@@ -1,3 +1,4 @@
+use crate::error::{failed, invalid, spawn_error, GitError};
 use crate::proc::CommandTimeoutExt;
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -63,65 +64,72 @@ impl FileStatus {
 // ── Repo Info ──
 
 /// Get the repository root directory
-pub fn get_repo_root() -> Result<String> {
+pub fn get_repo_root() -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
-        .context("Failed to run git")?;
+        .map_err(|e| spawn_error("Failed to run git", e))?;
 
     if !output.status.success() {
-        anyhow::bail!("Not in a git repository");
+        return Err(GitError::NotARepo { path: None });
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Get the repository root directory for a specific path
-pub fn get_repo_root_in(dir: &str) -> Result<String> {
+pub fn get_repo_root_in(dir: &str) -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(dir)
         .output()
-        .context(format!("Failed to run git in '{}'", dir))?;
+        .map_err(|e| spawn_error(format!("Failed to run git in '{dir}'"), e))?;
 
     if !output.status.success() {
-        anyhow::bail!("Not a git repository: {}", dir);
+        return Err(GitError::NotARepo {
+            path: Some(dir.to_string()),
+        });
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Get the repository root for a path inside a worktree (file or directory).
-pub fn get_repo_root_at(path: &str) -> Result<String> {
+pub fn get_repo_root_at(path: &str) -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["-C", path, "rev-parse", "--show-toplevel"])
         .output()
-        .context(format!("Failed to run git at '{}'", path))?;
+        .map_err(|e| spawn_error(format!("Failed to run git at '{path}'"), e))?;
 
     if !output.status.success() {
-        anyhow::bail!("Not a git repository: {}", path);
+        return Err(GitError::NotARepo {
+            path: Some(path.to_string()),
+        });
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Get current branch for a specific repo root
-pub fn get_current_branch_in(repo_root: &str) -> Result<String> {
+pub fn get_current_branch_in(repo_root: &str) -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(repo_root)
         .output()
-        .context("Failed to get current branch")?;
+        .map_err(|e| spawn_error("Failed to get current branch", e))?;
 
     if !output.status.success() {
-        anyhow::bail!("Failed to determine current branch");
+        return Err(GitError::Failed {
+            context: "Failed to determine current branch".into(),
+            stderr: String::new(),
+        });
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Auto-detect base branch for a specific repo root
-pub fn detect_base_branch_in(repo_root: &str) -> Result<String> {
+pub fn detect_base_branch_in(repo_root: &str) -> Result<String, GitError> {
     detect_base_branch_impl(Some(repo_root))
 }
 
@@ -129,7 +137,7 @@ pub fn detect_base_branch_in(repo_root: &str) -> Result<String> {
     clippy::literal_string_with_formatting_args,
     reason = "\"@{upstream}\" is a literal git refspec, not a format arg"
 )]
-fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
+fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String, GitError> {
     // Helper: run a git command and return trimmed stdout on success
     let run = |args: &[&str]| -> Option<String> {
         let mut cmd = Command::new("git");
@@ -213,13 +221,13 @@ pub fn git_diff_raw(
     base: &str,
     repo_root: &str,
     head_ref: Option<&str>,
-) -> Result<String> {
+) -> Result<String, GitError> {
     if base.starts_with('-') {
-        anyhow::bail!("Invalid base branch: {}", base);
+        return Err(invalid(format!("Invalid base branch: {base}")));
     }
     let head = head_ref.unwrap_or("HEAD");
     let merge_base_ref = format!("{}...{}", base, head);
-    let unified_arg = format!("--unified={}", super::DEFAULT_CONTEXT_LINES);
+    let unified_arg = format!("--unified={}", crate::DEFAULT_CONTEXT_LINES);
     let args: Vec<&str> = match mode {
         "branch" => vec![
             "diff",
@@ -236,14 +244,14 @@ pub fn git_diff_raw(
             "--no-color",
             "--no-ext-diff",
         ],
-        _ => anyhow::bail!("Unknown diff mode: {}", mode),
+        _ => return Err(invalid(format!("Unknown diff mode: {mode}"))),
     };
 
     let output = Command::new("git")
         .args(&args)
         .current_dir(repo_root)
         .output()
-        .context("Failed to run git diff")?;
+        .map_err(|e| spawn_error("Failed to run git diff", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -262,7 +270,7 @@ pub fn git_diff_raw(
     }
 
     if !stderr.is_empty() && !output.status.success() {
-        anyhow::bail!("git diff failed: {}", stderr.trim());
+        return Err(failed("git diff failed", &stderr));
     }
 
     if mode == "unstaged" {
@@ -283,12 +291,12 @@ pub fn git_diff_raw_file(
     path: &str,
     context_lines: Option<usize>,
     head_ref: Option<&str>,
-) -> Result<String> {
+) -> Result<String, GitError> {
     let head = head_ref.unwrap_or("HEAD");
     let merge_base_ref = format!("{}...{}", base, head);
     let unified_arg = format!(
         "--unified={}",
-        context_lines.unwrap_or(super::DEFAULT_CONTEXT_LINES)
+        context_lines.unwrap_or(crate::DEFAULT_CONTEXT_LINES)
     );
     let mut args: Vec<&str> = match mode {
         "branch" => vec![
@@ -308,7 +316,7 @@ pub fn git_diff_raw_file(
             "--no-ext-diff",
             "--",
         ],
-        _ => anyhow::bail!("Unknown diff mode: {}", mode),
+        _ => return Err(invalid(format!("Unknown diff mode: {mode}"))),
     };
     args.push(path);
 
@@ -316,20 +324,23 @@ pub fn git_diff_raw_file(
         .args(&args)
         .current_dir(repo_root)
         .output()
-        .context("Failed to run git diff for single file")?;
+        .map_err(|e| spawn_error("Failed to run git diff for single file", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !stderr.is_empty() && !output.status.success() {
-        anyhow::bail!("git diff failed for {}: {}", path, stderr.trim());
+        return Err(failed(format!("git diff failed for {path}"), &stderr));
     }
 
     Ok(stdout)
 }
 
 /// Append synthetic unified diffs for untracked text files to `combined`.
-pub fn append_untracked_synthetic_diffs(repo_root: &str, combined: String) -> Result<String> {
+pub fn append_untracked_synthetic_diffs(
+    repo_root: &str,
+    combined: String,
+) -> Result<String, GitError> {
     let untracked = untracked_files(repo_root)?;
     if untracked.is_empty() {
         return Ok(combined);
@@ -344,12 +355,12 @@ pub fn append_untracked_synthetic_diffs(repo_root: &str, combined: String) -> Re
 }
 
 /// List untracked files (excluding gitignored)
-fn untracked_files(repo_root: &str) -> Result<Vec<String>> {
+fn untracked_files(repo_root: &str) -> Result<Vec<String>, GitError> {
     let output = Command::new("git")
         .args(["ls-files", "--others", "--exclude-standard"])
         .current_dir(repo_root)
         .output()
-        .context("Failed to list untracked files")?;
+        .map_err(|e| spawn_error("Failed to list untracked files", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout
@@ -378,12 +389,12 @@ fn synthetic_new_file_diff(path: &str, content: &str) -> String {
 // ── Conflicts ──
 
 /// List files with unresolved merge conflicts
-pub fn unmerged_files(repo_root: &str) -> Result<Vec<String>> {
+pub fn unmerged_files(repo_root: &str) -> Result<Vec<String>, GitError> {
     let output = Command::new("git")
         .args(["diff", "--name-only", "--diff-filter=U"])
         .current_dir(repo_root)
         .output()
-        .context("Failed to list unmerged files")?;
+        .map_err(|e| spawn_error("Failed to list unmerged files", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout
@@ -423,9 +434,9 @@ pub fn is_merge_in_progress(repo_root: &str) -> bool {
 ///
 /// This ensures the Conflicts view shows the complete picture — not just files
 /// that still have conflict markers.
-pub fn git_diff_conflicts(repo_root: &str) -> Result<String> {
+pub fn git_diff_conflicts(repo_root: &str) -> Result<String, GitError> {
     let mut combined = String::new();
-    let unified_arg = format!("--unified={}", super::DEFAULT_CONTEXT_LINES);
+    let unified_arg = format!("--unified={}", crate::DEFAULT_CONTEXT_LINES);
 
     // Part 1: staged changes (resolved and auto-merged files)
     let staged_output = Command::new("git")
@@ -439,11 +450,11 @@ pub fn git_diff_conflicts(repo_root: &str) -> Result<String> {
         ])
         .current_dir(repo_root)
         .output()
-        .context("Failed to run git diff --cached HEAD")?;
+        .map_err(|e| spawn_error("Failed to run git diff --cached HEAD", e))?;
 
     let staged_stderr = String::from_utf8_lossy(&staged_output.stderr);
     if !staged_stderr.is_empty() && !staged_output.status.success() {
-        anyhow::bail!("git diff --cached HEAD failed: {}", staged_stderr.trim());
+        return Err(failed("git diff --cached HEAD failed", &staged_stderr));
     }
     combined.push_str(&String::from_utf8_lossy(&staged_output.stdout));
 
@@ -462,11 +473,16 @@ pub fn git_diff_conflicts(repo_root: &str) -> Result<String> {
             ])
             .current_dir(repo_root)
             .output()
-            .with_context(|| format!("Failed to run git diff HEAD for conflict file: {}", file))?;
+            .map_err(|e| {
+                spawn_error(
+                    format!("Failed to run git diff HEAD for conflict file: {file}"),
+                    e,
+                )
+            })?;
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !stderr.is_empty() && !output.status.success() {
-            anyhow::bail!("git diff HEAD failed for {}: {}", file, stderr.trim());
+            return Err(failed(format!("git diff HEAD failed for {file}"), &stderr));
         }
         combined.push_str(&String::from_utf8_lossy(&output.stdout));
     }
@@ -477,15 +493,18 @@ pub fn git_diff_conflicts(repo_root: &str) -> Result<String> {
 // ── Worktrees ──
 
 /// List all git worktrees for the repo
-pub fn list_worktrees(repo_root: &str) -> Result<Vec<Worktree>> {
+pub fn list_worktrees(repo_root: &str) -> Result<Vec<Worktree>, GitError> {
     let output = Command::new("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(repo_root)
         .output()
-        .context("Failed to list worktrees")?;
+        .map_err(|e| spawn_error("Failed to list worktrees", e))?;
 
     if !output.status.success() {
-        anyhow::bail!("git worktree list failed");
+        return Err(GitError::Failed {
+            context: "git worktree list failed".into(),
+            stderr: String::new(),
+        });
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -539,31 +558,31 @@ pub fn list_worktrees(repo_root: &str) -> Result<Vec<Worktree>> {
 // ── Staging ──
 
 /// Stage a single file
-pub fn git_stage_file(repo_root: &str, file_path: &str) -> Result<()> {
+pub fn git_stage_file(repo_root: &str, file_path: &str) -> Result<(), GitError> {
     let output = Command::new("git")
         .args(["add", "--", file_path])
         .current_dir(repo_root)
         .output()
-        .context("Failed to stage file")?;
+        .map_err(|e| spawn_error("Failed to stage file", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git add failed: {}", stderr.trim());
+        return Err(failed("git add failed", &stderr));
     }
     Ok(())
 }
 
 /// Unstage a single file
-pub fn git_unstage_file(repo_root: &str, file_path: &str) -> Result<()> {
+pub fn git_unstage_file(repo_root: &str, file_path: &str) -> Result<(), GitError> {
     let output = Command::new("git")
         .args(["reset", "HEAD", "--", file_path])
         .current_dir(repo_root)
         .output()
-        .context("Failed to unstage file")?;
+        .map_err(|e| spawn_error("Failed to unstage file", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git reset failed: {}", stderr.trim());
+        return Err(failed("git reset failed", &stderr));
     }
     Ok(())
 }
@@ -578,51 +597,51 @@ fn byte_prefix(s: &str, max: usize) -> &str {
 }
 
 /// Stage all files
-pub fn git_stage_all(repo_root: &str) -> Result<()> {
+pub fn git_stage_all(repo_root: &str) -> Result<(), GitError> {
     let output = Command::new("git")
         .args(["add", "-A"])
         .current_dir(repo_root)
         .output()
-        .context("Failed to stage all")?;
+        .map_err(|e| spawn_error("Failed to stage all", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git add -A failed: {}", stderr.trim());
+        return Err(failed("git add -A failed", &stderr));
     }
     Ok(())
 }
 
 /// Push current branch to remote, returning trimmed stderr output on success
-pub fn git_push(repo_root: &str) -> Result<String> {
+pub fn git_push(repo_root: &str) -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["push"])
         .current_dir(repo_root)
         .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
-        .context("Failed to run git push")?;
+        .map_err(|e| spawn_error("Failed to run git push", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git push failed: {}", stderr.trim());
+        return Err(failed("git push failed", &stderr));
     }
 
     Ok(String::from_utf8_lossy(&output.stderr).trim().to_string())
 }
 
 /// Get raw diff output between two refs (e.g. "HEAD~1" and "HEAD")
-pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<String> {
+pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<String, GitError> {
     let range = format!("{}..{}", from, to);
-    let unified_arg = format!("--unified={}", super::DEFAULT_CONTEXT_LINES);
+    let unified_arg = format!("--unified={}", crate::DEFAULT_CONTEXT_LINES);
     let output = Command::new("git")
         .args(["diff", &range, &unified_arg, "--no-color", "--no-ext-diff"])
         .current_dir(repo_root)
         .output()
-        .context("Failed to run git diff for range")?;
+        .map_err(|e| spawn_error("Failed to run git diff for range", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !stderr.is_empty() && !output.status.success() {
-        anyhow::bail!("git diff {} failed: {}", range, stderr.trim());
+        return Err(failed(format!("git diff {range} failed"), &stderr));
     }
 
     Ok(stdout)
@@ -633,24 +652,24 @@ pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<Strin
 /// base with `base`. Includes committed changes plus staged/unstaged tracked
 /// edits, so live edits in the checked-out branch surface immediately.
 /// Read-only; never mutates the working tree.
-pub fn git_diff_checkout_against_base(root: &str, base: &str) -> Result<String> {
+pub fn git_diff_checkout_against_base(root: &str, base: &str) -> Result<String, GitError> {
     if base.starts_with('-') {
-        anyhow::bail!("Invalid base branch: {}", base);
+        return Err(invalid(format!("Invalid base branch: {base}")));
     }
     let merge_base_out = Command::new("git")
         .args(["merge-base", base, "HEAD"])
         .current_dir(root)
         .output()
-        .context("failed to run git merge-base")?;
+        .map_err(|e| spawn_error("failed to run git merge-base", e))?;
     if !merge_base_out.status.success() {
         let stderr = String::from_utf8_lossy(&merge_base_out.stderr);
-        anyhow::bail!("git merge-base failed: {}", stderr.trim());
+        return Err(failed("git merge-base failed", &stderr));
     }
     let merge_base = String::from_utf8_lossy(&merge_base_out.stdout)
         .trim()
         .to_string();
 
-    let unified_arg = format!("--unified={}", super::DEFAULT_CONTEXT_LINES);
+    let unified_arg = format!("--unified={}", crate::DEFAULT_CONTEXT_LINES);
     let output = Command::new("git")
         .args([
             "diff",
@@ -661,10 +680,10 @@ pub fn git_diff_checkout_against_base(root: &str, base: &str) -> Result<String> 
         ])
         .current_dir(root)
         .output()
-        .context("failed to run git diff <merge-base>")?;
+        .map_err(|e| spawn_error("failed to run git diff <merge-base>", e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git diff failed: {}", stderr.trim());
+        return Err(failed("git diff failed", &stderr));
     }
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     append_untracked_synthetic_diffs(root, stdout)
@@ -674,31 +693,31 @@ pub fn git_diff_checkout_against_base(root: &str, base: &str) -> Result<String> 
 ///
 /// symmetric-difference range `base...branch` (everything on `branch` since
 /// it diverged from `base`). Read-only; never mutates the working tree.
-pub fn git_diff_against_branch(root: &str, base: &str, branch: &str) -> Result<String> {
+pub fn git_diff_against_branch(root: &str, base: &str, branch: &str) -> Result<String, GitError> {
     let spec = format!("{base}...{branch}");
     let output = Command::new("git")
         .args(["diff", "--no-color", "--no-ext-diff", &spec])
         .current_dir(root)
         .output()
-        .context("failed to run git diff <base>...<branch>")?;
+        .map_err(|e| spawn_error("failed to run git diff <base>...<branch>", e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git diff failed: {}", stderr.trim());
+        return Err(failed("git diff failed", &stderr));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// Commit staged changes with the given message
-pub fn git_commit(repo_root: &str, message: &str) -> Result<()> {
+pub fn git_commit(repo_root: &str, message: &str) -> Result<(), GitError> {
     let output = Command::new("git")
         .args(["commit", "-m", message])
         .current_dir(repo_root)
         .output()
-        .context("Failed to run git commit")?;
+        .map_err(|e| spawn_error("Failed to run git commit", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git commit failed: {}", stderr.trim());
+        return Err(failed("git commit failed", &stderr));
     }
     Ok(())
 }
@@ -759,7 +778,7 @@ pub fn git_log_range(
     repo_root: &str,
     limit: usize,
     skip: usize,
-) -> Result<Vec<CommitInfo>> {
+) -> Result<Vec<CommitInfo>, GitError> {
     let range = format!("{}..{}", from, to);
     let limit_str = format!("--max-count={}", limit);
     let skip_str = format!("--skip={}", skip);
@@ -775,7 +794,7 @@ pub fn git_log_range(
         ])
         .current_dir(repo_root)
         .output()
-        .context("Failed to run git log")?;
+        .map_err(|e| spawn_error("Failed to run git log", e))?;
 
     if !output.status.success() {
         // `from` or `to` may not exist locally — fall back to logging `to` alone.
@@ -783,26 +802,27 @@ pub fn git_log_range(
             .args(["log", to, &limit_str, &skip_str, LOG_FORMAT, "--shortstat"])
             .current_dir(repo_root)
             .output()
-            .context("Failed to run git log")?;
+            .map_err(|e| spawn_error("Failed to run git log", e))?;
         if !output.status.success() {
             return Ok(Vec::new());
         }
-        return parse_git_log(&String::from_utf8_lossy(&output.stdout));
+        return parse_git_log(&String::from_utf8_lossy(&output.stdout))
+            .map_err(|e| invalid(e.to_string()));
     }
 
-    parse_git_log(&String::from_utf8_lossy(&output.stdout))
+    parse_git_log(&String::from_utf8_lossy(&output.stdout)).map_err(|e| invalid(e.to_string()))
 }
 
-pub fn git_log_head(repo_root: &str, limit: usize) -> Result<Vec<CommitInfo>> {
+pub fn git_log_head(repo_root: &str, limit: usize) -> Result<Vec<CommitInfo>, GitError> {
     let limit_str = format!("--max-count={}", limit);
 
     let output = Command::new("git")
         .args(["log", &limit_str, LOG_FORMAT, "--shortstat"])
         .current_dir(repo_root)
         .output()
-        .context("Failed to run git log")?;
+        .map_err(|e| spawn_error("Failed to run git log", e))?;
 
-    parse_git_log(&String::from_utf8_lossy(&output.stdout))
+    parse_git_log(&String::from_utf8_lossy(&output.stdout)).map_err(|e| invalid(e.to_string()))
 }
 
 /// The `--format` every commit-listing `git log` passes, so one parser reads them all.
@@ -988,10 +1008,10 @@ fn parse_shortstat(line: &str) -> (usize, usize, usize) {
 }
 
 /// Get the diff for a single commit, handling merge commits and root commits
-pub fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String> {
+pub fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String, GitError> {
     // `hash` must be the full %H hash from CommitInfo.hash, never short_hash —
     // ambiguous short prefixes make git fail.
-    let unified_arg = format!("--unified={}", super::DEFAULT_CONTEXT_LINES);
+    let unified_arg = format!("--unified={}", crate::DEFAULT_CONTEXT_LINES);
     // Try diff against first parent
     let output = Command::new("git")
         .args([
@@ -1003,7 +1023,7 @@ pub fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String> {
         ])
         .current_dir(repo_root)
         .output()
-        .context("Failed to run git diff for commit")?;
+        .map_err(|e| spawn_error("Failed to run git diff for commit", e))?;
 
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).to_string());
@@ -1022,11 +1042,11 @@ pub fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String> {
         ])
         .current_dir(repo_root)
         .output()
-        .context("Failed to run git diff-tree for root commit")?;
+        .map_err(|e| spawn_error("Failed to run git diff-tree for root commit", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git diff-tree failed for {hash}: {}", stderr.trim());
+        return Err(failed(format!("git diff-tree failed for {hash}"), &stderr));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -1203,17 +1223,17 @@ pub fn diff_watched_file_snapshot(
     repo_root: &str,
     rel_path: &str,
     snapshots_dir: &str,
-) -> Result<Option<String>> {
-    let current_path = join_within(repo_root, rel_path)?;
-    let snapshot_path = join_within(snapshots_dir, rel_path)?;
+) -> Result<Option<String>, GitError> {
+    let current_path = join_within(repo_root, rel_path).map_err(|e| invalid(e.to_string()))?;
+    let snapshot_path = join_within(snapshots_dir, rel_path).map_err(|e| invalid(e.to_string()))?;
 
     if !snapshot_path.exists() {
         // First time seeing this file — save snapshot, signal "new file"
-        save_snapshot(repo_root, rel_path, snapshots_dir)?;
+        save_snapshot(repo_root, rel_path, snapshots_dir).map_err(|e| invalid(e.to_string()))?;
         return Ok(None);
     }
 
-    let unified_arg = format!("--unified={}", super::DEFAULT_CONTEXT_LINES);
+    let unified_arg = format!("--unified={}", crate::DEFAULT_CONTEXT_LINES);
     let output = Command::new("git")
         .args([
             "diff",
@@ -1226,7 +1246,7 @@ pub fn diff_watched_file_snapshot(
         .arg(&current_path)
         .current_dir(repo_root)
         .output()
-        .context("Failed to run git diff --no-index")?;
+        .map_err(|e| spawn_error("Failed to run git diff --no-index", e))?;
 
     let raw = String::from_utf8_lossy(&output.stdout).to_string();
     if raw.is_empty() {
@@ -1237,40 +1257,54 @@ pub fn diff_watched_file_snapshot(
 }
 
 /// Resolve a retained file version without reading its contents.
-pub fn git_blob_oid(root: &str, spec: &str) -> Result<String> {
+pub fn git_blob_oid(root: &str, spec: &str) -> Result<String, GitError> {
     let output = crate::proc::run_with_bounded_stdout(
         Command::new("git")
             .current_dir(root)
             .args(["rev-parse", "--verify", spec]),
         std::time::Duration::from_secs(5),
         128,
-    )?;
+    )
+    .map_err(|e| spawn_error("", e))?;
     if !output.status.success() {
-        anyhow::bail!("Document source could not be resolved");
+        return Err(GitError::Failed {
+            context: "Document source could not be resolved".into(),
+            stderr: String::new(),
+        });
     }
-    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    String::from_utf8(output.stdout)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| invalid(e.to_string()))
 }
 
 /// Read a Git blob without buffering beyond the caller's content limit.
-pub fn git_read_blob(root: &str, spec: &str, max_bytes: usize) -> Result<Vec<u8>> {
+pub fn git_read_blob(root: &str, spec: &str, max_bytes: usize) -> Result<Vec<u8>, GitError> {
     let output = crate::proc::run_with_bounded_stdout(
         Command::new("git")
             .current_dir(root)
             .args(["cat-file", "blob", spec]),
         std::time::Duration::from_secs(5),
         max_bytes,
-    )?;
+    )
+    .map_err(|e| spawn_error("", e))?;
     if !output.status.success() {
-        anyhow::bail!("Document source could not be read");
+        return Err(GitError::Failed {
+            context: "Document source could not be read".into(),
+            stderr: String::new(),
+        });
     }
     Ok(output.stdout)
 }
 
 /// Which of `paths` exist as files at `rev`. One `git ls-tree` for all of
 /// them; a path that is absent is simply not listed.
-pub fn git_paths_present_at(root: &str, rev: &str, paths: &[String]) -> Result<Vec<String>> {
+pub fn git_paths_present_at(
+    root: &str,
+    rev: &str,
+    paths: &[String],
+) -> Result<Vec<String>, GitError> {
     if rev.is_empty() || rev.starts_with('-') {
-        anyhow::bail!("Invalid revision: {}", rev);
+        return Err(invalid(format!("Invalid revision: {rev}")));
     }
     if paths.is_empty() {
         return Ok(Vec::new());
@@ -1289,9 +1323,13 @@ pub fn git_paths_present_at(root: &str, rev: &str, paths: &[String]) -> Result<V
             .args(paths),
         std::time::Duration::from_secs(5),
         64 * 1024,
-    )?;
+    )
+    .map_err(|e| spawn_error("", e))?;
     if !output.status.success() {
-        anyhow::bail!("Revision could not be listed");
+        return Err(GitError::Failed {
+            context: "Revision could not be listed".into(),
+            stderr: String::new(),
+        });
     }
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()

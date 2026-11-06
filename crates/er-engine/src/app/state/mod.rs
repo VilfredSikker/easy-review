@@ -3280,6 +3280,7 @@ impl TabState {
             &self.repo_root,
             head_ref_owned.as_deref(),
         )
+        .map_err(anyhow::Error::from)
     }
 
     /// Raw diff for AI review: prefer the cached UI diff when fresh, else refetch.
@@ -10888,7 +10889,7 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.risk_rules = crate::config::test_support::risk_rules(&[("src/**", "high")], None);
-        tab.filter_rules = crate::app::filter::parse_filter_expr("importance:foundational");
+        tab.filter_rules = crate::app::filter::parse_filter_expr("importance:high");
 
         let visible: Vec<&str> = tab
             .visible_files()
@@ -10898,13 +10899,13 @@ mod tests {
         assert_eq!(visible, vec!["src/lib.rs"]);
     }
 
-    /// Nothing declared means every path is `normal`, so a tier filter selects
+    /// Nothing declared means every path is `ai`, so a tier filter selects
     /// nothing rather than everything.
     #[test]
     fn visible_files_without_risk_rules_selects_no_tier() {
         let files = vec![make_file("src/lib.rs", vec![], 1, 0)];
         let mut tab = make_test_tab(files);
-        tab.filter_rules = crate::app::filter::parse_filter_expr("importance:foundational");
+        tab.filter_rules = crate::app::filter::parse_filter_expr("importance:high");
 
         assert!(tab.visible_files().is_empty());
     }

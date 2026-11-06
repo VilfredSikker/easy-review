@@ -73,21 +73,27 @@ fn image_mime(content_type: &str) -> Option<String> {
 
 fn fetch(url: &str) -> Result<String, String> {
     let auth = route(url).ok_or("Not a GitHub image URL")?;
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(20))
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(20)))
         .build();
-    let mut request = agent.get(url).set("User-Agent", "easy-review-desktop");
+    let agent = ureq::Agent::new_with_config(config);
+    let mut request = agent.get(url).header("User-Agent", "easy-review-desktop");
     if auth == Auth::Token {
         if let Some(token) = gh_token() {
-            request = request.set("Authorization", &format!("token {token}"));
+            request = request.header("Authorization", &format!("token {token}"));
         }
     }
     let response = request
         .call()
         .map_err(|e| format!("Image request failed: {e}"))?;
-    let mime = image_mime(response.content_type()).ok_or("Response is not an image")?;
+    let mime = response
+        .body()
+        .mime_type()
+        .and_then(image_mime)
+        .ok_or("Response is not an image")?;
     let mut bytes = Vec::new();
     response
+        .into_body()
         .into_reader()
         .take(MAX_IMAGE_BYTES + 1)
         .read_to_end(&mut bytes)

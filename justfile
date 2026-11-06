@@ -123,7 +123,7 @@ sign-release-desktop *ARGS:
 # Test the TUI + engine (scoped to target/tui — fast, no Tauri build).
 [group('test')]
 test:
-    ./scripts/er-tui.sh test -p er-engine -p er-tui
+    ./scripts/er-tui.sh test -p er-engine -p er-tui -p er-git
 
 # Test the desktop (Tauri) backend.
 [group('test')]

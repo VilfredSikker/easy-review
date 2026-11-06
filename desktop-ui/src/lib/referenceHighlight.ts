@@ -222,7 +222,6 @@ export function splitSegmentsByIdentifier(
       const range = ri < ranges.length ? ranges[ri] : null;
       if (!range || range[0] >= segEnd) {
         out.push({ ...seg, text: full.slice(cursor, segEnd) });
-        cursor = segEnd;
         break;
       }
       const [rs, re] = range;
@@ -256,23 +255,21 @@ export function caretTextOffset(e: MouseEvent, container: HTMLElement): number |
     ) => { offsetNode: Node; offset: number } | null;
   };
 
-  let node: Node | null = null;
-  let offset = 0;
-  if (typeof doc.caretRangeFromPoint === "function") {
-    const r = doc.caretRangeFromPoint(e.clientX, e.clientY);
-    if (!r) return null;
-    node = r.startContainer;
-    offset = r.startOffset;
-  } else if (typeof doc.caretPositionFromPoint === "function") {
-    const p = doc.caretPositionFromPoint(e.clientX, e.clientY);
-    if (!p) return null;
-    node = p.offsetNode;
-    offset = p.offset;
-  } else {
+  const point = (() => {
+    if (typeof doc.caretRangeFromPoint === "function") {
+      const r = doc.caretRangeFromPoint(e.clientX, e.clientY);
+      return r ? { node: r.startContainer, offset: r.startOffset } : null;
+    }
+    if (typeof doc.caretPositionFromPoint === "function") {
+      const p = doc.caretPositionFromPoint(e.clientX, e.clientY);
+      return p ? { node: p.offsetNode, offset: p.offset } : null;
+    }
     return null;
-  }
+  })();
+  if (!point) return null;
+  const { node, offset } = point;
 
-  if (!node || !container.contains(node)) return null;
+  if (!container.contains(node)) return null;
   const range = document.createRange();
   range.setStart(container, 0);
   try {

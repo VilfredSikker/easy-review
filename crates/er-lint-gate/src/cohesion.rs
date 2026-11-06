@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::attrs::is_cfg_test;
 use proc_macro2::{TokenStream, TokenTree};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
@@ -44,15 +45,6 @@ pub fn impl_cohesion(source: &str, opts: Options) -> Vec<Finding> {
     let mut out = Vec::new();
     check_items(&file.items, opts, &mut out);
     out
-}
-
-fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|a| {
-        a.path().is_ident("cfg")
-            && a.meta
-                .require_list()
-                .is_ok_and(|l| l.tokens.to_string().contains("test"))
-    })
 }
 
 /// An impl under an attribute macro (`#[tool_router]`) is shaped by that

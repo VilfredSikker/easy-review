@@ -58,6 +58,14 @@ Prove a fix or new behaviour with a test that fails before and passes after. Nev
      - **Owner actions:** anything only the owner can do.
      - **Follow-ups.**
 4. **Do not merge.** The owner or orchestrator merges after review.
+5. **Never force-push.** When `release/v1.0.0` gains code your branch lacks, run `git fetch origin && git merge origin/release/v1.0.0` in your worktree, re-run your checks, and push normally. Commits titled `epic 1.0.0: status` touch only `docs/epics/1.0.0/` and need no merge.
+6. **ADR numbers.** 0053 belongs to P05 (#376). Any other new ADR takes the next free number when you branch (`ls docs/adr`), because several PRs add ADRs in parallel.
+
+## Talking to the coordinator
+
+- Your instructions arrive as comments on your issue that start `**Next step (coordinator):**`. Read the latest one before you act, and do what it says.
+- After you post on GitHub (a PR, your report, a question, or "ready for re-review"), send a short message to the coordinator session naming the issue. Find it with `ListAgents`; its name starts with `1-0-0-coordinator`.
+- Ask a question on the issue, not only in a message, so the answer is on the record.
 
 ## Report back
 

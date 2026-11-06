@@ -415,7 +415,7 @@ mod tests {
         assert!(!kit_instructions("abc", None).contains("REVIEW.md"));
     }
 
-    /// A remote PR must find the same `[importance]` / `[file_kinds]` table a
+    /// A remote PR must find the same `[risk.<repo>]` / `[file_kinds]` table a
     /// clone of that repo would, or the facts silently say "undeclared".
     #[test]
     fn rules_key_for_a_remote_matches_a_clones_slug_repo() {

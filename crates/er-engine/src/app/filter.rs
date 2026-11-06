@@ -1009,7 +1009,7 @@ mod tests {
 
     #[test]
     fn parse_importance_filter() {
-        let rules = parse_filter_expr("+importance:foundational");
+        let rules = parse_filter_expr("+importance:high");
         assert_eq!(rules.len(), 1);
         match &rules[0] {
             FilterRule::Importance { include, tiers } => {
@@ -1022,7 +1022,7 @@ mod tests {
 
     #[test]
     fn parse_importance_filter_exclude() {
-        let rules = parse_filter_expr("-importance:isolated");
+        let rules = parse_filter_expr("-importance:low");
         assert_eq!(rules.len(), 1);
         match &rules[0] {
             FilterRule::Importance { include, tiers } => {
@@ -1042,11 +1042,22 @@ mod tests {
     }
 
     #[test]
+    fn importance_filter_ignores_the_old_tier_words() {
+        for expr in [
+            "+importance:foundational",
+            "+importance:isolated",
+            "+importance:normal",
+        ] {
+            assert!(parse_filter_expr(expr).is_empty(), "{expr}");
+        }
+    }
+
+    #[test]
     fn importance_filters_without_review_data() {
         // The case `risk:*` cannot serve: nothing has been reviewed, so every
         // call passes no review, and the declared tier still decides.
-        let rules = parse_filter_expr("+importance:foundational");
-        let importance = risk_rules(&[("crates/er-engine/src/**", "foundational")], None);
+        let rules = parse_filter_expr("+importance:high");
+        let importance = risk_rules(&[("crates/er-engine/src/**", "high")], None);
         let core = make_file(
             "crates/er-engine/src/app/filter.rs",
             FileStatus::Modified,
@@ -1070,8 +1081,8 @@ mod tests {
 
     #[test]
     fn importance_exclude_hides_only_the_tier_it_names() {
-        let rules = parse_filter_expr("-importance:isolated");
-        let importance = risk_rules(&[("*.md", "isolated")], None);
+        let rules = parse_filter_expr("-importance:low");
+        let importance = risk_rules(&[("*.md", "low")], None);
         let doc = make_file("docs/readme.md", FileStatus::Modified, 2, 0);
         let code = make_file("src/main.rs", FileStatus::Modified, 5, 3);
         assert!(!apply_filter_with_context(
@@ -1092,8 +1103,8 @@ mod tests {
     fn importance_is_not_gated_on_review_data() {
         // A review exists here, which is what a risk rule needs and an
         // importance rule must not: the tier answers the same either way.
-        let rules = parse_filter_expr("+importance:foundational");
-        let importance = risk_rules(&[("crates/er-engine/src/**", "foundational")], None);
+        let rules = parse_filter_expr("+importance:high");
+        let importance = risk_rules(&[("crates/er-engine/src/**", "high")], None);
         let core = make_file(
             "crates/er-engine/src/app/filter.rs",
             FileStatus::Modified,
@@ -1112,12 +1123,12 @@ mod tests {
     #[test]
     fn importance_without_declared_rules_resolves_every_path_to_ai() {
         // With no declared rules, every path is left to the review, so only a
-        // rule naming `ai` matches anything. `normal` is the `[importance]` spelling.
-        let foundational = parse_filter_expr("+importance:high");
-        let normal = parse_filter_expr("+importance:normal");
+        // rule naming `ai` matches anything.
+        let high = parse_filter_expr("+importance:high");
+        let ai = parse_filter_expr("+importance:ai");
         let file = make_file("src/main.rs", FileStatus::Modified, 5, 3);
-        assert!(!apply_filter_with_context(&foundational, &file, None, None));
-        assert!(apply_filter_with_context(&normal, &file, None, None));
+        assert!(!apply_filter_with_context(&high, &file, None, None));
+        assert!(apply_filter_with_context(&ai, &file, None, None));
     }
 
     #[test]
@@ -1213,7 +1224,7 @@ mod tests {
             [FilterRule::Risk { levels, .. }] if levels == &[RiskLevel::High, RiskLevel::Medium]
         ));
         assert!(matches!(
-            parse_filter_expr("importance:foundational,isolated").as_slice(),
+            parse_filter_expr("importance:high,low").as_slice(),
             [FilterRule::Importance { tiers, .. }]
                 if tiers == &[RiskTier::High, RiskTier::Low]
         ));

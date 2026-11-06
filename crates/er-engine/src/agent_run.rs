@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn run_timed_out_is_distinguishable_from_cancelled() {
-        let err = timed_out(Duration::from_secs(900)).context("while reviewing");
+        let err = timed_out(Duration::from_mins(15)).context("while reviewing");
         assert!(is_run_timed_out(&err));
         assert!(
             !is_run_cancelled(&err),
@@ -546,7 +546,7 @@ mod tests {
         // A 900 the reader has to divide by 60 is a worse error message than
         // one that already says 15.
         assert_eq!(
-            timed_out(Duration::from_secs(900)).to_string(),
+            timed_out(Duration::from_mins(15)).to_string(),
             "agent run exceeded its 15 minute limit"
         );
         assert_eq!(

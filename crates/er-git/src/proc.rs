@@ -7,7 +7,7 @@
 //! every command in the app rather than degrading a single row.
 //!
 //! [`run_with_timeout`] puts a ceiling on that. It follows the shape already
-//! used by [`crate::model_discovery::run_models_command`], and adds the
+//! used by `er_engine::model_discovery::run_models_command`, and adds the
 //! environment guards that stop a tool from asking a question in the first
 //! place.
 

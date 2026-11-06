@@ -42,7 +42,7 @@ pub fn slugify(s: &str) -> String {
         .to_string()
 }
 
-/// The key a repo's `[importance]` / `[file_kinds]` tables live under.
+/// The key a repo's `[risk.<repo>]` / `[file_kinds]` tables live under.
 ///
 /// Pass `remote_repo` (`owner/repo`) only for a target with no clone: its
 /// `repo_root` is whatever directory the process runs in, so the key comes from

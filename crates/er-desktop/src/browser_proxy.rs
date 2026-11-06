@@ -173,7 +173,7 @@ pub fn webview_navigation_handoff(http_location: &str) -> http::Response<Vec<u8>
 }
 
 pub struct UpstreamFetch {
-    pub response: ureq::Response,
+    pub response: ureq::http::Response<ureq::Body>,
     pub headers: Vec<ProxyHeader>,
 }
 
@@ -188,14 +188,12 @@ pub enum UpstreamFetchError {
     CrossOriginHandoff(String),
 }
 
-pub fn collect_ureq_headers(resp: &ureq::Response) -> Vec<ProxyHeader> {
-    resp.headers_names()
-        .into_iter()
-        .flat_map(|name| {
-            resp.all(&name).into_iter().map(move |value| ProxyHeader {
-                name: name.clone(),
-                value: value.to_string(),
-            })
+pub fn collect_ureq_headers(resp: &ureq::http::Response<ureq::Body>) -> Vec<ProxyHeader> {
+    resp.headers()
+        .iter()
+        .map(|(name, value)| ProxyHeader {
+            name: name.as_str().to_string(),
+            value: String::from_utf8_lossy(value.as_bytes()).into_owned(),
         })
         .collect()
 }
@@ -208,19 +206,19 @@ pub fn fetch_upstream_get(
     forward_cookies: bool,
 ) -> Result<UpstreamFetch, UpstreamFetchError> {
     log::info!("[erp] document_get url={initial_target} cookies={forward_cookies}");
-    let mut req = agent.get(initial_target).set("Accept-Encoding", "identity");
+    let mut req = agent
+        .get(initial_target)
+        .header("Accept-Encoding", "identity");
     for (name, value) in forward_headers {
         if !forward_cookies && name.eq_ignore_ascii_case("cookie") {
             continue;
         }
-        req = req.set(name, value);
+        req = req.header(name.as_str(), value.as_str());
     }
-    let resp = match req.call() {
-        Ok(resp) => resp,
-        Err(ureq::Error::Status(_, resp)) => resp,
-        Err(e) => return Err(UpstreamFetchError::Transport(Box::new(e))),
-    };
-    let status = resp.status();
+    let resp = req
+        .call()
+        .map_err(|e| UpstreamFetchError::Transport(Box::new(e)))?;
+    let status = resp.status().as_u16();
     let headers = collect_ureq_headers(&resp);
     if is_redirect_status(status) {
         let Some(location) = headers

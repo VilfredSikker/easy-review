@@ -8,7 +8,7 @@
 //! best guess across merges, which is why deleted-line attribution is
 //! best-effort and its failure never fails the added side.
 
-use anyhow::{bail, Context, Result};
+use crate::error::{failed, invalid, spawn_error, GitError};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -65,42 +65,42 @@ pub struct BlameRequest<'a> {
 }
 
 /// `git rev-parse --verify <rev>^{commit}` as a full oid.
-pub fn git_rev_parse_commit(repo_root: &str, rev: &str) -> Result<String> {
+pub fn git_rev_parse_commit(repo_root: &str, rev: &str) -> Result<String, GitError> {
     if rev.starts_with('-') {
-        bail!("Invalid revision: {rev}");
+        return Err(invalid(format!("Invalid revision: {rev}")));
     }
     let spec = format!("{rev}^{{commit}}");
     let output = Command::new("git")
         .args(["rev-parse", "--verify", "--quiet", &spec])
         .current_dir(repo_root)
         .output()
-        .context("failed to run git rev-parse")?;
+        .map_err(|e| spawn_error("failed to run git rev-parse", e))?;
     let oid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if !output.status.success() || oid.is_empty() {
-        bail!("{rev} is not a commit in this repository");
+        return Err(invalid(format!("{rev} is not a commit in this repository")));
     }
     Ok(oid)
 }
 
 /// `git merge-base <a> <b>`.
-pub fn git_merge_base(repo_root: &str, a: &str, b: &str) -> Result<String> {
+pub fn git_merge_base(repo_root: &str, a: &str, b: &str) -> Result<String, GitError> {
     if a.starts_with('-') || b.starts_with('-') {
-        bail!("Invalid revision");
+        return Err(invalid("Invalid revision"));
     }
     let output = Command::new("git")
         .args(["merge-base", a, b])
         .current_dir(repo_root)
         .output()
-        .context("failed to run git merge-base")?;
+        .map_err(|e| spawn_error("failed to run git merge-base", e))?;
     let oid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if !output.status.success() || oid.is_empty() {
-        bail!("{a} and {b} share no history");
+        return Err(invalid(format!("{a} and {b} share no history")));
     }
     Ok(oid)
 }
 
 /// Attribute one file's changed lines to the range's commits.
-pub fn blame_range(request: &BlameRequest<'_>) -> Result<LineAttribution> {
+pub fn blame_range(request: &BlameRequest<'_>) -> Result<LineAttribution, GitError> {
     let end_rev = match request.end {
         BlameEnd::Rev(rev) => rev,
         BlameEnd::WorkingTree => "HEAD",
@@ -164,19 +164,23 @@ pub fn blame_range(request: &BlameRequest<'_>) -> Result<LineAttribution> {
 }
 
 /// Range commits on the first-parent chain, oldest first.
-fn first_parent_chain(repo_root: &str, start: Option<&str>, end_oid: &str) -> Result<Vec<String>> {
+fn first_parent_chain(
+    repo_root: &str,
+    start: Option<&str>,
+    end_oid: &str,
+) -> Result<Vec<String>, GitError> {
     let range = start.map_or_else(|| end_oid.to_owned(), |s| format!("{s}..{end_oid}"));
     if range.starts_with('-') {
-        bail!("Invalid revision range: {range}");
+        return Err(invalid(format!("Invalid revision range: {range}")));
     }
     let output = Command::new("git")
         .args(["rev-list", "--reverse", "--first-parent", &range])
         .current_dir(repo_root)
         .output()
-        .context("failed to run git rev-list")?;
+        .map_err(|e| spawn_error("failed to run git rev-list", e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git rev-list failed: {}", stderr.trim());
+        return Err(failed("git rev-list failed", &stderr));
     }
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -192,7 +196,7 @@ fn run_blame(
     end: &str,
     reverse: bool,
     path: &str,
-) -> Result<Vec<BlameLine>> {
+) -> Result<Vec<BlameLine>, GitError> {
     let mut cmd = Command::new("git");
     cmd.args(["blame", "--porcelain"])
         .current_dir(request.repo_root);
@@ -216,10 +220,12 @@ fn run_blame(
         (None, true) => {}
     }
     cmd.arg("--").arg(path);
-    let output = cmd.output().context("failed to run git blame")?;
+    let output = cmd
+        .output()
+        .map_err(|e| spawn_error("failed to run git blame", e))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git blame failed: {}", stderr.trim());
+        return Err(failed("git blame failed", &stderr));
     }
     Ok(parse_porcelain(&String::from_utf8_lossy(&output.stdout)))
 }

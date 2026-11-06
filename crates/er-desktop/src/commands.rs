@@ -1704,19 +1704,22 @@ pub struct AppUpdateInfo {
     pub release_url: Option<String>,
 }
 
-const UPDATE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+const UPDATE_CACHE_TTL: std::time::Duration = std::time::Duration::from_hours(1);
 
 fn fetch_latest_release() -> Result<er_engine::release_update::LatestRelease, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(8))
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(8)))
         .build();
-    let text = agent
+    let agent = ureq::Agent::new_with_config(config);
+    let mut response = agent
         .get(er_engine::release_update::RELEASES_LATEST_API)
-        .set("User-Agent", "easy-review-desktop")
-        .set("Accept", "application/vnd.github+json")
+        .header("User-Agent", "easy-review-desktop")
+        .header("Accept", "application/vnd.github+json")
         .call()
-        .map_err(|e| format!("GitHub releases request failed: {e}"))?
-        .into_string()
+        .map_err(|e| format!("GitHub releases request failed: {e}"))?;
+    let text = response
+        .body_mut()
+        .read_to_string()
         .map_err(|e| format!("GitHub releases body read failed: {e}"))?;
     er_engine::release_update::parse_latest_release(&text).map_err(|e| e.to_string())
 }
@@ -12859,7 +12862,7 @@ mod tests {
             uses_stream_json: false,
             env: vec![],
             // These go through ER_FAKE_CLAUDE and never reach the spawn.
-            timeout: std::time::Duration::from_secs(900),
+            timeout: std::time::Duration::from_mins(15),
             slot_cap: 3,
             slot_ceiling: 6,
         };
@@ -12879,7 +12882,7 @@ mod tests {
             uses_stream_json: false,
             env: vec![],
             // These go through ER_FAKE_CLAUDE and never reach the spawn.
-            timeout: std::time::Duration::from_secs(900),
+            timeout: std::time::Duration::from_mins(15),
             slot_cap: 3,
             slot_ceiling: 6,
         };
@@ -12902,7 +12905,7 @@ mod tests {
             uses_stream_json: false,
             env: vec![],
             // These go through ER_FAKE_CLAUDE and never reach the spawn.
-            timeout: std::time::Duration::from_secs(900),
+            timeout: std::time::Duration::from_mins(15),
             slot_cap: 3,
             slot_ceiling: 6,
         };

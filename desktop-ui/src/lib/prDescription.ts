@@ -169,8 +169,10 @@ const parser = new Marked({
     },
     listitem(item) {
       if (!item.task) return false;
-      const box = this.checkbox({ checked: !!item.checked });
-      const body = this.parser.parse(item.tokens, !!item.loose);
+      const box = this.checkbox({ type: "checkbox", raw: "", checked: !!item.checked });
+      // marked 18 includes the checkbox token in the item; this renderer draws
+      // it in the same row as the body, so parse the body without it.
+      const body = this.parser.parse(item.tokens.filter((token) => token.type !== "checkbox"));
       return `<li class="md-task${item.checked ? " md-done" : ""}">${box}<span>${body}</span></li>\n`;
     },
     table(token) {

@@ -25,7 +25,7 @@ target dirs. Cargo aliases, per-crate dev loops, desktop dev, and signing live i
   usual answer.
 - **`ER_DEBUG=1 er` rewrites `/tmp/er_debug.log` on every git diff call.** The
   file holds only the most recent call's command, exit code, and stderr, so
-  copy it out before the next refresh. (`crates/er-engine/src/git/status.rs`)
+  copy it out before the next refresh. (`crates/er-git/src/status.rs`)
 
 ## GitHub repo metadata
 
