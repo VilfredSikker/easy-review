@@ -1,4 +1,4 @@
-use super::comments::{ErFeedback, ErGitHubComments, ErNotes, ErQuestions};
+use super::comments::{ErGitHubComments, ErNotes, ErQuestions};
 use super::diagrams::{
     ErDiagram, DIAGRAM_KIND_FLOWS, DIAGRAM_KIND_MENTAL_MODEL, DIAGRAM_KIND_SUBSYSTEMS,
 };
@@ -386,16 +386,6 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
     // Load .er/diagrams/*.json (mermaid diagrams — one file per generated diagram)
     state.diagrams = load_diagrams(er_dir, current_diff_hash);
 
-    // Load legacy .er-feedback.json (only if new files don't exist — migration support)
-    if state.questions.is_none() && state.github_comments.is_none() {
-        let feedback_path = Path::new(er_dir).join("feedback.json");
-        if let Ok(content) = read_sidecar(&feedback_path) {
-            if let Ok(feedback) = serde_json::from_str::<ErFeedback>(&content) {
-                state.feedback = Some(feedback);
-            }
-        }
-    }
-
     state
 }
 
@@ -515,7 +505,6 @@ pub fn latest_er_mtime_skipping(
         "tour.json",
         "summary.md",
         "checklist.json",
-        "feedback.json",
         "questions.json",
         "notes.json",
         "github-comments.json",
@@ -583,6 +572,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notes.json"), r#"{"version":1,"notes":[]}"#).unwrap();
         assert!(latest_er_mtime(dir.path().to_str().unwrap()).is_some());
+    }
+
+    #[test]
+    fn latest_er_mtime_ignores_feedback_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("feedback.json"),
+            r#"{"version":1,"diff_hash":"h","comments":[]}"#,
+        )
+        .unwrap();
+        assert!(latest_er_mtime(dir.path().to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn load_ai_state_ignores_feedback_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        std::fs::write(
+            dir.path().join("feedback.json"),
+            r#"{"version":1,"diff_hash":"h","comments":[{"id":"fb-1","file":"a.rs","hunk_index":0,"comment":"old"}]}"#,
+        )
+        .unwrap();
+        let state = load_ai_state(er_dir, "h", None);
+        assert!(state.find_comment("fb-1").is_none());
+        assert!(state.comments_for_hunk("a.rs", 0).is_empty());
     }
 
     #[test]

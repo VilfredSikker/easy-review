@@ -22,7 +22,7 @@ use crate::github::ReviewThreadState;
 // ── Timestamp helper ──────────────────────────────────────────────────────────
 
 /// Simple ISO 8601 UTC timestamp (no external crate needed).
-/// Kept in ISO format so .er-feedback.json timestamps are human-readable.
+/// Kept in ISO format so stored timestamps are human-readable.
 pub fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
