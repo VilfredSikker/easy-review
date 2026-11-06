@@ -23,8 +23,8 @@ pub enum HintType {
     Finding,
 }
 
-/// Unified reference to either a question, note, GitHub comment, or legacy comment.
-/// Used by query methods and UI rendering to handle both types uniformly.
+/// Unified reference to a question, a note, or a GitHub comment.
+/// Used by query methods and UI rendering to handle all three uniformly.
 ///
 /// Notes reuse the [`ReviewQuestion`] struct (their fields are identical); the
 /// `Note` variant exists so callers can distinguish a note from a question for
@@ -34,7 +34,6 @@ pub enum CommentRef<'a> {
     Question(&'a ReviewQuestion),
     Note(&'a ReviewQuestion),
     GitHubComment(&'a GitHubReviewComment),
-    Legacy(&'a FeedbackComment),
 }
 
 impl CommentRef<'_> {
@@ -42,7 +41,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.id,
             CommentRef::GitHubComment(c) => &c.id,
-            CommentRef::Legacy(c) => &c.id,
         }
     }
 
@@ -50,7 +48,7 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(_) => CommentType::Question,
             CommentRef::Note(_) => CommentType::Note,
-            CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => CommentType::GitHubComment,
+            CommentRef::GitHubComment(_) => CommentType::GitHubComment,
         }
     }
 
@@ -58,7 +56,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.text,
             CommentRef::GitHubComment(c) => &c.comment,
-            CommentRef::Legacy(c) => &c.comment,
         }
     }
 
@@ -78,13 +75,6 @@ impl CommentRef<'_> {
                     &c.author
                 }
             }
-            CommentRef::Legacy(c) => {
-                if c.author.is_empty() {
-                    "You"
-                } else {
-                    &c.author
-                }
-            }
         }
     }
 
@@ -92,7 +82,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.timestamp,
             CommentRef::GitHubComment(c) => &c.timestamp,
-            CommentRef::Legacy(c) => &c.timestamp,
         }
     }
 
@@ -101,7 +90,6 @@ impl CommentRef<'_> {
             // Questions and notes are local-only and never synced to GitHub.
             CommentRef::Question(_) | CommentRef::Note(_) => false,
             CommentRef::GitHubComment(c) => c.synced,
-            CommentRef::Legacy(c) => c.synced,
         }
     }
 
@@ -109,7 +97,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.resolved,
             CommentRef::GitHubComment(c) => c.resolved,
-            CommentRef::Legacy(c) => c.resolved,
         }
     }
 
@@ -117,7 +104,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.stale,
             CommentRef::GitHubComment(c) => c.stale || c.outdated,
-            CommentRef::Legacy(_) => false,
         }
     }
 
@@ -125,7 +111,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.in_reply_to.as_deref(),
             CommentRef::GitHubComment(c) => c.in_reply_to.as_deref(),
-            CommentRef::Legacy(c) => c.in_reply_to.as_deref(),
         }
     }
 
@@ -133,7 +118,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.file,
             CommentRef::GitHubComment(c) => &c.file,
-            CommentRef::Legacy(c) => &c.file,
         }
     }
 
@@ -141,7 +125,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.hunk_index,
             CommentRef::GitHubComment(c) => c.hunk_index,
-            CommentRef::Legacy(c) => c.hunk_index,
         }
     }
 
@@ -149,7 +132,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.line_start,
             CommentRef::GitHubComment(c) => c.line_start,
-            CommentRef::Legacy(c) => c.line_start,
         }
     }
 
@@ -157,7 +139,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.line_end,
             CommentRef::GitHubComment(c) => c.line_end,
-            CommentRef::Legacy(c) => c.line_end,
         }
     }
 
@@ -165,7 +146,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.old_line_start,
             CommentRef::GitHubComment(c) => c.old_line_start,
-            CommentRef::Legacy(_) => None,
         }
     }
 
@@ -174,7 +154,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::GitHubComment(c) => Some(c.side.as_str()),
             CommentRef::Question(q) | CommentRef::Note(q) => Some(q.side.as_str()),
-            CommentRef::Legacy(_) => None,
         }
     }
 
@@ -182,7 +161,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.anchor_status,
             CommentRef::GitHubComment(c) => &c.anchor_status,
-            CommentRef::Legacy(_) => "original",
         }
     }
 
@@ -191,7 +169,6 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.in_reply_to.is_none(),
             CommentRef::GitHubComment(c) => c.in_reply_to.is_none(),
-            CommentRef::Legacy(c) => c.in_reply_to.is_none(),
         }
     }
 
@@ -202,7 +179,6 @@ impl CommentRef<'_> {
             // Local comments are stored with author "You" — ownership is inferred from
             // that display name, not from the GitHub identity.
             CommentRef::GitHubComment(c) => c.source != "github" || c.author == "You",
-            CommentRef::Legacy(c) => c.source != "github" || c.author == "You",
         }
     }
 }
@@ -498,49 +474,6 @@ pub fn save_ui_annotations(
     std::fs::rename(&tmp, &path)
 }
 
-// ── Legacy .er-feedback.json (for migration) ──
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErFeedback {
-    pub version: u32,
-    pub diff_hash: String,
-    #[serde(default)]
-    pub github: Option<GitHubSyncState>,
-    #[serde(default)]
-    pub comments: Vec<FeedbackComment>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeedbackComment {
-    pub id: String,
-    #[serde(default)]
-    pub timestamp: String,
-    pub file: String,
-    pub hunk_index: Option<usize>,
-    pub line_start: Option<usize>,
-    pub line_end: Option<usize>,
-    #[serde(default)]
-    pub line_content: String,
-    pub comment: String,
-    #[serde(default)]
-    pub in_reply_to: Option<String>,
-    #[serde(default)]
-    pub resolved: bool,
-    /// "local" | "github"
-    #[serde(default = "default_source")]
-    pub source: String,
-    /// GitHub comment ID (for sync/dedup)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(default)]
-    pub github_id: Option<u64>,
-    /// Author display name ("You" for local, GitHub login for remote)
-    #[serde(default = "default_author")]
-    pub author: String,
-    /// Whether this comment was pushed to GitHub
-    #[serde(default)]
-    pub synced: bool,
-}
-
 /// Top-level GitHub comment eligible for batch validate / re-anchor.
 pub const fn github_comment_eligible_for_batch_validate(c: &GitHubReviewComment) -> bool {
     !c.resolved && !c.outdated && c.in_reply_to.is_none() && c.line_start.is_some()
@@ -667,6 +600,28 @@ mod tests {
         let c: GitHubReviewComment = serde_json::from_str(json).unwrap();
 
         assert!(!c.outdated);
+    }
+
+    #[test]
+    fn comment_ref_github_comment_reports_github_type_and_delete_rules() {
+        let mut c = sample_github_comment();
+        c.source = "github".into();
+        c.author = "octo".into();
+        c.synced = true;
+
+        let r = CommentRef::GitHubComment(&c);
+        assert_eq!(r.comment_type(), CommentType::GitHubComment);
+        assert!(r.is_synced());
+        assert!(!r.can_delete());
+
+        let mut local = sample_github_comment();
+        local.source = "local".into();
+        local.author = "You".into();
+        local.synced = false;
+
+        let r = CommentRef::GitHubComment(&local);
+        assert!(!r.is_synced());
+        assert!(r.can_delete());
     }
 
     #[test]

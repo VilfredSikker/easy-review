@@ -2184,7 +2184,6 @@ fn comment_ref_to_thread(
     let line = match c {
         CommentRef::Question(q) | CommentRef::Note(q) => q.line_start.unwrap_or(0),
         CommentRef::GitHubComment(gc) => gc.line_start.unwrap_or(0),
-        CommentRef::Legacy(lc) => lc.line_start.unwrap_or(0),
     };
     let line_end = c.line_end();
     let side = c
@@ -2204,7 +2203,6 @@ fn comment_ref_to_thread(
         stale: match c {
             CommentRef::Question(q) | CommentRef::Note(q) => q.stale,
             CommentRef::GitHubComment(gc) => gc.stale || gc.outdated,
-            CommentRef::Legacy(_) => false,
         },
         resolved: c.is_resolved(),
         root: ThreadMessage {
@@ -2223,7 +2221,7 @@ fn comment_ref_to_thread(
         replies: build_replies(c, tab, pending),
         promoted_to: match c {
             CommentRef::Question(q) | CommentRef::Note(q) => q.promoted_to.clone(),
-            _ => None,
+            CommentRef::GitHubComment(_) => None,
         },
     }
 }

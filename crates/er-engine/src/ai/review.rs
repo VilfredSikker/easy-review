@@ -763,8 +763,8 @@ pub struct ChecklistItem {
     pub related_files: Vec<String>,
 }
 
-// Comment types, question/GitHub comment data, and legacy feedback are in comments.rs.
-use super::comments::{CommentRef, ErFeedback, ErGitHubComments, ErNotes, ErQuestions, HintType};
+// Comment types and question/GitHub comment data are in comments.rs.
+use super::comments::{CommentRef, ErGitHubComments, ErNotes, ErQuestions, HintType};
 
 // ── AiReview navigation ──
 
@@ -791,7 +791,6 @@ fn indexed_hunk_index(comment: &CommentRef<'_>) -> Option<usize> {
     match comment {
         CommentRef::Question(q) | CommentRef::Note(q) => q.hunk_index,
         CommentRef::GitHubComment(c) => c.hunk_index,
-        CommentRef::Legacy(c) => c.hunk_index,
     }
 }
 
@@ -799,7 +798,6 @@ fn indexed_line_start(comment: &CommentRef<'_>) -> Option<usize> {
     match comment {
         CommentRef::Question(q) | CommentRef::Note(q) => q.line_start,
         CommentRef::GitHubComment(c) => c.line_start,
-        CommentRef::Legacy(c) => c.line_start,
     }
 }
 
@@ -840,8 +838,6 @@ pub struct AiState {
     pub triage: Option<super::triage::TriageReview>,
     /// Mermaid diagrams of the diff (`diagrams/*.json`), newest preset state only.
     pub diagrams: Vec<super::diagrams::ErDiagram>,
-    /// Legacy feedback (kept for migration, not used for new comments)
-    pub feedback: Option<ErFeedback>,
     /// Whether the loaded data matches the current diff
     pub is_stale: bool,
     /// Whether the loaded guided tour (`tour`) no longer matches the current
@@ -880,7 +876,6 @@ impl Default for AiState {
             github_comments: None,
             triage: None,
             diagrams: Vec::new(),
-            feedback: None,
             is_stale: false,
             tour_stale: false,
             stale_files: HashSet::new(),
@@ -1214,7 +1209,7 @@ impl AiState {
 
     /// Get all comments (questions + GitHub) for a specific file and hunk (including replies)
     pub fn comments_for_hunk(&self, path: &str, hunk_index: usize) -> Vec<CommentRef<'_>> {
-        // Use index only when questions, notes, or github_comments are present (not legacy fallback)
+        // Use the index only when one of the comment stores is loaded.
         if self.questions.is_some() || self.notes.is_some() || self.github_comments.is_some() {
             let index = self.comment_index();
             let key = (path.to_string(), Some(hunk_index));
@@ -1228,16 +1223,7 @@ impl AiState {
             }
             return result;
         }
-        // Legacy fallback
-        let mut result = Vec::new();
-        if let Some(fb) = &self.feedback {
-            for c in &fb.comments {
-                if c.file == path && c.hunk_index == Some(hunk_index) {
-                    result.push(CommentRef::Legacy(c));
-                }
-            }
-        }
-        result
+        Vec::new()
     }
 
     /// Like `comments_for_hunk` but also matches comments whose `hunk_index` is missing
@@ -1309,17 +1295,6 @@ impl AiState {
                 }
             }
         }
-        if let Some(fb) = &self.feedback {
-            for c in &fb.comments {
-                if c.file == path && c.in_reply_to.is_none() {
-                    let cr = CommentRef::Legacy(c);
-                    if comment_matches_hunk(&cr) && seen_ids.insert(c.id.clone()) {
-                        result.push(CommentRef::Legacy(c));
-                    }
-                }
-            }
-        }
-
         // For each top-level comment found, also include its replies
         let top_level_ids: Vec<String> = result.iter().map(|c| c.id().to_string()).collect();
         if let Some(qs) = &self.questions {
@@ -1349,16 +1324,6 @@ impl AiState {
                 }
             }
         }
-        if let Some(fb) = &self.feedback {
-            for c in &fb.comments {
-                if let Some(ref parent) = c.in_reply_to {
-                    if top_level_ids.contains(parent) && seen_ids.insert(c.id.clone()) {
-                        result.push(CommentRef::Legacy(c));
-                    }
-                }
-            }
-        }
-
         result
     }
 
@@ -1407,20 +1372,7 @@ impl AiState {
             }
             return result;
         }
-        // Legacy fallback
-        let mut result = Vec::new();
-        if let Some(fb) = &self.feedback {
-            for c in &fb.comments {
-                if c.file == path
-                    && c.hunk_index == Some(hunk_idx)
-                    && c.line_start == Some(line_num)
-                    && c.in_reply_to.is_none()
-                {
-                    result.push(CommentRef::Legacy(c));
-                }
-            }
-        }
-        result
+        Vec::new()
     }
 
     /// Comments targeting the hunk as a whole (no specific line, top-level only)
@@ -1441,20 +1393,7 @@ impl AiState {
             }
             return result;
         }
-        // Legacy fallback
-        let mut result = Vec::new();
-        if let Some(fb) = &self.feedback {
-            for c in &fb.comments {
-                if c.file == path
-                    && c.hunk_index == Some(hunk_idx)
-                    && c.line_start.is_none()
-                    && c.in_reply_to.is_none()
-                {
-                    result.push(CommentRef::Legacy(c));
-                }
-            }
-        }
-        result
+        Vec::new()
     }
 
     /// Comments for a file that have no valid anchor (hunk_index is None).
@@ -1479,16 +1418,6 @@ impl AiState {
             for c in &gc.comments {
                 if c.file == path && c.hunk_index.is_none() && c.in_reply_to.is_none() {
                     result.push(CommentRef::GitHubComment(c));
-                }
-            }
-        }
-        // Legacy fallback
-        if result.is_empty() {
-            if let Some(fb) = &self.feedback {
-                for c in &fb.comments {
-                    if c.file == path && c.hunk_index.is_none() && c.in_reply_to.is_none() {
-                        result.push(CommentRef::Legacy(c));
-                    }
                 }
             }
         }
@@ -1519,16 +1448,6 @@ impl AiState {
             for c in &gc.comments {
                 if c.in_reply_to.as_deref() == Some(comment_id) {
                     result.push(CommentRef::GitHubComment(c));
-                }
-            }
-        }
-        // Legacy fallback
-        if result.is_empty() {
-            if let Some(fb) = &self.feedback {
-                for c in &fb.comments {
-                    if c.in_reply_to.as_deref() == Some(comment_id) {
-                        result.push(CommentRef::Legacy(c));
-                    }
                 }
             }
         }
@@ -1758,11 +1677,6 @@ impl AiState {
                 return Some(CommentRef::GitHubComment(c));
             }
         }
-        if let Some(fb) = &self.feedback {
-            if let Some(c) = fb.comments.iter().find(|c| c.id == id) {
-                return Some(CommentRef::Legacy(c));
-            }
-        }
         None
     }
 
@@ -1840,7 +1754,7 @@ impl AiState {
     reason = "tests build fixtures by mutating a default one field at a time"
 )]
 mod tests {
-    use super::super::comments::{FeedbackComment, GitHubReviewComment, ReviewQuestion};
+    use super::super::comments::{GitHubReviewComment, ReviewQuestion};
     use super::*;
     use crate::git::LineType;
     use std::collections::HashMap;
@@ -2363,71 +2277,6 @@ mod tests {
         assert!(!category_only.is_security_stage());
     }
 
-    fn make_feedback_comment(file: &str, hunk_index: Option<usize>) -> FeedbackComment {
-        FeedbackComment {
-            id: format!("{}-{:?}", file, hunk_index),
-            timestamp: String::new(),
-            file: file.to_string(),
-            hunk_index,
-            line_start: None,
-            line_end: None,
-            line_content: String::new(),
-            comment: "test comment".to_string(),
-            in_reply_to: None,
-            resolved: false,
-            source: "local".to_string(),
-            github_id: None,
-            author: "You".to_string(),
-            synced: false,
-        }
-    }
-
-    fn make_feedback_comment_with_line(
-        file: &str,
-        hunk_index: Option<usize>,
-        line_start: Option<usize>,
-    ) -> FeedbackComment {
-        FeedbackComment {
-            id: format!("{}-{:?}-{:?}", file, hunk_index, line_start),
-            timestamp: String::new(),
-            file: file.to_string(),
-            hunk_index,
-            line_start,
-            line_end: None,
-            line_content: String::new(),
-            comment: "test comment".to_string(),
-            in_reply_to: None,
-            resolved: false,
-            source: "local".to_string(),
-            github_id: None,
-            author: "You".to_string(),
-            synced: false,
-        }
-    }
-
-    fn make_feedback_reply(
-        file: &str,
-        hunk_index: Option<usize>,
-        in_reply_to: &str,
-    ) -> FeedbackComment {
-        FeedbackComment {
-            id: format!("reply-{}-{:?}", file, hunk_index),
-            timestamp: String::new(),
-            file: file.to_string(),
-            hunk_index,
-            line_start: None,
-            line_end: None,
-            line_content: String::new(),
-            comment: "reply comment".to_string(),
-            in_reply_to: Some(in_reply_to.to_string()),
-            resolved: false,
-            source: "local".to_string(),
-            github_id: None,
-            author: "You".to_string(),
-            synced: false,
-        }
-    }
-
     // ── RiskLevel ──
 
     #[test]
@@ -2776,7 +2625,7 @@ mod tests {
     // ── AiState::comments_for_hunk ──
 
     #[test]
-    fn comments_for_hunk_no_feedback_returns_empty() {
+    fn comments_for_hunk_with_nothing_loaded_returns_empty() {
         let state = AiState::default();
         assert!(state.comments_for_hunk("a.rs", 0).is_empty());
     }
@@ -2784,14 +2633,14 @@ mod tests {
     #[test]
     fn comments_for_hunk_matching_file_and_hunk_returned() {
         let mut state = AiState::default();
-        state.feedback = Some(ErFeedback {
+        state.github_comments = Some(ErGitHubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
             comments: vec![
-                make_feedback_comment("a.rs", Some(0)),
-                make_feedback_comment("a.rs", Some(1)),
-                make_feedback_comment("b.rs", Some(0)),
+                make_github_comment("c1", "a.rs", Some(0), None),
+                make_github_comment("c2", "a.rs", Some(1), None),
+                make_github_comment("c3", "b.rs", Some(0), None),
             ],
         });
         let results = state.comments_for_hunk("a.rs", 0);
@@ -2803,11 +2652,11 @@ mod tests {
     #[test]
     fn comments_for_hunk_wrong_file_returns_empty() {
         let mut state = AiState::default();
-        state.feedback = Some(ErFeedback {
+        state.github_comments = Some(ErGitHubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
-            comments: vec![make_feedback_comment("a.rs", Some(0))],
+            comments: vec![make_github_comment("c1", "a.rs", Some(0), None)],
         });
         let results = state.comments_for_hunk("b.rs", 0);
         assert!(results.is_empty());
@@ -2818,15 +2667,16 @@ mod tests {
     #[test]
     fn comments_for_line_returns_matching_line_comments() {
         let mut state = AiState::default();
-        state.feedback = Some(ErFeedback {
+        let mut line_10 = make_github_comment("c1", "a.rs", Some(0), None);
+        line_10.line_start = Some(10);
+        let mut line_20 = make_github_comment("c2", "a.rs", Some(0), None);
+        line_20.line_start = Some(20);
+        let hunk_level = make_github_comment("c3", "a.rs", Some(0), None); // no line
+        state.github_comments = Some(ErGitHubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
-            comments: vec![
-                make_feedback_comment_with_line("a.rs", Some(0), Some(10)),
-                make_feedback_comment_with_line("a.rs", Some(0), Some(20)),
-                make_feedback_comment("a.rs", Some(0)), // hunk-level, no line
-            ],
+            comments: vec![line_10, line_20, hunk_level],
         });
         let results = state.comments_for_line("a.rs", 0, 10);
         assert_eq!(results.len(), 1);
@@ -2836,9 +2686,10 @@ mod tests {
     #[test]
     fn comments_for_line_excludes_replies() {
         let mut state = AiState::default();
-        let parent = make_feedback_comment_with_line("a.rs", Some(0), Some(10));
-        let reply = make_feedback_reply("a.rs", Some(0), &parent.id);
-        state.feedback = Some(ErFeedback {
+        let mut parent = make_github_comment("parent", "a.rs", Some(0), None);
+        parent.line_start = Some(10);
+        let reply = make_github_comment("reply", "a.rs", Some(0), Some(&parent.id));
+        state.github_comments = Some(ErGitHubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3130,14 +2981,14 @@ mod tests {
     #[test]
     fn comments_for_hunk_only_returns_hunk_level_comments() {
         let mut state = AiState::default();
-        state.feedback = Some(ErFeedback {
+        let hunk_level = make_github_comment("c1", "a.rs", Some(0), None);
+        let mut line_level = make_github_comment("c2", "a.rs", Some(0), None);
+        line_level.line_start = Some(10);
+        state.github_comments = Some(ErGitHubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
-            comments: vec![
-                make_feedback_comment("a.rs", Some(0)), // hunk-level
-                make_feedback_comment_with_line("a.rs", Some(0), Some(10)), // line-level
-            ],
+            comments: vec![hunk_level, line_level],
         });
         let results = state.comments_for_hunk_only("a.rs", 0);
         assert_eq!(results.len(), 1);
@@ -3147,9 +2998,9 @@ mod tests {
     #[test]
     fn comments_for_hunk_only_excludes_replies() {
         let mut state = AiState::default();
-        let parent = make_feedback_comment("a.rs", Some(0));
-        let reply = make_feedback_reply("a.rs", Some(0), &parent.id);
-        state.feedback = Some(ErFeedback {
+        let parent = make_github_comment("parent", "a.rs", Some(0), None);
+        let reply = make_github_comment("reply", "a.rs", Some(0), Some(&parent.id));
+        state.github_comments = Some(ErGitHubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3164,10 +3015,10 @@ mod tests {
     #[test]
     fn replies_to_returns_replies() {
         let mut state = AiState::default();
-        let parent = make_feedback_comment("a.rs", Some(0));
+        let parent = make_github_comment("parent", "a.rs", Some(0), None);
         let parent_id = parent.id.clone();
-        let reply = make_feedback_reply("a.rs", Some(0), &parent_id);
-        state.feedback = Some(ErFeedback {
+        let reply = make_github_comment("reply", "a.rs", Some(0), Some(&parent_id));
+        state.github_comments = Some(ErGitHubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3181,11 +3032,11 @@ mod tests {
     #[test]
     fn replies_to_no_replies_returns_empty() {
         let mut state = AiState::default();
-        state.feedback = Some(ErFeedback {
+        state.github_comments = Some(ErGitHubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
-            comments: vec![make_feedback_comment("a.rs", Some(0))],
+            comments: vec![make_github_comment("c1", "a.rs", Some(0), None)],
         });
         let results = state.replies_to("nonexistent");
         assert!(results.is_empty());
