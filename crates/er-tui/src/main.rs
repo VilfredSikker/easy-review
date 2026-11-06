@@ -317,11 +317,19 @@ fn main() -> Result<()> {
             let (hint_tx, hint_rx) = mpsc::channel::<String>();
             let (pr_tx, pr_rx) = mpsc::channel::<PrProbe>();
             std::thread::spawn(move || {
-                let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) else {
-                    // No PR: the tab now knows, so a key press can gate the
-                    // GitHub comment composer without calling `gh`.
-                    let _ = pr_tx.send(PrProbe::Absent);
-                    return;
+                let (pr_num, pr_base) = match github::gh_pr_for_current_branch(&repo_root) {
+                    github::BranchPrProbe::Present { number, base } => (number, base),
+                    // gh answered that the branch has no PR; the tab now knows,
+                    // so a key press can gate the composer without calling `gh`.
+                    github::BranchPrProbe::Absent => {
+                        let _ = pr_tx.send(PrProbe::Absent);
+                        return;
+                    }
+                    // Offline, unauthenticated or a timeout: still unknown.
+                    github::BranchPrProbe::Unknown => {
+                        let _ = pr_tx.send(PrProbe::Failed);
+                        return;
+                    }
                 };
                 if pr_base != current_base {
                     let _ = hint_tx.send(format!(
@@ -416,6 +424,19 @@ enum PrProbe {
     Absent,
     Found(Box<github::PrOverviewData>),
     Failed,
+}
+
+/// Apply one probe result. Only gh's explicit "no PR" marks the tab absent; a
+/// failed probe leaves the PR state unknown, so the composer still opens.
+fn apply_pr_probe(app: &mut App, probe: PrProbe) {
+    match probe {
+        PrProbe::Absent => app.tab_mut().pr_absent = true,
+        PrProbe::Found(data) => {
+            app.tab_mut().pr_absent = false;
+            app.tab_mut().pr_data = Some(*data);
+        }
+        PrProbe::Failed => {}
+    }
 }
 
 fn run_app<B: Backend<Error: Send + Sync + 'static>>(
@@ -573,14 +594,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         // Check for the PR probe's result from the background thread (fires once)
         if let Some(rx) = &pr_data_rx {
             if let Ok(probe) = rx.try_recv() {
-                match probe {
-                    PrProbe::Absent => app.tab_mut().pr_absent = true,
-                    PrProbe::Found(data) => {
-                        app.tab_mut().pr_absent = false;
-                        app.tab_mut().pr_data = Some(*data);
-                    }
-                    PrProbe::Failed => {}
-                }
+                apply_pr_probe(app, probe);
                 pr_data_rx = None;
             }
         }
@@ -730,6 +744,19 @@ mod tests {
         let mut watcher: Option<watch::FileWatcher> = None;
         let key = KeyEvent::new(code, modifiers);
         handle_normal_input(app, key, &tx, &mut watcher).unwrap();
+    }
+
+    #[test]
+    fn a_failed_probe_leaves_the_tab_unknown() {
+        let mut app = make_app(vec![]);
+        app.tab_mut().pr_absent = false;
+        apply_pr_probe(&mut app, PrProbe::Failed);
+        assert!(
+            !app.tab().pr_absent,
+            "an offline probe must not mark the branch as PR-less"
+        );
+        apply_pr_probe(&mut app, PrProbe::Absent);
+        assert!(app.tab().pr_absent, "gh's no-PR answer marks the tab");
     }
 
     // ── Ctrl+q vs bare q ──

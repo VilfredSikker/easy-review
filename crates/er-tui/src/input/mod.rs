@@ -3147,6 +3147,6 @@ mod tests {
         assert!(app
             .notification
             .as_ref()
-            .is_some_and(|n| n.message.contains("No pull request for this branch")));
+            .is_some_and(|n| n.message.contains("Comment not posted")));
     }
 }
