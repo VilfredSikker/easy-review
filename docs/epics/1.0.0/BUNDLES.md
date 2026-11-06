@@ -1,6 +1,6 @@
 # Bundles: how to hand out epic 1.0.0
 
-Filled-in prompts for every bundle: [PROMPTS.md](./PROMPTS.md).
+Filled-in prompts for every bundle: [PROMPTS.md](./PROMPTS.md). Coordinator handoff: [COORDINATOR.md](./COORDINATOR.md).
 
 A bundle is a set of issues that one agent session works through in order. The issues in a bundle share lanes or context, and each one needs the one before it merged. One session per bundle keeps that context and never runs two issues on the same lane.
 
