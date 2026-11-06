@@ -3121,7 +3121,7 @@ mod tests {
     }
 
     #[test]
-    fn a_post_on_a_branch_with_no_pr_is_not_posted_and_keeps_the_text() {
+    fn a_post_whose_pr_lookup_fails_keeps_the_text() {
         use crate::app::InputMode;
         use er_engine::ai::CommentType;
 
