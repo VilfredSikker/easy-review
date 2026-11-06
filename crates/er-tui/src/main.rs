@@ -317,7 +317,7 @@ fn main() -> Result<()> {
             let (hint_tx, hint_rx) = mpsc::channel::<String>();
             let (pr_tx, pr_rx) = mpsc::channel::<PrProbe>();
             std::thread::spawn(move || {
-                let (pr_num, pr_base) = match github::gh_pr_for_current_branch(&repo_root) {
+                let (pr_num, pr_base) = match github::probe_pr_for_current_branch(&repo_root) {
                     github::BranchPrProbe::Present { number, base } => (number, base),
                     // gh answered that the branch has no PR; the tab now knows,
                     // so a key press can gate the composer without calling `gh`.

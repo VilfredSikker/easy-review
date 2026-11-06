@@ -778,6 +778,7 @@ impl App {
         tab.comment_reply_to = None;
         tab.comment_finding_ref = None;
         tab.comment_type = comment_type;
+        tab.comment_client_id = None;
         let side = tab.comment_side_for_cursor(split_active);
         tab.comment_side = Some(side);
         self.input_mode = InputMode::Comment;
@@ -795,6 +796,7 @@ impl App {
         tab.comment_finding_ref = None;
         tab.comment_type = CommentType::GitHubComment;
         tab.comment_edit_id = None;
+        tab.comment_client_id = None;
         self.input_mode = InputMode::Comment;
     }
 
@@ -844,6 +846,7 @@ impl App {
         tab.comment_reply_to = None;
         tab.comment_type = comment_type;
         tab.comment_edit_id = Some(comment_id.to_string());
+        tab.comment_client_id = None;
         self.input_mode = InputMode::Comment;
     }
 
@@ -905,6 +908,7 @@ impl App {
         tab.comment_finding_ref = None;
         tab.comment_type = comment_type;
         tab.comment_edit_id = None;
+        tab.comment_client_id = None;
         self.input_mode = InputMode::Comment;
     }
 
@@ -950,6 +954,7 @@ impl App {
         tab.comment_finding_ref = Some(finding_id.to_string());
         tab.comment_type = CommentType::GitHubComment;
         tab.comment_edit_id = None;
+        tab.comment_client_id = None;
         self.input_mode = InputMode::Comment;
     }
 
@@ -1572,8 +1577,10 @@ impl App {
 
     /// Cancel comment input
     pub fn cancel_comment(&mut self) {
-        self.tab_mut().comment_textarea = TextArea::default();
-        self.tab_mut().comment_edit_id = None;
+        let tab = self.tab_mut();
+        tab.comment_textarea = TextArea::default();
+        tab.comment_edit_id = None;
+        tab.comment_client_id = None;
         self.input_mode = InputMode::Normal;
     }
 

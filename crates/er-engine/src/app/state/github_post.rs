@@ -271,9 +271,28 @@ impl App {
                 github_id,
                 created_at,
                 author,
-            }) => self.record_posted_comment(&ticket, github_id, created_at, author),
+            }) => self.record_posted_comment(
+                &ticket,
+                github_id,
+                created_at,
+                author,
+                ticket.request.body.clone(),
+            ),
             GitHubPostExecution::Adopted { comment } => {
-                self.record_posted_comment(&ticket, comment.id, comment.created_at, comment.author)
+                let edited = comment.body.trim_end() != ticket.request.body.trim_end();
+                let result = self.record_posted_comment(
+                    &ticket,
+                    comment.id,
+                    comment.created_at,
+                    comment.author,
+                    comment.body,
+                );
+                if edited && result.is_ok() {
+                    self.notify(
+                        "The earlier attempt posted the previous text; your edit was not posted.",
+                    );
+                }
+                result
             }
         }
     }
@@ -340,6 +359,22 @@ impl App {
             self.notify("Comment posted to GitHub");
         }
         posted
+    }
+
+    /// Keep a posted create reconcilable after a later step failed (for
+    /// example a promote whose source deletion failed), so the next send
+    /// adopts the comment instead of posting a second copy.
+    pub fn remember_posted_for_retry(&mut self, request: GitHubPostRequest) {
+        self.pending_github_posts.insert(
+            request.client_id.clone(),
+            PendingGitHubPost {
+                started_at: chrono_now(),
+                not_before_epoch: 0,
+                known_ids: HashSet::new(),
+                bodies: vec![request.body.clone()],
+                request,
+            },
+        );
     }
 
     /// `get_line_anchor` with the location passed in; the composer fields are
@@ -487,6 +522,7 @@ impl App {
         github_id: u64,
         created_at: String,
         author: String,
+        body: String,
     ) -> Result<PostedGitHubComment, GitHubPostError> {
         if matches!(ticket.request.target, GitHubPostTarget::General) {
             self.pending_github_posts.remove(&ticket.request.client_id);
@@ -526,7 +562,7 @@ impl App {
                 line_start: location.line_start,
                 line_end: location.line_end,
                 line_content: location.line_content.clone(),
-                comment: ticket.request.body.clone(),
+                comment: body,
                 in_reply_to: location.in_reply_to.clone(),
                 resolved: false,
                 source: "github".to_string(),
@@ -556,6 +592,19 @@ impl App {
             std::fs::rename(&tmp_path, &ticket.comments_path)
         })();
         if let Err(e) = write {
+            // GitHub holds the comment, so the retry must reconcile rather
+            // than post it again. The not-before time is zero because the
+            // comment already exists.
+            self.pending_github_posts.insert(
+                ticket.request.client_id.clone(),
+                PendingGitHubPost {
+                    started_at: ticket.started_at.clone(),
+                    not_before_epoch: 0,
+                    known_ids: ticket.known_ids.clone(),
+                    bodies: vec![ticket.request.body.clone()],
+                    request: ticket.request.clone(),
+                },
+            );
             return Err(GitHubPostError::RecordFailed(format!("{e:#}")));
         }
 
@@ -1176,6 +1225,92 @@ mod tests {
         );
         assert_eq!(f.poster.list_calls.load(Ordering::Relaxed), 0);
         assert_eq!(f.poster.posts(), 2);
+    }
+
+    #[test]
+    fn an_adopted_retry_records_the_posted_body_not_the_edit() {
+        let mut f = fixture();
+        let client = "c-adopt-edited";
+        f.poster
+            .record_unknown_as_listed
+            .store(true, Ordering::Relaxed);
+        f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
+            error: "timeout".to_string(),
+        });
+        let first = drive(&mut f.app, f.poster.as_ref(), line_intent("first"), client);
+        assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
+        clear_retry_delay(&mut f.app, client);
+
+        let second = drive(&mut f.app, f.poster.as_ref(), line_intent("edited"), client).unwrap();
+        assert_eq!(f.poster.posts(), 1);
+        assert_eq!(second.github_id, 100);
+        let gc = store(&f.app);
+        assert_eq!(gc.comments.len(), 1);
+        assert_eq!(
+            gc.comments[0].comment, "first",
+            "the sidecar records what GitHub holds"
+        );
+        assert!(f
+            .app
+            .notification
+            .as_ref()
+            .is_some_and(|n| n.message.contains("edit was not posted")));
+    }
+
+    #[test]
+    fn a_record_failure_reconciles_on_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(vec![sample_file()]);
+        // A regular file where the store dir must be makes the write fail.
+        let blocked = dir.path().join("er");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        app.tab_mut().er_root =
+            crate::paths::ErRoot::managed(blocked.to_string_lossy().into_owned());
+        app.tab_mut().branch_diff_hash = "branch-hash".to_string();
+        app.tab_mut().diff_hash = "diff-hash".to_string();
+        let poster = FakeCommentPoster::new();
+        app.set_github_comment_poster(poster.clone());
+
+        let client = "c-record-fail";
+        let first = drive(&mut app, poster.as_ref(), line_intent("hello"), client);
+        assert!(matches!(first, Err(GitHubPostError::RecordFailed(_))));
+        assert_eq!(poster.posts(), 1);
+        let pending = app
+            .pending_github_posts
+            .get(client)
+            .cloned()
+            .expect("a record failure keeps the pending post");
+        assert_eq!(pending.not_before_epoch, 0);
+
+        // Repair the path; the comment GitHub holds is the one to adopt.
+        std::fs::remove_file(&blocked).unwrap();
+        std::fs::create_dir_all(&blocked).unwrap();
+        let request = poster.posted.lock().unwrap()[0].clone();
+        let listed = listed_for(&request, 100, "viewer");
+        poster.add_listed(listed);
+
+        let second = drive(&mut app, poster.as_ref(), line_intent("hello"), client).unwrap();
+        assert_eq!(poster.posts(), 1, "the retry must adopt, not post again");
+        let gc = store(&app);
+        assert_eq!(gc.comments.len(), 1);
+        assert_eq!(gc.comments[0].id, second.store_id.unwrap());
+    }
+
+    #[test]
+    fn a_promote_delete_failure_reconciles_instead_of_reposting() {
+        let mut f = fixture();
+        let client = "c-promote-retry";
+        let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
+        let request = f.poster.posted.lock().unwrap()[0].clone();
+        // What the promote commands do when deleting the source fails.
+        f.app.remember_posted_for_retry(request.clone());
+        f.poster
+            .add_listed(listed_for(&request, first.github_id, "viewer"));
+
+        let second = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
+        assert_eq!(f.poster.posts(), 1, "the retry must adopt, not post again");
+        assert_eq!(second.github_id, first.github_id);
+        assert_eq!(store(&f.app).comments.len(), 1);
     }
 
     #[test]

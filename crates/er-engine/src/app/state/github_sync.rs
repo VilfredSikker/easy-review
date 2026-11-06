@@ -93,15 +93,33 @@ impl App {
                 self.notify("No PR info for remote mode");
                 return Ok(());
             }
-        } else {
-            match local_pr_target(&repo_root, explicit_pr_number) {
-                Ok(info) => {
-                    self.tab_mut().pr_absent = false;
-                    info
+        } else if let Some(number) = explicit_pr_number {
+            match crate::github::get_repo_info(&repo_root) {
+                Ok((owner, repo)) => (owner, repo, number),
+                Err(e) => {
+                    self.notify(&format!(
+                        "Could not read the repository for this pull request: {e:#}"
+                    ));
+                    return Ok(());
                 }
-                Err(_) => {
+            }
+        } else {
+            match crate::github::lookup_pr_for_current_branch(&repo_root) {
+                crate::github::PrLookup::Present {
+                    owner,
+                    repo,
+                    number,
+                } => {
+                    self.tab_mut().pr_absent = false;
+                    (owner, repo, number)
+                }
+                crate::github::PrLookup::Absent => {
                     self.tab_mut().pr_absent = true;
                     self.notify("No PR found for current branch");
+                    return Ok(());
+                }
+                crate::github::PrLookup::Unknown(e) => {
+                    self.notify(&format!("Could not read this branch's PR: {e}"));
                     return Ok(());
                 }
             }
@@ -290,15 +308,33 @@ impl App {
                 self.notify("No PR info for remote mode");
                 return Ok(());
             }
-        } else {
-            match local_pr_target(&repo_root, explicit_pr_number) {
-                Ok(info) => {
-                    self.tab_mut().pr_absent = false;
-                    info
+        } else if let Some(number) = explicit_pr_number {
+            match crate::github::get_repo_info(&repo_root) {
+                Ok((owner, repo)) => (owner, repo, number),
+                Err(e) => {
+                    self.notify(&format!(
+                        "Could not read the repository for this pull request: {e:#}"
+                    ));
+                    return Ok(());
                 }
-                Err(_) => {
+            }
+        } else {
+            match crate::github::lookup_pr_for_current_branch(&repo_root) {
+                crate::github::PrLookup::Present {
+                    owner,
+                    repo,
+                    number,
+                } => {
+                    self.tab_mut().pr_absent = false;
+                    (owner, repo, number)
+                }
+                crate::github::PrLookup::Absent => {
                     self.tab_mut().pr_absent = true;
                     self.notify("No PR found for current branch");
+                    return Ok(());
+                }
+                crate::github::PrLookup::Unknown(e) => {
+                    self.notify(&format!("Could not read this branch's PR: {e}"));
                     return Ok(());
                 }
             }
