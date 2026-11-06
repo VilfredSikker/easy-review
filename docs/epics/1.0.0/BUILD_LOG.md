@@ -61,3 +61,5 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 ### 2026-11-06 (coordinator)
 
 - Owner merged PR #365 and PR #368 into `main`. Merged `main` into `release/v1.0.0` (v0.6.5, #365, #368, #370; clean). Per D10, PROPOSAL.md is now a pointer to `docs/plans/plan-clean-slate-architecture.md`. `main` brought ADR 0052, so the next free ADR number is 0053.
+- Design reviews posted on all seven wave-1 decisions (#401, #402, #403, #407, #408, #409, #410): each is `**Design review:** revise`. In every one the chosen option holds; the gaps are in signatures, the task issue changes, and the code that PR #370 brought in. Cross-design points: #409 and #410 both put a `PrCommentBundle` cache in #381, which cannot build it until #382; #403, #409 and #410 each need a cache generation counter against a fetch that is still running when the cache is cleared.
+- Owner decision on #401 must-fix 4: the v1 store names branch and repo folders `<readable slug>-<8 hex of SHA-256 of the raw name>`; repos hash the normalized `host/owner/repo`. Applies from #386 (P15).
