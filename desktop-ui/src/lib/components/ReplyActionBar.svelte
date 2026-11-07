@@ -1,19 +1,17 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { copyToClipboard } from "$lib/clipboard";
-  import { resolveActivePrNumber } from "$lib/prUrl";
   import AnnotationOverflowMenu from "$lib/components/AnnotationOverflowMenu.svelte";
   import type { OverflowItem } from "$lib/annotationActions";
   import type { FindingResponseSnapshot, ThreadMessage } from "$lib/types";
 
-  type ReplyLike = (ThreadMessage | FindingResponseSnapshot) & { synced?: boolean };
+  type ReplyLike = ThreadMessage | FindingResponseSnapshot;
 
   interface Props {
     reply: ReplyLike;
     rootThreadId?: string | null;
     findingId?: string | null;
     isQuestion?: boolean;
-    parentSynced?: boolean;
     threadResolved?: boolean;
     onEdit?: () => void;
     onDelete: () => void | Promise<void>;
@@ -24,43 +22,22 @@
     rootThreadId = null,
     findingId = null,
     isQuestion = false,
-    parentSynced = false,
     threadResolved = false,
     onEdit,
     onDelete,
   }: Props = $props();
 
-  const origin = $derived(reply.origin ?? "thread_reply");
-  const isFindingResponse = $derived(origin === "finding_response");
   const hasThread = $derived(Boolean(rootThreadId));
-  const showPush = $derived(
-    !isQuestion &&
-      !isFindingResponse &&
-      hasThread &&
-      origin === "thread_reply" &&
-      reply.synced === false &&
-      parentSynced,
-  );
   const showAskAi = $derived(hasThread || Boolean(findingId));
   const showResolve = $derived(hasThread && !threadResolved && !isQuestion);
-  let pushing = $state(false);
 
-  // Copy, Push, Edit and Validate are rarer than Ask AI / Resolve / Delete, so
-  // they sit behind the menu rather than crowding every reply.
+  // Copy, Edit and Validate are rarer than Ask AI / Resolve / Delete, so they
+  // sit behind the menu rather than crowding every reply.
   const overflow = $derived.by((): OverflowItem[] => {
     const items: OverflowItem[] = [
       { id: "copy", label: "Copy reply", onselect: () => void copyReply() },
     ];
     if (onEdit) items.push({ id: "edit", label: "Edit", onselect: onEdit });
-    if (showPush) {
-      items.push({
-        id: "push",
-        label: pushing ? "Pushing…" : "Push only this",
-        title: "Push only this reply",
-        disabled: pushing,
-        onselect: () => void pushReply(),
-      });
-    }
     if (findingId || rootThreadId) {
       items.push({ id: "validate", label: "Validate with AI", onselect: () => void validateWithAi() });
     }
@@ -89,17 +66,6 @@
 
   async function copyReply() {
     await copyToClipboard(reply.body_markdown);
-  }
-
-  async function pushReply() {
-    if (!reply.id || pushing) return;
-    pushing = true;
-    try {
-      const prNumber = resolveActivePrNumber(app.snapshot);
-      await app.cmd("push_github_comment_reply", { replyId: reply.id, prNumber });
-    } finally {
-      pushing = false;
-    }
   }
 
   function resolveThread() {

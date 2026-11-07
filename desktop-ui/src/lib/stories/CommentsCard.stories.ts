@@ -18,7 +18,6 @@ export const Empty: Story = {
       local_comment_count: 0,
       github_comment_count: 0,
       comments: 0,
-      unpushed: 0,
       threads: [],
     },
     active: true,
@@ -39,7 +38,6 @@ export const GithubOnlyOutdated: Story = {
           file: "src/main.rs",
           line: 42,
           source: "github",
-          synced: true,
           stale: true,
           resolved: false,
           root: {

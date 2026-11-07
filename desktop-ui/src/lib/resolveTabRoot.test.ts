@@ -39,7 +39,6 @@ function minimalSnapshot(overrides: Partial<AppSnapshot>): AppSnapshot {
       github_comment_count: 0,
       comments: 0,
       questions: 0,
-      unpushed: 0,
       threads: [],
       findings: [],
       file_risks: [],

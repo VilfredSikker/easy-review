@@ -24,7 +24,6 @@ function emptyAi(overrides: Partial<AiSnapshot> = {}): AiSnapshot {
     comments: 0,
     questions: 0,
     notes: 0,
-    unpushed: 0,
     threads: [],
     findings: [],
     file_risks: [],

@@ -129,7 +129,6 @@ export function buildOptimisticThreadForKind(
     line_end: parsed.lineNumEnd,
     side: parsed.side,
     source: "local",
-    synced: false,
     stale: false,
     resolved: false,
     root: {
@@ -155,7 +154,6 @@ function bumpAiCounts(snap: AppSnapshot, kind: ThreadSnapshot["kind"], delta: nu
   if (kind === "comment") {
     snap.ai.comments = clamp(snap.ai.comments);
     snap.ai.local_comment_count = clamp(snap.ai.local_comment_count);
-    snap.ai.unpushed = clamp(snap.ai.unpushed);
   } else if (kind === "question") {
     snap.ai.questions = clamp(snap.ai.questions);
   } else {

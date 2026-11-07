@@ -2,7 +2,7 @@ import type { ThreadSnapshot } from "./types";
 
 /** Buttons shown on the card itself; everything else lives in the overflow menu. */
 export type PrimaryAction = "askAi" | "elaborate" | "reply" | "sendToAgent" | "resolve" | "promote" | "delete";
-export type OverflowAction = "copy" | "push" | "promoteNote" | "resolve" | "edit" | "validate" | "delete";
+export type OverflowAction = "copy" | "promoteNote" | "resolve" | "edit" | "validate" | "delete";
 
 export interface OverflowItem {
   id: string;
@@ -15,7 +15,6 @@ export interface OverflowItem {
 
 export interface ThreadActionInput {
   kind: ThreadSnapshot["kind"];
-  synced: boolean;
   resolved: boolean;
   /** Already promoted to a GitHub comment. */
   promoted: boolean;
@@ -76,7 +75,6 @@ function overflowActions(t: ThreadActionInput): OverflowAction[] {
   const isLocal = t.kind !== "comment";
   const open = !t.resolved;
   const overflow: OverflowAction[] = ["copy"];
-  if (!isLocal && !t.synced) overflow.push("push");
   if (t.kind === "question" && open) overflow.push("promoteNote");
   if (isLocal && open) overflow.push("resolve");
   if (t.rootEditable) overflow.push("edit");

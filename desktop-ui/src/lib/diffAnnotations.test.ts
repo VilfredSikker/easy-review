@@ -44,7 +44,6 @@ function mkThread(opts: Partial<ThreadSnapshot> & Pick<ThreadSnapshot, "id" | "f
   return {
     kind: "comment",
     source: "local",
-    synced: false,
     stale: false,
     resolved: false,
     root: { id: opts.id + ":root", author: "me", kind: "you", timestamp: "", body_markdown: "" },

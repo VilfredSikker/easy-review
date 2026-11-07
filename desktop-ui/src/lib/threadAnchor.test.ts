@@ -9,7 +9,6 @@ function thread(overrides: Partial<ThreadSnapshot> = {}): ThreadSnapshot {
     file: "README.md",
     line: 40,
     source: "local",
-    synced: false,
     stale: false,
     resolved: false,
     root: { id: "q-1", author: "you", kind: "you", timestamp: "", body_markdown: "why?" },

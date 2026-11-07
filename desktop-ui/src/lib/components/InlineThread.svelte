@@ -21,7 +21,6 @@
     type OverflowItem,
   } from "$lib/annotationActions";
   import { longAge } from "$lib/relativeTime";
-  import { resolveActivePrNumber } from "$lib/prUrl";
   import { isDocumentAnchored, ownReplyCount } from "$lib/threadAnchor";
   import { pendingReview } from "$lib/stores/pendingReview.svelte";
   import { newCommentClientId } from "$lib/optimisticComment";
@@ -53,7 +52,6 @@
   let editInitialBody = $state("");
 
   let justCopied = $state(false);
-  let pushing = $state(false);
   let promoteError = $state<string | null>(null);
 
   $effect(() => {
@@ -237,17 +235,6 @@
     setTimeout(() => (justCopied = false), 1500);
   }
 
-  async function pushOnlyThis() {
-    if (pushing || thread.synced || isLocal) return;
-    pushing = true;
-    try {
-      const prNumber = resolveActivePrNumber(app.snapshot);
-      await app.cmd("push_github_comment_thread", { id: thread.id, prNumber });
-    } finally {
-      pushing = false;
-    }
-  }
-
   function resolveThread() {
     if (thread.resolved) return;
     void app.cmd("resolve_thread", { id: thread.id });
@@ -273,7 +260,6 @@
   const actions = $derived(
     threadActions({
       kind: thread.kind,
-      synced: thread.synced,
       resolved: thread.resolved,
       promoted: isPromoted,
       documentAnchored: documentAnchored ?? isDocumentAnchored(thread, app.snapshot?.files),
@@ -284,13 +270,6 @@
   const overflowItems = $derived.by((): OverflowItem[] => {
     const byId: Record<string, OverflowItem> = {
       copy: { id: "copy", label: justCopied ? "Copied" : "Copy thread", title: "Copy thread as markdown", onselect: () => void copyThread() },
-      push: {
-        id: "push",
-        label: pushing ? "Pushing…" : "Push only this",
-        title: "Push this thread to GitHub (not a full review)",
-        disabled: pushing,
-        onselect: () => void pushOnlyThis(),
-      },
       promoteNote: { id: "promoteNote", label: "Promote to note", title: "Turn this question into a local actionable note", onselect: () => void promoteToNote() },
       resolve: { id: "resolve", label: "Resolve", onselect: resolveThread },
       edit: { id: "edit", label: "Edit", onselect: () => openEdit(thread.root.id, thread.root.body_markdown) },
@@ -350,10 +329,8 @@
         only you
       {:else if pendingReview.isPending(thread.id)}
         <span class="rounded-full border border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_14%,transparent)] px-1.5 py-0.5 text-[10px] text-warning" title="In your pending review; posts when you submit from Review">pending review</span>
-      {:else if thread.synced}
+      {:else if thread.source === "github"}
         GitHub · synced
-      {:else if thread.source === "local"}
-        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-hover border border-border font-mono text-[10px] text-ai"><span class="w-1 h-1 rounded-full bg-ai"></span>local · unpushed</span>
       {/if}
     </span>
   </div>
@@ -388,7 +365,6 @@
             reply={{ ...reply, origin: reply.origin ?? "thread_reply" }}
             rootThreadId={thread.id}
             isQuestion={isLocal}
-            parentSynced={thread.synced}
             threadResolved={thread.resolved}
             onEdit={reply.kind === "you" ? () => openEdit(reply.id, reply.body_markdown) : undefined}
             onDelete={() => deleteReply(reply.id)}

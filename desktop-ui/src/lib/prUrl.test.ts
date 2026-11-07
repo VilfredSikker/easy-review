@@ -33,7 +33,6 @@ function minimalSnapshot(overrides: Partial<AppSnapshot>): AppSnapshot {
       comments: 0,
       questions: 0,
       notes: 0,
-      unpushed: 0,
       threads: [],
       findings: [],
       file_risks: [],

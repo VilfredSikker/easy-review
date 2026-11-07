@@ -28,7 +28,6 @@ describe("card labels", () => {
 
 const base: ThreadActionInput = {
   kind: "comment",
-  synced: false,
   resolved: false,
   promoted: false,
   documentAnchored: false,
@@ -39,11 +38,7 @@ describe("threadActions", () => {
   test("a comment keeps a short row and moves the rest to overflow", () => {
     const a = threadActions(base);
     expect(a.primary).toEqual(["reply", "resolve"]);
-    expect(a.overflow).toEqual(["copy", "push", "edit", "validate", "delete"]);
-  });
-
-  test("a synced comment has nothing to push", () => {
-    expect(threadActions({ ...base, synced: true }).overflow).not.toContain("push");
+    expect(a.overflow).toEqual(["copy", "edit", "validate", "delete"]);
   });
 
   test("a question carries the AI actions and Promote", () => {

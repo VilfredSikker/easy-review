@@ -7,7 +7,7 @@ function msg(id: string, author: string, kind: ThreadMessage["kind"] = "human", 
 }
 
 function thread(id: string, at: { file: string; line: number }, root: ThreadMessage, replies: ThreadMessage[] = [], kind: ThreadSnapshot["kind"] = "comment"): ThreadSnapshot {
-  return { id, kind, ...at, source: "github", synced: true, stale: false, resolved: false, root, replies, promoted_to: null };
+  return { id, kind, ...at, source: "github", stale: false, resolved: false, root, replies, promoted_to: null };
 }
 
 describe("reviewerEntries", () => {

@@ -10,7 +10,6 @@ export type MergedReply = {
   body_markdown: string;
   origin: "finding_response" | "thread_reply";
   source?: string;
-  synced?: boolean;
   editable?: boolean;
   deletable?: boolean;
 };
@@ -48,7 +47,6 @@ export function mergeFindingReplies(
       body_markdown: r.body_markdown,
       origin: r.origin ?? "thread_reply",
       source: r.source,
-      synced: r.synced,
       editable: r.editable ?? r.kind === "you",
       deletable: r.deletable ?? true,
     });

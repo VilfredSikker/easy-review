@@ -36,7 +36,6 @@ function emptyAi(overrides: Partial<AiSnapshot> = {}): AiSnapshot {
     comments: 0,
     questions: 0,
     notes: 0,
-    unpushed: 0,
     threads: [],
     findings: [],
     has_review_json: false,
@@ -157,7 +156,6 @@ function commentThread(id = "c-1"): ThreadSnapshot {
     line_end: 12,
     side: "RIGHT",
     source: "local",
-    synced: false,
     stale: false,
     resolved: false,
     root: {
@@ -183,7 +181,6 @@ function withThread(thread: ThreadSnapshot): AppSnapshot {
       questions: thread.kind === "question" ? 1 : 0,
       notes: thread.kind === "note" ? 1 : 0,
       local_comment_count: thread.kind === "comment" ? 1 : 0,
-      unpushed: thread.kind === "comment" ? 1 : 0,
     }),
   });
 }
@@ -1044,7 +1041,6 @@ describe("finding-thread ops", () => {
         threads: [t],
         comments: 1,
         local_comment_count: 1,
-        unpushed: 1,
         findings: [finding({ thread_id: "c-f" })],
         high: 1,
       }),

@@ -14,7 +14,7 @@ type Story = StoryObj<typeof meta>;
 export const Comment: Story = { args: { thread: commentThread, hunk_idx: 0 } };
 export const Question: Story = { args: { thread: questionThread, hunk_idx: 0 } };
 export const Synced: Story = {
-  args: { thread: { ...commentThread, synced: true, source: "github" }, hunk_idx: 0 },
+  args: { thread: { ...commentThread, source: "github" }, hunk_idx: 0 },
 };
 export const Stale: Story = {
   args: { thread: { ...commentThread, stale: true }, hunk_idx: 0 },

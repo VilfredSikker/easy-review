@@ -1,11 +1,7 @@
 <script lang="ts">
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
-  import {
-    commentThreadsFromDiff,
-    hiddenGithubHint,
-    unpushedLocalCommentThreads,
-  } from "$lib/commentVisibility";
+  import { commentThreadsFromDiff, hiddenGithubHint } from "$lib/commentVisibility";
   import { navigateToThread } from "$lib/dom";
   import { baseName } from "$lib/shortFileName";
   import { copyReviewExport } from "$lib/stores/quickExport";
@@ -28,7 +24,6 @@
   import { commentsAuthorFilter } from "./commentsAuthorFilter.svelte";
   import { threadsByAuthor } from "./commentsAuthor";
   import { reviewPageTabKey } from "$lib/stores/reviewPageModel";
-  import { showOverviewSection } from "$lib/components/overview/overviewNav";
   import PanelActions from "./PanelActions.svelte";
 
   interface Props {
@@ -66,13 +61,9 @@
   );
   const counts = $derived(kindCounts(threads));
   const rows = $derived(commentRows(threads, rightPanelFilters.kind, fileOrder));
-  const pushable = $derived(unpushedLocalCommentThreads(ai?.threads, files).length);
 
   const pulling = $derived(app.snapshot?.bg_loading?.gh_comments ?? false);
-  const freshness = $derived.by(() => {
-    if (pulling) return "pulling…";
-    return pushable > 0 ? `${pushable} unpushed` : "synced";
-  });
+  const freshness = $derived(pulling ? "pulling…" : "synced");
 
   let manualPulling = $state(false);
   async function pull() {
@@ -103,7 +94,7 @@
 
 <div class="flex items-center justify-between gap-2 text-[12.5px] font-medium text-fg">
   <span>{counts.comment} on GitHub · {counts.question + counts.note} private</span>
-  <span class="mono text-[11px] font-normal {pushable > 0 ? 'text-ai' : 'text-add-fg'}">{freshness}</span>
+  <span class="mono text-[11px] font-normal text-add-fg">{freshness}</span>
 </div>
 
 <div class="flex items-center gap-1 flex-wrap text-[11.5px]">
@@ -170,9 +161,6 @@
 <PanelActions
   actions={[
     { glyph: "↻", label: "Pull GitHub comments", disabled: pulling || manualPulling, run: () => void pull() },
-    ...(pushable > 0
-      ? [{ glyph: "↑", label: `Push ${pushable} to GitHub…`, title: "Submit as a review or push one by one", run: () => showOverviewSection("branch") }]
-      : []),
     { glyph: "⧉", label: "Quick copy export", title: "Copy this list as markdown, ready to paste into a coding agent", run: quickCopy },
     { glyph: "↗", label: "Open export…", run: () => app.setMainView("export-review") },
   ]}

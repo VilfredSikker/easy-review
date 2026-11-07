@@ -31,7 +31,6 @@ function emptyAi(overrides: Partial<AiSnapshot> = {}): AiSnapshot {
     comments: 0,
     questions: 0,
     notes: 0,
-    unpushed: 0,
     threads: [],
     findings: [],
     has_review_json: false,
@@ -212,12 +211,10 @@ describe("applyOptimisticThread", () => {
     expect(view.files[0].hunks[0].threads.map((t) => t.id)).toEqual(["opt-1"]);
     expect(view.ai.comments).toBe(1);
     expect(view.ai.local_comment_count).toBe(1);
-    expect(view.ai.unpushed).toBe(1);
     expect(view.files[0].comment_count).toBe(1);
     expect(view.ai.threads[0]).toMatchObject({
       kind: "comment",
       source: "local",
-      synced: false,
       stale: false,
       side: "RIGHT",
       line: 12,
@@ -226,14 +223,13 @@ describe("applyOptimisticThread", () => {
     });
   });
 
-  it("bumps question counts and not unpushed", () => {
+  it("bumps question counts", () => {
     const view = snap();
     applyOptimisticThread(
       view,
       pendingFor("add_question", view, { ...commentArgs, text: "why?" }, "opt-q"),
     );
     expect(view.ai.questions).toBe(1);
-    expect(view.ai.unpushed).toBe(0);
     expect(view.files[0].question_count).toBe(1);
     expect(view.ai.threads[0].kind).toBe("question");
   });
@@ -284,7 +280,6 @@ describe("removeOptimisticThread", () => {
     expect(view.files[0].hunks[0].threads).toEqual([]);
     expect(view.ai.comments).toBe(0);
     expect(view.ai.local_comment_count).toBe(0);
-    expect(view.ai.unpushed).toBe(0);
     expect(view.files[0].comment_count).toBe(0);
   });
 
