@@ -123,6 +123,21 @@ allow = [
     "crates/er-desktop/src/snapshot.rs",
 ]
 
+# `Command::new("gh")` outside the crate that owns GitHub: call the GitHub trait.
+# The allow-list is shrink-only: an entry with no findings fails as stale.
+[workspace.metadata.lint-gate.spawn.gh]
+home = "crates/er-github"
+allow = [
+    "crates/er-engine/src/github.rs",
+    "crates/er-engine/src/app/state/preview.rs",
+    "crates/er-desktop/src/commands.rs",
+    "crates/er-desktop/src/github_image.rs",
+    "crates/er-desktop/src/main.rs",
+    "crates/er-desktop/src/pr_cache.rs",
+    "crates/er-desktop/src/projects.rs",
+    "crates/er-tui/src/input/mod.rs",
+]
+
 [profile.release]
 opt-level = 3
 lto = true
