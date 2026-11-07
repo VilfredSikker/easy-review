@@ -21,8 +21,10 @@ does not express gets an explicit field.
 
 A tab carries the config it resolves against, copied on the way in.
 
-- `TabState.importance` holds this repo's `ImportanceRepoConfig`, and
-  `TabState.file_kinds` its `FileKindRepoConfig`, by the same path.
+- `TabState.risk_rules` holds this repo's project risk rules, read through
+  `ErConfig::risk_rules`, and `TabState.file_kinds` its `FileKindRepoConfig`, by
+  the same path. P03 (1.0.0) removed the `[importance.<repo>]` table and its
+  `TabState.importance` field; the rules now live in `[risk.<repo>]`.
 - `App::push_tab` fills it when a tab opens, keyed by `storage::rules_key`: the
   name a clone's origin gives the repo. A remote-only tab has no clone, so its
   key comes from the PR's repo name, which is the name a clone would get.
