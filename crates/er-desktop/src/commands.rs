@@ -3237,7 +3237,9 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcom
                 // `origin/<base>` oid. After the sync just fetched `origin/<base>`,
                 // adopt that oid as the probed value so the two agree.
                 let base_short = base_branch.trim_start_matches("origin/").to_string();
-                if let Some(oid) = er_engine::github::rev_parse_oid(&repo_root, &base_branch) {
+                if let Some(oid) =
+                    er_engine::github::rev_parse_oid(&*state.ports.git, &repo_root, &base_branch)
+                {
                     let key = format!("{repo_root}\u{0}{base_short}");
                     if let Ok(mut cache) = state.branch_base_remote_oid.lock() {
                         cache.insert(key, oid);
@@ -3356,7 +3358,7 @@ fn pull_github_comments_blocking(state: &AppState, force: bool) -> Result<AppSna
             }
         }
     } else {
-        match er_engine::sync::local_pr_target(&ctx.repo_root, explicit_pr) {
+        match er_engine::sync::local_pr_target(&*state.ports.git, &ctx.repo_root, explicit_pr) {
             Ok(info) => Some(info),
             Err(_) => {
                 let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -3650,7 +3652,8 @@ fn post_github_comment_flow(
         let app = state.app.lock().map_err(|e| e.to_string())?;
         app.comment_post_context()
     };
-    let pr = er_engine::github_post::resolve_post_target(&ctx).map_err(|e| e.to_string())?;
+    let pr = er_engine::github_post::resolve_post_target(&*state.ports.git, &ctx)
+        .map_err(|e| e.to_string())?;
     let (ticket, poster) = {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         let ticket = app
@@ -6103,6 +6106,7 @@ struct RemotePrOpenInputs {
 }
 
 fn fetch_remote_pr_open_inputs(
+    git: &dyn er_engine::git::Git,
     owner: &str,
     repo: &str,
     number: u64,
@@ -6117,7 +6121,7 @@ fn fetch_remote_pr_open_inputs(
         });
         let (owner_b, repo_b) = (owner.to_string(), repo.to_string());
         let diff_h = s.spawn(move || {
-            er_engine::github::gh_pr_diff_remote(&owner_b, &repo_b, number)
+            er_engine::github::gh_pr_diff_remote(git, &owner_b, &repo_b, number)
                 .map_err(|e| e.to_string())
         });
         let (owner_c, repo_c) = (owner.to_string(), repo.to_string());
@@ -6239,7 +6243,7 @@ fn build_remote_pr_tab(
         log::info!("remote_pr_open {owner}/{repo}#{number} cache=hit");
         return Ok(tab);
     }
-    let inputs = fetch_remote_pr_open_inputs(owner, repo, number)?;
+    let inputs = fetch_remote_pr_open_inputs(&*state.ports.git, owner, repo, number)?;
     let mut tab = er_engine::app::TabState::new_remote_with_data(
         &pr_ref,
         inputs.base_branch.clone(),
@@ -6762,6 +6766,11 @@ fn kick_background_branch_refresh(
         }
         g.push(flight_key.clone());
     }
+    let ports = app_state
+        .lock()
+        .ok()
+        .map(|a| a.ports.clone())
+        .unwrap_or_else(er_engine::ports::Ports::cli);
     std::thread::spawn(move || {
         // Fetch the base branch from origin so the local diff is up-to-date.
         let base_strip = base_branch.strip_prefix("origin/").unwrap_or(&base_branch);
@@ -6770,11 +6779,12 @@ fn kick_background_branch_refresh(
         // lock-held full refresh below is pure cost. That is the steady state:
         // most opens find origin's base tip exactly where it already was.
         let remote_ref = format!("origin/{base_strip}");
-        let oid_before = er_engine::github::rev_parse_oid(&repo_root, &remote_ref);
+        let oid_before = er_engine::github::rev_parse_oid(&*ports.git, &repo_root, &remote_ref);
         let t_worker = std::time::Instant::now();
-        match er_engine::github::fetch_base_branch_ref(&repo_root, base_strip) {
+        match er_engine::github::fetch_base_branch_ref(&*ports.git, &repo_root, base_strip) {
             Ok(base_ref) => {
-                let oid_after = er_engine::github::rev_parse_oid(&repo_root, &remote_ref);
+                let oid_after =
+                    er_engine::github::rev_parse_oid(&*ports.git, &repo_root, &remote_ref);
                 // A first materialisation (`before` was None) counts as moved.
                 let moved = oid_before.is_none() || oid_before != oid_after;
                 // This worker was the one leg of a branch open with no phase
@@ -7138,8 +7148,12 @@ fn run_gh_pr_view_for_open(repo_root: &str, pr_number: u64) -> Result<PrOpenMeta
     })
 }
 
-fn run_gh_pr_diff_for_open(repo_root: &str, pr_number: u64) -> Result<String, String> {
-    er_engine::github::gh_pr_diff(pr_number, repo_root).map_err(|e| e.to_string())
+fn run_gh_pr_diff_for_open(
+    git: &dyn er_engine::git::Git,
+    repo_root: &str,
+    pr_number: u64,
+) -> Result<String, String> {
+    er_engine::github::gh_pr_diff(git, pr_number, repo_root).map_err(|e| e.to_string())
 }
 
 fn run_gh_pr_commits_for_open(repo_root: &str, pr_number: u64) -> Vec<er_engine::git::CommitInfo> {
@@ -7326,6 +7340,7 @@ fn load_pr_open_inputs(
             );
             let t_base = std::time::Instant::now();
             let resolved_base = er_engine::github::ensure_base_ref_available(
+                &*state.ports.git,
                 &repo_root,
                 &entry_freshness.base_branch,
             )
@@ -7376,6 +7391,7 @@ fn load_pr_open_inputs(
             );
             let t_base = std::time::Instant::now();
             let resolved_base = er_engine::github::ensure_base_ref_available(
+                &*state.ports.git,
                 &repo_root,
                 &entry_freshness.base_branch,
             )
@@ -7414,13 +7430,17 @@ fn load_pr_open_inputs(
             let base_branch = freshness.base_branch.clone();
             let diff_h = s.spawn(move || {
                 let t = std::time::Instant::now();
-                let res = run_gh_pr_diff_for_open(&diff_root, pr_number);
+                let res = run_gh_pr_diff_for_open(&*state.ports.git, &diff_root, pr_number);
                 (res, t.elapsed().as_millis())
             });
             let base_h = s.spawn(move || {
                 let t = std::time::Instant::now();
-                let res = er_engine::github::ensure_base_ref_available(&base_root, &base_branch)
-                    .map_err(|e| e.to_string());
+                let res = er_engine::github::ensure_base_ref_available(
+                    &*state.ports.git,
+                    &base_root,
+                    &base_branch,
+                )
+                .map_err(|e| e.to_string());
                 (res, t.elapsed().as_millis())
             });
             let commits_h = s.spawn(move || run_gh_pr_commits_for_open(&commits_root, pr_number));
@@ -7494,6 +7514,7 @@ fn load_pr_open_inputs(
             );
             let t_base = std::time::Instant::now();
             let resolved_base = er_engine::github::ensure_base_ref_available(
+                &*state.ports.git,
                 &repo_root,
                 &metadata.freshness.base_branch,
             )
@@ -7527,13 +7548,17 @@ fn load_pr_open_inputs(
             let base_branch = metadata.freshness.base_branch.clone();
             let diff_h = s.spawn(move || {
                 let t = std::time::Instant::now();
-                let res = run_gh_pr_diff_for_open(&diff_root, pr_number);
+                let res = run_gh_pr_diff_for_open(&*state.ports.git, &diff_root, pr_number);
                 (res, t.elapsed().as_millis())
             });
             let base_h = s.spawn(move || {
                 let t = std::time::Instant::now();
-                let res = er_engine::github::ensure_base_ref_available(&base_root, &base_branch)
-                    .map_err(|e| e.to_string());
+                let res = er_engine::github::ensure_base_ref_available(
+                    &*state.ports.git,
+                    &base_root,
+                    &base_branch,
+                )
+                .map_err(|e| e.to_string());
                 (res, t.elapsed().as_millis())
             });
             let (diff_res, diff_ms) = diff_h
@@ -7585,7 +7610,7 @@ fn load_pr_open_inputs(
         });
         let diff = s.spawn(move || {
             let t = std::time::Instant::now();
-            let res = run_gh_pr_diff_for_open(&diff_root, pr_number);
+            let res = run_gh_pr_diff_for_open(&*state.ports.git, &diff_root, pr_number);
             (res, t.elapsed().as_millis())
         });
         let (metadata_res, view_ms) = view
@@ -7611,9 +7636,12 @@ fn load_pr_open_inputs(
     let metadata = metadata_res?;
     let raw_diff = diff_res?;
     let t_base = std::time::Instant::now();
-    let resolved_base =
-        er_engine::github::ensure_base_ref_available(&repo_root, &metadata.freshness.base_branch)
-            .map_err(|e| e.to_string())?;
+    let resolved_base = er_engine::github::ensure_base_ref_available(
+        &*state.ports.git,
+        &repo_root,
+        &metadata.freshness.base_branch,
+    )
+    .map_err(|e| e.to_string())?;
     log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
     remember_pr_open_entry(
         &state.pr_open_cache,
@@ -8135,6 +8163,7 @@ fn prefetch_pr_open_impl(
     let cache = Arc::clone(&state.pr_open_cache);
     let in_flight = Arc::clone(&state.pr_open_prefetch_in_flight);
     let branch_label = format!("pr-{}", pr_number);
+    let ports = state.ports.clone();
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
         // Warm the PR comment sync cache: detached so the in-flight claim is
@@ -8143,8 +8172,11 @@ fn prefetch_pr_open_impl(
         // when the user clicks within the 60 s TTL.
         {
             let warm_root = repo_root.clone();
+            let warm_ports = ports.clone();
             std::thread::spawn(move || {
-                if let Ok(owner_repo) = er_engine::github::get_repo_info(&warm_root) {
+                if let Ok(owner_repo) =
+                    er_engine::github::get_repo_info(&*warm_ports.git, &warm_root)
+                {
                     let _ = er_engine::github::gh_pr_comment_bundle_cached(
                         &owner_repo.0,
                         &owner_repo.1,
@@ -8159,9 +8191,12 @@ fn prefetch_pr_open_impl(
         let commits_root = repo_root.clone();
         let base_branch = freshness.base_branch.clone();
         let (diff_res, base_res, commits) = std::thread::scope(|s| {
-            let diff_h = s.spawn(move || run_gh_pr_diff_for_open(&diff_root, pr_number));
+            let diff_git = ports.git.clone();
+            let diff_h =
+                s.spawn(move || run_gh_pr_diff_for_open(&*diff_git, &diff_root, pr_number));
+            let base_git = ports.git.clone();
             let base_h = s.spawn(move || {
-                er_engine::github::ensure_base_ref_available(&base_root, &base_branch)
+                er_engine::github::ensure_base_ref_available(&*base_git, &base_root, &base_branch)
                     .map_err(|e| e.to_string())
             });
             let commits_h = s.spawn(move || run_gh_pr_commits_for_open(&commits_root, pr_number));
@@ -8257,6 +8292,7 @@ fn prefetch_remote_pr_open_impl(
 
     let cache = Arc::clone(&state.remote_pr_open_cache);
     let in_flight = Arc::clone(&state.remote_pr_open_in_flight);
+    let ports = state.ports.clone();
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
         // Warm the PR comment sync cache — detached, like the local prefetch;
@@ -8273,7 +8309,7 @@ fn prefetch_remote_pr_open_impl(
                 );
             });
         }
-        let result = fetch_remote_pr_open_inputs(&owner, &repo, number);
+        let result = fetch_remote_pr_open_inputs(&*ports.git, &owner, &repo, number);
         match result {
             Ok(inputs) => {
                 crate::remote_pr_open_cache::insert_remote_pr_open_entry(
@@ -9086,7 +9122,7 @@ pub async fn sync_pr(
         if let Some(diff_oid) = refreshed_local_diff_oid {
             let key = pr_open_cache_key(&project_id, &root_path, pr_number);
             let freshness = freshness_from_pr_info(&fetched_pr, diff_oid.as_deref());
-            match run_gh_pr_diff_for_open(&root_path, pr_number) {
+            match run_gh_pr_diff_for_open(&*state.ports.git, &root_path, pr_number) {
                 Ok(raw_diff) => {
                     remember_pr_open_entry(
                         &state.pr_open_cache,
@@ -10023,6 +10059,7 @@ pub fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
     let app_arc = Arc::clone(&state.app);
     let loading = Arc::clone(&state.loading);
     let desktop_revision = Arc::clone(&state.desktop_revision);
+    let ports = state.ports.clone();
     std::thread::spawn(move || {
         // Phase 1 — brief lock: capture the fetch inputs and release, so the
         // network work below runs outside the critical section. Re-resolve the
@@ -10046,11 +10083,12 @@ pub fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
             // fetches would re-download them. Probed here, where no lock is
             // held, so the check costs a `git rev-parse` and nothing else.
             let already_present = er_engine::github::ref_exists_locally(
+                &*ports.git,
                 &inputs.repo_root,
                 &format!("refs/er/pr/{}/head", inputs.pr_number),
             );
             if !already_present {
-                match er_engine::app::TabState::fetch_pr_refresh(&inputs) {
+                match er_engine::app::TabState::fetch_pr_refresh(&*ports.git, &inputs) {
                     Ok(result) => fetched = Some(result),
                     Err(e) => {
                         log::error!("er-desktop: deferred tab pr fetch failed: {e}");
@@ -10124,6 +10162,7 @@ pub fn kick_post_open_offload(app: &App, state: &AppState) {
     let app_arc = Arc::clone(&state.app);
     let loading = Arc::clone(&state.loading);
     let desktop_revision = Arc::clone(&state.desktop_revision);
+    let ports = state.ports.clone();
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
 
@@ -10175,18 +10214,20 @@ pub fn kick_post_open_offload(app: &App, state: &AppState) {
         // Phase 2 — no lock: the PR's network legs, when the fallback path needs them.
         let mut fetch_failed = false;
         let fetched = match &work {
-            Work::Fetch(inputs) => match er_engine::app::TabState::fetch_pr_refresh(inputs) {
-                Ok(result) => Some(result),
-                Err(e) => {
-                    log::error!(
-                        "er-desktop: post-open offload fetch failed for pr={:?} root={}: {e}",
-                        expect_pr,
-                        expect_root
-                    );
-                    fetch_failed = true;
-                    None
+            Work::Fetch(inputs) => {
+                match er_engine::app::TabState::fetch_pr_refresh(&*ports.git, inputs) {
+                    Ok(result) => Some(result),
+                    Err(e) => {
+                        log::error!(
+                            "er-desktop: post-open offload fetch failed for pr={:?} root={}: {e}",
+                            expect_pr,
+                            expect_root
+                        );
+                        fetch_failed = true;
+                        None
+                    }
                 }
-            },
+            }
             _ => None,
         };
 
@@ -10319,7 +10360,7 @@ pub fn kick_branch_preload(app: &App, state: &AppState) {
         });
         let fetch_preview_head = || {
             let slug = inputs.remote_repo.clone().or_else(|| {
-                er_engine::github::get_repo_info(&inputs.repo_root)
+                er_engine::github::get_repo_info(&*inputs.ports.git, &inputs.repo_root)
                     .ok()
                     .map(|(owner, repo)| format!("{owner}/{repo}"))
             })?;
@@ -10497,13 +10538,14 @@ pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
     let app_arc = Arc::clone(&state.app);
     let in_flight = Arc::clone(&state.pr_ref_fetch_in_flight);
     let desktop_rev = Arc::clone(&state.desktop_revision);
+    let ports = state.ports.clone();
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
         // Probed here rather than on the caller's thread. The in-flight set
         // above dedupes by (repo_root, pr_number), so this `git rev-parse`
         // costs one subprocess per unique PR instead of one per open, and the
         // open path stops paying for it at all.
-        if er_engine::github::ref_exists_locally(&repo_root, &head_ref) {
+        if er_engine::github::ref_exists_locally(&*ports.git, &repo_root, &head_ref) {
             if let Ok(mut g) = in_flight.lock() {
                 g.remove(&key);
             }
@@ -10514,11 +10556,15 @@ pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
             let head_root = repo_root.clone();
             let base_root = repo_root.clone();
             let base_branch = base_branch.clone();
+            let head_git = ports.git.clone();
             let head_h = s.spawn(move || {
-                er_engine::github::fetch_pr_head(pr_number, &head_root).map_err(|e| e.to_string())
+                er_engine::github::fetch_pr_head(&*head_git, pr_number, &head_root)
+                    .map_err(|e| e.to_string())
             });
+            let base_git = ports.git.clone();
             let base_h = s.spawn(move || {
                 er_engine::github::fetch_base_branch_ref(
+                    &*base_git,
                     &base_root,
                     base_branch.trim_start_matches("origin/"),
                 )

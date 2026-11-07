@@ -1,5 +1,6 @@
 use crate::proc::CommandTimeoutExt;
 use anyhow::{Context, Result};
+use er_git::{Git, GitError};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::Command;
@@ -542,22 +543,16 @@ pub fn gh_pr_branch_names(pr_number: u64, repo_root: &str) -> Result<(String, St
 /// leaving the stale `refs/er/pr/<n>/head` and breaking re-entry into PR diff.
 /// The `+` only affects this `refs/er/` destination ref — never local branches
 /// (`refs/heads/`), remote-tracking refs, HEAD, or the working tree.
-pub fn fetch_pr_head(number: u64, root: &str) -> Result<String> {
+pub fn fetch_pr_head(git: &dyn Git, number: u64, root: &str) -> Result<String> {
     let ref_name = format!("refs/er/pr/{}/head", number);
-    let mut cmd = std::process::Command::new("git");
-    cmd.args([
-        "fetch",
-        "origin",
-        &format!("+pull/{}/head:{}", number, ref_name),
-    ])
-    .current_dir(root);
-    let output = crate::proc::run_with_timeout(&mut cmd, crate::proc::GIT_FETCH_TIMEOUT)
-        .context("failed to run git fetch for PR head")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git fetch PR head failed: {}", stderr.trim());
+    let refspec = format!("+pull/{}/head:{}", number, ref_name);
+    match git.fetch(root, &["origin", &refspec]) {
+        Ok(()) => Ok(ref_name),
+        Err(GitError::Failed { stderr, .. }) => {
+            anyhow::bail!("git fetch PR head failed: {}", stderr.trim())
+        }
+        Err(e) => Err(anyhow::Error::from(e).context("failed to run git fetch for PR head")),
     }
-    Ok(ref_name)
 }
 
 /// Whether an error came from a local branch that genuinely has no upstream.
@@ -569,72 +564,50 @@ pub fn is_no_upstream_to_refresh(err: &anyhow::Error) -> bool {
         .any(|cause| cause.to_string().contains("has no upstream to refresh"))
 }
 
-pub fn ref_exists_locally(repo_root: &str, ref_name: &str) -> bool {
-    let out = Command::new("git")
-        .args(["rev-parse", "--verify", ref_name])
-        .current_dir(repo_root)
-        .output();
-    out.map(|o| o.status.success()).unwrap_or(false)
+pub fn ref_exists_locally(git: &dyn Git, repo_root: &str, ref_name: &str) -> bool {
+    git.rev_parse_verify(repo_root, ref_name)
+        .is_ok_and(|oid| oid.is_some())
 }
 
 /// Resolve a git ref to its commit oid (full sha). Returns None on any failure.
-pub fn rev_parse_oid(repo_root: &str, ref_name: &str) -> Option<String> {
-    let out = Command::new("git")
-        .args(["rev-parse", "--verify", ref_name])
-        .current_dir(repo_root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if oid.is_empty() {
-        None
-    } else {
-        Some(oid)
-    }
+pub fn rev_parse_oid(git: &dyn Git, repo_root: &str, ref_name: &str) -> Option<String> {
+    git.rev_parse_verify(repo_root, ref_name).ok().flatten()
 }
 
 /// Force-fetch a base branch from origin, updating `origin/<base>` even if it already exists.
 /// Returns `origin/<base_branch>` on success.
-pub fn fetch_base_branch_ref(repo_root: &str, base_branch: &str) -> Result<String> {
+pub fn fetch_base_branch_ref(git: &dyn Git, repo_root: &str, base_branch: &str) -> Result<String> {
     let remote_ref = format!("origin/{}", base_branch);
     let refspec = format!(
         "+refs/heads/{}:refs/remotes/origin/{}",
         base_branch, base_branch
     );
 
-    let mut fetch_cmd = std::process::Command::new("git");
-    fetch_cmd
-        .args(["fetch", "origin", &refspec])
-        .current_dir(repo_root);
-    let fetch = crate::proc::run_with_timeout(&mut fetch_cmd, crate::proc::GIT_FETCH_TIMEOUT)
-        .context("Failed to fetch base branch from origin")?;
-
-    if !fetch.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch.stderr);
-        anyhow::bail!(
-            "Failed to fetch base branch '{}' from origin: {}",
-            base_branch,
-            stderr.trim()
-        );
+    match git.fetch(repo_root, &["origin", &refspec]) {
+        Ok(()) => {}
+        Err(GitError::Failed { stderr, .. }) => {
+            anyhow::bail!(
+                "Failed to fetch base branch '{}' from origin: {}",
+                base_branch,
+                stderr.trim()
+            );
+        }
+        Err(e) => {
+            return Err(anyhow::Error::from(e).context("Failed to fetch base branch from origin"));
+        }
     }
 
-    let verify = std::process::Command::new("git")
-        .args(["rev-parse", "--verify", &remote_ref])
-        .current_dir(repo_root)
-        .output()
-        .context("Failed to verify fetched base branch")?;
-
-    if !verify.status.success() {
-        anyhow::bail!(
-            "Base branch '{}' fetched but '{}' is not resolvable",
-            base_branch,
-            remote_ref
-        );
+    match git.rev_parse_verify(repo_root, &remote_ref) {
+        Ok(Some(_)) => Ok(remote_ref),
+        Ok(None) => {
+            anyhow::bail!(
+                "Base branch '{}' fetched but '{}' is not resolvable",
+                base_branch,
+                remote_ref
+            )
+        }
+        Err(e) => Err(anyhow::Error::from(e).context("Failed to verify fetched base branch")),
     }
-
-    Ok(remote_ref)
 }
 
 /// Whether a fetch failed because origin no longer has the branch. A stacked
@@ -654,22 +627,28 @@ pub fn is_pinned_pr_base(base: &str) -> bool {
 /// [`fetch_base_branch_ref`] for a PR whose base branch may be gone from
 /// origin. Falls back to the PR's `baseRefOid`, which GitHub keeps after the
 /// branch is deleted. The extra `gh` call happens only on that failure.
-pub fn fetch_pr_base_ref(repo_root: &str, pr_number: u64, base_branch: &str) -> Result<String> {
-    fetch_pr_base_ref_with(repo_root, pr_number, base_branch, || {
+pub fn fetch_pr_base_ref(
+    git: &dyn Git,
+    repo_root: &str,
+    pr_number: u64,
+    base_branch: &str,
+) -> Result<String> {
+    fetch_pr_base_ref_with(git, repo_root, pr_number, base_branch, || {
         gh_pr_base_oid(pr_number, repo_root)
     })
 }
 
 fn fetch_pr_base_ref_with(
+    git: &dyn Git,
     repo_root: &str,
     pr_number: u64,
     base_branch: &str,
     base_oid: impl FnOnce() -> Result<String>,
 ) -> Result<String> {
-    match fetch_base_branch_ref(repo_root, base_branch) {
+    match fetch_base_branch_ref(git, repo_root, base_branch) {
         Err(err) if is_missing_remote_ref(&err) => {
             let sha = base_oid()?;
-            pin_pr_base_commit(repo_root, pr_number, &sha).with_context(|| {
+            pin_pr_base_commit(git, repo_root, pr_number, &sha).with_context(|| {
                 format!("Base branch '{base_branch}' is gone from origin and its commit could not be fetched")
             })
         }
@@ -709,30 +688,31 @@ fn gh_pr_base_oid(pr_number: u64, repo_root: &str) -> Result<String> {
 /// Point `refs/er/pr/<n>/base` at `sha`, fetching it from origin only when the
 /// commit is not already local (it usually is: the base was fetched before it
 /// was deleted). Returns the ref name.
-fn pin_pr_base_commit(repo_root: &str, pr_number: u64, sha: &str) -> Result<String> {
+fn pin_pr_base_commit(git: &dyn Git, repo_root: &str, pr_number: u64, sha: &str) -> Result<String> {
     let ref_name = format!("refs/er/pr/{pr_number}/base");
-    if !ref_exists_locally(repo_root, &format!("{sha}^{{commit}}")) {
-        let mut cmd = Command::new("git");
-        cmd.args(["fetch", "origin", &format!("+{sha}:{ref_name}")])
-            .current_dir(repo_root);
-        let output = crate::proc::run_with_timeout(&mut cmd, crate::proc::GIT_FETCH_TIMEOUT)
-            .context("failed to run git fetch for PR base commit")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("git fetch PR base commit failed: {}", stderr.trim());
+    if !ref_exists_locally(git, repo_root, &format!("{sha}^{{commit}}")) {
+        let refspec = format!("+{sha}:{ref_name}");
+        match git.fetch(repo_root, &["origin", &refspec]) {
+            Ok(()) => return Ok(ref_name),
+            Err(GitError::Failed { stderr, .. }) => {
+                anyhow::bail!("git fetch PR base commit failed: {}", stderr.trim());
+            }
+            Err(e) => {
+                return Err(
+                    anyhow::Error::from(e).context("failed to run git fetch for PR base commit")
+                );
+            }
         }
-        return Ok(ref_name);
     }
-    let output = Command::new("git")
-        .args(["update-ref", &ref_name, sha])
-        .current_dir(repo_root)
-        .output()
-        .context("failed to run git update-ref for PR base commit")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git update-ref PR base commit failed: {}", stderr.trim());
+    match git.update_ref(repo_root, &ref_name, sha) {
+        Ok(()) => Ok(ref_name),
+        Err(GitError::Failed { stderr, .. }) => {
+            anyhow::bail!("git update-ref PR base commit failed: {}", stderr.trim());
+        }
+        Err(e) => {
+            Err(anyhow::Error::from(e).context("failed to run git update-ref for PR base commit"))
+        }
     }
-    Ok(ref_name)
 }
 
 /// Get the head branch name of a PR via gh CLI
@@ -758,19 +738,13 @@ pub fn gh_pr_head_branch_name(number: u64, root: &str) -> Result<String> {
 }
 
 /// Verify the local repo's remote matches the PR's owner/repo
-pub fn verify_remote_matches(repo_root: &str, pr_ref: &PrRef) -> Result<()> {
-    let output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(repo_root)
-        .output()
-        .context("Failed to get git remote URL")?;
-
-    if !output.status.success() {
+pub fn verify_remote_matches(git: &dyn Git, repo_root: &str, pr_ref: &PrRef) -> Result<()> {
+    let remote = match git.remote_url(repo_root, "origin") {
+        Ok(remote) => remote,
         // No remote — can't verify, let gh handle it
-        return Ok(());
-    }
-
-    let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(GitError::Failed { .. }) => return Ok(()),
+        Err(e) => return Err(anyhow::Error::from(e).context("Failed to get git remote URL")),
+    };
     let expected = format!("{}/{}", pr_ref.owner, pr_ref.repo);
     if !remote_matches_repo(&remote, &pr_ref.owner, &pr_ref.repo) {
         anyhow::bail!(
@@ -786,22 +760,24 @@ pub fn verify_remote_matches(repo_root: &str, pr_ref: &PrRef) -> Result<()> {
 /// Ensure a remote ref is available locally by fetching if needed.
 /// Returns the ref name that actually resolves — may be `origin/<base>` if
 /// no local branch exists.
-pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<String> {
+pub fn ensure_base_ref_available(
+    git: &dyn Git,
+    repo_root: &str,
+    base_branch: &str,
+) -> Result<String> {
     let base_branch = base_branch.trim();
     let base_branch = if base_branch.is_empty() {
-        crate::git::detect_base_branch_in(repo_root)
+        git.detect_base_branch(repo_root)
             .context("PR has no base branch; could not detect a default base")?
     } else {
         base_branch.to_string()
     };
 
     let rev_parse_ok = |refname: &str| -> Result<bool> {
-        let out = Command::new("git")
-            .args(["rev-parse", "--verify", refname])
-            .current_dir(repo_root)
-            .output()
-            .context("Failed to check ref")?;
-        Ok(out.status.success())
+        match git.rev_parse_verify(repo_root, refname) {
+            Ok(oid) => Ok(oid.is_some()),
+            Err(e) => Err(anyhow::Error::from(e).context("Failed to check ref")),
+        }
     };
 
     // Local branch exists — use it directly
@@ -819,28 +795,24 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
     // ref (e.g. `--upload-pack=…`) parses as a git option, not a refspec —
     // qualify bare names as `refs/heads/<name>` so the value never starts
     // with `-` (the fetch then simply fails to resolve, no injection).
-    let fetch = if base_branch.starts_with("refs/") {
-        Command::new("git")
-            .args(["fetch", "origin", &base_branch])
-            .current_dir(repo_root)
-            .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
-            .context("Failed to fetch base branch from origin")?
+    let qualified = format!("refs/heads/{base_branch}");
+    let fetch_ref = if base_branch.starts_with("refs/") {
+        base_branch.as_str()
     } else {
-        let qualified = format!("refs/heads/{base_branch}");
-        Command::new("git")
-            .args(["fetch", "origin", &qualified])
-            .current_dir(repo_root)
-            .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
-            .context("Failed to fetch base branch from origin")?
+        qualified.as_str()
     };
-
-    if !fetch.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch.stderr);
-        anyhow::bail!(
-            "Base branch '{}' not found locally or on origin: {}",
-            base_branch,
-            stderr.trim()
-        );
+    match git.fetch(repo_root, &["origin", fetch_ref]) {
+        Ok(()) => {}
+        Err(GitError::Failed { stderr, .. }) => {
+            anyhow::bail!(
+                "Base branch '{}' not found locally or on origin: {}",
+                base_branch,
+                stderr.trim()
+            );
+        }
+        Err(e) => {
+            return Err(anyhow::Error::from(e).context("Failed to fetch base branch from origin"));
+        }
     }
 
     // After fetch, origin/<base> should exist
@@ -965,7 +937,7 @@ pub fn classify_pr_lookup_failure(stderr: &str) -> PrLookup {
 
 /// Resolve the checked-out branch's PR without collapsing "no PR" and
 /// "could not ask" into one answer.
-pub fn lookup_pr_for_current_branch(repo_root: &str) -> PrLookup {
+pub fn lookup_pr_for_current_branch(git: &dyn Git, repo_root: &str) -> PrLookup {
     let output = match Command::new("gh")
         .args(["pr", "view", "--json", "number,headRepository"])
         .current_dir(repo_root)
@@ -995,7 +967,7 @@ pub fn lookup_pr_for_current_branch(repo_root: &str) -> PrLookup {
             number,
         };
     }
-    match parse_origin_remote(repo_root) {
+    match parse_origin_remote(git, repo_root) {
         Some((owner, repo)) => PrLookup::Present {
             owner,
             repo,
@@ -1069,8 +1041,8 @@ pub fn is_github_pr_url(s: &str) -> bool {
 }
 
 /// Get PR info (owner, repo, number) for the current branch
-pub fn get_pr_info(repo_root: &str) -> Result<(String, String, u64)> {
-    match lookup_pr_for_current_branch(repo_root) {
+pub fn get_pr_info(git: &dyn Git, repo_root: &str) -> Result<(String, String, u64)> {
+    match lookup_pr_for_current_branch(git, repo_root) {
         PrLookup::Present {
             owner,
             repo,
@@ -1162,7 +1134,7 @@ impl RepoInfoCache {
 static REPO_INFO_CACHE: OnceLock<RepoInfoCache> = OnceLock::new();
 
 /// Get GitHub owner/repo from the repository's `origin` remote.
-pub fn get_repo_info(repo_root: &str) -> Result<(String, String)> {
+pub fn get_repo_info(git: &dyn Git, repo_root: &str) -> Result<(String, String)> {
     let cache = REPO_INFO_CACHE.get_or_init(|| RepoInfoCache {
         inner: Mutex::new(HashMap::new()),
         ttl: Duration::from_secs(60),
@@ -1171,18 +1143,13 @@ pub fn get_repo_info(repo_root: &str) -> Result<(String, String)> {
     if let Some(cached) = cache.get(repo_root) {
         return Ok((cached.0.clone(), cached.1.clone()));
     }
-    let remote_output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(repo_root)
-        .output()
-        .context("Failed to get origin remote")?;
-    if !remote_output.status.success() {
-        let stderr = String::from_utf8_lossy(&remote_output.stderr);
-        anyhow::bail!("Failed to get origin remote: {}", stderr.trim());
-    }
-    let remote = String::from_utf8_lossy(&remote_output.stdout)
-        .trim()
-        .to_string();
+    let remote = match git.remote_url(repo_root, "origin") {
+        Ok(remote) => remote,
+        Err(GitError::Failed { stderr, .. }) => {
+            anyhow::bail!("Failed to get origin remote: {}", stderr.trim());
+        }
+        Err(e) => return Err(anyhow::Error::from(e).context("Failed to get origin remote")),
+    };
     let parsed = parse_owner_repo_from_remote(&remote)?;
     cache.insert(repo_root, parsed.clone());
     Ok(parsed)
@@ -1207,11 +1174,15 @@ fn owner_repo_matches_slug(owner: &str, repo: &str, slug: &str) -> bool {
 /// around them, which pushes the agent into hunting the filesystem for a copy of the code.
 /// Returns `None` whenever the match cannot be established — no origin, unparseable remote,
 /// or a different repository — so the caller keeps the artifact-dir behaviour.
-pub fn local_checkout_for_repo(repo_root: &str, remote_repo: &str) -> Option<String> {
+pub fn local_checkout_for_repo(
+    git: &dyn Git,
+    repo_root: &str,
+    remote_repo: &str,
+) -> Option<String> {
     if repo_root.is_empty() || remote_repo.is_empty() {
         return None;
     }
-    let (owner, repo) = get_repo_info(repo_root).ok()?;
+    let (owner, repo) = get_repo_info(git, repo_root).ok()?;
     owner_repo_matches_slug(&owner, &repo, remote_repo).then(|| repo_root.to_string())
 }
 
@@ -1799,7 +1770,7 @@ pub fn gh_pr_size_check_remote(owner: &str, repo: &str, number: u64) -> Result<(
 /// Works without a local clone — uses GitHub API via gh CLI.
 /// Falls back to shallow clone + local git diff when the PR exceeds GitHub's
 /// API line limit (HTTP 406 / diff_too_large).
-pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String> {
+pub fn gh_pr_diff_remote(git: &dyn Git, owner: &str, repo: &str, number: u64) -> Result<String> {
     gh_pr_size_check_remote(owner, repo, number)?;
     let repo_slug = format!("{}/{}", owner, repo);
     let output = Command::new("gh")
@@ -1810,7 +1781,7 @@ pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String>
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if gh_diff_too_large(&stderr) {
-            return gh_pr_diff_via_clone(owner, repo, number);
+            return gh_pr_diff_via_clone(git, owner, repo, number);
         }
         anyhow::bail!("Failed to get PR diff: {}", stderr.trim());
     }
@@ -1825,7 +1796,7 @@ pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String>
 /// "whatever local `origin/<base>...refs/pull/N/head` happens to produce" in
 /// every edge case, and using `gh pr diff` keeps Easy Review aligned with the
 /// Files changed view.
-pub fn gh_pr_diff(pr_number: u64, repo_root: &str) -> Result<String> {
+pub fn gh_pr_diff(git: &dyn Git, pr_number: u64, repo_root: &str) -> Result<String> {
     let output = Command::new("gh")
         .args(["pr", "diff", &pr_number.to_string()])
         .current_dir(repo_root)
@@ -1835,7 +1806,7 @@ pub fn gh_pr_diff(pr_number: u64, repo_root: &str) -> Result<String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if gh_diff_too_large(&stderr) {
-            return gh_pr_diff_too_large_fallback(pr_number, repo_root);
+            return gh_pr_diff_too_large_fallback(git, pr_number, repo_root);
         }
         anyhow::bail!("Failed to get PR diff: {}", stderr.trim());
     }
@@ -1857,22 +1828,22 @@ fn gh_diff_too_large(stderr: &str) -> bool {
 /// A PR the diff endpoint refused: build the diff from the local checkout, and
 /// only if that cannot work (no usable `origin`, a shallow clone with no merge
 /// base) clone the repo into a temp dir.
-fn gh_pr_diff_too_large_fallback(pr_number: u64, repo_root: &str) -> Result<String> {
-    let local = gh_pr_diff_via_local_git(pr_number, repo_root);
+fn gh_pr_diff_too_large_fallback(git: &dyn Git, pr_number: u64, repo_root: &str) -> Result<String> {
+    let local = gh_pr_diff_via_local_git(git, pr_number, repo_root);
     let Err(local_err) = local else {
         return local;
     };
-    let Some((owner, repo)) = parse_origin_remote(repo_root) else {
+    let Some((owner, repo)) = parse_origin_remote(git, repo_root) else {
         return Err(local_err.context("GitHub refused to render this large PR diff"));
     };
-    gh_pr_diff_via_clone(&owner, &repo, pr_number).map_err(|clone_err| {
+    gh_pr_diff_via_clone(git, &owner, &repo, pr_number).map_err(|clone_err| {
         clone_err.context(format!(
             "GitHub refused to render this large PR diff; local git diff also failed: {local_err:#}"
         ))
     })
 }
 
-fn gh_pr_diff_via_local_git(pr_number: u64, repo_root: &str) -> Result<String> {
+fn gh_pr_diff_via_local_git(git: &dyn Git, pr_number: u64, repo_root: &str) -> Result<String> {
     let output = Command::new("gh")
         .args([
             "pr",
@@ -1901,34 +1872,28 @@ fn gh_pr_diff_via_local_git(pr_number: u64, repo_root: &str) -> Result<String> {
 
     // By SHA rather than by branch name: it works for forks and for a head
     // branch that has since been deleted. No refs are created.
-    let fetch = Command::new("git")
-        .args(["fetch", "--no-tags", "origin", base_sha, head_sha])
-        .current_dir(repo_root)
-        .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
-        .context("Failed to fetch PR commits")?;
-    if !fetch.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch.stderr);
-        anyhow::bail!("Failed to fetch PR commits: {}", stderr.trim());
+    match git.fetch(repo_root, &["--no-tags", "origin", base_sha, head_sha]) {
+        Ok(()) => {}
+        Err(GitError::Failed { stderr, .. }) => {
+            anyhow::bail!("Failed to fetch PR commits: {}", stderr.trim());
+        }
+        Err(e) => return Err(anyhow::Error::from(e).context("Failed to fetch PR commits")),
     }
-    git_merge_base_diff(repo_root, base_sha, head_sha)
+    git_merge_base_diff(git, repo_root, base_sha, head_sha)
 }
 
 /// `git diff base...head`: against the merge base, which is what GitHub's
 /// Files changed view shows. A two-dot diff against the base tip would also
 /// show the base branch's own newer commits, reversed.
-fn git_merge_base_diff(repo_root: &str, base: &str, head: &str) -> Result<String> {
-    let unified_arg = format!("--unified={}", crate::git::DEFAULT_CONTEXT_LINES);
+fn git_merge_base_diff(git: &dyn Git, repo_root: &str, base: &str, head: &str) -> Result<String> {
     let range = format!("{base}...{head}");
-    let diff = Command::new("git")
-        .args(["diff", &range, &unified_arg, "--no-color", "--no-ext-diff"])
-        .current_dir(repo_root)
-        .output()
-        .context("Failed to run git diff for large PR")?;
-    if !diff.status.success() {
-        let stderr = String::from_utf8_lossy(&diff.stderr);
-        anyhow::bail!("git diff failed for large PR: {}", stderr.trim());
+    match git.diff_revs(repo_root, &[&range]) {
+        Ok(diff) => Ok(diff),
+        Err(GitError::Failed { stderr, .. }) => {
+            anyhow::bail!("git diff failed for large PR: {}", stderr.trim());
+        }
+        Err(e) => Err(anyhow::Error::from(e).context("Failed to run git diff for large PR")),
     }
-    Ok(String::from_utf8_lossy(&diff.stdout).to_string())
 }
 
 /// Base and head commit SHAs for a PR (from `gh pr view`). Works for merged PRs and
@@ -1971,7 +1936,7 @@ pub fn gh_pr_commit_shas_remote(owner: &str, repo: &str, number: u64) -> Result<
 
 /// Fallback for large PRs: shallow-clone the repo into a temp dir, fetch both
 /// commits by SHA, and produce the diff locally. The temp dir is cleaned up automatically.
-fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> {
+fn gh_pr_diff_via_clone(git: &dyn Git, owner: &str, repo: &str, number: u64) -> Result<String> {
     let (base_sha, head_sha) = gh_pr_commit_shas_remote(owner, repo, number)?;
     let repo_url = format!("https://github.com/{}/{}.git", owner, repo);
     // tempfile::Builder::tempdir: random name + 0700, so an attacker cannot
@@ -1990,67 +1955,46 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
         .to_string();
 
     // Shallow clone with only the two refs we need
-    let clone = Command::new("git")
-        .args([
-            "clone",
-            "--depth=1",
-            "--no-checkout",
-            "--filter=blob:none",
-            &repo_url,
-            &tmp_path,
-        ])
-        .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
-        .context("Failed to shallow clone for large PR diff")?;
-
-    if !clone.status.success() {
-        let stderr = String::from_utf8_lossy(&clone.stderr);
-        anyhow::bail!("Shallow clone failed: {}", stderr.trim());
+    match git.shallow_clone(&repo_url, &tmp_path) {
+        Ok(()) => {}
+        Err(GitError::Failed { stderr, .. }) => {
+            anyhow::bail!("Shallow clone failed: {}", stderr.trim());
+        }
+        Err(e) => {
+            return Err(anyhow::Error::from(e).context("Failed to shallow clone for large PR diff"));
+        }
     }
 
     // Fetch exact base/head commits (branch names fail for merged/deleted heads and some forks).
-    let fetch = Command::new("git")
-        .args([
-            "-C",
-            &tmp_path,
-            "fetch",
-            "--depth=1",
-            "origin",
-            &base_sha,
-            &head_sha,
-        ])
-        .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
-        .context("Failed to fetch PR commits")?;
-
-    if !fetch.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch.stderr);
-        anyhow::bail!("Failed to fetch PR commits: {}", stderr.trim());
+    match git.fetch(&tmp_path, &["--depth=1", "origin", &base_sha, &head_sha]) {
+        Ok(()) => {}
+        Err(GitError::Failed { stderr, .. }) => {
+            anyhow::bail!("Failed to fetch PR commits: {}", stderr.trim());
+        }
+        Err(e) => return Err(anyhow::Error::from(e).context("Failed to fetch PR commits")),
     }
 
     // Generate the diff
-    let unified_arg = format!("--unified={}", crate::git::DEFAULT_CONTEXT_LINES);
-    let diff = Command::new("git")
-        .args([
-            "-C",
-            &tmp_path,
-            "diff",
-            &base_sha,
-            &head_sha,
-            &unified_arg,
-            "--no-color",
-            "--no-ext-diff",
-        ])
-        .output()
-        .context("Failed to generate diff from cloned repo")?;
+    let diff = match git.diff_revs(&tmp_path, &[&base_sha, &head_sha]) {
+        Ok(diff) => diff,
+        Err(e) => {
+            // Clean up (TempDir removes the clone on drop — including on error).
+            drop(tmp_dir);
+            return Err(match e {
+                GitError::Failed { stderr, .. } => {
+                    anyhow::anyhow!("git diff failed in cloned repo: {}", stderr.trim())
+                }
+                other => {
+                    anyhow::Error::from(other).context("Failed to generate diff from cloned repo")
+                }
+            });
+        }
+    };
 
     // Clean up (TempDir removes the clone on drop — including on error).
     drop(tmp_dir);
 
-    if !diff.status.success() {
-        let stderr = String::from_utf8_lossy(&diff.stderr);
-        anyhow::bail!("git diff failed in cloned repo: {}", stderr.trim());
-    }
-
-    Ok(String::from_utf8_lossy(&diff.stdout).to_string())
+    Ok(diff)
 }
 
 /// Raw contents of `path` at `git_ref` on GitHub, capped at `max_bytes`.
@@ -3293,16 +3237,8 @@ fn parse_path_components(path: &str) -> Option<(String, String)> {
 ///
 /// Runs `git -C <repo_root> remote get-url origin`. Returns `None` if the
 /// remote is absent, unreachable, or the URL cannot be parsed.
-pub fn parse_origin_remote(repo_root: &str) -> Option<(String, String)> {
-    let out = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(repo_root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+pub fn parse_origin_remote(git: &dyn Git, repo_root: &str) -> Option<(String, String)> {
+    let url = git.remote_url(repo_root, "origin").ok()?;
     parse_remote_url(&url)
 }
 
@@ -3314,8 +3250,8 @@ pub fn parse_origin_remote(repo_root: &str) -> Option<(String, String)> {
 /// local clone and a remote session always resolve the same directory name.
 ///
 /// Returns `None` when the origin remote is absent or unparseable.
-pub fn canonical_owner_repo_slug(repo_root: &str) -> Option<String> {
-    let (owner, repo) = parse_origin_remote(repo_root)?;
+pub fn canonical_owner_repo_slug(git: &dyn Git, repo_root: &str) -> Option<String> {
+    let (owner, repo) = parse_origin_remote(git, repo_root)?;
     // Lowercase before slugging so that "Acme/My-Repo" and "acme/my-repo" resolve
     // to the same directory.  GitHub owner/repo names are case-insensitive.
     Some(crate::storage::slug_branch(
@@ -3503,11 +3439,12 @@ pub fn parse_pr_list_queue(
 
 /// Production-vs-noise line stats for a remote PR (fetches `gh pr diff`).
 pub fn gh_pr_prod_diff_stats(
+    git: &dyn Git,
     owner: &str,
     repo: &str,
     number: u64,
 ) -> Result<crate::git::ProdDiffStats> {
-    let raw = gh_pr_diff_remote(owner, repo, number)?;
+    let raw = gh_pr_diff_remote(git, owner, repo, number)?;
     Ok(crate::git::ProdDiffStats::from_raw_diff(&raw))
 }
 
@@ -3742,8 +3679,14 @@ mod tests {
 
     #[test]
     fn local_checkout_for_repo_needs_both_inputs() {
-        assert_eq!(local_checkout_for_repo("", "acme/discovery"), None);
-        assert_eq!(local_checkout_for_repo("/tmp/some-repo", ""), None);
+        assert_eq!(
+            local_checkout_for_repo(&er_git::CliGit, "", "acme/discovery"),
+            None
+        );
+        assert_eq!(
+            local_checkout_for_repo(&er_git::CliGit, "/tmp/some-repo", ""),
+            None
+        );
     }
 
     #[test]
@@ -4586,7 +4529,8 @@ mod tests {
             .current_dir(root)
             .output()
             .unwrap();
-        let slug = canonical_owner_repo_slug(root.to_str().unwrap()).expect("slug from origin");
+        let slug = canonical_owner_repo_slug(&er_git::CliGit, root.to_str().unwrap())
+            .expect("slug from origin");
         assert_eq!(slug, "acme-my-repo");
     }
 
@@ -4640,7 +4584,8 @@ mod tests {
     #[test]
     fn deleted_base_branch_is_a_missing_remote_ref() {
         let (_dir, clone, _) = clone_with_deleted_base();
-        let err = fetch_base_branch_ref(clone.to_str().unwrap(), "stack-base").unwrap_err();
+        let err = fetch_base_branch_ref(&er_git::CliGit, clone.to_str().unwrap(), "stack-base")
+            .unwrap_err();
         assert!(is_missing_remote_ref(&err), "{err:#}");
         assert!(!is_missing_remote_ref(&anyhow::anyhow!(
             "Could not resolve host: github.com"
@@ -4652,30 +4597,71 @@ mod tests {
         let (_dir, clone, sha) = clone_with_deleted_base();
         let root = clone.to_str().unwrap();
         // Before: the plain base fetch is the error the user saw in set_mode.
-        assert!(fetch_base_branch_ref(root, "stack-base").is_err());
+        assert!(fetch_base_branch_ref(&er_git::CliGit, root, "stack-base").is_err());
 
-        let base = fetch_pr_base_ref_with(root, 7, "stack-base", || Ok(sha.clone())).unwrap();
+        let base =
+            fetch_pr_base_ref_with(&er_git::CliGit, root, 7, "stack-base", || Ok(sha.clone()))
+                .unwrap();
         assert!(is_pinned_pr_base(&base));
-        assert_eq!(rev_parse_oid(root, &base).as_deref(), Some(sha.as_str()));
+        assert_eq!(
+            rev_parse_oid(&er_git::CliGit, root, &base).as_deref(),
+            Some(sha.as_str())
+        );
     }
 
     #[test]
     fn pr_base_fetch_of_a_live_branch_never_looks_up_the_commit() {
         let (_dir, clone, _) = clone_with_deleted_base();
-        let base = fetch_pr_base_ref_with(clone.to_str().unwrap(), 7, "main", || {
-            panic!("the fallback must not run for a branch origin still has")
-        })
-        .unwrap();
+        let base =
+            fetch_pr_base_ref_with(&er_git::CliGit, clone.to_str().unwrap(), 7, "main", || {
+                panic!("the fallback must not run for a branch origin still has")
+            })
+            .unwrap();
         assert_eq!(base, "origin/main");
+    }
+
+    #[test]
+    fn fetch_failure_text_survives_the_git_error() {
+        let missing = er_git::FakeGit::default().with_fetch(Err(er_git::GitError::Failed {
+            context: "git fetch failed".into(),
+            stderr: "fatal: couldn't find remote ref refs/heads/x".into(),
+        }));
+        let err = fetch_base_branch_ref(&missing, "/repo", "x").unwrap_err();
+        assert!(is_missing_remote_ref(&err), "{err:#}");
+
+        let no_upstream = er_git::FakeGit::default().with_fetch(Err(er_git::GitError::Failed {
+            context: "git fetch failed".into(),
+            stderr: "fatal: has no upstream to refresh".into(),
+        }));
+        let err = fetch_base_branch_ref(&no_upstream, "/repo", "x").unwrap_err();
+        assert!(is_no_upstream_to_refresh(&err), "{err:#}");
+    }
+
+    #[test]
+    fn fetch_pr_head_calls_fetch_with_the_pull_refspec() {
+        let fake = er_git::FakeGit::default().with_fetch(Ok(()));
+
+        let ref_name = fetch_pr_head(&fake, 7, "/repo").unwrap();
+
+        assert_eq!(ref_name, "refs/er/pr/7/head");
+        assert!(
+            fake.calls().iter().any(|c| c
+                == "fetch(root=\"/repo\", args=[\"origin\", \"+pull/7/head:refs/er/pr/7/head\"])"),
+            "{:?}",
+            fake.calls()
+        );
     }
 
     #[test]
     fn deleted_base_pins_to_its_local_commit() {
         let (_dir, clone, sha) = clone_with_deleted_base();
         let root = clone.to_str().unwrap();
-        let pinned = pin_pr_base_commit(root, 7, &sha).unwrap();
+        let pinned = pin_pr_base_commit(&er_git::CliGit, root, 7, &sha).unwrap();
         assert_eq!(pinned, "refs/er/pr/7/base");
-        assert_eq!(rev_parse_oid(root, &pinned).as_deref(), Some(sha.as_str()));
+        assert_eq!(
+            rev_parse_oid(&er_git::CliGit, root, &pinned).as_deref(),
+            Some(sha.as_str())
+        );
     }
 
     #[test]
@@ -4698,10 +4684,17 @@ mod tests {
             ],
         );
         let root = fresh.to_str().unwrap();
-        assert!(!ref_exists_locally(root, &format!("{sha}^{{commit}}")));
+        assert!(!ref_exists_locally(
+            &er_git::CliGit,
+            root,
+            &format!("{sha}^{{commit}}")
+        ));
 
-        let pinned = pin_pr_base_commit(root, 7, &sha).unwrap();
-        assert_eq!(rev_parse_oid(root, &pinned).as_deref(), Some(sha.as_str()));
+        let pinned = pin_pr_base_commit(&er_git::CliGit, root, 7, &sha).unwrap();
+        assert_eq!(
+            rev_parse_oid(&er_git::CliGit, root, &pinned).as_deref(),
+            Some(sha.as_str())
+        );
     }
 
     #[test]
@@ -4856,10 +4849,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         git_init_with_remote(root, "https://github.com/Acme/discovery.git");
-        let (owner, repo) = get_repo_info(root).expect("parses origin remote");
+        let (owner, repo) = get_repo_info(&er_git::CliGit, root).expect("parses origin remote");
         assert_eq!((owner.as_str(), repo.as_str()), ("Acme", "discovery"));
         // Second call is served from the process-wide cache (same value).
-        let (owner2, repo2) = get_repo_info(root).expect("cache serves");
+        let (owner2, repo2) = get_repo_info(&er_git::CliGit, root).expect("cache serves");
         assert_eq!((owner2.as_str(), repo2.as_str()), ("Acme", "discovery"));
     }
 
@@ -4979,7 +4972,8 @@ mod tests {
         git(root, &["commit", "-q", "-m", "base moved on"]);
         let base_tip = git(root, &["rev-parse", "HEAD"]);
 
-        let diff = git_merge_base_diff(root.to_str().unwrap(), &base_tip, &head).unwrap();
+        let diff =
+            git_merge_base_diff(&er_git::CliGit, root.to_str().unwrap(), &base_tip, &head).unwrap();
         assert!(diff.contains("feature.txt"), "{diff}");
         assert!(!diff.contains("landed-later.txt"), "{diff}");
     }

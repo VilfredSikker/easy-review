@@ -903,7 +903,7 @@ fn local_branch_divergence_for(
         }
     });
     // Resolved so the cache key moves with a new commit or a checkout.
-    let ahead = er_engine::github::rev_parse_oid(root, "HEAD")
+    let ahead = er_engine::github::rev_parse_oid(&*tab.ports.git, root, "HEAD")
         .and_then(|head| commits_behind_cached(root, pr_head, &head));
     Some(LocalBranchDivergenceSnapshot {
         pr_head_oid: pr_head.to_string(),
@@ -3423,7 +3423,8 @@ fn build_snapshot_inner(
             let latest = branch_base_remote_oid
                 .and_then(|c| c.lock().ok())
                 .and_then(|cache| cache.get(&key).cloned());
-            let used = er_engine::github::rev_parse_oid(&tab.repo_root, &tab.base_branch);
+            let used =
+                er_engine::github::rev_parse_oid(&*tab.ports.git, &tab.repo_root, &tab.base_branch);
             compute_oid_staleness(
                 latest.as_deref(),
                 used.as_deref(),
@@ -5577,6 +5578,7 @@ mod tests {
         let pr_head = rev_parse(tmp.path(), "main");
         std::fs::write(tmp.path().join("file.txt"), "edited\n").unwrap();
         let mut tab = TabState::new_for_test(vec![]);
+        tab.ports = er_engine::ports::Ports::cli();
         tab.repo_root = tmp.path().to_string_lossy().to_string();
         tab.pr_number = Some(42);
         tab.mode = DiffMode::Branch;
@@ -5610,6 +5612,7 @@ mod tests {
         let pr_head = rev_parse(tmp.path(), "main");
         std::fs::write(tmp.path().join("file.txt"), "edited\n").unwrap();
         let mut tab = TabState::new_for_test(vec![]);
+        tab.ports = er_engine::ports::Ports::cli();
         tab.repo_root = "/nonexistent/project-root".to_string();
         tab.pr_number = Some(42);
         tab.mode = DiffMode::Branch;
@@ -6334,8 +6337,10 @@ mod tests {
         cached_head_oid: &str,
     ) -> (App, PrCache) {
         let mut app = App::new_for_test(vec![]);
+        app.ports = er_engine::ports::Ports::cli();
         {
             let tab = app.tab_mut();
+            tab.ports = er_engine::ports::Ports::cli();
             tab.repo_root = "/tmp/test".to_string();
             tab.remote_repo = None;
             tab.pr_number = Some(pr_number);

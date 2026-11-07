@@ -215,7 +215,7 @@ pub fn prepare_pr_diff_tmp(
     ignore_globs: &[String],
     review_md: Option<&str>,
 ) -> Result<(String, String)> {
-    let mut raw = gh_pr_diff_remote(owner, repo, pr)?;
+    let mut raw = gh_pr_diff_remote(&*crate::ports::Ports::cli().git, owner, repo, pr)?;
     if !ignore_globs.is_empty() {
         raw = crate::git::filter_raw_diff_exclude_globs(&raw, ignore_globs);
     }

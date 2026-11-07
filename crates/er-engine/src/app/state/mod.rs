@@ -1391,7 +1391,7 @@ impl TabState {
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{pr_number}/head"));
         tab.pr_number = Some(pr_number);
-        tab.remote_repo = crate::github::get_repo_info(&tab.repo_root)
+        tab.remote_repo = crate::github::get_repo_info(&*tab.ports.git, &tab.repo_root)
             .ok()
             .map(|(owner, repo)| format!("{owner}/{repo}"));
         tab.pr_data = pr_data;
@@ -1489,7 +1489,8 @@ impl TabState {
         // head ref into the local clone.
         let (base_branch, head_branch_name) =
             crate::github::gh_pr_branch_names(pr_number, &repo_root)?;
-        let resolved_base = crate::github::ensure_base_ref_available(&repo_root, &base_branch)?;
+        let resolved_base =
+            crate::github::ensure_base_ref_available(&*ports.git, &repo_root, &base_branch)?;
 
         let mut tab = Self::new_with_base_unloaded(repo_root, resolved_base, ports)?;
         tab.local_branch_view = Some(if head_branch_name.is_empty() {
@@ -1499,7 +1500,7 @@ impl TabState {
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{}/head", pr_number));
         tab.pr_number = Some(pr_number);
-        tab.remote_repo = crate::github::get_repo_info(&tab.repo_root)
+        tab.remote_repo = crate::github::get_repo_info(&*tab.ports.git, &tab.repo_root)
             .ok()
             .map(|(owner, repo)| format!("{owner}/{repo}"));
         tab.pr_commits =
@@ -1535,7 +1536,7 @@ impl TabState {
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{}/head", pr_number));
         tab.pr_number = Some(pr_number);
-        tab.remote_repo = crate::github::get_repo_info(&tab.repo_root)
+        tab.remote_repo = crate::github::get_repo_info(&*tab.ports.git, &tab.repo_root)
             .ok()
             .map(|(owner, repo)| format!("{owner}/{repo}"));
         tab.pr_data = pr_data;
@@ -1587,7 +1588,12 @@ impl TabState {
         // Get the diff from GitHub
         let preview_head_oid =
             crate::github::gh_pr_head_oid_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number).ok();
-        let raw = crate::github::gh_pr_diff_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
+        let raw = crate::github::gh_pr_diff_remote(
+            &*ports.git,
+            &pr_ref.owner,
+            &pr_ref.repo,
+            pr_ref.number,
+        )?;
         let confirmed_preview_head =
             crate::github::gh_pr_head_oid_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number).ok();
         let preview_head_oid = if preview_head_oid == confirmed_preview_head {
@@ -2470,7 +2476,7 @@ impl TabState {
         let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
             crate::storage::slug_branch(&remote_repo.to_lowercase())
         } else {
-            crate::github::canonical_owner_repo_slug(&self.repo_root)?
+            crate::github::canonical_owner_repo_slug(&*self.ports.git, &self.repo_root)?
         };
         Some(
             crate::storage::pr_bucket_dir(&owner_repo_slug, pr_num)
@@ -2539,7 +2545,7 @@ impl TabState {
                 let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
                     Some(crate::storage::slug_branch(&remote_repo.to_lowercase()))
                 } else {
-                    crate::github::canonical_owner_repo_slug(&self.repo_root)
+                    crate::github::canonical_owner_repo_slug(&*self.ports.git, &self.repo_root)
                 };
                 // Only the PR bucket needs the owner/repo slug. If it can't be resolved
                 // (no usable git remote), fall through to the local view bucket rather
@@ -2728,11 +2734,13 @@ impl TabState {
         if !self.pr_refs_fetched {
             // First entry: fetch and cache the refs. Errors surface to the caller.
             let t = Instant::now();
-            let head_ref = crate::github::fetch_pr_head(pr_number, &self.repo_root)?;
+            let head_ref =
+                crate::github::fetch_pr_head(&*self.ports.git, pr_number, &self.repo_root)?;
             log_branch_profile_phase(self, "enter_pr_diff.fetch_pr_head", t);
             let base = self.base_branch.clone();
             let t = Instant::now();
             let base_ref = crate::github::fetch_pr_base_ref(
+                &*self.ports.git,
                 &self.repo_root,
                 pr_number,
                 base.trim_start_matches("origin/"),
@@ -2742,7 +2750,8 @@ impl TabState {
             // freshness check has a baseline on the normal open path (not just
             // after a manual sync). The ref oid is stable until re-fetched.
             let t = Instant::now();
-            self.last_diff_head_oid = crate::github::rev_parse_oid(&self.repo_root, &head_ref);
+            self.last_diff_head_oid =
+                crate::github::rev_parse_oid(&*self.ports.git, &self.repo_root, &head_ref);
             self.preview_head_oid = self.last_diff_head_oid.clone();
             log_branch_profile_phase(self, "enter_pr_diff.rev_parse_oid", t);
             self.pr_head_ref = Some(head_ref);
@@ -2845,12 +2854,16 @@ impl TabState {
     /// section. The head fetch and the `gh pr view` are independent, so they
     /// overlap; the base fetch needs the base name the lookup returns, so it
     /// follows them.
-    pub fn fetch_pr_refresh(inputs: &PrRefreshInputs) -> Result<PrRefreshResult> {
+    pub fn fetch_pr_refresh(
+        git: &dyn er_git::Git,
+        inputs: &PrRefreshInputs,
+    ) -> Result<PrRefreshResult> {
         let pr_number = inputs.pr_number;
         let repo_root = inputs.repo_root.as_str();
 
         let (head_result, lookup_result) = std::thread::scope(|s| {
-            let head_handle = s.spawn(move || crate::github::fetch_pr_head(pr_number, repo_root));
+            let head_handle =
+                s.spawn(move || crate::github::fetch_pr_head(git, pr_number, repo_root));
             let lookup = crate::github::gh_pr_base_branch_and_commits(repo_root, pr_number, 250);
             let head_result = head_handle
                 .join()
@@ -2878,10 +2891,11 @@ impl TabState {
             ),
         };
 
-        let resolved_base = crate::github::fetch_pr_base_ref(repo_root, pr_number, &base_branch)?;
+        let resolved_base =
+            crate::github::fetch_pr_base_ref(git, repo_root, pr_number, &base_branch)?;
         // The oid the diff is about to be computed against, so the desktop
         // freshness check can compare it to the latest PR head_oid.
-        let last_diff_head_oid = crate::github::rev_parse_oid(repo_root, &head_ref);
+        let last_diff_head_oid = crate::github::rev_parse_oid(git, repo_root, &head_ref);
 
         Ok(PrRefreshResult {
             head_ref,
@@ -2930,7 +2944,9 @@ impl TabState {
         let ref_name = format!("refs/er/pr/{pr_number}/head");
         // Only ever fills a gap. Overwriting a known oid with `None` on an
         // unresolvable ref would suppress a pill that was already correct.
-        if let Some(oid) = crate::github::rev_parse_oid(&self.repo_root, &ref_name) {
+        if let Some(oid) =
+            crate::github::rev_parse_oid(&*self.ports.git, &self.repo_root, &ref_name)
+        {
             self.last_diff_head_oid = Some(oid);
         }
     }
@@ -2948,7 +2964,7 @@ impl TabState {
             // lookup overlap inside `fetch_pr_refresh`, so logging them
             // separately would report two intervals that share wall time.
             let t = Instant::now();
-            let result = Self::fetch_pr_refresh(&inputs);
+            let result = Self::fetch_pr_refresh(&*self.ports.git, &inputs);
             log_branch_profile_phase(self, "fetch_pr_refresh", t);
             self.apply_pr_refresh(result?);
         } else if self.shows_branch_base_diff() {
@@ -2963,7 +2979,11 @@ impl TabState {
             let base_short = base.strip_prefix("origin/").unwrap_or(&base);
             if !crate::github::is_pinned_pr_base(base_short) {
                 let t = Instant::now();
-                match crate::github::fetch_base_branch_ref(&self.repo_root, base_short) {
+                match crate::github::fetch_base_branch_ref(
+                    &*self.ports.git,
+                    &self.repo_root,
+                    base_short,
+                ) {
                     Ok(resolved_base) => self.base_branch = resolved_base,
                     Err(e) => eprintln!("sync: base re-fetch failed for '{base_short}': {e}"),
                 }
@@ -3016,7 +3036,9 @@ impl TabState {
         let base_candidates = [format!("origin/{base_short}"), base_short.to_string()];
         let resolved_base = base_candidates
             .into_iter()
-            .find(|candidate| crate::github::ref_exists_locally(&self.repo_root, candidate))
+            .find(|candidate| {
+                crate::github::ref_exists_locally(&*self.ports.git, &self.repo_root, candidate)
+            })
             .ok_or_else(|| {
                 anyhow::anyhow!("No local base ref resolved for '{}'", self.base_branch)
             })?;
@@ -3086,12 +3108,14 @@ impl TabState {
             let candidates = [format!("origin/{base_short}"), base_short.to_string()];
             candidates
                 .into_iter()
-                .find(|candidate| crate::github::ref_exists_locally(&self.repo_root, candidate))
+                .find(|candidate| {
+                    crate::github::ref_exists_locally(&*self.ports.git, &self.repo_root, candidate)
+                })
                 .ok_or_else(|| {
                     anyhow::anyhow!("No local ref for '{}' — fetch the branch first", new_base)
                 })?
         } else {
-            crate::github::ensure_base_ref_available(&self.repo_root, &new_base)?
+            crate::github::ensure_base_ref_available(&*self.ports.git, &self.repo_root, &new_base)?
         };
 
         self.base_branch = resolved;
@@ -3232,7 +3256,10 @@ impl TabState {
                 let parts: Vec<&str> = repo_slug.split('/').collect();
                 if parts.len() == 2 {
                     return Some(crate::github::gh_pr_diff_remote(
-                        parts[0], parts[1], pr_number,
+                        &*self.ports.git,
+                        parts[0],
+                        parts[1],
+                        pr_number,
                     ));
                 }
             }
@@ -3243,7 +3270,11 @@ impl TabState {
         if self.repo_root.is_empty() {
             return None;
         }
-        Some(crate::github::gh_pr_diff(pr_number, &self.repo_root))
+        Some(crate::github::gh_pr_diff(
+            &*self.ports.git,
+            pr_number,
+            &self.repo_root,
+        ))
     }
 
     /// Fetch raw unified-diff text using the same subprocess rules as `refresh_diff`.
@@ -4743,7 +4774,11 @@ impl TabState {
             };
         }
         match self.remote_repo.as_deref() {
-            Some(slug) => match crate::github::local_checkout_for_repo(&self.repo_root, slug) {
+            Some(slug) => match crate::github::local_checkout_for_repo(
+                &*self.ports.git,
+                &self.repo_root,
+                slug,
+            ) {
                 Some(path) => ReviewMdSource::Git {
                     repo_root: path,
                     base_ref: format!("origin/{}", self.base_branch),
@@ -5996,12 +6031,14 @@ impl App {
                     )?;
 
                     // Verify the local repo matches the PR's repo
-                    crate::github::verify_remote_matches(&repo_root, &pr_ref)?;
+                    crate::github::verify_remote_matches(&*ports.git, &repo_root, &pr_ref)?;
 
                     // Fetch PR head to a local ref without touching the working tree
-                    let head_ref = crate::github::fetch_pr_head(pr_ref.number, &repo_root)?;
+                    let head_ref =
+                        crate::github::fetch_pr_head(&*ports.git, pr_ref.number, &repo_root)?;
                     let base = crate::github::gh_pr_base_branch(pr_ref.number, &repo_root)?;
-                    let base = crate::github::ensure_base_ref_available(&repo_root, &base)?;
+                    let base =
+                        crate::github::ensure_base_ref_available(&*ports.git, &repo_root, &base)?;
                     let head_branch =
                         crate::github::gh_pr_head_branch_name(pr_ref.number, &repo_root)
                             .unwrap_or_else(|_| format!("pr/{}", pr_ref.number));
@@ -15187,6 +15224,7 @@ mod tests {
         .to_string();
 
         let mut tab = make_test_tab(vec![]);
+        tab.ports = Ports::cli();
         tab.repo_root = root.to_str().unwrap().to_string();
         tab.pr_number = Some(7);
         assert!(
@@ -15981,6 +16019,7 @@ mod tests {
         );
 
         let mut tab = TabState::new_for_test(vec![]);
+        tab.ports = Ports::cli();
         tab.repo_root = root.to_string_lossy().to_string();
         tab.current_branch = "feat/foo".to_string();
         tab.local_branch_view = Some("feat/foo".to_string());
@@ -16120,6 +16159,7 @@ mod tests {
             ],
         );
         let mut tab = TabState::new_for_test(vec![]);
+        tab.ports = Ports::cli();
         tab.repo_root = root.to_string_lossy().to_string();
         tab.current_branch = "feat/foo".to_string();
         tab.local_branch_view = Some("feat/foo".to_string());
@@ -16381,6 +16421,7 @@ mod tests {
         );
 
         let mut tab = TabState::new_for_test(vec![]);
+        tab.ports = Ports::cli();
         tab.repo_root = root.to_string_lossy().to_string();
         tab.current_branch = "feat/foo".to_string();
         tab.local_branch_view = Some("feat/foo".to_string());

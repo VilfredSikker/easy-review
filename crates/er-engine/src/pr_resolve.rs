@@ -147,7 +147,7 @@ fn resolve_ref_string(raw: &str, input: &ResolvePrRefInput<'_>) -> Result<Resolv
             "ref_branch_head",
         );
     }
-    if let Ok((o, r, n)) = get_pr_info(&repo_root) {
+    if let Ok((o, r, n)) = get_pr_info(&*crate::ports::Ports::cli().git, &repo_root) {
         return finish(
             &o,
             &r,
@@ -177,7 +177,8 @@ fn resolve_from_worktree(
     project_name: Option<String>,
     via: &str,
 ) -> Result<ResolvedPrRef> {
-    let (owner, repo, number) = get_pr_info(repo_root).with_context(|| {
+    let (owner, repo, number) =
+        get_pr_info(&*crate::ports::Ports::cli().git, repo_root).with_context(|| {
         format!("no open PR for current branch in {repo_root} — checkout the PR branch or pass a PR URL")
     })?;
     finish(&owner, &repo, number, project_name, None, via)

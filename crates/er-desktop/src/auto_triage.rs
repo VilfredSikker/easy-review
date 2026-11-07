@@ -78,19 +78,29 @@ fn flight_key(req: &AutoTriageRequest) -> String {
     format!("{}#{}#{}", req.remote, req.pr_number, req.head_oid)
 }
 
-fn fetch_pr_diff(repo_root: &str, remote: &str, pr_number: u64) -> Result<String, String> {
+fn fetch_pr_diff(
+    git: &dyn er_engine::git::Git,
+    repo_root: &str,
+    remote: &str,
+    pr_number: u64,
+) -> Result<String, String> {
     if !repo_root.is_empty() {
-        return er_engine::github::gh_pr_diff(pr_number, repo_root).map_err(|e| e.to_string());
+        return er_engine::github::gh_pr_diff(git, pr_number, repo_root).map_err(|e| e.to_string());
     }
     let Some((owner, repo)) = remote.split_once('/') else {
         return Err(format!("Invalid remote slug: {remote}"));
     };
-    er_engine::github::gh_pr_diff_remote(owner, repo, pr_number).map_err(|e| e.to_string())
+    er_engine::github::gh_pr_diff_remote(git, owner, repo, pr_number).map_err(|e| e.to_string())
 }
 
-fn resolve_er_dir(remote: &str, repo_root: &str, pr_number: u64) -> Result<String, String> {
+fn resolve_er_dir(
+    git: &dyn er_engine::git::Git,
+    remote: &str,
+    repo_root: &str,
+    pr_number: u64,
+) -> Result<String, String> {
     let slug = if !repo_root.is_empty() {
-        er_engine::github::canonical_owner_repo_slug(repo_root)
+        er_engine::github::canonical_owner_repo_slug(git, repo_root)
             .unwrap_or_else(|| er_engine::storage::slug_branch(&remote.to_lowercase()))
     } else {
         er_engine::storage::slug_branch(&remote.to_lowercase())
@@ -139,7 +149,8 @@ pub fn dispatch_auto_triage(ctx: &AutoTriageContext, requests: Vec<AutoTriageReq
 }
 
 fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Result<(), String> {
-    let mut raw_diff = fetch_pr_diff(&req.repo_root, &req.remote, req.pr_number)?;
+    let ports = ctx.app.lock().map_err(|e| e.to_string())?.ports.clone();
+    let mut raw_diff = fetch_pr_diff(&*ports.git, &req.repo_root, &req.remote, req.pr_number)?;
     if !req.review_ignore_globs.is_empty() {
         raw_diff =
             er_engine::git::filter_raw_diff_exclude_globs(&raw_diff, &req.review_ignore_globs);
@@ -160,9 +171,8 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
         return Ok(());
     }
 
-    let er_dir = resolve_er_dir(&req.remote, &req.repo_root, req.pr_number)?;
+    let er_dir = resolve_er_dir(&*ports.git, &req.remote, &req.repo_root, req.pr_number)?;
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
-    let ports = ctx.app.lock().map_err(|e| e.to_string())?.ports.clone();
     // A remote-only project has no clone to name the repo, so key off `owner/repo`.
     let rules_key = if req.repo_root.is_empty() {
         er_engine::storage::rules_key(&*ports.git, "", Some(&req.remote))
@@ -281,7 +291,7 @@ fn run_branch_triage_once(
         return Err("Nothing to triage on this branch".to_string());
     }
 
-    let slug = er_engine::github::canonical_owner_repo_slug(repo_root)
+    let slug = er_engine::github::canonical_owner_repo_slug(&*ports.git, repo_root)
         .unwrap_or_else(|| er_engine::storage::slug_branch(&remote.to_lowercase()));
     let branch_slug = er_engine::storage::slug_branch(branch);
     let er_dir =

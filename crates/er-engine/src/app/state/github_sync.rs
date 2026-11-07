@@ -92,7 +92,7 @@ impl App {
                 return Ok(());
             }
         } else if let Some(number) = explicit_pr_number {
-            match crate::github::get_repo_info(&repo_root) {
+            match crate::github::get_repo_info(&*self.ports.git, &repo_root) {
                 Ok((owner, repo)) => (owner, repo, number),
                 Err(e) => {
                     self.notify(&format!(
@@ -102,7 +102,7 @@ impl App {
                 }
             }
         } else {
-            match crate::github::lookup_pr_for_current_branch(&repo_root) {
+            match crate::github::lookup_pr_for_current_branch(&*self.ports.git, &repo_root) {
                 crate::github::PrLookup::Present {
                     owner,
                     repo,
