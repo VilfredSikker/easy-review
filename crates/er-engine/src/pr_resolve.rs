@@ -5,7 +5,6 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::git::get_repo_root_at;
 use crate::github::{
     get_pr_info, gh_open_pr_number_for_head, owner_repo_storage_slug, parse_github_pr_url,
     parse_remote_url,
@@ -78,7 +77,7 @@ fn resolve_ref_string(raw: &str, input: &ResolvePrRefInput<'_>) -> Result<Resolv
     if let Some(path) = expand_path(raw) {
         if path.is_dir() || path.is_file() {
             if let Some(path_str) = path.to_str() {
-                if let Ok(repo_root) = get_repo_root_at(path_str) {
+                if let Ok(repo_root) = crate::ports::Ports::cli().git.repo_root_at(path_str) {
                     return resolve_from_worktree(&repo_root, None, "ref_worktree");
                 }
             }
