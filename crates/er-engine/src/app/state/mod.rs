@@ -2077,8 +2077,7 @@ impl TabState {
     /// the empty root makes any git call aimed at it fail to spawn instead of
     /// running in the launch directory, which is `/` from Finder.
     pub fn new_placeholder(ports: Ports) -> Self {
-        let mut tab = Self::new_for_test(Vec::new());
-        tab.ports = ports;
+        let mut tab = Self::new_for_test_with_ports(Vec::new(), ports);
         tab.repo_root = String::new();
         tab.er_root = ErRoot::unresolved("", &*tab.ports.git);
         tab.pr_absent = true;
@@ -16888,18 +16887,33 @@ mod tests {
 
     #[test]
     fn refresh_diff_surfaces_a_git_error_from_the_fake() {
-        let fake = std::sync::Arc::new(er_git::FakeGit::default().with_diff_raw(Err(
-            er_git::GitError::Failed {
-                context: "boom".into(),
-                stderr: String::new(),
-            },
-        )));
-        let mut tab = TabState::new_for_test_with_ports(Vec::new(), Ports::with_git(fake));
+        let fake = std::sync::Arc::new(
+            er_git::FakeGit::default()
+                .with_current_branch(Ok("feature".into()))
+                .with_is_merge_in_progress(false)
+                .with_diff_shortstat((1, 1, 0))
+                .with_diff_raw(Err(er_git::GitError::Failed {
+                    context: "boom".into(),
+                    stderr: String::new(),
+                })),
+        );
+        let existing = crate::git::parse_diff(
+            "diff --git a/old.rs b/old.rs\n--- a/old.rs\n+++ b/old.rs\n@@ -1 +1 @@\n-a\n+b\n",
+        );
+        let mut tab = TabState::new_for_test_with_ports(existing, Ports::with_git(fake.clone()));
 
-        tab.refresh_diff()
+        let err = tab
+            .refresh_diff()
             .expect_err("the fake's error must surface");
 
-        assert!(tab.files.is_empty());
+        assert!(format!("{err:#}").contains("boom"), "{err:#}");
+        assert!(
+            fake.calls().iter().any(|c| c.starts_with("diff_raw(")),
+            "the error must come from diff_raw: {:?}",
+            fake.calls()
+        );
+        assert_eq!(tab.files.len(), 1);
+        assert_eq!(tab.files[0].path, "old.rs");
     }
 
     #[test]
