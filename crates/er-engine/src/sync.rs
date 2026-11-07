@@ -184,11 +184,11 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 
 /// Whether a stored entry survives a pull as it is.
 ///
-/// Private AI follow-ups (`source: "local"`, no `github_id`) are kept. A
-/// comment pushed by the old push paths also says `source: "local"` but has a
-/// `github_id`; the pull rebuilds it from the listed comment as `gh-<id>`, so
-/// keeping it here would duplicate it. A P05 post is already `source: "github"`.
-pub(crate) fn keep_on_pull(c: &ai::GitHubReviewComment) -> bool {
+/// Private AI follow-ups (`source: "local"`, no `github_id`) are kept. A local
+/// comment with a `github_id` was posted individually by an older version; the
+/// pull rebuilds it as `gh-<id>`. A comment posted on create is already
+/// `source: "github"`.
+pub fn keep_on_pull(c: &ai::GitHubReviewComment) -> bool {
     c.source == "local" && c.github_id.is_none()
 }
 
@@ -207,7 +207,7 @@ pub fn rebuild_comment_store(
         last_synced: chrono_now(),
     });
 
-    let local_unpushed: Vec<_> = gc.comments.into_iter().filter(keep_on_pull).collect();
+    let local_kept: Vec<_> = gc.comments.into_iter().filter(keep_on_pull).collect();
 
     let mut github_entries = Vec::new();
     for gh in gh_comments {
@@ -272,7 +272,7 @@ pub fn rebuild_comment_store(
         });
     }
 
-    gc.comments = local_unpushed;
+    gc.comments = local_kept;
     gc.comments.extend(github_entries);
     gc
 }

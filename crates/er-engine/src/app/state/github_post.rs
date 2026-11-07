@@ -930,7 +930,6 @@ mod tests {
             "source": "github",
             "github_id": github_id,
             "author": "viewer",
-            "synced": true,
         }))
         .unwrap()
     }

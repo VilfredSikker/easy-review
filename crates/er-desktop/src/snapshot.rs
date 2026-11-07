@@ -6018,9 +6018,9 @@ mod tests {
         assert!(snapshot.threads[0].stale);
     }
 
-    /// The card splits counts by where a thread lives, not by whether it has a
-    /// GitHub id: a thread er created is local even after it was posted, and a
-    /// reply belongs to its root's thread, not to the top-level count.
+    /// Counts split by where a thread lives: a comment posted on create is
+    /// `source: "github"`, a private local thread stays `"local"`, and a reply
+    /// belongs to its root's thread, not to the top-level count.
     #[test]
     fn comment_counts_split_by_source() {
         let mut tab = TabState::new_for_test(vec![]);

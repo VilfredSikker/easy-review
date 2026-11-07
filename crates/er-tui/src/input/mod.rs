@@ -1706,13 +1706,10 @@ pub fn sync_github_comments(app: &mut App) -> Result<()> {
         last_synced: chrono_now(),
     });
 
-    // Keep only comments that live here: local threads er never posted. A local
-    // comment carrying a GitHub id was posted by an older version and is rebuilt
-    // below as a GitHub one instead.
-    let local_unpushed: Vec<_> = gc
+    let local_kept: Vec<_> = gc
         .comments
         .into_iter()
-        .filter(|c| c.source == "local" && c.github_id.is_none())
+        .filter(er_engine::sync::keep_on_pull)
         .collect();
 
     // Build fresh GitHub entries from API response
@@ -1787,8 +1784,8 @@ pub fn sync_github_comments(app: &mut App) -> Result<()> {
     }
 
     let github_count = github_entries.len();
-    let local_count = local_unpushed.len();
-    gc.comments = local_unpushed;
+    let local_count = local_kept.len();
+    gc.comments = local_kept;
     gc.comments.extend(github_entries);
 
     if let Some(dir) = std::path::Path::new(&comments_path).parent() {

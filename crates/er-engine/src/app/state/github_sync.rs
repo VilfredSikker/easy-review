@@ -167,8 +167,7 @@ impl App {
             last_synced: chrono_now(),
         });
 
-        // Keep only private local threads; posted comments are rebuilt below.
-        let local_unpushed: Vec<_> = gc
+        let local_kept: Vec<_> = gc
             .comments
             .into_iter()
             .filter(crate::sync::keep_on_pull)
@@ -242,8 +241,8 @@ impl App {
         }
 
         let github_count = github_entries.len();
-        let local_count = local_unpushed.len();
-        gc.comments = local_unpushed;
+        let local_count = local_kept.len();
+        gc.comments = local_kept;
         gc.comments.extend(github_entries);
 
         if let Some(dir) = std::path::Path::new(&comments_path).parent() {

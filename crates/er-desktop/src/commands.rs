@@ -13725,8 +13725,7 @@ mod tests {
                         "comment": "already on GitHub",
                         "source": "github",
                         "github_id": 11,
-                        "author": "octo",
-                        "synced": true
+                        "author": "octo"
                     }]
                 }))
                 .unwrap(),
