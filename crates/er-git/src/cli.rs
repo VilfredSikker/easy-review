@@ -90,6 +90,13 @@ pub trait Git: Send + Sync {
     fn blame_range(&self, request: &BlameRequest<'_>) -> Result<LineAttribution, GitError>;
     fn merge_base(&self, repo_root: &str, a: &str, b: &str) -> Result<String, GitError>;
     fn rev_parse_commit(&self, repo_root: &str, rev: &str) -> Result<String, GitError>;
+
+    fn remote_url(&self, root: &str, name: &str) -> Result<String, GitError>;
+    fn rev_parse_verify(&self, root: &str, rev: &str) -> Result<Option<String>, GitError>;
+    fn fetch(&self, root: &str, args: &[&str]) -> Result<(), GitError>;
+    fn update_ref(&self, root: &str, name: &str, target: &str) -> Result<(), GitError>;
+    fn diff_revs(&self, root: &str, revs: &[&str]) -> Result<String, GitError>;
+    fn shallow_clone(&self, url: &str, dest: &str) -> Result<(), GitError>;
 }
 
 /// The adapter that runs the real git binary.
@@ -274,6 +281,30 @@ impl Git for CliGit {
     fn rev_parse_commit(&self, repo_root: &str, rev: &str) -> Result<String, GitError> {
         crate::blame::git_rev_parse_commit(repo_root, rev)
     }
+
+    fn remote_url(&self, root: &str, name: &str) -> Result<String, GitError> {
+        crate::status::git_remote_url(root, name)
+    }
+
+    fn rev_parse_verify(&self, root: &str, rev: &str) -> Result<Option<String>, GitError> {
+        crate::status::git_rev_parse_verify(root, rev)
+    }
+
+    fn fetch(&self, root: &str, args: &[&str]) -> Result<(), GitError> {
+        crate::status::git_fetch(root, args)
+    }
+
+    fn update_ref(&self, root: &str, name: &str, target: &str) -> Result<(), GitError> {
+        crate::status::git_update_ref(root, name, target)
+    }
+
+    fn diff_revs(&self, root: &str, revs: &[&str]) -> Result<String, GitError> {
+        crate::status::git_diff_revs(root, revs)
+    }
+
+    fn shallow_clone(&self, url: &str, dest: &str) -> Result<(), GitError> {
+        crate::status::git_shallow_clone(url, dest)
+    }
 }
 
 #[cfg(test)]
@@ -293,8 +324,7 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
-    #[test]
-    fn cli_git_diff_raw_equals_the_free_function() {
+    fn repo_with_a_feature_commit() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         git(root, &["init", "-q", "-b", "main"]);
@@ -307,11 +337,90 @@ mod tests {
         std::fs::write(root.join("f"), "one\ntwo\n").unwrap();
         git(root, &["add", "."]);
         git(root, &["commit", "-q", "-m", "change"]);
+        dir
+    }
 
-        let root = root.to_str().unwrap();
+    #[test]
+    fn cli_git_diff_raw_equals_the_free_function() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path().to_str().unwrap();
         let via_trait = CliGit.diff_raw("branch", "main", root, None).unwrap();
         let via_free = crate::status::git_diff_raw("branch", "main", root, None).unwrap();
         assert_eq!(via_trait, via_free);
         assert!(via_trait.contains("+two"), "{via_trait}");
+    }
+
+    #[test]
+    fn remote_url_reads_origin() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path();
+        git(
+            root,
+            &["remote", "add", "origin", "git@example.invalid:o/r.git"],
+        );
+        assert_eq!(
+            CliGit.remote_url(root.to_str().unwrap(), "origin").unwrap(),
+            "git@example.invalid:o/r.git"
+        );
+    }
+
+    #[test]
+    fn rev_parse_verify_is_none_for_a_missing_ref() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path().to_str().unwrap();
+        assert!(CliGit.rev_parse_verify(root, "HEAD").unwrap().is_some());
+        assert_eq!(
+            CliGit
+                .rev_parse_verify(root, "refs/heads/not-there")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn update_ref_points_a_ref_at_a_commit() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path().to_str().unwrap();
+        let head = CliGit.rev_parse_verify(root, "HEAD").unwrap().unwrap();
+
+        CliGit.update_ref(root, "refs/er/test/head", &head).unwrap();
+
+        assert_eq!(
+            CliGit.rev_parse_verify(root, "refs/er/test/head").unwrap(),
+            Some(head)
+        );
+    }
+
+    #[test]
+    fn diff_revs_three_dot_diffs_against_the_merge_base() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path().to_str().unwrap();
+
+        let raw = CliGit.diff_revs(root, &["main...HEAD"]).unwrap();
+
+        assert!(raw.contains("+two"), "{raw}");
+    }
+
+    #[test]
+    fn fetch_pulls_a_ref_from_a_local_origin() {
+        let origin = repo_with_a_feature_commit();
+        let dest = tempfile::tempdir().unwrap();
+        git(dest.path(), &["init", "-q", "-b", "main"]);
+        git(
+            dest.path(),
+            &["remote", "add", "origin", origin.path().to_str().unwrap()],
+        );
+
+        CliGit
+            .fetch(
+                dest.path().to_str().unwrap(),
+                &["origin", "feature:refs/remotes/origin/feature"],
+            )
+            .unwrap();
+
+        assert!(CliGit
+            .rev_parse_verify(dest.path().to_str().unwrap(), "refs/remotes/origin/feature")
+            .unwrap()
+            .is_some());
     }
 }

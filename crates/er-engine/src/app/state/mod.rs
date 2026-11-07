@@ -20,6 +20,7 @@ use crate::git::{
 };
 use crate::github::PrOverviewData;
 use crate::paths::ErRoot;
+use crate::ports::Ports;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -690,6 +691,8 @@ impl StackState {
 
 /// State for a single repo tab
 pub struct TabState {
+    /// Subprocess handles, shared with the tab's workers.
+    pub ports: Ports,
     pub mode: DiffMode,
     pub base_branch: String,
     pub current_branch: String,
@@ -1342,25 +1345,29 @@ impl TabState {
     }
 
     /// Create a new tab for a given repo root
-    pub fn new(repo_root: String) -> Result<Self> {
-        let current_branch = git::get_current_branch_in(&repo_root)?;
-        let base_branch = git::detect_base_branch_in(&repo_root)?;
-        Self::new_inner(repo_root, current_branch, base_branch, true)
+    pub fn new(repo_root: String, ports: Ports) -> Result<Self> {
+        let current_branch = ports.git.current_branch(&repo_root)?;
+        let base_branch = ports.git.detect_base_branch(&repo_root)?;
+        Self::new_inner(repo_root, current_branch, base_branch, true, ports)
     }
 
     /// Create a TabState with a known base branch (skips auto-detection).
     /// Used for PR flows where the base is known from the GitHub API.
-    pub fn new_with_base(repo_root: String, base_branch: String) -> Result<Self> {
-        let current_branch = git::get_current_branch_in(&repo_root)?;
-        Self::new_inner(repo_root, current_branch, base_branch, true)
+    pub fn new_with_base(repo_root: String, base_branch: String, ports: Ports) -> Result<Self> {
+        let current_branch = ports.git.current_branch(&repo_root)?;
+        Self::new_inner(repo_root, current_branch, base_branch, true, ports)
     }
 
     /// Create a TabState with a known base branch but without the eager current
     /// checkout diff refresh. Callers that immediately switch the tab to another
     /// diff target can avoid computing a throwaway diff before their real refresh.
-    pub fn new_with_base_unloaded(repo_root: String, base_branch: String) -> Result<Self> {
-        let current_branch = git::get_current_branch_in(&repo_root)?;
-        Self::new_inner(repo_root, current_branch, base_branch, false)
+    pub fn new_with_base_unloaded(
+        repo_root: String,
+        base_branch: String,
+        ports: Ports,
+    ) -> Result<Self> {
+        let current_branch = ports.git.current_branch(&repo_root)?;
+        Self::new_inner(repo_root, current_branch, base_branch, false, ports)
     }
 
     /// Stub tab for an async-miss PR open: placed instantly with a
@@ -1375,8 +1382,9 @@ impl TabState {
         head_branch_name: Option<String>,
         pr_data: Option<PrOverviewData>,
         head_oid: Option<String>,
+        ports: Ports,
     ) -> Result<Self> {
-        let mut tab = Self::new_with_base_unloaded(repo_root, base_branch)?;
+        let mut tab = Self::new_with_base_unloaded(repo_root, base_branch, ports)?;
         tab.local_branch_view = Some(match head_branch_name {
             Some(name) if !name.is_empty() => name,
             _ => crate::storage::pr_placeholder_branch(pr_number),
@@ -1463,8 +1471,8 @@ impl TabState {
     /// Create a TabState for a read-only diff of a local branch against the
     /// project's base branch. Runs `git diff <base>...<branch>` — never
     /// checks the branch out or mutates the working tree.
-    pub fn new_local_branch(repo_root: String, branch: String) -> Result<Self> {
-        let mut tab = Self::new(repo_root)?;
+    pub fn new_local_branch(repo_root: String, branch: String, ports: Ports) -> Result<Self> {
+        let mut tab = Self::new(repo_root, ports)?;
         tab.local_branch_view = Some(branch);
         tab.mode = DiffMode::Branch;
         tab.sync_managed_storage();
@@ -1475,7 +1483,7 @@ impl TabState {
     /// Create a TabState for a read-only local PR review. Fetches the PR head to
     /// `refs/er/pr/<number>/head` without running `gh pr checkout` or touching the
     /// working tree. Diffs `<resolved_base>...refs/er/pr/<number>/head`.
-    pub fn new_local_pr(repo_root: String, pr_number: u64) -> Result<Self> {
+    pub fn new_local_pr(repo_root: String, pr_number: u64, ports: Ports) -> Result<Self> {
         // Resolve display/base metadata in one gh call. The PR parity diff is
         // loaded via `gh pr diff`, so initial open does not need to fetch the PR
         // head ref into the local clone.
@@ -1483,7 +1491,7 @@ impl TabState {
             crate::github::gh_pr_branch_names(pr_number, &repo_root)?;
         let resolved_base = crate::github::ensure_base_ref_available(&repo_root, &base_branch)?;
 
-        let mut tab = Self::new_with_base_unloaded(repo_root, resolved_base)?;
+        let mut tab = Self::new_with_base_unloaded(repo_root, resolved_base, ports)?;
         tab.local_branch_view = Some(if head_branch_name.is_empty() {
             crate::storage::pr_placeholder_branch(pr_number)
         } else {
@@ -1505,6 +1513,10 @@ impl TabState {
     /// Create a local PR review tab from data already loaded by the desktop
     /// backend. This keeps the first-render source as `gh pr diff` while letting
     /// desktop overlap/cache the independent GitHub calls.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructor takes the already-loaded PR inputs one for one"
+    )]
     pub fn new_local_pr_from_github_diff(
         repo_root: String,
         pr_number: u64,
@@ -1513,8 +1525,9 @@ impl TabState {
         raw: String,
         pr_data: Option<PrOverviewData>,
         pr_commits: Vec<CommitInfo>,
+        ports: Ports,
     ) -> Result<Self> {
-        let mut tab = Self::new_with_base_unloaded(repo_root, resolved_base)?;
+        let mut tab = Self::new_with_base_unloaded(repo_root, resolved_base, ports)?;
         tab.local_branch_view = Some(if head_branch_name.is_empty() {
             crate::storage::pr_placeholder_branch(pr_number)
         } else {
@@ -1566,7 +1579,7 @@ impl TabState {
 
     /// Create a TabState for remote PR review (no local git repo needed).
     /// Uses `gh pr diff --repo` instead of local git operations.
-    pub fn new_remote(pr_ref: &crate::github::PrRef) -> Result<Self> {
+    pub fn new_remote(pr_ref: &crate::github::PrRef, ports: Ports) -> Result<Self> {
         // Get metadata (base/head branch names)
         let (base_branch, head_branch) =
             crate::github::gh_pr_metadata_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
@@ -1586,7 +1599,7 @@ impl TabState {
         let pr_commits =
             crate::github::gh_pr_commits_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number, 250);
         let mut tab =
-            Self::new_remote_with_data(pr_ref, base_branch, head_branch, raw, pr_commits)?;
+            Self::new_remote_with_data(pr_ref, base_branch, head_branch, raw, pr_commits, ports)?;
         tab.preview_head_oid = preview_head_oid;
         Ok(tab)
     }
@@ -1601,6 +1614,7 @@ impl TabState {
         head_branch: String,
         raw: String,
         pr_commits: Vec<crate::git::CommitInfo>,
+        ports: Ports,
     ) -> Result<Self> {
         let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
@@ -1644,11 +1658,13 @@ impl TabState {
         let repo_root_remote = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
+        let er_root = ErRoot::unresolved(&repo_root_remote, &*ports.git);
         let mut tab = Self {
+            ports,
             mode: DiffMode::PrDiff,
             base_branch,
             current_branch: head_branch,
-            er_root: ErRoot::unresolved(&repo_root_remote),
+            er_root,
             repo_root: repo_root_remote,
             files,
             selected_file: 0,
@@ -1777,7 +1793,7 @@ impl TabState {
 
     /// Remote PR tab shell without network I/O. Call `refresh_diff()` (or focus
     /// via desktop `kick_deferred_tab_refresh`) to load `gh pr diff`.
-    pub fn new_remote_stub(pr_ref: &crate::github::PrRef) -> Result<Self> {
+    pub fn new_remote_stub(pr_ref: &crate::github::PrRef, ports: Ports) -> Result<Self> {
         let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
         let er_config = crate::config::ErConfig::default();
@@ -1785,11 +1801,13 @@ impl TabState {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
+        let er_root = ErRoot::unresolved(&repo_root_remote, &*ports.git);
         let mut tab = Self {
+            ports,
             mode: DiffMode::PrDiff,
             base_branch: String::new(),
             current_branch: String::new(),
-            er_root: ErRoot::unresolved(&repo_root_remote),
+            er_root,
             repo_root: repo_root_remote,
             files: Vec::new(),
             selected_file: 0,
@@ -1912,15 +1930,17 @@ impl TabState {
         current_branch: String,
         base_branch: String,
         refresh_initial_diff: bool,
+        ports: Ports,
     ) -> Result<Self> {
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
         let er_config = config::load_global_config();
         let watched_config = er_config.watched;
         let has_watched = !watched_config.paths.is_empty();
-        let merge_active = git::is_merge_in_progress(&repo_root);
-        let er_root = ErRoot::unresolved(&repo_root);
+        let merge_active = ports.git.is_merge_in_progress(&repo_root);
+        let er_root = ErRoot::unresolved(&repo_root, &*ports.git);
 
         let mut tab = Self {
+            ports,
             mode: DiffMode::Branch,
             base_branch,
             current_branch,
@@ -2050,10 +2070,10 @@ impl TabState {
     /// The tab `App::new_empty` holds. No repo, no git and no storage setup:
     /// the empty root makes any git call aimed at it fail to spawn instead of
     /// running in the launch directory, which is `/` from Finder.
-    pub fn new_placeholder() -> Self {
-        let mut tab = Self::new_for_test(Vec::new());
+    pub fn new_placeholder(ports: Ports) -> Self {
+        let mut tab = Self::new_for_test_with_ports(Vec::new(), ports);
         tab.repo_root = String::new();
-        tab.er_root = ErRoot::unresolved("");
+        tab.er_root = ErRoot::unresolved("", &*tab.ports.git);
         tab.pr_absent = true;
         tab.base_branch = String::new();
         tab.current_branch = String::new();
@@ -2064,12 +2084,18 @@ impl TabState {
     /// Create a minimal TabState for unit tests.
     /// Uses fixed repo root "/tmp/test" and no git I/O.
     pub fn new_for_test(files: Vec<crate::git::DiffFile>) -> Self {
+        Self::new_for_test_with_ports(files, Ports::for_test())
+    }
+
+    /// A minimal TabState with a scripted git handle.
+    pub fn new_for_test_with_ports(files: Vec<crate::git::DiffFile>, ports: Ports) -> Self {
         use crate::ai::{AiState, CommentType, InlineLayers, ReviewFocus};
         use crate::config::WatchedConfig;
         use crate::git::CompactionConfig;
         use std::collections::HashSet;
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
         Self {
+            ports,
             mode: DiffMode::Branch,
             base_branch: "main".to_string(),
             current_branch: "feature".to_string(),
@@ -2488,7 +2514,7 @@ impl TabState {
         if branch.is_empty() || self.repo_root.is_empty() {
             return None;
         }
-        let repo_slug = crate::storage::slug_repo(&self.repo_root);
+        let repo_slug = crate::storage::slug_repo(&*self.ports.git, &self.repo_root);
         let branch_slug = crate::storage::slug_branch(&branch);
         Some(
             crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch")
@@ -2533,7 +2559,7 @@ impl TabState {
         if branch.is_empty() || self.repo_root.is_empty() {
             return;
         }
-        let repo_slug = crate::storage::slug_repo(&self.repo_root);
+        let repo_slug = crate::storage::slug_repo(&*self.ports.git, &self.repo_root);
         let branch_slug = crate::storage::slug_branch(&branch);
         let bucket = self.review_bucket_name();
 
@@ -2580,7 +2606,7 @@ impl TabState {
         if self.remote_repo.is_some() || self.local_branch_view.is_some() {
             return Ok(());
         }
-        let git_branch = git::get_current_branch_in(&self.repo_root)?;
+        let git_branch = self.ports.git.current_branch(&self.repo_root)?;
         self.apply_checkout_branch_storage_change(&git_branch)
     }
 
@@ -3099,17 +3125,23 @@ impl TabState {
     /// unresolved files first then alphabetically.
     pub fn refresh_conflicts(&mut self) {
         self.loaded_diff_source = None;
-        self.merge_active = git::is_merge_in_progress(&self.repo_root);
+        self.merge_active = self.ports.git.is_merge_in_progress(&self.repo_root);
 
-        let raw = git::git_diff_conflicts(&self.repo_root).unwrap_or_default();
+        let raw = self
+            .ports
+            .git
+            .diff_conflicts(&self.repo_root)
+            .unwrap_or_default();
         let parsed = git::parse_diff(&raw);
 
         // Get the set of paths that still have conflict markers
-        let unmerged_paths: std::collections::HashSet<String> =
-            git::unmerged_files(&self.repo_root)
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
+        let unmerged_paths: std::collections::HashSet<String> = self
+            .ports
+            .git
+            .unmerged_files(&self.repo_root)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
         // Deduplicate by path — keep the last occurrence so that the unmerged
         // working-tree diff wins over the staged diff for conflict files.
@@ -3230,6 +3262,7 @@ impl TabState {
 
         if let Some(ref branch) = self.local_branch_view {
             let inputs = preload::BranchScopeFetchInputs {
+                ports: self.ports.clone(),
                 repo_root: self.repo_root.clone(),
                 base_branch: self.base_branch.clone(),
                 local_branch_view: Some(branch.clone()),
@@ -3243,6 +3276,7 @@ impl TabState {
 
         if let Some(ref repo_slug) = self.remote_repo {
             let inputs = preload::BranchScopeFetchInputs {
+                ports: self.ports.clone(),
                 repo_root: self.repo_root.clone(),
                 base_branch: self.base_branch.clone(),
                 local_branch_view: None,
@@ -3256,7 +3290,7 @@ impl TabState {
 
         let head_ref_owned = self.pr_head_ref.clone();
         if scope == "staged" && self.committed_unpushed {
-            let staged_raw = git::git_diff_raw(
+            let staged_raw = self.ports.git.diff_raw(
                 "staged",
                 &self.base_branch,
                 &self.repo_root,
@@ -3265,19 +3299,25 @@ impl TabState {
             if !staged_raw.is_empty() {
                 return Ok(staged_raw);
             }
-            match git::git_diff_raw_range("HEAD~1", "HEAD", &self.repo_root) {
+            match self
+                .ports
+                .git
+                .diff_raw_range("HEAD~1", "HEAD", &self.repo_root)
+            {
                 Ok(raw) => return Ok(raw),
                 Err(_) => return Ok(String::new()),
             }
         }
 
-        git::git_diff_raw(
-            scope,
-            &self.base_branch,
-            &self.repo_root,
-            head_ref_owned.as_deref(),
-        )
-        .map_err(anyhow::Error::from)
+        self.ports
+            .git
+            .diff_raw(
+                scope,
+                &self.base_branch,
+                &self.repo_root,
+                head_ref_owned.as_deref(),
+            )
+            .map_err(anyhow::Error::from)
     }
 
     /// Raw diff for AI review: prefer the cached UI diff when fresh, else refetch.
@@ -3319,7 +3359,7 @@ impl TabState {
 
         // Conflicts mode refreshes via refresh_conflicts() only
         if self.mode == DiffMode::Conflicts {
-            self.merge_active = git::is_merge_in_progress(&self.repo_root);
+            self.merge_active = self.ports.git.is_merge_in_progress(&self.repo_root);
             return Ok(());
         }
 
@@ -3520,7 +3560,7 @@ impl TabState {
         }
 
         // Update merge_active on every refresh
-        self.merge_active = git::is_merge_in_progress(&self.repo_root);
+        self.merge_active = self.ports.git.is_merge_in_progress(&self.repo_root);
 
         // Remember current position to restore after re-parse
         let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
@@ -3531,7 +3571,7 @@ impl TabState {
         let head_ref_owned = self.pr_head_ref.clone();
         let (raw, fetched_preview_head_oid) =
             if self.mode == DiffMode::Staged && self.committed_unpushed {
-                let staged_raw = git::git_diff_raw(
+                let staged_raw = self.ports.git.diff_raw(
                     self.mode.fetch_scope(),
                     &self.base_branch,
                     &self.repo_root,
@@ -3542,7 +3582,11 @@ impl TabState {
                     self.committed_unpushed = false;
                     (staged_raw, None)
                 } else {
-                    match git::git_diff_raw_range("HEAD~1", "HEAD", &self.repo_root) {
+                    match self
+                        .ports
+                        .git
+                        .diff_raw_range("HEAD~1", "HEAD", &self.repo_root)
+                    {
                         Ok(raw) => (raw, None),
                         Err(_) => {
                             self.committed_unpushed = false;
@@ -3598,10 +3642,12 @@ impl TabState {
             let git_mode = self.mode.fetch_scope();
             let base_branch = self.base_branch.clone();
             let head_ref_owned2 = self.pr_head_ref.clone();
+            let git_handle = self.ports.git.clone();
             for file in &mut self.files {
                 if to_expand.contains(&file.path) {
                     git::expand_compacted_file(
                         file,
+                        &*git_handle,
                         &repo_root,
                         git_mode,
                         &base_branch,
@@ -3660,7 +3706,7 @@ impl TabState {
         } else if recompute_branch_hash
             && (self.ai.has_data() || self.ai.has_questions() || self.ai.has_tour())
         {
-            let br = git::git_diff_raw(
+            let br = self.ports.git.diff_raw(
                 "branch",
                 &self.base_branch,
                 &self.repo_root,
@@ -4663,7 +4709,7 @@ impl TabState {
             .is_remote()
             .then_some(self.remote_repo.as_deref())
             .flatten();
-        crate::storage::rules_key(&self.repo_root, remote_only)
+        crate::storage::rules_key(&*self.ports.git, &self.repo_root, remote_only)
     }
 
     /// The rule tables `change-facts.md` resolves against. An empty risk
@@ -4994,8 +5040,11 @@ impl TabState {
             return (self.pr_commits.clone(), true);
         }
         let (head_ref, log_root) = self.history_log_source();
-        let commits =
-            git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, 0).unwrap_or_default();
+        let commits = self
+            .ports
+            .git
+            .log_range(&self.base_branch, &head_ref, &log_root, 50, 0)
+            .unwrap_or_default();
         (commits, false)
     }
 
@@ -5185,12 +5234,12 @@ impl TabState {
             self.watched_files.clear();
             return;
         }
-        match git::discover_watched_files(&self.repo_root, &self.watched_config.paths) {
+        match er_git::discover_watched_files(&self.repo_root, &self.watched_config.paths) {
             Ok(files) => {
                 // One batched `git check-ignore` instead of one subprocess per file —
                 // a dozen watched files would cost ~200ms of spawns on every open.
                 let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-                let ignored = git::gitignored_paths(&self.repo_root, &paths);
+                let ignored = self.ports.git.gitignored_paths(&self.repo_root, &paths);
                 self.watched_not_ignored = files
                     .iter()
                     .filter(|f| !ignored.contains(&f.path))
@@ -5219,7 +5268,7 @@ impl TabState {
         if let Some(watched) = self.selected_watched_file() {
             let path = watched.path.clone();
             let snapshots_dir = self.er_root.snapshots_dir();
-            git::save_snapshot(&self.repo_root, &path, &snapshots_dir)?;
+            er_git::save_snapshot(&self.repo_root, &path, &snapshots_dir)?;
         }
         Ok(())
     }
@@ -5719,6 +5768,9 @@ pub struct Notification {
 }
 
 pub struct App {
+    /// Subprocess handles, shared with every tab.
+    pub ports: Ports,
+
     /// Open tabs (one per repo)
     pub tabs: Vec<TabState>,
 
@@ -5924,10 +5976,10 @@ impl App {
         self.pending_model_discovery = Some(provider_id);
     }
 
-    pub fn new_with_args(paths: &[String]) -> Result<Self> {
+    pub fn new_with_args(paths: &[String], ports: Ports) -> Result<Self> {
         let tabs = if paths.is_empty() {
-            let repo_root = git::get_repo_root()?;
-            vec![TabState::new(repo_root)?]
+            let repo_root = ports.git.repo_root_cwd()?;
+            vec![TabState::new(repo_root, ports.clone())?]
         } else {
             let mut tabs = Vec::new();
             for path in paths {
@@ -5938,7 +5990,7 @@ impl App {
                     crate::github::ensure_gh_installed()?;
 
                     // We need to be in the repo. Use cwd.
-                    let repo_root = git::get_repo_root().context(
+                    let repo_root = ports.git.repo_root_cwd().context(
                         "Cannot open PR URL: not in a git repository. Clone the repo first.",
                     )?;
 
@@ -5953,7 +6005,7 @@ impl App {
                         crate::github::gh_pr_head_branch_name(pr_ref.number, &repo_root)
                             .unwrap_or_else(|_| format!("pr/{}", pr_ref.number));
 
-                    let mut tab = TabState::new_with_base(repo_root, base)?;
+                    let mut tab = TabState::new_with_base(repo_root, base, ports.clone())?;
                     tab.pr_head_ref = Some(head_ref);
                     tab.pr_number = Some(pr_ref.number);
                     tab.current_branch = head_branch;
@@ -5964,9 +6016,11 @@ impl App {
                     let canonical = std::fs::canonicalize(path)
                         .with_context(|| format!("Path not found: {}", path))?;
                     let dir = canonical.to_string_lossy().to_string();
-                    let repo_root = git::get_repo_root_in(&dir)
+                    let repo_root = ports
+                        .git
+                        .repo_root_in(&dir)
                         .with_context(|| format!("Not a git repository: {}", path))?;
-                    tabs.push(TabState::new(repo_root)?);
+                    tabs.push(TabState::new(repo_root, ports.clone())?);
                 }
             }
             tabs
@@ -5979,6 +6033,7 @@ impl App {
         let arena_registry = Self::init_arena_registry(Arc::new(|| {}));
 
         let mut app = Self {
+            ports,
             tabs,
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -6031,13 +6086,14 @@ impl App {
     /// the initial diff here is wasted work, and on machines launching
     /// outside a repo CWD this lets us still open a window backed by the
     /// last-active project's root.
-    pub fn new_unloaded(repo_root: String) -> Result<Self> {
-        let base = git::detect_base_branch_in(&repo_root)?;
-        let tab = TabState::new_with_base_unloaded(repo_root, base)?;
+    pub fn new_unloaded(repo_root: String, ports: Ports) -> Result<Self> {
+        let base = ports.git.detect_base_branch(&repo_root)?;
+        let tab = TabState::new_with_base_unloaded(repo_root, base, ports.clone())?;
         let er_config = crate::config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         let mut app = Self {
+            ports,
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -6081,7 +6137,11 @@ impl App {
     }
 
     /// Create App for remote PR review — no local git repo needed.
-    pub fn new_remote(mut tab: TabState, pr_data: Option<crate::github::PrOverviewData>) -> Self {
+    pub fn new_remote(
+        mut tab: TabState,
+        pr_data: Option<crate::github::PrOverviewData>,
+        ports: Ports,
+    ) -> Self {
         if let Some(data) = pr_data {
             tab.pr_data = Some(data);
         }
@@ -6089,6 +6149,7 @@ impl App {
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         let mut app = Self {
+            ports,
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -6133,15 +6194,22 @@ impl App {
 
     /// An App with no repo open: one placeholder tab, replaced by the first
     /// `open_tab`. For a launch that has no repo CWD and no saved project.
-    pub fn new_empty() -> Self {
-        Self::new_remote(TabState::new_placeholder(), None)
+    pub fn new_empty(ports: Ports) -> Self {
+        Self::new_remote(TabState::new_placeholder(ports.clone()), None, ports)
     }
 
     /// Construct an App with a single test tab. Intended for unit tests
     /// that need to exercise input handlers without spinning up git.
     pub fn new_for_test(files: Vec<crate::git::DiffFile>) -> Self {
+        Self::new_for_test_with_ports(files, Ports::for_test())
+    }
+
+    /// Construct an App with a single test tab and a scripted git handle.
+    pub fn new_for_test_with_ports(files: Vec<crate::git::DiffFile>, ports: Ports) -> Self {
+        let tab = TabState::new_for_test_with_ports(files, ports.clone());
         Self {
-            tabs: vec![TabState::new_for_test(files)],
+            ports,
+            tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
             should_quit: false,
@@ -6550,7 +6618,7 @@ impl App {
             }
         }
 
-        let mut tab = TabState::new_remote(&pr_ref)?;
+        let mut tab = TabState::new_remote(&pr_ref, self.ports.clone())?;
         let pr_data =
             crate::github::gh_pr_overview_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number);
         if let Some(data) = pr_data {
@@ -6656,7 +6724,7 @@ impl App {
             }
         }
 
-        let tab = TabState::new(repo_root)?;
+        let tab = TabState::new(repo_root, self.ports.clone())?;
         let name = tab.tab_name();
         self.push_tab(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -6803,7 +6871,7 @@ impl App {
     /// Open the worktree picker overlay
     pub fn open_worktree_picker(&mut self) -> Result<()> {
         let repo_root = self.tab().repo_root.clone();
-        let worktrees = git::list_worktrees(&repo_root)?;
+        let worktrees = self.ports.git.list_worktrees(&repo_root)?;
         self.overlay = Some(OverlayData::WorktreePicker {
             worktrees,
             selected: 0,
@@ -8178,7 +8246,10 @@ impl App {
         self.request_stack_load();
 
         let repo_root = self.tab().repo_root.clone();
-        let has_worktrees = git::list_worktrees(&repo_root)
+        let has_worktrees = self
+            .ports
+            .git
+            .list_worktrees(&repo_root)
             .map(|wts| wts.len() > 1)
             .unwrap_or(false);
         let has_pr = self.tab().pr_number.is_some();
@@ -9229,15 +9300,15 @@ impl App {
 
         match mode {
             DiffMode::Branch | DiffMode::Unstaged => {
-                git::git_stage_file(&repo_root, &file_path)?;
+                self.ports.git.stage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Staged: {}", file_path));
             }
             DiffMode::Staged => {
-                git::git_unstage_file(&repo_root, &file_path)?;
+                self.ports.git.unstage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Unstaged: {}", file_path));
             }
             DiffMode::Conflicts => {
-                git::git_stage_file(&repo_root, &file_path)?;
+                self.ports.git.stage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Resolved: {}", file_path));
             }
             DiffMode::History | DiffMode::Hidden | DiffMode::PrDiff | DiffMode::Tour => {
@@ -9257,7 +9328,7 @@ impl App {
     /// Stage all files
     pub fn stage_all(&mut self) -> Result<()> {
         let repo_root = self.tab().repo_root.clone();
-        git::git_stage_all(&repo_root)?;
+        self.ports.git.stage_all(&repo_root)?;
         self.notify("Staged all files");
         self.tab_mut().refresh_diff()?;
         Ok(())
@@ -9626,7 +9697,7 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let storage = tempfile::tempdir().unwrap();
         std::env::set_var("ER_STORAGE_ROOT", storage.path());
-        let er_dir = TabState::new_placeholder().er_dir();
+        let er_dir = TabState::new_placeholder(Ports::for_test()).er_dir();
         std::env::remove_var("ER_STORAGE_ROOT");
 
         assert_eq!(er_dir, storage.path().join("unresolved").to_string_lossy());
@@ -9639,8 +9710,8 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let storage = tempfile::tempdir().unwrap();
         std::env::set_var("ER_STORAGE_ROOT", storage.path());
-        let a = ErRoot::unresolved("/repo/a").er_dir();
-        let b = ErRoot::unresolved("/repo/b").er_dir();
+        let a = ErRoot::unresolved("/repo/a", &*crate::ports::Ports::for_test().git).er_dir();
+        let b = ErRoot::unresolved("/repo/b", &*crate::ports::Ports::for_test().git).er_dir();
         std::env::remove_var("ER_STORAGE_ROOT");
 
         assert_ne!(a, b);
@@ -9762,6 +9833,7 @@ mod tests {
         use crate::ai::{InlineLayers, ReviewFocus};
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
         TabState {
+            ports: Ports::for_test(),
             mode: DiffMode::Branch,
             base_branch: "main".to_string(),
             current_branch: "feature".to_string(),
@@ -10055,7 +10127,7 @@ mod tests {
         // diffs over 200 KB go lazy.
         let dir = init_repo_with_unstaged_change();
         let root = dir.path().to_string_lossy().to_string();
-        let mut tab = TabState::new(root).expect("tab for the temp repo");
+        let mut tab = TabState::new(root, Ports::cli()).expect("tab for the temp repo");
         tab.mode = DiffMode::Unstaged;
 
         tab.refresh_diff().expect("refresh runs");
@@ -10113,7 +10185,7 @@ mod tests {
         // findings rendering as current against a diff they no longer match.
         let dir = init_repo_with_a_feature_branch();
         let root = dir.path().to_string_lossy().to_string();
-        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
         tab.local_branch_view = Some("feature".to_string());
         tab.local_branch_checkout_root = None;
         tab.base_branch = "main".to_string();
@@ -10178,7 +10250,7 @@ mod tests {
 
     /// A read-only view of `feature` against `main`, loaded once.
     fn loaded_feature_view(root: &str) -> TabState {
-        let mut tab = TabState::new(root.to_string()).expect("tab for the temp repo");
+        let mut tab = TabState::new(root.to_string(), Ports::cli()).expect("tab for the temp repo");
         tab.local_branch_view = Some("feature".to_string());
         tab.local_branch_checkout_root = None;
         tab.base_branch = "main".to_string();
@@ -10251,7 +10323,7 @@ mod tests {
             .current_dir(&root)
             .output()
             .unwrap();
-        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
         tab.base_branch = "main".to_string();
         tab.mode = DiffMode::Branch;
         tab.refresh_diff().expect("full refresh");
@@ -10419,7 +10491,7 @@ mod tests {
 
         let dir = init_repo_with_a_feature_branch();
         let root = dir.path().to_string_lossy().to_string();
-        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
         tab.base_branch = "main".to_string();
         tab.pr_number = Some(7);
         tab.pr_head_ref = Some(add_pr_head_ref(&root, 7));
@@ -10485,7 +10557,7 @@ mod tests {
             git(&["commit", "-qm", &format!("main work {n}")]);
         }
 
-        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
         tab.base_branch = "fork".to_string();
         tab.pr_number = Some(7);
         tab.pr_head_ref = Some(add_pr_head_ref(&root, 7));
@@ -10569,7 +10641,7 @@ mod tests {
 
         let dir = init_repo_with_a_feature_branch();
         let root = dir.path().to_string_lossy().to_string();
-        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
         tab.local_branch_view = Some("feature".to_string());
         tab.local_branch_checkout_root = None;
         tab.base_branch = "main".to_string();
@@ -11028,6 +11100,7 @@ mod tests {
         git(&["remote", "add", "origin", "git@github.com:me/my-fork.git"]);
 
         let mut tab = make_test_tab(vec![]);
+        tab.ports = Ports::cli();
         tab.repo_root = dir.path().to_str().unwrap().to_string();
         let clone_key = tab.rules_key();
         assert_eq!(clone_key, "my-fork");
@@ -11071,7 +11144,7 @@ mod tests {
         let mut tab = make_test_tab(vec![make_file("e2e/login.ts", vec![], 4, 0)]);
         tab.repo_root = "/".to_string();
         tab.remote_repo = Some("acme/my-service".to_string());
-        let app = App::new_remote(tab, None);
+        let app = App::new_remote(tab, None, Ports::for_test());
 
         std::env::remove_var("ER_CONFIG_PATH");
         std::env::remove_var("ER_STORAGE_ROOT");
@@ -12460,6 +12533,7 @@ mod tests {
 
     fn make_test_app(tab: TabState) -> App {
         App {
+            ports: Ports::for_test(),
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -13790,6 +13864,7 @@ mod tests {
             Some("feature-x".to_string()),
             None,
             Some("oid-1".to_string()),
+            Ports::cli(),
         )
         .expect("stub builds");
         assert_eq!(tab.pr_number, Some(42));
@@ -13841,6 +13916,7 @@ mod tests {
             Some("feature-x".to_string()),
             None,
             None,
+            Ports::cli(),
         )
         .expect("stub builds");
         let er_dir = tab.er_dir();
@@ -14196,7 +14272,7 @@ mod tests {
         tab.current_branch = "main".to_string();
         tab.local_branch_view = Some("claude/dev-5067".to_string());
         tab.sync_managed_storage();
-        let repo_slug = crate::storage::slug_repo(&tab.repo_root);
+        let repo_slug = crate::storage::slug_repo(&*tab.ports.git, &tab.repo_root);
         let branch_slug = crate::storage::slug_branch("claude/dev-5067");
         // Phase 1: storage is now in a view-bucket subdir, not the branch root
         let expected = crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch");
@@ -14222,7 +14298,7 @@ mod tests {
         tab.current_branch = "main".to_string();
         tab.local_branch_view = Some("claude/dev-5067".to_string());
         tab.sync_managed_storage();
-        let repo_slug = crate::storage::slug_repo(&tab.repo_root);
+        let repo_slug = crate::storage::slug_repo(&*tab.ports.git, &tab.repo_root);
         let branch_slug = crate::storage::slug_branch("claude/dev-5067");
         // Phase 1: reviewed file is inside the view-bucket subdir
         let expected =
@@ -14247,7 +14323,7 @@ mod tests {
         tab.current_branch = "main".to_string();
         tab.sync_managed_storage();
 
-        let repo_slug = crate::storage::slug_repo(&tab.repo_root);
+        let repo_slug = crate::storage::slug_repo(&*tab.ports.git, &tab.repo_root);
         // Phase 1: reviewed files live inside the view-bucket subdir, not the branch root
         let main_dir = crate::storage::view_bucket_dir(
             &repo_slug,
@@ -15001,9 +15077,12 @@ mod tests {
         run_git_for_history_test(root, &["commit", "-am", "newer"]);
         let newer_hash = run_git_for_history_test(root, &["rev-parse", "HEAD"]);
 
-        let mut tab =
-            TabState::new_with_base_unloaded(root.to_string_lossy().to_string(), "main".into())
-                .unwrap();
+        let mut tab = TabState::new_with_base_unloaded(
+            root.to_string_lossy().to_string(),
+            "main".into(),
+            Ports::cli(),
+        )
+        .unwrap();
         tab.local_branch_view = Some("feature".to_string());
         tab.pr_number = Some(42);
         tab.pr_commits = vec![
@@ -15729,7 +15808,7 @@ mod tests {
             tab.apply_managed_root();
 
             let expected = crate::storage::view_bucket_dir(
-                &crate::storage::slug_repo(&tab.repo_root),
+                &crate::storage::slug_repo(&*tab.ports.git, &tab.repo_root),
                 &crate::storage::slug_branch("feat/buckets"),
                 bucket,
             )
@@ -15956,7 +16035,7 @@ mod tests {
         tab.apply_managed_root();
 
         let expected = crate::storage::view_bucket_dir(
-            &crate::storage::slug_repo(&tab.repo_root),
+            &crate::storage::slug_repo(&*tab.ports.git, &tab.repo_root),
             &crate::storage::slug_branch("feat/foo"),
             "branch",
         )
@@ -16730,7 +16809,7 @@ mod tests {
 
     #[test]
     fn new_empty_holds_one_placeholder_with_no_repo() {
-        let app = App::new_empty();
+        let app = App::new_empty(Ports::for_test());
         assert_eq!(app.tabs.len(), 1);
         let tab = app.tab();
         assert!(tab.placeholder);
@@ -16740,9 +16819,78 @@ mod tests {
     }
 
     #[test]
+    fn refresh_diff_reads_the_diff_through_the_git_handle() {
+        let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let fake = std::sync::Arc::new(
+            er_git::FakeGit::default()
+                .with_current_branch(Ok("feature".into()))
+                .with_is_merge_in_progress(false)
+                .with_diff_shortstat((1, 1, 0))
+                .with_diff_raw(Ok(raw.to_string())),
+        );
+        let ports = Ports::with_git(fake.clone());
+        let mut tab = TabState::new_for_test_with_ports(Vec::new(), ports);
+
+        tab.refresh_diff().expect("refresh through the fake");
+
+        assert_eq!(tab.files.len(), 1);
+        assert_eq!(tab.files[0].path, "x.rs");
+        assert!(
+            fake.calls()
+                .iter()
+                .any(|c| c.starts_with("diff_raw(") && c.contains("mode=\"branch\"")),
+            "calls: {:?}",
+            fake.calls()
+        );
+    }
+
+    #[test]
+    fn refresh_diff_surfaces_a_git_error_from_the_fake() {
+        let fake = std::sync::Arc::new(
+            er_git::FakeGit::default()
+                .with_current_branch(Ok("feature".into()))
+                .with_is_merge_in_progress(false)
+                .with_diff_shortstat((1, 1, 0))
+                .with_diff_raw(Err(er_git::GitError::Failed {
+                    context: "boom".into(),
+                    stderr: String::new(),
+                })),
+        );
+        let existing = crate::git::parse_diff(
+            "diff --git a/old.rs b/old.rs\n--- a/old.rs\n+++ b/old.rs\n@@ -1 +1 @@\n-a\n+b\n",
+        );
+        let mut tab = TabState::new_for_test_with_ports(existing, Ports::with_git(fake.clone()));
+
+        let err = tab
+            .refresh_diff()
+            .expect_err("the fake's error must surface");
+
+        assert!(format!("{err:#}").contains("boom"), "{err:#}");
+        assert!(
+            fake.calls().iter().any(|c| c.starts_with("diff_raw(")),
+            "the error must come from diff_raw: {:?}",
+            fake.calls()
+        );
+        assert_eq!(tab.files.len(), 1);
+        assert_eq!(tab.files[0].path, "old.rs");
+    }
+
+    #[test]
+    fn placeholder_app_carries_the_ports_it_was_given() {
+        let fake = std::sync::Arc::new(
+            er_git::FakeGit::default().with_remote_url(Ok("git@example.invalid:o/r.git".into())),
+        );
+        let app = App::new_empty(Ports::with_git(fake.clone()));
+
+        let _ = app.tab().ports.git.remote_url("/x", "origin");
+
+        assert!(fake.calls().iter().any(|c| c.starts_with("remote_url(")));
+    }
+
+    #[test]
     fn open_tab_replaces_a_lone_placeholder() {
         with_storage_root(|| {
-            let mut app = App::new_empty();
+            let mut app = App::new_empty(Ports::for_test());
             let idx = app.open_tab(TabState::new_for_test(Vec::new()));
             assert_eq!(idx, 0);
             assert_eq!(app.tabs.len(), 1);

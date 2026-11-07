@@ -570,7 +570,7 @@ impl TabState {
             let mode = self.mode.git_mode().to_string();
             let base = self.base_branch.clone();
             let head_ref_owned = self.pr_head_ref.clone();
-            if let Ok(raw) = git::git_diff_raw_file(
+            if let Ok(raw) = self.ports.git.diff_raw_file(
                 &mode,
                 &base,
                 &repo_root,
@@ -628,6 +628,7 @@ impl TabState {
                 let head_ref_owned = self.pr_head_ref.clone();
                 git::expand_compacted_file(
                     &mut self.files[self.selected_file],
+                    &*self.ports.git,
                     &repo_root,
                     &git_mode,
                     &base_branch,
@@ -698,9 +699,11 @@ impl TabState {
         }
 
         // Re-fetch the file diff with new context
+        let git = self.ports.git.clone();
         if let Some(file) = self.files.get_mut(self.selected_file) {
             git::refetch_file_with_context(
                 file,
+                &*git,
                 &self.repo_root,
                 self.mode.git_mode(),
                 &self.base_branch,
@@ -749,9 +752,11 @@ impl TabState {
             .find(|&s| s < current)
             .unwrap_or(git::DEFAULT_CONTEXT_LINES);
 
+        let git = self.ports.git.clone();
         if let Some(file) = self.files.get_mut(self.selected_file) {
             git::refetch_file_with_context(
                 file,
+                &*git,
                 &self.repo_root,
                 self.mode.git_mode(),
                 &self.base_branch,
@@ -805,9 +810,11 @@ impl TabState {
         }
 
         let path = file.path.clone();
+        let git = self.ports.git.clone();
         if let Some(file) = self.files.get_mut(self.selected_file) {
             if git::refetch_file_with_context(
                 file,
+                &*git,
                 &self.repo_root,
                 self.mode.git_mode(),
                 &self.base_branch,
@@ -906,7 +913,7 @@ impl TabState {
             (commit_hash, self.repo_root.clone())
         };
 
-        let raw_diff = match git::git_diff_commit(&hash, &repo_root) {
+        let raw_diff = match self.ports.git.diff_commit(&hash, &repo_root) {
             Ok(raw) => Ok(raw),
             Err(first_err)
                 if self.pr_number.is_some()
@@ -923,7 +930,10 @@ impl TabState {
                         self.pr_refs_fetched = true;
                     }
                 }
-                git::git_diff_commit(&hash, &repo_root).map_err(|_| first_err)
+                self.ports
+                    .git
+                    .diff_commit(&hash, &repo_root)
+                    .map_err(|_| first_err)
             }
             Err(err) => Err(err),
         };
@@ -1150,7 +1160,10 @@ impl TabState {
         // Runs synchronously on the event loop thread — a slow `git log` blocks the UI
         // for its full duration.
         let (head_ref, log_root) = self.history_log_source();
-        let new_commits = git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, skip)
+        let new_commits = self
+            .ports
+            .git
+            .log_range(&self.base_branch, &head_ref, &log_root, 50, skip)
             .unwrap_or_default();
 
         let history = match self.history.as_mut() {

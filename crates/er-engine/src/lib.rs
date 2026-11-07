@@ -30,6 +30,7 @@ pub mod github_post;
 pub mod highlight;
 pub mod model_discovery;
 pub mod paths;
+pub mod ports;
 pub mod pr_resolve;
 pub mod pr_review_feedback;
 pub use er_git::proc;

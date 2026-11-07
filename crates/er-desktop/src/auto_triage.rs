@@ -162,11 +162,12 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
 
     let er_dir = resolve_er_dir(&req.remote, &req.repo_root, req.pr_number)?;
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
+    let ports = ctx.app.lock().map_err(|e| e.to_string())?.ports.clone();
     // A remote-only project has no clone to name the repo, so key off `owner/repo`.
     let rules_key = if req.repo_root.is_empty() {
-        er_engine::storage::rules_key("", Some(&req.remote))
+        er_engine::storage::rules_key(&*ports.git, "", Some(&req.remote))
     } else {
-        er_engine::storage::rules_key(&req.repo_root, None)
+        er_engine::storage::rules_key(&*ports.git, &req.repo_root, None)
     };
     let base_branch = if req.base_ref.is_empty() {
         "main".to_string()
@@ -184,7 +185,7 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
             base_ref: format!("origin/{base_branch}"),
         }
     };
-    let review_md = er_engine::ai::review_md::collect(&review_md_source, &raw_diff);
+    let review_md = er_engine::ai::review_md::collect(&ports, &review_md_source, &raw_diff);
     let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
         &er_dir,
         &raw_diff,
@@ -266,8 +267,11 @@ fn run_branch_triage_once(
     if repo_root.is_empty() {
         return Err("Branch triage requires a local clone".to_string());
     }
-    let base_branch =
-        er_engine::git::detect_base_branch_in(repo_root).map_err(|e| e.to_string())?;
+    let ports = ctx.app.lock().map_err(|e| e.to_string())?.ports.clone();
+    let base_branch = ports
+        .git
+        .detect_base_branch(repo_root)
+        .map_err(|e| e.to_string())?;
     let mut raw_diff = er_engine::git::git_diff_raw_range(&base_branch, branch, repo_root)
         .map_err(|e| e.to_string())?;
     if !review_ignore_globs.is_empty() {
@@ -288,6 +292,7 @@ fn run_branch_triage_once(
     }
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
     let review_md = er_engine::ai::review_md::collect(
+        &ports,
         &er_engine::ai::review_md::ReviewMdSource::Git {
             repo_root: repo_root.to_string(),
             base_ref: base_branch.clone(),
@@ -297,7 +302,7 @@ fn run_branch_triage_once(
     let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
         &er_dir,
         &raw_diff,
-        &er_engine::storage::rules_key(repo_root, None),
+        &er_engine::storage::rules_key(&*ports.git, repo_root, None),
         review_md.as_deref(),
     )?;
 

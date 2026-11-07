@@ -999,7 +999,7 @@ impl App {
         // Without this, questions would always be marked stale because the hash would be empty.
         // Skip in remote mode — git_diff_raw requires a local git repo.
         if diff_hash.is_empty() && !self.tab().is_remote() {
-            if let Ok(br) = git::git_diff_raw(
+            if let Ok(br) = self.tab().ports.git.diff_raw(
                 "branch",
                 &base_branch,
                 &repo_root,
@@ -1111,7 +1111,7 @@ impl App {
         let pr_head_ref_owned = tab.pr_head_ref.clone();
 
         if diff_hash.is_empty() && !self.tab().is_remote() {
-            if let Ok(br) = git::git_diff_raw(
+            if let Ok(br) = self.tab().ports.git.diff_raw(
                 "branch",
                 &base_branch,
                 &repo_root,
@@ -2310,7 +2310,7 @@ impl App {
             return Ok(());
         }
         let repo_root = self.tab().repo_root.clone();
-        git::git_commit(&repo_root, &message)?;
+        self.tab().ports.git.commit(&repo_root, &message)?;
         self.tab_mut().commit_input.clear();
         self.input_mode = InputMode::Normal;
         self.tab_mut().committed_unpushed = true;
@@ -3830,7 +3830,7 @@ impl App {
         let task_kind = task.kind.clone();
         // Ranking is refused on remote-only tabs, so the clone names the repo
         // here as it does in the prompt (`TabState::rules_key`).
-        let repo_for_worker = crate::storage::rules_key(&target.repo_root, None);
+        let repo_for_worker = crate::storage::rules_key(&*self.ports.git, &target.repo_root, None);
         // The task may have waited in the queue; report runtime from launch.
         // The id (assigned at enqueue) stays stable so UI pills don't jump.
         task.started_at_ms = super::background::unix_now_ms();
@@ -4753,7 +4753,11 @@ mod background_queue_tests {
                 .output()
                 .ok()?;
         }
-        let mut app = App::new_with_args(&[tmp.to_string_lossy().to_string()]).ok()?;
+        let mut app = App::new_with_args(
+            &[tmp.to_string_lossy().to_string()],
+            crate::ports::Ports::cli(),
+        )
+        .ok()?;
         app.config.ai_hub.max_concurrent_reviews = cap;
         app.config.agent.command = "sleep".to_string();
         app.config.agent.args = vec!["5".to_string()];

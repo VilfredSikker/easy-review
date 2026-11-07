@@ -72,7 +72,7 @@ fn local_comments_survive_late_pr_number_assignment() {
     git(&repo, &["commit", "-q", "-m", "change"]);
 
     let repo_str = repo.to_string_lossy().to_string();
-    let mut app = App::new_with_args(&[repo_str]).expect("app");
+    let mut app = App::new_with_args(&[repo_str], er_engine::ports::Ports::cli()).expect("app");
 
     // Sanity: Branch mode, no PR yet.
     assert_eq!(app.tab().pr_number, None);
@@ -208,7 +208,7 @@ fn fresh_comment_is_anchored_to_diff_hash_and_survives_relocate() {
     git(&repo, &["commit", "-q", "-m", "change"]);
 
     let repo_str = repo.to_string_lossy().to_string();
-    let mut app = App::new_with_args(&[repo_str]).expect("app");
+    let mut app = App::new_with_args(&[repo_str], er_engine::ports::Ports::cli()).expect("app");
     let file = app.tab().files[0].path.clone();
 
     // Simulate a PR-diff-style view where the active diff hash differs from the
@@ -296,7 +296,11 @@ fn adding_local_github_comment_does_not_reload_all_ai_sidecars() {
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "-m", "change"]);
 
-    let mut app = App::new_with_args(&[repo.to_string_lossy().to_string()]).expect("app");
+    let mut app = App::new_with_args(
+        &[repo.to_string_lossy().to_string()],
+        er_engine::ports::Ports::cli(),
+    )
+    .expect("app");
     let file = app.tab().files[0].path.clone();
 
     // Plant a review that exists only in memory (no review.json on disk).

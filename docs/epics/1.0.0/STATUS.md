@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-07 17:20 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-07 21:30 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,8 +9,8 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| T1 | T5 GitHub port | [#381](https://github.com/VilfredSikker/easy-review/issues/381) P10 | C, E |
-| T2 | T4 git port | [#379](https://github.com/VilfredSikker/easy-review/issues/379) P08, then #380 P09 | E, F |
+| T1 | T5 GitHub port | [#381](https://github.com/VilfredSikker/easy-review/issues/381) P10 part 2 (trait, adapter, fake, engine move, `er::gh_spawn`) | C, E |
+| T2 | T4 git port | [#379](https://github.com/VilfredSikker/easy-review/issues/379) P08 part B (#426) waiting on CI, then #380 P09 | E, F |
 | D4 | – | idle | – |
 | D5 | – | idle; designs #402 and #404 done | – |
 | D1, D2, D3 | – | idle; next free design is #405 when #381 closes | – |
@@ -32,9 +32,9 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P05 | [#376](https://github.com/VilfredSikker/easy-review/issues/376) Post GitHub comments when created | E/F | opus | ✅ | [#416](https://github.com/VilfredSikker/easy-review/pull/416), [#417](https://github.com/VilfredSikker/easy-review/pull/417) | two stacked PRs |
 | P06 | [#377](https://github.com/VilfredSikker/easy-review/issues/377) Delete the local review draft | E/F | opus | ✅ | [#420](https://github.com/VilfredSikker/easy-review/pull/420), [#421](https://github.com/VilfredSikker/easy-review/pull/421) | release note: old batch-review comments may show twice |
 | P07 | [#378](https://github.com/VilfredSikker/easy-review/issues/378) Create er-git | C | sonnet | ✅ | [#419](https://github.com/VilfredSikker/easy-review/pull/419) | follow-ups in the PR review (cfg-test match, gh rule message) |
-| P08 | [#379](https://github.com/VilfredSikker/easy-review/issues/379) Engine git calls behind the port | E/F | sonnet | 🟡 | | T2 |
+| P08 | [#379](https://github.com/VilfredSikker/easy-review/issues/379) Engine git calls behind the port | E/F | sonnet | 🔵 | [#424](https://github.com/VilfredSikker/easy-review/pull/424) ✅, [#426](https://github.com/VilfredSikker/easy-review/pull/426) | part A merged; part B has a merge verdict and waits for CI |
 | P09 | [#380](https://github.com/VilfredSikker/easy-review/issues/380) Front-end git calls, git guardrail | C/F | sonnet | ⬜ | | after P08 |
-| P10 | [#381](https://github.com/VilfredSikker/easy-review/issues/381) Create er-github | C/E | opus | 🔧 | [#425](https://github.com/VilfredSikker/easy-review/pull/425) (part 1) | T1; part 1 fix-then-merge: raw fixtures, `.synthetic` names, tests for each #408 rule |
+| P10 | [#381](https://github.com/VilfredSikker/easy-review/issues/381) Create er-github | C/E | opus | 🟡 | [#425](https://github.com/VilfredSikker/easy-review/pull/425) ✅ (part 1) | T1 on part 2; all seven #408 rules proven by planted breaks |
 | P11 | [#382](https://github.com/VilfredSikker/easy-review/issues/382) Move github.rs into er-github | E | opus | ⬜ | | after P10, P08 |
 | P12 | [#383](https://github.com/VilfredSikker/easy-review/issues/383) Front-end gh calls, gh guardrail | C/F | opus | ⬜ | | after P11, P09 |
 | P13 | [#384](https://github.com/VilfredSikker/easy-review/issues/384) One remote-slug parser | F | sonnet | ⬜ | | after P11 |
