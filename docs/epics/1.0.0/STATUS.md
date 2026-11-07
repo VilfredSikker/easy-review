@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-06 20:05 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-07 23:00 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -10,12 +10,12 @@
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
 | T1 → T4 | T4 git port, then T5 | reading [#381](https://github.com/VilfredSikker/easy-review/issues/381) P10; starts when #377 merges; #379 and #380 after #377 | – |
-| T2 → T3 | T3 comment posting | [#376](https://github.com/VilfredSikker/easy-review/issues/376) P05 (TUI PR #417 left), then #377 P06 | E, F |
+| T2 → T3 | T3 comment posting | [#377](https://github.com/VilfredSikker/easy-review/issues/377) P06 | E, F |
 | D4 | – | idle; designs #401 and #406 done | – |
 | D5 | – | idle; designs #402 and #404 done | – |
 | D1, D2, D3 | – | idle; next free design is #405 when #381 closes | – |
 
-**Next to unblock:** #417 merging closes P05; then #377 (P06) runs, and its merge starts #381 (P10) and #379 (P08). #377 and #381 touch the same files (#381 moves `github.rs` and `pending_review.rs`), so they run in that order.
+**Next to unblock:** #377 (P06) merging closes phase 0 and starts #381 (P10) and #379 (P08). #377 and #381 touch the same files (#381 moves `github.rs` and `pending_review.rs`), so they run in that order.
 
 ## Progress
 
@@ -28,8 +28,8 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P03 | [#374](https://github.com/VilfredSikker/easy-review/issues/374) Delete the importance table | C | opus | ✅ | [#415](https://github.com/VilfredSikker/easy-review/pull/415) | follow-up: ADR 0037 names removed types |
 | P04 | [#375](https://github.com/VilfredSikker/easy-review/issues/375) Delete the repo-local storage root | E/F | opus | ✅ | [#414](https://github.com/VilfredSikker/easy-review/pull/414) | |
 | P25 | [#411](https://github.com/VilfredSikker/easy-review/issues/411) Upgrade dependencies, raise rust-version | C | sonnet | ✅ | [#418](https://github.com/VilfredSikker/easy-review/pull/418) | TypeScript 7 and Tailwind 4.3.5 deferred |
-| P05 | [#376](https://github.com/VilfredSikker/easy-review/issues/376) Post GitHub comments when created | E/F | opus | 🔵 | [#416](https://github.com/VilfredSikker/easy-review/pull/416) ✅, [#417](https://github.com/VilfredSikker/easy-review/pull/417) | #416 merged; #417 (TUI) has a merge verdict and waits for CI |
-| P06 | [#377](https://github.com/VilfredSikker/easy-review/issues/377) Delete the local review draft | E/F | opus | ⬜ | | after P05 |
+| P05 | [#376](https://github.com/VilfredSikker/easy-review/issues/376) Post GitHub comments when created | E/F | opus | ✅ | [#416](https://github.com/VilfredSikker/easy-review/pull/416), [#417](https://github.com/VilfredSikker/easy-review/pull/417) | two stacked PRs |
+| P06 | [#377](https://github.com/VilfredSikker/easy-review/issues/377) Delete the local review draft | E/F | opus | 🔵 | [#420](https://github.com/VilfredSikker/easy-review/pull/420), [#421](https://github.com/VilfredSikker/easy-review/pull/421) | T3; two stacked PRs; #420 drops an unrelated `prDescription.ts` change; #421 in review |
 | P07 | [#378](https://github.com/VilfredSikker/easy-review/issues/378) Create er-git | C | sonnet | ✅ | [#419](https://github.com/VilfredSikker/easy-review/pull/419) | follow-ups in the PR review (cfg-test match, gh rule message) |
 | P08 | [#379](https://github.com/VilfredSikker/easy-review/issues/379) Engine git calls behind the port | E/F | sonnet | ⬜ | | after P06 |
 | P09 | [#380](https://github.com/VilfredSikker/easy-review/issues/380) Front-end git calls, git guardrail | C/F | sonnet | ⬜ | | after P08 |
@@ -80,5 +80,4 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 
 **Actions.**
 
-1. After PR #418 (P25, merged): run the desktop app (`just dev`) and open a review of a local branch, and run `er` in a terminal once. Several UI libraries moved a major version (Vite 8, mermaid 12, shiki 4, xterm 6, marked 18), and no agent can check the screen. Tell the coordinator if anything looks wrong.
-2. Before P10 (#381) merges: provide real `gh` error samples (404, 401, 403 rate limit, 409, 422) if the implementer cannot capture them from a test repo. 409 and 422 may stay `*.synthetic` until then.
+None open. The real 409 and 422 `gh` captures are taken (in `~/er-gh-fixtures/`, recorded on #381); the 403 rate limit stays synthetic.
