@@ -190,7 +190,7 @@ impl App {
         // App mutation is serialized by the caller's App lock.
         self.recover_arena_bucket(&target.er_dir)?;
         let lease = self.acquire_review_flow_lease(&target.er_dir)?;
-        let review_md = crate::ai::review_md::collect(&review_md_source, &raw_diff);
+        let review_md = crate::ai::review_md::collect(&self.ports, &review_md_source, &raw_diff);
         let diff_hash = match crate::ai::prepared_diff::ensure_review_inputs(
             &target.er_dir,
             &raw_diff,

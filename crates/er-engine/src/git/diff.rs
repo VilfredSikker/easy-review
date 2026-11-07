@@ -653,12 +653,13 @@ pub fn compact_files(files: &mut [DiffFile], config: &CompactionConfig) {
 /// Uses `git diff -- <path>` for just that one file.
 pub fn expand_compacted_file(
     file: &mut DiffFile,
+    git: &dyn er_git::Git,
     repo_root: &str,
     mode: &str,
     base: &str,
     head_ref: Option<&str>,
 ) -> anyhow::Result<()> {
-    let raw = er_git::git_diff_raw_file(mode, base, repo_root, &file.path, None, head_ref)?;
+    let raw = git.diff_raw_file(mode, base, repo_root, &file.path, None, head_ref)?;
     let parsed = parse_diff(&raw);
     if let Some(f) = parsed.into_iter().next() {
         file.hunks = f.hunks;
@@ -674,13 +675,14 @@ pub fn expand_compacted_file(
 /// Replaces hunks, adds, and dels. Does not touch the `compacted` flag.
 pub fn refetch_file_with_context(
     file: &mut DiffFile,
+    git: &dyn er_git::Git,
     repo_root: &str,
     mode: &str,
     base: &str,
     context_lines: usize,
     head_ref: Option<&str>,
 ) -> anyhow::Result<()> {
-    let raw = er_git::git_diff_raw_file(
+    let raw = git.diff_raw_file(
         mode,
         base,
         repo_root,
@@ -1720,6 +1722,46 @@ index aaa..bbb 100644
         assert!(
             !expanded.hunks.is_empty(),
             "user-expanded file is parsed even above the eager limit"
+        );
+    }
+
+    #[test]
+    fn expand_compacted_file_reads_the_diff_through_the_handle() {
+        let raw = "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut file = parse_diff(raw).remove(0);
+        file.hunks.clear();
+        file.compacted = true;
+        let fake =
+            std::sync::Arc::new(er_git::FakeGit::default().with_diff_raw_file(Ok(raw.to_string())));
+
+        expand_compacted_file(&mut file, &*fake, "/repo", "branch", "main", None).unwrap();
+
+        assert_eq!(file.hunks.len(), 1);
+        assert!(!file.compacted);
+        assert_eq!(
+            fake.calls(),
+            vec![
+                "diff_raw_file(mode=\"branch\", base=\"main\", repo_root=\"/repo\", \
+                 path=\"f.rs\", context_lines=None, head_ref=None)"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn refetch_file_with_context_passes_the_context_to_the_handle() {
+        let raw = "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut file = parse_diff(raw).remove(0);
+        let fake =
+            std::sync::Arc::new(er_git::FakeGit::default().with_diff_raw_file(Ok(raw.to_string())));
+
+        refetch_file_with_context(&mut file, &*fake, "/repo", "branch", "main", 40, None).unwrap();
+
+        assert_eq!(file.hunks.len(), 1);
+        assert!(
+            fake.calls()[0].contains("context_lines=Some(40)"),
+            "{:?}",
+            fake.calls()
         );
     }
 }

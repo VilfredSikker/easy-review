@@ -46,6 +46,7 @@ pub struct PreloadedBranchRaw {
 /// [`fetch_branch_scope_raw`] on a worker thread.
 #[derive(Debug, Clone)]
 pub struct BranchScopeFetchInputs {
+    pub ports: crate::ports::Ports,
     pub repo_root: String,
     pub base_branch: String,
     pub local_branch_view: Option<String>,
@@ -85,23 +86,26 @@ pub fn fetch_branch_scope_raw(
         // working tree, not `gh pr diff`.
         return if let Some(checkout_root) = inputs.checkout_root.as_deref() {
             match scope {
-                "unstaged" | "staged" => {
-                    crate::git::git_diff_raw(scope, &inputs.base_branch, checkout_root, None)
-                        .map_err(anyhow::Error::from)
-                }
-                _ => crate::git::git_diff_checkout_against_base(checkout_root, &inputs.base_branch)
+                "unstaged" | "staged" => inputs
+                    .ports
+                    .git
+                    .diff_raw(scope, &inputs.base_branch, checkout_root, None)
+                    .map_err(anyhow::Error::from),
+                _ => inputs
+                    .ports
+                    .git
+                    .diff_checkout_against_base(checkout_root, &inputs.base_branch)
                     .map_err(anyhow::Error::from),
             }
         } else if let Some(head_ref) = inputs.pr_head_ref.as_deref() {
             if let Some(pr_number) = inputs.pr_number {
                 crate::github::gh_pr_diff(pr_number, &inputs.repo_root)
             } else {
-                crate::git::git_diff_against_branch(
-                    &inputs.repo_root,
-                    &inputs.base_branch,
-                    head_ref,
-                )
-                .map_err(anyhow::Error::from)
+                inputs
+                    .ports
+                    .git
+                    .diff_against_branch(&inputs.repo_root, &inputs.base_branch, head_ref)
+                    .map_err(anyhow::Error::from)
             }
         } else if let Some(pr_number) = inputs.pr_number {
             // Local PR tab whose refs haven't landed yet: fetch the PR-parity
@@ -111,7 +115,10 @@ pub fn fetch_branch_scope_raw(
             // silently fail when the branch isn't checked out locally).
             crate::github::gh_pr_diff(pr_number, &inputs.repo_root)
         } else {
-            crate::git::git_diff_against_branch(&inputs.repo_root, &inputs.base_branch, branch)
+            inputs
+                .ports
+                .git
+                .diff_against_branch(&inputs.repo_root, &inputs.base_branch, branch)
                 .map_err(anyhow::Error::from)
         };
     }
@@ -419,6 +426,7 @@ mod tests {
     #[test]
     fn dedupe_key_prefers_remote_slug_then_checkout_root() {
         let local = BranchScopeFetchInputs {
+            ports: crate::ports::Ports::for_test(),
             repo_root: "/r".to_string(),
             base_branch: "main".to_string(),
             local_branch_view: Some("f".to_string()),
@@ -544,6 +552,7 @@ mod tests {
             "feature".to_string(),
             DIFF.to_string(),
             Vec::new(),
+            crate::ports::Ports::for_test(),
         )
         .unwrap();
         assert_eq!(tab.remote_repo.as_deref(), Some("o/r"));

@@ -28,13 +28,13 @@ impl ErRoot {
     ///
     /// Each repository gets its own directory so two unresolved tabs never
     /// share a `session.json`, and none of them writes inside a repository.
-    pub fn unresolved(repo_root: &str) -> Self {
+    pub fn unresolved(repo_root: &str, git: &dyn er_git::Git) -> Self {
         let dir = crate::storage::storage_root().join("unresolved");
         if repo_root.is_empty() {
             return Self::managed(dir.to_string_lossy().into_owned());
         }
         Self::managed(
-            dir.join(crate::storage::slug_repo(repo_root))
+            dir.join(crate::storage::slug_repo(git, repo_root))
                 .to_string_lossy()
                 .into_owned(),
         )

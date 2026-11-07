@@ -282,9 +282,13 @@ fn resolve_local_feedback_target() -> Result<ResolvedPr, McpError> {
             "bucket=local could not resolve the current branch PR: {e}"
         ))
     })?;
-    let bucket_path = er_engine::storage::local_branch_bucket_dir(&repo_root, &branch)
-        .to_string_lossy()
-        .into_owned();
+    let bucket_path = er_engine::storage::local_branch_bucket_dir(
+        &*er_engine::ports::Ports::cli().git,
+        &repo_root,
+        &branch,
+    )
+    .to_string_lossy()
+    .into_owned();
     Ok(ResolvedPr {
         owner: owner.clone(),
         repo: repo.clone(),

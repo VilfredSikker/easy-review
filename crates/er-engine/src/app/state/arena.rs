@@ -991,7 +991,12 @@ mod tests {
     fn raw_diff_for_arena_uses_branch_view_not_head() {
         let dir = init_repo_with_branches();
         let root = dir.path().to_string_lossy().into_owned();
-        let mut tab = TabState::new_with_base_unloaded(root.clone(), "main".into()).unwrap();
+        let mut tab = TabState::new_with_base_unloaded(
+            root.clone(),
+            "main".into(),
+            crate::ports::Ports::cli(),
+        )
+        .unwrap();
         tab.local_branch_view = Some("feature".into());
 
         let naive = git::git_diff_raw("branch", "main", &root, None).unwrap();

@@ -592,6 +592,7 @@ mod tests {
 
         let root = root.to_string_lossy().into_owned();
         let mut tab = crate::app::TabState::new_for_test(Vec::new());
+        tab.ports = crate::ports::Ports::cli();
         tab.mode = DiffMode::Branch;
         tab.repo_root.clone_from(&root);
         tab.er_root = ErRoot::managed(format!("{root}/.er"));
@@ -602,6 +603,7 @@ mod tests {
         let er_dir = tab.er_dir();
 
         let mut app = App::new_for_test(Vec::new());
+        app.ports = crate::ports::Ports::cli();
         app.tabs[0] = tab;
         let target = BackgroundTaskTarget {
             repo_root: root.clone(),

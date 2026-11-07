@@ -51,6 +51,12 @@ struct FakeState {
     blame_range: Option<Result<LineAttribution, GitError>>,
     merge_base: Option<Result<String, GitError>>,
     rev_parse_commit: Option<Result<String, GitError>>,
+    remote_url: Option<Result<String, GitError>>,
+    rev_parse_verify: Option<Result<Option<String>, GitError>>,
+    fetch: Option<Result<(), GitError>>,
+    update_ref: Option<Result<(), GitError>>,
+    diff_revs: Option<Result<String, GitError>>,
+    shallow_clone: Option<Result<(), GitError>>,
 }
 
 fn unscripted(method: &str) -> GitError {
@@ -271,6 +277,42 @@ impl FakeGit {
     #[must_use]
     pub fn with_rev_parse_commit(self, value: Result<String, GitError>) -> Self {
         self.lock().rev_parse_commit = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_remote_url(self, value: Result<String, GitError>) -> Self {
+        self.lock().remote_url = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_rev_parse_verify(self, value: Result<Option<String>, GitError>) -> Self {
+        self.lock().rev_parse_verify = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_fetch(self, value: Result<(), GitError>) -> Self {
+        self.lock().fetch = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_update_ref(self, value: Result<(), GitError>) -> Self {
+        self.lock().update_ref = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_diff_revs(self, value: Result<String, GitError>) -> Self {
+        self.lock().diff_revs = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_shallow_clone(self, value: Result<(), GitError>) -> Self {
+        self.lock().shallow_clone = Some(value);
         self
     }
 }
@@ -589,6 +631,50 @@ impl Git for FakeGit {
         .rev_parse_commit
         .clone()
         .unwrap_or_else(|| Err(unscripted("rev_parse_commit")))
+    }
+
+    fn remote_url(&self, root: &str, name: &str) -> Result<String, GitError> {
+        self.record(format!("remote_url(root={root:?}, name={name:?})"))
+            .remote_url
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("remote_url")))
+    }
+
+    fn rev_parse_verify(&self, root: &str, rev: &str) -> Result<Option<String>, GitError> {
+        self.record(format!("rev_parse_verify(root={root:?}, rev={rev:?})"))
+            .rev_parse_verify
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("rev_parse_verify")))
+    }
+
+    fn fetch(&self, root: &str, args: &[&str]) -> Result<(), GitError> {
+        self.record(format!("fetch(root={root:?}, args={args:?})"))
+            .fetch
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("fetch")))
+    }
+
+    fn update_ref(&self, root: &str, name: &str, target: &str) -> Result<(), GitError> {
+        self.record(format!(
+            "update_ref(root={root:?}, name={name:?}, target={target:?})"
+        ))
+        .update_ref
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("update_ref")))
+    }
+
+    fn diff_revs(&self, root: &str, revs: &[&str]) -> Result<String, GitError> {
+        self.record(format!("diff_revs(root={root:?}, revs={revs:?})"))
+            .diff_revs
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("diff_revs")))
+    }
+
+    fn shallow_clone(&self, url: &str, dest: &str) -> Result<(), GitError> {
+        self.record(format!("shallow_clone(url={url:?}, dest={dest:?})"))
+            .shallow_clone
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("shallow_clone")))
     }
 }
 

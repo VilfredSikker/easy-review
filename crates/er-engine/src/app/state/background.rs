@@ -367,7 +367,10 @@ mod tests {
         if !ok {
             return;
         }
-        let mut tab = match TabState::new(tmp.to_string_lossy().to_string()) {
+        let mut tab = match TabState::new(
+            tmp.to_string_lossy().to_string(),
+            crate::ports::Ports::cli(),
+        ) {
             Ok(t) => t,
             Err(_) => return,
         };

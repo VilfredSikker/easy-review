@@ -215,6 +215,8 @@ fn main() -> Result<()> {
         }
     }
 
+    let ports = er_engine::ports::Ports::cli();
+
     // Remote mode: review PR(s) from GitHub API without local clone
     if cli.remote {
         github::ensure_gh_installed()?;
@@ -227,9 +229,9 @@ fn main() -> Result<()> {
         let first_url = urls[0];
         let pr_ref = github::parse_github_pr_url(first_url)
             .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {}", first_url))?;
-        let tab = app::TabState::new_remote(&pr_ref)?;
+        let tab = app::TabState::new_remote(&pr_ref, ports.clone())?;
         let pr_data = github::gh_pr_overview_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number);
-        let mut app = App::new_remote(tab, pr_data);
+        let mut app = App::new_remote(tab, pr_data, ports);
         app.tab_mut().reload_remote_comments();
 
         // Open additional remote PR tabs
@@ -269,7 +271,7 @@ fn main() -> Result<()> {
     }
 
     // Init app state (detects repo, branch, base branch, runs initial diff)
-    let mut app = App::new_with_args(&cli.paths)?;
+    let mut app = App::new_with_args(&cli.paths, ports)?;
 
     // Initialize theme from config
     ui::themes::set_theme_by_name(&app.config.display.theme);

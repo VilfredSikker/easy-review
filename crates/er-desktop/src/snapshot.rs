@@ -6533,7 +6533,7 @@ mod tests {
     /// snapshot misses either, a fresh install opens an empty review shell.
     #[test]
     fn empty_app_snapshot_matches_the_welcome_condition() {
-        let app = App::new_empty();
+        let app = App::new_empty(er_engine::ports::Ports::for_test());
         let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
         assert_eq!(snap.branch, "");
         assert!(snap.files.is_empty());
@@ -6658,6 +6658,7 @@ mod tests {
         let mut tab = TabState::new_with_base_unloaded(
             tmp.path().to_string_lossy().to_string(),
             "main".into(),
+            er_engine::ports::Ports::cli(),
         )
         .unwrap();
         tab.pr_number = Some(42);
