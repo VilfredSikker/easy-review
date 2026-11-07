@@ -35,6 +35,7 @@ crates/er-engine/src/ai/CLAUDE.md
 crates/er-engine/src/app/CLAUDE.md
 crates/er-engine/src/git/CLAUDE.md
 crates/er-git/CLAUDE.md
+crates/er-github/CLAUDE.md
 crates/er-engine/src/watch/CLAUDE.md
 crates/er-tui/src/ui/CLAUDE.md
 crates/er-desktop/agent.md
