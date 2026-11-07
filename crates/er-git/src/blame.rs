@@ -65,7 +65,7 @@ pub struct BlameRequest<'a> {
 }
 
 /// `git rev-parse --verify <rev>^{commit}` as a full oid.
-pub fn git_rev_parse_commit(repo_root: &str, rev: &str) -> Result<String, GitError> {
+pub(crate) fn git_rev_parse_commit(repo_root: &str, rev: &str) -> Result<String, GitError> {
     if rev.starts_with('-') {
         return Err(invalid(format!("Invalid revision: {rev}")));
     }
@@ -83,7 +83,7 @@ pub fn git_rev_parse_commit(repo_root: &str, rev: &str) -> Result<String, GitErr
 }
 
 /// `git merge-base <a> <b>`.
-pub fn git_merge_base(repo_root: &str, a: &str, b: &str) -> Result<String, GitError> {
+pub(crate) fn git_merge_base(repo_root: &str, a: &str, b: &str) -> Result<String, GitError> {
     if a.starts_with('-') || b.starts_with('-') {
         return Err(invalid("Invalid revision"));
     }
@@ -100,7 +100,7 @@ pub fn git_merge_base(repo_root: &str, a: &str, b: &str) -> Result<String, GitEr
 }
 
 /// Attribute one file's changed lines to the range's commits.
-pub fn blame_range(request: &BlameRequest<'_>) -> Result<LineAttribution, GitError> {
+pub(crate) fn blame_range(request: &BlameRequest<'_>) -> Result<LineAttribution, GitError> {
     let end_rev = match request.end {
         BlameEnd::Rev(rev) => rev,
         BlameEnd::WorkingTree => "HEAD",

@@ -269,9 +269,15 @@ fn feedback_bucket(value: Option<&str>) -> Result<&str, McpError> {
 }
 
 fn resolve_local_feedback_target() -> Result<ResolvedPr, McpError> {
-    let repo_root = er_engine::git::get_repo_root().map_err(|e| tool_err(e.to_string()))?;
-    let branch =
-        er_engine::git::get_current_branch_in(&repo_root).map_err(|e| tool_err(e.to_string()))?;
+    let ports = er_engine::ports::Ports::cli();
+    let repo_root = ports
+        .git
+        .repo_root_cwd()
+        .map_err(|e| tool_err(e.to_string()))?;
+    let branch = ports
+        .git
+        .current_branch(&repo_root)
+        .map_err(|e| tool_err(e.to_string()))?;
     if branch.is_empty() || branch == "HEAD" {
         return Err(tool_err(
             "bucket=local requires a checked-out branch, not a detached HEAD",

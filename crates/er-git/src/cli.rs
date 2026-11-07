@@ -97,6 +97,20 @@ pub trait Git: Send + Sync {
     fn update_ref(&self, root: &str, name: &str, target: &str) -> Result<(), GitError>;
     fn diff_revs(&self, root: &str, revs: &[&str]) -> Result<String, GitError>;
     fn shallow_clone(&self, url: &str, dest: &str) -> Result<(), GitError>;
+
+    fn show_ref_verify(&self, root: &str, refname: &str) -> Result<bool, GitError>;
+    fn current_branch_show(&self, root: &str) -> Result<String, GitError>;
+    fn for_each_ref(
+        &self,
+        root: &str,
+        format: &str,
+        sort: Option<&str>,
+        pattern: &str,
+    ) -> Result<String, GitError>;
+    fn ls_remote(&self, root: &str, remote: &str, refname: &str) -> Result<String, GitError>;
+    fn config_get_regexp(&self, root: &str, pattern: &str) -> Result<String, GitError>;
+    fn rev_list_count(&self, root: &str, range: &str) -> Result<String, GitError>;
+    fn branch_merged(&self, root: &str, base: &str) -> Result<String, GitError>;
 }
 
 /// The adapter that runs the real git binary.
@@ -305,6 +319,40 @@ impl Git for CliGit {
     fn shallow_clone(&self, url: &str, dest: &str) -> Result<(), GitError> {
         crate::status::git_shallow_clone(url, dest)
     }
+
+    fn show_ref_verify(&self, root: &str, refname: &str) -> Result<bool, GitError> {
+        crate::status::git_show_ref_verify(root, refname)
+    }
+
+    fn current_branch_show(&self, root: &str) -> Result<String, GitError> {
+        crate::status::git_current_branch_show(root)
+    }
+
+    fn for_each_ref(
+        &self,
+        root: &str,
+        format: &str,
+        sort: Option<&str>,
+        pattern: &str,
+    ) -> Result<String, GitError> {
+        crate::status::git_for_each_ref(root, format, sort, pattern)
+    }
+
+    fn ls_remote(&self, root: &str, remote: &str, refname: &str) -> Result<String, GitError> {
+        crate::status::git_ls_remote(root, remote, refname)
+    }
+
+    fn config_get_regexp(&self, root: &str, pattern: &str) -> Result<String, GitError> {
+        crate::status::git_config_get_regexp(root, pattern)
+    }
+
+    fn rev_list_count(&self, root: &str, range: &str) -> Result<String, GitError> {
+        crate::status::git_rev_list_count(root, range)
+    }
+
+    fn branch_merged(&self, root: &str, base: &str) -> Result<String, GitError> {
+        crate::status::git_branch_merged(root, base)
+    }
 }
 
 #[cfg(test)]
@@ -399,6 +447,88 @@ mod tests {
         let raw = CliGit.diff_revs(root, &["main...HEAD"]).unwrap();
 
         assert!(raw.contains("+two"), "{raw}");
+    }
+
+    #[test]
+    fn show_ref_verify_is_false_for_a_missing_branch() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path().to_str().unwrap();
+
+        assert!(CliGit.show_ref_verify(root, "refs/heads/feature").unwrap());
+        assert!(!CliGit
+            .show_ref_verify(root, "refs/heads/not-there")
+            .unwrap());
+    }
+
+    #[test]
+    fn current_branch_show_names_the_checked_out_branch() {
+        let dir = repo_with_a_feature_commit();
+        assert_eq!(
+            CliGit
+                .current_branch_show(dir.path().to_str().unwrap())
+                .unwrap(),
+            "feature"
+        );
+    }
+
+    #[test]
+    fn for_each_ref_returns_the_requested_format() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path().to_str().unwrap();
+
+        let names = CliGit
+            .for_each_ref(root, "%(refname:short)", None, "refs/heads/")
+            .unwrap();
+        assert!(names.lines().any(|l| l == "feature"), "{names}");
+        assert!(names.lines().any(|l| l == "main"), "{names}");
+
+        let sorted = CliGit
+            .for_each_ref(
+                root,
+                "%(refname:short)",
+                Some("-committerdate"),
+                "refs/heads/",
+            )
+            .unwrap();
+        assert!(sorted.lines().any(|l| l == "feature"), "{sorted}");
+    }
+
+    #[test]
+    fn config_get_regexp_lists_remote_urls() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path();
+        git(
+            root,
+            &["remote", "add", "origin", "git@example.invalid:o/r.git"],
+        );
+
+        let out = CliGit
+            .config_get_regexp(root.to_str().unwrap(), r"^remote\..*\.url$")
+            .unwrap();
+
+        assert!(out.contains("remote.origin.url"), "{out}");
+    }
+
+    #[test]
+    fn rev_list_count_counts_commits_in_a_range() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path().to_str().unwrap();
+
+        assert_eq!(CliGit.rev_list_count(root, "main..feature").unwrap(), "1");
+    }
+
+    #[test]
+    fn branch_merged_lists_branches_merged_into_base() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path();
+        git(root, &["checkout", "-q", "main"]);
+        git(root, &["merge", "--no-ff", "-m", "merge", "feature"]);
+
+        let merged = CliGit
+            .branch_merged(root.to_str().unwrap(), "main")
+            .unwrap();
+
+        assert!(merged.lines().any(|l| l.trim() == "feature"), "{merged}");
     }
 
     #[test]

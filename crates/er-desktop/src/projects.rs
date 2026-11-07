@@ -393,15 +393,10 @@ fn sanitize_id(name: &str) -> String {
 }
 
 fn current_branch(root_path: &str) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .args(["branch", "--show-current"])
-        .current_dir(root_path)
-        .output()
+    let s = er_engine::ports::Ports::cli()
+        .git
+        .current_branch_show(root_path)
         .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() {
         None
     } else {
@@ -509,16 +504,11 @@ pub fn slug_from_remote_url(url: &str) -> Option<String> {
 fn local_remote_url(root_path: &str) -> Option<String> {
     // `--local` so this reads the repository's own remotes rather than whatever
     // the user's global config happens to hold.
-    let out = std::process::Command::new("git")
-        .args(["config", "--local", "--get-regexp", r"^remote\..*\.url$"])
-        .current_dir(root_path)
-        .output()
+    let stdout = er_engine::ports::Ports::cli()
+        .git
+        .config_get_regexp(root_path, r"^remote\..*\.url$")
         .ok()?;
-    if !out.status.success() {
-        return None;
-    }
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
     let mut urls: Vec<(String, String)> = Vec::new();
     for line in stdout.lines() {
         // `remote.<name>.url <value>` — the value may itself contain spaces.
@@ -653,10 +643,11 @@ pub fn sync_projects_from_tabs(tabs: &[er_engine::app::TabState]) {
     }
     use std::collections::HashSet;
     let refs: Vec<TabProjectRef> = tabs.iter().map(TabProjectRef::from_tab).collect();
+    let git = &*tabs[0].ports.git;
     let mut seen_roots = HashSet::new();
     for r in &refs {
         if !r.repo_root.is_empty() && seen_roots.insert(r.repo_root.clone()) {
-            let _ = auto_register(&r.repo_root);
+            let _ = auto_register(git, &r.repo_root);
         }
     }
     let mut seen_remotes = HashSet::new();
@@ -689,15 +680,15 @@ fn needs_remote_query(file: &ProjectsFile, root_path: &str) -> bool {
 /// picked, and `git remote` resolves from anywhere inside a repo, so a row
 /// named after a crate directory would take the real repo's remote and collect
 /// its PRs and inbox items under an id no other code could resolve.
-fn project_root_for(path: &str) -> Option<String> {
-    let root = er_engine::git::get_repo_root_at(path).ok()?;
+fn project_root_for(git: &dyn er_engine::git::Git, path: &str) -> Option<String> {
+    let root = git.repo_root_at(path).ok()?;
     Some(root).filter(|r| !r.is_empty())
 }
 
 /// Register the repository containing `root_path`, or `None` when the path
 /// isn't in a repository. Returns the existing row when one already covers it.
-pub fn auto_register(root_path: &str) -> Option<ProjectRecord> {
-    let root_path = project_root_for(root_path)?;
+pub fn auto_register(git: &dyn er_engine::git::Git, root_path: &str) -> Option<ProjectRecord> {
+    let root_path = project_root_for(git, root_path)?;
     let root_path = root_path.as_str();
     let mut file = load();
 
@@ -1349,8 +1340,9 @@ mod tests {
 
         // Compare against git's own answer for the top level: on macOS the
         // temp path is a /var symlink and git reports the resolved /private/var.
-        let top = project_root_for(repo.to_str().unwrap()).expect("repo root resolves");
-        let from_subdir = project_root_for(repo.join("crates/er-desktop").to_str().unwrap());
+        let git = &*er_engine::ports::Ports::cli().git;
+        let top = project_root_for(git, repo.to_str().unwrap()).expect("repo root resolves");
+        let from_subdir = project_root_for(git, repo.join("crates/er-desktop").to_str().unwrap());
         assert_eq!(
             from_subdir,
             Some(top),
@@ -1361,7 +1353,10 @@ mod tests {
     #[test]
     fn project_root_for_rejects_a_path_outside_any_repository() {
         assert_eq!(
-            project_root_for("/nonexistent-path-for-er-project-test"),
+            project_root_for(
+                &*er_engine::ports::Ports::cli().git,
+                "/nonexistent-path-for-er-project-test"
+            ),
             None
         );
     }

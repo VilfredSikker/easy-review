@@ -282,7 +282,9 @@ fn run_branch_triage_once(
         .git
         .detect_base_branch(repo_root)
         .map_err(|e| e.to_string())?;
-    let mut raw_diff = er_engine::git::git_diff_raw_range(&base_branch, branch, repo_root)
+    let mut raw_diff = ports
+        .git
+        .diff_raw_range(&base_branch, branch, repo_root)
         .map_err(|e| e.to_string())?;
     if !review_ignore_globs.is_empty() {
         raw_diff = er_engine::git::filter_raw_diff_exclude_globs(&raw_diff, review_ignore_globs);

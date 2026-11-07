@@ -749,18 +749,14 @@ pub fn compute_oid_staleness(
 /// `GIT_NO_LAZY_FETCH` keeps a partial clone from downloading a missing commit:
 /// the snapshot never fetches, and an object that is not local yet is an
 /// unknown count, not a reason to block the build on the network.
-fn rev_list_count(repo_root: &str, from: &str, to: &str) -> Option<usize> {
+fn rev_list_count(
+    git: &dyn er_engine::git::Git,
+    repo_root: &str,
+    from: &str,
+    to: &str,
+) -> Option<usize> {
     let range = format!("{from}..{to}");
-    let out = std::process::Command::new("git")
-        .args(["rev-list", "--count", &range])
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .current_dir(repo_root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    git.rev_list_count(repo_root, &range).ok()?.parse().ok()
 }
 
 type CommitsBehindKey = (String, String, String);
@@ -777,7 +773,12 @@ const COMMITS_BEHIND_CACHE_CAP: usize = 8;
 
 const COMMITS_BEHIND_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
-fn commits_behind_cached(repo_root: &str, built_from: &str, latest: &str) -> Option<usize> {
+fn commits_behind_cached(
+    git: &dyn er_engine::git::Git,
+    repo_root: &str,
+    built_from: &str,
+    latest: &str,
+) -> Option<usize> {
     let key = (
         repo_root.to_string(),
         built_from.to_string(),
@@ -791,7 +792,7 @@ fn commits_behind_cached(repo_root: &str, built_from: &str, latest: &str) -> Opt
             return *count;
         }
     }
-    let count = rev_list_count(repo_root, built_from, latest);
+    let count = rev_list_count(git, repo_root, built_from, latest);
     if let Ok(mut guard) = COMMITS_BEHIND_CACHE.lock() {
         guard.retain(|(k, at, _)| *k != key && at.elapsed() < COMMITS_BEHIND_TTL);
         if guard.len() >= COMMITS_BEHIND_CACHE_CAP {
@@ -899,12 +900,12 @@ fn local_branch_divergence_for(
         if root == tab.repo_root {
             stat.files
         } else {
-            er_engine::git::diff_shortstat(root, false).0
+            tab.ports.git.diff_shortstat(root, false).0
         }
     });
     // Resolved so the cache key moves with a new commit or a checkout.
     let ahead = er_engine::github::rev_parse_oid(&*tab.ports.git, root, "HEAD")
-        .and_then(|head| commits_behind_cached(root, pr_head, &head));
+        .and_then(|head| commits_behind_cached(&*tab.ports.git, root, pr_head, &head));
     Some(LocalBranchDivergenceSnapshot {
         pr_head_oid: pr_head.to_string(),
         ahead,
@@ -2379,8 +2380,12 @@ pub type MetaCache = std::sync::Arc<Mutex<HashMap<String, ProjectMeta>>>;
 
 /// Refresh the per-project metadata cache by shelling out to git for each
 /// known project. MUST NOT hold `AppState.app` — runs on a background thread.
-pub fn refresh_meta_cache(active_root: &str, cache: &MetaCache) -> bool {
-    refresh_meta_cache_filtered(active_root, cache, None)
+pub fn refresh_meta_cache(
+    git: &dyn er_engine::git::Git,
+    active_root: &str,
+    cache: &MetaCache,
+) -> bool {
+    refresh_meta_cache_filtered(git, active_root, cache, None)
 }
 
 /// Variant that refreshes a single project (by id), leaving entries for other
@@ -2388,8 +2393,12 @@ pub fn refresh_meta_cache(active_root: &str, cache: &MetaCache) -> bool {
 /// projects untouched. Used at startup so the active project's branches show
 /// up immediately without paying for `git branch / worktree list / base
 /// detection` on every other registered project first.
-pub fn refresh_meta_cache_for_project(project_id: &str, cache: &MetaCache) -> bool {
-    refresh_meta_cache_filtered("", cache, Some(project_id))
+pub fn refresh_meta_cache_for_project(
+    git: &dyn er_engine::git::Git,
+    project_id: &str,
+    cache: &MetaCache,
+) -> bool {
+    refresh_meta_cache_filtered(git, "", cache, Some(project_id))
 }
 
 pub fn meta_cache_fingerprint(cache: &MetaCache) -> u64 {
@@ -2409,6 +2418,7 @@ pub fn meta_cache_fingerprint(cache: &MetaCache) -> u64 {
 }
 
 fn refresh_meta_cache_filtered(
+    git: &dyn er_engine::git::Git,
     active_root: &str,
     cache: &MetaCache,
     only_project_id: Option<&str>,
@@ -2422,10 +2432,11 @@ fn refresh_meta_cache_filtered(
         .filter(|p| !p.root_path.is_empty())
         .filter(|p| only_project_id.is_none_or(|id| p.id == id))
         .map(|p| {
-            let current_branch = detect_current_branch(&p.root_path);
-            let base_branch = detect_base_branch(&p.root_path);
-            let raw_worktrees = er_engine::git::list_worktrees(&p.root_path).unwrap_or_default();
+            let current_branch = detect_current_branch(git, &p.root_path);
+            let base_branch = detect_base_branch(git, &p.root_path);
+            let raw_worktrees = git.list_worktrees(&p.root_path).unwrap_or_default();
             let local_branches = build_tracked_branches(
+                git,
                 &p.root_path,
                 &base_branch,
                 &current_branch,
@@ -2434,6 +2445,7 @@ fn refresh_meta_cache_filtered(
                 &raw_worktrees,
             );
             let auto_branches = build_auto_branches(
+                git,
                 &p.root_path,
                 &base_branch,
                 &current_branch,
@@ -3438,8 +3450,12 @@ fn build_snapshot_inner(
     // A remote PR tab has no clone to count in.
     let diff_stale = diff_stale.map(|mut stale| {
         if !tab.is_remote() {
-            stale.commits_behind =
-                commits_behind_cached(&tab.repo_root, &stale.built_from_oid, &stale.latest_oid);
+            stale.commits_behind = commits_behind_cached(
+                &*tab.ports.git,
+                &tab.repo_root,
+                &stale.built_from_oid,
+                &stale.latest_oid,
+            );
         }
         stale
     });
@@ -3456,7 +3472,7 @@ fn build_snapshot_inner(
     {
         let stat = |staged| {
             let (files, additions, deletions) =
-                er_engine::git::diff_shortstat(&tab.repo_root, staged);
+                tab.ports.git.diff_shortstat(&tab.repo_root, staged);
             ScopeStat {
                 files,
                 additions,
@@ -3523,7 +3539,12 @@ fn build_snapshot_inner(
         worktrees: if chrome_only {
             Vec::new()
         } else {
-            build_worktrees(&tab.repo_root, &tab.base_branch, &tab.repo_root)
+            build_worktrees(
+                &*tab.ports.git,
+                &tab.repo_root,
+                &tab.base_branch,
+                &tab.repo_root,
+            )
         },
         projects: build_projects(tab, pr_cache, pr_cache_fetched_at, meta_cache, gh_user),
         notification: app.notification.clone(),
@@ -3714,12 +3735,15 @@ fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
         // wrong branch (e.g. main). The branch ref resolves in the main clone too.
         // Matches the source History mode uses so clicking a commit resolves it.
         let head_ref = tab.commit_head_ref();
-        let ranged = er_engine::git::git_log_range(&tab.base_branch, head_ref, log_root, LIMIT, 0)
+        let ranged = tab
+            .ports
+            .git
+            .log_range(&tab.base_branch, head_ref, log_root, LIMIT, 0)
             .unwrap_or_default();
         if ranged.is_empty() {
             // On the base branch itself `base..HEAD` is empty — fall back to
             // recent HEAD history so the commit scroller still shows something.
-            er_engine::git::git_log_head(log_root, LIMIT).unwrap_or_default()
+            tab.ports.git.log_head(log_root, LIMIT).unwrap_or_default()
         } else {
             ranged
         }
@@ -3743,19 +3767,16 @@ fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
                 .filter(|c| !c.diffstat_known)
                 .map(|c| c.hash.as_str())
                 .collect();
-            let stats = er_engine::git::git_commit_shortstats(log_root, &missing);
+            let stats = tab.ports.git.commit_shortstats(log_root, &missing);
             let unpushed = if listed_by_github {
                 std::collections::HashSet::new()
             } else {
                 // A local PR tab's fetched head counts as pushed even when it
                 // lives outside refs/remotes (a fork's PR).
                 let pushed_refs: Vec<&str> = tab.pr_head_ref.as_deref().into_iter().collect();
-                er_engine::git::git_unpushed_shas(
-                    log_root,
-                    tab.commit_head_ref(),
-                    &pushed_refs,
-                    LIMIT,
-                )
+                tab.ports
+                    .git
+                    .unpushed_shas(log_root, tab.commit_head_ref(), &pushed_refs, LIMIT)
             };
             CommitMeta { stats, unpushed }
         })
@@ -3969,10 +3990,11 @@ fn worktrees_meta_cached(
 
 /// The worktree list, plus the cache key its contents fingerprint to.
 fn worktrees_list_and_key(
+    git: &dyn er_engine::git::Git,
     repo_root: &str,
     base_branch: &str,
 ) -> (Vec<er_engine::git::Worktree>, WorktreesMetaKey) {
-    let wts = er_engine::git::list_worktrees(repo_root).unwrap_or_default();
+    let wts = git.list_worktrees(repo_root).unwrap_or_default();
 
     let fingerprint = {
         use std::hash::{Hash, Hasher};
@@ -4011,13 +4033,14 @@ fn worktrees_list_and_key(
 /// identical subprocesses for one answer, on the snapshot path with the App lock
 /// held.
 fn compute_worktrees_meta(
+    git: &dyn er_engine::git::Git,
     wts: &[er_engine::git::Worktree],
     repo_root: &str,
     base_branch: &str,
 ) -> WorktreeMetaMap {
     let repo_remote = crate::projects::resolve_repo_remote(repo_root);
-    let merges = pr_branch_merges(repo_root);
-    let merged = merged_branches(repo_root, base_branch, wts.len());
+    let merges = pr_branch_merges(git, repo_root);
+    let merged = merged_branches(git, repo_root, base_branch, wts.len());
     wts.iter()
         .map(|wt| {
             let (is_pr, pr_number, is_merged) =
@@ -4045,7 +4068,7 @@ static WORKTREES_WARM_IN_FLIGHT: Mutex<Option<(String, String)>> = Mutex::new(No
 /// TTL requires, which costs more than the miss it avoids. The gate matches the
 /// key's first two fields, so it never computes the fingerprint (which needs
 /// `list_worktrees`) just to ask whether a warm is due.
-pub fn kick_worktrees_warm(repo_root: &str, base_branch: &str) {
+pub fn kick_worktrees_warm(ports: er_engine::ports::Ports, repo_root: &str, base_branch: &str) {
     if repo_root.is_empty() {
         return;
     }
@@ -4073,8 +4096,10 @@ pub fn kick_worktrees_warm(repo_root: &str, base_branch: &str) {
     }
 
     std::thread::spawn(move || {
-        let (wts, key) = worktrees_list_and_key(&pair.0, &pair.1);
-        let _ = worktrees_meta_cached(key, || compute_worktrees_meta(&wts, &pair.0, &pair.1));
+        let (wts, key) = worktrees_list_and_key(&*ports.git, &pair.0, &pair.1);
+        let _ = worktrees_meta_cached(key, || {
+            compute_worktrees_meta(&*ports.git, &wts, &pair.0, &pair.1)
+        });
         if let Ok(mut g) = WORKTREES_WARM_IN_FLIGHT.lock() {
             if g.as_ref() == Some(&pair) {
                 *g = None;
@@ -4084,13 +4109,16 @@ pub fn kick_worktrees_warm(repo_root: &str, base_branch: &str) {
 }
 
 fn build_worktrees(
+    git: &dyn er_engine::git::Git,
     repo_root: &str,
     base_branch: &str,
     current_root: &str,
 ) -> Vec<WorktreeSnapshot> {
-    let (wts, key) = worktrees_list_and_key(repo_root, base_branch);
+    let (wts, key) = worktrees_list_and_key(git, repo_root, base_branch);
 
-    let meta = worktrees_meta_cached(key, || compute_worktrees_meta(&wts, repo_root, base_branch));
+    let meta = worktrees_meta_cached(key, || {
+        compute_worktrees_meta(git, &wts, repo_root, base_branch)
+    });
 
     wts.into_iter()
         .map(|wt| {
@@ -4118,25 +4146,19 @@ fn build_worktrees(
 /// 100 branches — all asking the same question of the same base. Empty when the
 /// answer cannot be established, which callers read as "nothing is merged",
 /// matching the per-branch form's `.unwrap_or(false)`.
-fn merged_into_base(repo_root: &str, base_branch: &str) -> std::collections::HashSet<String> {
+fn merged_into_base(
+    git: &dyn er_engine::git::Git,
+    repo_root: &str,
+    base_branch: &str,
+) -> std::collections::HashSet<String> {
     if base_branch.is_empty() {
         return std::collections::HashSet::new();
     }
-    std::process::Command::new("git")
-        .args([
-            "branch",
-            "--merged",
-            base_branch,
-            // `--format` drops the `* `/`+ ` prefixes `git branch` adds for the
-            // current and worktree branches, so the output is bare names.
-            "--format=%(refname:short)",
-        ])
-        .current_dir(repo_root)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
+    // `--format` drops the `* `/`+ ` prefixes `git branch` adds for the current
+    // and worktree branches, so the output is bare names.
+    git.branch_merged(repo_root, base_branch)
+        .map(|stdout| {
+            stdout
                 .lines()
                 .map(|line| line.trim().to_string())
                 .filter(|line| !line.is_empty())
@@ -4159,6 +4181,7 @@ const MAX_WORKTREES_FOR_MERGED_CHECK: usize = 10;
 /// established (no base branch, git failed) — callers treat all three alike, so
 /// they only need `contains`.
 fn merged_branches(
+    git: &dyn er_engine::git::Git,
     repo_root: &str,
     base_branch: &str,
     worktree_count: usize,
@@ -4166,10 +4189,11 @@ fn merged_branches(
     if worktree_count > MAX_WORKTREES_FOR_MERGED_CHECK {
         return std::collections::HashSet::new();
     }
-    merged_into_base(repo_root, base_branch)
+    merged_into_base(git, repo_root, base_branch)
 }
 
 fn build_tracked_branches(
+    git: &dyn er_engine::git::Git,
     repo_root: &str,
     base_branch: &str,
     current_branch: &str,
@@ -4177,23 +4201,16 @@ fn build_tracked_branches(
     dismissed: &[String],
     worktrees: &[er_engine::git::Worktree],
 ) -> Vec<BranchInfo> {
-    let out = std::process::Command::new("git")
-        .args([
-            "for-each-ref",
-            "--format=%(refname:short)|%(upstream:short)",
-            "refs/heads/",
-        ])
-        .current_dir(repo_root)
-        .output();
-    let Ok(out) = out else {
+    let Ok(text) = git.for_each_ref(
+        repo_root,
+        "%(refname:short)|%(upstream:short)",
+        None,
+        "refs/heads/",
+    ) else {
         return Vec::new();
     };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
 
-    let merged = merged_branches(repo_root, base_branch, worktrees.len());
+    let merged = merged_branches(git, repo_root, base_branch, worktrees.len());
 
     // Build the full list first, then filter to the curated set (tracked ∪ {current}).
     let all: Vec<BranchInfo> = text
@@ -4258,7 +4275,12 @@ fn build_tracked_branches(
     visible
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per branch-list input"
+)]
 fn build_auto_branches(
+    git: &dyn er_engine::git::Git,
     repo_root: &str,
     base_branch: &str,
     current_branch: &str,
@@ -4267,24 +4289,16 @@ fn build_auto_branches(
     limit: usize,
     worktrees: &[er_engine::git::Worktree],
 ) -> Vec<BranchInfo> {
-    let out = std::process::Command::new("git")
-        .args([
-            "for-each-ref",
-            "--sort=-committerdate",
-            "--format=%(refname:short)|%(upstream:short)",
-            "refs/heads/",
-        ])
-        .current_dir(repo_root)
-        .output();
-    let Ok(out) = out else {
+    let Ok(text) = git.for_each_ref(
+        repo_root,
+        "%(refname:short)|%(upstream:short)",
+        Some("-committerdate"),
+        "refs/heads/",
+    ) else {
         return Vec::new();
     };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
 
-    let merged = merged_branches(repo_root, base_branch, worktrees.len());
+    let merged = merged_branches(git, repo_root, base_branch, worktrees.len());
 
     let tracked_set: std::collections::HashSet<&str> = tracked.iter().map(|s| s.as_str()).collect();
     let dismissed_set: std::collections::HashSet<&str> =
@@ -4722,37 +4736,19 @@ fn build_projects_from_file(
         .collect()
 }
 
-fn detect_current_branch(repo_root: &str) -> String {
-    std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(repo_root)
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default()
+fn detect_current_branch(git: &dyn er_engine::git::Git, repo_root: &str) -> String {
+    git.current_branch(repo_root).unwrap_or_default()
 }
 
-fn detect_base_branch(repo_root: &str) -> String {
+fn detect_base_branch(git: &dyn er_engine::git::Git, repo_root: &str) -> String {
     // Cheap fallback: try common defaults
     for candidate in ["main", "master", "develop", "dev"] {
-        let out = std::process::Command::new("git")
-            .args([
-                "rev-parse",
-                "--verify",
-                &format!("refs/heads/{}", candidate),
-            ])
-            .current_dir(repo_root)
-            .output();
-        if let Ok(o) = out {
-            if o.status.success() {
-                return candidate.to_string();
-            }
+        let spec = format!("refs/heads/{candidate}");
+        if git
+            .rev_parse_verify(repo_root, &spec)
+            .is_ok_and(|oid| oid.is_some())
+        {
+            return candidate.to_string();
         }
     }
     String::new()
@@ -5354,18 +5350,11 @@ pub fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
 ///
 /// Branch config is repository-wide, so this answers for every worktree at once
 /// and belongs outside any per-worktree loop.
-fn pr_branch_merges(repo_root: &str) -> HashMap<String, String> {
-    let Ok(out) = std::process::Command::new("git")
-        .args(["config", "--local", "--get-regexp", r"^branch\..*\.merge$"])
-        .current_dir(repo_root)
-        .output()
-    else {
+fn pr_branch_merges(git: &dyn er_engine::git::Git, repo_root: &str) -> HashMap<String, String> {
+    let Ok(stdout) = git.config_get_regexp(repo_root, r"^branch\..*\.merge$") else {
         return HashMap::new();
     };
-    if !out.status.success() {
-        return HashMap::new();
-    }
-    String::from_utf8_lossy(&out.stdout)
+    stdout
         .lines()
         .filter_map(|line| {
             let (key, value) = line.split_once(' ')?;
@@ -5417,6 +5406,15 @@ fn status_str(status: &FileStatus) -> String {
 mod tests {
     use super::*;
     use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
+
+    /// Snapshot builders reach git; a test app that exercises them uses the
+    /// real adapter rather than the unscripted fake.
+    fn use_cli_ports(app: &mut App) {
+        app.ports = er_engine::ports::Ports::cli();
+        for tab in &mut app.tabs {
+            tab.ports = er_engine::ports::Ports::cli();
+        }
+    }
 
     #[test]
     fn review_flow_snapshot_keeps_captured_task_identity_and_wire_status() {
@@ -5564,12 +5562,21 @@ mod tests {
         let main = rev_parse(tmp.path(), "main");
         let feature = rev_parse(tmp.path(), "feature");
 
-        assert_eq!(commits_behind_cached(&root, &main, &feature), Some(1));
-        assert_eq!(commits_behind_cached(&root, &feature, &main), Some(0));
+        assert_eq!(
+            commits_behind_cached(&*er_engine::ports::Ports::cli().git, &root, &main, &feature),
+            Some(1)
+        );
+        assert_eq!(
+            commits_behind_cached(&*er_engine::ports::Ports::cli().git, &root, &feature, &main),
+            Some(0)
+        );
         // A head pushed since the last fetch is not in the object store: no
         // count rather than a wrong one.
         let missing = "0123456789abcdef0123456789abcdef01234567";
-        assert_eq!(commits_behind_cached(&root, &main, missing), None);
+        assert_eq!(
+            commits_behind_cached(&*er_engine::ports::Ports::cli().git, &root, &main, missing),
+            None
+        );
     }
 
     #[test]
@@ -6295,6 +6302,7 @@ mod tests {
     #[test]
     fn pr_commit_snapshot_uses_cached_pr_commits() {
         let mut tab = TabState::new_for_test(vec![]);
+        tab.ports = er_engine::ports::Ports::cli();
         tab.pr_number = Some(42);
         tab.local_branch_view = Some("feature".to_string());
         tab.pr_commits = vec![
@@ -6413,6 +6421,7 @@ mod tests {
         let (mut app, pr_cache) =
             pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
         let mut working = TabState::new_for_test(vec![]);
+        working.ports = er_engine::ports::Ports::cli();
         working.repo_root = "/tmp/test".to_string();
         app.tabs.push(working);
         app.tabs.swap(0, 1);
@@ -6439,7 +6448,9 @@ mod tests {
     #[test]
     fn inactive_pr_tab_without_a_baseline_is_not_stale() {
         let (mut app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, None, "head2");
-        app.tabs.push(TabState::new_for_test(vec![]));
+        let mut working = TabState::new_for_test(vec![]);
+        working.ports = er_engine::ports::Ports::cli();
+        app.tabs.push(working);
         app.active_tab = 1;
 
         assert!(!snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
@@ -6469,7 +6480,9 @@ mod tests {
                 tab.mode = DiffMode::PrDiff;
                 tab.last_diff_head_oid = Some(built_from.to_string());
             }
-            app.tabs.push(TabState::new_for_test(vec![]));
+            let mut working = TabState::new_for_test(vec![]);
+            working.ports = er_engine::ports::Ports::cli();
+            app.tabs.push(working);
 
             app.active_tab = 0;
             let active = snapshot_with_cache(&app, &pr_cache);
@@ -6538,7 +6551,7 @@ mod tests {
     /// snapshot misses either, a fresh install opens an empty review shell.
     #[test]
     fn empty_app_snapshot_matches_the_welcome_condition() {
-        let app = App::new_empty(er_engine::ports::Ports::for_test());
+        let app = App::new_empty(er_engine::ports::Ports::cli());
         let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
         assert_eq!(snap.branch, "");
         assert!(snap.files.is_empty());
@@ -6596,6 +6609,7 @@ mod tests {
     fn local_branch_commit_snapshot_still_uses_git_log_range() {
         let tmp = init_repo_with_feature_commit();
         let mut tab = TabState::new_for_test(vec![]);
+        tab.ports = er_engine::ports::Ports::cli();
         tab.repo_root = tmp.path().to_string_lossy().to_string();
         tab.base_branch = "main".to_string();
         tab.current_branch = "feature".to_string();
@@ -6619,6 +6633,7 @@ mod tests {
             &["update-ref", "refs/remotes/origin/feature", "feature"],
         );
         let mut tab = TabState::new_for_test(vec![]);
+        tab.ports = er_engine::ports::Ports::cli();
         tab.repo_root = tmp.path().to_string_lossy().to_string();
         tab.base_branch = "main".to_string();
         tab.current_branch = "feature".to_string();
@@ -6635,6 +6650,7 @@ mod tests {
         let tmp = init_repo_with_feature_commit();
         let feature_sha = run_git(tmp.path(), &["rev-parse", "feature"]);
         let mut tab = TabState::new_for_test(vec![]);
+        tab.ports = er_engine::ports::Ports::cli();
         tab.repo_root = tmp.path().to_string_lossy().to_string();
         tab.pr_number = Some(42);
         tab.local_branch_view = Some("feature".to_string());
@@ -6920,7 +6936,8 @@ mod tests {
     #[test]
     fn differential_snapshot_omits_unchanged_hunks() {
         let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
-        let app = er_engine::app::App::new_for_test(files);
+        let mut app = er_engine::app::App::new_for_test(files);
+        use_cli_ports(&mut app);
         let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
 
         // First snapshot sends full hunks.
@@ -6944,6 +6961,7 @@ mod tests {
     fn differential_snapshot_resends_on_content_change() {
         let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
         let mut app = er_engine::app::App::new_for_test(files);
+        use_cli_ports(&mut app);
         let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
 
         let s1 = delta_snap(&app, &sent);
@@ -6967,6 +6985,7 @@ mod tests {
     fn differential_snapshot_resends_when_threads_change() {
         let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
         let mut app = er_engine::app::App::new_for_test(files);
+        use_cli_ports(&mut app);
         let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
 
         let s1 = delta_snap(&app, &sent);
@@ -7001,6 +7020,7 @@ mod tests {
     fn differential_snapshot_clears_on_view_change_and_reset() {
         let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
         let mut app = er_engine::app::App::new_for_test(files);
+        use_cli_ports(&mut app);
         let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
 
         let _ = delta_snap(&app, &sent);
@@ -7154,7 +7174,7 @@ mod tests {
         let dir = init_repo_with_a_merged_and_an_open_branch();
         let root = dir.path().to_string_lossy().to_string();
 
-        let merged = merged_into_base(&root, "main");
+        let merged = merged_into_base(&*er_engine::ports::Ports::cli().git, &root, "main");
         assert!(merged.contains("merged-branch"), "got {merged:?}");
         assert!(merged.contains("main"), "the base is merged into itself");
         assert!(
@@ -7164,8 +7184,9 @@ mod tests {
 
         // An unresolvable base yields nothing rather than a wrong answer —
         // the same outcome the per-branch form's `.unwrap_or(false)` gave.
-        assert!(merged_into_base(&root, "no-such-base").is_empty());
-        assert!(merged_into_base(&root, "").is_empty());
+        let git = &*er_engine::ports::Ports::cli().git;
+        assert!(merged_into_base(git, &root, "no-such-base").is_empty());
+        assert!(merged_into_base(git, &root, "").is_empty());
     }
 
     #[test]
@@ -7176,19 +7197,20 @@ mod tests {
         let dir = init_repo_with_a_merged_and_an_open_branch();
         let root = dir.path().to_string_lossy().to_string();
 
-        let at_limit = merged_branches(&root, "main", MAX_WORKTREES_FOR_MERGED_CHECK);
+        let git = &*er_engine::ports::Ports::cli().git;
+        let at_limit = merged_branches(git, &root, "main", MAX_WORKTREES_FOR_MERGED_CHECK);
         assert!(
             at_limit.contains("merged-branch"),
             "at the threshold the check still runs: {at_limit:?}"
         );
 
-        let over_limit = merged_branches(&root, "main", MAX_WORKTREES_FOR_MERGED_CHECK + 1);
+        let over_limit = merged_branches(git, &root, "main", MAX_WORKTREES_FOR_MERGED_CHECK + 1);
         assert!(
             over_limit.is_empty(),
             "past the threshold the check is skipped: {over_limit:?}"
         );
         assert!(
-            merged_branches(&root, "", 0).is_empty(),
+            merged_branches(git, &root, "", 0).is_empty(),
             "an empty base has nothing to compare against"
         );
     }
@@ -8056,6 +8078,7 @@ mod tests {
     #[test]
     fn painted_view_matches_on_working_tab_with_branch() {
         let mut app = App::new_for_test(Vec::new());
+        use_cli_ports(&mut app);
         app.tab_mut().current_branch = "feature".into();
         let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
         assert!(optimistic_view_matches(&app, &painted_view(&snap)));
@@ -8073,10 +8096,23 @@ mod tests {
     #[test]
     fn painted_view_rejects_a_switched_mode() {
         let mut app = App::new_for_test(Vec::new());
+        use_cli_ports(&mut app);
         app.tab_mut().current_branch = "feature".into();
         let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
         let mut view = painted_view(&snap);
         view.mode = "staged".into();
         assert!(!optimistic_view_matches(&app, &view));
+    }
+
+    #[test]
+    fn detect_current_branch_reads_head_through_the_handle() {
+        let fake = std::sync::Arc::new(
+            er_git::FakeGit::default().with_current_branch(Ok("feature".into())),
+        );
+        let ports = er_engine::ports::Ports::with_git(fake);
+
+        let branch = detect_current_branch(&*ports.git, "/nonexistent-repo");
+
+        assert_eq!(branch, "feature");
     }
 }

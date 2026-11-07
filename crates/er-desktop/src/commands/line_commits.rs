@@ -11,10 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use er_engine::app::{DiffMode, TabState};
-use er_engine::git::{
-    blame_range, git_merge_base, git_rev_parse_commit, BlameEnd, BlameRequest, FileStatus,
-    GitError, LineAttribution,
-};
+use er_engine::git::{BlameEnd, BlameRequest, FileStatus, GitError, LineAttribution};
 use tauri::State;
 
 use super::AppState;
@@ -177,6 +174,7 @@ fn branch_source(tab: &TabState) -> Result<Source, String> {
 
 /// The git half: resolve oids, then hit the cache or blame.
 fn attribute(
+    git: &dyn er_engine::git::Git,
     cache: &LineCommitsCache,
     target: &Target,
     path: &str,
@@ -185,19 +183,19 @@ fn attribute(
     let err = |e: GitError| e.to_string();
     let (root, start, end, working_tree) = match &target.source {
         Source::Range { root, base, head } => {
-            let end = git_rev_parse_commit(root, head).map_err(err)?;
-            let start = git_merge_base(root, base, &end).map_err(err)?;
+            let end = git.rev_parse_commit(root, head).map_err(err)?;
+            let start = git.merge_base(root, base, &end).map_err(err)?;
             (root, Some(start), end, false)
         }
         Source::WorkingTree { root, base } => {
-            let end = git_rev_parse_commit(root, "HEAD").map_err(err)?;
-            let start = git_merge_base(root, base, &end).map_err(err)?;
+            let end = git.rev_parse_commit(root, "HEAD").map_err(err)?;
+            let start = git.merge_base(root, base, &end).map_err(err)?;
             (root, Some(start), end, true)
         }
         Source::Commit { root, sha } => {
-            let end = git_rev_parse_commit(root, sha).map_err(err)?;
+            let end = git.rev_parse_commit(root, sha).map_err(err)?;
             // A root commit has no parent: every line of it is its own.
-            let start = git_rev_parse_commit(root, &format!("{end}^")).ok();
+            let start = git.rev_parse_commit(root, &format!("{end}^")).ok();
             (root, start, end, false)
         }
     };
@@ -213,18 +211,19 @@ fn attribute(
     if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key)) {
         return Ok(hit);
     }
-    let attribution = blame_range(&BlameRequest {
-        repo_root: root,
-        start: start.as_deref(),
-        end: if working_tree {
-            BlameEnd::WorkingTree
-        } else {
-            BlameEnd::Rev(&end)
-        },
-        path,
-        old_path: target.old_path.as_deref(),
-    })
-    .map_err(err)?;
+    let attribution = git
+        .blame_range(&BlameRequest {
+            repo_root: root,
+            start: start.as_deref(),
+            end: if working_tree {
+                BlameEnd::WorkingTree
+            } else {
+                BlameEnd::Rev(&end)
+            },
+            path,
+            old_path: target.old_path.as_deref(),
+        })
+        .map_err(err)?;
     if let Ok(mut c) = cache.lock() {
         c.insert(key, attribution.clone());
     }
@@ -232,6 +231,7 @@ fn attribute(
 }
 
 fn line_commits_for(
+    ports: &er_engine::ports::Ports,
     app: &Mutex<er_engine::app::App>,
     cache: &LineCommitsCache,
     path: String,
@@ -242,7 +242,7 @@ fn line_commits_for(
         resolve(app.tab(), &path)
     };
     let (unavailable, attribution) =
-        match target.and_then(|target| attribute(cache, &target, &path, &cache_key)) {
+        match target.and_then(|target| attribute(&*ports.git, cache, &target, &path, &cache_key)) {
             Ok(attribution) => (None, attribution),
             Err(reason) => (Some(reason), LineAttribution::default()),
         };
@@ -264,7 +264,13 @@ pub async fn line_commits(
 ) -> Result<LineCommits, String> {
     let state = state.inner().clone();
     super::run_blocking(move || {
-        line_commits_for(&state.app, &state.line_commits_cache, path, cache_key)
+        line_commits_for(
+            &state.ports,
+            &state.app,
+            &state.line_commits_cache,
+            path,
+            cache_key,
+        )
     })
     .await
 }
@@ -392,23 +398,26 @@ mod tests {
         let head = git(root, &["rev-parse", "HEAD"]);
 
         let mut app = er_engine::app::App::new_for_test(vec![]);
+        let ports = er_engine::ports::Ports::cli();
+        app.ports = ports.clone();
+        app.tabs[0].ports = ports.clone();
         app.tabs[0].repo_root = root.to_str().unwrap().into();
         app.tabs[0].base_branch = "main".into();
         app.tabs[0].mode = DiffMode::Branch;
         let app = Mutex::new(app);
         let cache = LineCommitsCache::default();
 
-        let first = line_commits_for(&app, &cache, "f".into(), "k1".into()).unwrap();
+        let first = line_commits_for(&ports, &app, &cache, "f".into(), "k1".into()).unwrap();
         assert_eq!(first.unavailable, None);
         assert_eq!(first.attribution.commits, std::slice::from_ref(&head));
         assert_eq!(first.attribution.added.len(), 1);
         assert_eq!(cache.lock().unwrap().entries.len(), 1);
 
-        let again = line_commits_for(&app, &cache, "f".into(), "k1".into()).unwrap();
+        let again = line_commits_for(&ports, &app, &cache, "f".into(), "k1".into()).unwrap();
         assert_eq!(again.attribution, first.attribution);
         assert_eq!(cache.lock().unwrap().entries.len(), 1);
 
-        line_commits_for(&app, &cache, "f".into(), "k2".into()).unwrap();
+        line_commits_for(&ports, &app, &cache, "f".into(), "k2".into()).unwrap();
         assert_eq!(cache.lock().unwrap().entries.len(), 2);
 
         let commit = Target {
@@ -418,13 +427,13 @@ mod tests {
             },
             old_path: None,
         };
-        let single = attribute(&cache, &commit, "f", "k1").unwrap();
+        let single = attribute(&*ports.git, &cache, &commit, "f", "k1").unwrap();
         assert_eq!(single.commits, std::slice::from_ref(&head));
         assert_eq!(single.added.len(), 1);
         assert_eq!(single.added[0].start, 2);
 
         app.lock().unwrap().tabs[0].mode = DiffMode::Unstaged;
-        let off = line_commits_for(&app, &cache, "f".into(), "k1".into()).unwrap();
+        let off = line_commits_for(&ports, &app, &cache, "f".into(), "k1".into()).unwrap();
         assert_eq!(off.unavailable.as_deref(), Some(UNCOMMITTED_REASON));
         assert!(off.attribution.commits.is_empty());
     }

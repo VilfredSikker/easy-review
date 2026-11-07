@@ -898,7 +898,6 @@ mod review_flow_arena_inputs_tests {
 mod tests {
     use super::*;
     use crate::arena::ArenaScope;
-    use crate::git;
     use std::process::Command;
 
     /// The recorded hash wins over a recomputed one. This is the review-ignore
@@ -999,7 +998,10 @@ mod tests {
         .unwrap();
         tab.local_branch_view = Some("feature".into());
 
-        let naive = git::git_diff_raw("branch", "main", &root, None).unwrap();
+        let naive = crate::ports::Ports::cli()
+            .git
+            .diff_raw("branch", "main", &root, None)
+            .unwrap();
         assert!(
             naive.trim().is_empty(),
             "HEAD on main should not show feature vs main"
