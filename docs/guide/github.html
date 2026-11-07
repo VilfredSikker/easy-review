@@ -66,28 +66,22 @@ er --remote https://github.com/owner/repo/pull/42</code></pre>
       <thead><tr><th>Key</th><th>Action</th></tr></thead>
       <tbody>
         <tr><td><kbd>G</kbd></td><td><strong>Pull</strong> review comments from the PR into your diff view</td></tr>
-        <tr><td><kbd>g</kbd> → <em>Push comments to GitHub</em></td><td><strong>Push</strong> your local comments up to the PR — <kbd>r</kbd> posts them as one review, <kbd>i</kbd> as individual comments</td></tr>
       </tbody>
     </table>
     <p>
       Pulled comments appear inline, anchored to their lines, alongside your own. Each comment tracks its
-      <code>source</code>, GitHub <code>id</code>, <code>author</code>, and <code>synced</code> flag. Because
-      deduplication keys on the GitHub id, pulling repeatedly is safe — you will not get duplicates. Pushing marks your
-      comments as synced. Replies are single-level threads, matching GitHub's PR review model (see
-      <a href="comments.html">Comments &amp; Questions</a>).
+      <code>source</code>, GitHub <code>id</code>, and <code>author</code>. Because deduplication keys on the GitHub id,
+      pulling repeatedly is safe — you will not get duplicates. Replies are single-level threads, matching GitHub's PR
+      review model (see <a href="comments.html">Comments &amp; Questions</a>).
     </p>
 
-    <h2>Publishing your review to a PR</h2>
+    <h2>Posting a comment to a PR</h2>
     <p>
-      Publishing happens inside <code>er</code> itself. In the <strong>TUI</strong>, open the Git hub (<kbd>g</kbd>)
-      and choose <strong>Push comments to GitHub</strong> — <kbd>r</kbd> bundles the pending comments into one review,
-      <kbd>i</kbd> posts each on its own; in the <strong>Desktop app</strong>, open the Comments card and use
-      <em>Push to GitHub</em> — <em>As review</em> (one submission carrying the pending comments) or
-      <em>Individually</em>. What GitHub receives is your GitHub comments: AI findings, questions, and notes are private
-      to your machine until you promote one to a comment in the desktop app. The desktop refreshes the diff before
-      submitting a review and skips comments whose lines are no longer in it; that submission is the bridge from a
-      local <code>er</code> session to a review your team sees on GitHub. See
-      <a href="skills.html">AI Hub Actions</a>.
+      A comment you create is posted to the PR immediately: <kbd>c</kbd> then Enter in the TUI, or the comment composer
+      in the desktop app. If the post fails, the text stays with you and the next attempt first checks whether the
+      comment already arrived, so a flaky network does not produce a duplicate. AI findings, questions, and notes stay
+      private to your machine until you create a comment from them. Bulk-pushing drafts is gone — every GitHub comment
+      is already on the PR. See <a href="skills.html">AI Hub Actions</a>.
     </p>
 
     <h2>Staging, committing, and pushing <span class="pill tui">terminal</span></h2>

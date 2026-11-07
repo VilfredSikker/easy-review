@@ -3099,40 +3099,6 @@ pub async fn resolve_thread(
     .await
 }
 
-fn validate_review_submission(
-    pending_line_comment_count: usize,
-    summary: &str,
-) -> Result<(), String> {
-    if pending_line_comment_count == 0 && summary.trim().is_empty() {
-        return Err(
-            "Nothing to submit. Add at least one unpushed GitHub comment or enter a review summary. Local questions are private and are not submitted.".to_string()
-        );
-    }
-    Ok(())
-}
-
-fn is_anchor_in_current_diff(
-    file_anchors: &std::collections::HashMap<String, Vec<(usize, usize)>>,
-    file: &str,
-    line: usize,
-) -> bool {
-    file_anchors.get(file).is_some_and(|ranges| {
-        ranges
-            .iter()
-            .any(|(start, end)| line >= *start && line < *end)
-    })
-}
-
-fn anchor_range_in_current_diff(
-    file_anchors: &std::collections::HashMap<String, Vec<(usize, usize)>>,
-    file: &str,
-    line_start: usize,
-    line_end: usize,
-) -> bool {
-    is_anchor_in_current_diff(file_anchors, file, line_start)
-        && is_anchor_in_current_diff(file_anchors, file, line_end)
-}
-
 // ── GitHub sync ───────────────────────────────────────────────────────────────
 
 // Sync commands run on the main thread; `refresh_diff` shells out to git and
@@ -3444,60 +3410,6 @@ fn pull_github_comments_blocking(state: &AppState, force: bool) -> Result<AppSna
     }
 }
 
-// The three push commands shell out to `gh` for every unsynced comment; as sync
-// commands that network round trip ran on the main thread and froze the window.
-#[tauri::command]
-pub async fn push_github_comments(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
-    let state = state.inner().clone();
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.push_all_comments_to_github()
-            .map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
-    })
-    .await
-}
-
-/// Push a single local comment thread (root + replies) to GitHub.
-#[tauri::command]
-pub async fn push_github_comment_thread(
-    id: String,
-    pr_number: Option<u64>,
-    state: State<'_, AppState>,
-) -> Result<AppSnapshot, String> {
-    let state = state.inner().clone();
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.push_github_comment_thread(&id, pr_number)
-            .map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
-    })
-    .await
-}
-
-/// Push a single unsynced local GitHub comment reply (parent must already be on GitHub).
-#[tauri::command]
-pub async fn push_github_comment_reply(
-    reply_id: String,
-    pr_number: Option<u64>,
-    state: State<'_, AppState>,
-) -> Result<AppSnapshot, String> {
-    if reply_id.starts_with("fr-") {
-        return Err("Finding validation replies cannot be pushed individually — promote the finding instead.".to_string());
-    }
-    let state = state.inner().clone();
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.push_github_comment_reply(&reply_id, pr_number)
-            .map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
-    })
-    .await
-}
-
-/// Submit pending local comments as a GitHub PR review with an explicit decision.
-/// `mode` must be "COMMENT", "APPROVE", or "REQUEST_CHANGES".
-/// `summary` is the top-level review body sent to GitHub.
 fn gh_review_submit_err(e: anyhow::Error) -> String {
     let raw = e.to_string();
     if is_own_pr_approval_error(&raw) {
@@ -3519,348 +3431,9 @@ fn gh_review_submit_err(e: anyhow::Error) -> String {
     }
 }
 
-fn is_gh_review_422(err: &anyhow::Error) -> bool {
-    let raw = err.to_string();
-    raw.contains("422") || raw.to_lowercase().contains("unprocessable")
-}
-
-#[tauri::command]
-pub async fn submit_github_review(
-    mode: String,
-    summary: String,
-    state: State<'_, AppState>,
-) -> Result<AppSnapshot, String> {
-    let state = state.inner().clone();
-    // The body refreshes the diff (`refetch_and_refresh_diff`), which shells out
-    // to git while holding the app lock. On the main thread that freezes the
-    // window for the length of the diff — the failure ADR 0015 exists to
-    // prevent, on the Submit review button.
-    run_blocking(move || {
-    use er_engine::ai::ErGitHubComments;
-    use er_engine::github;
-
-    let event = match mode.as_str() {
-        "APPROVE" | "REQUEST_CHANGES" | "COMMENT" => mode.as_str(),
-        _ => {
-            return Err(format!(
-                "Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES."
-            ));
-        }
-    };
-
-    // Fast preflight for the common desktop PR-review path: if the active tab
-    // already carries PR metadata, avoid refreshing the diff and waiting for
-    // GitHub only to get the known own-PR approval rejection.
-    if event == "APPROVE" {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some((owner, repo, number)) = active_github_key(&app, &state) {
-            let me = state.gh_user.lock().ok().and_then(|login| login.clone());
-            if let (Some(me), Some(author)) =
-                (me, active_pr_author(&app, &state, &owner, &repo, number))
-            {
-                if author.eq_ignore_ascii_case(&me) {
-                    return Err(own_pr_approval_error());
-                }
-            }
-        }
-    }
-
-    // Refresh the local diff so line anchors are checked against the latest tree.
-    {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if !app.tab().is_remote() {
-            app.tab_mut()
-                .refetch_and_refresh_diff()
-                .map_err(|e| e.to_string())?;
-        }
-    }
-
-    let (
-        owner,
-        repo_name,
-        pr_number,
-        is_remote,
-        repo_root,
-        comments_path,
-        file_anchors,
-        old_file_anchors,
-    ) = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab = app.tab();
-        let is_remote = tab.is_remote();
-        let repo_root = tab.repo_root.clone();
-        let comments_path = tab.github_comments_path();
-        let mut file_anchors: std::collections::HashMap<String, Vec<(usize, usize)>> =
-            std::collections::HashMap::new();
-        let mut old_file_anchors: std::collections::HashMap<String, Vec<(usize, usize)>> =
-            std::collections::HashMap::new();
-        for f in &tab.files {
-            let mut new_ranges = Vec::new();
-            let mut old_ranges = Vec::new();
-            for h in &f.hunks {
-                let new_start = h.new_start;
-                let new_end = h.new_start + h.new_count.max(1);
-                new_ranges.push((new_start, new_end));
-                let old_start = h.old_start;
-                let old_end = h.old_start + h.old_count.max(1);
-                old_ranges.push((old_start, old_end));
-            }
-            file_anchors.insert(f.path.clone(), new_ranges);
-            old_file_anchors.insert(f.path.clone(), old_ranges);
-        }
-
-        let (owner, repo_name, pr_number) = if is_remote {
-            if let (Some(ref slug), Some(n)) = (&tab.remote_repo, tab.pr_number) {
-                let mut parts = slug.split('/');
-                let o = parts.next().unwrap_or("").to_string();
-                let r = parts.next().unwrap_or("").to_string();
-                (o, r, n)
-            } else {
-                return Err("No PR info for this tab".to_string());
-            }
-        } else {
-            // Prefer the tab's explicit PR number (set when a local PR review was
-            // opened) over branch detection. `get_pr_info` alone re-runs `gh pr
-            // view` for the current branch and bails when no PR is detected, even
-            // though the tab already knows which PR these comments belong to —
-            // which is why individual pushes (which use `local_pr_target`) work
-            // but the batch review submit failed with "No PR associated with
-            // current branch".
-            let pr_info = er_engine::sync::local_pr_target(&repo_root, tab.pr_number)
-                .map_err(|e| e.to_string())?;
-            (pr_info.0, pr_info.1, pr_info.2)
-        };
-        if event == "APPROVE" {
-            let me = state.gh_user.lock().ok().and_then(|login| login.clone());
-            if let (Some(me), Some(author)) = (
-                me,
-                active_pr_author(&app, &state, &owner, &repo_name, pr_number),
-            ) {
-                if author.eq_ignore_ascii_case(&me) {
-                    return Err(own_pr_approval_error());
-                }
-            }
-        }
-        (
-            owner,
-            repo_name,
-            pr_number,
-            is_remote,
-            repo_root,
-            comments_path,
-            file_anchors,
-            old_file_anchors,
-        )
-    };
-
-    // Collect pending line comments into the batch format.
-    let gc: ErGitHubComments = std::fs::read_to_string(&comments_path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<ErGitHubComments>(&s).ok())
-        .unwrap_or(ErGitHubComments {
-            version: 1,
-            diff_hash: String::new(),
-            github: None,
-            comments: vec![],
-        });
-
-    // Reject early if any unsynced local comment has no line anchor — those can
-    // never be part of a GitHub review batch and would silently get marked synced
-    // without actually being sent.
-    let unsubmittable_count = gc
-        .comments
-        .iter()
-        .filter(|c| {
-            c.source == "local" && !c.synced && !c.file.is_empty() && c.line_start.is_none()
-        })
-        .count();
-    if unsubmittable_count > 0 {
-        return Err(format!(
-            "{unsubmittable_count} pending comment(s) have no line anchor and cannot be included \
-             in a batch GitHub review. Add them on a specific diff line or delete them first."
-        ));
-    }
-
-    struct BatchEntry {
-        id: String,
-        file: String,
-        line_start: usize,
-        line_end: Option<usize>,
-        old_line: Option<usize>,
-        body: String,
-        side: String,
-    }
-
-    // Only top-level line comments belong in a review batch — replies use the reply API.
-    let candidates: Vec<BatchEntry> = gc
-        .comments
-        .iter()
-        .filter(|c| {
-            c.source == "local"
-                && !c.synced
-                && !c.file.is_empty()
-                && c.in_reply_to.is_none()
-                && c.anchor_status != "lost"
-                && !c.outdated
-        })
-        .filter_map(|c| {
-            c.line_start.map(|start| {
-                let end = c.line_end.filter(|e| *e > start).unwrap_or(start);
-                BatchEntry {
-                    id: c.id.clone(),
-                    file: c.file.clone(),
-                    line_start: start,
-                    line_end: if end > start { Some(end) } else { None },
-                    old_line: c.old_line_start,
-                    body: c.comment.clone(),
-                    side: c.side.clone(),
-                }
-            })
-        })
-        .collect();
-
-    // Partition into valid (anchor in current diff) and stale.
-    // LEFT-side comments (deleted lines) validate against old-side hunk ranges;
-    // RIGHT-side comments validate against new-side ranges.
-    let mut invalid_anchors: Vec<(String, usize, String)> = Vec::new();
-    let mut batch_entries: Vec<BatchEntry> = Vec::new();
-    for e in candidates {
-        let end = e.line_end.unwrap_or(e.line_start);
-        let in_diff = if e.side == "LEFT" {
-            let start = e.old_line.unwrap_or(e.line_start);
-            let old_end = e
-                .line_end
-                .and_then(|le| e.old_line.map(|ol| ol + (le - e.line_start)))
-                .unwrap_or(start);
-            anchor_range_in_current_diff(&old_file_anchors, &e.file, start, old_end)
-        } else {
-            anchor_range_in_current_diff(&file_anchors, &e.file, e.line_start, end)
-        };
-        if in_diff {
-            batch_entries.push(e);
-        } else {
-            invalid_anchors.push((e.id, e.line_start, e.file));
-        }
-    }
-
-    let batch: Vec<er_engine::github::ReviewBatchEntry> = batch_entries
-        .iter()
-        .map(|e| {
-            let end = e.line_end.unwrap_or(e.line_start);
-            let (line, start_line) = if e.side == "LEFT" {
-                let start = e.old_line.unwrap_or(e.line_start);
-                let old_end = e
-                    .line_end
-                    .and_then(|le| e.old_line.map(|ol| ol + (le - e.line_start)))
-                    .unwrap_or(start);
-                (old_end, if old_end > start { Some(start) } else { None })
-            } else {
-                (
-                    end,
-                    if end > e.line_start {
-                        Some(e.line_start)
-                    } else {
-                        None
-                    },
-                )
-            };
-            er_engine::github::ReviewBatchEntry {
-                file: e.file.clone(),
-                line,
-                start_line,
-                body: e.body.clone(),
-                side: e.side.clone(),
-            }
-        })
-        .collect();
-    let submitted_ids: Vec<String> = batch_entries.iter().map(|e| e.id.clone()).collect();
-
-    let summary_trimmed = summary.trim().to_string();
-    validate_review_submission(batch.len(), &summary_trimmed)?;
-    if !invalid_anchors.is_empty() {
-        let sample = invalid_anchors
-            .iter()
-            .take(3)
-            .map(|(id, line, file)| format!("{id} ({file}:{line}) — stale line anchor"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(format!(
-            "Some local comments reference lines/files not present in the current diff and cannot be submitted. Resolve/delete or re-anchor them first. Examples: {sample}"
-        ));
-    }
-
-    let submit_review = |comments: &[github::ReviewBatchEntry]| -> Result<(), anyhow::Error> {
-        if is_remote {
-            github::gh_pr_submit_review_remote(
-                &owner,
-                &repo_name,
-                pr_number,
-                comments,
-                event,
-                &summary_trimmed,
-            )
-        } else {
-            github::gh_pr_submit_review(
-                &owner,
-                &repo_name,
-                pr_number,
-                comments,
-                &repo_root,
-                event,
-                &summary_trimmed,
-            )
-        }
-    };
-
-    let mut decision_only_fallback = false;
-    match submit_review(&batch) {
-        Ok(()) => {}
-        Err(e)
-            if !batch.is_empty()
-                && is_gh_review_422(&e)
-                && (event == "APPROVE" || event == "REQUEST_CHANGES") =>
-        {
-            submit_review(&[]).map_err(gh_review_submit_err)?;
-            decision_only_fallback = true;
-        }
-        Err(e) => return Err(gh_review_submit_err(e)),
-    }
-
-    let mut gc_to_write = gc;
-    if decision_only_fallback {
-        let skipped = batch.len();
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.notify(&format!(
-            "{event} submitted, but {skipped} inline comment(s) could not be bundled (stale vs PR head). Refresh the diff, then push them individually."
-        ));
-    } else if !submitted_ids.is_empty() {
-        let submitted: std::collections::HashSet<String> = submitted_ids.into_iter().collect();
-        let mut touched = false;
-        for c in &mut gc_to_write.comments {
-            if submitted.contains(&c.id) {
-                c.synced = true;
-                touched = true;
-            }
-        }
-        if touched {
-            write_json_atomic(&comments_path, &gc_to_write)?;
-        }
-    }
-
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.tab_mut().reload_ai_state();
-    Ok(snap_from(&app, &state))
-    })
-    .await
-}
-
 /// Submit a bare PR review decision (APPROVE / REQUEST_CHANGES / COMMENT) from
-///
-/// the GitHub card. Unlike `submit_github_review`, this **does not** bundle any
-/// pending line-anchored comments — it sends only the body + event. This avoids
-/// HTTP 422s when local drafts have stale line anchors vs the remote PR head
-/// (the GitHub card is for decisions, not for pushing inline drafts — that's
-/// what the Comments card is for).
+/// the GitHub card. It sends only the body + event; inline comments post as
+/// they are created (ADR 0053), so there is no draft to bundle here.
 #[tauri::command]
 pub fn submit_github_pr_decision(
     mode: String,
@@ -3938,7 +3511,7 @@ pub fn submit_github_pr_decision(
 
 /// Post a PR-wide (issue-stream) comment on the active tab's PR. Used by the
 /// GitHub card's "Comment / Review" action — distinct from line-anchored
-/// review comments handled by `submit_github_review`.
+/// comments, which post where they are created (ADR 0053).
 #[tauri::command]
 pub async fn post_github_pr_comment(
     body: String,
@@ -11710,7 +11283,6 @@ fn compute_content_revision_with_arbiter(app: &App, other_overlay: Option<&[u8]>
         if let Some(last) = gc.comments.last() {
             last.id.hash(&mut h);
             last.timestamp.hash(&mut h);
-            last.synced.hash(&mut h);
             last.resolved.hash(&mut h);
             last.outdated.hash(&mut h);
             last.stale.hash(&mut h);
@@ -12916,23 +12488,6 @@ mod tests {
     }
 
     #[test]
-    fn review_submit_validation_rejects_blank() {
-        let err = validate_review_submission(0, "").unwrap_err();
-        assert!(err.contains("Nothing to submit"));
-        assert!(err.contains("private"));
-    }
-
-    #[test]
-    fn review_submit_validation_accepts_summary_only() {
-        validate_review_submission(0, "Looks good overall").unwrap();
-    }
-
-    #[test]
-    fn review_submit_validation_accepts_comment_batch() {
-        validate_review_submission(2, "").unwrap();
-    }
-
-    #[test]
     fn review_line_target_maps_ranges_and_sides() {
         let t = |end: Option<usize>, side: Option<&str>| ReviewLineTarget {
             file: "src/a.rs".into(),
@@ -13048,7 +12603,6 @@ mod tests {
                 source: "local".to_string(),
                 github_id: None,
                 author: "You".to_string(),
-                synced: false,
                 outdated: false,
                 stale: false,
                 context_before: vec![],
@@ -13585,97 +13139,6 @@ mod tests {
         );
     }
 
-    fn make_gh_comment(
-        id: &str,
-        file: &str,
-        line_start: Option<usize>,
-        synced: bool,
-    ) -> GitHubReviewComment {
-        GitHubReviewComment {
-            id: id.to_string(),
-            timestamp: "t".to_string(),
-            file: file.to_string(),
-            hunk_index: None,
-            line_start,
-            line_end: None,
-            line_content: String::new(),
-            comment: "body".to_string(),
-            in_reply_to: None,
-            resolved: false,
-            source: "local".to_string(),
-            github_id: None,
-            author: "You".to_string(),
-            synced,
-            outdated: false,
-            stale: false,
-            context_before: vec![],
-            context_after: vec![],
-            old_line_start: None,
-            hunk_header: String::new(),
-            anchor_status: "original".to_string(),
-            relocated_at_hash: String::new(),
-            finding_ref: None,
-            side: "RIGHT".to_string(),
-        }
-    }
-
-    /// Verifies that comments without a line anchor are detected as unsubmittable
-    /// before any GitHub API call would be made.
-    #[test]
-    fn submit_review_detects_unanchored_local_comments() {
-        let gc = ErGitHubComments {
-            version: 1,
-            diff_hash: "abc".to_string(),
-            github: None,
-            comments: vec![
-                make_gh_comment("c-1", "src/main.rs", Some(10), false), // has anchor, unsynced
-                make_gh_comment("c-2", "src/lib.rs", None, false), // NO anchor, unsynced — the problem
-                make_gh_comment("c-3", "src/foo.rs", None, true), // no anchor but already synced — OK
-            ],
-        };
-
-        let unsubmittable_count = gc
-            .comments
-            .iter()
-            .filter(|c| {
-                c.source == "local" && !c.synced && !c.file.is_empty() && c.line_start.is_none()
-            })
-            .count();
-
-        assert_eq!(
-            unsubmittable_count, 1,
-            "only the unsynced comment without a line anchor should be flagged"
-        );
-    }
-
-    /// Verifies that all-anchored unsynced comments produce a zero unsubmittable count,
-    /// meaning the validation passes and submission proceeds normally.
-    #[test]
-    fn submit_review_no_false_positive_when_all_comments_have_anchors() {
-        let gc = ErGitHubComments {
-            version: 1,
-            diff_hash: "abc".to_string(),
-            github: None,
-            comments: vec![
-                make_gh_comment("c-1", "src/main.rs", Some(5), false),
-                make_gh_comment("c-2", "src/lib.rs", Some(20), false),
-            ],
-        };
-
-        let unsubmittable_count = gc
-            .comments
-            .iter()
-            .filter(|c| {
-                c.source == "local" && !c.synced && !c.file.is_empty() && c.line_start.is_none()
-            })
-            .count();
-
-        assert_eq!(
-            unsubmittable_count, 0,
-            "no unsubmittable comments when all have line anchors"
-        );
-    }
-
     /// Regression: `process_ai_task_inbox` must not call `maybe_send_native_notification`
     /// while holding the inbox mutex (non-reentrant lock → permanent deadlock on review done).
     #[test]
@@ -13908,9 +13371,6 @@ mod tests {
             "ask_ai",
             "validate_with_ai",
             "elaborate_with_ai",
-            "push_github_comments",
-            "push_github_comment_thread",
-            "push_github_comment_reply",
             "post_github_pr_comment",
             "get_pending_review",
             "add_pending_review_comment",
@@ -14265,8 +13725,7 @@ mod tests {
                         "comment": "already on GitHub",
                         "source": "github",
                         "github_id": 11,
-                        "author": "octo",
-                        "synced": true
+                        "author": "octo"
                     }]
                 }))
                 .unwrap(),

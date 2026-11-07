@@ -172,9 +172,7 @@ impl TabState {
     /// state only when both the bucket dir and the diff hash still match the
     /// tab's current branch view; the slot is KEPT on mismatch (an unrelated
     /// view's reload — e.g. the PR bucket at open — must not destroy the
-    /// branch preload before the first Branch click). The diff hash separates
-    /// the PR reload from the slot — harmless in practice (the open-time hash
-    /// is empty), but worth knowing.
+    /// branch preload before the first Branch click).
     pub fn take_preloaded_branch_ai(
         &mut self,
         bucket_dir: &str,

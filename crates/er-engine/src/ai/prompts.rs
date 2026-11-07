@@ -1538,7 +1538,7 @@ Do not add new review comments in this action.
    - `SHIFTED`: still applies but the line moved — update `hunk_index`, `line_start`, `line_content`, `context_before`, `context_after`, `old_line_start`, `hunk_header`, set `anchor_status` to `relocated`, update `relocated_at_hash` to `{safe_hash}` (the harness-computed hash of the prepared diff you are anchoring against).
    - `LOST`: cannot anchor — set `anchor_status` to `lost` (leave `resolved` false unless the concern is clearly obsolete).
 5. Do **not** set `outdated` — that flag reflects GitHub thread state from sync.
-6. Preserve `version`, `github` sync metadata, `github_id`, `source`, `synced`, and reply threads unless a parent is resolved.
+6. Preserve `version`, `github` sync metadata, `github_id`, `source`, and reply threads unless a parent is resolved.
 7. Write updated `{safe_output_dir}/github-comments.json`.
 8. If `{safe_output_dir}/summary.md` exists, append:
    `Comment refresh: N resolved, M re-anchored, K lost.`

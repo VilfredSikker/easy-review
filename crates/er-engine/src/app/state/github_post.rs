@@ -575,7 +575,6 @@ impl App {
                 source: "github".to_string(),
                 github_id: Some(github_id),
                 author,
-                synced: true,
                 outdated: false,
                 stale: false,
                 context_before: location.context_before.clone(),
@@ -931,7 +930,6 @@ mod tests {
             "source": "github",
             "github_id": github_id,
             "author": "viewer",
-            "synced": true,
         }))
         .unwrap()
     }
@@ -1021,7 +1019,6 @@ mod tests {
         assert_eq!(entry.id, format!("gh-{}", posted.github_id));
         assert_eq!(entry.github_id, Some(posted.github_id));
         assert_eq!(entry.source, "github");
-        assert!(entry.synced);
         assert_eq!(entry.line_start, Some(2));
 
         let request = f.poster.posted.lock().unwrap()[0].clone();
@@ -1112,7 +1109,7 @@ mod tests {
         let gc = store(&f.app);
         assert_eq!(gc.comments.len(), 1);
         assert!(gc.comments[0].github_id.is_none());
-        assert!(!gc.comments[0].synced);
+        assert_eq!(gc.comments[0].source, "local");
     }
 
     #[test]

@@ -107,8 +107,6 @@ staleness. `branch_diff_hash` exists as the always-SHA-256 sibling for that reas
   already holds this content — the choice sets the revision markers and so decides
   whether the next poll resends. It is invisible in the response body.
   `docs/adr/0033-snapshot-returning-helpers.md`.
-- `submit_github_review` is high risk: submit only valid, unsynced local comments, and
-  mark them synced only after GitHub confirms.
 - Reviewing a PR must not touch the user's worktree; use fetched refs and the PR tab
   constructors. `docs/adr/0020-read-only-pr-review.md`.
 

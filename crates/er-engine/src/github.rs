@@ -2623,8 +2623,8 @@ pub struct ReviewBatchEntry {
 
 /// Submit a batch PR review with multiple comments in one API call.
 ///
-/// `comments` is a slice of `ReviewBatchEntry`. Marks all included comments as synced
-/// (no individual comment IDs are returned by the review API).
+/// `comments` is a slice of `ReviewBatchEntry`. No individual comment ids are
+/// returned by the review API; the next pull rebuilds them from GitHub.
 pub fn gh_pr_submit_review(
     owner: &str,
     repo: &str,

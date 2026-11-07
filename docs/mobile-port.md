@@ -108,7 +108,7 @@ Mobile has no always-on process:
 - Commit composer, staging, watch mode, export-to-agent
 - Multi-worktree tabs, tracked branches, local-agent inbox
 
-Worth keeping if the API supports it: submit review (approve / comment) and push comments.
+Worth keeping if the API supports it: submit a review decision (approve / comment) and post comments as they are created.
 
 ---
 

@@ -85,11 +85,12 @@ impl CommentRef<'_> {
         }
     }
 
-    pub const fn is_synced(&self) -> bool {
+    /// Whether this comment is a GitHub comment that came from the PR. Local
+    /// comments are private AI follow-ups and never appear on GitHub.
+    pub fn is_on_github(&self) -> bool {
         match self {
-            // Questions and notes are local-only and never synced to GitHub.
             CommentRef::Question(_) | CommentRef::Note(_) => false,
-            CommentRef::GitHubComment(c) => c.synced,
+            CommentRef::GitHubComment(c) => c.source == "github",
         }
     }
 
@@ -345,9 +346,6 @@ pub struct GitHubReviewComment {
     /// Author display name ("You" for local, GitHub login for remote)
     #[serde(default = "default_author")]
     pub author: String,
-    /// Whether this comment was pushed to GitHub
-    #[serde(default)]
-    pub synced: bool,
     /// Persisted GitHub review-thread outdated state.
     #[serde(default)]
     pub outdated: bool,
@@ -533,7 +531,6 @@ mod tests {
             source: "github".into(),
             github_id: Some(1),
             author: "octo".into(),
-            synced: true,
             outdated: false,
             stale: false,
             context_before: vec![],
@@ -603,24 +600,32 @@ mod tests {
     }
 
     #[test]
+    fn github_comments_json_with_a_synced_field_still_loads() {
+        // Old sidecars carry `synced`; serde ignores the unknown field.
+        let c: GitHubReviewComment = serde_json::from_str(
+            r#"{"id":"c","file":"a.rs","hunk_index":0,"line_start":1,"comment":"x","synced":true}"#,
+        )
+        .unwrap();
+        assert_eq!(c.id, "c");
+    }
+
+    #[test]
     fn comment_ref_github_comment_reports_github_type_and_delete_rules() {
         let mut c = sample_github_comment();
         c.source = "github".into();
         c.author = "octo".into();
-        c.synced = true;
 
         let r = CommentRef::GitHubComment(&c);
         assert_eq!(r.comment_type(), CommentType::GitHubComment);
-        assert!(r.is_synced());
+        assert!(r.is_on_github());
         assert!(!r.can_delete());
 
         let mut local = sample_github_comment();
         local.source = "local".into();
         local.author = "You".into();
-        local.synced = false;
 
         let r = CommentRef::GitHubComment(&local);
-        assert!(!r.is_synced());
+        assert!(!r.is_on_github());
         assert!(r.can_delete());
     }
 
@@ -770,7 +775,7 @@ mod tests {
         assert_eq!(cref.id(), "n-1");
         assert_eq!(cref.text(), "Refactor before merge");
         // Notes are local-only, like questions.
-        assert!(!cref.is_synced());
+        assert!(!cref.is_on_github());
         assert!(cref.can_delete());
     }
 

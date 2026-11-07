@@ -663,7 +663,6 @@ mod tests {
             source: "local".into(),
             github_id: None,
             author: "you".into(),
-            synced: false,
             outdated: false,
             stale: false,
             context_before: Vec::new(),

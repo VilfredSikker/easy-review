@@ -3250,7 +3250,6 @@ mod tests {
             source: "local".to_string(),
             github_id: None,
             author: "You".to_string(),
-            synced: false,
             outdated: false,
             stale: false,
             context_before: vec![],

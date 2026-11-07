@@ -1276,7 +1276,6 @@ impl App {
             source: "local".to_string(),
             github_id: None,
             author,
-            synced: false,
             outdated: false,
             stale: false,
             context_before: anchor.context_before,

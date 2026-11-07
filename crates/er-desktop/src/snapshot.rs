@@ -1452,7 +1452,6 @@ pub struct ThreadSnapshot {
     #[serde(default = "default_thread_side")]
     pub side: String,
     pub source: String, // "local" | "github"
-    pub synced: bool,
     pub stale: bool,
     pub resolved: bool,
     pub root: ThreadMessage,
@@ -1475,8 +1474,6 @@ pub struct ThreadMessage {
     pub origin: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
-    #[serde(default)]
-    pub synced: Option<bool>,
     #[serde(default)]
     pub editable: Option<bool>,
     #[serde(default)]
@@ -1585,7 +1582,6 @@ pub struct AiSnapshot {
     pub comments: usize,
     pub questions: usize,
     pub notes: usize,
-    pub unpushed: usize,
     pub threads: Vec<ThreadSnapshot>,
     pub findings: Vec<FlatFinding>,
     /// Findings the arbiter ruled out, so the card can say how many it is not
@@ -2206,7 +2202,6 @@ fn comment_ref_to_thread(
         line_end,
         side,
         source,
-        synced: c.is_synced(),
         stale: match c {
             CommentRef::Question(q) | CommentRef::Note(q) => q.stale,
             CommentRef::GitHubComment(gc) => gc.stale || gc.outdated,
@@ -2220,7 +2215,6 @@ fn comment_ref_to_thread(
             body_markdown: c.text().to_string(),
             origin: None,
             source: None,
-            synced: None,
             editable: None,
             deletable: None,
             ai_action: None,
@@ -2275,7 +2269,6 @@ fn build_replies(
                     body_markdown: q.text.clone(),
                     origin: Some("thread_reply".to_string()),
                     source: Some("question".to_string()),
-                    synced: None,
                     editable: Some(kind == "you"),
                     deletable: Some(true),
                     ai_action: q.ai_action.clone(),
@@ -2296,7 +2289,6 @@ fn build_replies(
                     body_markdown: n.text.clone(),
                     origin: Some("thread_reply".to_string()),
                     source: Some("note".to_string()),
-                    synced: None,
                     editable: Some(kind == "you"),
                     deletable: Some(true),
                     ai_action: n.ai_action.clone(),
@@ -2317,7 +2309,6 @@ fn build_replies(
                     body_markdown: c.comment.clone(),
                     origin: Some("thread_reply".to_string()),
                     source: Some(c.source.clone()),
-                    synced: Some(c.synced),
                     editable: Some(kind == "you"),
                     deletable: Some(true),
                     ai_action: None,
@@ -2341,7 +2332,6 @@ fn build_replies(
             body_markdown: "…thinking".to_string(),
             origin: Some("thread_reply".to_string()),
             source: None,
-            synced: None,
             editable: None,
             deletable: None,
             ai_action: reply.ai_action.map(str::to_string),
@@ -3667,7 +3657,6 @@ fn empty_ai_snapshot() -> AiSnapshot {
         comments: 0,
         questions: 0,
         notes: 0,
-        unpushed: 0,
         threads: Vec::new(),
         findings: Vec::new(),
         arbiter_dropped: 0,
@@ -4947,20 +4936,13 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         .as_ref()
         .map(|c| c.comments.len())
         .unwrap_or(0);
-    let unpushed = ai
-        .github_comments
-        .as_ref()
-        .map(|c| c.comments.iter().filter(|c| !c.synced).count())
-        .unwrap_or(0);
     let local_comment_count = ai
         .github_comments
         .as_ref()
         .map(|c| {
             c.comments
                 .iter()
-                .filter(|comment| {
-                    comment.in_reply_to.is_none() && comment.source == "local" && !comment.synced
-                })
+                .filter(|comment| comment.in_reply_to.is_none() && comment.source == "local")
                 .count()
         })
         .unwrap_or(0);
@@ -4970,9 +4952,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         .map(|c| {
             c.comments
                 .iter()
-                .filter(|comment| {
-                    comment.in_reply_to.is_none() && (comment.source == "github" || comment.synced)
-                })
+                .filter(|comment| comment.in_reply_to.is_none() && comment.source == "github")
                 .count()
         })
         .unwrap_or(0);
@@ -4992,7 +4972,6 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         line_end: q.line_end,
                         side: q.side.clone(),
                         source: "local".to_string(),
-                        synced: false,
                         stale: q.stale,
                         resolved: q.resolved,
                         github_id: None,
@@ -5004,7 +4983,6 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             body_markdown: q.text.clone(),
                             origin: None,
                             source: None,
-                            synced: None,
                             editable: None,
                             deletable: None,
                             ai_action: None,
@@ -5027,7 +5005,6 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         line_end: n.line_end,
                         side: n.side.clone(),
                         source: "local".to_string(),
-                        synced: false,
                         stale: n.stale,
                         resolved: n.resolved,
                         github_id: None,
@@ -5039,7 +5016,6 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             body_markdown: n.text.clone(),
                             origin: None,
                             source: None,
-                            synced: None,
                             editable: None,
                             deletable: None,
                             ai_action: None,
@@ -5067,7 +5043,6 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         line_end: c.line_end,
                         side: c.side.clone(),
                         source: c.source.clone(),
-                        synced: c.synced,
                         stale: c.stale || c.outdated,
                         resolved: c.resolved,
                         github_id: c.github_id,
@@ -5079,7 +5054,6 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             body_markdown: c.comment.clone(),
                             origin: None,
                             source: None,
-                            synced: None,
                             editable: None,
                             deletable: None,
                             ai_action: None,
@@ -5340,7 +5314,6 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         comments,
         questions,
         notes,
-        unpushed,
         threads,
         findings,
         arbiter_dropped: ai.arbiter_effect.dropped,
@@ -6016,7 +5989,6 @@ mod tests {
             source: "github".to_string(),
             github_id: Some(1),
             author: "octo".to_string(),
-            synced: true,
             outdated,
             stale,
             context_before: vec![],
@@ -6044,6 +6016,36 @@ mod tests {
 
         assert_eq!(snapshot.threads.len(), 1);
         assert!(snapshot.threads[0].stale);
+    }
+
+    /// Counts split by where a thread lives: a comment posted on create is
+    /// `source: "github"`, a private local thread stays `"local"`, and a reply
+    /// belongs to its root's thread, not to the top-level count.
+    #[test]
+    fn comment_counts_split_by_source() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut local_root = github_comment(false, false);
+        local_root.id = "local-1".to_string();
+        local_root.source = "local".to_string();
+        local_root.github_id = None;
+        let mut github_root = github_comment(false, false);
+        github_root.id = "gh-2".to_string();
+        github_root.github_id = Some(2);
+        let mut github_reply = github_comment(false, false);
+        github_reply.id = "gh-3".to_string();
+        github_reply.github_id = Some(3);
+        github_reply.in_reply_to = Some("gh-2".to_string());
+        tab.ai.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "hash".to_string(),
+            github: None,
+            comments: vec![local_root, github_root, github_reply],
+        });
+
+        let snapshot = build_ai_snapshot(&tab, None);
+
+        assert_eq!(snapshot.local_comment_count, 1);
+        assert_eq!(snapshot.github_comment_count, 1);
     }
 
     #[test]
