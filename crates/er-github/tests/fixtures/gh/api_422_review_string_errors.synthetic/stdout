@@ -1,0 +1,4 @@
+HTTP/2.0 422 Unprocessable Entity
+Content-Type: application/json
+
+{"message":"Unprocessable Entity","errors":["user_id can only have one pending review per pull request","Review Can not approve your own pull request"],"status":"422"}

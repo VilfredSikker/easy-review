@@ -23,13 +23,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # Tokens that never resolve for someone holding only the code.
-PATTERNS='review-fix-loop|§[A-Z][0-9]+|plan O[0-9]|first-paint plan|release/v[0-9]|the merge commit|\([OJCRSBF][0-9][):,]|P[0-9]-[0-9]|Step [A-Z][0-9]:|Part [A-Z]:|issues? #[0-9]+'
+PATTERNS='review-fix-loop|§[A-Z][0-9]+|plan O[0-9]|first-paint plan|release/v[0-9]|the merge commit|\([OJCRSBF][0-9][):,]|P[0-9]-[0-9]|\bP[0-2][0-9]\b|Step [A-Z][0-9]:|Part [A-Z]:|issues? #[0-9]+'
 # Two deliberate narrowings, both driven by a false positive the gate produced on
 # its first run against the tree that motivated it:
 #   - "the merge commit" and not "merge commits" — the plural is ordinary git
 #     vocabulary ("handling merge commits and root commits" in git/status.rs).
 #   - `issue`/`issues #N` and not a bare `#N`, which is a Rust attribute, a CSS
 #     colour, or a fixture label as often as it is a tracker reference.
+#
+# The `P[0-2][0-9]` arm catches epic plan ids (`P01`–`P25`) without matching
+# percentile names such as `P50`, `P90` or `P99`, whose first digit is 5–9.
 
 echo "comments-check: scanning inline comments"
 echo

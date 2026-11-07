@@ -1,0 +1,6 @@
+gh
+api
+--include
+graphql
+-f
+query={ repository(owner:"VilfredSikker", name:"easy-review") { pullRequest(number: 99999999) { id } } }

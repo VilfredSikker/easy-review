@@ -1,0 +1,4 @@
+gh
+api
+--include
+repos/x/y/issues

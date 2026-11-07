@@ -1,0 +1,8 @@
+gh
+api
+--include
+-X
+POST
+repos/VilfredSikker/er-gh-samples/pulls/1/reviews
+-f
+event=APPROVE
