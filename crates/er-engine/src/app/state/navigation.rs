@@ -925,7 +925,9 @@ impl TabState {
                 // never fetched here. Fetching the head ref brings it in without
                 // touching the working tree (ADR 0020).
                 if let Some(pr_number) = self.pr_number {
-                    if let Ok(head_ref) = crate::github::fetch_pr_head(pr_number, &self.repo_root) {
+                    if let Ok(head_ref) =
+                        crate::github::fetch_pr_head(&*self.ports.git, pr_number, &self.repo_root)
+                    {
                         self.pr_head_ref = Some(head_ref);
                         self.pr_refs_fetched = true;
                     }

@@ -1637,7 +1637,7 @@ pub fn sync_github_comments(app: &mut App) -> Result<()> {
             return Ok(());
         }
     } else {
-        let pr_info = github::get_pr_info(&repo_root);
+        let pr_info = github::get_pr_info(&*app.ports.git, &repo_root);
         let pr_info = match pr_info {
             Ok(info) => info,
             Err(_) => {

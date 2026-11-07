@@ -277,11 +277,14 @@ fn resolve_local_feedback_target() -> Result<ResolvedPr, McpError> {
             "bucket=local requires a checked-out branch, not a detached HEAD",
         ));
     }
-    let (owner, repo, number) = er_engine::github::get_pr_info(&repo_root).map_err(|e| {
-        tool_err(format!(
-            "bucket=local could not resolve the current branch PR: {e}"
-        ))
-    })?;
+    let (owner, repo, number) =
+        er_engine::github::get_pr_info(&*er_engine::ports::Ports::cli().git, &repo_root).map_err(
+            |e| {
+                tool_err(format!(
+                    "bucket=local could not resolve the current branch PR: {e}"
+                ))
+            },
+        )?;
     let bucket_path = er_engine::storage::local_branch_bucket_dir(
         &*er_engine::ports::Ports::cli().git,
         &repo_root,
@@ -392,7 +395,14 @@ async fn enrich_production_lines(owner: &str, repo: &str, prs: &mut [QueuePr], m
             let number = pr.number;
             (
                 number,
-                tokio::task::spawn_blocking(move || gh_pr_prod_diff_stats(&owner, &repo, number)),
+                tokio::task::spawn_blocking(move || {
+                    gh_pr_prod_diff_stats(
+                        &*er_engine::ports::Ports::cli().git,
+                        &owner,
+                        &repo,
+                        number,
+                    )
+                }),
             )
         })
         .collect();
@@ -757,7 +767,12 @@ impl ErMcp {
                 let owner_c = owner.clone();
                 let name_c = name.clone();
                 let stats = tokio::task::spawn_blocking(move || {
-                    gh_pr_prod_diff_stats(&owner_c, &name_c, number)
+                    gh_pr_prod_diff_stats(
+                        &*er_engine::ports::Ports::cli().git,
+                        &owner_c,
+                        &name_c,
+                        number,
+                    )
                 })
                 .await
                 .ok()
@@ -794,7 +809,9 @@ impl ErMcp {
         let stats: ProdDiffStats = tokio::task::spawn_blocking({
             let owner = owner.clone();
             let name = name.clone();
-            move || gh_pr_prod_diff_stats(&owner, &name, number)
+            move || {
+                gh_pr_prod_diff_stats(&*er_engine::ports::Ports::cli().git, &owner, &name, number)
+            }
         })
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?

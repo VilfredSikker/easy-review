@@ -358,7 +358,10 @@ pub struct CommentPostContext {
 }
 
 /// Resolve the PR to post to. Never called under the App lock.
-pub fn resolve_post_target(ctx: &CommentPostContext) -> Result<PrPostTarget, GitHubPostError> {
+pub fn resolve_post_target(
+    git: &dyn er_git::Git,
+    ctx: &CommentPostContext,
+) -> Result<PrPostTarget, GitHubPostError> {
     if ctx.is_remote {
         let slug = ctx.remote_repo.as_deref().ok_or_else(|| {
             GitHubPostError::NotPosted("No remote repository for this tab".to_string())
@@ -377,7 +380,7 @@ pub fn resolve_post_target(ctx: &CommentPostContext) -> Result<PrPostTarget, Git
         });
     }
     if let Some(pr) = ctx.pr_number {
-        let (owner, repo) = crate::github::get_repo_info(&ctx.repo_root).map_err(|e| {
+        let (owner, repo) = crate::github::get_repo_info(git, &ctx.repo_root).map_err(|e| {
             GitHubPostError::NotPosted(format!(
                 "Could not read the repository for this pull request: {e:#}"
             ))
@@ -390,7 +393,7 @@ pub fn resolve_post_target(ctx: &CommentPostContext) -> Result<PrPostTarget, Git
         });
     }
     post_target_from_lookup(
-        crate::github::lookup_pr_for_current_branch(&ctx.repo_root),
+        crate::github::lookup_pr_for_current_branch(git, &ctx.repo_root),
         ctx,
     )
 }

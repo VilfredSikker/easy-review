@@ -115,7 +115,6 @@ impl-cohesion = { max-groups = 1, min-group-lines = 40 }
 [workspace.metadata.lint-gate.spawn.git]
 home = "crates/er-git"
 allow = [
-    "crates/er-engine/src/github.rs",
     "crates/er-desktop/src/commands.rs",
     "crates/er-desktop/src/main.rs",
     "crates/er-desktop/src/projects.rs",

@@ -36,7 +36,7 @@ pub use er_git::{
     git_merge_base, git_paths_present_at, git_push, git_read_blob, git_rev_parse_commit,
     git_stage_all, git_stage_file, git_unpushed_shas, git_unstage_file, gitignored_paths,
     is_merge_in_progress, list_worktrees, read_watched_file_content, save_snapshot, unmerged_files,
-    BlameEnd, BlameRequest, BlameSpan, CommitInfo, FileStatus, GitError, LineAttribution,
+    BlameEnd, BlameRequest, BlameSpan, CommitInfo, FileStatus, Git, GitError, LineAttribution,
     WatchedFile, Worktree,
 };
 pub use file_kind::{classify_path, FileKind};

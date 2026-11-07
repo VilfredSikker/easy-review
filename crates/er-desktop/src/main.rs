@@ -664,7 +664,7 @@ fn pr_head_probe_target(app: &Mutex<App>) -> Option<(String, u64)> {
     if tab.repo_root.is_empty() {
         return None;
     }
-    let (owner, repo) = er_engine::github::get_repo_info(&tab.repo_root).ok()?;
+    let (owner, repo) = er_engine::github::get_repo_info(&*tab.ports.git, &tab.repo_root).ok()?;
     Some((format!("{owner}/{repo}"), pr_number))
 }
 
@@ -1652,6 +1652,7 @@ fn main() {
     if !deferred_tab_indices.is_empty() {
         let warmer_app = Arc::clone(&app_arc);
         let warmer_rev = Arc::clone(&desktop_revision);
+        let warmer_ports = ports.clone();
         std::thread::spawn(move || {
             // Brief grace period so the active tab's diff + the first frame land
             // before we start consuming CPU on background tabs.
@@ -1692,7 +1693,7 @@ fn main() {
                 let mut fetch_failed = false;
                 let t_fetch = std::time::Instant::now();
                 let fetched = inputs.and_then(|inputs| {
-                    match er_engine::app::TabState::fetch_pr_refresh(&inputs) {
+                    match er_engine::app::TabState::fetch_pr_refresh(&*warmer_ports.git, &inputs) {
                         Ok(result) => Some(result),
                         Err(e) => {
                             log::warn!("background tab warmup fetch failed: {e}");

@@ -576,14 +576,15 @@ pub fn find_local_line_for_diff_hunk(
 /// Resolve (owner, repo, pr_number) for a local-mode tab, preferring an
 /// explicit PR number over branch detection.
 pub fn local_pr_target(
+    git: &dyn er_git::Git,
     repo_root: &str,
     explicit_pr_number: Option<u64>,
 ) -> Result<(String, String, u64)> {
     if let Some(n) = explicit_pr_number {
-        let (owner, repo_name) = github::get_repo_info(repo_root)?;
+        let (owner, repo_name) = github::get_repo_info(git, repo_root)?;
         return Ok((owner, repo_name, n));
     }
-    github::get_pr_info(repo_root)
+    github::get_pr_info(git, repo_root)
 }
 
 #[cfg(test)]

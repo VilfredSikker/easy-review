@@ -230,6 +230,7 @@ fn main() -> Result<()> {
         let pr_ref = github::parse_github_pr_url(first_url)
             .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {}", first_url))?;
         let tab = app::TabState::new_remote(&pr_ref, ports.clone())?;
+        // The remote branch below reaches git through the same handle.
         let pr_data = github::gh_pr_overview_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number);
         let mut app = App::new_remote(tab, pr_data, ports);
         app.tab_mut().reload_remote_comments();
@@ -288,9 +289,9 @@ fn main() -> Result<()> {
     if let Some(pr_number) = cli.pr {
         github::ensure_gh_installed()?;
         let repo_root = app.tab().repo_root.clone();
-        let head_ref = github::fetch_pr_head(pr_number, &repo_root)?;
+        let head_ref = github::fetch_pr_head(&*app.ports.git, pr_number, &repo_root)?;
         let base = github::gh_pr_base_branch(pr_number, &repo_root)?;
-        let base = github::ensure_base_ref_available(&repo_root, &base)?;
+        let base = github::ensure_base_ref_available(&*app.ports.git, &repo_root, &base)?;
         let head_branch = github::gh_pr_head_branch_name(pr_number, &repo_root)
             .unwrap_or_else(|_| format!("pr/{}", pr_number));
         let tab = app.tab_mut();
