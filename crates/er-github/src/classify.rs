@@ -639,6 +639,22 @@ mod tests {
     }
 
     #[test]
+    fn a_graphql_200_rate_limit_reads_the_reset_from_the_header() {
+        let error = classify_fixture(&fixtures_root().join("graphql_200_rate_limited.synthetic"))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                GhError::RateLimited {
+                    reset_epoch_secs: Some(1793976383),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn split_pages_keeps_a_raw_body_byte_for_byte() {
         let stdout =
             std::fs::read(fixtures_root().join("api_paginate_raw_two_pages.synthetic/stdout"))
