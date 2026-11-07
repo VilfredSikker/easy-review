@@ -344,6 +344,15 @@ impl CliGitHub {
             .map_err(|error| action_error(action, error))
     }
 
+    /// Delete `branch` on `owner/repo`. A branch that is already gone counts as
+    /// deleted: a repo that deletes merged branches itself gets there first, and
+    /// reporting that as a failure would read as a failed merge.
+    ///
+    /// `expected_tip` is the PR's head commit. A long-lived branch (`dev`,
+    /// `staging`) can gain commits after its PR closed; deleting it then would
+    /// drop work no PR holds, and Restore would bring back only the old head. So
+    /// the branch is deleted only while it still points at the PR head, as
+    /// GitHub's own "can be safely deleted" requires.
     pub(crate) fn delete_remote_branch(
         &self,
         owner: &str,
@@ -374,6 +383,7 @@ impl CliGitHub {
         Ok(())
     }
 
+    /// State of PR `number` (`OPEN`, `MERGED`, `CLOSED`), read live.
     pub(crate) fn pr_state(&self, owner: &str, repo: &str, number: u64) -> Result<String, GhError> {
         let slug = format!("{owner}/{repo}");
         let args = vec![
@@ -391,6 +401,8 @@ impl CliGitHub {
         Ok(out.trim().to_string())
     }
 
+    /// Whether `base` has a merge queue. On such a branch `gh pr merge` only
+    /// enqueues the PR, so the PR stays open until the queue merges it.
     pub(crate) fn base_has_merge_queue(
         &self,
         owner: &str,
@@ -408,6 +420,8 @@ impl CliGitHub {
         Ok(v["data"]["repository"]["mergeQueue"].is_object())
     }
 
+    /// Cached [`CliGitHub::base_has_merge_queue`]; queue setup changes about as
+    /// often as repo settings do.
     pub(crate) fn cached_base_has_merge_queue(
         &self,
         owner: &str,
@@ -422,6 +436,7 @@ impl CliGitHub {
             .ok()
     }
 
+    /// Whether PR `number` sits in its base branch's merge queue.
     pub(crate) fn pr_in_merge_queue(
         &self,
         owner: &str,
@@ -437,6 +452,10 @@ impl CliGitHub {
         parse_in_merge_queue(&out)
     }
 
+    /// Whether the viewer may merge a PR into `base` without its requirements
+    /// met (`gh pr merge --admin`). `viewerCanMergeAsAdmin` covers classic branch
+    /// protection only and reads false for a ruleset bypass actor, so the
+    /// rulesets on `base` are asked too.
     pub(crate) fn viewer_can_bypass(
         &self,
         owner: &str,
@@ -470,6 +489,7 @@ impl CliGitHub {
         Ok(true)
     }
 
+    /// Recreate `branch` at `sha` — GitHub's "Restore branch" after a merge.
     pub(crate) fn restore_remote_branch(
         &self,
         owner: &str,
@@ -502,6 +522,8 @@ impl CliGitHub {
         Ok(())
     }
 
+    /// Whether `branch` still exists on `owner/repo`. `Err` when GitHub could not
+    /// answer, so a network failure is never read as "deleted".
     pub(crate) fn remote_branch_exists(
         &self,
         owner: &str,
@@ -526,6 +548,7 @@ impl CliGitHub {
         })
     }
 
+    /// Cached [`CliGitHub::repo_merge_settings`].
     pub(crate) fn cached_repo_merge_settings(
         &self,
         owner: &str,
@@ -539,6 +562,13 @@ impl CliGitHub {
             .ok()
     }
 
+    /// Cached [`CliGitHub::remote_branch_exists`]; `None` when GitHub could not
+    /// answer.
+    ///
+    /// `deleting_itself`: the repo deletes merged branches, a moment after the
+    /// merge. A "present" seen then is likely to turn false soon, so it is kept
+    /// only briefly; GitHub skips that delete for a protected branch or the base
+    /// of another PR, so it is still kept, rather than asked for every poll.
     pub(crate) fn cached_remote_branch_exists(
         &self,
         owner: &str,
@@ -557,6 +587,10 @@ impl CliGitHub {
             .ok()
     }
 
+    /// Cached [`CliGitHub::viewer_can_bypass`]. Bypass rights depend on the
+    /// viewer's role and the base branch's rules, so the answer is cached per
+    /// base. `None` when GitHub could not answer, and the box then offers no
+    /// bypass.
     pub(crate) fn cached_viewer_can_bypass(
         &self,
         owner: &str,
@@ -680,6 +714,8 @@ mod tests {
 
     #[test]
     fn merge_never_deletes_the_branch_through_gh() {
+        // `--delete-branch` without a working-tree-free guarantee can switch the
+        // user's checkout; deletion is a separate API call.
         for method in [MergeMethod::Merge, MergeMethod::Squash, MergeMethod::Rebase] {
             for auto in [false, true] {
                 let a = args(PrAction::Merge {
@@ -768,6 +804,7 @@ mod tests {
         assert!(parse_ruleset_bypassable(&mode("always")).unwrap());
         assert!(parse_ruleset_bypassable(&mode("pull_requests_only")).unwrap());
         assert!(!parse_ruleset_bypassable(&mode("never")).unwrap());
+        // Unknown means no answer, so the box offers no bypass.
         assert!(parse_ruleset_bypassable(r#"{"id":1}"#).is_err());
     }
 
@@ -881,6 +918,7 @@ mod tests {
         let s = parse_repo_merge_settings(r#"{"data": {"repository": {}}}"#).unwrap();
         assert!(s.merge_commit_allowed && s.squash_merge_allowed && s.rebase_merge_allowed);
         assert!(!s.delete_branch_on_merge);
+        // GitHub's default is off; guessing on would offer a refused button.
         assert!(!s.auto_merge_allowed);
         assert!(s.viewer_permission.is_none());
     }
@@ -919,6 +957,9 @@ mod tests {
 
     #[test]
     fn present_branch_on_an_auto_deleting_repo_is_kept_only_briefly() {
+        // Right after a merge on a delete-on-merge repo, "present" is about to
+        // turn false; kept for the full TTL it would show Delete for minutes,
+        // and not kept at all it would cost a `gh` call every poll.
         assert_eq!(branch_exists_ttl(true, true), PENDING_DELETE_TTL);
         assert_eq!(branch_exists_ttl(true, false), BRANCH_EXISTS_TTL);
         assert_eq!(branch_exists_ttl(false, true), BRANCH_EXISTS_TTL);
@@ -926,6 +967,8 @@ mod tests {
 
     #[test]
     fn a_branch_that_moved_past_the_pr_is_kept() {
+        // A long-lived branch with commits after the PR closed holds work no
+        // PR has; deleting it would lose that work.
         let err = check_tip_matches("dev", "newcommit123", "prhead").unwrap_err();
         assert!(err.to_string().contains("It was kept"), "{err}");
         assert!(err.to_string().contains("newcomm"), "{err}");

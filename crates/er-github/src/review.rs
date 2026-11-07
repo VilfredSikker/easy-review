@@ -111,6 +111,8 @@ impl CliGitHub {
 }
 
 impl CliGitHub {
+    /// Head oid of a remote PR (no local clone needed) — the staleness baseline
+    /// for remote tabs.
     pub(crate) fn pr_head_oid_remote(
         &self,
         owner: &str,
@@ -128,6 +130,10 @@ impl CliGitHub {
         Ok(oid)
     }
 
+    /// Submit a batch PR review with multiple comments in one API call.
+    ///
+    /// `comments` is a slice of `ReviewBatchEntry`. No individual comment ids are
+    /// returned by the review API; the next pull rebuilds them from GitHub.
     #[expect(
         clippy::too_many_arguments,
         reason = "the review inputs travel together and match the wrapper's signature"
@@ -164,6 +170,8 @@ impl CliGitHub {
         )
     }
 
+    /// Submit a batch PR review with multiple comments on a remote PR (no local
+    /// repo required).
     pub(crate) fn submit_review_remote(
         &self,
         owner: &str,

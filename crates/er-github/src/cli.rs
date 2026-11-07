@@ -22,9 +22,14 @@ pub struct Caches {
 
 impl Caches {
     pub fn new() -> Self {
+        // Repo settings rarely change, and the status loop runs every 30s; one
+        // query per repo per TTL keeps it off the rate limit (ADR 0026).
         Self {
             merge_queue: TtlCache::new(Duration::from_mins(15), None),
             bypass: TtlCache::new(Duration::from_mins(15), None),
+            // A merged PR's branch rarely changes, but the status loop asks
+            // every 30s. Delete and restore update the entry, so the box
+            // reflects its own actions at once (ADR 0026).
             branch_exists: TtlCache::new(Duration::from_mins(5), None),
             repo_settings: TtlCache::new(Duration::from_mins(15), None),
         }

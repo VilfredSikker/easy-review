@@ -813,6 +813,27 @@ mod tests {
     }
 
     #[test]
+    fn not_found_detection() {
+        let not_found = classify(
+            Ok(output(1, Vec::new(), "gh: Not Found (HTTP 404)")),
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(not_found, GhError::NotFound { .. }),
+            "{not_found:?}"
+        );
+        let network = classify(
+            Ok(output(1, Vec::new(), "error connecting to api.github.com")),
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(network, GhError::Network { .. }), "{network:?}");
+    }
+
+    #[test]
     fn a_404_in_a_pr_number_is_not_a_not_found() {
         let error = classify(
             Ok(output(

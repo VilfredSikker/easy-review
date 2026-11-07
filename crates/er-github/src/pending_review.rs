@@ -230,6 +230,8 @@ impl CliGitHub {
 }
 
 impl CliGitHub {
+    /// The viewer's pending review on `owner/repo#pr`. An empty review (no
+    /// `review_id`) when none has been started.
     pub(crate) fn pending_review(
         &self,
         owner: &str,
@@ -244,6 +246,8 @@ impl CliGitHub {
         parse_pending_review(&stdout)
     }
 
+    /// Add one line comment to the viewer's pending review, starting the review
+    /// when there is none yet.
     pub(crate) fn pending_review_add_comment(
         &self,
         owner: &str,
@@ -275,6 +279,8 @@ impl CliGitHub {
         }
     }
 
+    /// Drop one comment from the pending review. The review itself stays, empty,
+    /// until it is submitted.
     pub(crate) fn pending_review_remove_comment(
         &self,
         comment_node_id: &str,
@@ -283,6 +289,9 @@ impl CliGitHub {
             .map(|_| ())
     }
 
+    /// Submit the viewer's review with `event`, posting its pending comments with
+    /// it. Without a pending review this is a plain review carrying only the
+    /// summary. Returns how many line comments went out with it.
     pub(crate) fn pending_review_submit(
         &self,
         owner: &str,
@@ -325,7 +334,7 @@ impl CliGitHub {
 pub fn gh_pending_review(owner: &str, repo: &str, pr: u64) -> anyhow::Result<PendingReview> {
     default_handle()
         .pending_review(owner, repo, pr)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| anyhow::anyhow!("Failed to read the pending review: {error}"))
 }
 
 pub fn gh_pending_review_add_comment(
@@ -336,13 +345,17 @@ pub fn gh_pending_review_add_comment(
 ) -> anyhow::Result<()> {
     default_handle()
         .pending_review_add_comment(owner, repo, pr, entry)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| {
+            anyhow::anyhow!("Failed to add the comment to your pending review: {error}")
+        })
 }
 
 pub fn gh_pending_review_remove_comment(comment_node_id: &str) -> anyhow::Result<()> {
     default_handle()
         .pending_review_remove_comment(comment_node_id)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| {
+            anyhow::anyhow!("Failed to remove the comment from your pending review: {error}")
+        })
 }
 
 pub fn gh_pending_review_submit(
@@ -354,7 +367,7 @@ pub fn gh_pending_review_submit(
 ) -> anyhow::Result<usize> {
     default_handle()
         .pending_review_submit(owner, repo, pr, event, body)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| anyhow::anyhow!("Failed to submit the pending review: {error}"))
 }
 
 #[cfg(test)]
