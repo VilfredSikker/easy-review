@@ -63,7 +63,11 @@ fn read_text(bytes: Vec<u8>) -> Option<String> {
 /// The text to hand the agent, or `None` when the base has no `REVIEW.md`
 /// or it could not be read. A failed read means "absent": a review never
 /// fails over this file.
-pub fn collect(source: &ReviewMdSource, raw_diff: &str) -> Option<String> {
+pub fn collect(
+    ports: &crate::ports::Ports,
+    source: &ReviewMdSource,
+    raw_diff: &str,
+) -> Option<String> {
     let (base_ref, files): (&str, Vec<(String, String)>) = match source {
         ReviewMdSource::None => return None,
         ReviewMdSource::Git {
@@ -75,18 +79,18 @@ pub fn collect(source: &ReviewMdSource, raw_diff: &str) -> Option<String> {
                 .map(|h| h.path)
                 .collect();
             let candidates = candidate_paths(&changed);
-            let present =
-                crate::git::git_paths_present_at(repo_root, base_ref, &candidates).ok()?;
+            let present = ports
+                .git
+                .paths_present_at(repo_root, base_ref, &candidates)
+                .ok()?;
             let files = candidates
                 .into_iter()
                 .filter(|c| present.contains(c))
                 .filter_map(|path| {
-                    let bytes = crate::git::git_read_blob(
-                        repo_root,
-                        &format!("{base_ref}:{path}"),
-                        MAX_FILE_BYTES,
-                    )
-                    .ok()?;
+                    let bytes = ports
+                        .git
+                        .read_blob(repo_root, &format!("{base_ref}:{path}"), MAX_FILE_BYTES)
+                        .ok()?;
                     Some((path, read_text(bytes)?))
                 })
                 .collect();
@@ -213,10 +217,39 @@ mod tests {
         write(dir.path(), "REVIEW.md", "pr rules");
         commit_all(dir.path());
         write(dir.path(), "REVIEW.md", "working rules");
-        let out = collect(&src(dir.path()), &diff_for("a.rs")).unwrap();
+        let out = collect(
+            &crate::ports::Ports::cli(),
+            &src(dir.path()),
+            &diff_for("a.rs"),
+        )
+        .unwrap();
         assert!(out.contains("base rules"));
         assert!(!out.contains("pr rules"));
         assert!(!out.contains("working rules"));
+    }
+
+    #[test]
+    fn review_md_collect_reads_blobs_through_the_handle() {
+        let fake = std::sync::Arc::new(
+            er_git::FakeGit::default()
+                .with_paths_present_at(Ok(vec!["REVIEW.md".to_string()]))
+                .with_read_blob(Ok(b"handle rules".to_vec())),
+        );
+        let ports = crate::ports::Ports::with_git(fake.clone());
+        let dir = repo();
+
+        let out = collect(&ports, &src(dir.path()), &diff_for("a.rs")).unwrap();
+
+        assert!(out.contains("handle rules"), "{out}");
+        let calls = fake.calls();
+        assert!(
+            calls.iter().any(|c| c.starts_with("paths_present_at(")),
+            "{calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c.starts_with("read_blob(")),
+            "{calls:?}"
+        );
     }
 
     #[test]
@@ -226,7 +259,12 @@ mod tests {
         write(dir.path(), "svc/REVIEW.md", "svc rules");
         write(dir.path(), "web/REVIEW.md", "web rules");
         commit_all(dir.path());
-        let out = collect(&src(dir.path()), &diff_for("svc/x.rs")).unwrap();
+        let out = collect(
+            &crate::ports::Ports::cli(),
+            &src(dir.path()),
+            &diff_for("svc/x.rs"),
+        )
+        .unwrap();
         assert!(out.contains("svc rules"));
         assert!(!out.contains("web rules"));
     }
@@ -236,7 +274,14 @@ mod tests {
         let dir = repo();
         write(dir.path(), "a.rs", "a\n");
         commit_all(dir.path());
-        assert_eq!(collect(&src(dir.path()), &diff_for("a.rs")), None);
+        assert_eq!(
+            collect(
+                &crate::ports::Ports::cli(),
+                &src(dir.path()),
+                &diff_for("a.rs")
+            ),
+            None
+        );
     }
 
     #[test]
@@ -248,7 +293,10 @@ mod tests {
             repo_root: dir.path().to_string_lossy().into_owned(),
             base_ref: "nope".into(),
         };
-        assert_eq!(collect(&source, &diff_for("a.rs")), None);
+        assert_eq!(
+            collect(&crate::ports::Ports::cli(), &source, &diff_for("a.rs")),
+            None
+        );
     }
 
     #[test]
@@ -276,7 +324,12 @@ mod tests {
             write(dir.path(), rel, &big);
         }
         commit_all(dir.path());
-        let out = collect(&src(dir.path()), &diff_for("a/b/c/d.rs")).unwrap();
+        let out = collect(
+            &crate::ports::Ports::cli(),
+            &src(dir.path()),
+            &diff_for("a/b/c/d.rs"),
+        )
+        .unwrap();
         assert!(out.len() <= MAX_TOTAL_BYTES + 512);
         assert!(out.ends_with("more REVIEW.md files not included)"));
     }

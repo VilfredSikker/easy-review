@@ -1339,6 +1339,107 @@ pub fn git_paths_present_at(
         .collect())
 }
 
+/// Read a configured remote's URL, trimmed.
+pub(crate) fn git_remote_url(root: &str, name: &str) -> Result<String, GitError> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", name])
+        .current_dir(root)
+        .output()
+        .map_err(|e| spawn_error("Failed to get git remote URL", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("Failed to get git remote URL", &stderr));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Resolve a revision to its oid; `None` when it does not resolve.
+pub(crate) fn git_rev_parse_verify(root: &str, rev: &str) -> Result<Option<String>, GitError> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", rev])
+        .current_dir(root)
+        .output()
+        .map_err(|e| spawn_error("Failed to run git rev-parse", e))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!oid.is_empty()).then_some(oid))
+}
+
+/// Run `git fetch` with the given arguments under the fetch timeout.
+pub(crate) fn git_fetch(root: &str, args: &[&str]) -> Result<(), GitError> {
+    let output = Command::new("git")
+        .arg("fetch")
+        .args(args)
+        .current_dir(root)
+        .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
+        .map_err(|e| spawn_error("Failed to run git fetch", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("git fetch failed", &stderr));
+    }
+    Ok(())
+}
+
+/// Point a ref at a commit.
+pub(crate) fn git_update_ref(root: &str, name: &str, target: &str) -> Result<(), GitError> {
+    let output = Command::new("git")
+        .args(["update-ref", name, target])
+        .current_dir(root)
+        .output()
+        .map_err(|e| spawn_error("Failed to run git update-ref", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("git update-ref failed", &stderr));
+    }
+    Ok(())
+}
+
+/// Diff two revisions with the shared context width.
+pub(crate) fn git_diff_revs(root: &str, revs: &[&str]) -> Result<String, GitError> {
+    let unified_arg = format!("--unified={}", crate::DEFAULT_CONTEXT_LINES);
+    let output = Command::new("git")
+        .arg("diff")
+        .args(revs)
+        .args([&unified_arg, "--no-color", "--no-ext-diff"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| spawn_error("Failed to run git diff", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("git diff failed", &stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Clone a remote without a checkout, under the fetch timeout.
+pub(crate) fn git_shallow_clone(url: &str, dest: &str) -> Result<(), GitError> {
+    let output = Command::new("git")
+        .args([
+            "clone",
+            "--depth=1",
+            "--no-checkout",
+            "--filter=blob:none",
+            url,
+            dest,
+        ])
+        .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
+        .map_err(|e| spawn_error("Failed to run git clone", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("git clone failed", &stderr));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

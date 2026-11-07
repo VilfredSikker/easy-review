@@ -231,7 +231,11 @@ pub fn prepare_pr_diff_tmp(
     std::fs::create_dir_all(&er_dir).with_context(|| format!("mkdir {er_dir}"))?;
     // Rule tables are keyed the way `storage::slug_repo` names a clone of this
     // repo (the origin URL's basename), not by the owner/repo storage slug.
-    let key = crate::storage::rules_key("", Some(&format!("{owner}/{repo}")));
+    let key = crate::storage::rules_key(
+        &*crate::ports::Ports::cli().git,
+        "",
+        Some(&format!("{owner}/{repo}")),
+    );
     crate::ai::prepared_diff::ensure_review_inputs_from_config(&er_dir, &raw, &key, review_md)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let diff_path = format!("{er_dir}/diff-tmp");
@@ -253,6 +257,7 @@ pub fn prepare_review_kit(
     let (meta_base, meta_head) = gh_pr_metadata_remote(owner, repo, pr)
         .unwrap_or_else(|_| ("main".into(), format!("pr-{pr}")));
     let review_md = crate::ai::review_md::collect(
+        &crate::ports::Ports::cli(),
         &crate::ai::review_md::ReviewMdSource::Gh {
             repo_slug: format!("{owner}/{repo}"),
             base_ref: meta_base.clone(),
@@ -434,17 +439,32 @@ mod tests {
             "origin",
             "git@github.com:Acme/My_Service.git",
         ]);
-        let clone_key = crate::storage::slug_repo(dir.path().to_str().unwrap());
+        let clone_key = crate::storage::slug_repo(
+            &*crate::ports::Ports::cli().git,
+            dir.path().to_str().unwrap(),
+        );
         assert_eq!(
-            crate::storage::rules_key("", Some("Acme/My_Service")),
+            crate::storage::rules_key(
+                &*crate::ports::Ports::for_test().git,
+                "",
+                Some("Acme/My_Service")
+            ),
             clone_key
         );
         assert_eq!(
-            crate::storage::rules_key("/", Some("Acme/My_Service")),
+            crate::storage::rules_key(
+                &*crate::ports::Ports::for_test().git,
+                "/",
+                Some("Acme/My_Service")
+            ),
             clone_key
         );
         assert_eq!(
-            crate::storage::rules_key(dir.path().to_str().unwrap(), None),
+            crate::storage::rules_key(
+                &*crate::ports::Ports::cli().git,
+                dir.path().to_str().unwrap(),
+                None
+            ),
             clone_key
         );
         assert_ne!(owner_repo_storage_slug("Acme", "My_Service"), clone_key);

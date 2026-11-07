@@ -139,7 +139,7 @@ impl TabState {
                     file.path
                 )
             };
-            if let Ok(oid) = crate::git::git_blob_oid(root, &spec) {
+            if let Ok(oid) = self.ports.git.blob_oid(root, &spec) {
                 self.preview_blob_ids.insert(file.path.clone(), oid);
             }
         }
@@ -535,18 +535,18 @@ fn verify_blob(bytes: &[u8], expected: &str) -> Result<()> {
 }
 
 impl FilePreviewRequest {
-    pub fn read(&self) -> Result<String> {
-        let bytes = self.read_bytes(MAX_PREVIEW_BYTES)?;
+    pub fn read(&self, git: &dyn er_git::Git) -> Result<String> {
+        let bytes = self.read_bytes(git, MAX_PREVIEW_BYTES)?;
         if bytes.contains(&0) {
             bail!("Binary document cannot be previewed");
         }
         String::from_utf8(bytes).context("Document is not UTF-8 text")
     }
 
-    pub fn read_bytes(&self, limit: usize) -> Result<Vec<u8>> {
+    pub fn read_bytes(&self, git: &dyn er_git::Git, limit: usize) -> Result<Vec<u8>> {
         Ok(match &self.source {
             Source::Diff(section, deleted) => reconstruct(section, *deleted, limit)?,
-            Source::Blob(root, oid) => crate::git::git_read_blob(root, oid, limit)?,
+            Source::Blob(root, oid) => git.read_blob(root, oid, limit)?,
             Source::Checkout(root, expected_mtime) => {
                 let file = open_checkout_file(root, &self.path)?;
                 let before = file.metadata()?;
@@ -630,6 +630,7 @@ mod tests {
 
     fn tab(raw: &str, root: &Path, mode: DiffMode) -> TabState {
         let mut tab = super::super::tests::make_test_tab(git::parse_diff(raw));
+        tab.ports = crate::ports::Ports::cli();
         tab.repo_root = root.to_string_lossy().into_owned();
         tab.mode = mode;
         tab.raw_diff = Some(raw.to_string());
@@ -751,26 +752,33 @@ mod tests {
         );
         let t = tab(&raw, dir.path(), DiffMode::Staged);
         assert_eq!(
-            t.capture_file_preview("added.md").unwrap().read().unwrap(),
+            t.capture_file_preview("added.md")
+                .unwrap()
+                .read(&er_git::CliGit)
+                .unwrap(),
             "new\r\nlast"
         );
         assert_eq!(
             t.capture_file_preview("deleted.md")
                 .unwrap()
-                .read()
+                .read(&er_git::CliGit)
                 .unwrap(),
             "old\r\nlast"
         );
         let changed = raw.replace("+new\r\n", "+wrong\r\n");
         assert_ne!(changed, raw);
         let t = tab(&changed, dir.path(), DiffMode::Staged);
-        assert!(t.capture_file_preview("added.md").unwrap().read().is_err());
+        assert!(t
+            .capture_file_preview("added.md")
+            .unwrap()
+            .read(&er_git::CliGit)
+            .is_err());
         let changed = raw.replace("-old\r\n", "-wrong\r\n");
         let t = tab(&changed, dir.path(), DiffMode::Staged);
         assert!(t
             .capture_file_preview("deleted.md")
             .unwrap()
-            .read()
+            .read(&er_git::CliGit)
             .is_err());
         let oid = git(dir.path(), &["rev-parse", ":added.md"]);
         assert_eq!(oid.len(), 64);
@@ -791,7 +799,7 @@ mod tests {
         assert_eq!(
             t.capture_file_preview("replacement.md")
                 .unwrap()
-                .read()
+                .read(&er_git::CliGit)
                 .unwrap(),
             "valid \u{fffd}\n"
         );
@@ -807,7 +815,7 @@ mod tests {
         assert!(t
             .capture_file_preview("replacement.md")
             .unwrap()
-            .read()
+            .read(&er_git::CliGit)
             .is_err());
     }
 
@@ -823,7 +831,10 @@ mod tests {
         t.local_branch_checkout_root = Some(dir.path().to_string_lossy().into_owned());
         std::fs::write(dir.path().join("readme.md"), "working\nunchanged\n").unwrap();
         assert_eq!(
-            t.capture_file_preview("readme.md").unwrap().read().unwrap(),
+            t.capture_file_preview("readme.md")
+                .unwrap()
+                .read(&er_git::CliGit)
+                .unwrap(),
             "staged\nunchanged\n"
         );
         let raw = git(dir.path(), &["diff"]);
@@ -831,7 +842,10 @@ mod tests {
         t.remote_repo = Some("owner/repo".into());
         t.local_branch_view = Some("feature".into());
         assert_eq!(
-            t.capture_file_preview("readme.md").unwrap().read().unwrap(),
+            t.capture_file_preview("readme.md")
+                .unwrap()
+                .read(&er_git::CliGit)
+                .unwrap(),
             "working\nunchanged\n"
         );
         git(
@@ -841,7 +855,10 @@ mod tests {
         let raw = git(dir.path(), &["diff", "HEAD~1", "HEAD"]);
         let t = tab(&raw, dir.path(), DiffMode::Branch);
         assert_eq!(
-            t.capture_file_preview("readme.md").unwrap().read().unwrap(),
+            t.capture_file_preview("readme.md")
+                .unwrap()
+                .read(&er_git::CliGit)
+                .unwrap(),
             "staged\nunchanged\n"
         );
     }
@@ -853,7 +870,11 @@ mod tests {
         for bytes in [vec![0], vec![0xff], vec![b'a'; MAX_PREVIEW_BYTES + 1]] {
             std::fs::write(dir.path().join("readme.md"), bytes).unwrap();
             let t = tab(raw, dir.path(), DiffMode::Unstaged);
-            assert!(t.capture_file_preview("readme.md").unwrap().read().is_err());
+            assert!(t
+                .capture_file_preview("readme.md")
+                .unwrap()
+                .read(&er_git::CliGit)
+                .is_err());
         }
         assert!(validate_path("../readme.md").is_err());
         assert!(validate_path("/readme.md").is_err());
@@ -863,7 +884,11 @@ mod tests {
             std::fs::remove_file(dir.path().join("readme.md")).unwrap();
             std::os::unix::fs::symlink(outside.path(), dir.path().join("readme.md")).unwrap();
             let t = tab(raw, dir.path(), DiffMode::Unstaged);
-            assert!(t.capture_file_preview("readme.md").unwrap().read().is_err());
+            assert!(t
+                .capture_file_preview("readme.md")
+                .unwrap()
+                .read(&er_git::CliGit)
+                .is_err());
         }
     }
 
@@ -880,7 +905,7 @@ mod tests {
             "different complete document\n",
         )
         .unwrap();
-        assert!(request.read().is_err());
+        assert!(request.read(&er_git::CliGit).is_err());
         t.raw_diff = Some(raw.replace("abcdef0", "1234567"));
         assert_ne!(context, t.preview_context_key());
         assert_ne!(key, t.file_preview_key("readme.md"));
@@ -919,7 +944,10 @@ mod tests {
     fn image_sides(t: &TabState, path: &str) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
         let request = t.capture_image_preview(path).unwrap();
         let read = |side: Option<FilePreviewRequest>| {
-            side.map(|r| r.read_bytes(MAX_IMAGE_PREVIEW_BYTES).unwrap())
+            side.map(|r| {
+                r.read_bytes(&er_git::CliGit, MAX_IMAGE_PREVIEW_BYTES)
+                    .unwrap()
+            })
         };
         (read(request.before), read(request.after))
     }
@@ -972,7 +1000,7 @@ mod tests {
         );
         // The text reader still refuses image bytes.
         let request = t.capture_image_preview("logo.png").unwrap();
-        assert!(request.after.unwrap().read().is_err());
+        assert!(request.after.unwrap().read(&er_git::CliGit).is_err());
     }
 
     #[test]
@@ -1015,7 +1043,9 @@ mod tests {
         let after = request.after.unwrap();
         assert!(matches!(after.source, Source::Diff(_, false)));
         assert_eq!(
-            after.read_bytes(MAX_IMAGE_PREVIEW_BYTES).unwrap(),
+            after
+                .read_bytes(&er_git::CliGit, MAX_IMAGE_PREVIEW_BYTES)
+                .unwrap(),
             svg.as_bytes()
         );
     }
@@ -1042,7 +1072,12 @@ mod tests {
         let request = t.capture_image_preview("logo.png").unwrap();
         let before = request.before.unwrap();
         assert!(matches!(before.source, Source::Blob(..)));
-        assert_eq!(before.read_bytes(MAX_IMAGE_PREVIEW_BYTES).unwrap(), bytes);
+        assert_eq!(
+            before
+                .read_bytes(&er_git::CliGit, MAX_IMAGE_PREVIEW_BYTES)
+                .unwrap(),
+            bytes
+        );
     }
 
     #[test]
@@ -1057,7 +1092,7 @@ mod tests {
         );
         let request = t.capture_file_preview("notes.md").unwrap();
         assert!(matches!(request.source, Source::Diff(..)));
-        assert!(request.read().is_err());
+        assert!(request.read(&er_git::CliGit).is_err());
     }
 
     #[test]
@@ -1117,7 +1152,7 @@ mod tests {
         std::fs::write(dir.path().join("readme.md"), "unrelated live edit").unwrap();
         let request = t.capture_file_preview("readme.md").unwrap();
         assert_eq!(
-            request.read().unwrap(),
+            request.read(&er_git::CliGit).unwrap(),
             "new\r\ncomplete\r\nwithout final newline"
         );
         let context = t.preview_context_key();
@@ -1136,7 +1171,10 @@ mod tests {
         h.commits[0].hash = deleted_hash;
         h.commit_files = git::parse_diff(&raw);
         assert_eq!(
-            t.capture_file_preview("readme.md").unwrap().read().unwrap(),
+            t.capture_file_preview("readme.md")
+                .unwrap()
+                .read(&er_git::CliGit)
+                .unwrap(),
             "new\r\ncomplete\r\nwithout final newline"
         );
     }
@@ -1151,7 +1189,7 @@ mod tests {
         assert_eq!(
             t.capture_file_preview("renamed.md")
                 .unwrap()
-                .read()
+                .read(&er_git::CliGit)
                 .unwrap(),
             "old\nunchanged\n"
         );

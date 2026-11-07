@@ -838,6 +838,8 @@ fn main() {
     er_engine::env_path::init_cli_path();
     dev_log::init();
 
+    let ports = er_engine::ports::Ports::cli();
+
     // When a persisted tabs.json exists we're going to replace `app.tabs`
     // entirely below, so the engine init only needs a placeholder tab —
     // running the initial `refresh_diff()` here would be wasted work
@@ -848,33 +850,38 @@ fn main() {
     let cwd_repo_root = er_engine::git::get_repo_root().ok();
 
     let mut app = match (has_persisted_tabs, cwd_repo_root.clone()) {
-        (true, Some(root)) => App::new_unloaded(root)
-            .unwrap_or_else(|e| empty_app(&format!("er-desktop: failed to init engine: {e}"))),
+        (true, Some(root)) => App::new_unloaded(root, ports.clone()).unwrap_or_else(|e| {
+            empty_app(&format!("er-desktop: failed to init engine: {e}"), &ports)
+        }),
         (true, None) => {
             // No CWD repo but we have tabs to restore: open against a saved
             // project so the engine has a valid root.
             let fallback = startup_root_from_projects(&projects::load());
             match fallback
                 .as_deref()
-                .map(|p| App::new_unloaded(p.to_string()))
+                .map(|p| App::new_unloaded(p.to_string(), ports.clone()))
             {
                 Some(Ok(a)) => a,
-                Some(Err(e)) => empty_app(&format!(
-                    "er-desktop: failed to init engine for {}: {e}",
-                    fallback.as_deref().unwrap_or("?")
-                )),
+                Some(Err(e)) => empty_app(
+                    &format!(
+                        "er-desktop: failed to init engine for {}: {e}",
+                        fallback.as_deref().unwrap_or("?")
+                    ),
+                    &ports,
+                ),
                 None => empty_app(
                     "er-desktop: not started from a git repo, and no saved project folder still exists",
+                    &ports,
                 ),
             }
         }
-        (false, _) => match App::new_with_args(&[]) {
+        (false, _) => match App::new_with_args(&[], ports.clone()) {
             Ok(a) => a,
             Err(cwd_err) => {
                 let fallback = startup_root_from_projects(&projects::load());
                 match fallback
                     .as_deref()
-                    .map(|p| App::new_with_args(&[p.to_string()]))
+                    .map(|p| App::new_with_args(&[p.to_string()], ports.clone()))
                 {
                     Some(Ok(a)) => {
                         log::info!(
@@ -883,7 +890,10 @@ fn main() {
                         );
                         a
                     }
-                    _ => empty_app(&format!("er-desktop: failed to init engine: {cwd_err}")),
+                    _ => empty_app(
+                        &format!("er-desktop: failed to init engine: {cwd_err}"),
+                        &ports,
+                    ),
                 }
             }
         },
@@ -904,9 +914,9 @@ fn main() {
         for (i, d) in file.tabs.iter().enumerate() {
             let eager = i == active_idx;
             let result = if eager {
-                tabs::rebuild_tab(d)
+                tabs::rebuild_tab(d, &ports)
             } else {
-                tabs::rebuild_tab_stub(d)
+                tabs::rebuild_tab_stub(d, &ports)
             };
             match result {
                 Ok(t) => {
@@ -1023,6 +1033,7 @@ fn main() {
     let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let state = AppState {
+        ports: ports.clone(),
         app: Arc::clone(&app_arc),
         pr_cache: Arc::clone(&pr_cache),
         pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
@@ -2202,9 +2213,9 @@ fn startup_root_from_projects(file: &projects::ProjectsFile) -> Option<String> {
 
 /// Start with no repo open instead of exiting. A Finder launch with nothing to
 /// open lands here, and the front end shows its welcome so a repo can be picked.
-fn empty_app(msg: &str) -> App {
+fn empty_app(msg: &str, ports: &er_engine::ports::Ports) -> App {
     eprintln!("{msg}; opening with no repo");
-    App::new_empty()
+    App::new_empty(ports.clone())
 }
 
 /// Base cadence for the branch-base staleness probe: one `git ls-remote` a

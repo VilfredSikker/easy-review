@@ -458,7 +458,7 @@ fn store_review_md(paths: &ArenaPaths, repo_root: &str, base_branch: &str, raw_d
         repo_root: repo_root.to_string(),
         base_ref: base_branch.to_string(),
     };
-    let text = crate::ai::review_md::collect(&source, raw_diff);
+    let text = crate::ai::review_md::collect(&crate::ports::Ports::cli(), &source, raw_diff);
     let _ = crate::ai::review_md::write_review_md(&paths.root.to_string_lossy(), text.as_deref());
 }
 

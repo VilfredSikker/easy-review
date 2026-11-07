@@ -48,36 +48,29 @@ pub fn slugify(s: &str) -> String {
 /// `repo_root` is whatever directory the process runs in, so the key comes from
 /// the repo name, which is what [`slug_repo`] returns for a clone of it. With
 /// `None` the clone is asked, so every view of one clone shares a key.
-pub fn rules_key(repo_root: &str, remote_repo: Option<&str>) -> String {
+pub fn rules_key(git: &dyn er_git::Git, repo_root: &str, remote_repo: Option<&str>) -> String {
     match remote_repo.map(str::trim).filter(|r| !r.is_empty()) {
         Some(remote) => {
             let name = remote.rsplit('/').next().unwrap_or(remote);
             slugify(name.trim_end_matches(".git"))
         }
-        None => slug_repo(repo_root),
+        None => slug_repo(git, repo_root),
     }
 }
 
 /// Derive a stable repo slug. Prefer the basename of the git remote origin URL;
 /// fall back to the basename of `repo_root`.
-pub fn slug_repo(repo_root: &str) -> String {
-    if let Ok(out) = std::process::Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(repo_root)
-        .output()
-    {
-        if out.status.success() {
-            let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let url = url.trim_end_matches(".git").to_string();
-            let name = url
-                .rsplit('/')
-                .next()
-                .or_else(|| url.rsplit(':').next())
-                .unwrap_or(&url)
-                .to_string();
-            if !name.is_empty() {
-                return slugify(&name);
-            }
+pub fn slug_repo(git: &dyn er_git::Git, repo_root: &str) -> String {
+    if let Ok(url) = git.remote_url(repo_root, "origin") {
+        let url = url.trim_end_matches(".git").to_string();
+        let name = url
+            .rsplit('/')
+            .next()
+            .or_else(|| url.rsplit(':').next())
+            .unwrap_or(&url)
+            .to_string();
+        if !name.is_empty() {
+            return slugify(&name);
         }
     }
     std::path::Path::new(repo_root)
@@ -148,8 +141,8 @@ pub fn view_bucket_dir(repo_slug: &str, branch_slug: &str, bucket: &str) -> Path
 ///
 /// This follows the same storage rules as a local `er` tab: the `branch` view
 /// bucket under managed storage.
-pub fn local_branch_bucket_dir(repo_root: &str, branch: &str) -> PathBuf {
-    view_bucket_dir(&slug_repo(repo_root), &slug_branch(branch), "branch")
+pub fn local_branch_bucket_dir(git: &dyn er_git::Git, repo_root: &str, branch: &str) -> PathBuf {
+    view_bucket_dir(&slug_repo(git, repo_root), &slug_branch(branch), "branch")
 }
 
 /// Directory for a PR bucket under the managed storage root.
@@ -259,9 +252,29 @@ mod tests {
 
     #[test]
     fn local_branch_bucket_dir_uses_branch_view_bucket() {
-        let dir = local_branch_bucket_dir("/tmp/example-repo", "feature/foo");
+        let dir = local_branch_bucket_dir(
+            &*crate::ports::Ports::for_test().git,
+            "/tmp/example-repo",
+            "feature/foo",
+        );
         let s = dir.to_string_lossy();
         assert!(s.contains("repos/example-repo/branches/feature-foo/view-buckets/branch"));
+    }
+
+    #[test]
+    fn slug_repo_uses_the_remote_url_from_the_handle() {
+        let fake = er_git::FakeGit::default()
+            .with_remote_url(Ok("git@github.com:Acme/My-Repo.git".into()));
+        assert_eq!(slug_repo(&fake, "/anywhere"), "My-Repo");
+    }
+
+    #[test]
+    fn slug_repo_falls_back_to_the_directory_name_when_the_remote_is_missing() {
+        let fake = er_git::FakeGit::default().with_remote_url(Err(er_git::GitError::Failed {
+            context: "no origin".into(),
+            stderr: String::new(),
+        }));
+        assert_eq!(slug_repo(&fake, "/tmp/Some-Dir"), "Some-Dir");
     }
 
     #[test]
@@ -328,7 +341,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::env::set_var("ER_STORAGE_ROOT", tmp.path());
         std::env::set_var("ER_REPO_LOCAL", "1");
-        let dir = local_branch_bucket_dir("/some/repo", "feature");
+        let dir = local_branch_bucket_dir(
+            &*crate::ports::Ports::for_test().git,
+            "/some/repo",
+            "feature",
+        );
         std::env::remove_var("ER_REPO_LOCAL");
         std::env::remove_var("ER_STORAGE_ROOT");
 

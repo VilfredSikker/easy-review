@@ -229,7 +229,11 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
     }
 }
 
-fn rebuild_local_branch(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::TabState> {
+fn rebuild_local_branch(
+    d: &TabDescriptor,
+    lazy: bool,
+    ports: &er_engine::ports::Ports,
+) -> Result<er_engine::app::TabState> {
     let branch = d
         .branch
         .clone()
@@ -237,9 +241,10 @@ fn rebuild_local_branch(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app:
     // Prefer the persisted (user-chosen) base; fall back to auto-detection.
     let base = match d.base_ref.as_deref() {
         Some(base) if !base.is_empty() => base.to_string(),
-        _ => er_engine::git::detect_base_branch_in(&d.repo_root)?,
+        _ => ports.git.detect_base_branch(&d.repo_root)?,
     };
-    let mut tab = er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
+    let mut tab =
+        er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base, ports.clone())?;
     tab.local_branch_view = Some(branch);
     tab.mode = er_engine::app::DiffMode::Branch;
     // Reloads AI sidecars so Review/Notes/Context have this tab's data on
@@ -253,18 +258,23 @@ fn rebuild_local_branch(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app:
     Ok(tab)
 }
 
-fn rebuild_local_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::TabState> {
+fn rebuild_local_pr(
+    d: &TabDescriptor,
+    lazy: bool,
+    ports: &er_engine::ports::Ports,
+) -> Result<er_engine::app::TabState> {
     let number = d
         .pr_number
         .context("local_pr descriptor missing pr_number")?;
     if !lazy {
-        return er_engine::app::TabState::new_local_pr(d.repo_root.clone(), number);
+        return er_engine::app::TabState::new_local_pr(d.repo_root.clone(), number, ports.clone());
     }
     let base = match d.base_ref.clone() {
         Some(b) if !b.is_empty() => b,
-        _ => er_engine::git::detect_base_branch_in(&d.repo_root)?,
+        _ => ports.git.detect_base_branch(&d.repo_root)?,
     };
-    let mut tab = er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
+    let mut tab =
+        er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base, ports.clone())?;
     tab.local_branch_view = d.branch.clone().or_else(|| Some(format!("pr/{}", number)));
     tab.pr_number = Some(number);
     tab.pr_head_ref = d.pr_head_ref.clone();
@@ -278,7 +288,11 @@ fn rebuild_local_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::Tab
     Ok(tab)
 }
 
-fn rebuild_remote_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::TabState> {
+fn rebuild_remote_pr(
+    d: &TabDescriptor,
+    lazy: bool,
+    ports: &er_engine::ports::Ports,
+) -> Result<er_engine::app::TabState> {
     let owner = d.pr_owner.clone().context("remote_pr missing owner")?;
     let repo = d.pr_repo.clone().context("remote_pr missing repo")?;
     let number = d.pr_number.context("remote_pr missing number")?;
@@ -288,7 +302,7 @@ fn rebuild_remote_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::Ta
         number,
     };
     if lazy {
-        let mut tab = er_engine::app::TabState::new_remote_stub(&pr_ref)?;
+        let mut tab = er_engine::app::TabState::new_remote_stub(&pr_ref, ports.clone())?;
         if let Some(branch) = d.branch.clone().filter(|s| !s.is_empty()) {
             tab.current_branch = branch;
         }
@@ -297,7 +311,7 @@ fn rebuild_remote_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::Ta
         }
         Ok(tab)
     } else {
-        er_engine::app::TabState::new_remote(&pr_ref)
+        er_engine::app::TabState::new_remote(&pr_ref, ports.clone())
     }
 }
 
@@ -307,40 +321,53 @@ fn rebuild_remote_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::Ta
 /// When `lazy` is true, tabs are built without their initial diff load and get
 /// `needs_initial_refresh = true`. The first diff runs when the tab gains focus
 /// (or when the background warmer reaches a same-project stub).
-pub fn rebuild_tab_with(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::TabState> {
+pub fn rebuild_tab_with(
+    d: &TabDescriptor,
+    lazy: bool,
+    ports: &er_engine::ports::Ports,
+) -> Result<er_engine::app::TabState> {
     let mut tab = match d.kind {
         TabKind::Working => {
             if lazy {
                 let base = match d.base_ref.as_deref() {
                     Some(base) if !base.is_empty() => base.to_string(),
-                    _ => er_engine::git::detect_base_branch_in(&d.repo_root)?,
+                    _ => ports.git.detect_base_branch(&d.repo_root)?,
                 };
-                let mut tab =
-                    er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
+                let mut tab = er_engine::app::TabState::new_with_base_unloaded(
+                    d.repo_root.clone(),
+                    base,
+                    ports.clone(),
+                )?;
                 tab.needs_initial_refresh = true;
                 tab
             } else {
-                er_engine::app::TabState::new(d.repo_root.clone())?
+                er_engine::app::TabState::new(d.repo_root.clone(), ports.clone())?
             }
         }
-        TabKind::LocalBranch => rebuild_local_branch(d, lazy)?,
-        TabKind::RemotePr => rebuild_remote_pr(d, lazy)?,
-        TabKind::LocalPr => rebuild_local_pr(d, lazy)?,
+        TabKind::LocalBranch => rebuild_local_branch(d, lazy, ports)?,
+        TabKind::RemotePr => rebuild_remote_pr(d, lazy, ports)?,
+        TabKind::LocalPr => rebuild_local_pr(d, lazy, ports)?,
     };
     apply_descriptor_browser(&mut tab, d);
     Ok(tab)
 }
 
 /// Backwards-compatible eager rebuild (legacy callers).
-pub fn rebuild_tab(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
-    rebuild_tab_with(d, false)
+pub fn rebuild_tab(
+    d: &TabDescriptor,
+    ports: &er_engine::ports::Ports,
+) -> Result<er_engine::app::TabState> {
+    rebuild_tab_with(d, false, ports)
 }
 
 /// Lazy rebuild: returns a stub without running the initial `refresh_diff()`.
 /// The tab's `needs_initial_refresh` flag is set so a focus handler (or
 /// background warmer) can run the diff later.
-pub fn rebuild_tab_stub(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
-    rebuild_tab_with(d, true)
+pub fn rebuild_tab_stub(
+    d: &TabDescriptor,
+    ports: &er_engine::ports::Ports,
+) -> Result<er_engine::app::TabState> {
+    rebuild_tab_with(d, true, ports)
 }
 
 #[cfg(test)]
@@ -477,8 +504,12 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         init_git_repo(tmp.path());
         let root = tmp.path().to_string_lossy().to_string();
-        let mut tab = er_engine::app::TabState::new_with_base_unloaded(root, "main".to_string())
-            .expect("tab");
+        let mut tab = er_engine::app::TabState::new_with_base_unloaded(
+            root,
+            "main".to_string(),
+            er_engine::ports::Ports::cli(),
+        )
+        .expect("tab");
         tab.pr_number = Some(42);
         tab.local_branch_view = Some("dependabot/cargo-abc".to_string());
         let d = descriptor_from_tab(&tab);
@@ -493,9 +524,12 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         init_git_repo(tmp.path());
         let root = tmp.path().to_string_lossy().to_string();
-        let mut tab =
-            er_engine::app::TabState::new_with_base_unloaded(root, "origin/main".to_string())
-                .expect("tab");
+        let mut tab = er_engine::app::TabState::new_with_base_unloaded(
+            root,
+            "origin/main".to_string(),
+            er_engine::ports::Ports::cli(),
+        )
+        .expect("tab");
         tab.pr_number = Some(1425);
         tab.local_branch_view = Some("feat/delete-plates".to_string());
         tab.remote_repo = Some("reshapebiotech/discovery".to_string());
@@ -538,7 +572,7 @@ mod tests {
             browser_url: None,
             browser_layout: None,
         };
-        let tab = rebuild_remote_pr(&d, true).expect("stub");
+        let tab = rebuild_remote_pr(&d, true, &er_engine::ports::Ports::for_test()).expect("stub");
         assert_eq!(tab.current_branch, "feat/from-fork");
         assert_eq!(tab.base_branch, "main");
         assert_eq!(tab.pr_number, Some(1425));
@@ -553,9 +587,12 @@ mod tests {
         init_git_repo(tmp.path());
         let root = tmp.path().to_string_lossy().to_string();
 
-        let mut probe =
-            er_engine::app::TabState::new_with_base_unloaded(root.clone(), "main".to_string())
-                .expect("probe");
+        let mut probe = er_engine::app::TabState::new_with_base_unloaded(
+            root.clone(),
+            "main".to_string(),
+            er_engine::ports::Ports::cli(),
+        )
+        .expect("probe");
         probe.pr_number = Some(99);
         probe.local_branch_view = Some("feat-ai-stub".to_string());
         probe.sync_managed_storage_light();
@@ -579,7 +616,7 @@ mod tests {
             browser_url: None,
             browser_layout: None,
         };
-        let tab = rebuild_local_pr(&d, true).expect("stub");
+        let tab = rebuild_local_pr(&d, true, &er_engine::ports::Ports::cli()).expect("stub");
         assert_eq!(
             tab.mode,
             er_engine::app::DiffMode::PrDiff,
@@ -600,7 +637,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         init_git_repo(tmp.path());
         let root = tmp.path().to_string_lossy().to_string();
-        let mut app = er_engine::app::App::new_unloaded(root).expect("app");
+        let mut app =
+            er_engine::app::App::new_unloaded(root, er_engine::ports::Ports::cli()).expect("app");
         app.active_tab = 99;
         let (descriptors, active) = persisted_tabs(&app);
         assert_eq!(active, 0);
@@ -610,7 +648,7 @@ mod tests {
     #[test]
     fn placeholder_tab_is_not_persisted() {
         // Saving it would make the next launch try to restore a tab with no repo.
-        let app = er_engine::app::App::new_empty();
+        let app = er_engine::app::App::new_empty(er_engine::ports::Ports::for_test());
         let (descriptors, active) = persisted_tabs(&app);
         assert!(descriptors.is_empty());
         assert_eq!(active, 0);

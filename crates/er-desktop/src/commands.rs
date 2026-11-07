@@ -153,6 +153,7 @@ pub struct OpenSourceResult {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub ports: er_engine::ports::Ports,
     pub app: Arc<Mutex<App>>,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     pub pr_cache_fetched_at: PrCacheFetchedAtMap,
@@ -1128,7 +1129,7 @@ pub async fn request_file_preview(
                     .map_err(|e| e.to_string())?,
             )
         };
-        let text = request.read().map_err(|e| e.to_string())?;
+        let text = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
         {
             let app = state.app.lock().map_err(|e| e.to_string())?;
             if app.active_tab != active_tab
@@ -1189,7 +1190,7 @@ pub async fn request_image_preview(
         };
         let read = |side: &Option<er_engine::app::FilePreviewRequest>| {
             side.as_ref()
-                .map(|r| r.read_bytes(er_engine::app::MAX_IMAGE_PREVIEW_BYTES))
+                .map(|r| r.read_bytes(&*state.ports.git, er_engine::app::MAX_IMAGE_PREVIEW_BYTES))
                 .transpose()
         };
         let after = read(&request.after).map_err(|e| e.to_string())?;
@@ -2761,7 +2762,7 @@ pub async fn add_document_thread(
         if request.preview_key != preview_key {
             return Err("The document changed before the comment was saved".to_string());
         }
-        let source = request.read().map_err(|e| e.to_string())?;
+        let source = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if app.active_tab != active_tab || app.tab().file_preview_key(&file) != request.preview_key
         {
@@ -3947,7 +3948,7 @@ pub async fn run_ai_review(
         if raw.trim().is_empty() {
             return Err("Nothing to review".to_string());
         }
-        let review_md = er_engine::ai::review_md::collect(&review_md_source, &raw);
+        let review_md = er_engine::ai::review_md::collect(&state.ports, &review_md_source, &raw);
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.check_review_bucket_admission(&er_dir)
             .map_err(|e| e.to_string())?;
@@ -4319,7 +4320,8 @@ pub async fn run_ai_expert_review(
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
-        let review_md = er_engine::ai::review_md::collect(&app.tab().review_md_source(), &raw);
+        let review_md =
+            er_engine::ai::review_md::collect(&app.ports, &app.tab().review_md_source(), &raw);
         let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
             &er_dir,
             &raw,
@@ -4466,8 +4468,11 @@ pub async fn run_ai_scoped_review(
             }
         };
 
-        let review_md =
-            er_engine::ai::review_md::collect(&app.tab().review_md_source(), &diff_body);
+        let review_md = er_engine::ai::review_md::collect(
+            &app.ports,
+            &app.tab().review_md_source(),
+            &diff_body,
+        );
         let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
             &er_dir,
             &diff_body,
@@ -4665,7 +4670,8 @@ pub async fn run_ai_validate(
             return Err("Nothing to validate".to_string());
         }
         let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
-        let review_md = er_engine::ai::review_md::collect(&app.tab().review_md_source(), &raw);
+        let review_md =
+            er_engine::ai::review_md::collect(&app.ports, &app.tab().review_md_source(), &raw);
         er_engine::ai::review_md::write_review_md(&er_dir, review_md.as_deref())?;
 
         app.tab_mut().relocate_all_comments();
@@ -6155,6 +6161,7 @@ fn fetch_remote_pr_open_inputs(
 fn remote_pr_tab_from_entry(
     pr_ref: &er_engine::github::PrRef,
     entry: crate::remote_pr_open_cache::RemotePrOpenEntry,
+    ports: &er_engine::ports::Ports,
 ) -> Result<er_engine::app::TabState, String> {
     let mut tab = er_engine::app::TabState::new_remote_with_data(
         pr_ref,
@@ -6162,6 +6169,7 @@ fn remote_pr_tab_from_entry(
         entry.head_branch,
         entry.raw_diff.clone(),
         entry.pr_commits,
+        ports.clone(),
     )
     .map_err(|e| e.to_string())?;
     if let Some(data) = entry.pr_data {
@@ -6215,7 +6223,7 @@ fn build_remote_pr_tab(
         repo,
         number,
     ) {
-        let mut tab = remote_pr_tab_from_entry(&pr_ref, entry.clone())?;
+        let mut tab = remote_pr_tab_from_entry(&pr_ref, entry.clone(), &state.ports)?;
         // Seed the staleness probe's baseline with the oid the cached diff was
         // fetched at: equal oid ⇒ pill stays off; advanced ⇒ it lights. Fall
         // back to the PR-list cache only when the entry has no oid (pre-upgrade
@@ -6238,6 +6246,7 @@ fn build_remote_pr_tab(
         inputs.head_branch.clone(),
         inputs.raw_diff.clone(),
         inputs.pr_commits.clone(),
+        state.ports.clone(),
     )
     .map_err(|e| e.to_string())?;
     if let Some(data) = inputs.pr_data.clone() {
@@ -6602,7 +6611,7 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
     };
     let path_str = path.to_string_lossy().to_string();
 
-    let mut new_tab = er_engine::app::TabState::new(path_str.clone())
+    let mut new_tab = er_engine::app::TabState::new(path_str.clone(), state.ports.clone())
         .map_err(|e| format!("Failed to open {path_str}: {e}"))?;
     new_tab
         .refresh_diff()
@@ -6626,6 +6635,7 @@ enum LocalBranchOpenPath {
 fn build_local_branch_tab(
     project_id: &str,
     name: String,
+    ports: &er_engine::ports::Ports,
 ) -> Result<(er_engine::app::TabState, LocalBranchOpenPath), String> {
     let branch_name = name.clone();
     let t_project = std::time::Instant::now();
@@ -6639,12 +6649,15 @@ fn build_local_branch_tab(
     log_branch_open_phase(project_id, &branch_name, "project_lookup", t_project);
 
     let t_base = std::time::Instant::now();
-    let base_branch =
-        er_engine::git::detect_base_branch_in(&proj.root_path).map_err(|e| e.to_string())?;
+    let base_branch = ports
+        .git
+        .detect_base_branch(&proj.root_path)
+        .map_err(|e| e.to_string())?;
     log_branch_open_phase(project_id, &branch_name, "base_detect", t_base);
 
     let t_tab_init = std::time::Instant::now();
-    let mut new_tab = build_local_branch_tab_for_repo(&proj.root_path, base_branch, name.clone())?;
+    let mut new_tab =
+        build_local_branch_tab_for_repo(&proj.root_path, base_branch, name.clone(), ports)?;
     log_branch_open_phase(project_id, &branch_name, "tab_init", t_tab_init);
     // Light: re-roots managed storage and reloads the reviewed markers without
     // the AI reload. The refresh below reaches its own AI gate once
@@ -6683,10 +6696,14 @@ fn build_local_branch_tab_for_repo(
     repo_root: &str,
     base_branch: String,
     name: String,
+    ports: &er_engine::ports::Ports,
 ) -> Result<er_engine::app::TabState, String> {
-    let mut tab =
-        er_engine::app::TabState::new_with_base_unloaded(repo_root.to_string(), base_branch)
-            .map_err(|e| e.to_string())?;
+    let mut tab = er_engine::app::TabState::new_with_base_unloaded(
+        repo_root.to_string(),
+        base_branch,
+        ports.clone(),
+    )
+    .map_err(|e| e.to_string())?;
     tab.local_branch_view = Some(name.clone());
     // Resolve the working tree before the first diff refresh. The watcher only
     // applies later changes, so it cannot repair a same-branch tab whose root
@@ -6851,7 +6868,7 @@ fn open_local_branch_impl(
     let t_total = std::time::Instant::now();
     let branch_name = name.clone();
     let t_tab_build = std::time::Instant::now();
-    let (new_tab, open_path) = build_local_branch_tab(&project_id, name)?;
+    let (new_tab, open_path) = build_local_branch_tab(&project_id, name, &state.ports)?;
     log_branch_open_phase(&project_id, &branch_name, "tab_build", t_tab_build);
     let t_app_lock = std::time::Instant::now();
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -7692,6 +7709,7 @@ fn open_pr_review_impl(
         inputs.raw_diff,
         Some(inputs.metadata.pr_data),
         inputs.metadata.pr_commits,
+        state.ports.clone(),
     )
     .map_err(|e| {
         log::error!("open_pr_review: pr=#{pr_number} project_id={project_id} err={e}");
@@ -7850,6 +7868,7 @@ fn open_pr_review_miss_async(
         head,
         pr_data,
         head_oid,
+        state.ports.clone(),
     )
     .map_err(|e| e.to_string())?;
     let tab_build_ms = t_tab_build.elapsed().as_millis();
@@ -8939,8 +8958,13 @@ pub fn open_project_branch(
         .clone();
     let mut new_tab = build_local_branch_tab_for_repo(
         &proj.root_path,
-        er_engine::git::detect_base_branch_in(&proj.root_path).map_err(|e| e.to_string())?,
+        state
+            .ports
+            .git
+            .detect_base_branch(&proj.root_path)
+            .map_err(|e| e.to_string())?,
         branch,
+        &state.ports,
     )?;
     // Light, as in `build_local_branch_tab`: the refresh below reloads the AI
     // sidecars through its own gate, so a full sync duplicates that read.
@@ -9307,7 +9331,7 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
         .find(|p| p.id == id)
         .ok_or_else(|| format!("Project not found: {id}"))?
         .clone();
-    let new_tab = er_engine::app::TabState::new(proj.root_path.clone())
+    let new_tab = er_engine::app::TabState::new(proj.root_path.clone(), state.ports.clone())
         .map_err(|e| format!("Failed to open {}: {e}", proj.root_path))?;
     app.open_tab(new_tab);
     app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
@@ -9902,8 +9926,10 @@ pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
     // Spawn a working-tree tab cloned from the active tab's repo root.
     // If that fails (e.g. deleted repo), fall back to the first tab's root.
     let root = app.tab().repo_root.clone();
-    let tab = er_engine::app::TabState::new(root.clone())
-        .or_else(|_| er_engine::app::TabState::new(app.tabs[0].repo_root.clone()))
+    let tab = er_engine::app::TabState::new(root.clone(), state.ports.clone())
+        .or_else(|_| {
+            er_engine::app::TabState::new(app.tabs[0].repo_root.clone(), state.ports.clone())
+        })
         .map_err(|e| format!("Failed to open new tab: {e}"))?;
     app.open_tab(tab);
     crate::tabs::persist_app_tabs(&app);
@@ -10232,6 +10258,7 @@ pub fn branch_preload_target(
     // skips the fetch but preloads the branch-view AI sidecars so the first
     // Branch click is instant even when the view was collapsed at open.
     Some(er_engine::app::BranchScopeFetchInputs {
+        ports: app.ports.clone(),
         repo_root: tab.repo_root.clone(),
         base_branch: tab.base_branch.clone(),
         local_branch_view: tab.local_branch_view.clone(),
@@ -11851,6 +11878,7 @@ mod tests {
         let loading = Arc::new(Mutex::new(crate::snapshot::LoadingFlags::default()));
         let watch_status = Arc::new(Mutex::new(crate::snapshot::WatchStatusSnapshot::default()));
         AppState {
+            ports: er_engine::ports::Ports::for_test(),
             app,
             pr_cache: Arc::new(Mutex::new(HashMap::new())),
             pr_cache_fetched_at: Arc::new(Mutex::new(HashMap::new())),
@@ -11986,7 +12014,13 @@ mod tests {
         .unwrap();
         let root = repo.to_string_lossy().into_owned();
 
-        let mut tab = build_local_branch_tab_for_repo(&root, "main".into(), "main".into()).unwrap();
+        let mut tab = build_local_branch_tab_for_repo(
+            &root,
+            "main".into(),
+            "main".into(),
+            &er_engine::ports::Ports::cli(),
+        )
+        .unwrap();
         assert_eq!(tab.repo_root, root);
         assert_eq!(tab.local_branch_view.as_deref(), Some("main"));
         assert_eq!(
@@ -12017,8 +12051,13 @@ mod tests {
         .unwrap();
         let root = repo.to_string_lossy().into_owned();
 
-        let mut tab =
-            build_local_branch_tab_for_repo(&root, "main".into(), "linked".into()).unwrap();
+        let mut tab = build_local_branch_tab_for_repo(
+            &root,
+            "main".into(),
+            "linked".into(),
+            &er_engine::ports::Ports::cli(),
+        )
+        .unwrap();
         let expected_checkout = linked
             .canonicalize()
             .unwrap()
@@ -12042,8 +12081,13 @@ mod tests {
         let dir = ReviewFlowTestDir::new();
         let repo = init_local_branch_fixture(&dir);
         let root = repo.to_string_lossy().into_owned();
-        let tab = build_local_branch_tab_for_repo(&root, "main".into(), "not-checked-out".into())
-            .unwrap();
+        let tab = build_local_branch_tab_for_repo(
+            &root,
+            "main".into(),
+            "not-checked-out".into(),
+            &er_engine::ports::Ports::cli(),
+        )
+        .unwrap();
 
         assert_eq!(tab.repo_root, root);
         assert_eq!(tab.local_branch_view.as_deref(), Some("not-checked-out"));
@@ -12751,7 +12795,7 @@ mod tests {
         use er_engine::app::TabState;
         let mut seed = TabState::new_for_test(vec![]);
         seed.repo_root = "tab0".into();
-        let mut app = App::new_remote(seed, None);
+        let mut app = App::new_remote(seed, None, er_engine::ports::Ports::for_test());
         for i in 1..n {
             let mut t = TabState::new_for_test(vec![]);
             t.repo_root = format!("tab{i}");
@@ -12917,6 +12961,7 @@ mod tests {
                 head_oid: Some("oid-1".into()),
                 last_touched: 0,
             },
+            &er_engine::ports::Ports::for_test(),
         )
         .unwrap();
         assert_eq!(tab.remote_repo.as_deref(), Some("o/r"));

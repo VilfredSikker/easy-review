@@ -1223,7 +1223,8 @@ pub fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)
         app.notify("Nothing to review");
         return None;
     }
-    let review_md = er_engine::ai::review_md::collect(&app.tab().review_md_source(), &raw);
+    let review_md =
+        er_engine::ai::review_md::collect(&app.ports, &app.tab().review_md_source(), &raw);
     match er_engine::ai::prepared_diff::ensure_review_inputs(
         &er_dir,
         &raw,
