@@ -98,8 +98,11 @@ pub fn classify(
 
 /// Strip `gh api --include` headers. Without `--paginate`, exactly one leading
 /// block is removed and the rest is kept byte for byte. With `--paginate`, a
-/// status line starts at offset 0, after `\n`, or immediately after `]` or `}`,
-/// outside a JSON string at bracket depth 0.
+/// status line starts at offset 0, after `\n`, or immediately after `]` or `}`
+/// at bracket depth 0. String and bracket state is tracked only in page bodies;
+/// header blocks are skipped, so a quote in a header value cannot hide a later
+/// page. `--paginate` with `--jq` is not supported: gh filters each page, so the
+/// boundary is lost.
 pub fn split_pages(stdout: &[u8], paginated: bool) -> (Vec<GhHeaders>, Vec<u8>) {
     if !paginated {
         return match parse_header_block(stdout, 0) {
@@ -141,11 +144,29 @@ pub fn split_pages(stdout: &[u8], paginated: bool) -> (Vec<GhHeaders>, Vec<u8>) 
 
 fn page_starts(stdout: &[u8]) -> Vec<usize> {
     let mut starts = vec![0];
+    let mut in_headers = stdout.starts_with(b"HTTP/");
     let mut in_string = false;
     let mut escaped = false;
     let mut depth = 0usize;
     let mut i = 0;
     while i < stdout.len() {
+        if in_headers {
+            if stdout[i] == b'\n' {
+                let rest = &stdout[i + 1..];
+                if rest.starts_with(b"\r\n") {
+                    in_headers = false;
+                    i += 3;
+                    continue;
+                }
+                if rest.starts_with(b"\n") {
+                    in_headers = false;
+                    i += 2;
+                    continue;
+                }
+            }
+            i += 1;
+            continue;
+        }
         let byte = stdout[i];
         if in_string {
             if escaped {
@@ -167,9 +188,11 @@ fn page_starts(stdout: &[u8]) -> Vec<usize> {
         let after_bracket = matches!(byte, b']' | b'}') && depth == 0;
         if after_bracket && stdout[i + 1..].starts_with(b"HTTP/") {
             starts.push(i + 1);
+            in_headers = true;
         }
         if byte == b'\n' && stdout[i + 1..].starts_with(b"HTTP/") {
             starts.push(i + 1);
+            in_headers = true;
         }
         i += 1;
     }
@@ -212,7 +235,7 @@ fn parse_header_block(stdout: &[u8], start: usize) -> Option<(GhHeaders, usize)>
 fn http_error(block: &GhHeaders, body: &[u8], stderr: &str) -> GhError {
     let code = block.status();
     let message = if code == 422 {
-        unprocessable_message(body, code)
+        unprocessable_message(body, stderr, code)
     } else {
         http_message(body, stderr, code)
     };
@@ -287,8 +310,9 @@ fn http_message(body: &[u8], stderr: &str, code: u16) -> String {
 }
 
 /// A review 422 carries its reason in `errors` as plain strings, so keep every
-/// entry: GitHub's top-level message, then each reason, joined with `; `.
-fn unprocessable_message(body: &[u8], code: u16) -> String {
+/// entry: GitHub's top-level message, then each reason, joined with `; `. When
+/// the body has neither, gh's stderr line is the only reason left.
+fn unprocessable_message(body: &[u8], stderr: &str, code: u16) -> String {
     let mut parts = Vec::new();
     if let Some(message) = json_message(body) {
         parts.push(message);
@@ -299,7 +323,7 @@ fn unprocessable_message(body: &[u8], code: u16) -> String {
         }
     }
     let mut message = if parts.is_empty() {
-        String::new()
+        stderr.trim().to_string()
     } else {
         parts.join("; ")
     };
@@ -518,7 +542,7 @@ mod tests {
                         result.unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
                     if dir
                         .file_name()
-                        .is_some_and(|name| name == "api_paginate_raw_two_pages")
+                        .is_some_and(|name| name == "api_paginate_raw_two_pages.synthetic")
                     {
                         assert_eq!(output.body, b"[{\"id\":1}][{\"id\":2}]");
                     }
@@ -558,6 +582,57 @@ mod tests {
     }
 
     #[test]
+    fn a_success_with_an_exhausted_limit_is_not_an_error() {
+        let stdout = "HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 0\r\n\r\n{\"ok\":true}";
+        let result = classify(Ok(output(0, stdout, "")), true, false).unwrap();
+        assert_eq!(result.body, b"{\"ok\":true}");
+    }
+
+    #[test]
+    fn retry_after_takes_precedence_over_the_reset_header() {
+        let stdout = "HTTP/2.0 403 Forbidden\r\nRetry-After: 60\r\n\
+             X-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 4102444800\r\n\r\n\
+             {\"message\":\"API rate limit exceeded\"}";
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let error = classify(Ok(output(1, stdout, "")), true, false).unwrap_err();
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(
+            matches!(
+                error,
+                GhError::RateLimited {
+                    reset_epoch_secs: Some(reset),
+                    ..
+                } if reset >= before + 60 && reset <= after + 60
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn the_reset_header_counts_only_when_the_limit_is_exhausted() {
+        let stdout = "HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 5\r\n\
+             X-Ratelimit-Reset: 4102444800\r\n\r\n\
+             {\"message\":\"You have exceeded a secondary rate limit\"}";
+        let error = classify(Ok(output(1, stdout, "")), true, false).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                GhError::RateLimited {
+                    reset_epoch_secs: None,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn a_graphql_200_error_falls_to_the_stderr_table() {
         let error = classify_fixture(&fixtures_root().join("graphql_200_not_found")).unwrap_err();
         assert!(matches!(error, GhError::NotFound { .. }), "{error:?}");
@@ -566,7 +641,8 @@ mod tests {
     #[test]
     fn split_pages_keeps_a_raw_body_byte_for_byte() {
         let stdout =
-            std::fs::read(fixtures_root().join("api_paginate_raw_two_pages/stdout")).unwrap();
+            std::fs::read(fixtures_root().join("api_paginate_raw_two_pages.synthetic/stdout"))
+                .unwrap();
         let (blocks, body) = split_pages(&stdout, true);
         assert_eq!(blocks.len(), 2);
         assert_eq!(body, b"[{\"id\":1}][{\"id\":2}]");
@@ -581,9 +657,35 @@ mod tests {
     }
 
     #[test]
+    fn split_pages_ignores_a_status_line_inside_nested_brackets() {
+        let stdout = b"HTTP/2.0 200 OK\r\n\r\n[[1]HTTP/2.0 200 OK\r\nX-Test: y\r\n\r\n2]";
+        let (blocks, body) = split_pages(stdout, true);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(body, b"[[1]HTTP/2.0 200 OK\r\nX-Test: y\r\n\r\n2]");
+    }
+
+    #[test]
+    fn split_pages_keeps_an_unpaginated_body_byte_for_byte() {
+        let stdout = b"HTTP/2.0 200 OK\r\nX-Test: y\r\n\r\n[a]\nHTTP/2.0 200 OK\r\n\r\n[b]";
+        let (blocks, body) = split_pages(stdout, false);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(body, b"[a]\nHTTP/2.0 200 OK\r\n\r\n[b]");
+    }
+
+    #[test]
+    fn split_pages_keeps_a_quote_in_a_header_from_hiding_the_next_page() {
+        let stdout =
+            b"HTTP/2.0 200 OK\r\nX-Reason: say \"hi\r\n\r\n[1]\nHTTP/2.0 200 OK\r\n\r\n[2]";
+        let (blocks, body) = split_pages(stdout, true);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(body, b"[1][2]");
+    }
+
+    #[test]
     fn a_paginated_second_page_failure_is_classified() {
         let error =
-            classify_fixture(&fixtures_root().join("api_paginate_second_page_404")).unwrap_err();
+            classify_fixture(&fixtures_root().join("api_paginate_second_page_404.synthetic"))
+                .unwrap_err();
         assert!(matches!(error, GhError::NotFound { .. }), "{error:?}");
     }
 
@@ -601,7 +703,8 @@ mod tests {
     #[test]
     fn unprocessable_keeps_string_errors() {
         let error =
-            classify_fixture(&fixtures_root().join("api_422_review_string_errors")).unwrap_err();
+            classify_fixture(&fixtures_root().join("api_422_review_string_errors.synthetic"))
+                .unwrap_err();
         let GhError::Unprocessable { message } = error else {
             panic!("expected Unprocessable");
         };
@@ -617,6 +720,24 @@ mod tests {
     }
 
     #[test]
+    fn a_422_without_a_json_message_keeps_the_stderr_line() {
+        let error = classify(
+            Ok(output(
+                1,
+                "HTTP/2.0 422 Unprocessable Entity\r\n\r\n{}",
+                "gh: Reference does not exist (HTTP 422)",
+            )),
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, GhError::Unprocessable { message } if message.contains("Reference does not exist")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn split_pages_ignores_http_inside_a_comment_body() {
         let comment = r#"{"body":"see [RFC]HTTP/1.1 200 OK"}"#;
         let stdout =
@@ -627,8 +748,17 @@ mod tests {
     }
 
     #[test]
+    fn split_pages_ignores_a_status_line_inside_a_string() {
+        let stdout = b"HTTP/2.0 200 OK\r\n\r\n\"one\nHTTP/1.1 200 OK\r\nX-Test: y\r\n\r\n\"";
+        let (blocks, body) = split_pages(stdout, true);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(body, b"\"one\nHTTP/1.1 200 OK\r\nX-Test: y\r\n\r\n\"");
+    }
+
+    #[test]
     fn a_403_with_remaining_zero_is_rate_limited_with_the_reset_time() {
-        let error = classify_fixture(&fixtures_root().join("api_403_rate_limit")).unwrap_err();
+        let error =
+            classify_fixture(&fixtures_root().join("api_403_rate_limit.synthetic")).unwrap_err();
         assert!(
             matches!(
                 error,
@@ -643,7 +773,8 @@ mod tests {
 
     #[test]
     fn a_plain_403_is_forbidden_not_rate_limited() {
-        let error = classify_fixture(&fixtures_root().join("api_403_forbidden")).unwrap_err();
+        let error =
+            classify_fixture(&fixtures_root().join("api_403_forbidden.synthetic")).unwrap_err();
         assert!(matches!(error, GhError::Forbidden { .. }), "{error:?}");
     }
 

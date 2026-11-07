@@ -13,12 +13,16 @@ A GraphQL query can answer HTTP 200 with an `errors` array; the stderr line then
 
 ## Messages
 
-An HTTP-backed message keeps GitHub's top-level `message` and the first `errors[].message`, gh's stderr line, and `(HTTP NNN)` when not already present. A review 422 carries its reasons as plain `errors` strings, so `Unprocessable` keeps the top-level message plus every entry joined with `; `; otherwise the matcher that looks for "one pending review" or "approve your own" would lose the text.
+An HTTP-backed message keeps GitHub's top-level `message` and the first `errors[].message`, gh's stderr line, and `(HTTP NNN)` when not already present. A review 422 carries its reasons as plain `errors` strings, so `Unprocessable` keeps the top-level message plus every entry joined with `; `; otherwise the matcher that looks for "one pending review" or "approve your own" would lose the text. When the body carries no message and no errors, gh's stderr line is kept instead.
 
 ## Pagination
 
-`gh api --include --paginate` prints a status line and headers before every page. A page boundary starts at offset 0, after `\n`, or immediately after `]` or `}`, at bracket depth 0 and outside a JSON string: the scanner tracks quotes and `\` escapes, because a review comment can contain `[RFC]HTTP/1.1 200 OK`. Header blocks are stripped and the bodies are concatenated byte for byte.
+Without `--paginate`, exactly one leading header block is stripped and every byte after it is the body, so a body that contains its own `HTTP/` text passes through unchanged.
+
+`gh api --include --paginate` prints a status line and headers before every page. A page boundary starts at offset 0, after `\n`, or immediately after `]` or `}`, at bracket depth 0 and outside a JSON string: the scanner tracks quotes and `\` escapes, because a review comment can contain `[RFC]HTTP/1.1 200 OK`. String and bracket state is tracked only in page bodies; header blocks are skipped, so a quote in a header value cannot hide a later page. Header blocks are stripped and the bodies are concatenated byte for byte.
+
+`--paginate` together with `--jq` is not supported: gh applies the filter to each page, so the joined output no longer has a reliable boundary to split.
 
 ## Fixtures
 
-Every classification rule is pinned by a capture under `crates/er-github/tests/fixtures/gh/<case>/` (`args`, `exit`, `stdout`, `stderr`, `expect`, optional `message`). A rule that needs a case no one can trigger gets a `*.synthetic` directory, named that way so a real capture can replace it.
+Every classification rule is pinned by a capture under `crates/er-github/tests/fixtures/gh/<case>/` (`args`, `exit`, `stdout`, `stderr`, `expect`, optional `message`). The directory name has no suffix for a real capture and ends in `.synthetic` for a constructed one, so a real capture replaces a fabricated case by dropping the suffix.
