@@ -1,0 +1,6 @@
+HTTP/2.0 404 Not Found
+Content-Type: application/json; charset=utf-8
+X-Ratelimit-Remaining: 4659
+X-Ratelimit-Reset: 1793976383
+
+{"message":"Not Found","documentation_url":"https://docs.github.com/rest/pulls/pulls#get-a-pull-request","status":"404"}

@@ -1,0 +1,8 @@
+gh
+api
+--include
+-X
+PUT
+repos/VilfredSikker/er-gh-samples/pulls/1/merge
+-f
+sha=0000000000000000000000000000000000000000

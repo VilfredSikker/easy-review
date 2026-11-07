@@ -1,0 +1,5 @@
+HTTP/2.0 200 OK
+Content-Type: application/json; charset=utf-8
+X-Ratelimit-Remaining: 4866
+
+{"data":{"repository":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND","path":["repository","pullRequest"],"message":"Could not resolve to a PullRequest with the number of 99999999."}]}

@@ -1403,6 +1403,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "er-github"
+version = "0.6.5"
+dependencies = [
+ "chrono",
+ "serde_json",
+]
+
+[[package]]
 name = "er-lint-gate"
 version = "0.6.5"
 dependencies = [
