@@ -196,6 +196,15 @@ mod tests {
     }
 
     #[test]
+    fn a_spawn_anywhere_outside_home_fails_with_no_allow_list() {
+        let mut by_file = BTreeMap::new();
+        by_file.insert("crates/er-desktop/src/a.rs".to_string(), vec![finding()]);
+        let diags = evaluate(&by_file, "crates/er-git", &[], CODE);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].level, "error");
+    }
+
+    #[test]
     fn a_finding_outside_home_and_allow_list_fails() {
         let mut by_file = BTreeMap::new();
         by_file.insert("crates/x/src/a.rs".to_string(), vec![finding()]);
