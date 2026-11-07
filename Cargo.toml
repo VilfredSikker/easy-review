@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/er-engine", "crates/er-tui", "crates/er-desktop", "crates/er-mcp", "crates/er-crap", "crates/er-lint-gate", "crates/er-git"]
+members = ["crates/er-engine", "crates/er-tui", "crates/er-desktop", "crates/er-mcp", "crates/er-crap", "crates/er-lint-gate", "crates/er-git", "crates/er-github"]
 
 [workspace.package]
 version = "0.6.5"
@@ -21,6 +21,7 @@ toml = "1"
 dirs = "6"
 notify = "8"
 notify-debouncer-mini = "0.7"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Lint is a gate, in two tiers (docs/adr/0038-lint-is-a-ratcheted-gate.md).
 # `just clippy` runs it through er-lint-gate, which fails on any diagnostic

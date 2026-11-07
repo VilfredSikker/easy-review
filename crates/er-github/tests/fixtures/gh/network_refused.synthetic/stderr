@@ -1,0 +1,1 @@
+Get "https://api.github.com/user": proxyconnect tcp: dial tcp 127.0.0.1:1: connect: connection refused

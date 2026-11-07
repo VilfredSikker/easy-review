@@ -1,0 +1,8 @@
+gh
+pr
+view
+99999999
+--json
+headRefOid
+--jq
+.headRefOid

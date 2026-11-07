@@ -1,0 +1,6 @@
+gh
+api
+--include
+graphql
+-f
+query={ viewer { login } }
