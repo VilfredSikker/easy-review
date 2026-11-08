@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::artifact::{Artifact, Mode};
-use crate::envelope::{self, Envelope, Loaded, Unreadable};
+use crate::envelope::{self, Envelope, Loaded, Stored, Unreadable};
 use crate::error::StoreError;
-use crate::key::{ArtifactKey, Scope};
+use crate::key::{ArtifactKey, RelPath, Scope, SlotName};
 use crate::time::format_rfc3339_utc;
 
 /// The largest artifact or text file a read accepts and a write produces.
@@ -49,6 +49,14 @@ fn file_state(path: &Path) -> Result<FileState, StoreError> {
         return Ok(FileState::TooLarge(metadata.len()));
     }
     Ok(FileState::Readable)
+}
+
+fn remove_file(path: &Path) -> Result<(), StoreError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn serialize<T: Artifact>(value: &T, written_at: &str) -> Result<String, StoreError> {
@@ -207,6 +215,103 @@ impl ArtifactStore {
         }
         result
     }
+
+    pub fn delete<T: Artifact>(&self, key: &ArtifactKey<T>) -> Result<(), StoreError> {
+        remove_file(&self.path(key))
+    }
+
+    pub fn list<T: Artifact>(&self, scope: &Scope) -> Result<Vec<T::Slot>, StoreError> {
+        let Some(single) = T::Slot::singleton() else {
+            return self.list_slots::<T>(scope);
+        };
+        let key = ArtifactKey::<T>::new(scope.clone(), single.clone())?;
+        Ok(if self.path(&key).is_file() {
+            vec![single]
+        } else {
+            Vec::new()
+        })
+    }
+
+    fn list_slots<T: Artifact>(&self, scope: &Scope) -> Result<Vec<T::Slot>, StoreError> {
+        let template = T::FILE;
+        let Some((prefix, suffix)) = template.split_once("{slot}") else {
+            return Err(StoreError::InvalidPath {
+                value: template.to_string(),
+            });
+        };
+        let (directory, file_prefix) = match prefix.rsplit_once('/') {
+            Some((directory, file_prefix)) => (Some(directory), file_prefix),
+            None => (None, prefix),
+        };
+        let directory = match directory {
+            Some(directory) => self.scope_dir(scope).join(directory),
+            None => self.scope_dir(scope),
+        };
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut slots = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(stem) = name
+                .strip_prefix(file_prefix)
+                .and_then(|rest| rest.strip_suffix(suffix))
+            else {
+                continue;
+            };
+            if let Some(slot) = T::Slot::parse(stem) {
+                slots.push(slot);
+            }
+        }
+        slots.sort();
+        slots.dedup();
+        Ok(slots)
+    }
+
+    pub fn read_text(&self, scope: &Scope, file: &RelPath) -> Result<Loaded<String>, StoreError> {
+        let path = self.text_path(scope, file);
+        match file_state(&path)? {
+            FileState::Missing => Ok(Loaded::Absent),
+            FileState::NotFile => Ok(Loaded::Unreadable(Unreadable::Malformed(
+                "not a regular file".to_string(),
+            ))),
+            FileState::TooLarge(bytes) => Ok(Loaded::Unreadable(Unreadable::TooLarge { bytes })),
+            FileState::Readable => {
+                let bytes = std::fs::read(&path)?;
+                match String::from_utf8(bytes) {
+                    Ok(value) => Ok(Loaded::Found(Stored { value, meta: None })),
+                    Err(_) => Ok(Loaded::Unreadable(Unreadable::Malformed(
+                        "text is not UTF-8".to_string(),
+                    ))),
+                }
+            }
+        }
+    }
+
+    pub fn write_text(&self, scope: &Scope, file: &RelPath, text: &str) -> Result<(), StoreError> {
+        let bytes = text.as_bytes();
+        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if length > MAX_ARTIFACT_BYTES {
+            return Err(StoreError::TooLarge { bytes: length });
+        }
+        Self::write_bytes(&self.text_path(scope, file), bytes, false)
+    }
+
+    pub fn delete_text(&self, scope: &Scope, file: &RelPath) -> Result<(), StoreError> {
+        remove_file(&self.text_path(scope, file))
+    }
+
+    pub fn text_path(&self, scope: &Scope, file: &RelPath) -> PathBuf {
+        self.scope_dir(scope).join(file.as_path())
+    }
 }
 
 #[cfg(test)]
@@ -217,8 +322,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::key::{ArtifactKey, BranchView, Scope, Slug};
-    use crate::test_support::{TestBare, TestBig, TestEnveloped, TestLegacy, TestMigrateErr};
+    use crate::key::{ArtifactKey, BranchView, ExpertId, RelPath, Scope, Slug};
+    use crate::test_support::{
+        TestBare, TestBig, TestEnveloped, TestExpert, TestExpertSingleton, TestLegacy,
+        TestMigrateErr,
+    };
 
     fn temp_store() -> (TempDir, ArtifactStore) {
         let directory = TempDir::new().unwrap();
@@ -495,6 +603,44 @@ mod tests {
     }
 
     #[test]
+    fn list_returns_sorted_slots_and_skips_tmp_and_foreign_files() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let experts = store.scope_dir(&scope).join("experts");
+        std::fs::create_dir_all(&experts).unwrap();
+        for name in [
+            "security.json",
+            "api.json",
+            ".x.json",
+            "x.prev.json",
+            "x.txt",
+            ".x.json.123.0.tmp",
+        ] {
+            std::fs::write(experts.join(name), "{}").unwrap();
+        }
+        let slots = store.list::<TestExpert>(&scope).unwrap();
+        assert_eq!(
+            slots,
+            vec![
+                ExpertId::new("api").unwrap(),
+                ExpertId::new("security").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_removes_the_file_and_is_idempotent() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestEnveloped>(&scope, ());
+        store.write(&key, &TestEnveloped { value: 1 }).unwrap();
+        assert!(store.exists(&key));
+        store.delete(&key).unwrap();
+        assert!(!store.exists(&key));
+        store.delete(&key).unwrap();
+    }
+
+    #[test]
     fn path_matches_the_file_that_was_written() {
         let (directory, store) = temp_store();
         let scope = scope(&directory);
@@ -649,7 +795,118 @@ mod tests {
     }
 
     #[test]
+    fn text_write_then_read_round_trips_without_an_envelope() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let file = RelPath::new("summary.md").unwrap();
+        store.write_text(&scope, &file, "hello").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(store.text_path(&scope, &file)).unwrap(),
+            "hello"
+        );
+        match store.read_text(&scope, &file).unwrap() {
+            Loaded::Found(stored) => {
+                assert_eq!(stored.value, "hello");
+                assert!(stored.meta.is_none());
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+        assert_eq!(
+            store
+                .read_text(&scope, &RelPath::new("missing.md").unwrap())
+                .unwrap(),
+            Loaded::Absent
+        );
+
+        let large = RelPath::new("large.md").unwrap();
+        let handle = std::fs::File::create(store.text_path(&scope, &large)).unwrap();
+        handle.set_len(MAX_ARTIFACT_BYTES + 1).unwrap();
+        assert_eq!(
+            store.read_text(&scope, &large).unwrap(),
+            Loaded::Unreadable(Unreadable::TooLarge {
+                bytes: MAX_ARTIFACT_BYTES + 1
+            })
+        );
+
+        store.delete_text(&scope, &file).unwrap();
+        store.delete_text(&scope, &file).unwrap();
+        assert_eq!(store.read_text(&scope, &file).unwrap(), Loaded::Absent);
+    }
+
+    #[test]
     fn default_migrate_rejects_every_version() {
         assert!(TestBare::migrate(0, json!({})).is_err());
+    }
+
+    #[test]
+    fn registry_flags_a_file_no_kind_claims() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        std::fs::create_dir_all(store.scope_dir(&scope).join("experts")).unwrap();
+        std::fs::write(store.scope_dir(&scope).join("experts/security.json"), "{}").unwrap();
+        std::fs::write(store.scope_dir(&scope).join("junk.txt"), "{}").unwrap();
+        let mut registry = crate::registry::Registry::new();
+        registry.register::<TestExpert>().unwrap();
+        let unaccounted = registry.unaccounted(&store.scope_dir(&scope), &[]).unwrap();
+        assert_eq!(unaccounted, vec![Path::new("junk.txt").to_path_buf()]);
+    }
+
+    #[test]
+    fn registry_accepts_registered_slot_patterns_and_ignored_files() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        std::fs::create_dir_all(store.scope_dir(&scope).join("experts")).unwrap();
+        std::fs::write(store.scope_dir(&scope).join("experts/security.json"), "{}").unwrap();
+        std::fs::write(store.scope_dir(&scope).join(".diff-tmp.sha256"), "h").unwrap();
+        let mut registry = crate::registry::Registry::new();
+        registry.register::<TestExpert>().unwrap();
+        let ignore = vec![crate::registry::Pattern::new(".diff-tmp.sha256")];
+        assert!(registry
+            .unaccounted(&store.scope_dir(&scope), &ignore)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn registry_rejects_a_duplicate_kind() {
+        let mut registry = crate::registry::Registry::new();
+        registry.register::<TestExpert>().unwrap();
+        assert!(registry.register::<TestExpert>().is_err());
+    }
+
+    #[test]
+    fn registry_ignores_flow_backups() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let backup = store.scope_dir(&scope).join("flow-backups/accept-1");
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(backup.join("review.json"), "{}").unwrap();
+        let mut registry = crate::registry::Registry::new();
+        registry.register::<TestEnveloped>().unwrap();
+        let ignore = vec![crate::registry::Pattern::new("flow-backups/**")];
+        assert!(registry
+            .unaccounted(&store.scope_dir(&scope), &ignore)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn registry_rejects_overlapping_patterns() {
+        let mut registry = crate::registry::Registry::new();
+        registry.register::<TestExpert>().unwrap();
+        assert!(registry.register::<TestExpertSingleton>().is_err());
+    }
+
+    #[test]
+    fn registry_accepts_a_registered_text_file() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        std::fs::write(store.scope_dir(&scope).join("summary.md"), "hi").unwrap();
+        let mut registry = crate::registry::Registry::new();
+        registry.register_text("summary", "summary.md").unwrap();
+        assert!(registry
+            .unaccounted(&store.scope_dir(&scope), &[])
+            .unwrap()
+            .is_empty());
     }
 }
