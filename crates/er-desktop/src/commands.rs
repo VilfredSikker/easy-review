@@ -6709,7 +6709,7 @@ fn build_local_branch_tab_for_repo(
     tab.mode = er_engine::app::DiffMode::Branch;
     // The tab's own remote is the repo actually being viewed, not whichever
     // project's remote happens to be active in the app.
-    tab.remote_repo = projects::resolve_repo_remote(repo_root);
+    tab.remote_repo = projects::resolve_repo_remote(&*ports.git, repo_root);
     Ok(tab)
 }
 
@@ -8862,7 +8862,10 @@ pub fn remove_tracked_branch(
 }
 
 #[tauri::command]
-pub fn list_available_branches(project_id: String) -> Result<Vec<String>, String> {
+pub fn list_available_branches(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<Vec<String>, String> {
     let file = projects::load();
     let proj = file
         .projects
@@ -8870,13 +8873,14 @@ pub fn list_available_branches(project_id: String) -> Result<Vec<String>, String
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Project not found: {project_id}"))?;
 
-    let ports = er_engine::ports::Ports::cli();
-    let text = ports
+    let text = state
+        .ports
         .git
         .for_each_ref(&proj.root_path, "%(refname:short)", None, "refs/heads/")
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("git for-each-ref failed: {e}"))?;
 
-    let current = ports
+    let current = state
+        .ports
         .git
         .current_branch_show(&proj.root_path)
         .unwrap_or_default();

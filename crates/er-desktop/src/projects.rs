@@ -392,11 +392,8 @@ fn sanitize_id(name: &str) -> String {
     }
 }
 
-fn current_branch(root_path: &str) -> Option<String> {
-    let s = er_engine::ports::Ports::cli()
-        .git
-        .current_branch_show(root_path)
-        .ok()?;
+fn current_branch(git: &dyn er_engine::git::Git, root_path: &str) -> Option<String> {
+    let s = git.current_branch_show(root_path).ok()?;
     if s.is_empty() {
         None
     } else {
@@ -501,11 +498,10 @@ pub fn slug_from_remote_url(url: &str) -> Option<String> {
 /// One `git config --get-regexp` returns every remote, so `origin` can be
 /// preferred over `upstream` without a second subprocess. Preference order
 /// mirrors what `gh` resolves by default.
-fn local_remote_url(root_path: &str) -> Option<String> {
+fn local_remote_url(git: &dyn er_engine::git::Git, root_path: &str) -> Option<String> {
     // `--local` so this reads the repository's own remotes rather than whatever
     // the user's global config happens to hold.
-    let stdout = er_engine::ports::Ports::cli()
-        .git
+    let stdout = git
         .config_get_regexp(root_path, r"^remote\..*\.url$")
         .ok()?;
 
@@ -541,8 +537,8 @@ fn local_remote_url(root_path: &str) -> Option<String> {
 /// same remote `gh` reads and costs ~24ms instead of a ~640ms network round
 /// trip. `gh` runs only when there is no remote or the URL does not reduce to
 /// a slug, so offline use and unparseable remotes keep the previous behaviour.
-pub fn resolve_repo_remote(root_path: &str) -> Option<String> {
-    if let Some(slug) = local_remote_url(root_path).and_then(|u| slug_from_remote_url(&u)) {
+pub fn resolve_repo_remote(git: &dyn er_engine::git::Git, root_path: &str) -> Option<String> {
+    if let Some(slug) = local_remote_url(git, root_path).and_then(|u| slug_from_remote_url(&u)) {
         return Some(slug);
     }
     query_remote(root_path).filter(|s| !s.is_empty())
@@ -732,7 +728,7 @@ pub fn auto_register(git: &dyn er_engine::git::Git, root_path: &str) -> Option<P
         n += 1;
     }
 
-    let tracked_branches = current_branch(root_path)
+    let tracked_branches = current_branch(git, root_path)
         .map(|b| vec![b])
         .unwrap_or_default();
 
@@ -1472,7 +1468,8 @@ mod tests {
             ("origin", "git@github.com:VilfredSikker/easy-review.git"),
         ]);
         let root = tmp.path().join("repo");
-        let url = local_remote_url(root.to_str().unwrap()).expect("a local remote");
+        let url = local_remote_url(&*er_engine::ports::Ports::cli().git, root.to_str().unwrap())
+            .expect("a local remote");
         assert_eq!(url, "git@github.com:VilfredSikker/easy-review.git");
         assert_eq!(
             slug_from_remote_url(&url).as_deref(),
@@ -1487,7 +1484,10 @@ mod tests {
         // the behaviour for a repo that has never been pushed anywhere.
         let tmp = repo_with_remotes(&[]);
         let root = tmp.path().join("repo");
-        assert_eq!(local_remote_url(root.to_str().unwrap()), None);
+        assert_eq!(
+            local_remote_url(&*er_engine::ports::Ports::cli().git, root.to_str().unwrap()),
+            None
+        );
     }
 
     #[test]
@@ -1502,7 +1502,8 @@ mod tests {
         )]);
         let root = tmp.path().join("repo");
         assert_eq!(
-            resolve_repo_remote(root.to_str().unwrap()).as_deref(),
+            resolve_repo_remote(&*er_engine::ports::Ports::cli().git, root.to_str().unwrap())
+                .as_deref(),
             Some("er-test-no-such-org-zz9/no-such-repo")
         );
     }

@@ -4038,7 +4038,7 @@ fn compute_worktrees_meta(
     repo_root: &str,
     base_branch: &str,
 ) -> WorktreeMetaMap {
-    let repo_remote = crate::projects::resolve_repo_remote(repo_root);
+    let repo_remote = crate::projects::resolve_repo_remote(git, repo_root);
     let merges = pr_branch_merges(git, repo_root);
     let merged = merged_branches(git, repo_root, base_branch, wts.len());
     wts.iter()
@@ -8109,10 +8109,17 @@ mod tests {
         let fake = std::sync::Arc::new(
             er_git::FakeGit::default().with_current_branch(Ok("feature".into())),
         );
-        let ports = er_engine::ports::Ports::with_git(fake);
+        let ports = er_engine::ports::Ports::with_git(fake.clone());
 
         let branch = detect_current_branch(&*ports.git, "/nonexistent-repo");
 
         assert_eq!(branch, "feature");
+        assert!(
+            fake.calls()
+                .iter()
+                .any(|call| call.contains("current_branch")),
+            "the helper must read HEAD through the handle: {:?}",
+            fake.calls()
+        );
     }
 }

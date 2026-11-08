@@ -481,16 +481,68 @@ mod tests {
             .unwrap();
         assert!(names.lines().any(|l| l == "feature"), "{names}");
         assert!(names.lines().any(|l| l == "main"), "{names}");
+    }
+
+    /// Commit with a fixed author and committer date, so a date sort can be
+    /// told apart from the default refname order.
+    fn commit_at(root: &std::path::Path, date: &str, message: &str) {
+        std::fs::write(root.join("f"), format!("{message}\n")).unwrap();
+        git(root, &["add", "."]);
+        let out = std::process::Command::new("git")
+            .args(["-c", "commit.gpgsign=false", "commit", "-q", "-m", message])
+            .current_dir(root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git commit: {out:?}");
+    }
+
+    #[test]
+    fn for_each_ref_sorts_by_the_requested_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "user.email", "t@example.invalid"]);
+        git(root, &["config", "user.name", "Tests"]);
+        commit_at(root, "2019-01-01 00:00:00 +0000", "base");
+        git(root, &["checkout", "-q", "-b", "aaa"]);
+        commit_at(root, "2020-01-01 00:00:00 +0000", "older");
+        git(root, &["checkout", "-q", "main"]);
+        git(root, &["checkout", "-q", "-b", "zzz"]);
+        commit_at(root, "2020-06-01 00:00:00 +0000", "newer");
 
         let sorted = CliGit
             .for_each_ref(
-                root,
+                root.to_str().unwrap(),
                 "%(refname:short)",
                 Some("-committerdate"),
                 "refs/heads/",
             )
             .unwrap();
-        assert!(sorted.lines().any(|l| l == "feature"), "{sorted}");
+        assert_eq!(
+            sorted.lines().collect::<Vec<_>>(),
+            ["zzz", "aaa", "main"],
+            "{sorted}"
+        );
+
+        // The default order is refname, so the assertion above only holds when
+        // the sort argument reaches git.
+        let unsorted = CliGit
+            .for_each_ref(
+                root.to_str().unwrap(),
+                "%(refname:short)",
+                None,
+                "refs/heads/",
+            )
+            .unwrap();
+        assert_eq!(
+            unsorted.lines().collect::<Vec<_>>(),
+            ["aaa", "main", "zzz"],
+            "{unsorted}"
+        );
     }
 
     #[test]
@@ -552,5 +604,29 @@ mod tests {
             .rev_parse_verify(dest.path().to_str().unwrap(), "refs/remotes/origin/feature")
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn ls_remote_asks_the_remote_for_one_ref() {
+        let origin = repo_with_a_feature_commit();
+        let dest = tempfile::tempdir().unwrap();
+        git(dest.path(), &["init", "-q", "-b", "main"]);
+        git(
+            dest.path(),
+            &["remote", "add", "origin", origin.path().to_str().unwrap()],
+        );
+
+        let out = CliGit
+            .ls_remote(
+                dest.path().to_str().unwrap(),
+                "origin",
+                "refs/heads/feature",
+            )
+            .unwrap();
+
+        let mut parts = out.split_whitespace();
+        assert_eq!(parts.next().map(str::len), Some(40), "{out}");
+        assert_eq!(parts.next(), Some("refs/heads/feature"), "{out}");
+        assert_eq!(parts.next(), None, "{out}");
     }
 }
