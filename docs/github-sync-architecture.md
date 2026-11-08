@@ -172,7 +172,7 @@ The GitHub API layer is roughly 35% of the mobile port ([mobile-port.md](./mobil
 
 ## References
 
-- [`crates/er-engine/src/github.rs`](../crates/er-engine/src/github.rs) — `gh` wrapper
+- [`crates/er-github/`](../crates/er-github/) — the `GitHub` port and its `gh` adapter
 - [`crates/er-engine/src/app/state/github_sync.rs`](../crates/er-engine/src/app/state/github_sync.rs) — comment sync and anchor resolution
 - [`crates/er-desktop/src/commands.rs`](../crates/er-desktop/src/commands.rs) — revision counters and `poll`
 - [`crates/er-desktop/src/snapshot.rs`](../crates/er-desktop/src/snapshot.rs) — snapshot builder, meta fingerprint

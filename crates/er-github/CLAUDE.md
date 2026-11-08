@@ -21,4 +21,18 @@ a free function, so a test can answer with `FakeGitHub`.
 The convention follows `crates/er-git/CLAUDE.md`: one trait object passed in,
 and no global that tests reach. Production wrappers use `default_handle()`;
 tests build `CliGitHub` on a `ScriptedRunner`. The `github` field on
-`er_engine::ports::Ports` arrives with the migration PRs.
+`er_engine::ports::Ports` carries the handle.
+
+## Layout
+
+The moved `github.rs` bodies are grouped by concern: checkout, diff, commits,
+comments, overview, repo and lookup. Put a new function beside the one that
+calls it most; the tree is the inventory.
+
+## Compatibility wrappers
+
+The front ends and the engine still call the old free-function names. Each is
+a one-expression wrapper over `default_handle()` with its old
+`anyhow::Result` (or `Option`) return. Where the old code wrapped gh's text in
+a sentence, the wrapper uses `anyhow!("{old}: {e}")`; where it had none, the
+error passes through. They go when the callers take the handle.
