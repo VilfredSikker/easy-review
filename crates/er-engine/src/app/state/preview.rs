@@ -5,7 +5,6 @@ use anyhow::{bail, Context, Result};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Component, Path};
-use std::process::Command;
 
 pub const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 /// Screenshots and diagrams routinely pass the 1 MiB text cap.
@@ -19,12 +18,23 @@ enum Source {
     Remote(String, String, bool, Option<String>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FilePreviewRequest {
     pub path: String,
     pub preview_context_key: String,
     pub preview_key: String,
     source: Source,
+    github: std::sync::Arc<dyn er_github::GitHub>,
+}
+
+impl std::fmt::Debug for FilePreviewRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilePreviewRequest")
+            .field("path", &self.path)
+            .field("preview_context_key", &self.preview_context_key)
+            .field("preview_key", &self.preview_key)
+            .finish_non_exhaustive()
+    }
 }
 
 fn fingerprint(value: impl Hash) -> String {
@@ -366,6 +376,7 @@ impl TabState {
             preview_context_key: self.preview_context_key(),
             preview_key: self.file_preview_key(path),
             source,
+            github: self.ports.github.clone(),
         };
         Ok((request, status))
     }
@@ -459,12 +470,15 @@ fn bounded_read(reader: impl Read, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn read_command(command: &mut Command, limit: usize) -> Result<Vec<u8>> {
-    let output = crate::proc::run_with_bounded_stdout(command, crate::proc::GH_TIMEOUT, limit)?;
-    if !output.status.success() {
-        bail!("Document source could not be read");
+fn gh_read_error(error: crate::github::GhError, limit: usize) -> anyhow::Error {
+    match error {
+        crate::github::GhError::Tool { ref stderr, .. }
+            if stderr.contains("exceeds byte limit") =>
+        {
+            too_large(limit)
+        }
+        error => anyhow::anyhow!("Document source could not be read: {error}"),
     }
-    Ok(output.stdout)
 }
 
 fn reconstruct(section: &str, deleted: bool, limit: usize) -> Result<Vec<u8>> {
@@ -572,11 +586,13 @@ impl FilePreviewRequest {
                 }
                 let parent;
                 let commit = if *deleted {
-                    let bytes = read_command(
-                        Command::new("gh")
-                            .args(["api", &format!("repos/{repo}/git/commits/{commit}")]),
-                        MAX_PREVIEW_BYTES,
-                    )?;
+                    let bytes = self
+                        .github
+                        .api_get_bounded(
+                            &format!("repos/{repo}/git/commits/{commit}"),
+                            MAX_PREVIEW_BYTES,
+                        )
+                        .map_err(|error| gh_read_error(error, MAX_PREVIEW_BYTES))?;
                     let metadata: serde_json::Value = serde_json::from_slice(&bytes)?;
                     parent = metadata["parents"][0]["sha"]
                         .as_str()
@@ -597,15 +613,10 @@ impl FilePreviewRequest {
                         }
                     })
                     .collect::<String>();
-                let bytes = read_command(
-                    Command::new("gh").args([
-                        "api",
-                        "-H",
-                        "Accept: application/vnd.github.raw+json",
-                        &format!("repos/{repo}/contents/{path}?ref={commit}"),
-                    ]),
-                    limit,
-                )?;
+                let bytes = self
+                    .github
+                    .api_get_bounded(&format!("repos/{repo}/contents/{path}?ref={commit}"), limit)
+                    .map_err(|error| gh_read_error(error, limit))?;
                 if let Some(expected) = expected_blob {
                     verify_blob(&bytes, expected)?;
                 }
@@ -641,7 +652,7 @@ mod tests {
     }
 
     fn git(root: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
+        let out = std::process::Command::new("git")
             .args([
                 "-c",
                 "diff.noprefix=false",
@@ -805,7 +816,7 @@ mod tests {
         );
         std::fs::write(&path, b"invalid \xff\n").unwrap();
         git(dir.path(), &["add", "."]);
-        let out = Command::new("git")
+        let out = std::process::Command::new("git")
             .current_dir(dir.path())
             .args(["diff", "--cached", "--no-ext-diff", "--no-color"])
             .output()

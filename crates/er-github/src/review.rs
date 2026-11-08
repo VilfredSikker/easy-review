@@ -247,3 +247,60 @@ pub fn gh_pr_submit_review_remote(
             error => anyhow::anyhow!("Failed to submit review: {error}"),
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runner::{GhCall, GhRunner};
+    use crate::test_support::output;
+    use std::io;
+    use std::process::Output;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct CapturingRunner {
+        payloads: Mutex<Vec<String>>,
+    }
+
+    impl GhRunner for CapturingRunner {
+        fn run(&self, call: &GhCall<'_>) -> io::Result<Output> {
+            if let Some(index) = call.args.iter().position(|arg| arg == "--input") {
+                let path = &call.args[index + 1];
+                self.payloads
+                    .lock()
+                    .unwrap()
+                    .push(std::fs::read_to_string(path)?);
+            }
+            if call.args.get(1).is_some_and(|arg| arg == "api") {
+                Ok(output(0, "{}", ""))
+            } else {
+                Ok(output(0, "abc123\n", ""))
+            }
+        }
+
+        fn spawn_detached(&self, _args: &[String], _dir: Option<&str>) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn submit_review_posts_the_batch_with_the_pinned_commit() {
+        let runner = std::sync::Arc::new(CapturingRunner::default());
+        let github = crate::CliGitHub::new(runner.clone());
+        let comments = [ReviewBatchEntry {
+            file: "a.rs".into(),
+            line: 3,
+            start_line: None,
+            body: "hey".into(),
+            side: "RIGHT".into(),
+        }];
+        github
+            .submit_review("o", "r", 7, &comments, "/root", "COMMENT", "body")
+            .unwrap();
+        let payloads = runner.payloads.lock().unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert!(payloads[0].contains("abc123"), "{}", payloads[0]);
+        assert!(payloads[0].contains("a.rs"), "{}", payloads[0]);
+        assert!(payloads[0].contains("hey"), "{}", payloads[0]);
+    }
+}

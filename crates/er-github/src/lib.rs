@@ -312,6 +312,9 @@ pub trait GitHub: Send + Sync {
     fn overview_no_checks(&self, repo_root: &str, pr_number: Option<u64>)
         -> Option<PrOverviewData>;
     fn overview_remote(&self, owner: &str, repo: &str, number: u64) -> Option<PrOverviewData>;
+
+    /// One bounded `gh api` read whose body is returned without headers.
+    fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError>;
 }
 
 static DEFAULT_HANDLE: OnceLock<Arc<CliGitHub>> = OnceLock::new();

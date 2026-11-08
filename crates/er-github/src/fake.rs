@@ -68,6 +68,7 @@ struct FakeState {
     overview: Option<Option<PrOverviewData>>,
     overview_no_checks: Option<Option<PrOverviewData>>,
     overview_remote: Option<Option<PrOverviewData>>,
+    api_get_bounded: Option<Result<Vec<u8>, GhError>>,
 }
 
 fn unscripted(method: &str) -> GhError {
@@ -362,6 +363,12 @@ impl FakeGitHub {
     #[must_use]
     pub fn with_overview_remote(self, value: Option<PrOverviewData>) -> Self {
         self.lock().overview_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_api_get_bounded(self, value: Result<Vec<u8>, GhError>) -> Self {
+        self.lock().api_get_bounded = Some(value);
         self
     }
 }
@@ -945,6 +952,15 @@ impl GitHub for FakeGitHub {
         .overview_remote
         .clone()
         .unwrap_or_else(|| panic!("FakeGitHub: unscripted overview_remote"))
+    }
+
+    fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError> {
+        self.record(format!(
+            "api_get_bounded(path={path:?}, max_bytes={max_bytes:?})"
+        ))
+        .api_get_bounded
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("api_get_bounded")))
     }
 }
 

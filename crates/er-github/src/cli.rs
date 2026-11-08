@@ -499,6 +499,10 @@ impl GitHub for CliGitHub {
     fn overview_remote(&self, owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
         CliGitHub::overview_remote(self, owner, repo, number)
     }
+
+    fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError> {
+        CliGitHub::api_get_bounded(self, path, max_bytes)
+    }
 }
 
 /// `gh api graphql` with string variables (`-f`, so a numeric repo name stays

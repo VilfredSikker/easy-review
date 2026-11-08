@@ -1950,6 +1950,18 @@ pub fn gh_open_pr_refs_json(repo_slug: &str) -> Result<String> {
 }
 
 impl CliGitHub {
+    /// One bounded `gh api` read whose body is returned without headers.
+    pub(crate) fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError> {
+        let args = vec![
+            "api".to_string(),
+            path.to_string(),
+            "-H".to_string(),
+            "Accept: application/vnd.github.raw+json".to_string(),
+        ];
+        let output = self.run_gh(&args, None, Some(max_bytes))?;
+        Ok(output.body)
+    }
+
     /// Fetch PR overview data for a remote repo (no local clone needed).
     pub(crate) fn overview_remote(
         &self,
@@ -4578,6 +4590,103 @@ mod tests {
                 .is_some(),
             "the cache key is lowercased"
         );
+    }
+
+    #[test]
+    fn push_comment_sends_path_line_side_and_body() {
+        let runner = Arc::new(crate::testing::ScriptedRunner::new());
+        runner.script(
+            &["gh", "pr", "view"],
+            Ok(crate::test_support::output(0, "abc\n", "")),
+        );
+        runner.script(
+            &["gh", "api", "--include", "-X", "POST"],
+            Ok(crate::test_support::output(0, r#"{"id":9}"#, "")),
+        );
+        let github = CliGitHub::new(runner.clone());
+        let id = github
+            .push_comment(
+                "o",
+                "r",
+                7,
+                NewLineComment {
+                    path: "a.rs",
+                    line_start: 3,
+                    line_end: Some(5),
+                    body: "hey",
+                    side: "RIGHT",
+                },
+                "/root",
+            )
+            .unwrap();
+        assert_eq!(id, 9);
+        let calls = runner.calls();
+        let post = &calls[1];
+        for expected in [
+            "path=a.rs",
+            "line=5",
+            "start_line=3",
+            "side=RIGHT",
+            "body=hey",
+            "commit_id=abc",
+        ] {
+            assert!(
+                post.iter().any(|arg| arg == expected),
+                "{expected} missing from {post:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reply_comment_targets_the_parent_comment_id() {
+        let runner = Arc::new(crate::testing::ScriptedRunner::new());
+        runner.script(
+            &["gh", "api", "--include", "-X", "POST"],
+            Ok(crate::test_support::output(0, r#"{"id":10}"#, "")),
+        );
+        let github = CliGitHub::new(runner.clone());
+        let id = github
+            .reply_comment("o", "r", 7, 42, "hi", "/root")
+            .unwrap();
+        assert_eq!(id, 10);
+        let calls = runner.calls();
+        assert!(
+            calls[0].iter().any(|arg| arg == "in_reply_to=42"),
+            "{:?}",
+            calls[0]
+        );
+    }
+
+    #[test]
+    fn delete_comment_treats_404_as_already_gone() {
+        let runner = Arc::new(crate::testing::ScriptedRunner::new());
+        runner.script(
+            &["gh", "api", "--include", "-X", "DELETE"],
+            Ok(crate::test_support::output(
+                1,
+                "HTTP/2.0 404 Not Found\r\n\r\n{}",
+                "gh: Not Found (HTTP 404)",
+            )),
+        );
+        let github = CliGitHub::new(runner);
+        github.delete_comment("o", "r", 5, "/root").unwrap();
+    }
+
+    #[test]
+    fn delete_comment_fails_on_403() {
+        let runner = Arc::new(crate::testing::ScriptedRunner::new());
+        runner.script(
+            &["gh", "api", "--include", "-X", "DELETE"],
+            Ok(crate::test_support::output(
+                1,
+                "HTTP/2.0 403 Forbidden\r\n\r\n\
+                 {\"message\":\"Resource not accessible by integration\"}",
+                "gh: Resource not accessible by integration (HTTP 403)",
+            )),
+        );
+        let github = CliGitHub::new(runner);
+        let error = github.delete_comment("o", "r", 5, "/root").unwrap_err();
+        assert!(matches!(error, GhError::Forbidden { .. }), "{error:?}");
     }
 
     #[test]
