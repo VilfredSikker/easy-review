@@ -97,6 +97,20 @@ pub trait Git: Send + Sync {
     fn update_ref(&self, root: &str, name: &str, target: &str) -> Result<(), GitError>;
     fn diff_revs(&self, root: &str, revs: &[&str]) -> Result<String, GitError>;
     fn shallow_clone(&self, url: &str, dest: &str) -> Result<(), GitError>;
+
+    fn show_ref_verify(&self, root: &str, refname: &str) -> Result<bool, GitError>;
+    fn current_branch_show(&self, root: &str) -> Result<String, GitError>;
+    fn for_each_ref(
+        &self,
+        root: &str,
+        format: &str,
+        sort: Option<&str>,
+        pattern: &str,
+    ) -> Result<String, GitError>;
+    fn ls_remote(&self, root: &str, remote: &str, refname: &str) -> Result<String, GitError>;
+    fn config_get_regexp(&self, root: &str, pattern: &str) -> Result<String, GitError>;
+    fn rev_list_count(&self, root: &str, range: &str) -> Result<String, GitError>;
+    fn branch_merged(&self, root: &str, base: &str) -> Result<String, GitError>;
 }
 
 /// The adapter that runs the real git binary.
@@ -305,6 +319,40 @@ impl Git for CliGit {
     fn shallow_clone(&self, url: &str, dest: &str) -> Result<(), GitError> {
         crate::status::git_shallow_clone(url, dest)
     }
+
+    fn show_ref_verify(&self, root: &str, refname: &str) -> Result<bool, GitError> {
+        crate::status::git_show_ref_verify(root, refname)
+    }
+
+    fn current_branch_show(&self, root: &str) -> Result<String, GitError> {
+        crate::status::git_current_branch_show(root)
+    }
+
+    fn for_each_ref(
+        &self,
+        root: &str,
+        format: &str,
+        sort: Option<&str>,
+        pattern: &str,
+    ) -> Result<String, GitError> {
+        crate::status::git_for_each_ref(root, format, sort, pattern)
+    }
+
+    fn ls_remote(&self, root: &str, remote: &str, refname: &str) -> Result<String, GitError> {
+        crate::status::git_ls_remote(root, remote, refname)
+    }
+
+    fn config_get_regexp(&self, root: &str, pattern: &str) -> Result<String, GitError> {
+        crate::status::git_config_get_regexp(root, pattern)
+    }
+
+    fn rev_list_count(&self, root: &str, range: &str) -> Result<String, GitError> {
+        crate::status::git_rev_list_count(root, range)
+    }
+
+    fn branch_merged(&self, root: &str, base: &str) -> Result<String, GitError> {
+        crate::status::git_branch_merged(root, base)
+    }
 }
 
 #[cfg(test)]
@@ -402,6 +450,140 @@ mod tests {
     }
 
     #[test]
+    fn show_ref_verify_is_false_for_a_missing_branch() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path().to_str().unwrap();
+
+        assert!(CliGit.show_ref_verify(root, "refs/heads/feature").unwrap());
+        assert!(!CliGit
+            .show_ref_verify(root, "refs/heads/not-there")
+            .unwrap());
+    }
+
+    #[test]
+    fn current_branch_show_names_the_checked_out_branch() {
+        let dir = repo_with_a_feature_commit();
+        assert_eq!(
+            CliGit
+                .current_branch_show(dir.path().to_str().unwrap())
+                .unwrap(),
+            "feature"
+        );
+    }
+
+    #[test]
+    fn for_each_ref_returns_the_requested_format() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path().to_str().unwrap();
+
+        let names = CliGit
+            .for_each_ref(root, "%(refname:short)", None, "refs/heads/")
+            .unwrap();
+        assert!(names.lines().any(|l| l == "feature"), "{names}");
+        assert!(names.lines().any(|l| l == "main"), "{names}");
+    }
+
+    /// Commit with a fixed author and committer date, so a date sort can be
+    /// told apart from the default refname order.
+    fn commit_at(root: &std::path::Path, date: &str, message: &str) {
+        std::fs::write(root.join("f"), format!("{message}\n")).unwrap();
+        git(root, &["add", "."]);
+        let out = std::process::Command::new("git")
+            .args(["-c", "commit.gpgsign=false", "commit", "-q", "-m", message])
+            .current_dir(root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git commit: {out:?}");
+    }
+
+    #[test]
+    fn for_each_ref_sorts_by_the_requested_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "user.email", "t@example.invalid"]);
+        git(root, &["config", "user.name", "Tests"]);
+        commit_at(root, "2019-01-01 00:00:00 +0000", "base");
+        git(root, &["checkout", "-q", "-b", "aaa"]);
+        commit_at(root, "2020-01-01 00:00:00 +0000", "older");
+        git(root, &["checkout", "-q", "main"]);
+        git(root, &["checkout", "-q", "-b", "zzz"]);
+        commit_at(root, "2020-06-01 00:00:00 +0000", "newer");
+
+        let sorted = CliGit
+            .for_each_ref(
+                root.to_str().unwrap(),
+                "%(refname:short)",
+                Some("-committerdate"),
+                "refs/heads/",
+            )
+            .unwrap();
+        assert_eq!(
+            sorted.lines().collect::<Vec<_>>(),
+            ["zzz", "aaa", "main"],
+            "{sorted}"
+        );
+
+        // The default order is refname, so the assertion above only holds when
+        // the sort argument reaches git.
+        let unsorted = CliGit
+            .for_each_ref(
+                root.to_str().unwrap(),
+                "%(refname:short)",
+                None,
+                "refs/heads/",
+            )
+            .unwrap();
+        assert_eq!(
+            unsorted.lines().collect::<Vec<_>>(),
+            ["aaa", "main", "zzz"],
+            "{unsorted}"
+        );
+    }
+
+    #[test]
+    fn config_get_regexp_lists_remote_urls() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path();
+        git(
+            root,
+            &["remote", "add", "origin", "git@example.invalid:o/r.git"],
+        );
+
+        let out = CliGit
+            .config_get_regexp(root.to_str().unwrap(), r"^remote\..*\.url$")
+            .unwrap();
+
+        assert!(out.contains("remote.origin.url"), "{out}");
+    }
+
+    #[test]
+    fn rev_list_count_counts_commits_in_a_range() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path().to_str().unwrap();
+
+        assert_eq!(CliGit.rev_list_count(root, "main..feature").unwrap(), "1");
+    }
+
+    #[test]
+    fn branch_merged_lists_branches_merged_into_base() {
+        let dir = repo_with_a_feature_commit();
+        let root = dir.path();
+        git(root, &["checkout", "-q", "main"]);
+        git(root, &["merge", "--no-ff", "-m", "merge", "feature"]);
+
+        let merged = CliGit
+            .branch_merged(root.to_str().unwrap(), "main")
+            .unwrap();
+
+        assert!(merged.lines().any(|l| l.trim() == "feature"), "{merged}");
+    }
+
+    #[test]
     fn fetch_pulls_a_ref_from_a_local_origin() {
         let origin = repo_with_a_feature_commit();
         let dest = tempfile::tempdir().unwrap();
@@ -422,5 +604,29 @@ mod tests {
             .rev_parse_verify(dest.path().to_str().unwrap(), "refs/remotes/origin/feature")
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn ls_remote_asks_the_remote_for_one_ref() {
+        let origin = repo_with_a_feature_commit();
+        let dest = tempfile::tempdir().unwrap();
+        git(dest.path(), &["init", "-q", "-b", "main"]);
+        git(
+            dest.path(),
+            &["remote", "add", "origin", origin.path().to_str().unwrap()],
+        );
+
+        let out = CliGit
+            .ls_remote(
+                dest.path().to_str().unwrap(),
+                "origin",
+                "refs/heads/feature",
+            )
+            .unwrap();
+
+        let mut parts = out.split_whitespace();
+        assert_eq!(parts.next().map(str::len), Some(40), "{out}");
+        assert_eq!(parts.next(), Some("refs/heads/feature"), "{out}");
+        assert_eq!(parts.next(), None, "{out}");
     }
 }

@@ -985,9 +985,10 @@ fn kick_active_gh_status(app: &App, state: &AppState) {
 fn kick_meta_refresh(state: &AppState, root: String) {
     let cache = state.meta_cache.clone();
     let desktop_revision = Arc::clone(&state.desktop_revision);
+    let ports = state.ports.clone();
     desktop_revision.fetch_add(1, Ordering::Relaxed);
     std::thread::spawn(move || {
-        crate::snapshot::refresh_meta_cache(&root, &cache);
+        crate::snapshot::refresh_meta_cache(&*ports.git, &root, &cache);
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     });
 }
@@ -1821,15 +1822,7 @@ fn github_file_url_for_tab(
         ));
     }
 
-    let remote = std::process::Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(&tab.repo_root)
-        .output()
-        .ok()?;
-    if !remote.status.success() {
-        return None;
-    }
-    let remote = String::from_utf8_lossy(&remote.stdout).trim().to_string();
+    let remote = tab.ports.git.remote_url(&tab.repo_root, "origin").ok()?;
     let slug = parse_github_slug(&remote)?;
     Some(format!(
         "https://github.com/{slug}/blob/{branch_ref}/{file_path}#L{line_num}"
@@ -5690,6 +5683,7 @@ fn ask_ai_impl(
     let pending_arc = Arc::clone(&state.pending_ai_replies);
     let meta_cache = state.meta_cache.clone();
     let desktop_revision = Arc::clone(&state.desktop_revision);
+    let ports = state.ports.clone();
     let thread_id_for_thread = thread_id.clone();
     let repo_root_for_thread = repo_root;
     let inv_for_thread = invocation;
@@ -5731,7 +5725,7 @@ fn ask_ai_impl(
         if let Ok(mut p) = pending_arc.lock() {
             p.remove(&thread_id_for_thread);
         }
-        crate::snapshot::refresh_meta_cache(&repo_root_for_thread, &meta_cache);
+        crate::snapshot::refresh_meta_cache(&*ports.git, &repo_root_for_thread, &meta_cache);
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     });
 
@@ -5925,6 +5919,7 @@ fn ask_ai_for_finding(
     let pending_arc = Arc::clone(&state.pending_ai_replies);
     let meta_cache = state.meta_cache.clone();
     let desktop_revision = Arc::clone(&state.desktop_revision);
+    let ports = state.ports.clone();
     let finding_id_for_thread = finding_id;
     let er_dir_for_thread = er_dir;
     let repo_root_for_thread = repo_root;
@@ -5955,7 +5950,7 @@ fn ask_ai_for_finding(
         if let Ok(mut p) = pending_arc.lock() {
             p.remove(&format!("finding:{finding_id_for_thread}"));
         }
-        crate::snapshot::refresh_meta_cache(&repo_root_for_thread, &meta_cache);
+        crate::snapshot::refresh_meta_cache(&*ports.git, &repo_root_for_thread, &meta_cache);
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     });
 
@@ -6038,24 +6033,22 @@ fn finding_fields_for_ref(
 /// active-branch watcher (`main.rs::desired_local_branch_watch`) so both
 /// attach a checkout root using the same logic — making Saved/My PRs/Recent
 /// behave like Tracked when the PR's head branch is checked out.
-pub fn resolve_head_checkout(repo_root: &str, branch: &str) -> Option<String> {
+pub fn resolve_head_checkout(
+    git: &dyn er_engine::git::Git,
+    repo_root: &str,
+    branch: &str,
+) -> Option<String> {
     if branch.is_empty() {
         return None;
     }
-    // Project root checkout?
-    let head_out = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(repo_root)
-        .output()
-        .ok()?;
-    if head_out.status.success() {
-        let head = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
-        if head == branch {
-            return Some(repo_root.to_string());
-        }
+    // Project root checkout? An unreadable HEAD (an unborn branch, say) must
+    // still fall through to the linked-worktree check, as the raw command did.
+    let head = git.current_branch(repo_root).unwrap_or_default();
+    if head == branch {
+        return Some(repo_root.to_string());
     }
     // Linked worktree checkout?
-    let worktrees = er_engine::git::list_worktrees(repo_root).ok()?;
+    let worktrees = git.list_worktrees(repo_root).ok()?;
     let wt = worktrees.into_iter().find(|w| w.branch == branch)?;
     Some(wt.path)
 }
@@ -6624,7 +6617,7 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.open_tab(new_tab);
     crate::tabs::persist_app_tabs(&app);
-    let _ = projects::auto_register(&path_str);
+    let _ = projects::auto_register(&*state.ports.git, &path_str);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     Ok(snap_from(&app, &state))
 }
@@ -6712,11 +6705,11 @@ fn build_local_branch_tab_for_repo(
     // Resolve the working tree before the first diff refresh. The watcher only
     // applies later changes, so it cannot repair a same-branch tab whose root
     // was left unset at construction.
-    tab.local_branch_checkout_root = resolve_head_checkout(repo_root, &name);
+    tab.local_branch_checkout_root = resolve_head_checkout(&*ports.git, repo_root, &name);
     tab.mode = er_engine::app::DiffMode::Branch;
     // The tab's own remote is the repo actually being viewed, not whichever
     // project's remote happens to be active in the app.
-    tab.remote_repo = projects::resolve_repo_remote(repo_root);
+    tab.remote_repo = projects::resolve_repo_remote(&*ports.git, repo_root);
     Ok(tab)
 }
 
@@ -7755,7 +7748,8 @@ fn open_pr_review_impl(
     } else {
         head_branch_for_checkout
     };
-    let checkout_root = resolve_head_checkout(&repo_root_for_checkout, &checkout_branch);
+    let checkout_root =
+        resolve_head_checkout(&*state.ports.git, &repo_root_for_checkout, &checkout_branch);
     log_branch_open_phase(&project_id, &branch_label, "pr_tab_build", t_tab_build);
     log::info!(
         "branch_open project={} branch={} phase=pr_open_cache hit={}",
@@ -8004,7 +7998,7 @@ fn kick_miss_open_offload(
                 let checkout_root = if head_branch.is_empty() {
                     None
                 } else {
-                    resolve_head_checkout(&inputs.repo_root, &head_branch)
+                    resolve_head_checkout(&*state_ref.ports.git, &inputs.repo_root, &head_branch)
                 };
                 if let Ok(mut app) = app_arc.lock() {
                     // Re-resolve the stub by index + identity (sibling worker
@@ -8812,17 +8806,11 @@ pub fn add_tracked_branch(
         .ok_or_else(|| format!("Project not found: {project_id}"))?;
 
     // Confirm the branch actually exists locally before tracking it.
-    let exists = std::process::Command::new("git")
-        .args([
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{}", name),
-        ])
-        .current_dir(&proj.root_path)
-        .status()
-        .map_err(|e| format!("git show-ref failed: {e}"))?
-        .success();
+    let exists = state
+        .ports
+        .git
+        .show_ref_verify(&proj.root_path, &format!("refs/heads/{name}"))
+        .map_err(|e| format!("git show-ref failed: {e}"))?;
     if !exists {
         return Err(format!("Branch '{name}' does not exist locally"));
     }
@@ -8851,18 +8839,10 @@ pub fn remove_tracked_branch(
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Project not found: {project_id}"))?;
 
-    let current = std::process::Command::new("git")
-        .args(["branch", "--show-current"])
-        .current_dir(&proj.root_path)
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
+    let current = state
+        .ports
+        .git
+        .current_branch_show(&proj.root_path)
         .unwrap_or_default();
     if !current.is_empty() && current == name {
         return Err(
@@ -8882,7 +8862,10 @@ pub fn remove_tracked_branch(
 }
 
 #[tauri::command]
-pub fn list_available_branches(project_id: String) -> Result<Vec<String>, String> {
+pub fn list_available_branches(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<Vec<String>, String> {
     let file = projects::load();
     let proj = file
         .projects
@@ -8890,31 +8873,16 @@ pub fn list_available_branches(project_id: String) -> Result<Vec<String>, String
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Project not found: {project_id}"))?;
 
-    let out = std::process::Command::new("git")
-        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
-        .current_dir(&proj.root_path)
-        .output()
+    let text = state
+        .ports
+        .git
+        .for_each_ref(&proj.root_path, "%(refname:short)", None, "refs/heads/")
         .map_err(|e| format!("git for-each-ref failed: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "git for-each-ref failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
 
-    let current = std::process::Command::new("git")
-        .args(["branch", "--show-current"])
-        .current_dir(&proj.root_path)
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
+    let current = state
+        .ports
+        .git
+        .current_branch_show(&proj.root_path)
         .unwrap_or_default();
 
     let names: Vec<String> = text
@@ -11069,7 +11037,7 @@ fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     // the snapshot with the lock held, and a cold entry there pays the entire
     // fan-out inside it; warming here means the next build reads a warm entry.
     // No-op unless the cached entry is actually getting old (see the fn).
-    crate::snapshot::kick_worktrees_warm(&warm_target.0, &warm_target.1);
+    crate::snapshot::kick_worktrees_warm(state.ports.clone(), &warm_target.0, &warm_target.1);
     let lock_wait_ms = lock_t0.elapsed().as_millis();
 
     // Pass two: re-take for the revisions and the snapshot, so the two agree
@@ -11885,6 +11853,7 @@ mod tests {
             ..Default::default()
         };
         let mut app = er_engine::app::App::new_for_test(Vec::new());
+        app.ports = er_engine::ports::Ports::cli();
         app.config.ai_hub = AiHubConfig {
             default_provider: Some("fake".into()),
             review_models: {
@@ -11905,6 +11874,7 @@ mod tests {
         };
         {
             let tab = app.tab_mut();
+            tab.ports = er_engine::ports::Ports::cli();
             tab.repo_root = repo.to_string_lossy().into_owned();
             tab.er_root = er_engine::paths::ErRoot::Managed {
                 agent_dir: bucket.to_string_lossy().into_owned(),
@@ -11924,7 +11894,7 @@ mod tests {
         let loading = Arc::new(Mutex::new(crate::snapshot::LoadingFlags::default()));
         let watch_status = Arc::new(Mutex::new(crate::snapshot::WatchStatusSnapshot::default()));
         AppState {
-            ports: er_engine::ports::Ports::for_test(),
+            ports: er_engine::ports::Ports::cli(),
             app,
             pr_cache: Arc::new(Mutex::new(HashMap::new())),
             pr_cache_fetched_at: Arc::new(Mutex::new(HashMap::new())),

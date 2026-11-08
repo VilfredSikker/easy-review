@@ -57,6 +57,13 @@ struct FakeState {
     update_ref: Option<Result<(), GitError>>,
     diff_revs: Option<Result<String, GitError>>,
     shallow_clone: Option<Result<(), GitError>>,
+    show_ref_verify: Option<Result<bool, GitError>>,
+    current_branch_show: Option<Result<String, GitError>>,
+    for_each_ref: Option<Result<String, GitError>>,
+    ls_remote: Option<Result<String, GitError>>,
+    config_get_regexp: Option<Result<String, GitError>>,
+    rev_list_count: Option<Result<String, GitError>>,
+    branch_merged: Option<Result<String, GitError>>,
 }
 
 fn unscripted(method: &str) -> GitError {
@@ -313,6 +320,48 @@ impl FakeGit {
     #[must_use]
     pub fn with_shallow_clone(self, value: Result<(), GitError>) -> Self {
         self.lock().shallow_clone = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_show_ref_verify(self, value: Result<bool, GitError>) -> Self {
+        self.lock().show_ref_verify = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_current_branch_show(self, value: Result<String, GitError>) -> Self {
+        self.lock().current_branch_show = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_for_each_ref(self, value: Result<String, GitError>) -> Self {
+        self.lock().for_each_ref = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_ls_remote(self, value: Result<String, GitError>) -> Self {
+        self.lock().ls_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_config_get_regexp(self, value: Result<String, GitError>) -> Self {
+        self.lock().config_get_regexp = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_rev_list_count(self, value: Result<String, GitError>) -> Self {
+        self.lock().rev_list_count = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_branch_merged(self, value: Result<String, GitError>) -> Self {
+        self.lock().branch_merged = Some(value);
         self
     }
 }
@@ -675,6 +724,69 @@ impl Git for FakeGit {
             .shallow_clone
             .clone()
             .unwrap_or_else(|| Err(unscripted("shallow_clone")))
+    }
+
+    fn show_ref_verify(&self, root: &str, refname: &str) -> Result<bool, GitError> {
+        self.record(format!(
+            "show_ref_verify(root={root:?}, refname={refname:?})"
+        ))
+        .show_ref_verify
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("show_ref_verify")))
+    }
+
+    fn current_branch_show(&self, root: &str) -> Result<String, GitError> {
+        self.record(format!("current_branch_show(root={root:?})"))
+            .current_branch_show
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("current_branch_show")))
+    }
+
+    fn for_each_ref(
+        &self,
+        root: &str,
+        format: &str,
+        sort: Option<&str>,
+        pattern: &str,
+    ) -> Result<String, GitError> {
+        self.record(format!(
+            "for_each_ref(root={root:?}, format={format:?}, sort={sort:?}, pattern={pattern:?})"
+        ))
+        .for_each_ref
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("for_each_ref")))
+    }
+
+    fn ls_remote(&self, root: &str, remote: &str, refname: &str) -> Result<String, GitError> {
+        self.record(format!(
+            "ls_remote(root={root:?}, remote={remote:?}, refname={refname:?})"
+        ))
+        .ls_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("ls_remote")))
+    }
+
+    fn config_get_regexp(&self, root: &str, pattern: &str) -> Result<String, GitError> {
+        self.record(format!(
+            "config_get_regexp(root={root:?}, pattern={pattern:?})"
+        ))
+        .config_get_regexp
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("config_get_regexp")))
+    }
+
+    fn rev_list_count(&self, root: &str, range: &str) -> Result<String, GitError> {
+        self.record(format!("rev_list_count(root={root:?}, range={range:?})"))
+            .rev_list_count
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("rev_list_count")))
+    }
+
+    fn branch_merged(&self, root: &str, base: &str) -> Result<String, GitError> {
+        self.record(format!("branch_merged(root={root:?}, base={base:?})"))
+            .branch_merged
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("branch_merged")))
     }
 }
 
