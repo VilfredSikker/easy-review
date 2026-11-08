@@ -31,7 +31,8 @@ by hand and do not write the file with `std::fs`. A host-only kind is
 ## Traps
 
 - A newer file is not overwritten. `read` reports `NewerVersion`; `write`
-  refuses it. Bump the version when a payload schema changes.
+  refuses it. Adding an optional payload field needs no version bump; bump
+  only when an older binary cannot read the new payload, and add a `migrate`.
 - `write` does not fsync. `write_durable` does, for the kinds whose loss
   matters.
 - `read` never compares `diff_hash`. Staleness is the caller's job; agent output

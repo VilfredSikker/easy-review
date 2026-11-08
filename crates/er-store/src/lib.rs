@@ -131,6 +131,37 @@ pub(crate) mod test_support {
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestBigEnveloped {
+        pub blob: String,
+    }
+
+    impl Artifact for TestBigEnveloped {
+        const KIND: &'static str = "test-big-enveloped";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Enveloped;
+        const FILE: &'static str = "test-big-enveloped.json";
+        type Slot = ();
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestEnvelopedHash {
+        pub value: u32,
+        pub diff_hash: String,
+    }
+
+    impl Artifact for TestEnvelopedHash {
+        const KIND: &'static str = "test-enveloped-hash";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Enveloped;
+        const FILE: &'static str = "test-enveloped-hash.json";
+        type Slot = ();
+
+        fn diff_hash(&self) -> Option<&str> {
+            Some(&self.diff_hash)
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
     pub struct TestBadSingleton {
         pub value: u32,
     }

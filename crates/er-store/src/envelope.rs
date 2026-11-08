@@ -121,6 +121,9 @@ fn parse_bare<T: Artifact>(value: Value) -> Loaded<T> {
         let Some(kind) = object.get("kind").and_then(Value::as_str) else {
             return malformed("kind is not a string");
         };
+        if let Some(found) = newer_envelope_version::<T>(kind, &value) {
+            return Loaded::Unreadable(Unreadable::NewerVersion { found });
+        }
         return Loaded::Unreadable(Unreadable::WrongKind {
             found: kind.to_string(),
         });
@@ -129,6 +132,15 @@ fn parse_bare<T: Artifact>(value: Value) -> Loaded<T> {
         return malformed("envelope payload in a bare kind");
     }
     parse_bare_payload::<T>(value, None)
+}
+
+/// A `Bare` kind that finds its own envelope with a newer version must not
+/// overwrite it. Any other envelope is the wrong shape for a bare file.
+fn newer_envelope_version<T: Artifact>(kind: &str, value: &Value) -> Option<u32> {
+    if kind != T::KIND {
+        return None;
+    }
+    version_of(value).filter(|version| *version > T::VERSION)
 }
 
 fn parse_legacy_bare<T: Artifact>(value: Value, max_bare: u32) -> Loaded<T> {
