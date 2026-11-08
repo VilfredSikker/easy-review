@@ -1446,6 +1446,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "er-store"
+version = "0.6.5"
+dependencies = [
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "er-tui"
 version = "0.6.5"
 dependencies = [
