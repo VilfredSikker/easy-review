@@ -117,16 +117,18 @@ fn spawn_config(table: &toml::Value, program: &str) -> anyhow::Result<SpawnConfi
         .and_then(toml::Value::as_str)
         .with_context(|| format!("[workspace.metadata.lint-gate.spawn.{program}] has no home"))?
         .to_string();
-    let allow = entry
-        .get("allow")
-        .and_then(toml::Value::as_array)
-        .with_context(|| {
-            format!("[workspace.metadata.lint-gate.spawn.{program}] has no allow list")
-        })?
-        .iter()
-        .filter_map(toml::Value::as_str)
-        .map(str::to_string)
-        .collect();
+    let allow = match entry.get("allow") {
+        Some(value) => value
+            .as_array()
+            .with_context(|| {
+                format!("[workspace.metadata.lint-gate.spawn.{program}] allow must be a list")
+            })?
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        None => Vec::new(),
+    };
     Ok(SpawnConfig { home, allow })
 }
 
@@ -334,4 +336,47 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     }
     eprintln!("\n{}", problems.join("\n\n"));
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_allow_key_means_an_empty_list() {
+        let dir = std::env::temp_dir().join(format!(
+            "er-lint-gate-allow-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            r#"
+[workspace.metadata.lint-gate]
+budgeted = []
+
+[workspace.metadata.lint-gate.impl-cohesion]
+max-groups = 1
+min-group-lines = 1
+
+[workspace.metadata.lint-gate.spawn.git]
+home = "crates/er-git"
+
+[workspace.metadata.lint-gate.spawn.gh]
+home = "crates/er-github"
+allow = ["crates/x/src/a.rs"]
+"#,
+        )
+        .unwrap();
+
+        let config = gate_config(&dir).expect("config without an allow key");
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(config.spawn_git.allow.is_empty());
+        assert_eq!(config.spawn_gh.allow, ["crates/x/src/a.rs"]);
+    }
 }

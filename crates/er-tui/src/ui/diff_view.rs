@@ -2877,7 +2877,7 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
 
     if use_snapshot {
         // Try to get snapshot diff
-        match er_engine::git::diff_watched_file_snapshot(
+        match app.ports.git.diff_watched_file_snapshot(
             repo_root,
             path,
             &tab.er_root.snapshots_dir(),
@@ -3035,7 +3035,7 @@ fn render_watched_content_lines(lines: &mut Vec<Line>, repo_root: &str, path: &s
         return;
     }
 
-    match er_engine::git::read_watched_file_content(repo_root, path) {
+    match er_git::read_watched_file_content(repo_root, path) {
         Ok(Some(content)) => {
             let total_lines = content.lines().count();
             if total_lines > 10_000 {

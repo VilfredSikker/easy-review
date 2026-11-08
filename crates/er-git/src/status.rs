@@ -64,7 +64,7 @@ impl FileStatus {
 // ── Repo Info ──
 
 /// Get the repository root directory
-pub fn get_repo_root() -> Result<String, GitError> {
+pub(crate) fn get_repo_root() -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
@@ -78,7 +78,7 @@ pub fn get_repo_root() -> Result<String, GitError> {
 }
 
 /// Get the repository root directory for a specific path
-pub fn get_repo_root_in(dir: &str) -> Result<String, GitError> {
+pub(crate) fn get_repo_root_in(dir: &str) -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(dir)
@@ -95,7 +95,7 @@ pub fn get_repo_root_in(dir: &str) -> Result<String, GitError> {
 }
 
 /// Get the repository root for a path inside a worktree (file or directory).
-pub fn get_repo_root_at(path: &str) -> Result<String, GitError> {
+pub(crate) fn get_repo_root_at(path: &str) -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["-C", path, "rev-parse", "--show-toplevel"])
         .output()
@@ -111,7 +111,7 @@ pub fn get_repo_root_at(path: &str) -> Result<String, GitError> {
 }
 
 /// Get current branch for a specific repo root
-pub fn get_current_branch_in(repo_root: &str) -> Result<String, GitError> {
+pub(crate) fn get_current_branch_in(repo_root: &str) -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(repo_root)
@@ -129,7 +129,7 @@ pub fn get_current_branch_in(repo_root: &str) -> Result<String, GitError> {
 }
 
 /// Auto-detect base branch for a specific repo root
-pub fn detect_base_branch_in(repo_root: &str) -> Result<String, GitError> {
+pub(crate) fn detect_base_branch_in(repo_root: &str) -> Result<String, GitError> {
     detect_base_branch_impl(Some(repo_root))
 }
 
@@ -216,7 +216,7 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String, GitError> 
 
 /// Get the raw diff output from git for a given mode.
 /// `head_ref` overrides the "HEAD" ref used in branch diffs (for no-checkout PR review).
-pub fn git_diff_raw(
+pub(crate) fn git_diff_raw(
     mode: &str,
     base: &str,
     repo_root: &str,
@@ -284,7 +284,7 @@ pub fn git_diff_raw(
 ///
 /// `context_lines` overrides the default context (pass `None` for `DEFAULT_CONTEXT_LINES`).
 /// `head_ref` overrides the "HEAD" ref used in branch diffs (for no-checkout PR review).
-pub fn git_diff_raw_file(
+pub(crate) fn git_diff_raw_file(
     mode: &str,
     base: &str,
     repo_root: &str,
@@ -337,7 +337,7 @@ pub fn git_diff_raw_file(
 }
 
 /// Append synthetic unified diffs for untracked text files to `combined`.
-pub fn append_untracked_synthetic_diffs(
+pub(crate) fn append_untracked_synthetic_diffs(
     repo_root: &str,
     combined: String,
 ) -> Result<String, GitError> {
@@ -389,7 +389,7 @@ fn synthetic_new_file_diff(path: &str, content: &str) -> String {
 // ── Conflicts ──
 
 /// List files with unresolved merge conflicts
-pub fn unmerged_files(repo_root: &str) -> Result<Vec<String>, GitError> {
+pub(crate) fn unmerged_files(repo_root: &str) -> Result<Vec<String>, GitError> {
     let output = Command::new("git")
         .args(["diff", "--name-only", "--diff-filter=U"])
         .current_dir(repo_root)
@@ -405,7 +405,7 @@ pub fn unmerged_files(repo_root: &str) -> Result<Vec<String>, GitError> {
 }
 
 /// Check if a merge is currently in progress (MERGE_HEAD exists)
-pub fn is_merge_in_progress(repo_root: &str) -> bool {
+pub(crate) fn is_merge_in_progress(repo_root: &str) -> bool {
     // Use git rev-parse --git-dir to find the correct .git directory (handles worktrees)
     let output = Command::new("git")
         .args(["rev-parse", "--git-dir"])
@@ -434,7 +434,7 @@ pub fn is_merge_in_progress(repo_root: &str) -> bool {
 ///
 /// This ensures the Conflicts view shows the complete picture — not just files
 /// that still have conflict markers.
-pub fn git_diff_conflicts(repo_root: &str) -> Result<String, GitError> {
+pub(crate) fn git_diff_conflicts(repo_root: &str) -> Result<String, GitError> {
     let mut combined = String::new();
     let unified_arg = format!("--unified={}", crate::DEFAULT_CONTEXT_LINES);
 
@@ -493,7 +493,7 @@ pub fn git_diff_conflicts(repo_root: &str) -> Result<String, GitError> {
 // ── Worktrees ──
 
 /// List all git worktrees for the repo
-pub fn list_worktrees(repo_root: &str) -> Result<Vec<Worktree>, GitError> {
+pub(crate) fn list_worktrees(repo_root: &str) -> Result<Vec<Worktree>, GitError> {
     let output = Command::new("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(repo_root)
@@ -558,7 +558,7 @@ pub fn list_worktrees(repo_root: &str) -> Result<Vec<Worktree>, GitError> {
 // ── Staging ──
 
 /// Stage a single file
-pub fn git_stage_file(repo_root: &str, file_path: &str) -> Result<(), GitError> {
+pub(crate) fn git_stage_file(repo_root: &str, file_path: &str) -> Result<(), GitError> {
     let output = Command::new("git")
         .args(["add", "--", file_path])
         .current_dir(repo_root)
@@ -573,7 +573,7 @@ pub fn git_stage_file(repo_root: &str, file_path: &str) -> Result<(), GitError> 
 }
 
 /// Unstage a single file
-pub fn git_unstage_file(repo_root: &str, file_path: &str) -> Result<(), GitError> {
+pub(crate) fn git_unstage_file(repo_root: &str, file_path: &str) -> Result<(), GitError> {
     let output = Command::new("git")
         .args(["reset", "HEAD", "--", file_path])
         .current_dir(repo_root)
@@ -597,7 +597,7 @@ fn byte_prefix(s: &str, max: usize) -> &str {
 }
 
 /// Stage all files
-pub fn git_stage_all(repo_root: &str) -> Result<(), GitError> {
+pub(crate) fn git_stage_all(repo_root: &str) -> Result<(), GitError> {
     let output = Command::new("git")
         .args(["add", "-A"])
         .current_dir(repo_root)
@@ -612,7 +612,7 @@ pub fn git_stage_all(repo_root: &str) -> Result<(), GitError> {
 }
 
 /// Push current branch to remote, returning trimmed stderr output on success
-pub fn git_push(repo_root: &str) -> Result<String, GitError> {
+pub(crate) fn git_push(repo_root: &str) -> Result<String, GitError> {
     let output = Command::new("git")
         .args(["push"])
         .current_dir(repo_root)
@@ -628,7 +628,11 @@ pub fn git_push(repo_root: &str) -> Result<String, GitError> {
 }
 
 /// Get raw diff output between two refs (e.g. "HEAD~1" and "HEAD")
-pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<String, GitError> {
+pub(crate) fn git_diff_raw_range(
+    from: &str,
+    to: &str,
+    repo_root: &str,
+) -> Result<String, GitError> {
     let range = format!("{}..{}", from, to);
     let unified_arg = format!("--unified={}", crate::DEFAULT_CONTEXT_LINES);
     let output = Command::new("git")
@@ -652,7 +656,7 @@ pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<Strin
 /// base with `base`. Includes committed changes plus staged/unstaged tracked
 /// edits, so live edits in the checked-out branch surface immediately.
 /// Read-only; never mutates the working tree.
-pub fn git_diff_checkout_against_base(root: &str, base: &str) -> Result<String, GitError> {
+pub(crate) fn git_diff_checkout_against_base(root: &str, base: &str) -> Result<String, GitError> {
     if base.starts_with('-') {
         return Err(invalid(format!("Invalid base branch: {base}")));
     }
@@ -693,7 +697,11 @@ pub fn git_diff_checkout_against_base(root: &str, base: &str) -> Result<String, 
 ///
 /// symmetric-difference range `base...branch` (everything on `branch` since
 /// it diverged from `base`). Read-only; never mutates the working tree.
-pub fn git_diff_against_branch(root: &str, base: &str, branch: &str) -> Result<String, GitError> {
+pub(crate) fn git_diff_against_branch(
+    root: &str,
+    base: &str,
+    branch: &str,
+) -> Result<String, GitError> {
     let spec = format!("{base}...{branch}");
     let output = Command::new("git")
         .args(["diff", "--no-color", "--no-ext-diff", &spec])
@@ -708,7 +716,7 @@ pub fn git_diff_against_branch(root: &str, base: &str, branch: &str) -> Result<S
 }
 
 /// Commit staged changes with the given message
-pub fn git_commit(repo_root: &str, message: &str) -> Result<(), GitError> {
+pub(crate) fn git_commit(repo_root: &str, message: &str) -> Result<(), GitError> {
     let output = Command::new("git")
         .args(["commit", "-m", message])
         .current_dir(repo_root)
@@ -772,7 +780,7 @@ pub fn git_log_branch(
 /// branch's own commits even when that branch is NOT the checked-out HEAD of
 /// `repo_root` — pass the branch ref as `to`. On failure (ref missing), falls
 /// back to logging just `to` so the scroller still shows the branch history.
-pub fn git_log_range(
+pub(crate) fn git_log_range(
     from: &str,
     to: &str,
     repo_root: &str,
@@ -813,7 +821,7 @@ pub fn git_log_range(
     parse_git_log(&String::from_utf8_lossy(&output.stdout)).map_err(|e| invalid(e.to_string()))
 }
 
-pub fn git_log_head(repo_root: &str, limit: usize) -> Result<Vec<CommitInfo>, GitError> {
+pub(crate) fn git_log_head(repo_root: &str, limit: usize) -> Result<Vec<CommitInfo>, GitError> {
     let limit_str = format!("--max-count={}", limit);
 
     let output = Command::new("git")
@@ -890,7 +898,7 @@ fn parse_git_log(output: &str) -> Result<Vec<CommitInfo>> {
 /// skipped rather than failing the batch, so a PR whose head was never fetched
 /// yields an empty map; merges map to zeros, as `--shortstat` prints nothing
 /// for them.
-pub fn git_commit_shortstats(
+pub(crate) fn git_commit_shortstats(
     repo_root: &str,
     shas: &[&str],
 ) -> std::collections::HashMap<String, (usize, usize, usize)> {
@@ -931,7 +939,7 @@ pub fn git_commit_shortstats(
 /// `refs/remotes`, such as a PR's `refs/er/pr/<N>/head`; one that does not
 /// exist is ignored. Any failure yields an empty set, so a commit is shown as
 /// unpushed only when git positively says so.
-pub fn git_unpushed_shas(
+pub(crate) fn git_unpushed_shas(
     repo_root: &str,
     head: &str,
     pushed_refs: &[&str],
@@ -963,7 +971,7 @@ pub fn git_unpushed_shas(
 
 /// `(files, additions, deletions)` for the working-tree (unstaged) or index
 /// (staged) diff. Cheap `--shortstat` call; all zeros on any failure.
-pub fn diff_shortstat(repo_root: &str, staged: bool) -> (usize, usize, usize) {
+pub(crate) fn diff_shortstat(repo_root: &str, staged: bool) -> (usize, usize, usize) {
     let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "--shortstat"];
     if staged {
         args.push("--cached");
@@ -1008,7 +1016,7 @@ fn parse_shortstat(line: &str) -> (usize, usize, usize) {
 }
 
 /// Get the diff for a single commit, handling merge commits and root commits
-pub fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String, GitError> {
+pub(crate) fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String, GitError> {
     // `hash` must be the full %H hash from CommitInfo.hash, never short_hash —
     // ambiguous short prefixes make git fail.
     let unified_arg = format!("--unified={}", crate::DEFAULT_CONTEXT_LINES);
@@ -1145,7 +1153,10 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
 /// echoed paths match the inputs verbatim (no `core.quotePath` escaping on
 /// non-ASCII paths). A spawn or I/O failure yields an empty set — i.e. "nothing
 /// ignored" — matching the conservative fallback of the former per-path check.
-pub fn gitignored_paths(repo_root: &str, paths: &[String]) -> std::collections::HashSet<String> {
+pub(crate) fn gitignored_paths(
+    repo_root: &str,
+    paths: &[String],
+) -> std::collections::HashSet<String> {
     use std::collections::HashSet;
     use std::io::Write;
     use std::process::Stdio;
@@ -1219,7 +1230,7 @@ pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Opti
 ///
 /// `snapshots_dir` is the absolute path to the snapshots directory (e.g. from
 /// `tab.er_root.snapshots_dir()`).
-pub fn diff_watched_file_snapshot(
+pub(crate) fn diff_watched_file_snapshot(
     repo_root: &str,
     rel_path: &str,
     snapshots_dir: &str,
@@ -1257,7 +1268,7 @@ pub fn diff_watched_file_snapshot(
 }
 
 /// Resolve a retained file version without reading its contents.
-pub fn git_blob_oid(root: &str, spec: &str) -> Result<String, GitError> {
+pub(crate) fn git_blob_oid(root: &str, spec: &str) -> Result<String, GitError> {
     let output = crate::proc::run_with_bounded_stdout(
         Command::new("git")
             .current_dir(root)
@@ -1278,7 +1289,7 @@ pub fn git_blob_oid(root: &str, spec: &str) -> Result<String, GitError> {
 }
 
 /// Read a Git blob without buffering beyond the caller's content limit.
-pub fn git_read_blob(root: &str, spec: &str, max_bytes: usize) -> Result<Vec<u8>, GitError> {
+pub(crate) fn git_read_blob(root: &str, spec: &str, max_bytes: usize) -> Result<Vec<u8>, GitError> {
     let output = crate::proc::run_with_bounded_stdout(
         Command::new("git")
             .current_dir(root)
@@ -1298,7 +1309,7 @@ pub fn git_read_blob(root: &str, spec: &str, max_bytes: usize) -> Result<Vec<u8>
 
 /// Which of `paths` exist as files at `rev`. One `git ls-tree` for all of
 /// them; a path that is absent is simply not listed.
-pub fn git_paths_present_at(
+pub(crate) fn git_paths_present_at(
     root: &str,
     rev: &str,
     paths: &[String],
@@ -1438,6 +1449,121 @@ pub(crate) fn git_shallow_clone(url: &str, dest: &str) -> Result<(), GitError> {
         return Err(failed("git clone failed", &stderr));
     }
     Ok(())
+}
+
+/// Whether a ref resolves, from `show-ref --verify --quiet`.
+pub(crate) fn git_show_ref_verify(root: &str, refname: &str) -> Result<bool, GitError> {
+    let output = Command::new("git")
+        .args(["show-ref", "--verify", "--quiet", refname])
+        .current_dir(root)
+        .output()
+        .map_err(|e| spawn_error("", e))?;
+    Ok(output.status.success())
+}
+
+/// The checked-out branch from `branch --show-current` (empty on a detached HEAD).
+pub(crate) fn git_current_branch_show(root: &str) -> Result<String, GitError> {
+    let output = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| spawn_error("git branch --show-current failed", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("git branch --show-current failed", &stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// One `for-each-ref` query, optionally sorted.
+pub(crate) fn git_for_each_ref(
+    root: &str,
+    format: &str,
+    sort: Option<&str>,
+    pattern: &str,
+) -> Result<String, GitError> {
+    let sort_arg = sort.map(|s| format!("--sort={s}"));
+    let format_arg = format!("--format={format}");
+    let mut args = vec!["for-each-ref"];
+    if let Some(sort_arg) = sort_arg.as_deref() {
+        args.push(sort_arg);
+    }
+    args.push(&format_arg);
+    args.push(pattern);
+
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(root)
+        .output()
+        .map_err(|e| spawn_error("git for-each-ref failed", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("git for-each-ref failed", &stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Ask a remote for one ref's oid under the fetch timeout.
+pub(crate) fn git_ls_remote(root: &str, remote: &str, refname: &str) -> Result<String, GitError> {
+    let output = Command::new("git")
+        .args(["ls-remote", remote, refname])
+        .current_dir(root)
+        .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
+        .map_err(|e| spawn_error("git ls-remote failed", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("git ls-remote failed", &stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// The local config entries matching a regexp, one line per match.
+pub(crate) fn git_config_get_regexp(root: &str, pattern: &str) -> Result<String, GitError> {
+    let output = Command::new("git")
+        .args(["config", "--local", "--get-regexp", pattern])
+        .current_dir(root)
+        .output()
+        .map_err(|e| spawn_error("git config --local --get-regexp failed", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("git config --local --get-regexp failed", &stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Commit count between two revs, without lazy-fetching in a partial clone.
+pub(crate) fn git_rev_list_count(root: &str, range: &str) -> Result<String, GitError> {
+    let output = Command::new("git")
+        .args(["rev-list", "--count", range])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .current_dir(root)
+        .output()
+        .map_err(|e| spawn_error("git rev-list --count failed", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("git rev-list --count failed", &stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Local branches merged into `base`, bare names.
+pub(crate) fn git_branch_merged(root: &str, base: &str) -> Result<String, GitError> {
+    let output = Command::new("git")
+        .args(["branch", "--merged", base, "--format=%(refname:short)"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| spawn_error("git branch --merged failed", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed("git branch --merged failed", &stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 #[cfg(test)]
