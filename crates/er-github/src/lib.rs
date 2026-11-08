@@ -12,11 +12,13 @@ pub mod classify;
 mod cli;
 mod error;
 mod fake;
+mod legacy;
 pub mod pending_review;
 pub mod review;
 mod runner;
 #[cfg(test)]
 mod test_support;
+pub mod types;
 
 pub use actions::{
     cached_base_has_merge_queue, cached_remote_branch_exists, cached_repo_merge_settings,
@@ -27,6 +29,7 @@ pub use classify::{classify, is_unknown_command, split_pages, GhHeaders, GhOutpu
 pub use cli::{Caches, CliGitHub};
 pub use error::GhError;
 pub use fake::FakeGitHub;
+pub use legacy::*;
 pub use pending_review::{
     gh_pending_review, gh_pending_review_add_comment, gh_pending_review_remove_comment,
     gh_pending_review_submit, review_body_required, PendingReview, PendingReviewComment,
@@ -36,6 +39,7 @@ pub use review::{
     gh_pr_head_oid_remote, gh_pr_submit_review, gh_pr_submit_review_remote, ReviewBatchEntry,
 };
 pub use runner::{GhCall, GhRunner, ProcessRunner};
+pub use types::{parse_github_updated_at, QueuePr, ThreadAddressingSummary};
 
 pub mod testing {
     pub use crate::runner::testing::ScriptedRunner;
