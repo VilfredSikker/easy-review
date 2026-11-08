@@ -8,12 +8,13 @@ use crate::cache::TtlCache;
 use crate::classify::{classify, GhOutput};
 use crate::error::GhError;
 use crate::legacy::{
-    CreatedComment, GitHubComment, IssueComment, NewLineComment, PrCommentBundle, PrOverviewData,
-    ReviewThreadState,
+    BranchPrProbe, CheckRun, CreatedComment, GhNotification, GitHubComment, IssueComment,
+    NewLineComment, PrCommentBundle, PrLookup, PrOverviewData, PrStatusBundle, ReviewThreadState,
 };
 use crate::pending_review::PendingReview;
 use crate::review::ReviewBatchEntry;
 use crate::runner::{GhCall, GhRunner};
+use crate::types::ThreadAddressingSummary;
 use crate::GitHub;
 use std::collections::HashMap;
 
@@ -502,6 +503,200 @@ impl GitHub for CliGitHub {
 
     fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError> {
         CliGitHub::api_get_bounded(self, path, max_bytes)
+    }
+
+    fn fetch_pr_base_ref(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+        pr_number: u64,
+        base_branch: &str,
+    ) -> Result<String, GhError> {
+        CliGitHub::fetch_pr_base_ref(self, git, repo_root, pr_number, base_branch)
+    }
+
+    fn pr_head_branch_name(&self, number: u64, root: &str) -> Result<String, GhError> {
+        CliGitHub::pr_head_branch_name(self, number, root)
+    }
+
+    fn pr_size_check_remote(&self, owner: &str, repo: &str, number: u64) -> Result<(), GhError> {
+        CliGitHub::pr_size_check_remote(self, owner, repo, number)
+    }
+
+    fn pr_diff_remote(
+        &self,
+        git: &dyn er_git::Git,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<String, GhError> {
+        CliGitHub::pr_diff_remote(self, git, owner, repo, number)
+    }
+
+    fn pr_diff(
+        &self,
+        git: &dyn er_git::Git,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<String, GhError> {
+        CliGitHub::pr_diff(self, git, pr_number, repo_root)
+    }
+
+    fn commit_shas_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(String, String), GhError> {
+        CliGitHub::commit_shas_remote(self, owner, repo, number)
+    }
+
+    fn file_at_ref(
+        &self,
+        repo_slug: &str,
+        path: &str,
+        git_ref: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, GhError> {
+        CliGitHub::file_at_ref(self, repo_slug, path, git_ref, max_bytes)
+    }
+
+    fn pr_commits(
+        &self,
+        repo_root: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<er_git::CommitInfo>, GhError> {
+        CliGitHub::pr_commits(self, repo_root, number, limit)
+    }
+
+    fn pr_base_branch_and_commits(
+        &self,
+        repo_root: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<(String, Vec<er_git::CommitInfo>), GhError> {
+        CliGitHub::pr_base_branch_and_commits(self, repo_root, number, limit)
+    }
+
+    fn commits_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<er_git::CommitInfo>, GhError> {
+        CliGitHub::commits_remote(self, owner, repo, number, limit)
+    }
+
+    fn ensure_installed(&self) -> Result<(), GhError> {
+        CliGitHub::ensure_installed(self)
+    }
+
+    fn list_participating_notifications(&self) -> Result<Vec<GhNotification>, GhError> {
+        CliGitHub::list_participating_notifications(self)
+    }
+
+    fn pr_base_branch(&self, pr_number: u64, repo_root: &str) -> Result<String, GhError> {
+        CliGitHub::pr_base_branch(self, pr_number, repo_root)
+    }
+
+    fn pr_branch_names(
+        &self,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<(String, String), GhError> {
+        CliGitHub::pr_branch_names(self, pr_number, repo_root)
+    }
+
+    fn probe_pr_for_current_branch(&self, repo_root: &str) -> BranchPrProbe {
+        CliGitHub::probe_pr_for_current_branch(self, repo_root)
+    }
+
+    fn pr_for_current_branch(&self, repo_root: &str) -> Option<(u64, String)> {
+        CliGitHub::pr_for_current_branch(self, repo_root)
+    }
+
+    fn lookup_pr_for_current_branch(&self, git: &dyn er_git::Git, repo_root: &str) -> PrLookup {
+        CliGitHub::lookup_pr_for_current_branch(self, git, repo_root)
+    }
+
+    fn open_pr_number_for_head(
+        &self,
+        owner: &str,
+        repo: &str,
+        head: &str,
+    ) -> Result<Option<u64>, GhError> {
+        CliGitHub::open_pr_number_for_head(self, owner, repo, head)
+    }
+
+    fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Option<String> {
+        CliGitHub::pr_title(self, owner, repo, number)
+    }
+
+    fn get_pr_info(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<(String, String, u64), GhError> {
+        CliGitHub::get_pr_info(self, git, repo_root)
+    }
+
+    fn current_login(&self) -> Option<String> {
+        CliGitHub::current_login(self)
+    }
+
+    fn stack_view_json(&self, repo_root: &str) -> Result<String, GhError> {
+        CliGitHub::stack_view_json(self, repo_root)
+    }
+
+    fn open_pr_refs_json(&self, repo_slug: &str) -> Result<String, GhError> {
+        CliGitHub::open_pr_refs_json(self, repo_slug)
+    }
+
+    fn pr_metadata_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(String, String), GhError> {
+        CliGitHub::pr_metadata_remote(self, owner, repo, number)
+    }
+
+    fn pr_status_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<PrStatusBundle, GhError> {
+        CliGitHub::pr_status_remote(self, owner, repo, number)
+    }
+
+    fn pr_checks_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Vec<CheckRun>, GhError> {
+        CliGitHub::pr_checks_remote(self, owner, repo, number)
+    }
+
+    fn pr_checks_state_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<&'static str, GhError> {
+        CliGitHub::pr_checks_state_remote(self, owner, repo, number)
+    }
+
+    fn pr_thread_addressing_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<ThreadAddressingSummary, GhError> {
+        CliGitHub::pr_thread_addressing_remote(self, owner, repo, pr)
     }
 }
 

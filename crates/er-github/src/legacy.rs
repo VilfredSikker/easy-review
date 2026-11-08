@@ -1,11 +1,9 @@
 use anyhow::{Context, Result};
-use er_git::proc::CommandTimeoutExt;
 use er_git::{Git, GitError};
 use serde::Deserialize;
 
 use crate::{default_handle, CliGitHub, GhError};
 use std::collections::HashMap;
-use std::process::Command;
 use std::sync::Arc;
 
 /// Parsed reference to a GitHub PR
@@ -183,64 +181,77 @@ pub fn parse_pr_commits_graphql(bytes: &[u8], limit: usize) -> Result<Vec<er_git
     ))
 }
 
-/// Fetch the commits on a local-clone PR using the GitHub API via `gh`.
+impl CliGitHub {
+    /// Fetch the commits on a local-clone PR using the GitHub API via `gh`.
+    pub(crate) fn pr_commits(
+        &self,
+        repo_root: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<er_git::CommitInfo>, GhError> {
+        let out = self.run_gh_args(
+            &["pr", "view", &number.to_string(), "--json", "commits"],
+            Some(repo_root),
+        )?;
+        parse_pr_commits_view_json(&out.body, limit).map_err(GhError::from)
+    }
+
+    /// A PR's base branch and commit list, from one `gh pr view`.
+    pub(crate) fn pr_base_branch_and_commits(
+        &self,
+        repo_root: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<(String, Vec<er_git::CommitInfo>), GhError> {
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &number.to_string(),
+                "--json",
+                "baseRefName,commits",
+            ],
+            Some(repo_root),
+        )?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.body).map_err(|error| GhError::Local {
+                message: format!("Failed to parse gh pr view JSON: {error}"),
+            })?;
+        let base = value
+            .get("baseRefName")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if base.is_empty() {
+            return Err(GhError::Local {
+                message: format!("PR #{number} has no base branch"),
+            });
+        }
+        let commits = parse_pr_commits_view_value(&value, limit);
+        Ok((base, commits))
+    }
+}
+
+/// Compatibility wrappers for front ends and engine callers.
 pub fn gh_pr_commits(
     repo_root: &str,
     number: u64,
     limit: usize,
 ) -> Result<Vec<er_git::CommitInfo>> {
-    let mut cmd = Command::new("gh");
-    cmd.args(["pr", "view", &number.to_string(), "--json", "commits"])
-        .current_dir(repo_root);
-    let output = er_git::proc::run_with_timeout(&mut cmd, er_git::proc::GH_TIMEOUT)
-        .context("Failed to run gh pr view for commits")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to get PR #{number} commits: {}", stderr.trim());
-    }
-    parse_pr_commits_view_json(&output.stdout, limit)
+    default_handle()
+        .pr_commits(repo_root, number, limit)
+        .map_err(anyhow::Error::from)
 }
 
-/// A PR's base branch and commit list, from one `gh pr view`.
-///
-/// [`gh_pr_base_branch`] and [`gh_pr_commits`] are two `gh pr view --json`
-/// invocations against the same PR, so asking for both costs two network round
-/// trips (~0.6s each) to read two fields of one object. Callers that need both
-/// — the desktop Sync path — should use this instead.
 pub fn gh_pr_base_branch_and_commits(
     repo_root: &str,
     number: u64,
     limit: usize,
 ) -> Result<(String, Vec<er_git::CommitInfo>)> {
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "pr",
-        "view",
-        &number.to_string(),
-        "--json",
-        "baseRefName,commits",
-    ])
-    .current_dir(repo_root);
-    let output = er_git::proc::run_with_timeout(&mut cmd, er_git::proc::GH_TIMEOUT)
-        .context("Failed to run gh pr view for base branch and commits")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to get PR #{}: {}", number, stderr.trim());
-    }
-
-    let value: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("Failed to parse gh pr view JSON")?;
-    let base = value
-        .get("baseRefName")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if base.is_empty() {
-        anyhow::bail!("PR #{} has no base branch", number);
-    }
-    let commits = parse_pr_commits_view_value(&value, limit);
-    Ok((base, commits))
+    default_handle()
+        .pr_base_branch_and_commits(repo_root, number, limit)
+        .map_err(anyhow::Error::from)
 }
 
 /// Deduplicate reviewers by login from the reviews array.
@@ -372,39 +383,87 @@ pub fn parse_github_pr_url(url: &str) -> Option<PrRef> {
     })
 }
 
-pub(crate) fn gh_spawn_context(err: std::io::Error) -> anyhow::Error {
-    if err.kind() == std::io::ErrorKind::NotFound {
-        anyhow::anyhow!(
-            "GitHub CLI (`gh`) not found on PATH. Install it (https://cli.github.com) \
-             and ensure it is on PATH for GUI apps (e.g. /opt/homebrew/bin)."
-        )
-    } else {
-        anyhow::Error::new(err).context("Failed to run gh")
+impl CliGitHub {
+    /// Check that `gh` is installed and authenticated.
+    pub(crate) fn ensure_installed(&self) -> Result<(), GhError> {
+        match self.run_gh_args(&["--version"], None) {
+            Ok(_) => {}
+            Err(GhError::NotInstalled) => {
+                return Err(GhError::Local {
+                    message: "GitHub CLI (gh) is not installed. Install it: https://cli.github.com"
+                        .to_string(),
+                });
+            }
+            Err(_) => {
+                return Err(GhError::Local {
+                    message: "GitHub CLI (gh) is not working properly".to_string(),
+                });
+            }
+        }
+        match self.run_gh_args(&["auth", "status"], None) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(GhError::Unauthenticated {
+                message: "GitHub CLI is not authenticated. Run: gh auth login".to_string(),
+            }),
+        }
+    }
+
+    /// Participating unread notifications (not the full watched-repo firehose).
+    pub(crate) fn list_participating_notifications(&self) -> Result<Vec<GhNotification>, GhError> {
+        let out = self.run_gh_args(
+            &["api", "notifications?participating=true&per_page=50"],
+            None,
+        )?;
+        serde_json::from_slice(&out.body).map_err(|error| GhError::Local {
+            message: format!("Failed to parse GitHub notifications: {error}"),
+        })
+    }
+
+    /// Get the base branch for a PR using `gh pr view`.
+    pub(crate) fn pr_base_branch(
+        &self,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<String, GhError> {
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "baseRefName",
+                "--jq",
+                ".baseRefName",
+            ],
+            Some(repo_root),
+        )?;
+        let base = String::from_utf8_lossy(&out.body).trim().to_string();
+        if base.is_empty() {
+            return Err(GhError::Local {
+                message: format!("PR #{pr_number} has no base branch"),
+            });
+        }
+        Ok(base)
     }
 }
 
-/// Check if `gh` CLI is installed and authenticated
+/// Compatibility wrappers for front ends and engine callers.
 pub fn ensure_gh_installed() -> Result<()> {
-    let output = Command::new("gh")
-        .args(["--version"])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("GitHub CLI (gh) is not installed. Install it: https://cli.github.com")?;
+    default_handle()
+        .ensure_installed()
+        .map_err(anyhow::Error::from)
+}
 
-    if !output.status.success() {
-        anyhow::bail!("GitHub CLI (gh) is not working properly");
-    }
+pub fn gh_list_participating_notifications() -> Result<Vec<GhNotification>> {
+    default_handle()
+        .list_participating_notifications()
+        .map_err(anyhow::Error::from)
+}
 
-    // Check auth
-    let auth = Command::new("gh")
-        .args(["auth", "status"])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to check gh auth status")?;
-
-    if !auth.status.success() {
-        anyhow::bail!("GitHub CLI is not authenticated. Run: gh auth login");
-    }
-
-    Ok(())
+pub fn gh_pr_base_branch(pr_number: u64, repo_root: &str) -> Result<String> {
+    default_handle()
+        .pr_base_branch(pr_number, repo_root)
+        .map_err(anyhow::Error::from)
 }
 
 /// A GitHub notification thread from `GET /notifications`.
@@ -436,21 +495,6 @@ pub struct GhNotificationRepo {
     pub full_name: String,
 }
 
-/// Participating unread notifications (not the full watched-repo firehose).
-pub fn gh_list_participating_notifications() -> Result<Vec<GhNotification>> {
-    let output = Command::new("gh")
-        .args(["api", "notifications?participating=true&per_page=50"])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to fetch GitHub notifications")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to fetch GitHub notifications: {}", stderr.trim());
-    }
-
-    Ok(serde_json::from_slice(&output.stdout)?)
-}
-
 /// Pull request number from a notification subject URL.
 ///
 /// Handles both `/pulls/N` and `/issues/N` (PR comments use the issues path).
@@ -465,65 +509,43 @@ pub fn pr_number_from_notification_url(url: &str) -> Option<u64> {
     last.parse().ok()
 }
 
-/// Get the base branch for a PR using `gh pr view`
-pub fn gh_pr_base_branch(pr_number: u64, repo_root: &str) -> Result<String> {
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "pr",
-        "view",
-        &pr_number.to_string(),
-        "--json",
-        "baseRefName",
-        "--jq",
-        ".baseRefName",
-    ])
-    .current_dir(repo_root);
-    let output = er_git::proc::run_with_timeout(&mut cmd, er_git::proc::GH_TIMEOUT)
-        .context("Failed to get PR base branch")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to get PR #{}: {}", pr_number, stderr.trim());
+impl CliGitHub {
+    /// Get the base and head branch names for a PR with a single `gh pr view`.
+    pub(crate) fn pr_branch_names(
+        &self,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<(String, String), GhError> {
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "baseRefName,headRefName",
+                "--jq",
+                r#"[.baseRefName, .headRefName] | @tsv"#,
+            ],
+            Some(repo_root),
+        )?;
+        let text = String::from_utf8_lossy(&out.body);
+        let mut parts = text.trim().split('\t');
+        let base = parts.next().unwrap_or("").to_string();
+        let head = parts.next().unwrap_or("").to_string();
+        if base.is_empty() {
+            return Err(GhError::Local {
+                message: format!("PR #{pr_number} has no base branch"),
+            });
+        }
+        Ok((base, head))
     }
-
-    let base = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if base.is_empty() {
-        anyhow::bail!("PR #{} has no base branch", pr_number);
-    }
-
-    Ok(base)
 }
 
-/// Get the base and head branch names for a PR with a single `gh pr view` call.
+/// Compatibility wrapper for front ends and engine callers.
 pub fn gh_pr_branch_names(pr_number: u64, repo_root: &str) -> Result<(String, String)> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "baseRefName,headRefName",
-            "--jq",
-            r#"[.baseRefName, .headRefName] | @tsv"#,
-        ])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to get PR branch names")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to get PR #{}: {}", pr_number, stderr.trim());
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut parts = text.trim().split('\t');
-    let base = parts.next().unwrap_or("").to_string();
-    let head = parts.next().unwrap_or("").to_string();
-    if base.is_empty() {
-        anyhow::bail!("PR #{} has no base branch", pr_number);
-    }
-
-    Ok((base, head))
+    default_handle()
+        .pr_branch_names(pr_number, repo_root)
+        .map_err(anyhow::Error::from)
 }
 
 /// Fetch PR head to a local ref without checking out. Returns the local ref name.
@@ -615,18 +637,46 @@ pub fn is_pinned_pr_base(base: &str) -> bool {
     base.starts_with("refs/er/")
 }
 
-/// [`fetch_base_branch_ref`] for a PR whose base branch may be gone from
-/// origin. Falls back to the PR's `baseRefOid`, which GitHub keeps after the
-/// branch is deleted. The extra `gh` call happens only on that failure.
-pub fn fetch_pr_base_ref(
-    git: &dyn Git,
-    repo_root: &str,
-    pr_number: u64,
-    base_branch: &str,
-) -> Result<String> {
-    fetch_pr_base_ref_with(git, repo_root, pr_number, base_branch, || {
-        gh_pr_base_oid(pr_number, repo_root)
-    })
+impl CliGitHub {
+    /// [`fetch_base_branch_ref`] for a PR whose base branch may be gone from
+    /// origin. Falls back to the PR's `baseRefOid`, which GitHub keeps after
+    /// the branch is deleted. The extra `gh` call happens only on that failure.
+    pub(crate) fn fetch_pr_base_ref(
+        &self,
+        git: &dyn Git,
+        repo_root: &str,
+        pr_number: u64,
+        base_branch: &str,
+    ) -> Result<String, GhError> {
+        fetch_pr_base_ref_with(git, repo_root, pr_number, base_branch, || {
+            self.pr_base_oid(pr_number, repo_root)
+                .map_err(anyhow::Error::from)
+        })
+        .map_err(GhError::from)
+    }
+
+    fn pr_base_oid(&self, pr_number: u64, repo_root: &str) -> Result<String, GhError> {
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "baseRefOid",
+                "--jq",
+                ".baseRefOid",
+            ],
+            Some(repo_root),
+        )?;
+        let sha = String::from_utf8_lossy(&out.body).trim().to_string();
+        // Hex-only, so the value can never parse as a git option below.
+        if sha.is_empty() || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(GhError::Local {
+                message: format!("PR #{pr_number} has no usable base commit: '{sha}'"),
+            });
+        }
+        Ok(sha)
+    }
 }
 
 fn fetch_pr_base_ref_with(
@@ -647,33 +697,16 @@ fn fetch_pr_base_ref_with(
     }
 }
 
-fn gh_pr_base_oid(pr_number: u64, repo_root: &str) -> Result<String> {
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "pr",
-        "view",
-        &pr_number.to_string(),
-        "--json",
-        "baseRefOid",
-        "--jq",
-        ".baseRefOid",
-    ])
-    .current_dir(repo_root);
-    let output = er_git::proc::run_with_timeout(&mut cmd, er_git::proc::GH_TIMEOUT)
-        .context("Failed to get PR base commit")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "Failed to get PR #{pr_number} base commit: {}",
-            stderr.trim()
-        );
-    }
-    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    // Hex-only, so the value can never parse as a git option below.
-    if sha.is_empty() || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
-        anyhow::bail!("PR #{pr_number} has no usable base commit: '{sha}'");
-    }
-    Ok(sha)
+/// Compatibility wrapper for front ends and engine callers.
+pub fn fetch_pr_base_ref(
+    git: &dyn Git,
+    repo_root: &str,
+    pr_number: u64,
+    base_branch: &str,
+) -> Result<String> {
+    default_handle()
+        .fetch_pr_base_ref(git, repo_root, pr_number, base_branch)
+        .map_err(anyhow::Error::from)
 }
 
 /// Point `refs/er/pr/<n>/base` at `sha`, fetching it from origin only when the
@@ -706,26 +739,30 @@ fn pin_pr_base_commit(git: &dyn Git, repo_root: &str, pr_number: u64, sha: &str)
     }
 }
 
-/// Get the head branch name of a PR via gh CLI
-pub fn gh_pr_head_branch_name(number: u64, root: &str) -> Result<String> {
-    let output = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--json",
-            "headRefName",
-            "--jq",
-            ".headRefName",
-        ])
-        .current_dir(root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("failed to run gh pr view")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh pr view failed: {}", stderr.trim());
+impl CliGitHub {
+    /// Get the head branch name of a PR via `gh pr view`.
+    pub(crate) fn pr_head_branch_name(&self, number: u64, root: &str) -> Result<String, GhError> {
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &number.to_string(),
+                "--json",
+                "headRefName",
+                "--jq",
+                ".headRefName",
+            ],
+            Some(root),
+        )?;
+        Ok(String::from_utf8_lossy(&out.body).trim().to_string())
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Compatibility wrapper for front ends and engine callers.
+pub fn gh_pr_head_branch_name(number: u64, root: &str) -> Result<String> {
+    default_handle()
+        .pr_head_branch_name(number, root)
+        .map_err(anyhow::Error::from)
 }
 
 /// Verify the local repo's remote matches the PR's owner/repo
@@ -843,59 +880,60 @@ fn gh_failure_is_absent(stderr: &str) -> bool {
     stderr.to_lowercase().contains("no pull requests found")
 }
 
-pub fn probe_pr_for_current_branch(repo_root: &str) -> BranchPrProbe {
-    // Use --jq to extract "number<tab>baseRefName" — robust against JSON formatting
-    let output = match Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            "--json",
-            "number,baseRefName",
-            "--jq",
-            r#"[.number, .baseRefName] | @tsv"#,
-        ])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-    {
-        Ok(output) => output,
-        Err(_) => return BranchPrProbe::Unknown,
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return if gh_failure_is_absent(&stderr) {
-            BranchPrProbe::Absent
-        } else {
-            BranchPrProbe::Unknown
+impl CliGitHub {
+    pub(crate) fn probe_pr_for_current_branch(&self, repo_root: &str) -> BranchPrProbe {
+        // Use --jq to extract "number<tab>baseRefName" — robust against JSON formatting
+        let out = match self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                "--json",
+                "number,baseRefName",
+                "--jq",
+                r#"[.number, .baseRefName] | @tsv"#,
+            ],
+            Some(repo_root),
+        ) {
+            Ok(out) => out,
+            Err(error) if gh_failure_is_absent(&error.to_string()) => {
+                return BranchPrProbe::Absent;
+            }
+            Err(_) => return BranchPrProbe::Unknown,
         };
+
+        let text = String::from_utf8_lossy(&out.body);
+        let text = text.trim();
+        let Some((num_str, base)) = text.split_once('\t') else {
+            return BranchPrProbe::Unknown;
+        };
+        let Ok(number) = num_str.parse::<u64>() else {
+            return BranchPrProbe::Unknown;
+        };
+        if base.is_empty() {
+            return BranchPrProbe::Unknown;
+        }
+        BranchPrProbe::Present {
+            number,
+            base: base.to_string(),
+        }
     }
 
-    let text = String::from_utf8_lossy(&output.stdout);
-    let text = text.trim();
-    let Some((num_str, base)) = text.split_once('\t') else {
-        return BranchPrProbe::Unknown;
-    };
-    let Ok(number) = num_str.parse::<u64>() else {
-        return BranchPrProbe::Unknown;
-    };
-    if base.is_empty() {
-        return BranchPrProbe::Unknown;
-    }
-    BranchPrProbe::Present {
-        number,
-        base: base.to_string(),
+    /// The PR for the checked-out branch, if one can be read.
+    pub(crate) fn pr_for_current_branch(&self, repo_root: &str) -> Option<(u64, String)> {
+        match self.probe_pr_for_current_branch(repo_root) {
+            BranchPrProbe::Present { number, base } => Some((number, base)),
+            BranchPrProbe::Absent | BranchPrProbe::Unknown => None,
+        }
     }
 }
 
-/// The PR for the checked-out branch, if one can be read.
-///
-/// Prefer [`probe_pr_for_current_branch`] when "no PR" and "could not ask"
-/// must be told apart.
+/// Compatibility wrappers for front ends and engine callers.
+pub fn probe_pr_for_current_branch(repo_root: &str) -> BranchPrProbe {
+    default_handle().probe_pr_for_current_branch(repo_root)
+}
+
 pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
-    match probe_pr_for_current_branch(repo_root) {
-        BranchPrProbe::Present { number, base } => Some((number, base)),
-        BranchPrProbe::Absent | BranchPrProbe::Unknown => None,
-    }
+    default_handle().pr_for_current_branch(repo_root)
 }
 
 /// Three-way result of a PR lookup for the checked-out branch.
@@ -928,102 +966,138 @@ pub fn classify_pr_lookup_failure(stderr: &str) -> PrLookup {
 
 /// Resolve the checked-out branch's PR without collapsing "no PR" and
 /// "could not ask" into one answer.
-pub fn lookup_pr_for_current_branch(git: &dyn Git, repo_root: &str) -> PrLookup {
-    let output = match Command::new("gh")
-        .args(["pr", "view", "--json", "number,headRepository"])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-    {
-        Ok(output) => output,
-        Err(e) => return PrLookup::Unknown(format!("{e:#}")),
-    };
-
-    if !output.status.success() {
-        return classify_pr_lookup_failure(&String::from_utf8_lossy(&output.stderr));
-    }
-
-    let v: serde_json::Value = match serde_json::from_slice(&output.stdout) {
-        Ok(v) => v,
-        Err(e) => return PrLookup::Unknown(format!("Failed to parse PR info JSON: {e}")),
-    };
-    let Some(number) = v["number"].as_u64() else {
-        return PrLookup::Unknown("Missing PR number".to_string());
-    };
-    let owner = v["headRepository"]["owner"]["login"].as_str().unwrap_or("");
-    let repo_name = v["headRepository"]["name"].as_str().unwrap_or("");
-    if !owner.is_empty() && !repo_name.is_empty() {
-        return PrLookup::Present {
-            owner: owner.to_string(),
-            repo: repo_name.to_string(),
-            number,
+impl CliGitHub {
+    /// Resolve the checked-out branch's PR without collapsing "no PR" and
+    /// "could not ask" into one answer.
+    pub(crate) fn lookup_pr_for_current_branch(&self, git: &dyn Git, repo_root: &str) -> PrLookup {
+        let out = match self.run_gh_args(
+            &["pr", "view", "--json", "number,headRepository"],
+            Some(repo_root),
+        ) {
+            Ok(out) => out,
+            Err(error) => {
+                let text = error.to_string();
+                return if gh_failure_is_absent(&text) {
+                    PrLookup::Absent
+                } else {
+                    classify_pr_lookup_failure(&text)
+                };
+            }
         };
-    }
-    match parse_origin_remote(git, repo_root) {
-        Some((owner, repo)) => PrLookup::Present {
-            owner,
-            repo,
-            number,
-        },
-        None => PrLookup::Unknown("Could not read the repository's origin remote".to_string()),
+
+        let v: serde_json::Value = match serde_json::from_slice(&out.body) {
+            Ok(v) => v,
+            Err(e) => return PrLookup::Unknown(format!("Failed to parse PR info JSON: {e}")),
+        };
+        let Some(number) = v["number"].as_u64() else {
+            return PrLookup::Unknown("Missing PR number".to_string());
+        };
+        let owner = v["headRepository"]["owner"]["login"].as_str().unwrap_or("");
+        let repo_name = v["headRepository"]["name"].as_str().unwrap_or("");
+        if !owner.is_empty() && !repo_name.is_empty() {
+            return PrLookup::Present {
+                owner: owner.to_string(),
+                repo: repo_name.to_string(),
+                number,
+            };
+        }
+        match parse_origin_remote(git, repo_root) {
+            Some((owner, repo)) => PrLookup::Present {
+                owner,
+                repo,
+                number,
+            },
+            None => PrLookup::Unknown("Could not read the repository's origin remote".to_string()),
+        }
     }
 }
 
-/// Open PR number whose head branch matches `head` on `owner/repo` (first non-draft).
-pub fn gh_open_pr_number_for_head(owner: &str, repo: &str, head: &str) -> Result<Option<u64>> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--repo",
-            &format!("{owner}/{repo}"),
-            "--head",
-            head,
-            "--state",
-            "open",
-            "--limit",
-            "10",
-            "--json",
-            "number,isDraft",
-        ])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .map_err(gh_spawn_context)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh pr list --head failed: {}", stderr.trim());
-    }
-
-    let rows: Vec<serde_json::Value> =
-        serde_json::from_slice(&output.stdout).context("invalid gh pr list JSON")?;
-    let number = rows
-        .iter()
-        .find(|row| row.get("isDraft").and_then(|v| v.as_bool()) != Some(true))
-        .and_then(|row| row.get("number").and_then(|v| v.as_u64()));
-    Ok(number)
+/// Compatibility wrapper for front ends and engine callers.
+pub fn lookup_pr_for_current_branch(git: &dyn Git, repo_root: &str) -> PrLookup {
+    default_handle().lookup_pr_for_current_branch(git, repo_root)
 }
 
-/// PR title via `gh pr view --repo` (returns `None` when `gh` fails).
-pub fn gh_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &format!("{owner}/{repo}"),
-            "--json",
-            "title",
-        ])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .ok()?;
-    if !output.status.success() {
-        return None;
+impl CliGitHub {
+    /// Open PR number whose head branch matches `head` on `owner/repo` (first
+    /// non-draft).
+    pub(crate) fn open_pr_number_for_head(
+        &self,
+        owner: &str,
+        repo: &str,
+        head: &str,
+    ) -> Result<Option<u64>, GhError> {
+        let slug = format!("{owner}/{repo}");
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "list",
+                "--repo",
+                &slug,
+                "--head",
+                head,
+                "--state",
+                "open",
+                "--limit",
+                "10",
+                "--json",
+                "number,isDraft",
+            ],
+            None,
+        )?;
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(&out.body).map_err(|error| GhError::Local {
+                message: format!("invalid gh pr list JSON: {error}"),
+            })?;
+        Ok(rows
+            .iter()
+            .find(|row| row.get("isDraft").and_then(|v| v.as_bool()) != Some(true))
+            .and_then(|row| row.get("number").and_then(|v| v.as_u64())))
     }
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    value
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+
+    /// PR title via `gh pr view --repo` (returns `None` when `gh` fails).
+    pub(crate) fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Option<String> {
+        let slug = format!("{owner}/{repo}");
+        let out = self
+            .run_gh_args(
+                &[
+                    "pr",
+                    "view",
+                    &number.to_string(),
+                    "--repo",
+                    &slug,
+                    "--json",
+                    "title",
+                ],
+                None,
+            )
+            .ok()?;
+        let value: serde_json::Value = serde_json::from_slice(&out.body).ok()?;
+        value
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    /// Get PR info (owner, repo, number) for the current branch.
+    pub(crate) fn get_pr_info(
+        &self,
+        git: &dyn Git,
+        repo_root: &str,
+    ) -> Result<(String, String, u64), GhError> {
+        match self.lookup_pr_for_current_branch(git, repo_root) {
+            PrLookup::Present {
+                owner,
+                repo,
+                number,
+            } => Ok((owner, repo, number)),
+            PrLookup::Absent => Err(GhError::Local {
+                message: "No PR associated with current branch".to_string(),
+            }),
+            PrLookup::Unknown(e) => Err(GhError::Local {
+                message: format!("Failed to get PR info: {e}"),
+            }),
+        }
+    }
 }
 
 /// Check if a string looks like a GitHub PR URL
@@ -1031,17 +1105,21 @@ pub fn is_github_pr_url(s: &str) -> bool {
     parse_github_pr_url(s).is_some()
 }
 
-/// Get PR info (owner, repo, number) for the current branch
+/// Compatibility wrappers for front ends and engine callers.
+pub fn gh_open_pr_number_for_head(owner: &str, repo: &str, head: &str) -> Result<Option<u64>> {
+    default_handle()
+        .open_pr_number_for_head(owner, repo, head)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
+    default_handle().pr_title(owner, repo, number)
+}
+
 pub fn get_pr_info(git: &dyn Git, repo_root: &str) -> Result<(String, String, u64)> {
-    match lookup_pr_for_current_branch(git, repo_root) {
-        PrLookup::Present {
-            owner,
-            repo,
-            number,
-        } => Ok((owner, repo, number)),
-        PrLookup::Absent => anyhow::bail!("No PR associated with current branch"),
-        PrLookup::Unknown(e) => anyhow::bail!("Failed to get PR info: {e}"),
-    }
+    default_handle()
+        .get_pr_info(git, repo_root)
+        .map_err(anyhow::Error::from)
 }
 
 /// Parse owner/repo from a git remote URL
@@ -1539,49 +1617,66 @@ fn remote_matches_repo(remote: &str, owner: &str, repo: &str) -> bool {
 const REMOTE_PR_MAX_CHANGED_FILES: u64 = 10_000;
 const REMOTE_PR_MAX_LINE_CHANGES: u64 = 5_000_000;
 
-/// Quick size check via `gh pr view` so we do not clone multi‑GB repos for hopeless PRs.
+impl CliGitHub {
+    /// Quick size check via `gh pr view` so we do not clone multi-GB repos for
+    /// hopeless PRs.
+    pub(crate) fn pr_size_check_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(), GhError> {
+        let repo_slug = format!("{owner}/{repo}");
+        let n = number.to_string();
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &n,
+                "--repo",
+                &repo_slug,
+                "--json",
+                "additions,deletions,changedFiles",
+                "--jq",
+                r#"{additions: .additions, deletions: .deletions, files: .changedFiles}"#,
+            ],
+            None,
+        )?;
+        let v: serde_json::Value =
+            serde_json::from_slice(&out.body).map_err(|error| GhError::Local {
+                message: format!("PR size JSON: {error}"),
+            })?;
+        let additions = v["additions"].as_u64().unwrap_or(0);
+        let deletions = v["deletions"].as_u64().unwrap_or(0);
+        let files = v["files"].as_u64().unwrap_or(0);
+        let lines = additions.saturating_add(deletions);
+
+        if files > REMOTE_PR_MAX_CHANGED_FILES || lines > REMOTE_PR_MAX_LINE_CHANGES {
+            return Err(GhError::Local {
+                message: format!(
+                    "PR #{number} is too large to review here ({files} files, +{additions}/-{deletions} lines). \
+                     Open a smaller PR, or clone {owner}/{repo} locally."
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Whether a failed `gh pr diff` means GitHub refused to render the diff.
+fn diff_is_too_large(error: &GhError) -> bool {
+    match error {
+        GhError::TooLarge { .. } => true,
+        GhError::Tool { stderr, .. } => gh_diff_too_large(stderr),
+        _ => false,
+    }
+}
+
+/// Compatibility wrapper for front ends and engine callers.
 pub fn gh_pr_size_check_remote(owner: &str, repo: &str, number: u64) -> Result<()> {
-    let repo_slug = format!("{}/{}", owner, repo);
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "additions,deletions,changedFiles",
-            "--jq",
-            r#"{additions: .additions, deletions: .deletions, files: .changedFiles}"#,
-        ])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to check PR size")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to check PR #{} size: {}", number, stderr.trim());
-    }
-
-    let v: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).context("PR size JSON")?;
-    let additions = v["additions"].as_u64().unwrap_or(0);
-    let deletions = v["deletions"].as_u64().unwrap_or(0);
-    let files = v["files"].as_u64().unwrap_or(0);
-    let lines = additions.saturating_add(deletions);
-
-    if files > REMOTE_PR_MAX_CHANGED_FILES || lines > REMOTE_PR_MAX_LINE_CHANGES {
-        anyhow::bail!(
-            "PR #{} is too large to review here ({} files, +{}/-{} lines). \
-             Open a smaller PR, or clone {}/{} locally.",
-            number,
-            files,
-            additions,
-            deletions,
-            owner,
-            repo
-        );
-    }
-    Ok(())
+    default_handle()
+        .pr_size_check_remote(owner, repo, number)
+        .map_err(anyhow::Error::from)
 }
 
 /// Get raw unified diff for a PR via `gh pr diff N --repo owner/repo`.
@@ -1589,23 +1684,32 @@ pub fn gh_pr_size_check_remote(owner: &str, repo: &str, number: u64) -> Result<(
 /// Works without a local clone — uses GitHub API via gh CLI.
 /// Falls back to shallow clone + local git diff when the PR exceeds GitHub's
 /// API line limit (HTTP 406 / diff_too_large).
-pub fn gh_pr_diff_remote(git: &dyn Git, owner: &str, repo: &str, number: u64) -> Result<String> {
-    gh_pr_size_check_remote(owner, repo, number)?;
-    let repo_slug = format!("{}/{}", owner, repo);
-    let output = Command::new("gh")
-        .args(["pr", "diff", &number.to_string(), "--repo", &repo_slug])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .map_err(gh_spawn_context)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if gh_diff_too_large(&stderr) {
-            return gh_pr_diff_via_clone(git, owner, repo, number);
+impl CliGitHub {
+    pub(crate) fn pr_diff_remote(
+        &self,
+        git: &dyn Git,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<String, GhError> {
+        self.pr_size_check_remote(owner, repo, number)?;
+        let repo_slug = format!("{owner}/{repo}");
+        let n = number.to_string();
+        match self.run_gh_args(&["pr", "diff", &n, "--repo", &repo_slug], None) {
+            Ok(out) => Ok(String::from_utf8_lossy(&out.body).to_string()),
+            Err(error) if diff_is_too_large(&error) => {
+                self.pr_diff_via_clone(git, owner, repo, number)
+            }
+            Err(error) => Err(error),
         }
-        anyhow::bail!("Failed to get PR diff: {}", stderr.trim());
     }
+}
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+/// Compatibility wrapper for front ends and engine callers.
+pub fn gh_pr_diff_remote(git: &dyn Git, owner: &str, repo: &str, number: u64) -> Result<String> {
+    default_handle()
+        .pr_diff_remote(git, owner, repo, number)
+        .map_err(anyhow::Error::from)
 }
 
 /// Get raw unified diff for a PR using the local repo context.
@@ -1615,22 +1719,29 @@ pub fn gh_pr_diff_remote(git: &dyn Git, owner: &str, repo: &str, number: u64) ->
 /// "whatever local `origin/<base>...refs/pull/N/head` happens to produce" in
 /// every edge case, and using `gh pr diff` keeps Easy Review aligned with the
 /// Files changed view.
-pub fn gh_pr_diff(git: &dyn Git, pr_number: u64, repo_root: &str) -> Result<String> {
-    let output = Command::new("gh")
-        .args(["pr", "diff", &pr_number.to_string()])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .map_err(gh_spawn_context)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if gh_diff_too_large(&stderr) {
-            return gh_pr_diff_too_large_fallback(git, pr_number, repo_root);
+impl CliGitHub {
+    pub(crate) fn pr_diff(
+        &self,
+        git: &dyn Git,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<String, GhError> {
+        let n = pr_number.to_string();
+        match self.run_gh_args(&["pr", "diff", &n], Some(repo_root)) {
+            Ok(out) => Ok(String::from_utf8_lossy(&out.body).to_string()),
+            Err(error) if diff_is_too_large(&error) => {
+                self.pr_diff_too_large_fallback(git, pr_number, repo_root)
+            }
+            Err(error) => Err(error),
         }
-        anyhow::bail!("Failed to get PR diff: {}", stderr.trim());
     }
+}
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+/// Compatibility wrapper for front ends and engine callers.
+pub fn gh_pr_diff(git: &dyn Git, pr_number: u64, repo_root: &str) -> Result<String> {
+    default_handle()
+        .pr_diff(git, pr_number, repo_root)
+        .map_err(anyhow::Error::from)
 }
 
 /// Whether `gh pr diff` stderr says GitHub refused to render the diff.
@@ -1647,58 +1758,73 @@ fn gh_diff_too_large(stderr: &str) -> bool {
 /// A PR the diff endpoint refused: build the diff from the local checkout, and
 /// only if that cannot work (no usable `origin`, a shallow clone with no merge
 /// base) clone the repo into a temp dir.
-fn gh_pr_diff_too_large_fallback(git: &dyn Git, pr_number: u64, repo_root: &str) -> Result<String> {
-    let local = gh_pr_diff_via_local_git(git, pr_number, repo_root);
-    let Err(local_err) = local else {
-        return local;
-    };
-    let Some((owner, repo)) = parse_origin_remote(git, repo_root) else {
-        return Err(local_err.context("GitHub refused to render this large PR diff"));
-    };
-    gh_pr_diff_via_clone(git, &owner, &repo, pr_number).map_err(|clone_err| {
-        clone_err.context(format!(
-            "GitHub refused to render this large PR diff; local git diff also failed: {local_err:#}"
-        ))
-    })
-}
-
-fn gh_pr_diff_via_local_git(git: &dyn Git, pr_number: u64, repo_root: &str) -> Result<String> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "baseRefOid,headRefOid",
-            "--jq",
-            r#"[.baseRefOid, .headRefOid] | @tsv"#,
-        ])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .map_err(gh_spawn_context)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "Failed to get PR #{pr_number} commit SHAs: {}",
-            stderr.trim()
-        );
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let (base_sha, head_sha) = text
-        .split_once('\t')
-        .filter(|(base, head)| !base.is_empty() && !head.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("Unexpected gh pr view output: {text}"))?;
-
-    // By SHA rather than by branch name: it works for forks and for a head
-    // branch that has since been deleted. No refs are created.
-    match git.fetch(repo_root, &["--no-tags", "origin", base_sha, head_sha]) {
-        Ok(()) => {}
-        Err(GitError::Failed { stderr, .. }) => {
-            anyhow::bail!("Failed to fetch PR commits: {}", stderr.trim());
+impl CliGitHub {
+    fn pr_diff_too_large_fallback(
+        &self,
+        git: &dyn Git,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<String, GhError> {
+        let local = self.pr_diff_via_local_git(git, pr_number, repo_root);
+        let Err(local_err) = local else {
+            return local;
+        };
+        let Some((owner, repo)) = parse_origin_remote(git, repo_root) else {
+            return Err(GhError::Local {
+                message: format!("{local_err}: GitHub refused to render this large PR diff"),
+            });
+        };
+        match self.pr_diff_via_clone(git, &owner, &repo, pr_number) {
+            Ok(diff) => Ok(diff),
+            Err(clone_err) => Err(GhError::Local {
+                message: format!(
+                    "GitHub refused to render this large PR diff; local git diff also failed: {local_err:#}: {clone_err}"
+                ),
+            }),
         }
-        Err(e) => return Err(anyhow::Error::from(e).context("Failed to fetch PR commits")),
     }
-    git_merge_base_diff(git, repo_root, base_sha, head_sha)
+
+    fn pr_diff_via_local_git(
+        &self,
+        git: &dyn Git,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<String, GhError> {
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "baseRefOid,headRefOid",
+                "--jq",
+                r#"[.baseRefOid, .headRefOid] | @tsv"#,
+            ],
+            Some(repo_root),
+        )?;
+        let text = String::from_utf8_lossy(&out.body).trim().to_string();
+        let (base_sha, head_sha) = text
+            .split_once('\t')
+            .filter(|(base, head)| !base.is_empty() && !head.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Unexpected gh pr view output: {text}"))?;
+
+        // By SHA rather than by branch name: it works for forks and for a head
+        // branch that has since been deleted. No refs are created.
+        match git.fetch(repo_root, &["--no-tags", "origin", base_sha, head_sha]) {
+            Ok(()) => {}
+            Err(GitError::Failed { stderr, .. }) => {
+                return Err(GhError::Local {
+                    message: format!("Failed to fetch PR commits: {}", stderr.trim()),
+                });
+            }
+            Err(e) => {
+                return Err(GhError::from(
+                    anyhow::Error::from(e).context("Failed to fetch PR commits"),
+                ));
+            }
+        }
+        git_merge_base_diff(git, repo_root, base_sha, head_sha).map_err(GhError::from)
+    }
 }
 
 /// `git diff base...head`: against the merge base, which is what GitHub's
@@ -1717,236 +1843,261 @@ fn git_merge_base_diff(git: &dyn Git, repo_root: &str, base: &str, head: &str) -
 
 /// Base and head commit SHAs for a PR (from `gh pr view`). Works for merged PRs and
 /// deleted head branches — unlike branch names, which may no longer exist on origin.
-pub fn gh_pr_commit_shas_remote(owner: &str, repo: &str, number: u64) -> Result<(String, String)> {
-    let repo_slug = format!("{}/{}", owner, repo);
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "baseRefOid,headRefOid",
-            "--jq",
-            r#"[.baseRefOid, .headRefOid] | @tsv"#,
-        ])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to get PR commit SHAs")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "Failed to get PR #{} commit SHAs: {}",
-            number,
-            stderr.trim()
-        );
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let (base_sha, head_sha) = text
-        .split_once('\t')
-        .ok_or_else(|| anyhow::anyhow!("Unexpected gh pr view output: {}", text))?;
-    if base_sha.is_empty() || head_sha.is_empty() {
-        anyhow::bail!("Missing base or head SHA for PR #{}", number);
-    }
-    Ok((base_sha.to_string(), head_sha.to_string()))
-}
-
-/// Fallback for large PRs: shallow-clone the repo into a temp dir, fetch both
-/// commits by SHA, and produce the diff locally. The temp dir is cleaned up automatically.
-fn gh_pr_diff_via_clone(git: &dyn Git, owner: &str, repo: &str, number: u64) -> Result<String> {
-    let (base_sha, head_sha) = gh_pr_commit_shas_remote(owner, repo, number)?;
-    let repo_url = format!("https://github.com/{}/{}.git", owner, repo);
-    // tempfile::Builder::tempdir: random name + 0700, so an attacker cannot
-    // pre-create the clone dir (the old fixed `er-remote-{owner}-{repo}-{n}`
-    // name with remove_dir_all + clone let an attacker win the dir, then swap
-    // .git/config — core.sshCommand + ssh origin → code execution on the
-    // fetch below; or poison the diff). 0700 also blocks reading the clone.
-    let tmp_dir = tempfile::Builder::new()
-        .prefix("er-remote-")
-        .tempdir()
-        .context("Failed to create temp dir for large PR diff")?;
-    let tmp_path = tmp_dir
-        .path()
-        .to_str()
-        .context("Temp dir path is not valid UTF-8")?
-        .to_string();
-
-    // Shallow clone with only the two refs we need
-    match git.shallow_clone(&repo_url, &tmp_path) {
-        Ok(()) => {}
-        Err(GitError::Failed { stderr, .. }) => {
-            anyhow::bail!("Shallow clone failed: {}", stderr.trim());
-        }
-        Err(e) => {
-            return Err(anyhow::Error::from(e).context("Failed to shallow clone for large PR diff"));
-        }
-    }
-
-    // Fetch exact base/head commits (branch names fail for merged/deleted heads and some forks).
-    match git.fetch(&tmp_path, &["--depth=1", "origin", &base_sha, &head_sha]) {
-        Ok(()) => {}
-        Err(GitError::Failed { stderr, .. }) => {
-            anyhow::bail!("Failed to fetch PR commits: {}", stderr.trim());
-        }
-        Err(e) => return Err(anyhow::Error::from(e).context("Failed to fetch PR commits")),
-    }
-
-    // Generate the diff
-    let diff = match git.diff_revs(&tmp_path, &[&base_sha, &head_sha]) {
-        Ok(diff) => diff,
-        Err(e) => {
-            // Clean up (TempDir removes the clone on drop — including on error).
-            drop(tmp_dir);
-            return Err(match e {
-                GitError::Failed { stderr, .. } => {
-                    anyhow::anyhow!("git diff failed in cloned repo: {}", stderr.trim())
-                }
-                other => {
-                    anyhow::Error::from(other).context("Failed to generate diff from cloned repo")
-                }
+impl CliGitHub {
+    /// Base and head commit SHAs for a PR (from `gh pr view`). Works for merged
+    /// PRs and deleted head branches.
+    pub(crate) fn commit_shas_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(String, String), GhError> {
+        let repo_slug = format!("{owner}/{repo}");
+        let n = number.to_string();
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &n,
+                "--repo",
+                &repo_slug,
+                "--json",
+                "baseRefOid,headRefOid",
+                "--jq",
+                r#"[.baseRefOid, .headRefOid] | @tsv"#,
+            ],
+            None,
+        )?;
+        let text = String::from_utf8_lossy(&out.body).trim().to_string();
+        let (base_sha, head_sha) = text
+            .split_once('\t')
+            .ok_or_else(|| anyhow::anyhow!("Unexpected gh pr view output: {text}"))?;
+        if base_sha.is_empty() || head_sha.is_empty() {
+            return Err(GhError::Local {
+                message: format!("Missing base or head SHA for PR #{number}"),
             });
         }
-    };
-
-    // Clean up (TempDir removes the clone on drop — including on error).
-    drop(tmp_dir);
-
-    Ok(diff)
+        Ok((base_sha.to_string(), head_sha.to_string()))
+    }
 }
 
-/// Raw contents of `path` at `git_ref` on GitHub, capped at `max_bytes`.
+/// Compatibility wrapper for front ends and engine callers.
+pub fn gh_pr_commit_shas_remote(owner: &str, repo: &str, number: u64) -> Result<(String, String)> {
+    default_handle()
+        .commit_shas_remote(owner, repo, number)
+        .map_err(anyhow::Error::from)
+}
+
+impl CliGitHub {
+    /// Fallback for large PRs: shallow-clone the repo into a temp dir, fetch
+    /// both commits by SHA, and produce the diff locally. The temp dir is
+    /// cleaned up automatically.
+    fn pr_diff_via_clone(
+        &self,
+        git: &dyn Git,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<String, GhError> {
+        let (base_sha, head_sha) = self.commit_shas_remote(owner, repo, number)?;
+        let repo_url = format!("https://github.com/{owner}/{repo}.git");
+        // tempfile::Builder::tempdir: random name + 0700, so an attacker cannot
+        // pre-create the clone dir (the old fixed `er-remote-{owner}-{repo}-{n}`
+        // name with remove_dir_all + clone let an attacker win the dir, then swap
+        // .git/config — core.sshCommand + ssh origin → code execution on the
+        // fetch below; or poison the diff). 0700 also blocks reading the clone.
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("er-remote-")
+            .tempdir()
+            .map_err(|error| GhError::Local {
+                message: format!("Failed to create temp dir for large PR diff: {error}"),
+            })?;
+        let tmp_path = tmp_dir
+            .path()
+            .to_str()
+            .ok_or_else(|| GhError::Local {
+                message: "Temp dir path is not valid UTF-8".to_string(),
+            })?
+            .to_string();
+
+        // Shallow clone with only the two refs we need
+        match git.shallow_clone(&repo_url, &tmp_path) {
+            Ok(()) => {}
+            Err(GitError::Failed { stderr, .. }) => {
+                return Err(GhError::Local {
+                    message: format!("Shallow clone failed: {}", stderr.trim()),
+                });
+            }
+            Err(e) => {
+                return Err(GhError::from(
+                    anyhow::Error::from(e).context("Failed to shallow clone for large PR diff"),
+                ));
+            }
+        }
+
+        // Fetch exact base/head commits (branch names fail for merged/deleted heads and some forks).
+        match git.fetch(&tmp_path, &["--depth=1", "origin", &base_sha, &head_sha]) {
+            Ok(()) => {}
+            Err(GitError::Failed { stderr, .. }) => {
+                return Err(GhError::Local {
+                    message: format!("Failed to fetch PR commits: {}", stderr.trim()),
+                });
+            }
+            Err(e) => {
+                return Err(GhError::from(
+                    anyhow::Error::from(e).context("Failed to fetch PR commits"),
+                ));
+            }
+        }
+
+        // Generate the diff
+        let diff = match git.diff_revs(&tmp_path, &[&base_sha, &head_sha]) {
+            Ok(diff) => diff,
+            Err(e) => {
+                // Clean up (TempDir removes the clone on drop — including on error).
+                drop(tmp_dir);
+                return Err(match e {
+                    GitError::Failed { stderr, .. } => GhError::Local {
+                        message: format!("git diff failed in cloned repo: {}", stderr.trim()),
+                    },
+                    other => GhError::from(
+                        anyhow::Error::from(other)
+                            .context("Failed to generate diff from cloned repo"),
+                    ),
+                });
+            }
+        };
+
+        // Clean up (TempDir removes the clone on drop — including on error).
+        drop(tmp_dir);
+
+        Ok(diff)
+    }
+}
+
+impl CliGitHub {
+    /// Raw contents of `path` at `git_ref` on GitHub, capped at `max_bytes`.
+    pub(crate) fn file_at_ref(
+        &self,
+        repo_slug: &str,
+        path: &str,
+        git_ref: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, GhError> {
+        fn encode(s: &str) -> String {
+            s.bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.') {
+                        (b as char).to_string()
+                    } else {
+                        format!("%{b:02X}")
+                    }
+                })
+                .collect()
+        }
+        self.api_get_bounded(
+            &format!(
+                "repos/{repo_slug}/contents/{}?ref={}",
+                encode(path),
+                encode(git_ref)
+            ),
+            max_bytes,
+        )
+    }
+}
+
+/// Compatibility wrapper for front ends and engine callers.
 pub fn gh_file_at_ref(
     repo_slug: &str,
     path: &str,
     git_ref: &str,
     max_bytes: usize,
 ) -> Result<Vec<u8>> {
-    fn encode(s: &str) -> String {
-        s.bytes()
-            .map(|b| {
-                if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.') {
-                    (b as char).to_string()
-                } else {
-                    format!("%{b:02X}")
-                }
-            })
-            .collect()
-    }
-    let output = er_git::proc::run_with_bounded_stdout(
-        Command::new("gh").args([
-            "api",
-            "-H",
-            "Accept: application/vnd.github.raw+json",
-            &format!(
-                "repos/{repo_slug}/contents/{}?ref={}",
-                encode(path),
-                encode(git_ref)
-            ),
-        ]),
-        er_git::proc::GH_TIMEOUT,
-        max_bytes,
-    )?;
-    if !output.status.success() {
-        anyhow::bail!("File could not be read from GitHub");
-    }
-    Ok(output.stdout)
+    default_handle()
+        .file_at_ref(repo_slug, path, git_ref, max_bytes)
+        .map_err(anyhow::Error::from)
 }
 
-/// Get PR metadata (base branch, head branch) via `gh pr view --repo`.
-/// Returns (base_ref_name, head_ref_name).
+impl CliGitHub {
+    /// Get PR metadata (base branch, head branch) via `gh pr view --repo`.
+    pub(crate) fn pr_metadata_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(String, String), GhError> {
+        let repo_slug = format!("{owner}/{repo}");
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &number.to_string(),
+                "--repo",
+                &repo_slug,
+                "--json",
+                "baseRefName,headRefName",
+                "--jq",
+                r#"[.baseRefName, .headRefName] | @tsv"#,
+            ],
+            None,
+        )?;
+        let text = String::from_utf8_lossy(&out.body);
+        let text = text.trim();
+        let (base, head) = text
+            .split_once('\t')
+            .ok_or_else(|| anyhow::anyhow!("Unexpected gh pr view output: {text}"))?;
+        Ok((base.to_string(), head.to_string()))
+    }
+
+    /// Run `gh stack view --json` (github/gh-stack extension) for the repo at
+    /// `repo_root` and return its stdout.
+    ///
+    /// A non-zero exit is an expected steady state — the branch may not be in a
+    /// stack, or the extension may not be installed — so `gh`'s stderr
+    /// diagnostic is the error message.
+    pub(crate) fn stack_view_json(&self, repo_root: &str) -> Result<String, GhError> {
+        let out = self.run_gh_args(&["stack", "view", "--json"], Some(repo_root))?;
+        Ok(String::from_utf8_lossy(&out.body).to_string())
+    }
+
+    /// Open PRs of `owner/repo` with just the refs needed to walk a stack chain.
+    pub(crate) fn open_pr_refs_json(&self, repo_slug: &str) -> Result<String, GhError> {
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "list",
+                "--repo",
+                repo_slug,
+                "--state",
+                "open",
+                "--limit",
+                "200",
+                "--json",
+                "number,url,headRefName,baseRefName",
+            ],
+            None,
+        )?;
+        Ok(String::from_utf8_lossy(&out.body).to_string())
+    }
+}
+
+/// Compatibility wrappers for front ends and engine callers.
 pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(String, String)> {
-    let repo_slug = format!("{}/{}", owner, repo);
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "baseRefName,headRefName",
-            "--jq",
-            r#"[.baseRefName, .headRefName] | @tsv"#,
-        ])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to get PR metadata")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to get PR #{} metadata: {}", number, stderr.trim());
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    let text = text.trim();
-    let (base, head) = text
-        .split_once('\t')
-        .ok_or_else(|| anyhow::anyhow!("Unexpected gh pr view output: {}", text))?;
-
-    Ok((base.to_string(), head.to_string()))
+    default_handle()
+        .pr_metadata_remote(owner, repo, number)
+        .map_err(anyhow::Error::from)
 }
 
-/// Run `gh stack view --json` (github/gh-stack extension) for the repo at
-/// `repo_root` and return its stdout.
-///
-/// A non-zero exit is an expected steady state — the branch may not be in a
-/// stack, or the extension may not be installed — so `gh`'s stderr diagnostic is
-/// returned as the error message and surfaced to the user as the reason.
 pub fn gh_stack_view_json(repo_root: &str) -> Result<String> {
-    let output = Command::new("gh")
-        .args(["stack", "view", "--json"])
-        .current_dir(repo_root)
-        // `gh stack view` opens an interactive TUI under a TTY; the JSON flag
-        // avoids it, and these env vars keep any prompt from blocking the
-        // worker thread that runs this.
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to run `gh stack view`")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let reason = stderr.trim();
-        return Err(anyhow::anyhow!(
-            "{}",
-            if reason.is_empty() {
-                "gh stack view failed"
-            } else {
-                reason
-            }
-        ));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    default_handle()
+        .stack_view_json(repo_root)
+        .map_err(anyhow::Error::from)
 }
 
-/// Open PRs of `owner/repo` with just the refs needed to walk a stack chain
-/// (`gh pr list --json number,url,headRefName,baseRefName`). Blocking; callers
-/// run it on a worker thread.
 pub fn gh_open_pr_refs_json(repo_slug: &str) -> Result<String> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--repo",
-            repo_slug,
-            "--state",
-            "open",
-            "--limit",
-            "200",
-            "--json",
-            "number,url,headRefName,baseRefName",
-        ])
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .output()
-        .map_err(gh_spawn_context)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh pr list failed: {}", stderr.trim());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    default_handle()
+        .open_pr_refs_json(repo_slug)
+        .map_err(anyhow::Error::from)
 }
 
 impl CliGitHub {
@@ -2675,32 +2826,47 @@ fn check_time(v: &serde_json::Value) -> Option<String> {
 ///
 /// On any failure (gh unavailable, no auth, etc.) returns an empty list so the
 /// caller degrades gracefully.
+impl CliGitHub {
+    /// The commits on a remote PR, through the paginated GraphQL query.
+    pub(crate) fn commits_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<er_git::CommitInfo>, GhError> {
+        let query = format!("query={PR_COMMITS_GRAPHQL}");
+        let owner_arg = format!("owner={owner}");
+        let repo_arg = format!("repo={repo}");
+        let number_arg = format!("number={number}");
+        let args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "--paginate".to_string(),
+            "-f".to_string(),
+            query,
+            "-f".to_string(),
+            owner_arg,
+            "-f".to_string(),
+            repo_arg,
+            "-F".to_string(),
+            number_arg,
+        ];
+        let out = self.run_gh(&args, None, None)?;
+        parse_pr_commits_graphql(&out.body, limit).map_err(GhError::from)
+    }
+}
+
+/// Compatibility wrapper for front ends and engine callers.
 pub fn gh_pr_commits_remote(
     owner: &str,
     repo: &str,
     number: u64,
     limit: usize,
 ) -> Vec<er_git::CommitInfo> {
-    let output = match Command::new("gh")
-        .args(["api", "graphql", "--paginate", "-f"])
-        .arg(format!("query={PR_COMMITS_GRAPHQL}"))
-        .arg("-f")
-        .arg(format!("owner={owner}"))
-        .arg("-f")
-        .arg(format!("repo={repo}"))
-        .arg("-F")
-        .arg(format!("number={number}"))
-        .output_timed(er_git::proc::GH_TIMEOUT)
-    {
-        Ok(o) => o,
-        Err(_) => return Vec::new(),
-    };
-
-    if !output.status.success() {
-        return Vec::new();
-    }
-
-    parse_pr_commits_graphql(&output.stdout, limit).unwrap_or_default()
+    default_handle()
+        .commits_remote(owner, repo, number, limit)
+        .unwrap_or_default()
 }
 
 /// Combined overview + conversation-comments + reviews for a remote PR, in
@@ -2712,67 +2878,87 @@ pub fn gh_pr_commits_remote(
 ///
 /// `gh pr checks` (CI status) is intentionally NOT folded in here — it's a
 /// different `gh` subcommand and must stay a separate call (`gh_pr_checks_remote`).
+#[derive(Debug, Clone)]
 pub struct PrStatusBundle {
     pub overview: PrOverviewFull,
     pub comments: Vec<PrComment>,
     pub reviews: Vec<PrReview>,
 }
 
-/// Fetch overview + comments + reviews for a remote PR in one `gh pr view` call.
-/// No local clone required.
-pub fn gh_pr_status_remote(owner: &str, repo: &str, number: u64) -> Result<PrStatusBundle> {
-    let repo_slug = format!("{}/{}", owner, repo);
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "number,title,body,state,isDraft,author,reviewDecision,mergeable,mergeStateStatus,headRefName,headRefOid,isCrossRepository,autoMergeRequest,baseRefName,labels,url,comments,reviews,createdAt,reviewRequests,commits",
-        ])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to run gh pr view (status bundle)")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh pr view (status bundle) failed: {}", stderr.trim());
+impl CliGitHub {
+    /// Fetch overview + comments + reviews for a remote PR in one `gh pr view`
+    /// call. No local clone required.
+    pub(crate) fn pr_status_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<PrStatusBundle, GhError> {
+        let repo_slug = format!("{owner}/{repo}");
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &number.to_string(),
+                "--repo",
+                &repo_slug,
+                "--json",
+                "number,title,body,state,isDraft,author,reviewDecision,mergeable,mergeStateStatus,headRefName,headRefOid,isCrossRepository,autoMergeRequest,baseRefName,labels,url,comments,reviews,createdAt,reviewRequests,commits",
+            ],
+            None,
+        )?;
+        let json = String::from_utf8_lossy(&out.body);
+        // overview parse failure is fatal (the caller treats a failed overview
+        // as "no status available").
+        let overview = parse_pr_overview(&json)?;
+        // comments/reviews failures are non-fatal (the old call sites wrapped
+        // these in `.unwrap_or_default()`).
+        let comments = parse_pr_comments(&json).unwrap_or_default();
+        let reviews = parse_pr_reviews(&json).unwrap_or_default();
+        Ok(PrStatusBundle {
+            overview,
+            comments,
+            reviews,
+        })
     }
-    let json = String::from_utf8_lossy(&output.stdout);
-    // overview parse failure is fatal (matches old gh_pr_overview_remote_full
-    // behavior — caller treats a failed overview as "no status available").
-    let overview = parse_pr_overview(&json)?;
-    // comments/reviews failures are non-fatal (matches old call sites, which
-    // wrapped these in `.unwrap_or_default()` at the spawn closure).
-    let comments = parse_pr_comments(&json).unwrap_or_default();
-    let reviews = parse_pr_reviews(&json).unwrap_or_default();
-    Ok(PrStatusBundle {
-        overview,
-        comments,
-        reviews,
-    })
+
+    /// Fetch CI check runs for a remote PR; no checks configured is not an error.
+    pub(crate) fn pr_checks_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Vec<CheckRun>, GhError> {
+        let repo_slug = format!("{owner}/{repo}");
+        let Ok(out) = self.run_gh_args(
+            &[
+                "pr",
+                "checks",
+                &number.to_string(),
+                "--repo",
+                &repo_slug,
+                "--json",
+                "name,state,bucket,link,startedAt,completedAt,description",
+            ],
+            None,
+        ) else {
+            return Ok(Vec::new());
+        };
+        parse_pr_checks(&String::from_utf8_lossy(&out.body)).map_err(GhError::from)
+    }
 }
 
-/// Fetch CI check runs for a remote PR.
+/// Compatibility wrappers for front ends and engine callers.
+pub fn gh_pr_status_remote(owner: &str, repo: &str, number: u64) -> Result<PrStatusBundle> {
+    default_handle()
+        .pr_status_remote(owner, repo, number)
+        .map_err(anyhow::Error::from)
+}
+
 pub fn gh_pr_checks_remote(owner: &str, repo: &str, number: u64) -> Result<Vec<CheckRun>> {
-    let repo_slug = format!("{}/{}", owner, repo);
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "checks",
-            &number.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "name,state,bucket,link,startedAt,completedAt,description",
-        ])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to run gh pr checks")?;
-    if !output.status.success() {
-        // No checks configured is not an error — return empty.
-        return Ok(Vec::new());
-    }
-    parse_pr_checks(&String::from_utf8_lossy(&output.stdout))
+    default_handle()
+        .pr_checks_remote(owner, repo, number)
+        .map_err(anyhow::Error::from)
 }
 
 // ── Canonical repo identity ──
@@ -3031,54 +3217,69 @@ pub fn gh_pr_approve(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Login of the authenticated `gh` user, if available.
+impl CliGitHub {
+    pub(crate) fn current_login(&self) -> Option<String> {
+        let out = self
+            .run_gh_args(&["api", "user", "--jq", ".login"], None)
+            .ok()?;
+        let login = String::from_utf8_lossy(&out.body).trim().to_string();
+        if login.is_empty() {
+            None
+        } else {
+            Some(login)
+        }
+    }
+}
+
+/// Compatibility wrapper for front ends and engine callers.
 pub fn gh_current_login() -> Option<String> {
-    let output = Command::new("gh")
-        .args(["api", "user", "--jq", ".login"])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let login = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if login.is_empty() {
-        None
-    } else {
-        Some(login)
-    }
+    default_handle().current_login()
 }
 
 /// List PRs for a repo with the fields the engine's review queue needs.
 ///
 /// `state` is passed to `gh pr list --state` (`open`, `closed`, `merged`, `all`).
+impl CliGitHub {
+    pub(crate) fn pr_list_queue(
+        &self,
+        owner: &str,
+        repo: &str,
+        state: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::types::QueuePr>, GhError> {
+        let repo_slug = format!("{owner}/{repo}");
+        let limit = limit.clamp(1, 100).to_string();
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "list",
+                "--repo",
+                &repo_slug,
+                "--state",
+                state,
+                "--limit",
+                &limit,
+                "--json",
+                "number,title,headRefName,baseRefName,state,isDraft,author,reviewRequests,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,updatedAt,labels,url,latestReviews",
+            ],
+            None,
+        )?;
+        let me = self.current_login();
+        parse_pr_list_queue(&String::from_utf8_lossy(&out.body), me.as_deref())
+            .map_err(GhError::from)
+    }
+}
+
+/// Compatibility wrapper for front ends and engine callers.
 pub fn gh_pr_list_queue(
     owner: &str,
     repo: &str,
     state: &str,
     limit: usize,
 ) -> Result<Vec<crate::types::QueuePr>> {
-    let repo_slug = format!("{}/{}", owner, repo);
-    let limit = limit.clamp(1, 100);
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--repo",
-            &repo_slug,
-            "--state",
-            state,
-            "--limit",
-            &limit.to_string(),
-            "--json",
-            "number,title,headRefName,baseRefName,state,isDraft,author,reviewRequests,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,updatedAt,labels,url,latestReviews",
-        ])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to run gh pr list")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh pr list failed: {}", stderr.trim());
-    }
-    let me = gh_current_login();
-    parse_pr_list_queue(&String::from_utf8_lossy(&output.stdout), me.as_deref())
+    default_handle()
+        .pr_list_queue(owner, repo, state, limit)
+        .map_err(anyhow::Error::from)
 }
 
 /// Pure parser for `gh pr list --json …` review-queue payloads.
@@ -3232,9 +3433,23 @@ fn check_run_is_pending(c: &CheckRun) -> bool {
 }
 
 /// Fetch checks and return rollup state for a remote PR.
+impl CliGitHub {
+    pub(crate) fn pr_checks_state_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<&'static str, GhError> {
+        let checks = self.pr_checks_remote(owner, repo, number)?;
+        Ok(summarize_checks_state(&checks))
+    }
+}
+
+/// Compatibility wrapper for front ends and engine callers.
 pub fn gh_pr_checks_state_remote(owner: &str, repo: &str, number: u64) -> Result<&'static str> {
-    let checks = gh_pr_checks_remote(owner, repo, number)?;
-    Ok(summarize_checks_state(&checks))
+    default_handle()
+        .pr_checks_state_remote(owner, repo, number)
+        .map_err(anyhow::Error::from)
 }
 
 /// Thread-level addressing summary (resolved / outdated / open).
@@ -3260,66 +3475,81 @@ pub fn summarize_thread_addressing_from_graphql(
 ///
 /// Paginates GraphQL `reviewThreads` (100/page, up to 10 pages). If more threads
 /// remain after the cap, `truncated` is set and `all_addressed` is forced false.
+impl CliGitHub {
+    pub(crate) fn pr_thread_addressing_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<crate::types::ThreadAddressingSummary, GhError> {
+        const PAGE_SIZE: u32 = 100;
+        const MAX_PAGES: u32 = 10;
+
+        let mut flags: Vec<(bool, bool)> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut truncated = false;
+
+        for page in 0..MAX_PAGES {
+            let after_arg = match &cursor {
+                Some(c) => format!(r#", after: "{}""#, c.replace('"', "")),
+                None => String::new(),
+            };
+            let query = format!(
+                r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: {}{}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ isResolved isOutdated comments(first: 1) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
+                owner, repo, pr, PAGE_SIZE, after_arg
+            );
+            let out = match self
+                .run_gh_args(&["api", "graphql", "-f", &format!("query={query}")], None)
+            {
+                Ok(out) => out,
+                Err(_) => {
+                    if page == 0 {
+                        return Ok(crate::types::ThreadAddressingSummary::default());
+                    }
+                    truncated = true;
+                    break;
+                }
+            };
+            let json = String::from_utf8_lossy(&out.body);
+            let Ok(response) = serde_json::from_str::<ReviewThreadsResponse>(&json) else {
+                if page == 0 {
+                    return Ok(crate::types::ThreadAddressingSummary::default());
+                }
+                truncated = true;
+                break;
+            };
+            let conn = response.data.repository.pull_request.review_threads;
+            for t in &conn.nodes {
+                flags.push((t.is_resolved, t.is_outdated));
+            }
+            let page_info = conn.page_info.unwrap_or_default();
+            if !page_info.has_next_page {
+                break;
+            }
+            if page + 1 >= MAX_PAGES {
+                truncated = true;
+                break;
+            }
+            cursor = page_info.end_cursor;
+            if cursor.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+                truncated = true;
+                break;
+            }
+        }
+
+        Ok(crate::types::ThreadAddressingSummary::from_thread_flags_truncated(&flags, truncated))
+    }
+}
+
+/// Compatibility wrapper for front ends and engine callers.
 pub fn gh_pr_thread_addressing_remote(
     owner: &str,
     repo: &str,
     pr: u64,
 ) -> Result<crate::types::ThreadAddressingSummary> {
-    const PAGE_SIZE: u32 = 100;
-    const MAX_PAGES: u32 = 10;
-
-    let mut flags: Vec<(bool, bool)> = Vec::new();
-    let mut cursor: Option<String> = None;
-    let mut truncated = false;
-
-    for page in 0..MAX_PAGES {
-        let after_arg = match &cursor {
-            Some(c) => format!(r#", after: "{}""#, c.replace('"', "")),
-            None => String::new(),
-        };
-        let query = format!(
-            r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: {}{}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ isResolved isOutdated comments(first: 1) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
-            owner, repo, pr, PAGE_SIZE, after_arg
-        );
-        let output = Command::new("gh")
-            .args(["api", "graphql", "-f", &format!("query={}", query)])
-            .output_timed(er_git::proc::GH_TIMEOUT)
-            .context("Failed to fetch review threads")?;
-        if !output.status.success() {
-            if page == 0 {
-                return Ok(crate::types::ThreadAddressingSummary::default());
-            }
-            truncated = true;
-            break;
-        }
-        let json = String::from_utf8_lossy(&output.stdout);
-        let Ok(response) = serde_json::from_str::<ReviewThreadsResponse>(&json) else {
-            if page == 0 {
-                return Ok(crate::types::ThreadAddressingSummary::default());
-            }
-            truncated = true;
-            break;
-        };
-        let conn = response.data.repository.pull_request.review_threads;
-        for t in &conn.nodes {
-            flags.push((t.is_resolved, t.is_outdated));
-        }
-        let page_info = conn.page_info.unwrap_or_default();
-        if !page_info.has_next_page {
-            break;
-        }
-        if page + 1 >= MAX_PAGES {
-            truncated = true;
-            break;
-        }
-        cursor = page_info.end_cursor;
-        if cursor.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
-            truncated = true;
-            break;
-        }
-    }
-
-    Ok(crate::types::ThreadAddressingSummary::from_thread_flags_truncated(&flags, truncated))
+    default_handle()
+        .pr_thread_addressing_remote(owner, repo, pr)
+        .map_err(anyhow::Error::from)
 }
 
 #[cfg(test)]
@@ -4714,12 +4944,12 @@ mod tests {
     }
 
     fn git_init_with_remote(root: &str, remote: &str) {
-        let out = Command::new("git")
+        let out = std::process::Command::new("git")
             .args(["init", "-q", root])
             .output()
             .expect("git init");
         assert!(out.status.success());
-        let out = Command::new("git")
+        let out = std::process::Command::new("git")
             .args(["remote", "add", "origin", remote])
             .current_dir(root)
             .output()

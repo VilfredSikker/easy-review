@@ -315,6 +315,116 @@ pub trait GitHub: Send + Sync {
 
     /// One bounded `gh api` read whose body is returned without headers.
     fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError>;
+
+    fn fetch_pr_base_ref(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+        pr_number: u64,
+        base_branch: &str,
+    ) -> Result<String, GhError>;
+    fn pr_head_branch_name(&self, number: u64, root: &str) -> Result<String, GhError>;
+
+    fn pr_size_check_remote(&self, owner: &str, repo: &str, number: u64) -> Result<(), GhError>;
+    fn pr_diff_remote(
+        &self,
+        git: &dyn er_git::Git,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<String, GhError>;
+    fn pr_diff(
+        &self,
+        git: &dyn er_git::Git,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<String, GhError>;
+    fn commit_shas_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(String, String), GhError>;
+    fn file_at_ref(
+        &self,
+        repo_slug: &str,
+        path: &str,
+        git_ref: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, GhError>;
+    fn pr_commits(
+        &self,
+        repo_root: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<er_git::CommitInfo>, GhError>;
+    fn pr_base_branch_and_commits(
+        &self,
+        repo_root: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<(String, Vec<er_git::CommitInfo>), GhError>;
+    fn commits_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<er_git::CommitInfo>, GhError>;
+
+    fn ensure_installed(&self) -> Result<(), GhError>;
+    fn list_participating_notifications(&self) -> Result<Vec<GhNotification>, GhError>;
+    fn pr_base_branch(&self, pr_number: u64, repo_root: &str) -> Result<String, GhError>;
+    fn pr_branch_names(&self, pr_number: u64, repo_root: &str)
+        -> Result<(String, String), GhError>;
+    fn probe_pr_for_current_branch(&self, repo_root: &str) -> BranchPrProbe;
+    fn pr_for_current_branch(&self, repo_root: &str) -> Option<(u64, String)>;
+    fn lookup_pr_for_current_branch(&self, git: &dyn er_git::Git, repo_root: &str) -> PrLookup;
+    fn open_pr_number_for_head(
+        &self,
+        owner: &str,
+        repo: &str,
+        head: &str,
+    ) -> Result<Option<u64>, GhError>;
+    fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Option<String>;
+    fn get_pr_info(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<(String, String, u64), GhError>;
+    fn current_login(&self) -> Option<String>;
+    fn stack_view_json(&self, repo_root: &str) -> Result<String, GhError>;
+    fn open_pr_refs_json(&self, repo_slug: &str) -> Result<String, GhError>;
+    fn pr_metadata_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(String, String), GhError>;
+    fn pr_status_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<PrStatusBundle, GhError>;
+    fn pr_checks_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Vec<CheckRun>, GhError>;
+    fn pr_checks_state_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<&'static str, GhError>;
+    fn pr_thread_addressing_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<ThreadAddressingSummary, GhError>;
 }
 
 static DEFAULT_HANDLE: OnceLock<Arc<CliGitHub>> = OnceLock::new();

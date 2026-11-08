@@ -3,11 +3,12 @@
 use crate::actions::{PrAction, RepoMergeSettings};
 use crate::error::GhError;
 use crate::legacy::{
-    CreatedComment, GitHubComment, IssueComment, NewLineComment, PrCommentBundle, PrOverviewData,
-    ReviewThreadState,
+    BranchPrProbe, CheckRun, CreatedComment, GhNotification, GitHubComment, IssueComment,
+    NewLineComment, PrCommentBundle, PrLookup, PrOverviewData, PrStatusBundle, ReviewThreadState,
 };
 use crate::pending_review::PendingReview;
 use crate::review::ReviewBatchEntry;
+use crate::types::ThreadAddressingSummary;
 use crate::GitHub;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -69,6 +70,34 @@ struct FakeState {
     overview_no_checks: Option<Option<PrOverviewData>>,
     overview_remote: Option<Option<PrOverviewData>>,
     api_get_bounded: Option<Result<Vec<u8>, GhError>>,
+    fetch_pr_base_ref: Option<Result<String, GhError>>,
+    pr_head_branch_name: Option<Result<String, GhError>>,
+    pr_size_check_remote: Option<Result<(), GhError>>,
+    pr_diff_remote: Option<Result<String, GhError>>,
+    pr_diff: Option<Result<String, GhError>>,
+    commit_shas_remote: Option<Result<(String, String), GhError>>,
+    file_at_ref: Option<Result<Vec<u8>, GhError>>,
+    pr_commits: Option<Result<Vec<er_git::CommitInfo>, GhError>>,
+    pr_base_branch_and_commits: Option<Result<(String, Vec<er_git::CommitInfo>), GhError>>,
+    commits_remote: Option<Result<Vec<er_git::CommitInfo>, GhError>>,
+    ensure_installed: Option<Result<(), GhError>>,
+    list_participating_notifications: Option<Result<Vec<GhNotification>, GhError>>,
+    pr_base_branch: Option<Result<String, GhError>>,
+    pr_branch_names: Option<Result<(String, String), GhError>>,
+    probe_pr_for_current_branch: Option<BranchPrProbe>,
+    pr_for_current_branch: Option<Option<(u64, String)>>,
+    lookup_pr_for_current_branch: Option<PrLookup>,
+    open_pr_number_for_head: Option<Result<Option<u64>, GhError>>,
+    pr_title: Option<Option<String>>,
+    get_pr_info: Option<Result<(String, String, u64), GhError>>,
+    current_login: Option<Option<String>>,
+    stack_view_json: Option<Result<String, GhError>>,
+    open_pr_refs_json: Option<Result<String, GhError>>,
+    pr_metadata_remote: Option<Result<(String, String), GhError>>,
+    pr_status_remote: Option<Result<PrStatusBundle, GhError>>,
+    pr_checks_remote: Option<Result<Vec<CheckRun>, GhError>>,
+    pr_checks_state_remote: Option<Result<&'static str, GhError>>,
+    pr_thread_addressing_remote: Option<Result<ThreadAddressingSummary, GhError>>,
 }
 
 fn unscripted(method: &str) -> GhError {
@@ -369,6 +398,183 @@ impl FakeGitHub {
     #[must_use]
     pub fn with_api_get_bounded(self, value: Result<Vec<u8>, GhError>) -> Self {
         self.lock().api_get_bounded = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_fetch_pr_base_ref(self, value: Result<String, GhError>) -> Self {
+        self.lock().fetch_pr_base_ref = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_head_branch_name(self, value: Result<String, GhError>) -> Self {
+        self.lock().pr_head_branch_name = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_size_check_remote(self, value: Result<(), GhError>) -> Self {
+        self.lock().pr_size_check_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_diff_remote(self, value: Result<String, GhError>) -> Self {
+        self.lock().pr_diff_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_diff(self, value: Result<String, GhError>) -> Self {
+        self.lock().pr_diff = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_commit_shas_remote(self, value: Result<(String, String), GhError>) -> Self {
+        self.lock().commit_shas_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_file_at_ref(self, value: Result<Vec<u8>, GhError>) -> Self {
+        self.lock().file_at_ref = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_commits(self, value: Result<Vec<er_git::CommitInfo>, GhError>) -> Self {
+        self.lock().pr_commits = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_base_branch_and_commits(
+        self,
+        value: Result<(String, Vec<er_git::CommitInfo>), GhError>,
+    ) -> Self {
+        self.lock().pr_base_branch_and_commits = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_commits_remote(self, value: Result<Vec<er_git::CommitInfo>, GhError>) -> Self {
+        self.lock().commits_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_ensure_installed(self, value: Result<(), GhError>) -> Self {
+        self.lock().ensure_installed = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_list_participating_notifications(
+        self,
+        value: Result<Vec<GhNotification>, GhError>,
+    ) -> Self {
+        self.lock().list_participating_notifications = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_base_branch(self, value: Result<String, GhError>) -> Self {
+        self.lock().pr_base_branch = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_branch_names(self, value: Result<(String, String), GhError>) -> Self {
+        self.lock().pr_branch_names = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_probe_pr_for_current_branch(self, value: BranchPrProbe) -> Self {
+        self.lock().probe_pr_for_current_branch = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_for_current_branch(self, value: Option<(u64, String)>) -> Self {
+        self.lock().pr_for_current_branch = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_lookup_pr_for_current_branch(self, value: PrLookup) -> Self {
+        self.lock().lookup_pr_for_current_branch = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_open_pr_number_for_head(self, value: Result<Option<u64>, GhError>) -> Self {
+        self.lock().open_pr_number_for_head = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_title(self, value: Option<String>) -> Self {
+        self.lock().pr_title = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_get_pr_info(self, value: Result<(String, String, u64), GhError>) -> Self {
+        self.lock().get_pr_info = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_current_login(self, value: Option<String>) -> Self {
+        self.lock().current_login = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_stack_view_json(self, value: Result<String, GhError>) -> Self {
+        self.lock().stack_view_json = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_open_pr_refs_json(self, value: Result<String, GhError>) -> Self {
+        self.lock().open_pr_refs_json = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_metadata_remote(self, value: Result<(String, String), GhError>) -> Self {
+        self.lock().pr_metadata_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_status_remote(self, value: Result<PrStatusBundle, GhError>) -> Self {
+        self.lock().pr_status_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_checks_remote(self, value: Result<Vec<CheckRun>, GhError>) -> Self {
+        self.lock().pr_checks_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_checks_state_remote(self, value: Result<&'static str, GhError>) -> Self {
+        self.lock().pr_checks_state_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_thread_addressing_remote(
+        self,
+        value: Result<ThreadAddressingSummary, GhError>,
+    ) -> Self {
+        self.lock().pr_thread_addressing_remote = Some(value);
         self
     }
 }
@@ -961,6 +1167,326 @@ impl GitHub for FakeGitHub {
         .api_get_bounded
         .clone()
         .unwrap_or_else(|| Err(unscripted("api_get_bounded")))
+    }
+
+    fn fetch_pr_base_ref(
+        &self,
+        _git: &dyn er_git::Git,
+        repo_root: &str,
+        pr_number: u64,
+        base_branch: &str,
+    ) -> Result<String, GhError> {
+        self.record(format!(
+            "fetch_pr_base_ref(repo_root={repo_root:?}, pr_number={pr_number:?}, base_branch={base_branch:?})"
+        ))
+        .fetch_pr_base_ref
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("fetch_pr_base_ref")))
+    }
+
+    fn pr_head_branch_name(&self, number: u64, root: &str) -> Result<String, GhError> {
+        self.record(format!(
+            "pr_head_branch_name(number={number:?}, root={root:?})"
+        ))
+        .pr_head_branch_name
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_head_branch_name")))
+    }
+
+    fn pr_size_check_remote(&self, owner: &str, repo: &str, number: u64) -> Result<(), GhError> {
+        self.record(format!(
+            "pr_size_check_remote(owner={owner:?}, repo={repo:?}, number={number:?})"
+        ))
+        .pr_size_check_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_size_check_remote")))
+    }
+
+    fn pr_diff_remote(
+        &self,
+        _git: &dyn er_git::Git,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<String, GhError> {
+        self.record(format!(
+            "pr_diff_remote(owner={owner:?}, repo={repo:?}, number={number:?})"
+        ))
+        .pr_diff_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_diff_remote")))
+    }
+
+    fn pr_diff(
+        &self,
+        _git: &dyn er_git::Git,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<String, GhError> {
+        self.record(format!(
+            "pr_diff(pr_number={pr_number:?}, repo_root={repo_root:?})"
+        ))
+        .pr_diff
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_diff")))
+    }
+
+    fn commit_shas_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(String, String), GhError> {
+        self.record(format!(
+            "commit_shas_remote(owner={owner:?}, repo={repo:?}, number={number:?})"
+        ))
+        .commit_shas_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("commit_shas_remote")))
+    }
+
+    fn file_at_ref(
+        &self,
+        repo_slug: &str,
+        path: &str,
+        git_ref: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, GhError> {
+        self.record(format!(
+            "file_at_ref(repo_slug={repo_slug:?}, path={path:?}, git_ref={git_ref:?}, max_bytes={max_bytes:?})"
+        ))
+        .file_at_ref
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("file_at_ref")))
+    }
+
+    fn pr_commits(
+        &self,
+        repo_root: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<er_git::CommitInfo>, GhError> {
+        self.record(format!(
+            "pr_commits(repo_root={repo_root:?}, number={number:?}, limit={limit:?})"
+        ))
+        .pr_commits
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_commits")))
+    }
+
+    fn pr_base_branch_and_commits(
+        &self,
+        repo_root: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<(String, Vec<er_git::CommitInfo>), GhError> {
+        self.record(format!(
+            "pr_base_branch_and_commits(repo_root={repo_root:?}, number={number:?}, limit={limit:?})"
+        ))
+        .pr_base_branch_and_commits
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_base_branch_and_commits")))
+    }
+
+    fn commits_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<er_git::CommitInfo>, GhError> {
+        self.record(format!(
+            "commits_remote(owner={owner:?}, repo={repo:?}, number={number:?}, limit={limit:?})"
+        ))
+        .commits_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("commits_remote")))
+    }
+
+    fn ensure_installed(&self) -> Result<(), GhError> {
+        self.record("ensure_installed()".to_string())
+            .ensure_installed
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("ensure_installed")))
+    }
+
+    fn list_participating_notifications(&self) -> Result<Vec<GhNotification>, GhError> {
+        self.record("list_participating_notifications()".to_string())
+            .list_participating_notifications
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("list_participating_notifications")))
+    }
+
+    fn pr_base_branch(&self, pr_number: u64, repo_root: &str) -> Result<String, GhError> {
+        self.record(format!(
+            "pr_base_branch(pr_number={pr_number:?}, repo_root={repo_root:?})"
+        ))
+        .pr_base_branch
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_base_branch")))
+    }
+
+    fn pr_branch_names(
+        &self,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<(String, String), GhError> {
+        self.record(format!(
+            "pr_branch_names(pr_number={pr_number:?}, repo_root={repo_root:?})"
+        ))
+        .pr_branch_names
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_branch_names")))
+    }
+
+    fn probe_pr_for_current_branch(&self, repo_root: &str) -> BranchPrProbe {
+        self.record(format!(
+            "probe_pr_for_current_branch(repo_root={repo_root:?})"
+        ))
+        .probe_pr_for_current_branch
+        .clone()
+        .unwrap_or(BranchPrProbe::Unknown)
+    }
+
+    fn pr_for_current_branch(&self, repo_root: &str) -> Option<(u64, String)> {
+        self.record(format!("pr_for_current_branch(repo_root={repo_root:?})"))
+            .pr_for_current_branch
+            .clone()
+            .unwrap_or(None)
+    }
+
+    fn lookup_pr_for_current_branch(&self, _git: &dyn er_git::Git, repo_root: &str) -> PrLookup {
+        self.record(format!(
+            "lookup_pr_for_current_branch(repo_root={repo_root:?})"
+        ))
+        .lookup_pr_for_current_branch
+        .clone()
+        .unwrap_or_else(|| PrLookup::Unknown("unscripted lookup".to_string()))
+    }
+
+    fn open_pr_number_for_head(
+        &self,
+        owner: &str,
+        repo: &str,
+        head: &str,
+    ) -> Result<Option<u64>, GhError> {
+        self.record(format!(
+            "open_pr_number_for_head(owner={owner:?}, repo={repo:?}, head={head:?})"
+        ))
+        .open_pr_number_for_head
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("open_pr_number_for_head")))
+    }
+
+    fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Option<String> {
+        self.record(format!(
+            "pr_title(owner={owner:?}, repo={repo:?}, number={number:?})"
+        ))
+        .pr_title
+        .clone()
+        .unwrap_or(None)
+    }
+
+    fn get_pr_info(
+        &self,
+        _git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<(String, String, u64), GhError> {
+        self.record(format!("get_pr_info(repo_root={repo_root:?})"))
+            .get_pr_info
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("get_pr_info")))
+    }
+
+    fn current_login(&self) -> Option<String> {
+        self.record("current_login()".to_string())
+            .current_login
+            .clone()
+            .unwrap_or(None)
+    }
+
+    fn stack_view_json(&self, repo_root: &str) -> Result<String, GhError> {
+        self.record(format!("stack_view_json(repo_root={repo_root:?})"))
+            .stack_view_json
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("stack_view_json")))
+    }
+
+    fn open_pr_refs_json(&self, repo_slug: &str) -> Result<String, GhError> {
+        self.record(format!("open_pr_refs_json(repo_slug={repo_slug:?})"))
+            .open_pr_refs_json
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("open_pr_refs_json")))
+    }
+
+    fn pr_metadata_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(String, String), GhError> {
+        self.record(format!(
+            "pr_metadata_remote(owner={owner:?}, repo={repo:?}, number={number:?})"
+        ))
+        .pr_metadata_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_metadata_remote")))
+    }
+
+    fn pr_status_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<PrStatusBundle, GhError> {
+        self.record(format!(
+            "pr_status_remote(owner={owner:?}, repo={repo:?}, number={number:?})"
+        ))
+        .pr_status_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_status_remote")))
+    }
+
+    fn pr_checks_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Vec<CheckRun>, GhError> {
+        self.record(format!(
+            "pr_checks_remote(owner={owner:?}, repo={repo:?}, number={number:?})"
+        ))
+        .pr_checks_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_checks_remote")))
+    }
+
+    fn pr_checks_state_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<&'static str, GhError> {
+        self.record(format!(
+            "pr_checks_state_remote(owner={owner:?}, repo={repo:?}, number={number:?})"
+        ))
+        .pr_checks_state_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_checks_state_remote")))
+    }
+
+    fn pr_thread_addressing_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<ThreadAddressingSummary, GhError> {
+        self.record(format!(
+            "pr_thread_addressing_remote(owner={owner:?}, repo={repo:?}, pr={pr:?})"
+        ))
+        .pr_thread_addressing_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_thread_addressing_remote")))
     }
 }
 
