@@ -12,7 +12,7 @@
 | T1 | T5 GitHub port | [#382](https://github.com/VilfredSikker/easy-review/issues/382) P11, part 1 (#431) in review, part 2 in progress | E |
 | T2 | T4 git port | idle; next #383 (P12) after P11 | – |
 | D4 | T6 store core | [#385](https://github.com/VilfredSikker/easy-review/issues/385) P14 (implementing its own #401 design) | C |
-| D1 | D6 | [#405](https://github.com/VilfredSikker/easy-review/issues/405) P16-design, revising after review | – |
+| D1 | – | idle (P16 waits on P23, P15, P11) | – |
 | D2, D3, D5 | – | idle | – |
 
 **Phase 0, P08, P09 and P10 are merged.** #429 and #430 (P14) merge the release branch in, since #428 touched the root `Cargo.toml` first. Next: #382 merging unblocks #383 (P12); #382 unblocks #384 (P13); #385 unblocks #386 (P15).
@@ -40,7 +40,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P13 | [#384](https://github.com/VilfredSikker/easy-review/issues/384) One remote-slug parser | F | sonnet | ⬜ | | after P11 |
 | P14 | [#385](https://github.com/VilfredSikker/easy-review/issues/385) Create er-store | C | opus | 🔧 | [#429](https://github.com/VilfredSikker/easy-review/pull/429), [#430](https://github.com/VilfredSikker/easy-review/pull/430) | D4; part 1 merged; part 2 merge verdict, awaiting CI after release merge |
 | P15 | [#386](https://github.com/VilfredSikker/easy-review/issues/386) Move to the v1 root | C/E | sonnet | ⬜ | | after P14 |
-| P16 | [#387](https://github.com/VilfredSikker/easy-review/issues/387) Comments and notes through the store | C/E/F | opus | ⛔ | | design #405; after P23, P15, P11, P06 |
+| P16 | [#387](https://github.com/VilfredSikker/easy-review/issues/387) Comments and notes through the store | C/E/F | opus | ⬜ | | after P23, P15, P11 |
 | P17 | [#388](https://github.com/VilfredSikker/easy-review/issues/388) Session state through the store | C/E | opus | ⬜ | | after P16 |
 | P18 | [#389](https://github.com/VilfredSikker/easy-review/issues/389) Review artifacts through the store | E | opus | ⬜ | | after P17 |
 | P19 | [#390](https://github.com/VilfredSikker/easy-review/issues/390) Remaining AI artifacts through the store | C/E | opus | ⬜ | | after P18 |
@@ -62,7 +62,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | [#401](https://github.com/VilfredSikker/easy-review/issues/401) P14: store envelope and keys | P14 | ✅ | amendment B; applied to #385–#387, #393, #395 |
 | [#402](https://github.com/VilfredSikker/easy-review/issues/402) P20: findings projection | P20 | ✅ | applied to #391 |
 | [#404](https://github.com/VilfredSikker/easy-review/issues/404) P21: validation and scoped overlays | P21 | ✅ | amendments A1–A2; applied to #392 (plus the `z` cleanup step) and #391 |
-| [#405](https://github.com/VilfredSikker/easy-review/issues/405) P16: annotation types, promote boundary | P16 | 🔵 | approved with A1–A8; #387 folded, coordinator check |
+| [#405](https://github.com/VilfredSikker/easy-review/issues/405) P16: annotation types, promote boundary | P16 | ✅ | amendments A1–A8; applied to #387 |
 | [#406](https://github.com/VilfredSikker/easy-review/issues/406) P23: lock, lease, change channel | P23 | ✅ | amendments A1–A2; applied to #394 and #387–#389; P16 now follows P23 |
 
 ## Phase gates
