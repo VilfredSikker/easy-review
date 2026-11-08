@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-08 00:00 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-08 09:40 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -38,7 +38,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P11 | [#382](https://github.com/VilfredSikker/easy-review/issues/382) Move github.rs into er-github | E | opus | 🟡 | | T1 |
 | P12 | [#383](https://github.com/VilfredSikker/easy-review/issues/383) Front-end gh calls, gh guardrail | C/F | opus | ⬜ | | after P11, P09 |
 | P13 | [#384](https://github.com/VilfredSikker/easy-review/issues/384) One remote-slug parser | F | sonnet | ⬜ | | after P11 |
-| P14 | [#385](https://github.com/VilfredSikker/easy-review/issues/385) Create er-store | C | opus | 🟡 | | D4 |
+| P14 | [#385](https://github.com/VilfredSikker/easy-review/issues/385) Create er-store | C | opus | 🔧 | [#429](https://github.com/VilfredSikker/easy-review/pull/429), [#430](https://github.com/VilfredSikker/easy-review/pull/430) | D4; part 1 fix-then-merge (amendment C); part 2 in review |
 | P15 | [#386](https://github.com/VilfredSikker/easy-review/issues/386) Move to the v1 root | C/E | sonnet | ⬜ | | after P14 |
 | P16 | [#387](https://github.com/VilfredSikker/easy-review/issues/387) Comments and notes through the store | C/E/F | opus | ⛔ | | design #405; after P23, P15, P11, P06 |
 | P17 | [#388](https://github.com/VilfredSikker/easy-review/issues/388) Session state through the store | C/E | opus | ⬜ | | after P16 |
