@@ -45,6 +45,7 @@ pub mod testing {
     pub use crate::runner::testing::ScriptedRunner;
 }
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 /// One method per public function that spawns `gh`.
@@ -140,6 +141,172 @@ pub trait GitHub: Send + Sync {
         body: &str,
     ) -> Result<(), GhError>;
     fn pr_head_oid_remote(&self, owner: &str, repo: &str, pr: u64) -> Result<String, GhError>;
+
+    fn get_repo_info(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<(String, String), GhError>;
+
+    /// The local checkout to run a remote PR review in, when `repo_root`'s
+    /// `origin` is the same GitHub repository the PR belongs to (`remote_repo`
+    /// is an `"owner/repo"` slug).
+    ///
+    /// Remote reviews otherwise run from the managed artifact directory with no
+    /// repository around them, which pushes the agent into hunting the
+    /// filesystem for a copy of the code. Returns `None` whenever the match
+    /// cannot be established — no origin, unparseable remote, or a different
+    /// repository — so the caller keeps the artifact-dir behaviour.
+    fn local_checkout_for_repo(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+        remote_repo: &str,
+    ) -> Option<String> {
+        if repo_root.is_empty() || remote_repo.is_empty() {
+            return None;
+        }
+        let (owner, repo) = self.get_repo_info(git, repo_root).ok()?;
+        crate::legacy::owner_repo_matches_slug(&owner, &repo, remote_repo)
+            .then(|| repo_root.to_string())
+    }
+
+    fn pr_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: &str,
+    ) -> Result<Vec<GitHubComment>, GhError>;
+    fn pr_comments_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<Vec<GitHubComment>, GhError>;
+    fn review_threads(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: &str,
+    ) -> Result<HashMap<u64, ReviewThreadState>, GhError>;
+    fn review_threads_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<HashMap<u64, ReviewThreadState>, GhError>;
+    fn pr_head_oid(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<String, GhError>;
+    fn post_line_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+        commit_id: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError>;
+    fn post_reply(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError>;
+    fn post_general(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        body: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError>;
+    fn issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<Vec<IssueComment>, GhError>;
+    fn viewer_login(&self, repo_root: Option<&str>) -> Result<String, GhError>;
+    fn push_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+        repo_root: &str,
+    ) -> Result<u64, GhError>;
+    fn push_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+    ) -> Result<u64, GhError>;
+    fn reply_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<u64, GhError>;
+    fn reply_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+    ) -> Result<u64, GhError>;
+    fn update_review_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<(), GhError>;
+    fn delete_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        repo_root: &str,
+    ) -> Result<(), GhError>;
+    fn edit_body(&self, repo_root: &str, body: &str) -> Result<(), GhError>;
+    fn approve(
+        &self,
+        repo_root: &str,
+        remote_repo: Option<&str>,
+        pr_number: Option<u64>,
+    ) -> Result<(), GhError>;
+    fn fetch_pr_comment_bundle(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<PrCommentBundle, GhError>;
+    fn pr_comment_bundle_cached(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<Arc<PrCommentBundle>, GhError>;
+    fn invalidate_comments(&self);
 }
 
 static DEFAULT_HANDLE: OnceLock<Arc<CliGitHub>> = OnceLock::new();

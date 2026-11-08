@@ -3,11 +3,10 @@ use er_git::proc::CommandTimeoutExt;
 use er_git::{Git, GitError};
 use serde::Deserialize;
 
-use crate::review::gh_pr_head_oid_remote;
+use crate::{default_handle, CliGitHub, GhError};
 use std::collections::HashMap;
 use std::process::Command;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 /// Parsed reference to a GitHub PR
 #[derive(Debug, Clone)]
@@ -1064,92 +1063,47 @@ fn parse_owner_repo_from_remote(remote: &str) -> Result<(String, String)> {
     }
 }
 
-type RepoInfoEntry = (Arc<(String, String)>, Instant);
-type RepoInfoMap = HashMap<String, RepoInfoEntry>;
-
-/// Process-wide cache of [`get_repo_info`] results (origin owner/repo per repo
-/// root). `git remote get-url` runs on every agent spawn of a remote PR via
-/// [`local_checkout_for_repo`]; the origin remote is effectively static per
-/// repo, so a short TTL removes the subprocess from the hot path.
-/// Failures are not cached; expired and excess entries are pruned on insert.
-struct RepoInfoCache {
-    inner: Mutex<RepoInfoMap>,
-    ttl: Duration,
-    cap: usize,
-}
-
-impl RepoInfoCache {
-    fn get(&self, repo_root: &str) -> Option<Arc<(String, String)>> {
-        // Drop the guard before the (lock-free) expiry check to avoid holding
-        // the cache mutex longer than needed on the hot lookup path.
-        let (v, at) = {
-            let g = self.inner.lock().ok()?;
-            let (v, at) = g.get(repo_root)?;
-            // Clone into owned values so the guard can be dropped before the
-            // lock-free expiry check below.
-            let v = Arc::clone(v);
-            let at = *at;
-            drop(g);
-            (v, at)
-        };
-        if at.elapsed() > self.ttl {
-            self.inner.lock().ok()?.remove(repo_root);
-            return None;
-        }
-        Some(v)
-    }
-
-    fn insert(&self, repo_root: &str, v: (String, String)) {
-        let Ok(mut g) = self.inner.lock() else {
-            return;
-        };
-        let now = Instant::now();
-        if g.len() >= self.cap && !g.contains_key(repo_root) {
-            // Drop one expired entry, else the oldest by insertion time.
-            if let Some(k) = g
-                .iter()
-                .find(|(_, (_, at))| at.elapsed() > self.ttl)
-                .map(|(k, _)| k.clone())
-                .or_else(|| {
-                    g.iter()
-                        .min_by_key(|(_, (_, at))| *at)
-                        .map(|(k, _)| k.clone())
-                })
-            {
-                g.remove(&k);
-            }
-        }
-        g.insert(repo_root.to_string(), (Arc::new(v), now));
+impl CliGitHub {
+    /// Get GitHub owner/repo from the repository's `origin` remote, cached for
+    /// 60 seconds per repo root.
+    pub(crate) fn get_repo_info(
+        &self,
+        git: &dyn Git,
+        repo_root: &str,
+    ) -> Result<(String, String), GhError> {
+        let cached = self.cache().repo_info.get_or_fetch(
+            repo_root.to_string(),
+            || -> Result<Arc<(String, String)>, GhError> {
+                let remote = git.remote_url(repo_root, "origin").map_err(|error| {
+                    let detail = match error {
+                        GitError::Failed { stderr, .. } => stderr.trim().to_string(),
+                        error => error.to_string(),
+                    };
+                    GhError::Local {
+                        message: format!("Failed to get origin remote: {detail}"),
+                    }
+                })?;
+                let parsed =
+                    parse_owner_repo_from_remote(&remote).map_err(|error| GhError::Local {
+                        message: error.to_string(),
+                    })?;
+                Ok(Arc::new(parsed))
+            },
+        )?;
+        Ok((cached.0.clone(), cached.1.clone()))
     }
 }
 
-static REPO_INFO_CACHE: OnceLock<RepoInfoCache> = OnceLock::new();
-
-/// Get GitHub owner/repo from the repository's `origin` remote.
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn get_repo_info(git: &dyn Git, repo_root: &str) -> Result<(String, String)> {
-    let cache = REPO_INFO_CACHE.get_or_init(|| RepoInfoCache {
-        inner: Mutex::new(HashMap::new()),
-        ttl: Duration::from_secs(60),
-        cap: 64,
-    });
-    if let Some(cached) = cache.get(repo_root) {
-        return Ok((cached.0.clone(), cached.1.clone()));
-    }
-    let remote = match git.remote_url(repo_root, "origin") {
-        Ok(remote) => remote,
-        Err(GitError::Failed { stderr, .. }) => {
-            anyhow::bail!("Failed to get origin remote: {}", stderr.trim());
-        }
-        Err(e) => return Err(anyhow::Error::from(e).context("Failed to get origin remote")),
-    };
-    let parsed = parse_owner_repo_from_remote(&remote)?;
-    cache.insert(repo_root, parsed.clone());
-    Ok(parsed)
+    default_handle()
+        .get_repo_info(git, repo_root)
+        .map_err(anyhow::Error::from)
 }
 
 /// True when `owner`/`repo` name the same GitHub repository as the `"owner/repo"` slug.
 /// GitHub treats owner and repo names case-insensitively.
-fn owner_repo_matches_slug(owner: &str, repo: &str, slug: &str) -> bool {
+pub(crate) fn owner_repo_matches_slug(owner: &str, repo: &str, slug: &str) -> bool {
     let (slug_owner, slug_repo) = match slug.split_once('/') {
         Some(parts) => parts,
         None => return false,
@@ -1157,25 +1111,6 @@ fn owner_repo_matches_slug(owner: &str, repo: &str, slug: &str) -> bool {
     let repo = repo.strip_suffix(".git").unwrap_or(repo);
     let slug_repo = slug_repo.strip_suffix(".git").unwrap_or(slug_repo);
     owner.eq_ignore_ascii_case(slug_owner) && repo.eq_ignore_ascii_case(slug_repo)
-}
-
-/// The local checkout to run a remote PR review in, when `repo_root`'s `origin` is the same
-/// GitHub repository the PR belongs to (`remote_repo` is an `"owner/repo"` slug).
-///
-/// Remote reviews otherwise run from the managed artifact directory with no repository
-/// around them, which pushes the agent into hunting the filesystem for a copy of the code.
-/// Returns `None` whenever the match cannot be established — no origin, unparseable remote,
-/// or a different repository — so the caller keeps the artifact-dir behaviour.
-pub fn local_checkout_for_repo(
-    git: &dyn Git,
-    repo_root: &str,
-    remote_repo: &str,
-) -> Option<String> {
-    if repo_root.is_empty() || remote_repo.is_empty() {
-        return None;
-    }
-    let (owner, repo) = get_repo_info(git, repo_root).ok()?;
-    owner_repo_matches_slug(&owner, &repo, remote_repo).then(|| repo_root.to_string())
 }
 
 /// Parse `gh api --paginate` output: one array, or several concatenated arrays.
@@ -1190,30 +1125,20 @@ fn parse_paginated<T: serde::de::DeserializeOwned>(stdout: &str) -> Result<Vec<T
     Ok(out)
 }
 
-/// Fetch all review comments for a PR
-pub fn gh_pr_comments(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    repo_root: &str,
-) -> Result<Vec<GitHubComment>> {
-    let output = Command::new("gh")
-        .args([
-            "api",
-            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-            "--paginate",
-        ])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to fetch PR comments")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to fetch PR comments: {}", stderr.trim());
+impl CliGitHub {
+    /// Fetch all review comments for a PR.
+    pub(crate) fn pr_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: &str,
+    ) -> Result<Vec<GitHubComment>, GhError> {
+        let path = format!("repos/{owner}/{repo}/pulls/{pr}/comments");
+        let output = self.run_gh_args(&["api", &path, "--paginate"], Some(repo_root))?;
+        let stdout = String::from_utf8_lossy(&output.body);
+        parse_paginated(&stdout).map_err(GhError::from)
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_paginated(&stdout)
 }
 
 /// Build `gh api -f/-F` args for a line or multi-line review comment.
@@ -1253,332 +1178,244 @@ pub struct NewLineComment<'a> {
     pub side: &'a str,
 }
 
-/// Head oid of a PR: from a local checkout when one is given, remote otherwise.
-pub fn gh_pr_head_oid(owner: &str, repo: &str, pr: u64, repo_root: Option<&str>) -> Result<String> {
-    let Some(repo_root) = repo_root else {
-        return gh_pr_head_oid_remote(owner, repo, pr);
-    };
-    // Get the latest commit SHA for the PR (required for review comments)
-    let sha_output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr.to_string(),
-            "--json",
-            "headRefOid",
-            "--jq",
-            ".headRefOid",
-        ])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to get PR head SHA")?;
-
-    if !sha_output.status.success() {
-        let stderr = String::from_utf8_lossy(&sha_output.stderr);
-        anyhow::bail!("Failed to get HEAD SHA from gh pr view: {}", stderr.trim());
-    }
-
-    let commit_id = String::from_utf8_lossy(&sha_output.stdout)
-        .trim()
-        .to_string();
-    if commit_id.is_empty() {
-        anyhow::bail!("Failed to get HEAD SHA from gh pr view: empty output");
-    }
-    Ok(commit_id)
-}
-
-/// Post a line-anchored review comment at the given head commit.
-pub fn gh_pr_post_line_comment(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    comment: NewLineComment<'_>,
-    commit_id: &str,
-    repo_root: Option<&str>,
-) -> Result<CreatedComment> {
-    let NewLineComment {
-        path,
-        line_start,
-        line_end,
-        body,
-        side,
-    } = comment;
-    let end = line_end.unwrap_or(line_start);
-    let field_args = review_comment_field_args(path, line_start, end, side, body, commit_id);
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "api",
-        "-X",
-        "POST",
-        &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-    ]);
-    for arg in &field_args {
-        if arg.starts_with("line=") || arg.starts_with("start_line=") {
-            cmd.arg("-F").arg(arg);
-        } else {
-            cmd.arg("-f").arg(arg);
+impl CliGitHub {
+    /// Head oid of a PR: from a local checkout when one is given, remote otherwise.
+    pub(crate) fn pr_head_oid(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<String, GhError> {
+        let Some(repo_root) = repo_root else {
+            return self.pr_head_oid_remote(owner, repo, pr);
+        };
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &pr.to_string(),
+                "--json",
+                "headRefOid",
+                "--jq",
+                ".headRefOid",
+            ],
+            Some(repo_root),
+        )?;
+        let commit_id = String::from_utf8_lossy(&out.body).trim().to_string();
+        if commit_id.is_empty() {
+            return Err(GhError::Local {
+                message: "Failed to get HEAD SHA from gh pr view: empty output".to_string(),
+            });
         }
-    }
-    if let Some(root) = repo_root {
-        cmd.current_dir(root);
-    }
-    let output = cmd
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to push comment to GitHub")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to push comment: {}", stderr.trim());
+        Ok(commit_id)
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let resp: CreateCommentResponse =
-        serde_json::from_str(&stdout).context("Failed to parse create comment response")?;
-
-    Ok(resp.into_created())
+    /// Post a line-anchored review comment at the given head commit.
+    pub(crate) fn post_line_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+        commit_id: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError> {
+        let NewLineComment {
+            path,
+            line_start,
+            line_end,
+            body,
+            side,
+        } = comment;
+        let end = line_end.unwrap_or(line_start);
+        let field_args = review_comment_field_args(path, line_start, end, side, body, commit_id);
+        let mut args = vec![
+            "api".to_string(),
+            "-X".to_string(),
+            "POST".to_string(),
+            format!("repos/{owner}/{repo}/pulls/{pr}/comments"),
+        ];
+        for arg in &field_args {
+            let flag = if arg.starts_with("line=") || arg.starts_with("start_line=") {
+                "-F"
+            } else {
+                "-f"
+            };
+            args.push(flag.to_string());
+            args.push(arg.clone());
+        }
+        let output = self.run_gh(&args, repo_root, None)?;
+        let stdout = String::from_utf8_lossy(&output.body);
+        let resp: CreateCommentResponse =
+            serde_json::from_str(&stdout).map_err(|error| GhError::Local {
+                message: format!("Failed to parse create comment response: {error}"),
+            })?;
+        Ok(resp.into_created())
+    }
 }
 
-/// Post a reply to an existing review comment.
-pub fn gh_pr_post_reply(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    in_reply_to: u64,
-    body: &str,
-    repo_root: Option<&str>,
-) -> Result<CreatedComment> {
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "api",
-        "-X",
-        "POST",
-        &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-        "-f",
-        &format!("body={}", body),
-        "-F",
-        &format!("in_reply_to={}", in_reply_to),
-    ]);
-    if let Some(root) = repo_root {
-        cmd.current_dir(root);
-    }
-    let output = cmd
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to push reply to GitHub")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to push reply: {}", stderr.trim());
+impl CliGitHub {
+    /// Post a reply to an existing review comment.
+    pub(crate) fn post_reply(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError> {
+        let path = format!("repos/{owner}/{repo}/pulls/{pr}/comments");
+        let in_reply_to = in_reply_to.to_string();
+        let body = format!("body={body}");
+        let reply = format!("in_reply_to={in_reply_to}");
+        let output = self.run_gh_args(
+            &["api", "-X", "POST", &path, "-f", &body, "-F", &reply],
+            repo_root,
+        )?;
+        let stdout = String::from_utf8_lossy(&output.body);
+        let resp: CreateCommentResponse =
+            serde_json::from_str(&stdout).map_err(|error| GhError::Local {
+                message: format!("Failed to parse reply response: {error}"),
+            })?;
+        Ok(resp.into_created())
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let resp: CreateCommentResponse =
-        serde_json::from_str(&stdout).context("Failed to parse reply response")?;
+    /// Post a PR-wide comment (the issues API).
+    pub(crate) fn post_general(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        body: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError> {
+        let path = format!("repos/{owner}/{repo}/issues/{pr}/comments");
+        let body = format!("body={body}");
+        let output = self.run_gh_args(&["api", "-X", "POST", &path, "-f", &body], repo_root)?;
+        let stdout = String::from_utf8_lossy(&output.body);
+        let resp: CreateCommentResponse =
+            serde_json::from_str(&stdout).map_err(|error| GhError::Local {
+                message: format!("Failed to parse general comment response: {error}"),
+            })?;
+        Ok(resp.into_created())
+    }
 
-    Ok(resp.into_created())
+    /// Fetch a PR's issue comments (PR-wide comments, not review comments).
+    pub(crate) fn issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<Vec<IssueComment>, GhError> {
+        let path = format!("repos/{owner}/{repo}/issues/{pr}/comments");
+        let output = self.run_gh_args(&["api", &path, "--paginate"], repo_root)?;
+        parse_paginated(&String::from_utf8_lossy(&output.body)).map_err(GhError::from)
+    }
+
+    /// Login of the authenticated `gh` user.
+    pub(crate) fn viewer_login(&self, repo_root: Option<&str>) -> Result<String, GhError> {
+        let output = self.run_gh_args(&["api", "user", "--jq", ".login"], repo_root)?;
+        let login = String::from_utf8_lossy(&output.body).trim().to_string();
+        if login.is_empty() {
+            return Err(GhError::Local {
+                message: "Failed to read the gh user: empty login".to_string(),
+            });
+        }
+        Ok(login)
+    }
 }
 
-/// Post a PR-wide comment (the issues API).
-pub fn gh_pr_post_general(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    body: &str,
-    repo_root: Option<&str>,
-) -> Result<CreatedComment> {
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "api",
-        "-X",
-        "POST",
-        &format!("repos/{}/{}/issues/{}/comments", owner, repo, pr),
-        "-f",
-        &format!("body={}", body),
-    ]);
-    if let Some(root) = repo_root {
-        cmd.current_dir(root);
-    }
-    let output = cmd
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to post general PR comment")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to post general comment: {}", stderr.trim());
+impl CliGitHub {
+    /// Push a new review comment to a PR.
+    pub(crate) fn push_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+        repo_root: &str,
+    ) -> Result<u64, GhError> {
+        let commit_id = self.pr_head_oid(owner, repo, pr, Some(repo_root))?;
+        Ok(self
+            .post_line_comment(owner, repo, pr, comment, &commit_id, Some(repo_root))?
+            .id)
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let resp: CreateCommentResponse =
-        serde_json::from_str(&stdout).context("Failed to parse general comment response")?;
-
-    Ok(resp.into_created())
-}
-
-/// Fetch a PR's issue comments (PR-wide comments, not review comments).
-pub fn gh_pr_issue_comments(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    repo_root: Option<&str>,
-) -> Result<Vec<IssueComment>> {
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "api",
-        &format!("repos/{}/{}/issues/{}/comments", owner, repo, pr),
-        "--paginate",
-    ]);
-    if let Some(root) = repo_root {
-        cmd.current_dir(root);
-    }
-    let output = cmd
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to fetch PR issue comments")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to fetch PR issue comments: {}", stderr.trim());
-    }
-    parse_paginated(&String::from_utf8_lossy(&output.stdout))
-}
-
-/// Login of the authenticated `gh` user.
-pub fn gh_viewer_login(repo_root: Option<&str>) -> Result<String> {
-    let mut cmd = Command::new("gh");
-    cmd.args(["api", "user", "--jq", ".login"]);
-    if let Some(root) = repo_root {
-        cmd.current_dir(root);
-    }
-    let output = cmd
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to read the gh user")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to read the gh user: {}", stderr.trim());
-    }
-    let login = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if login.is_empty() {
-        anyhow::bail!("Failed to read the gh user: empty login");
-    }
-    Ok(login)
-}
-
-/// Push a new review comment to a PR.
-pub fn gh_pr_push_comment(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    comment: NewLineComment<'_>,
-    repo_root: &str,
-) -> Result<u64> {
-    let commit_id = gh_pr_head_oid(owner, repo, pr, Some(repo_root))?;
-    Ok(gh_pr_post_line_comment(owner, repo, pr, comment, &commit_id, Some(repo_root))?.id)
-}
-
-/// Push a reply to an existing review comment
-pub fn gh_pr_reply_comment(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    in_reply_to: u64,
-    body: &str,
-    repo_root: &str,
-) -> Result<u64> {
-    Ok(gh_pr_post_reply(owner, repo, pr, in_reply_to, body, Some(repo_root))?.id)
-}
-
-/// Update a review comment body on a PR
-pub fn gh_pr_update_review_comment(
-    owner: &str,
-    repo: &str,
-    comment_id: u64,
-    body: &str,
-    repo_root: &str,
-) -> Result<()> {
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "PATCH",
-            &format!("repos/{}/{}/pulls/comments/{}", owner, repo, comment_id),
-            "-f",
-            &format!("body={}", body),
-        ])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to update comment on GitHub")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to update comment: {}", stderr.trim());
+    /// Push a reply to an existing review comment.
+    pub(crate) fn reply_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<u64, GhError> {
+        Ok(self
+            .post_reply(owner, repo, pr, in_reply_to, body, Some(repo_root))?
+            .id)
     }
 
-    Ok(())
-}
+    /// Update a review comment body on a PR.
+    pub(crate) fn update_review_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<(), GhError> {
+        let path = format!("repos/{owner}/{repo}/pulls/comments/{comment_id}");
+        let body = format!("body={body}");
+        self.run_gh_args(&["api", "-X", "PATCH", &path, "-f", &body], Some(repo_root))
+            .map(|_| ())
+    }
 
-/// Delete a review comment from a PR
-pub fn gh_pr_delete_comment(
-    owner: &str,
-    repo: &str,
-    comment_id: u64,
-    repo_root: &str,
-) -> Result<()> {
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "DELETE",
-            &format!("repos/{}/{}/pulls/comments/{}", owner, repo, comment_id),
-        ])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to delete comment from GitHub")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // 404 is OK — comment may already be deleted
-        if !stderr.contains("404") {
-            anyhow::bail!("Failed to delete comment: {}", stderr.trim());
+    /// Delete a review comment from a PR. A 404 means it is already gone.
+    pub(crate) fn delete_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        repo_root: &str,
+    ) -> Result<(), GhError> {
+        let path = format!("repos/{owner}/{repo}/pulls/comments/{comment_id}");
+        match self.run_gh_args(&["api", "-X", "DELETE", &path], Some(repo_root)) {
+            Ok(_) => Ok(()),
+            Err(GhError::NotFound { .. }) => Ok(()),
+            Err(error) => Err(error),
         }
     }
 
-    Ok(())
-}
-
-/// Update the PR body with the given content via `gh pr edit --body`
-pub fn gh_pr_edit_body(repo_root: &str, body: &str) -> Result<()> {
-    let output = Command::new("gh")
-        .args(["pr", "edit", "--body", body])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to update PR body")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to update PR body: {}", stderr.trim());
+    /// Update the PR body with the given content via `gh pr edit --body`.
+    pub(crate) fn edit_body(&self, repo_root: &str, body: &str) -> Result<(), GhError> {
+        self.run_gh_args(&["pr", "edit", "--body", body], Some(repo_root))
+            .map(|_| ())
     }
 
-    Ok(())
-}
-
-/// Approve a PR via `gh pr review --approve`.
-/// Uses `--repo` and PR number when reviewing a remote PR.
-pub fn gh_pr_approve(
-    repo_root: &str,
-    remote_repo: Option<&str>,
-    pr_number: Option<u64>,
-) -> Result<()> {
-    let mut cmd = Command::new("gh");
-    cmd.args(["pr", "review", "--approve"]);
-    if let (Some(slug), Some(n)) = (remote_repo, pr_number) {
-        cmd.args(["--repo", slug, &n.to_string()]);
+    /// Approve a PR via `gh pr review --approve`. Uses `--repo` and PR number
+    /// when reviewing a remote PR.
+    pub(crate) fn approve(
+        &self,
+        repo_root: &str,
+        remote_repo: Option<&str>,
+        pr_number: Option<u64>,
+    ) -> Result<(), GhError> {
+        let mut args = vec![
+            "pr".to_string(),
+            "review".to_string(),
+            "--approve".to_string(),
+        ];
+        if let (Some(slug), Some(n)) = (remote_repo, pr_number) {
+            args.push("--repo".to_string());
+            args.push(slug.to_string());
+            args.push(n.to_string());
+        }
+        self.run_gh(&args, Some(repo_root), None).map(|_| ())
     }
-    cmd.current_dir(repo_root);
-    let output = cmd
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to run gh pr review --approve")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh pr approve failed: {}", stderr.trim());
-    }
-    Ok(())
 }
 
 /// Fetch PR overview data: title, body, state, author, branches, reviewers.
@@ -2177,24 +2014,18 @@ pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrO
     })
 }
 
-/// Fetch PR comments for a remote repo (no local clone needed).
-pub fn gh_pr_comments_remote(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComment>> {
-    let output = Command::new("gh")
-        .args([
-            "api",
-            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-            "--paginate",
-        ])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to fetch PR comments")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to fetch PR comments: {}", stderr.trim());
+impl CliGitHub {
+    /// Fetch PR comments for a remote repo (no local clone needed).
+    pub(crate) fn pr_comments_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<Vec<GitHubComment>, GhError> {
+        let path = format!("repos/{owner}/{repo}/pulls/{pr}/comments");
+        let output = self.run_gh_args(&["api", &path, "--paginate"], None)?;
+        parse_paginated(&String::from_utf8_lossy(&output.body)).map_err(GhError::from)
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_paginated(&stdout)
 }
 
 // ── GraphQL review thread resolution ──
@@ -2265,32 +2096,51 @@ pub struct ReviewThreadState {
     pub outdated: bool,
 }
 
-/// Fetch review thread state for a PR (local repo).
-/// Returns a map of comment_id -> thread state for all review-thread comments.
-pub fn gh_pr_review_threads(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    repo_root: &str,
-) -> Result<HashMap<u64, ReviewThreadState>> {
-    let query = format!(
-        r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved isOutdated comments(first: 100) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
-        owner, repo, pr
-    );
-
-    let output = Command::new("gh")
-        .args(["api", "graphql", "-f", &format!("query={}", query)])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to fetch review threads")?;
-
-    if !output.status.success() {
-        // Non-fatal: fall back to all-unresolved if GraphQL fails
-        return Ok(HashMap::new());
+impl CliGitHub {
+    /// Fetch review thread state for a PR (local repo). A GraphQL failure is
+    /// non-fatal: the caller falls back to all-unresolved.
+    pub(crate) fn review_threads(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: &str,
+    ) -> Result<HashMap<u64, ReviewThreadState>, GhError> {
+        let query = review_threads_query(owner, repo, pr);
+        match self.run_gh_args(
+            &["api", "graphql", "-f", &format!("query={query}")],
+            Some(repo_root),
+        ) {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.body);
+                parse_review_threads_response(&stdout).map_err(GhError::from)
+            }
+            Err(_) => Ok(HashMap::new()),
+        }
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_review_threads_response(&stdout)
+    /// Fetch review thread state for a remote PR (no local clone needed).
+    pub(crate) fn review_threads_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<HashMap<u64, ReviewThreadState>, GhError> {
+        let query = review_threads_query(owner, repo, pr);
+        match self.run_gh_args(&["api", "graphql", "-f", &format!("query={query}")], None) {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.body);
+                parse_review_threads_response(&stdout).map_err(GhError::from)
+            }
+            Err(_) => Ok(HashMap::new()),
+        }
+    }
+}
+
+fn review_threads_query(owner: &str, repo: &str, pr: u64) -> String {
+    format!(
+        r#"query {{ repository(owner: "{owner}", name: "{repo}") {{ pullRequest(number: {pr}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved isOutdated comments(first: 100) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#
+    )
 }
 
 /// Run two independent closures concurrently and return both results.
@@ -2326,159 +2176,87 @@ where
 /// run in parallel here, and the sidebar hover prefetch warms this cache so the
 /// post-open `pull_github_comments` is served from memory instead of the
 /// network.
+#[derive(Debug, Clone)]
 pub struct PrCommentBundle {
     pub comments: Vec<GitHubComment>,
     pub threads: HashMap<u64, ReviewThreadState>,
 }
 
-type PrCommentEntry = (Arc<PrCommentBundle>, Instant);
-type PrCommentMap = HashMap<(String, String, u64), PrCommentEntry>;
-
-struct PrCommentsCache {
-    inner: Mutex<PrCommentMap>,
-    ttl: Duration,
-    cap: usize,
-    /// Bumped by every invalidation so a fetch that raced it cannot re-cache.
-    generation: std::sync::atomic::AtomicU64,
-}
-
-impl PrCommentsCache {
-    fn get(&self, owner: &str, repo: &str, pr: u64) -> Option<Arc<PrCommentBundle>> {
-        // Drop the guard before the (lock-free) expiry check to avoid holding
-        // the cache mutex longer than needed on the hot lookup path.
-        let (bundle, at) = {
-            let g = self.inner.lock().ok()?;
-            let key = (owner.to_string(), repo.to_string(), pr);
-            let (bundle, at) = g.get(&key)?;
-            // Clone into owned values so the guard can be dropped before the
-            // lock-free expiry check below.
-            let bundle = Arc::clone(bundle);
-            let at = *at;
-            drop(g);
-            (bundle, at)
-        };
-        if at.elapsed() > self.ttl {
-            let key = (owner.to_string(), repo.to_string(), pr);
-            self.inner.lock().ok()?.remove(&key);
-            return None;
-        }
-        Some(bundle)
+impl CliGitHub {
+    /// Fetch REST comments + GraphQL review-thread state in parallel; bypasses
+    /// the cache. `repo_root = None` uses the remote variants.
+    pub(crate) fn fetch_pr_comment_bundle(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<PrCommentBundle, GhError> {
+        let (comments, threads) = run_parallel(
+            || match repo_root {
+                Some(root) => self.pr_comments(owner, repo, pr, root),
+                None => self.pr_comments_remote(owner, repo, pr),
+            },
+            || match repo_root {
+                Some(root) => self.review_threads(owner, repo, pr, root),
+                None => self.review_threads_remote(owner, repo, pr),
+            },
+        );
+        Ok(PrCommentBundle {
+            comments: comments?,
+            threads: threads?,
+        })
     }
 
-    fn insert(&self, owner: &str, repo: &str, pr: u64, bundle: Arc<PrCommentBundle>) {
-        let Ok(mut g) = self.inner.lock() else {
-            return;
-        };
-        let key = (owner.to_string(), repo.to_string(), pr);
-        if g.len() >= self.cap && !g.contains_key(&key) {
-            if let Some(k) = g
-                .iter()
-                .find(|(_, (_, at))| at.elapsed() > self.ttl)
-                .map(|(k, _)| k.clone())
-                .or_else(|| {
-                    g.iter()
-                        .min_by_key(|(_, (_, at))| *at)
-                        .map(|(k, _)| k.clone())
-                })
-            {
-                g.remove(&k);
-            }
-        }
-        g.insert(key, (bundle, Instant::now()));
+    /// Fetch (and cache) the PR comment sync bundle. A warm cache makes
+    /// `sync_github_comments` network-free.
+    pub(crate) fn pr_comment_bundle_cached(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<Arc<PrCommentBundle>, GhError> {
+        let key = (owner.to_ascii_lowercase(), repo.to_ascii_lowercase(), pr);
+        self.cache().pr_comments.get_or_fetch(key, || {
+            self.fetch_pr_comment_bundle(owner, repo, pr, repo_root)
+                .map(Arc::new)
+        })
+    }
+
+    /// Drop all cached PR comment bundles. Called on push: a comment pushed
+    /// while the 60 s TTL is warm would otherwise be absent from the stale
+    /// bundle and dropped from `github-comments.json` on the next pull.
+    pub(crate) fn invalidate_comments(&self) {
+        self.cache().pr_comments.clear();
     }
 }
 
-static PR_COMMENTS_CACHE: OnceLock<PrCommentsCache> = OnceLock::new();
-
-/// Fetch REST comments + GraphQL review-thread state in parallel.
-/// `repo_root = None` uses the remote variants (no local clone needed).
+/// Compatibility wrappers for front ends; removed when they take the handle.
 pub fn fetch_pr_comment_bundle(
     owner: &str,
     repo: &str,
     pr: u64,
     repo_root: Option<&str>,
 ) -> Result<PrCommentBundle> {
-    let (comments, threads) = run_parallel(
-        || match repo_root {
-            Some(root) => gh_pr_comments(owner, repo, pr, root),
-            None => gh_pr_comments_remote(owner, repo, pr),
-        },
-        || match repo_root {
-            Some(root) => gh_pr_review_threads(owner, repo, pr, root),
-            None => gh_pr_review_threads_remote(owner, repo, pr),
-        },
-    );
-    Ok(PrCommentBundle {
-        comments: comments?,
-        threads: threads?,
-    })
+    default_handle()
+        .fetch_pr_comment_bundle(owner, repo, pr, repo_root)
+        .map_err(anyhow::Error::from)
 }
 
-/// Fetch (and cache) the PR comment sync bundle: REST comments + GraphQL
-///
-/// review-thread state. `repo_root = None` uses the remote variants (no local
-/// clone needed). A warm cache makes `sync_github_comments` network-free.
 pub fn gh_pr_comment_bundle_cached(
     owner: &str,
     repo: &str,
     pr: u64,
     repo_root: Option<&str>,
 ) -> Result<Arc<PrCommentBundle>> {
-    let cache = PR_COMMENTS_CACHE.get_or_init(|| PrCommentsCache {
-        inner: Mutex::new(HashMap::new()),
-        ttl: Duration::from_secs(60),
-        cap: 32,
-        generation: std::sync::atomic::AtomicU64::new(0),
-    });
-    if let Some(bundle) = cache.get(owner, repo, pr) {
-        return Ok(bundle);
-    }
-    let generation = cache.generation.load(std::sync::atomic::Ordering::SeqCst);
-    let bundle = Arc::new(fetch_pr_comment_bundle(owner, repo, pr, repo_root)?);
-    // A post invalidated the cache while this fetch was running; its data may
-    // predate the post, so do not make it the next 60 seconds' answer.
-    if cache.generation.load(std::sync::atomic::Ordering::SeqCst) == generation {
-        cache.insert(owner, repo, pr, Arc::clone(&bundle));
-    }
-    Ok(bundle)
+    default_handle()
+        .pr_comment_bundle_cached(owner, repo, pr, repo_root)
+        .map_err(anyhow::Error::from)
 }
 
-/// Drop all cached PR comment bundles. Called on push: a comment pushed while
-/// the 60 s TTL is warm would otherwise be absent from the stale bundle and
-/// dropped from `github-comments.json` on the next pull.
 pub fn invalidate_pr_comments_cache() {
-    if let Some(cache) = PR_COMMENTS_CACHE.get() {
-        cache
-            .generation
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if let Ok(mut g) = cache.inner.lock() {
-            g.clear();
-        }
-    }
-}
-
-/// Fetch review thread state for a remote PR (no local clone needed).
-pub fn gh_pr_review_threads_remote(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-) -> Result<HashMap<u64, ReviewThreadState>> {
-    let query = format!(
-        r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved isOutdated comments(first: 100) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
-        owner, repo, pr
-    );
-
-    let output = Command::new("gh")
-        .args(["api", "graphql", "-f", &format!("query={}", query)])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to fetch review threads")?;
-
-    if !output.status.success() {
-        return Ok(HashMap::new());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_review_threads_response(&stdout)
+    default_handle().invalidate_comments();
 }
 
 /// Parse the GraphQL response into a comment_id -> review thread state map.
@@ -2506,19 +2284,60 @@ fn parse_review_threads_response(json: &str) -> Result<HashMap<u64, ReviewThread
     Ok(state_map)
 }
 
-/// Push a new review comment to a remote PR (no local clone needed).
+impl CliGitHub {
+    /// Push a new review comment to a remote PR (no local clone needed).
+    pub(crate) fn push_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+    ) -> Result<u64, GhError> {
+        let commit_id = self.pr_head_oid(owner, repo, pr, None)?;
+        Ok(self
+            .post_line_comment(owner, repo, pr, comment, &commit_id, None)?
+            .id)
+    }
+
+    /// Post a general comment on a PR (not attached to any file/line). Uses the
+    /// Issues API — PRs are issues in GitHub.
+    pub(crate) fn general_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<u64, GhError> {
+        Ok(self
+            .post_general(owner, repo, pr, body, Some(repo_root))?
+            .id)
+    }
+
+    /// Post a general comment on a remote PR (no local repo required).
+    pub(crate) fn general_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        body: &str,
+    ) -> Result<u64, GhError> {
+        Ok(self.post_general(owner, repo, pr, body, None)?.id)
+    }
+}
+
+/// Compatibility wrappers for front ends and engine callers.
 pub fn gh_pr_push_comment_remote(
     owner: &str,
     repo: &str,
     pr: u64,
     comment: NewLineComment<'_>,
 ) -> Result<u64> {
-    let commit_id = gh_pr_head_oid(owner, repo, pr, None)?;
-    Ok(gh_pr_post_line_comment(owner, repo, pr, comment, &commit_id, None)?.id)
+    default_handle()
+        .push_comment_remote(owner, repo, pr, comment)
+        .map_err(anyhow::Error::from)
 }
 
-/// Post a general comment on a PR (not attached to any file/line).
-/// Uses the Issues API — PRs are issues in GitHub.
 pub fn gh_pr_general_comment(
     owner: &str,
     repo: &str,
@@ -2526,12 +2345,15 @@ pub fn gh_pr_general_comment(
     body: &str,
     repo_root: &str,
 ) -> Result<u64> {
-    Ok(gh_pr_post_general(owner, repo, pr, body, Some(repo_root))?.id)
+    default_handle()
+        .general_comment(owner, repo, pr, body, repo_root)
+        .map_err(anyhow::Error::from)
 }
 
-/// Post a general comment on a remote PR (no local repo required).
 pub fn gh_pr_general_comment_remote(owner: &str, repo: &str, pr: u64, body: &str) -> Result<u64> {
-    Ok(gh_pr_post_general(owner, repo, pr, body, None)?.id)
+    default_handle()
+        .general_comment_remote(owner, repo, pr, body)
+        .map_err(anyhow::Error::from)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3001,7 +2823,188 @@ pub fn gh_pr_reply_comment_remote(
     in_reply_to: u64,
     body: &str,
 ) -> Result<u64> {
-    Ok(gh_pr_post_reply(owner, repo, pr, in_reply_to, body, None)?.id)
+    default_handle()
+        .reply_comment_remote(owner, repo, pr, in_reply_to, body)
+        .map_err(anyhow::Error::from)
+}
+
+impl CliGitHub {
+    pub(crate) fn reply_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+    ) -> Result<u64, GhError> {
+        Ok(self
+            .post_reply(owner, repo, pr, in_reply_to, body, None)?
+            .id)
+    }
+}
+
+// Compatibility wrappers, kept until the callers take the handle.
+pub fn gh_pr_comments(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    repo_root: &str,
+) -> Result<Vec<GitHubComment>> {
+    default_handle()
+        .pr_comments(owner, repo, pr, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_comments_remote(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComment>> {
+    default_handle()
+        .pr_comments_remote(owner, repo, pr)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_review_threads(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    repo_root: &str,
+) -> Result<HashMap<u64, ReviewThreadState>> {
+    default_handle()
+        .review_threads(owner, repo, pr, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_review_threads_remote(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+) -> Result<HashMap<u64, ReviewThreadState>> {
+    default_handle()
+        .review_threads_remote(owner, repo, pr)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_head_oid(owner: &str, repo: &str, pr: u64, repo_root: Option<&str>) -> Result<String> {
+    default_handle()
+        .pr_head_oid(owner, repo, pr, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_post_line_comment(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    comment: NewLineComment<'_>,
+    commit_id: &str,
+    repo_root: Option<&str>,
+) -> Result<CreatedComment> {
+    default_handle()
+        .post_line_comment(owner, repo, pr, comment, commit_id, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_post_reply(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    in_reply_to: u64,
+    body: &str,
+    repo_root: Option<&str>,
+) -> Result<CreatedComment> {
+    default_handle()
+        .post_reply(owner, repo, pr, in_reply_to, body, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_post_general(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    body: &str,
+    repo_root: Option<&str>,
+) -> Result<CreatedComment> {
+    default_handle()
+        .post_general(owner, repo, pr, body, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_issue_comments(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    repo_root: Option<&str>,
+) -> Result<Vec<IssueComment>> {
+    default_handle()
+        .issue_comments(owner, repo, pr, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_viewer_login(repo_root: Option<&str>) -> Result<String> {
+    default_handle()
+        .viewer_login(repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_push_comment(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    comment: NewLineComment<'_>,
+    repo_root: &str,
+) -> Result<u64> {
+    default_handle()
+        .push_comment(owner, repo, pr, comment, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_reply_comment(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    in_reply_to: u64,
+    body: &str,
+    repo_root: &str,
+) -> Result<u64> {
+    default_handle()
+        .reply_comment(owner, repo, pr, in_reply_to, body, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_update_review_comment(
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    body: &str,
+    repo_root: &str,
+) -> Result<()> {
+    default_handle()
+        .update_review_comment(owner, repo, comment_id, body, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_delete_comment(
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    repo_root: &str,
+) -> Result<()> {
+    default_handle()
+        .delete_comment(owner, repo, comment_id, repo_root)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_edit_body(repo_root: &str, body: &str) -> Result<()> {
+    default_handle()
+        .edit_body(repo_root, body)
+        .map_err(anyhow::Error::from)
+}
+
+pub fn gh_pr_approve(
+    repo_root: &str,
+    remote_repo: Option<&str>,
+    pr_number: Option<u64>,
+) -> Result<()> {
+    default_handle()
+        .approve(repo_root, remote_repo, pr_number)
+        .map_err(anyhow::Error::from)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3393,13 +3396,24 @@ mod tests {
 
     #[test]
     fn local_checkout_for_repo_needs_both_inputs() {
+        let github = crate::FakeGitHub::default()
+            .with_get_repo_info(Ok(("acme".into(), "discovery".into())));
         assert_eq!(
-            local_checkout_for_repo(&er_git::CliGit, "", "acme/discovery"),
+            crate::GitHub::local_checkout_for_repo(&github, &er_git::CliGit, "", "acme/discovery"),
             None
         );
         assert_eq!(
-            local_checkout_for_repo(&er_git::CliGit, "/tmp/some-repo", ""),
+            crate::GitHub::local_checkout_for_repo(&github, &er_git::CliGit, "/tmp/some-repo", ""),
             None
+        );
+        assert_eq!(
+            crate::GitHub::local_checkout_for_repo(
+                &github,
+                &er_git::CliGit,
+                "/tmp/some-repo",
+                "acme/discovery"
+            ),
+            Some("/tmp/some-repo".to_string())
         );
     }
 
@@ -4468,94 +4482,119 @@ mod tests {
         assert_eq!(s.thread_count, 2);
     }
 
-    // ── get_repo_info cache ──
+    // ── caches ──
 
-    #[test]
-    fn repo_info_cache_serves_within_ttl_and_expires() {
-        let cache = RepoInfoCache {
-            inner: Mutex::new(HashMap::new()),
-            ttl: Duration::from_millis(5),
-            cap: 4,
-        };
-        cache.insert("/r", ("owner".into(), "repo".into()));
-        let hit = cache.get("/r").expect("fresh entry serves");
-        assert_eq!((hit.0.as_str(), hit.1.as_str()), ("owner", "repo"));
-        std::thread::sleep(Duration::from_millis(20));
-        assert!(cache.get("/r").is_none(), "expired entry must miss");
+    fn cli_github() -> CliGitHub {
+        CliGitHub::new(Arc::new(crate::testing::ScriptedRunner::new()))
     }
 
     #[test]
-    fn repo_info_cache_evicts_over_cap() {
-        let cache = RepoInfoCache {
-            inner: Mutex::new(HashMap::new()),
-            ttl: Duration::from_secs(60),
-            cap: 2,
-        };
-        cache.insert("/a", ("o1".into(), "r1".into()));
-        cache.insert("/b", ("o2".into(), "r2".into()));
-        cache.insert("/c", ("o3".into(), "r3".into()));
-        assert!(cache.get("/a").is_none(), "oldest evicted at cap");
-        assert!(cache.get("/b").is_some());
-        assert!(cache.get("/c").is_some());
-    }
-
-    #[test]
-    fn get_repo_info_parses_origin_remote_and_serves_from_cache() {
+    fn repo_info_is_served_from_cache_within_60_seconds() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         git_init_with_remote(root, "https://github.com/Acme/discovery.git");
-        let (owner, repo) = get_repo_info(&er_git::CliGit, root).expect("parses origin remote");
+        let github = cli_github();
+        let (owner, repo) = github
+            .get_repo_info(&er_git::CliGit, root)
+            .expect("parses origin remote");
         assert_eq!((owner.as_str(), repo.as_str()), ("Acme", "discovery"));
-        // Second call is served from the process-wide cache (same value).
-        let (owner2, repo2) = get_repo_info(&er_git::CliGit, root).expect("cache serves");
+        // A fresh lookup would now fail; a hit proves the cache served it.
+        std::process::Command::new("git")
+            .args(["remote", "remove", "origin"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let (owner2, repo2) = github
+            .get_repo_info(&er_git::CliGit, root)
+            .expect("cache serves");
         assert_eq!((owner2.as_str(), repo2.as_str()), ("Acme", "discovery"));
     }
 
-    // ── PR comment bundle cache ──
+    #[test]
+    fn repo_info_cache_is_keyed_by_the_root_as_given() {
+        let caches = crate::Caches::new();
+        caches
+            .repo_info
+            .put("/Repo/Root".to_string(), Arc::new(("o".into(), "r".into())));
+        assert!(caches.repo_info.get(&"/Repo/Root".to_string()).is_some());
+        assert!(
+            caches.repo_info.get(&"/repo/root".to_string()).is_none(),
+            "the repo root key keeps case"
+        );
+    }
 
     #[test]
-    fn pr_comments_cache_serves_within_ttl_and_expires() {
-        let cache = PrCommentsCache {
-            inner: Mutex::new(HashMap::new()),
-            ttl: Duration::from_millis(5),
-            cap: 4,
-            generation: std::sync::atomic::AtomicU64::new(0),
-        };
+    fn comment_bundle_cache_serves_within_ttl_and_expires() {
+        let cache: crate::cache::TtlCache<(String, String, u64), Arc<PrCommentBundle>> =
+            crate::cache::TtlCache::new(std::time::Duration::from_millis(5), Some(4));
         let bundle = Arc::new(PrCommentBundle {
             comments: Vec::new(),
             threads: HashMap::new(),
         });
-        cache.insert("o", "r", 1, Arc::clone(&bundle));
-        assert!(cache.get("o", "r", 1).is_some(), "fresh entry serves");
-        std::thread::sleep(Duration::from_millis(20));
-        assert!(cache.get("o", "r", 1).is_none(), "expired entry must miss");
+        cache.put(("o".into(), "r".into(), 1u64), Arc::clone(&bundle));
+        assert!(
+            cache.get(&("o".into(), "r".into(), 1u64)).is_some(),
+            "fresh entry serves"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(
+            cache.get(&("o".into(), "r".into(), 1u64)).is_none(),
+            "expired entry must miss"
+        );
     }
 
     #[test]
-    fn pr_comments_cache_is_keyed_by_owner_repo_pr() {
-        let cache = PrCommentsCache {
-            inner: Mutex::new(HashMap::new()),
-            ttl: Duration::from_secs(60),
-            cap: 4,
-            generation: std::sync::atomic::AtomicU64::new(0),
-        };
-        cache.insert(
-            "o",
-            "r",
-            1,
-            Arc::new(PrCommentBundle {
-                comments: Vec::new(),
-                threads: HashMap::new(),
-            }),
+    fn comment_bundle_cache_is_keyed_by_lowercased_owner_repo_pr() {
+        let runner = Arc::new(crate::testing::ScriptedRunner::new());
+        runner.script(
+            &[
+                "gh",
+                "api",
+                "--include",
+                "repos/Acme/Repo/pulls/1/comments",
+                "--paginate",
+            ],
+            Ok(crate::testing::ScriptedRunner::output(0, "[]", "")),
         );
-        assert!(cache.get("o", "r", 2).is_none(), "different PR misses");
-        assert!(
-            cache.get("o", "other", 1).is_none(),
-            "different repo misses"
+        runner.script(
+            &["gh", "api", "--include", "graphql"],
+            Ok(crate::testing::ScriptedRunner::output(0, "{}", "")),
         );
+        let github = CliGitHub::new(runner);
+        github
+            .pr_comment_bundle_cached("Acme", "Repo", 1, None)
+            .expect("bundle");
         assert!(
-            cache.get("other", "r", 1).is_none(),
-            "different owner misses"
+            github
+                .cache()
+                .pr_comments
+                .get(&("acme".into(), "repo".into(), 1))
+                .is_some(),
+            "the cache key is lowercased"
+        );
+    }
+
+    #[test]
+    fn invalidate_comments_leaves_merge_settings_cached() {
+        let github = cli_github();
+        let bundle = Arc::new(PrCommentBundle {
+            comments: Vec::new(),
+            threads: HashMap::new(),
+        });
+        github
+            .cache()
+            .pr_comments
+            .put(("o".into(), "r".into(), 1), bundle);
+        github.cache().merge_queue.put("o/r:main".to_string(), true);
+        github.invalidate_comments();
+        assert!(github
+            .cache()
+            .pr_comments
+            .get(&("o".into(), "r".into(), 1))
+            .is_none());
+        assert_eq!(
+            github.cache().merge_queue.get(&"o/r:main".to_string()),
+            Some(true)
         );
     }
 

@@ -209,6 +209,17 @@ mod tests {
     }
 
     #[test]
+    fn a_capped_cache_evicts_the_oldest_entry() {
+        let cache: TtlCache<String, u32> = TtlCache::new(Duration::from_secs(60), Some(2));
+        cache.put(key("a"), 1);
+        cache.put(key("b"), 2);
+        cache.put(key("c"), 3);
+        assert_eq!(cache.get(&key("a")), None);
+        assert_eq!(cache.get(&key("b")), Some(2));
+        assert_eq!(cache.get(&key("c")), Some(3));
+    }
+
+    #[test]
     fn clear_empties_every_entry() {
         let cache: TtlCache<String, u32> = TtlCache::new(Duration::from_secs(60), None);
         cache.put(key("a"), 1);
