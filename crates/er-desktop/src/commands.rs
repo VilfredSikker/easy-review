@@ -8873,23 +8873,28 @@ pub fn list_available_branches(
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Project not found: {project_id}"))?;
 
-    let text = state
-        .ports
-        .git
-        .for_each_ref(&proj.root_path, "%(refname:short)", None, "refs/heads/")
-        .map_err(|e| format!("git for-each-ref failed: {e}"))?;
+    available_branches(&*state.ports.git, &proj.root_path, &proj.tracked_branches)
+}
 
-    let current = state
-        .ports
-        .git
-        .current_branch_show(&proj.root_path)
-        .unwrap_or_default();
+/// Branch names not checked out and not already tracked.
+fn available_branches(
+    git: &dyn er_engine::git::Git,
+    root_path: &str,
+    tracked: &[String],
+) -> Result<Vec<String>, String> {
+    // `GitError` already words a failed call, context included; adding the
+    // context again here would print it twice.
+    let text = git
+        .for_each_ref(root_path, "%(refname:short)", None, "refs/heads/")
+        .map_err(|e| e.to_string())?;
+
+    let current = git.current_branch_show(root_path).unwrap_or_default();
 
     let names: Vec<String> = text
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|n| !n.is_empty())
-        .filter(|n| n != &current && !proj.tracked_branches.iter().any(|t| t == n))
+        .filter(|n| n != &current && !tracked.iter().any(|t| t == n))
         .collect();
     Ok(names)
 }
@@ -11644,6 +11649,20 @@ mod tests {
         load_ui_annotations, save_ui_annotations, ErGitHubComments, ErQuestions,
         GitHubReviewComment, ReviewQuestion, UiAnnotation,
     };
+
+    #[test]
+    fn an_available_branch_error_names_the_command_once() {
+        let fake = er_git::FakeGit::default().with_for_each_ref(Err(er_git::GitError::Failed {
+            context: "git for-each-ref failed".to_string(),
+            stderr: "fatal: not a git repository".to_string(),
+        }));
+
+        let text = available_branches(&fake, "/nonexistent-repo", &[])
+            .expect_err("a failed for-each-ref must surface");
+
+        assert_eq!(text.matches("git for-each-ref failed").count(), 1, "{text}");
+        assert!(text.contains("fatal: not a git repository"), "{text}");
+    }
 
     #[test]
     fn card_action_prompt_picks_the_kind_and_action() {
