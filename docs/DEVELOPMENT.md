@@ -46,7 +46,7 @@ Defined in [`.cargo/config.toml`](../.cargo/config.toml). Each alias runs [`carg
 | `cargo tui-build` | `scripts/er-tui.sh build -p er-tui` | Dev build of terminal `er` → `target/tui/` |
 | `cargo tui-release` | `scripts/er-tui.sh build --release -p er-tui` | Release build → `target/tui/release/er` |
 | `cargo tui-install` | `scripts/er-tui.sh install --path crates/er-tui` | Install `er` to `~/.cargo/bin` |
-| `cargo tui-test` | `scripts/er-tui.sh test -p er-engine -p er-tui` | Fast tests (no desktop) |
+| `cargo tui-test` | `scripts/er-tui.sh test -p er-engine -p er-tui -p er-store` | Fast tests (no desktop) |
 | `cargo tui-run` | `scripts/er-tui.sh run -p er-tui` | Run TUI from repo root |
 | `cargo tui …` | `scripts/er-tui.sh …` | Passthrough to scoped cargo |
 | `cargo er-dev` | `scripts/tauri-dev.sh` | Desktop dev (`target/desktop/`) |
@@ -67,7 +67,7 @@ Extra args append: `cargo tui-build --release`, `cargo er-dev --logs arena`.
 
 ```bash
 ./scripts/er-tui.sh build -p er-tui
-./scripts/er-tui.sh test -p er-engine -p er-tui
+./scripts/er-tui.sh test -p er-engine -p er-tui -p er-store
 ./scripts/er-tui.sh run -p er-tui -- --filter '*.rs'
 ./scripts/tauri-dev.sh --logs arena
 ./scripts/cargo-gc.sh              # manual reclaim; --force also drops target/desktop

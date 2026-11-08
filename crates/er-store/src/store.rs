@@ -1,0 +1,655 @@
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::artifact::{Artifact, Mode};
+use crate::envelope::{self, Envelope, Loaded, Unreadable};
+use crate::error::StoreError;
+use crate::key::{ArtifactKey, Scope};
+use crate::time::format_rfc3339_utc;
+
+/// The largest artifact or text file a read accepts and a write produces.
+pub const MAX_ARTIFACT_BYTES: u64 = 10_000_000;
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn next_sequence() -> u64 {
+    TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+}
+
+fn temp_name(file_name: &str, pid: u32, sequence: u64) -> String {
+    format!(".{file_name}.{pid}.{sequence}.tmp")
+}
+
+fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+enum FileState {
+    Missing,
+    NotFile,
+    TooLarge(u64),
+    Readable,
+}
+
+fn file_state(path: &Path) -> Result<FileState, StoreError> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(FileState::Missing);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() {
+        return Ok(FileState::NotFile);
+    }
+    if metadata.len() > MAX_ARTIFACT_BYTES {
+        return Ok(FileState::TooLarge(metadata.len()));
+    }
+    Ok(FileState::Readable)
+}
+
+fn serialize<T: Artifact>(value: &T, written_at: &str) -> Result<String, StoreError> {
+    match T::MODE {
+        Mode::Enveloped => Ok(serde_json::to_string_pretty(&Envelope {
+            kind: T::KIND,
+            version: T::VERSION,
+            diff_hash: value.diff_hash(),
+            producer: Some("host"),
+            written_at: written_at.to_string(),
+            payload: value,
+        })?),
+        Mode::Bare => Ok(serde_json::to_string_pretty(value)?),
+    }
+}
+
+fn write_tmp(
+    tmp: &Path,
+    path: &Path,
+    bytes: &[u8],
+    parent: &Path,
+    durable: bool,
+) -> Result<(), StoreError> {
+    if durable {
+        let mut file = std::fs::File::create(tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(tmp, path)?;
+        #[cfg(unix)]
+        {
+            let directory = std::fs::File::open(parent)?;
+            directory.sync_all()?;
+        }
+        #[cfg(not(unix))]
+        let _ = parent;
+    } else {
+        std::fs::write(tmp, bytes)?;
+        std::fs::rename(tmp, path)?;
+    }
+    Ok(())
+}
+
+/// A typed view over one store root.
+#[derive(Clone, Debug)]
+pub struct ArtifactStore {
+    root: PathBuf,
+}
+
+impl ArtifactStore {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn scope_dir(&self, scope: &Scope) -> PathBuf {
+        match scope {
+            Scope::Branch { repo, branch, view } => self
+                .root
+                .join("repos")
+                .join(repo.as_str())
+                .join("branches")
+                .join(branch.as_str())
+                .join("view-buckets")
+                .join(view.as_str()),
+            Scope::Pr { repo, number } => self
+                .root
+                .join("repos")
+                .join(repo.as_str())
+                .join("prs")
+                .join(format!("pr-{number}")),
+            Scope::App => self.root.join("app"),
+            Scope::Dir(dir) => dir.as_path().to_path_buf(),
+        }
+    }
+
+    pub fn path<T: Artifact>(&self, key: &ArtifactKey<T>) -> PathBuf {
+        self.scope_dir(key.scope())
+            .join(key.relative_path().as_path())
+    }
+
+    pub fn exists<T: Artifact>(&self, key: &ArtifactKey<T>) -> bool {
+        self.path(key).is_file()
+    }
+
+    pub fn read<T: Artifact>(&self, key: &ArtifactKey<T>) -> Result<Loaded<T>, StoreError> {
+        let path = self.path(key);
+        match file_state(&path)? {
+            FileState::Missing => Ok(Loaded::Absent),
+            FileState::NotFile => Ok(Loaded::Unreadable(Unreadable::Malformed(
+                "not a regular file".to_string(),
+            ))),
+            FileState::TooLarge(bytes) => Ok(Loaded::Unreadable(Unreadable::TooLarge { bytes })),
+            FileState::Readable => {
+                let bytes = std::fs::read(&path)?;
+                match serde_json::from_slice(&bytes) {
+                    Ok(value) => Ok(envelope::parse::<T>(value)),
+                    Err(error) => Ok(Loaded::Unreadable(Unreadable::Malformed(error.to_string()))),
+                }
+            }
+        }
+    }
+
+    pub fn write<T: Artifact>(&self, key: &ArtifactKey<T>, value: &T) -> Result<(), StoreError> {
+        self.write_impl(key, value, false)
+    }
+
+    pub fn write_durable<T: Artifact>(
+        &self,
+        key: &ArtifactKey<T>,
+        value: &T,
+    ) -> Result<(), StoreError> {
+        self.write_impl(key, value, true)
+    }
+
+    fn write_impl<T: Artifact>(
+        &self,
+        key: &ArtifactKey<T>,
+        value: &T,
+        durable: bool,
+    ) -> Result<(), StoreError> {
+        if let Loaded::Unreadable(Unreadable::NewerVersion { found }) = self.read(key)? {
+            return Err(StoreError::NewerVersion {
+                path: self.path(key),
+                found,
+                expected: T::VERSION,
+            });
+        }
+        let written_at = format_rfc3339_utc(now_epoch_secs());
+        let text = serialize::<T>(value, &written_at)?;
+        let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
+        if bytes > MAX_ARTIFACT_BYTES {
+            return Err(StoreError::TooLarge { bytes });
+        }
+        Self::write_bytes(&self.path(key), text.as_bytes(), durable)
+    }
+
+    fn write_bytes(path: &Path, bytes: &[u8], durable: bool) -> Result<(), StoreError> {
+        let parent = path.parent().ok_or_else(|| StoreError::InvalidPath {
+            value: path.display().to_string(),
+        })?;
+        std::fs::create_dir_all(parent)?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| StoreError::InvalidPath {
+                value: path.display().to_string(),
+            })?;
+        let tmp = parent.join(temp_name(file_name, std::process::id(), next_sequence()));
+        let result = write_tmp(&tmp, path, bytes, parent, durable);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::key::{ArtifactKey, BranchView, Scope, Slug};
+    use crate::test_support::{TestBare, TestBig, TestEnveloped, TestLegacy, TestMigrateErr};
+
+    fn temp_store() -> (TempDir, ArtifactStore) {
+        let directory = TempDir::new().unwrap();
+        let store = ArtifactStore::new(directory.path());
+        (directory, store)
+    }
+
+    fn scope(directory: &TempDir) -> Scope {
+        Scope::dir(directory.path()).unwrap()
+    }
+
+    fn key<T: Artifact>(scope: &Scope, slot: T::Slot) -> ArtifactKey<T> {
+        ArtifactKey::new(scope.clone(), slot).unwrap()
+    }
+
+    fn bare_value() -> TestBare {
+        TestBare {
+            version: TestBare::VERSION,
+            diff_hash: "abc".to_string(),
+            value: 9,
+        }
+    }
+
+    #[test]
+    fn enveloped_write_then_read_round_trips_and_has_every_envelope_field() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestEnveloped>(&scope, ());
+        let value = TestEnveloped { value: 7 };
+        store.write(&key, &value).unwrap();
+
+        let raw = std::fs::read_to_string(store.path(&key)).unwrap();
+        let document: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        for field in [
+            "kind",
+            "version",
+            "diff_hash",
+            "producer",
+            "written_at",
+            "payload",
+        ] {
+            assert!(document.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(document["kind"], "test-enveloped");
+        assert_eq!(document["version"], TestEnveloped::VERSION);
+        assert_eq!(document["producer"], "host");
+        assert_eq!(document["payload"]["value"], 7);
+
+        match store.read(&key).unwrap() {
+            Loaded::Found(stored) => {
+                assert_eq!(stored.value, value);
+                let meta = stored.meta.expect("envelope metadata");
+                assert_eq!(meta.version, TestEnveloped::VERSION);
+                assert_eq!(meta.producer.as_deref(), Some("host"));
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_write_stores_the_payload_bytes_with_no_wrapper() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestBare>(&scope, ());
+        let value = bare_value();
+        store.write(&key, &value).unwrap();
+
+        let raw = std::fs::read_to_string(store.path(&key)).unwrap();
+        assert_eq!(raw, serde_json::to_string_pretty(&value).unwrap());
+        let document: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(document.get("kind").is_none());
+        assert!(document.get("payload").is_none());
+    }
+
+    #[test]
+    fn bare_read_accepts_a_file_an_agent_wrote() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestBare>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        std::fs::write(
+            store.path(&key),
+            r#"{"version":2,"diff_hash":"agent","value":5}"#,
+        )
+        .unwrap();
+
+        match store.read(&key).unwrap() {
+            Loaded::Found(stored) => {
+                assert!(stored.meta.is_none());
+                assert_eq!(stored.value.value, 5);
+                assert_eq!(stored.value.diff_hash, "agent");
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_version_is_unreadable_not_a_partial_read() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let enveloped = key::<TestEnveloped>(&scope, ());
+        std::fs::create_dir_all(store.path(&enveloped).parent().unwrap()).unwrap();
+        std::fs::write(
+            store.path(&enveloped),
+            r#"{"kind":"test-enveloped","version":1,"payload":{"value":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            store.read(&enveloped).unwrap(),
+            Loaded::Unreadable(Unreadable::UnknownVersion { found: 1 })
+        );
+
+        let bare = key::<TestBare>(&scope, ());
+        std::fs::write(
+            store.path(&bare),
+            r#"{"version":1,"diff_hash":"h","value":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            store.read(&bare).unwrap(),
+            Loaded::Unreadable(Unreadable::UnknownVersion { found: 1 })
+        );
+    }
+
+    #[test]
+    fn bare_payload_without_a_version_field_is_unreadable() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestBare>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        std::fs::write(store.path(&key), r#"{"diff_hash":"h","value":1}"#).unwrap();
+        assert!(matches!(
+            store.read(&key).unwrap(),
+            Loaded::Unreadable(Unreadable::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn envelope_of_another_kind_is_unreadable() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestEnveloped>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        std::fs::write(
+            store.path(&key),
+            r#"{"kind":"other","version":2,"payload":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            store.read(&key).unwrap(),
+            Loaded::Unreadable(Unreadable::WrongKind {
+                found: "other".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_json_is_unreadable_and_the_file_is_left_untouched() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestBare>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        std::fs::write(store.path(&key), "{not json").unwrap();
+        let before = std::fs::read(store.path(&key)).unwrap();
+        assert!(matches!(
+            store.read(&key).unwrap(),
+            Loaded::Unreadable(Unreadable::Malformed(_))
+        ));
+        assert_eq!(std::fs::read(store.path(&key)).unwrap(), before);
+    }
+
+    #[test]
+    fn a_file_over_the_size_limit_is_too_large_and_is_not_read() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestBare>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        let file = std::fs::File::create(store.path(&key)).unwrap();
+        file.set_len(MAX_ARTIFACT_BYTES + 1).unwrap();
+        assert_eq!(
+            store.read(&key).unwrap(),
+            Loaded::Unreadable(Unreadable::TooLarge {
+                bytes: MAX_ARTIFACT_BYTES + 1
+            })
+        );
+    }
+
+    #[test]
+    fn a_missing_file_is_absent() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestEnveloped>(&scope, ());
+        assert_eq!(store.read(&key).unwrap(), Loaded::Absent);
+    }
+
+    #[test]
+    fn a_successful_write_leaves_no_tmp_file_and_a_failed_rename_cleans_up() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestEnveloped>(&scope, ());
+        store.write(&key, &TestEnveloped { value: 1 }).unwrap();
+        let parent = store.path(&key).parent().unwrap().to_path_buf();
+        let names: Vec<String> = std::fs::read_dir(&parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["test-enveloped.json".to_string()]);
+
+        std::fs::remove_file(store.path(&key)).unwrap();
+        std::fs::create_dir_all(store.path(&key)).unwrap();
+        assert!(store.write(&key, &TestEnveloped { value: 2 }).is_err());
+        let leftovers: Vec<String> = std::fs::read_dir(&parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "left {leftovers:?}");
+    }
+
+    #[test]
+    fn two_writes_in_one_process_use_different_tmp_names() {
+        assert_ne!(temp_name("a.json", 1, 0), temp_name("a.json", 1, 1));
+    }
+
+    #[test]
+    fn dir_scope_accepts_any_directory_and_rejects_empty_and_dotdot() {
+        let bucket = TempDir::new().unwrap();
+        let scope = Scope::dir(bucket.path()).unwrap();
+        let store = ArtifactStore::new("/somewhere/else");
+        let key = key::<TestEnveloped>(&scope, ());
+        assert_eq!(store.path(&key), bucket.path().join("test-enveloped.json"));
+        assert!(Scope::dir("").is_err());
+        assert!(Scope::dir("a/../b").is_err());
+    }
+
+    #[test]
+    fn scope_paths_follow_the_documented_layout() {
+        let store = ArtifactStore::new("/root");
+        let branch = Scope::Branch {
+            repo: Slug::new("my-repo").unwrap(),
+            branch: Slug::new("feature-x").unwrap(),
+            view: BranchView::Unstaged,
+        };
+        assert_eq!(
+            store.scope_dir(&branch),
+            Path::new("/root/repos/my-repo/branches/feature-x/view-buckets/unstaged")
+        );
+        let pr = Scope::Pr {
+            repo: Slug::new("owner-repo").unwrap(),
+            number: 42,
+        };
+        assert_eq!(
+            store.scope_dir(&pr),
+            Path::new("/root/repos/owner-repo/prs/pr-42")
+        );
+        assert_eq!(store.scope_dir(&Scope::App), Path::new("/root/app"));
+    }
+
+    #[test]
+    fn a_bare_file_with_another_diff_hash_is_found() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestBare>(&scope, ());
+        let value = TestBare {
+            version: TestBare::VERSION,
+            diff_hash: "old".to_string(),
+            value: 3,
+        };
+        store.write(&key, &value).unwrap();
+        match store.read(&key).unwrap() {
+            Loaded::Found(stored) => assert_eq!(stored.value.diff_hash, "old"),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn path_matches_the_file_that_was_written() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestEnveloped>(&scope, ());
+        assert_eq!(
+            store.path(&key),
+            directory.path().join("test-enveloped.json")
+        );
+        store.write(&key, &TestEnveloped { value: 1 }).unwrap();
+        assert!(store.path(&key).is_file());
+    }
+
+    #[test]
+    fn a_directory_at_the_target_path_is_unreadable() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestEnveloped>(&scope, ());
+        std::fs::create_dir_all(store.path(&key)).unwrap();
+        assert_eq!(
+            store.read(&key).unwrap(),
+            Loaded::Unreadable(Unreadable::Malformed("not a regular file".to_string()))
+        );
+    }
+
+    #[test]
+    fn migrate_returning_another_error_is_malformed() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestMigrateErr>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        std::fs::write(store.path(&key), r#"{"version":1,"value":1}"#).unwrap();
+        assert!(matches!(
+            store.read(&key).unwrap(),
+            Loaded::Unreadable(Unreadable::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn a_newer_envelope_version_is_unreadable() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestEnveloped>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        std::fs::write(
+            store.path(&key),
+            r#"{"kind":"test-enveloped","version":99,"payload":{"value":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            store.read(&key).unwrap(),
+            Loaded::Unreadable(Unreadable::NewerVersion { found: 99 })
+        );
+    }
+
+    #[test]
+    fn write_refuses_to_replace_a_newer_file() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestEnveloped>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        let newer = r#"{"kind":"test-enveloped","version":99,"payload":{"value":1}}"#;
+        std::fs::write(store.path(&key), newer).unwrap();
+        let error = store.write(&key, &TestEnveloped { value: 2 }).unwrap_err();
+        match error {
+            StoreError::NewerVersion {
+                found, expected, ..
+            } => {
+                assert_eq!(found, 99);
+                assert_eq!(expected, TestEnveloped::VERSION);
+            }
+            other => panic!("expected NewerVersion, got {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(store.path(&key)).unwrap(), newer);
+    }
+
+    #[test]
+    fn write_refuses_a_payload_over_the_size_limit() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestBig>(&scope, ());
+        let blob = "x".repeat(usize::try_from(MAX_ARTIFACT_BYTES).unwrap() + 1);
+        let value = TestBig {
+            version: TestBig::VERSION,
+            diff_hash: "h".to_string(),
+            blob,
+        };
+        assert!(matches!(
+            store.write(&key, &value),
+            Err(StoreError::TooLarge { .. })
+        ));
+        assert!(!store.path(&key).exists());
+    }
+
+    #[test]
+    fn enveloped_kind_reads_a_legacy_bare_file() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestLegacy>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        std::fs::write(store.path(&key), r#"{"version":1,"value":7}"#).unwrap();
+        match store.read(&key).unwrap() {
+            Loaded::Found(stored) => {
+                assert_eq!(stored.value.value, 7);
+                assert!(stored.meta.is_none());
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn app_scope_path_is_root_app_file() {
+        let store = ArtifactStore::new("/root");
+        let key = key::<TestEnveloped>(&Scope::App, ());
+        assert_eq!(store.path(&key), Path::new("/root/app/test-enveloped.json"));
+    }
+
+    #[test]
+    fn bare_file_wrapped_in_an_envelope_is_unreadable() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestBare>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        std::fs::write(
+            store.path(&key),
+            json!({
+                "kind": "test-bare",
+                "version": TestBare::VERSION,
+                "diff_hash": "h",
+                "producer": "host",
+                "written_at": "2026-11-06T09:30:00Z",
+                "payload": {"version": TestBare::VERSION, "diff_hash": "h", "value": 1}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.read(&key).unwrap(),
+            Loaded::Unreadable(Unreadable::WrongKind {
+                found: "test-bare".to_string()
+            })
+        );
+
+        std::fs::write(
+            store.path(&key),
+            r#"{"payload":{"version":2,"diff_hash":"h","value":1}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            store.read(&key).unwrap(),
+            Loaded::Unreadable(Unreadable::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn default_migrate_rejects_every_version() {
+        assert!(TestBare::migrate(0, json!({})).is_err());
+    }
+}

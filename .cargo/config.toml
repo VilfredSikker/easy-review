@@ -4,7 +4,7 @@
 #   cargo tui-build       → scripts/er-tui.sh build -p er-tui
 #   cargo tui-release     → scripts/er-tui.sh build --release -p er-tui
 #   cargo tui-install     → scripts/er-tui.sh install --path crates/er-tui
-#   cargo tui-test        → scripts/er-tui.sh test -p er-engine -p er-tui
+#   cargo tui-test        → scripts/er-tui.sh test -p er-engine -p er-tui -p er-store
 #   cargo tui-run         → scripts/er-tui.sh run -p er-tui
 #   cargo tui …           → scripts/er-tui.sh …
 #   cargo er-dev                 → scripts/tauri-dev.sh
