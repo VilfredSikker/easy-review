@@ -7,8 +7,12 @@ license.workspace = true
 description = "GitHub access behind a typed port for easy-review"
 
 [dependencies]
+er-git = { path = "../er-git" }
+anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

@@ -7,13 +7,12 @@
 //! one pending review per reviewer per PR, which is why the first comment
 //! starts it and every later one is appended to it.
 
-use super::ReviewBatchEntry;
-use super::{gh_pr_head_oid_remote, gh_pr_submit_review_remote, review_comment_json};
-use crate::proc::CommandTimeoutExt;
-use anyhow::{Context, Result};
+use crate::cli::CliGitHub;
+use crate::default_handle;
+use crate::error::GhError;
+use crate::review::{review_comment_json, ReviewBatchEntry};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::process::Command;
 
 /// The viewer's pending review on one PR, plus the request that asked for it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -72,105 +71,6 @@ const DELETE_COMMENT_MUTATION: &str = r#"mutation($id:ID!){
   deletePullRequestReviewComment(input:{id:$id}){clientMutationId}
 }"#;
 
-/// The viewer's pending review on `owner/repo#pr`. An empty review (no
-/// `review_id`) when none has been started.
-pub fn gh_pending_review(owner: &str, repo: &str, pr: u64) -> Result<PendingReview> {
-    let stdout = gh_graphql(
-        &[
-            format!("query={PENDING_REVIEW_QUERY}"),
-            format!("owner={owner}"),
-            format!("repo={repo}"),
-        ],
-        &[format!("pr={pr}")],
-    )
-    .context("Failed to read the pending review")?;
-    parse_pending_review(&stdout)
-}
-
-/// Add one line comment to the viewer's pending review, starting the review
-/// when there is none yet.
-pub fn gh_pending_review_add_comment(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    entry: &ReviewBatchEntry,
-) -> Result<()> {
-    let current = gh_pending_review(owner, repo, pr)?;
-    match current.review_node_id {
-        Some(review) => {
-            let (strings, ints) = add_thread_fields(&review, entry);
-            gh_graphql(&strings, &ints)
-                .context("Failed to add the comment to your pending review")?;
-            Ok(())
-        }
-        None => {
-            let commit_id = gh_pr_head_oid_remote(owner, repo, pr)?;
-            let payload = start_review_payload(&commit_id, entry);
-            gh_api_post_json(
-                &format!("repos/{owner}/{repo}/pulls/{pr}/reviews"),
-                &payload,
-            )
-            .context("Failed to start a pending review")
-        }
-    }
-}
-
-/// Drop one comment from the pending review. The review itself stays, empty,
-/// until it is submitted.
-pub fn gh_pending_review_remove_comment(comment_node_id: &str) -> Result<()> {
-    gh_graphql(
-        &[
-            format!("query={DELETE_COMMENT_MUTATION}"),
-            format!("id={comment_node_id}"),
-        ],
-        &[],
-    )
-    .context("Failed to remove the comment from your pending review")?;
-    Ok(())
-}
-
-/// Submit the viewer's review with `event`, posting its pending comments with
-/// it. Without a pending review this is a plain review carrying only the
-/// summary. Returns how many line comments went out with it.
-pub fn gh_pending_review_submit(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    event: &str,
-    body: &str,
-) -> Result<usize> {
-    let current = gh_pending_review(owner, repo, pr)?;
-    let count = current.comments.len();
-    if review_body_required(event, count) && body.trim().is_empty() {
-        anyhow::bail!("GitHub requires a summary for this review when it carries no line comments");
-    }
-    match current.review_id {
-        Some(id) => {
-            let output = Command::new("gh")
-                .args([
-                    "api",
-                    "-X",
-                    "POST",
-                    &format!("repos/{owner}/{repo}/pulls/{pr}/reviews/{id}/events"),
-                    "-f",
-                    &format!("event={event}"),
-                    "-f",
-                    &format!("body={body}"),
-                ])
-                .output_timed(crate::proc::GH_TIMEOUT)
-                .context("Failed to submit the pending review")?;
-            if !output.status.success() {
-                anyhow::bail!(
-                    "Failed to submit review: {}",
-                    gh_failure_detail(&output.stdout, &output.stderr)
-                );
-            }
-        }
-        None => gh_pr_submit_review_remote(owner, repo, pr, &[], event, body)?,
-    }
-    Ok(count)
-}
-
 /// GitHub rejects a Comment or Request changes review that says nothing: no
 /// summary and no line comments. Approve may be empty.
 pub fn review_body_required(event: &str, comment_count: usize) -> bool {
@@ -204,14 +104,17 @@ fn add_thread_fields(review_node_id: &str, entry: &ReviewBatchEntry) -> (Vec<Str
     (strings, ints)
 }
 
-fn parse_pending_review(json: &str) -> Result<PendingReview> {
-    let v: serde_json::Value =
-        serde_json::from_str(json).context("Failed to parse the pending review response")?;
+fn parse_pending_review(json: &str) -> Result<PendingReview, GhError> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|_| GhError::Local {
+        message: "Failed to parse the pending review response".to_string(),
+    })?;
     let data = &v["data"];
     let viewer = data["viewer"]["login"].as_str().map(str::to_string);
     let pr = &data["repository"]["pullRequest"];
     if pr.is_null() {
-        anyhow::bail!("Pull request not found");
+        return Err(GhError::Local {
+            message: "Pull request not found".to_string(),
+        });
     }
 
     let mut out = PendingReview {
@@ -303,51 +206,168 @@ fn parse_pending_comment(
     })
 }
 
-fn gh_graphql(strings: &[String], ints: &[String]) -> Result<String> {
-    let mut cmd = Command::new("gh");
-    cmd.args(["api", "graphql"]);
-    for s in strings {
-        cmd.arg("-f").arg(s);
+impl CliGitHub {
+    fn post_json(&self, path: &str, payload: &serde_json::Value) -> Result<(), GhError> {
+        // A temp file rather than an argument: the body is user text, and a
+        // NamedTempFile is 0600 and O_EXCL (see `post_pr_review`).
+        let mut tmp = tempfile::NamedTempFile::new().map_err(|error| GhError::Local {
+            message: format!("Failed to create review payload file: {error}"),
+        })?;
+        serde_json::to_writer(&mut tmp, payload).map_err(|error| GhError::Local {
+            message: format!("Failed to write review payload: {error}"),
+        })?;
+        let tmp_path = tmp.path().to_string_lossy().into_owned();
+        let args = vec![
+            "api".to_string(),
+            "-X".to_string(),
+            "POST".to_string(),
+            path.to_string(),
+            "--input".to_string(),
+            tmp_path,
+        ];
+        self.run_gh(&args, None, None).map(|_| ())
     }
-    for i in ints {
-        cmd.arg("-F").arg(i);
-    }
-    let output = cmd
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .map_err(super::gh_spawn_context)?;
-    if !output.status.success() {
-        anyhow::bail!("{}", gh_failure_detail(&output.stdout, &output.stderr));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn gh_api_post_json(path: &str, payload: &serde_json::Value) -> Result<()> {
-    // A temp file rather than an argument: the body is user text, and a
-    // NamedTempFile is 0600 and O_EXCL (see `post_pr_review`).
-    let mut tmp = tempfile::NamedTempFile::new().context("Failed to create review payload file")?;
-    serde_json::to_writer(&mut tmp, payload).context("Failed to write review payload")?;
-    let tmp_path = tmp.path().to_string_lossy().into_owned();
-    let output = Command::new("gh")
-        .args(["api", "-X", "POST", path, "--input", &tmp_path])
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .map_err(super::gh_spawn_context)?;
-    drop(tmp);
-    if !output.status.success() {
-        anyhow::bail!("{}", gh_failure_detail(&output.stdout, &output.stderr));
+impl CliGitHub {
+    /// The viewer's pending review on `owner/repo#pr`. An empty review (no
+    /// `review_id`) when none has been started.
+    pub(crate) fn pending_review(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<PendingReview, GhError> {
+        let stdout = self.graphql(
+            PENDING_REVIEW_QUERY,
+            &[("owner", owner), ("repo", repo)],
+            &[("pr", &pr.to_string())],
+        )?;
+        parse_pending_review(&stdout)
     }
-    Ok(())
+
+    /// Add one line comment to the viewer's pending review, starting the review
+    /// when there is none yet.
+    pub(crate) fn pending_review_add_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        entry: &ReviewBatchEntry,
+    ) -> Result<(), GhError> {
+        let current = self.pending_review(owner, repo, pr)?;
+        match current.review_node_id {
+            Some(review) => {
+                let (strings, ints) = add_thread_fields(&review, entry);
+                let mut args = vec!["api".to_string(), "graphql".to_string()];
+                for value in strings {
+                    args.extend(["-f".to_string(), value]);
+                }
+                for value in ints {
+                    args.extend(["-F".to_string(), value]);
+                }
+                self.run_gh(&args, None, None).map(|_| ())
+            }
+            None => {
+                let commit_id = self.pr_head_oid_remote(owner, repo, pr)?;
+                let payload = start_review_payload(&commit_id, entry);
+                self.post_json(
+                    &format!("repos/{owner}/{repo}/pulls/{pr}/reviews"),
+                    &payload,
+                )
+            }
+        }
+    }
+
+    /// Drop one comment from the pending review. The review itself stays, empty,
+    /// until it is submitted.
+    pub(crate) fn pending_review_remove_comment(
+        &self,
+        comment_node_id: &str,
+    ) -> Result<(), GhError> {
+        self.graphql(DELETE_COMMENT_MUTATION, &[("id", comment_node_id)], &[])
+            .map(|_| ())
+    }
+
+    /// Submit the viewer's review with `event`, posting its pending comments with
+    /// it. Without a pending review this is a plain review carrying only the
+    /// summary. Returns how many line comments went out with it.
+    pub(crate) fn pending_review_submit(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        event: &str,
+        body: &str,
+    ) -> Result<usize, GhError> {
+        let current = self.pending_review(owner, repo, pr)?;
+        let count = current.comments.len();
+        if review_body_required(event, count) && body.trim().is_empty() {
+            return Err(GhError::Local {
+                message:
+                    "GitHub requires a summary for this review when it carries no line comments"
+                        .to_string(),
+            });
+        }
+        match current.review_id {
+            Some(id) => {
+                let args = vec![
+                    "api".to_string(),
+                    "-X".to_string(),
+                    "POST".to_string(),
+                    format!("repos/{owner}/{repo}/pulls/{pr}/reviews/{id}/events"),
+                    "-f".to_string(),
+                    format!("event={event}"),
+                    "-f".to_string(),
+                    format!("body={body}"),
+                ];
+                self.run_gh(&args, None, None)?;
+            }
+            None => self.submit_review_remote(owner, repo, pr, &[], event, body)?,
+        }
+        Ok(count)
+    }
 }
 
-/// `gh api` puts GitHub's JSON error on stdout and its own summary on stderr;
-/// the JSON names the field that was rejected, so keep both.
-fn gh_failure_detail(stdout: &[u8], stderr: &[u8]) -> String {
-    let stderr = String::from_utf8_lossy(stderr);
-    let stdout = String::from_utf8_lossy(stdout);
-    if stdout.trim().is_empty() {
-        stderr.trim().to_string()
-    } else {
-        format!("{} ({})", stderr.trim(), stdout.trim())
-    }
+// Compatibility wrappers, kept for the front ends and `app/state`.
+
+pub fn gh_pending_review(owner: &str, repo: &str, pr: u64) -> anyhow::Result<PendingReview> {
+    default_handle()
+        .pending_review(owner, repo, pr)
+        .map_err(|error| anyhow::anyhow!("Failed to read the pending review: {error}"))
+}
+
+pub fn gh_pending_review_add_comment(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    entry: &ReviewBatchEntry,
+) -> anyhow::Result<()> {
+    default_handle()
+        .pending_review_add_comment(owner, repo, pr, entry)
+        .map_err(|error| {
+            anyhow::anyhow!("Failed to add the comment to your pending review: {error}")
+        })
+}
+
+pub fn gh_pending_review_remove_comment(comment_node_id: &str) -> anyhow::Result<()> {
+    default_handle()
+        .pending_review_remove_comment(comment_node_id)
+        .map_err(|error| {
+            anyhow::anyhow!("Failed to remove the comment from your pending review: {error}")
+        })
+}
+
+pub fn gh_pending_review_submit(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    event: &str,
+    body: &str,
+) -> anyhow::Result<usize> {
+    default_handle()
+        .pending_review_submit(owner, repo, pr, event, body)
+        .map_err(|error| anyhow::anyhow!("Failed to submit the pending review: {error}"))
 }
 
 #[cfg(test)]
