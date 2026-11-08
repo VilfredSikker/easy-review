@@ -373,3 +373,58 @@ mod tests {
         assert_eq!(root.er_dir(), expected.to_string_lossy());
     }
 }
+
+#[cfg(test)]
+mod store_scope_tests {
+    use super::{pr_bucket_dir, storage_root, view_bucket_dir, STORAGE_TEST_ENV_LOCK};
+    use er_store::{Artifact, ArtifactKey, ArtifactStore, BranchView, Mode, Scope, Slug};
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    struct ScopeTestArtifact {
+        version: u32,
+        diff_hash: String,
+    }
+
+    impl Artifact for ScopeTestArtifact {
+        const KIND: &'static str = "scope-test";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "scope-test.json";
+        type Slot = ();
+    }
+
+    #[test]
+    fn store_scope_paths_equal_the_engine_bucket_dirs() {
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let store = ArtifactStore::new(storage_root());
+
+        let branch = Scope::Branch {
+            repo: Slug::new("my-repo").unwrap(),
+            branch: Slug::new("feature-x").unwrap(),
+            view: BranchView::Unstaged,
+        };
+        let key = ArtifactKey::<ScopeTestArtifact>::new(branch, ()).unwrap();
+        assert_eq!(
+            store.path(&key).parent().unwrap(),
+            view_bucket_dir("my-repo", "feature-x", "unstaged").as_path()
+        );
+
+        let pr = Scope::Pr {
+            repo: Slug::new("owner-repo").unwrap(),
+            number: 42,
+        };
+        let key = ArtifactKey::<ScopeTestArtifact>::new(pr, ()).unwrap();
+        assert_eq!(
+            store.path(&key).parent().unwrap(),
+            pr_bucket_dir("owner-repo", 42).as_path()
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+}
