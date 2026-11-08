@@ -970,7 +970,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             } else if action == InputMode::Confirm(ConfirmAction::Push) {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
-                match git::git_push(&repo_root) {
+                match app.ports.git.push(&repo_root) {
                     Ok(_) => {
                         app.tab_mut().committed_unpushed = false;
                         let _ = app.tab_mut().refresh_diff();
