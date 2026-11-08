@@ -307,6 +307,11 @@ pub trait GitHub: Send + Sync {
         repo_root: Option<&str>,
     ) -> Result<Arc<PrCommentBundle>, GhError>;
     fn invalidate_comments(&self);
+
+    fn overview(&self, repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData>;
+    fn overview_no_checks(&self, repo_root: &str, pr_number: Option<u64>)
+        -> Option<PrOverviewData>;
+    fn overview_remote(&self, owner: &str, repo: &str, number: u64) -> Option<PrOverviewData>;
 }
 
 static DEFAULT_HANDLE: OnceLock<Arc<CliGitHub>> = OnceLock::new();

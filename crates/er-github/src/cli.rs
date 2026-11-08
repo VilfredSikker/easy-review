@@ -8,7 +8,8 @@ use crate::cache::TtlCache;
 use crate::classify::{classify, GhOutput};
 use crate::error::GhError;
 use crate::legacy::{
-    CreatedComment, GitHubComment, IssueComment, NewLineComment, PrCommentBundle, ReviewThreadState,
+    CreatedComment, GitHubComment, IssueComment, NewLineComment, PrCommentBundle, PrOverviewData,
+    ReviewThreadState,
 };
 use crate::pending_review::PendingReview;
 use crate::review::ReviewBatchEntry;
@@ -481,6 +482,22 @@ impl GitHub for CliGitHub {
 
     fn invalidate_comments(&self) {
         CliGitHub::invalidate_comments(self);
+    }
+
+    fn overview(&self, repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
+        CliGitHub::overview(self, repo_root, pr_number)
+    }
+
+    fn overview_no_checks(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Option<PrOverviewData> {
+        CliGitHub::overview_no_checks(self, repo_root, pr_number)
+    }
+
+    fn overview_remote(&self, owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
+        CliGitHub::overview_remote(self, owner, repo, number)
     }
 }
 

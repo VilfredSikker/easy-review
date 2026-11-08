@@ -1418,122 +1418,112 @@ impl CliGitHub {
     }
 }
 
-/// Fetch PR overview data: title, body, state, author, branches, reviewers.
-/// If `pr_number` is Some, fetches that specific PR; otherwise auto-detects from current branch.
-pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
-    gh_pr_overview_impl(repo_root, pr_number, true)
-}
-
-/// Like `gh_pr_overview`, but skips the separate `gh pr checks` subprocess
-///
-/// (`checks` is always empty in the result). Use this when the caller already
-/// has a fresher CI-checks source for the same PR — e.g. the desktop's 30s
-/// gh-status loop (`fetch_github_status` / `gh_status_cache`) — and only needs
-/// title/state/author/branch/reviewer metadata, to avoid a duplicate
-/// `gh pr checks` call on every tick.
-pub fn gh_pr_overview_no_checks(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
-    gh_pr_overview_impl(repo_root, pr_number, false)
-}
-
-fn gh_pr_overview_impl(
-    repo_root: &str,
-    pr_number: Option<u64>,
-    include_checks: bool,
-) -> Option<PrOverviewData> {
-    // Fetch core PR fields
-    let mut args = vec!["pr", "view"];
-    let pr_num_str;
-    if let Some(n) = pr_number {
-        pr_num_str = n.to_string();
-        args.push(&pr_num_str);
-    }
-    args.extend_from_slice(&[
-        "--json",
-        "number,title,body,state,author,url,baseRefName,headRefName,reviews",
-    ]);
-    let view_output = Command::new("gh")
-        .args(&args)
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .ok()?;
-
-    if !view_output.status.success() {
-        return None;
+impl CliGitHub {
+    /// Fetch PR overview data: title, body, state, author, branches, reviewers.
+    /// If `pr_number` is Some, fetches that specific PR; otherwise auto-detects
+    /// from the current branch.
+    pub(crate) fn overview(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Option<PrOverviewData> {
+        self.overview_impl(repo_root, pr_number, true)
     }
 
-    let json_str = String::from_utf8_lossy(&view_output.stdout);
-    let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
-
-    let number = v["number"].as_u64().unwrap_or(0);
-    let title = v["title"].as_str().unwrap_or("").to_string();
-    let body = v["body"].as_str().unwrap_or("").to_string();
-    let state = v["state"].as_str().unwrap_or("").to_string();
-    let author = v["author"]["login"].as_str().unwrap_or("").to_string();
-    let url = v["url"].as_str().unwrap_or("").to_string();
-    let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
-    let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
-
-    let reviewers: Vec<ReviewerStatus> = if let Some(reviews_arr) = v["reviews"].as_array() {
-        deduplicate_reviewers(reviews_arr)
-    } else {
-        Vec::new()
-    };
-
-    // Fetch CI checks (separate call — may fail if no checks configured).
-    // Skipped when the caller already has a fresher checks source — see
-    // `gh_pr_overview_no_checks`.
-    let checks = if include_checks {
-        gh_pr_checks_data(repo_root).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-
-    Some(PrOverviewData {
-        number,
-        title,
-        body,
-        state,
-        author,
-        url,
-        base_branch,
-        head_branch,
-        checks,
-        reviewers,
-    })
-}
-
-/// Fetch CI check runs for the current PR
-fn gh_pr_checks_data(repo_root: &str) -> Result<Vec<CiCheck>> {
-    let output = Command::new("gh")
-        .args(["pr", "checks", "--json", "name,state,bucket"])
-        .current_dir(repo_root)
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .context("Failed to run gh pr checks")?;
-
-    if !output.status.success() {
-        return Ok(Vec::new());
+    /// Like [`Self::overview`], but skips the separate `gh pr checks`
+    /// subprocess (`checks` is always empty in the result). Use this when the
+    /// caller already has a fresher CI-checks source for the same PR.
+    pub(crate) fn overview_no_checks(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Option<PrOverviewData> {
+        self.overview_impl(repo_root, pr_number, false)
     }
 
-    let json_str = String::from_utf8_lossy(&output.stdout);
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
+    fn overview_impl(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+        include_checks: bool,
+    ) -> Option<PrOverviewData> {
+        let mut args = vec!["pr".to_string(), "view".to_string()];
+        if let Some(n) = pr_number {
+            args.push(n.to_string());
+        }
+        args.extend([
+            "--json".to_string(),
+            "number,title,body,state,author,url,baseRefName,headRefName,reviews".to_string(),
+        ]);
+        let view_output = self.run_gh(&args, Some(repo_root), None).ok()?;
+        let json_str = String::from_utf8_lossy(&view_output.body);
+        let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
 
-    let checks = arr
-        .iter()
-        .filter_map(|c| {
-            let name = c["name"].as_str()?;
-            // gh pr checks uses "state" (e.g. SUCCESS, FAILURE, PENDING)
-            // and "bucket" (pass, fail, pending) for grouping
-            let state = c["state"].as_str().unwrap_or("unknown");
-            let bucket = c["bucket"].as_str().map(|s| s.to_string());
-            Some(CiCheck {
-                name: name.to_string(),
-                status: state.to_string(),
-                conclusion: bucket,
-            })
+        let number = v["number"].as_u64().unwrap_or(0);
+        let title = v["title"].as_str().unwrap_or("").to_string();
+        let body = v["body"].as_str().unwrap_or("").to_string();
+        let state = v["state"].as_str().unwrap_or("").to_string();
+        let author = v["author"]["login"].as_str().unwrap_or("").to_string();
+        let url = v["url"].as_str().unwrap_or("").to_string();
+        let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
+        let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
+
+        let reviewers: Vec<ReviewerStatus> = if let Some(reviews_arr) = v["reviews"].as_array() {
+            deduplicate_reviewers(reviews_arr)
+        } else {
+            Vec::new()
+        };
+
+        // Fetch CI checks (separate call — may fail if no checks configured).
+        let checks = if include_checks {
+            self.checks_data(repo_root).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        Some(PrOverviewData {
+            number,
+            title,
+            body,
+            state,
+            author,
+            url,
+            base_branch,
+            head_branch,
+            checks,
+            reviewers,
         })
-        .collect();
+    }
 
-    Ok(checks)
+    /// Fetch CI check runs for the current PR; a failure reads as no checks.
+    fn checks_data(&self, repo_root: &str) -> Result<Vec<CiCheck>, GhError> {
+        let Ok(output) = self.run_gh_args(
+            &["pr", "checks", "--json", "name,state,bucket"],
+            Some(repo_root),
+        ) else {
+            return Ok(Vec::new());
+        };
+        let json_str = String::from_utf8_lossy(&output.body);
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
+
+        let checks = arr
+            .iter()
+            .filter_map(|c| {
+                let name = c["name"].as_str()?;
+                // gh pr checks uses "state" (e.g. SUCCESS, FAILURE, PENDING)
+                // and "bucket" (pass, fail, pending) for grouping
+                let state = c["state"].as_str().unwrap_or("unknown");
+                let bucket = c["bucket"].as_str().map(|s| s.to_string());
+                Some(CiCheck {
+                    name: name.to_string(),
+                    status: state.to_string(),
+                    conclusion: bucket,
+                })
+            })
+            .collect();
+
+        Ok(checks)
+    }
 }
 
 /// Test whether a remote URL belongs to the given owner/repo.
@@ -1959,59 +1949,75 @@ pub fn gh_open_pr_refs_json(repo_slug: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Fetch PR overview data for a remote repo (no local clone needed).
-pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
-    let repo_slug = format!("{}/{}", owner, repo);
-    let view_output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "number,title,body,state,author,url,baseRefName,headRefName,reviews",
-        ])
-        .output_timed(er_git::proc::GH_TIMEOUT)
-        .ok()?;
+impl CliGitHub {
+    /// Fetch PR overview data for a remote repo (no local clone needed).
+    pub(crate) fn overview_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Option<PrOverviewData> {
+        let repo_slug = format!("{owner}/{repo}");
+        let number_arg = number.to_string();
+        let view_output = self
+            .run_gh_args(
+                &[
+                    "pr",
+                    "view",
+                    &number_arg,
+                    "--repo",
+                    &repo_slug,
+                    "--json",
+                    "number,title,body,state,author,url,baseRefName,headRefName,reviews",
+                ],
+                None,
+            )
+            .ok()?;
+        let json_str = String::from_utf8_lossy(&view_output.body);
+        let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
 
-    if !view_output.status.success() {
-        return None;
+        let number = v["number"].as_u64().unwrap_or(0);
+        let title = v["title"].as_str().unwrap_or("").to_string();
+        let body = v["body"].as_str().unwrap_or("").to_string();
+        let state = v["state"].as_str().unwrap_or("").to_string();
+        let author = v["author"]["login"].as_str().unwrap_or("").to_string();
+        let url = v["url"].as_str().unwrap_or("").to_string();
+        let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
+        let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
+
+        let reviewers: Vec<ReviewerStatus> = if let Some(reviews_arr) = v["reviews"].as_array() {
+            deduplicate_reviewers(reviews_arr)
+        } else {
+            Vec::new()
+        };
+
+        // Skip CI checks for remote (would need --repo flag on gh pr checks too)
+        Some(PrOverviewData {
+            number,
+            title,
+            body,
+            state,
+            author,
+            url,
+            base_branch,
+            head_branch,
+            checks: Vec::new(),
+            reviewers,
+        })
     }
+}
 
-    let json_str = String::from_utf8_lossy(&view_output.stdout);
-    let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+/// Compatibility wrappers for front ends and engine callers.
+pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
+    default_handle().overview(repo_root, pr_number)
+}
 
-    let number = v["number"].as_u64().unwrap_or(0);
-    let title = v["title"].as_str().unwrap_or("").to_string();
-    let body = v["body"].as_str().unwrap_or("").to_string();
-    let state = v["state"].as_str().unwrap_or("").to_string();
-    let author = v["author"]["login"].as_str().unwrap_or("").to_string();
-    let url = v["url"].as_str().unwrap_or("").to_string();
-    let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
-    let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
+pub fn gh_pr_overview_no_checks(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
+    default_handle().overview_no_checks(repo_root, pr_number)
+}
 
-    let reviewers: Vec<ReviewerStatus> = if let Some(reviews_arr) = v["reviews"].as_array() {
-        deduplicate_reviewers(reviews_arr)
-    } else {
-        Vec::new()
-    };
-
-    // Skip CI checks for remote (would need --repo flag on gh pr checks too)
-    let checks = Vec::new();
-
-    Some(PrOverviewData {
-        number,
-        title,
-        body,
-        state,
-        author,
-        url,
-        base_branch,
-        head_branch,
-        checks,
-        reviewers,
-    })
+pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
+    default_handle().overview_remote(owner, repo, number)
 }
 
 impl CliGitHub {

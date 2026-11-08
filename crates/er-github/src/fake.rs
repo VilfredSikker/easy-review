@@ -3,7 +3,8 @@
 use crate::actions::{PrAction, RepoMergeSettings};
 use crate::error::GhError;
 use crate::legacy::{
-    CreatedComment, GitHubComment, IssueComment, NewLineComment, PrCommentBundle, ReviewThreadState,
+    CreatedComment, GitHubComment, IssueComment, NewLineComment, PrCommentBundle, PrOverviewData,
+    ReviewThreadState,
 };
 use crate::pending_review::PendingReview;
 use crate::review::ReviewBatchEntry;
@@ -64,6 +65,9 @@ struct FakeState {
     approve: Option<Result<(), GhError>>,
     fetch_pr_comment_bundle: Option<Result<PrCommentBundle, GhError>>,
     pr_comment_bundle_cached: Option<Result<Arc<PrCommentBundle>, GhError>>,
+    overview: Option<Option<PrOverviewData>>,
+    overview_no_checks: Option<Option<PrOverviewData>>,
+    overview_remote: Option<Option<PrOverviewData>>,
 }
 
 fn unscripted(method: &str) -> GhError {
@@ -340,6 +344,24 @@ impl FakeGitHub {
         value: Result<Arc<PrCommentBundle>, GhError>,
     ) -> Self {
         self.lock().pr_comment_bundle_cached = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_overview(self, value: Option<PrOverviewData>) -> Self {
+        self.lock().overview = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_overview_no_checks(self, value: Option<PrOverviewData>) -> Self {
+        self.lock().overview_no_checks = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_overview_remote(self, value: Option<PrOverviewData>) -> Self {
+        self.lock().overview_remote = Some(value);
         self
     }
 }
@@ -892,6 +914,37 @@ impl GitHub for FakeGitHub {
 
     fn invalidate_comments(&self) {
         drop(self.record("invalidate_comments()".to_string()));
+    }
+
+    fn overview(&self, repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
+        self.record(format!(
+            "overview(repo_root={repo_root:?}, pr_number={pr_number:?})"
+        ))
+        .overview
+        .clone()
+        .unwrap_or_else(|| panic!("FakeGitHub: unscripted overview"))
+    }
+
+    fn overview_no_checks(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Option<PrOverviewData> {
+        self.record(format!(
+            "overview_no_checks(repo_root={repo_root:?}, pr_number={pr_number:?})"
+        ))
+        .overview_no_checks
+        .clone()
+        .unwrap_or_else(|| panic!("FakeGitHub: unscripted overview_no_checks"))
+    }
+
+    fn overview_remote(&self, owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
+        self.record(format!(
+            "overview_remote(owner={owner:?}, repo={repo:?}, number={number:?})"
+        ))
+        .overview_remote
+        .clone()
+        .unwrap_or_else(|| panic!("FakeGitHub: unscripted overview_remote"))
     }
 }
 
