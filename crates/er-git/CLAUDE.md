@@ -11,7 +11,8 @@ a free function, so a test can answer with `FakeGit` and needs no repository.
   and `git` is a bug in `er`. `docs/adr/0001-shell-out-to-git.md`.
 - A new git command is a new `Git` trait method in `cli.rs`, its `CliGit`
   forward, its `FakeGit` slot and a `CliGit` test, all in the PR that needs it.
-  Never spawn `git` from a caller: the `er::git_spawn` gate fails the build.
+  Never spawn `git` from a caller: the `er::git_spawn` gate fails the build,
+  and there is no allow-list, so every spawn outside this crate is an error.
 - Every invocation passes `--no-color` and `--no-ext-diff`. Without them a user
   with difftastic or delta configured gets output the parser cannot read.
 

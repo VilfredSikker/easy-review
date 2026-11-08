@@ -200,6 +200,15 @@ mod tests {
     }
 
     #[test]
+    fn a_spawn_anywhere_outside_home_fails_with_no_allow_list() {
+        let mut by_file = BTreeMap::new();
+        by_file.insert("crates/er-desktop/src/a.rs".to_string(), vec![finding()]);
+        let diags = evaluate(&by_file, "crates/er-git", &[], CODE, "Git");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].level, "error");
+    }
+
+    #[test]
     fn the_gh_rule_does_not_flag_a_git_spawn() {
         assert!(findings("fn f() { Command::new(\"git\"); }", "gh").is_empty());
     }

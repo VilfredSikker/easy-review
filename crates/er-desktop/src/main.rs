@@ -16,7 +16,6 @@ use er_desktop::{
 };
 use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
 use er_engine::app::App;
-use er_engine::proc::CommandTimeoutExt;
 
 /// Inject the annotation content script before `</head>` (or `</body>` as fallback).
 fn inject_script(mut html: Vec<u8>) -> Vec<u8> {
@@ -847,7 +846,7 @@ fn main() {
     let has_persisted_tabs = tabs::load_tabs()
         .map(|f| !f.tabs.is_empty())
         .unwrap_or(false);
-    let cwd_repo_root = er_engine::git::get_repo_root().ok();
+    let cwd_repo_root = ports.git.repo_root_cwd().ok();
 
     let mut app = match (has_persisted_tabs, cwd_repo_root.clone()) {
         (true, Some(root)) => App::new_unloaded(root, ports.clone()).unwrap_or_else(|e| {
@@ -945,7 +944,7 @@ fn main() {
     if projects::load().projects.is_empty() {
         let root = app.tab().repo_root.clone();
         if !root.is_empty() {
-            let _ = projects::auto_register(&root);
+            let _ = projects::auto_register(&*ports.git, &root);
         }
     }
 
@@ -1153,6 +1152,7 @@ fn main() {
         let probe_app = Arc::clone(&app_arc);
         let probe_cache = Arc::clone(&branch_base_remote_oid);
         let probe_rev = Arc::clone(&desktop_revision);
+        let probe_ports = ports.clone();
         let mut probe_interval_secs = PROBE_INTERVAL_SECS;
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(probe_interval_secs));
@@ -1183,22 +1183,18 @@ fn main() {
             }
 
             // Phase 2: no lock — ask origin for the base branch tip.
-            let out = std::process::Command::new("git")
-                .args(["ls-remote", "origin", &base_short])
-                .current_dir(&repo_root)
-                .output_timed(er_engine::proc::GIT_FETCH_TIMEOUT);
-            let oid = match out {
-                Ok(o) if o.status.success() => {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
+            let oid = probe_ports
+                .git
+                .ls_remote(&repo_root, "origin", &base_short)
+                .ok()
+                .and_then(|stdout| {
                     stdout
                         .lines()
                         .next()
                         .and_then(|line| line.split_whitespace().next())
                         .map(|s| s.to_string())
                         .filter(|s| !s.is_empty())
-                }
-                _ => None,
-            };
+                });
             let Some(oid) = oid else {
                 // Probe failed. Treat as unchanged and back off, so a flaky
                 // network is not hammered at the fast cadence.
@@ -1603,6 +1599,7 @@ fn main() {
     let bg_meta = Arc::clone(&meta_cache);
     let meta_desktop_rev = Arc::clone(&desktop_revision);
     let meta_app = Arc::clone(&app_arc);
+    let meta_ports = ports.clone();
     std::thread::spawn(move || {
         #[expect(
             clippy::expect_used,
@@ -1617,14 +1614,14 @@ fn main() {
             // ASAP. Then a short delay before the full sweep covers everyone else.
             let active_id = projects::load().active_id.clone();
             if let Some(id) = active_id.as_deref() {
-                if snapshot::refresh_meta_cache_for_project(id, &bg_meta) {
+                if snapshot::refresh_meta_cache_for_project(&*meta_ports.git, id, &bg_meta) {
                     profile_log::bump_desktop_revision(&meta_desktop_rev, "meta_startup_project");
                 }
             }
             // First full pass — slight delay so we don't compete with the
             // active tab's diff refresh for git CPU during the first frame.
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            if snapshot::refresh_meta_cache(&launch_root, &bg_meta) {
+            if snapshot::refresh_meta_cache(&*meta_ports.git, &launch_root, &bg_meta) {
                 profile_log::bump_desktop_revision(&meta_desktop_rev, "meta_startup_full");
             }
             loop {
@@ -1637,7 +1634,7 @@ fn main() {
                 tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
                 let active_id = projects::load().active_id.clone();
                 if let Some(id) = active_id.as_deref() {
-                    if snapshot::refresh_meta_cache_for_project(id, &bg_meta) {
+                    if snapshot::refresh_meta_cache_for_project(&*meta_ports.git, id, &bg_meta) {
                         profile_log::bump_desktop_revision(&meta_desktop_rev, "meta_tick");
                     }
                 }
@@ -2159,7 +2156,7 @@ fn watch_branch_for_tab(tab: &er_engine::app::TabState) -> Option<String> {
 fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
     let tab = app.tab();
     let branch = watch_branch_for_tab(tab)?;
-    let root = commands::resolve_head_checkout(&tab.repo_root, &branch)?;
+    let root = commands::resolve_head_checkout(&*app.ports.git, &tab.repo_root, &branch)?;
     Some((branch, root))
 }
 
