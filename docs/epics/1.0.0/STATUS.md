@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-08 09:40 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-08 12:30 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -12,7 +12,7 @@
 | T1 | T5 GitHub port | [#382](https://github.com/VilfredSikker/easy-review/issues/382) P11 | E |
 | T2 | T4 git port | [#380](https://github.com/VilfredSikker/easy-review/issues/380) P09, PR #428 in review | C, F |
 | D4 | T6 store core | [#385](https://github.com/VilfredSikker/easy-review/issues/385) P14 (implementing its own #401 design) | C |
-| D1 | D6 | [#405](https://github.com/VilfredSikker/easy-review/issues/405) P16-design | – |
+| D1 | D6 | [#405](https://github.com/VilfredSikker/easy-review/issues/405) P16-design, revising after review | – |
 | D2, D3, D5 | – | idle | – |
 
 **Phase 0, P08 and P10 are merged.** #385 (P14) and #428 (P09) both touch the root `Cargo.toml` (lane C); the second to merge merges the release branch in. Next: #380 merging and #382 merging unblock #383 (P12); #382 unblocks #384 (P13); #385 unblocks #386 (P15).
@@ -38,7 +38,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P11 | [#382](https://github.com/VilfredSikker/easy-review/issues/382) Move github.rs into er-github | E | opus | 🟡 | | T1 |
 | P12 | [#383](https://github.com/VilfredSikker/easy-review/issues/383) Front-end gh calls, gh guardrail | C/F | opus | ⬜ | | after P11, P09 |
 | P13 | [#384](https://github.com/VilfredSikker/easy-review/issues/384) One remote-slug parser | F | sonnet | ⬜ | | after P11 |
-| P14 | [#385](https://github.com/VilfredSikker/easy-review/issues/385) Create er-store | C | opus | 🔧 | [#429](https://github.com/VilfredSikker/easy-review/pull/429), [#430](https://github.com/VilfredSikker/easy-review/pull/430) | D4; part 1 fix-then-merge (amendment C); part 2 in review |
+| P14 | [#385](https://github.com/VilfredSikker/easy-review/issues/385) Create er-store | C | opus | 🔧 | [#429](https://github.com/VilfredSikker/easy-review/pull/429), [#430](https://github.com/VilfredSikker/easy-review/pull/430) | D4; both parts fix-then-merge (amendment C) |
 | P15 | [#386](https://github.com/VilfredSikker/easy-review/issues/386) Move to the v1 root | C/E | sonnet | ⬜ | | after P14 |
 | P16 | [#387](https://github.com/VilfredSikker/easy-review/issues/387) Comments and notes through the store | C/E/F | opus | ⛔ | | design #405; after P23, P15, P11, P06 |
 | P17 | [#388](https://github.com/VilfredSikker/easy-review/issues/388) Session state through the store | C/E | opus | ⬜ | | after P16 |
@@ -62,7 +62,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | [#401](https://github.com/VilfredSikker/easy-review/issues/401) P14: store envelope and keys | P14 | ✅ | amendment B; applied to #385–#387, #393, #395 |
 | [#402](https://github.com/VilfredSikker/easy-review/issues/402) P20: findings projection | P20 | ✅ | applied to #391 |
 | [#404](https://github.com/VilfredSikker/easy-review/issues/404) P21: validation and scoped overlays | P21 | ✅ | amendments A1–A2; applied to #392 (plus the `z` cleanup step) and #391 |
-| [#405](https://github.com/VilfredSikker/easy-review/issues/405) P16: annotation types, promote boundary | P16 | 🟡 | D1 |
+| [#405](https://github.com/VilfredSikker/easy-review/issues/405) P16: annotation types, promote boundary | P16 | 🔧 | D1; revise (four must-fixes) |
 | [#406](https://github.com/VilfredSikker/easy-review/issues/406) P23: lock, lease, change channel | P23 | ✅ | amendments A1–A2; applied to #394 and #387–#389; P16 now follows P23 |
 
 ## Phase gates
