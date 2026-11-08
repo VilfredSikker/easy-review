@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::artifact::{Artifact, Mode};
 use crate::error::StoreError;
-use crate::key::RelPath;
+use crate::key::{validated_template, RelPath};
 
 /// A glob for an artifact file.
 ///
@@ -115,7 +115,7 @@ impl Registry {
     }
 
     pub fn register<T: Artifact>(&mut self) -> Result<(), StoreError> {
-        let pattern = Pattern::new(T::FILE.replace("{slot}", "*"));
+        let pattern = pattern_of(&validated_template::<T>("*")?);
         let mode = match T::MODE {
             Mode::Enveloped => EntryMode::Enveloped,
             Mode::Bare => EntryMode::Bare,
@@ -132,11 +132,9 @@ impl Registry {
         kind: &'static str,
         file: &'static str,
     ) -> Result<(), StoreError> {
-        let path = RelPath::new(file)?;
-        let pattern = Pattern::new(path.as_path().to_string_lossy().into_owned());
         self.push(Entry {
             kind,
-            pattern,
+            pattern: pattern_of(&RelPath::new(file)?),
             mode: EntryMode::Text,
         })
     }
@@ -179,6 +177,10 @@ impl Registry {
     }
 }
 
+fn pattern_of(path: &RelPath) -> Pattern {
+    Pattern::new(path.as_path().to_string_lossy().into_owned())
+}
+
 fn overlaps(left: &Pattern, right: &Pattern) -> bool {
     if directory_of(left.as_str()) != directory_of(right.as_str()) {
         return false;
@@ -218,7 +220,9 @@ fn walk(
         let child = relative.join(entry.file_name());
         if file_type.is_dir() {
             walk(&entry.path(), &child, registry, ignore, out)?;
-        } else if file_type.is_file() && !registry.accounted(&child, ignore) {
+        } else if entry.path().is_file() && !registry.accounted(&child, ignore) {
+            // `is_file` follows a symlink, so a link to a file is reported.
+            // A symlinked directory is not walked, so a loop cannot form.
             out.push(child);
         }
     }

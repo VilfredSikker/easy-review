@@ -404,16 +404,28 @@ mod store_scope_tests {
         std::env::set_var("ER_STORAGE_ROOT", tmp.path());
         let store = ArtifactStore::new(storage_root());
 
-        let branch = Scope::Branch {
-            repo: Slug::new("my-repo").unwrap(),
-            branch: Slug::new("feature-x").unwrap(),
-            view: BranchView::Unstaged,
-        };
-        let key = ArtifactKey::<ScopeTestArtifact>::new(branch, ()).unwrap();
-        assert_eq!(
-            store.path(&key).parent().unwrap(),
-            view_bucket_dir("my-repo", "feature-x", "unstaged").as_path()
-        );
+        let repo = Slug::new("my-repo").unwrap();
+        let branch = Slug::new("feature-x").unwrap();
+        for view in [
+            BranchView::Branch,
+            BranchView::Unstaged,
+            BranchView::Staged,
+            BranchView::History,
+        ] {
+            let key = ArtifactKey::<ScopeTestArtifact>::new(
+                Scope::Branch {
+                    repo: repo.clone(),
+                    branch: branch.clone(),
+                    view,
+                },
+                (),
+            )
+            .unwrap();
+            assert_eq!(
+                store.path(&key).parent().unwrap(),
+                view_bucket_dir("my-repo", "feature-x", view.as_str()).as_path()
+            );
+        }
 
         let pr = Scope::Pr {
             repo: Slug::new("owner-repo").unwrap(),

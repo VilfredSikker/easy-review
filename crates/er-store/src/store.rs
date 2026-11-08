@@ -324,8 +324,9 @@ mod tests {
     use super::*;
     use crate::key::{ArtifactKey, BranchView, ExpertId, RelPath, Scope, Slug};
     use crate::test_support::{
-        TestBare, TestBig, TestBigEnveloped, TestEnveloped, TestEnvelopedHash, TestExpert,
-        TestExpertSingleton, TestLegacy, TestMigrateErr,
+        TestAbsoluteTemplate, TestBadMulti, TestBadSingleton, TestBare, TestBig, TestBigEnveloped,
+        TestDotDotTemplate, TestEnveloped, TestEnvelopedHash, TestExpert, TestExpertAlt,
+        TestExpertSingleton, TestGeneral, TestLegacy, TestMigrateErr,
     };
 
     fn temp_store() -> (TempDir, ArtifactStore) {
@@ -1023,10 +1024,13 @@ mod tests {
     }
 
     #[test]
-    fn registry_rejects_a_duplicate_kind() {
+    fn registry_rejects_a_duplicate_kind_with_another_pattern() {
         let mut registry = crate::registry::Registry::new();
         registry.register::<TestExpert>().unwrap();
-        assert!(registry.register::<TestExpert>().is_err());
+        assert!(matches!(
+            registry.register::<TestExpertAlt>(),
+            Err(StoreError::DuplicateRegistration { kind }) if kind == "test-expert"
+        ));
     }
 
     #[test]
@@ -1046,10 +1050,76 @@ mod tests {
     }
 
     #[test]
-    fn registry_rejects_overlapping_patterns() {
+    fn registry_rejects_overlapping_patterns_in_both_orders() {
         let mut registry = crate::registry::Registry::new();
         registry.register::<TestExpert>().unwrap();
         assert!(registry.register::<TestExpertSingleton>().is_err());
+
+        let mut registry = crate::registry::Registry::new();
+        registry.register::<TestExpertSingleton>().unwrap();
+        assert!(registry.register::<TestExpert>().is_err());
+    }
+
+    #[test]
+    fn registry_accepts_a_slot_pattern_next_to_a_root_file() {
+        let mut registry = crate::registry::Registry::new();
+        registry.register::<TestExpert>().unwrap();
+        registry.register::<TestGeneral>().unwrap();
+    }
+
+    #[test]
+    fn registry_rejects_an_absolute_template() {
+        let mut registry = crate::registry::Registry::new();
+        assert!(matches!(
+            registry.register::<TestAbsoluteTemplate>(),
+            Err(StoreError::InvalidPath { .. })
+        ));
+    }
+
+    #[test]
+    fn registry_rejects_a_dotdot_template() {
+        let mut registry = crate::registry::Registry::new();
+        assert!(matches!(
+            registry.register::<TestDotDotTemplate>(),
+            Err(StoreError::InvalidPath { .. })
+        ));
+    }
+
+    #[test]
+    fn registry_rejects_a_singleton_template_with_a_slot() {
+        let mut registry = crate::registry::Registry::new();
+        assert!(matches!(
+            registry.register::<TestBadSingleton>(),
+            Err(StoreError::InvalidPath { .. })
+        ));
+    }
+
+    #[test]
+    fn registry_rejects_a_multi_template_without_a_slot() {
+        let mut registry = crate::registry::Registry::new();
+        assert!(matches!(
+            registry.register::<TestBadMulti>(),
+            Err(StoreError::InvalidPath { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_reports_a_symlinked_file() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let target = store.scope_dir(&scope).join("target.bin");
+        std::fs::write(&target, "x").unwrap();
+        std::os::unix::fs::symlink(&target, store.scope_dir(&scope).join("link.bin")).unwrap();
+        let registry = crate::registry::Registry::new();
+        let unaccounted = registry.unaccounted(&store.scope_dir(&scope), &[]).unwrap();
+        assert_eq!(
+            unaccounted,
+            vec![
+                Path::new("link.bin").to_path_buf(),
+                Path::new("target.bin").to_path_buf()
+            ]
+        );
     }
 
     #[test]

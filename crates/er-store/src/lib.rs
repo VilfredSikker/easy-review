@@ -202,6 +202,60 @@ pub(crate) mod test_support {
         type Slot = ExpertId;
     }
 
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestAbsoluteTemplate {
+        pub value: u32,
+    }
+
+    impl Artifact for TestAbsoluteTemplate {
+        const KIND: &'static str = "test-absolute-template";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "/absolute.json";
+        type Slot = ();
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestDotDotTemplate {
+        pub value: u32,
+    }
+
+    impl Artifact for TestDotDotTemplate {
+        const KIND: &'static str = "test-dotdot-template";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "nested/../escape.json";
+        type Slot = ();
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestGeneral {
+        pub value: u32,
+    }
+
+    impl Artifact for TestGeneral {
+        const KIND: &'static str = "test-general";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "general.json";
+        type Slot = ();
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestExpertAlt {
+        pub version: u32,
+        pub diff_hash: String,
+        pub value: u32,
+    }
+
+    impl Artifact for TestExpertAlt {
+        const KIND: &'static str = "test-expert";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "experts-alt/{slot}.json";
+        type Slot = ExpertId;
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     pub struct BadSlot(pub String);
 

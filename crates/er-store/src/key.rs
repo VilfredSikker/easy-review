@@ -231,6 +231,30 @@ impl SlotName for DiagramId {
     }
 }
 
+/// Validate a kind's `FILE` against its slot type and return the path with
+/// `{slot}` replaced. A singleton kind must not carry `{slot}`; a multi-file
+/// kind must carry it exactly once. The result must be a relative path with no
+/// `..` component.
+pub(crate) fn validated_template<T: Artifact>(replacement: &str) -> Result<RelPath, StoreError> {
+    let template = T::FILE;
+    let placeholders = template.matches("{slot}").count();
+    if T::Slot::singleton().is_some() {
+        if placeholders != 0 {
+            return Err(StoreError::InvalidPath {
+                value: template.to_string(),
+            });
+        }
+        RelPath::new(template)
+    } else {
+        if placeholders != 1 {
+            return Err(StoreError::InvalidPath {
+                value: template.to_string(),
+            });
+        }
+        RelPath::new(template.replace("{slot}", replacement))
+    }
+}
+
 /// A scope, a slot and the resolved file path.
 pub struct ArtifactKey<T: Artifact> {
     scope: Scope,
@@ -240,23 +264,11 @@ pub struct ArtifactKey<T: Artifact> {
 
 impl<T: Artifact> ArtifactKey<T> {
     pub fn new(scope: Scope, slot: T::Slot) -> Result<Self, StoreError> {
-        let template = T::FILE;
-        let placeholders = template.matches("{slot}").count();
         let rel = if T::Slot::singleton().is_some() {
-            if placeholders != 0 {
-                return Err(StoreError::InvalidPath {
-                    value: template.to_string(),
-                });
-            }
-            RelPath::new(template)?
+            validated_template::<T>("")?
         } else {
-            if placeholders != 1 {
-                return Err(StoreError::InvalidPath {
-                    value: template.to_string(),
-                });
-            }
             validate_component("slot", slot.as_str())?;
-            RelPath::new(template.replace("{slot}", slot.as_str()))?
+            validated_template::<T>(slot.as_str())?
         };
         Ok(Self { scope, slot, rel })
     }
