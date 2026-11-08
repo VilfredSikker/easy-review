@@ -1377,6 +1377,7 @@ dependencies = [
  "anyhow",
  "dirs 6.0.0",
  "er-git",
+ "er-github",
  "glob",
  "libc",
  "notify",
@@ -1407,8 +1408,12 @@ dependencies = [
 name = "er-github"
 version = "0.6.5"
 dependencies = [
+ "anyhow",
  "chrono",
+ "er-git",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

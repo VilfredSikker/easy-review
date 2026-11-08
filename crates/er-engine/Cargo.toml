@@ -17,6 +17,7 @@ highlight = ["dep:syntect", "dep:two-face"]
 
 [dependencies]
 er-git = { path = "../er-git" }
+er-github = { path = "../er-github" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

@@ -7,11 +7,13 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-mod pending_review;
-pub use pending_review::{
+pub use er_github::pending_review::{
     gh_pending_review, gh_pending_review_add_comment, gh_pending_review_remove_comment,
     gh_pending_review_submit, review_body_required, PendingReview, PendingReviewComment,
     ReviewRequest,
+};
+pub use er_github::review::{
+    gh_pr_head_oid_remote, gh_pr_submit_review, gh_pr_submit_review_remote, ReviewBatchEntry,
 };
 
 /// Parsed reference to a GitHub PR
@@ -2465,35 +2467,6 @@ pub fn invalidate_pr_comments_cache() {
     }
 }
 
-/// Head oid of a remote PR (no local clone needed) — the staleness baseline
-/// for remote tabs.
-pub fn gh_pr_head_oid_remote(owner: &str, repo: &str, pr: u64) -> Result<String> {
-    let remote = format!("{owner}/{repo}");
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr.to_string(),
-            "--repo",
-            &remote,
-            "--json",
-            "headRefOid",
-            "--jq",
-            ".headRefOid",
-        ])
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .context("Failed to get remote PR head SHA")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to get HEAD SHA from gh pr view: {}", stderr.trim());
-    }
-    let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if oid.is_empty() {
-        anyhow::bail!("Failed to get HEAD SHA from gh pr view: empty output");
-    }
-    Ok(oid)
-}
-
 /// Fetch review thread state for a remote PR (no local clone needed).
 pub fn gh_pr_review_threads_remote(
     owner: &str,
@@ -2552,218 +2525,6 @@ pub fn gh_pr_push_comment_remote(
 ) -> Result<u64> {
     let commit_id = gh_pr_head_oid(owner, repo, pr, None)?;
     Ok(gh_pr_post_line_comment(owner, repo, pr, comment, &commit_id, None)?.id)
-}
-
-/// A single comment entry for a batch PR review submission.
-pub struct ReviewBatchEntry {
-    pub file: String,
-    /// End line of the anchor (GitHub `line` field).
-    pub line: usize,
-    /// Start line when the comment spans multiple lines (GitHub `start_line`).
-    pub start_line: Option<usize>,
-    pub body: String,
-    pub side: String,
-}
-
-/// Submit a batch PR review with multiple comments in one API call.
-///
-/// `comments` is a slice of `ReviewBatchEntry`. No individual comment ids are
-/// returned by the review API; the next pull rebuilds them from GitHub.
-pub fn gh_pr_submit_review(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    comments: &[ReviewBatchEntry],
-    repo_root: &str,
-    event: &str,
-    body: &str,
-) -> Result<()> {
-    // Fetch the head commit SHA
-    let sha_output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr.to_string(),
-            "--json",
-            "headRefOid",
-            "--jq",
-            ".headRefOid",
-        ])
-        .current_dir(repo_root)
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .context("Failed to get PR head SHA")?;
-
-    if !sha_output.status.success() {
-        let stderr = String::from_utf8_lossy(&sha_output.stderr);
-        anyhow::bail!("Failed to get HEAD SHA: {}", stderr.trim());
-    }
-
-    let commit_id = String::from_utf8_lossy(&sha_output.stdout)
-        .trim()
-        .to_string();
-    if commit_id.is_empty() {
-        anyhow::bail!("Failed to get HEAD SHA: empty output");
-    }
-
-    post_pr_review(
-        owner,
-        repo,
-        pr,
-        ReviewSubmission {
-            commit_id: &commit_id,
-            event,
-            body,
-            comments,
-        },
-        Some(repo_root),
-    )
-}
-
-/// The body of one `POST /pulls/{pr}/reviews` call.
-struct ReviewSubmission<'a> {
-    commit_id: &'a str,
-    event: &'a str,
-    body: &'a str,
-    comments: &'a [ReviewBatchEntry],
-}
-
-fn pr_review_payload_json(
-    commit_id: &str,
-    event: &str,
-    body: &str,
-    comments: &[ReviewBatchEntry],
-) -> serde_json::Value {
-    let mut payload = serde_json::json!({
-        "commit_id": commit_id,
-        "event": event,
-        "body": body,
-    });
-    if !comments.is_empty() {
-        let comment_values: Vec<serde_json::Value> =
-            comments.iter().map(review_comment_json).collect();
-        payload["comments"] = serde_json::Value::Array(comment_values);
-    }
-    payload
-}
-
-/// One entry of a review's `comments` array, as `POST /pulls/{pr}/reviews`
-/// takes it.
-fn review_comment_json(entry: &ReviewBatchEntry) -> serde_json::Value {
-    let mut obj = serde_json::json!({
-        "path": entry.file,
-        "line": entry.line,
-        "side": entry.side,
-        "body": entry.body
-    });
-    if let Some(start) = entry.start_line {
-        if start < entry.line {
-            obj["start_line"] = serde_json::json!(start);
-            if entry.side == "LEFT" {
-                obj["start_side"] = serde_json::json!("LEFT");
-            }
-        }
-    }
-    obj
-}
-
-fn post_pr_review(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    review: ReviewSubmission<'_>,
-    repo_root: Option<&str>,
-) -> Result<()> {
-    let payload =
-        pr_review_payload_json(review.commit_id, review.event, review.body, review.comments);
-    // NamedTempFile: O_EXCL + 0600, so no symlink/race exposure in world-
-    // writable /tmp and no world-readable payload (security review MEDIUM:
-    // the previous fixed-name /tmp/er_review_payload_{pid}.json allowed
-    // symlink overwrite, race-swap, and payload disclosure). Deleted on drop.
-    let mut tmp = tempfile::NamedTempFile::new().context("Failed to create review payload file")?;
-    serde_json::to_writer(&mut tmp, &payload).context("Failed to write review payload")?;
-    let tmp_path = tmp.path().to_string_lossy().into_owned();
-
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "api",
-        "-X",
-        "POST",
-        &format!("repos/{}/{}/pulls/{}/reviews", owner, repo, pr),
-        "--input",
-        &tmp_path,
-    ]);
-    if let Some(root) = repo_root {
-        cmd.current_dir(root);
-    }
-    let output = cmd
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .context("Failed to submit PR review")?;
-
-    drop(tmp);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let detail = if stdout.trim().is_empty() {
-            stderr.trim().to_string()
-        } else {
-            format!("{} ({})", stderr.trim(), stdout.trim())
-        };
-        anyhow::bail!("Failed to submit review: {}", detail);
-    }
-
-    Ok(())
-}
-
-/// Submit a batch PR review with multiple comments on a remote PR (no local repo required).
-pub fn gh_pr_submit_review_remote(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    comments: &[ReviewBatchEntry],
-    event: &str,
-    body: &str,
-) -> Result<()> {
-    let repo_slug = format!("{}/{}", owner, repo);
-    let sha_output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "headRefOid",
-            "--jq",
-            ".headRefOid",
-        ])
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .context("Failed to get PR head SHA")?;
-
-    if !sha_output.status.success() {
-        let stderr = String::from_utf8_lossy(&sha_output.stderr);
-        anyhow::bail!("Failed to get HEAD SHA: {}", stderr.trim());
-    }
-
-    let commit_id = String::from_utf8_lossy(&sha_output.stdout)
-        .trim()
-        .to_string();
-    if commit_id.is_empty() {
-        anyhow::bail!("Failed to get HEAD SHA: empty output");
-    }
-
-    post_pr_review(
-        owner,
-        repo,
-        pr,
-        ReviewSubmission {
-            commit_id: &commit_id,
-            event,
-            body,
-            comments,
-        },
-        None,
-    )
 }
 
 /// Post a general comment on a PR (not attached to any file/line).

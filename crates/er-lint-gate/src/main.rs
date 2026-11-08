@@ -69,6 +69,7 @@ struct GateConfig {
     budgeted: HashSet<String>,
     impl_cohesion: cohesion::Options,
     spawn_git: SpawnConfig,
+    spawn_gh: SpawnConfig,
 }
 
 /// `[workspace.metadata.lint-gate]` in the root manifest.
@@ -95,33 +96,40 @@ fn gate_config(root: &Path) -> anyhow::Result<GateConfig> {
             .and_then(|n| usize::try_from(n).ok())
             .with_context(|| format!("[workspace.metadata.lint-gate] impl-cohesion needs {key}"))
     };
-    let git = table
-        .get("spawn")
-        .and_then(|spawn| spawn.get("git"))
-        .context("[workspace.metadata.lint-gate] has no spawn.git table")?;
-    let home = git
-        .get("home")
-        .and_then(toml::Value::as_str)
-        .context("[workspace.metadata.lint-gate.spawn.git] has no home")?
-        .to_string();
-    let allow = match git.get("allow") {
-        Some(value) => value
-            .as_array()
-            .context("[workspace.metadata.lint-gate.spawn.git] allow must be a list")?
-            .iter()
-            .filter_map(toml::Value::as_str)
-            .map(str::to_string)
-            .collect(),
-        None => Vec::new(),
-    };
     Ok(GateConfig {
         budgeted,
         impl_cohesion: cohesion::Options {
             max_groups: threshold("max-groups")?,
             min_group_lines: threshold("min-group-lines")?,
         },
-        spawn_git: SpawnConfig { home, allow },
+        spawn_git: spawn_config(table, "git")?,
+        spawn_gh: spawn_config(table, "gh")?,
     })
+}
+
+fn spawn_config(table: &toml::Value, program: &str) -> anyhow::Result<SpawnConfig> {
+    let entry = table
+        .get("spawn")
+        .and_then(|spawn| spawn.get(program))
+        .with_context(|| format!("[workspace.metadata.lint-gate] has no spawn.{program} table"))?;
+    let home = entry
+        .get("home")
+        .and_then(toml::Value::as_str)
+        .with_context(|| format!("[workspace.metadata.lint-gate.spawn.{program}] has no home"))?
+        .to_string();
+    let allow = match entry.get("allow") {
+        Some(value) => value
+            .as_array()
+            .with_context(|| {
+                format!("[workspace.metadata.lint-gate.spawn.{program}] allow must be a list")
+            })?
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        None => Vec::new(),
+    };
+    Ok(SpawnConfig { home, allow })
 }
 
 /// Every `.rs` file under each crate's `src/`, workspace-relative.
@@ -172,21 +180,28 @@ fn cohesion_diagnostics(root: &Path, opts: cohesion::Options) -> anyhow::Result<
     Ok(out)
 }
 
-fn spawn_diagnostics(root: &Path, config: &SpawnConfig) -> anyhow::Result<Vec<Diagnostic>> {
+fn spawn_diagnostics(
+    root: &Path,
+    config: &SpawnConfig,
+    program: &str,
+    trait_name: &str,
+) -> anyhow::Result<Vec<Diagnostic>> {
     let mut by_file = BTreeMap::new();
     for rel in crate_sources(root)? {
         let source = std::fs::read_to_string(root.join(&rel))?;
         let file = rel.to_string_lossy().replace('\\', "/");
-        let findings = spawn::findings(&source, "git");
+        let findings = spawn::findings(&source, program);
         if !findings.is_empty() {
             by_file.insert(file, findings);
         }
     }
+    let code = format!("er::{program}_spawn");
     Ok(spawn::evaluate(
         &by_file,
         &config.home,
         &config.allow,
-        spawn::CODE,
+        &code,
+        trait_name,
     ))
 }
 
@@ -221,7 +236,8 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     let budget_path = root.join(BUDGET_FILE);
     let budget = read_budget(&budget_path)?;
     let cohesion = cohesion_diagnostics(&root, config.impl_cohesion)?;
-    let spawn = spawn_diagnostics(&root, &config.spawn_git)?;
+    let spawn = spawn_diagnostics(&root, &config.spawn_git, "git", "Git")?;
+    let spawn_gh = spawn_diagnostics(&root, &config.spawn_gh, "gh", "GitHub")?;
     if flags.cohesion_only {
         for d in &cohesion {
             print!("{}", d.rendered);
@@ -246,6 +262,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     let mut diags = diagnostics::parse(&stream);
     diags.extend(cohesion);
     diags.extend(spawn);
+    diags.extend(spawn_gh);
     let e = evaluate(diags, &config.budgeted, &budget, output.status.success());
 
     let mut problems = Vec::new();
@@ -348,6 +365,10 @@ min-group-lines = 1
 
 [workspace.metadata.lint-gate.spawn.git]
 home = "crates/er-git"
+
+[workspace.metadata.lint-gate.spawn.gh]
+home = "crates/er-github"
+allow = ["crates/x/src/a.rs"]
 "#,
         )
         .unwrap();
@@ -356,5 +377,6 @@ home = "crates/er-git"
         std::fs::remove_dir_all(&dir).ok();
 
         assert!(config.spawn_git.allow.is_empty());
+        assert_eq!(config.spawn_gh.allow, ["crates/x/src/a.rs"]);
     }
 }

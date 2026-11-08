@@ -77,6 +77,7 @@ pub fn evaluate(
     home: &str,
     allow: &[String],
     code: &str,
+    trait_name: &str,
 ) -> Vec<Diagnostic> {
     let under_home = |file: &str| file == home || file.starts_with(&format!("{home}/"));
     let mut out = Vec::new();
@@ -85,7 +86,10 @@ pub fn evaluate(
             continue;
         }
         for finding in findings {
-            let message = format!("{} outside {home}: call the Git trait", finding.message);
+            let message = format!(
+                "{} outside {home}: call the {trait_name} trait",
+                finding.message
+            );
             out.push(error(file, finding.line, code, &message));
         }
     }
@@ -112,7 +116,7 @@ fn error(file: &str, line: usize, code: &str, message: &str) -> Diagnostic {
         file: Some(file.into()),
         line,
         column: 1,
-        rendered: format!("error: {message}\n  --> {file}:{line}\n\n"),
+        rendered: format!("error[{code}]: {message}\n  --> {file}:{line}\n\n"),
     }
 }
 
@@ -199,16 +203,32 @@ mod tests {
     fn a_spawn_anywhere_outside_home_fails_with_no_allow_list() {
         let mut by_file = BTreeMap::new();
         by_file.insert("crates/er-desktop/src/a.rs".to_string(), vec![finding()]);
-        let diags = evaluate(&by_file, "crates/er-git", &[], CODE);
+        let diags = evaluate(&by_file, "crates/er-git", &[], CODE, "Git");
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].level, "error");
+    }
+
+    #[test]
+    fn the_gh_rule_does_not_flag_a_git_spawn() {
+        assert!(findings("fn f() { Command::new(\"git\"); }", "gh").is_empty());
+    }
+
+    #[test]
+    fn the_gh_rule_names_the_github_trait() {
+        let mut by_file = BTreeMap::new();
+        by_file.insert("crates/x/src/a.rs".to_string(), vec![finding()]);
+        let diags = evaluate(&by_file, "crates/er-github", &[], "er::gh_spawn", "GitHub");
+        assert!(
+            diags[0].rendered.contains("call the GitHub trait"),
+            "{diags:?}"
+        );
     }
 
     #[test]
     fn a_finding_outside_home_and_allow_list_fails() {
         let mut by_file = BTreeMap::new();
         by_file.insert("crates/x/src/a.rs".to_string(), vec![finding()]);
-        let diags = evaluate(&by_file, "crates/er-git", &[], CODE);
+        let diags = evaluate(&by_file, "crates/er-git", &[], CODE, "Git");
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].level, "error");
         assert_eq!(diags[0].code.as_deref(), Some(CODE));
@@ -223,20 +243,20 @@ mod tests {
         let mut by_file = BTreeMap::new();
         by_file.insert("crates/x/src/a.rs".to_string(), vec![finding()]);
         let allow = ["crates/x/src/a.rs".to_string()];
-        assert!(evaluate(&by_file, "crates/er-git", &allow, CODE).is_empty());
+        assert!(evaluate(&by_file, "crates/er-git", &allow, CODE, "Git").is_empty());
     }
 
     #[test]
     fn a_finding_under_home_passes() {
         let mut by_file = BTreeMap::new();
         by_file.insert("crates/er-git/src/a.rs".to_string(), vec![finding()]);
-        assert!(evaluate(&by_file, "crates/er-git", &[], CODE).is_empty());
+        assert!(evaluate(&by_file, "crates/er-git", &[], CODE, "Git").is_empty());
     }
 
     #[test]
     fn an_allow_list_entry_without_findings_is_stale() {
         let allow = ["crates/x/src/a.rs".to_string()];
-        let diags = evaluate(&BTreeMap::new(), "crates/er-git", &allow, CODE);
+        let diags = evaluate(&BTreeMap::new(), "crates/er-git", &allow, CODE, "Git");
         assert_eq!(diags.len(), 1);
         assert!(
             diags[0]
