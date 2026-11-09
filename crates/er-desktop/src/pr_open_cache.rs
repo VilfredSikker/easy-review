@@ -1,11 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::commands::{PrOpenCacheEntry, PrOpenCacheKey};
 use anyhow::Result;
-
-const PR_OPEN_CACHE_SCHEMA_VERSION: u32 = 1;
+use er_store::{Artifact, Loaded, Mode};
 
 /// Per-entry cap on the `raw_diff` we persist to disk. Entries above this stay
 /// in the in-memory cache but are skipped when writing the on-disk file — a big
@@ -14,8 +12,28 @@ const PR_OPEN_CACHE_MAX_PERSISTED_DIFF_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PersistedPrOpenFile {
-    version: u32,
     entries: Vec<PersistedPrOpenEntry>,
+}
+
+/// The payload holds `PrOverviewData` and `CommitInfo` from other crates; the
+/// store only needs a schema to describe the kind, so a permissive object is
+/// enough and keeps the shared types free of a schema dependency.
+impl schemars::JsonSchema for PersistedPrOpenFile {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "PersistedPrOpenFile".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({"type": "object"})
+    }
+}
+
+impl Artifact for PersistedPrOpenFile {
+    const KIND: &'static str = "pr-open-cache";
+    const VERSION: u32 = 1;
+    const MODE: Mode = Mode::Enveloped;
+    const FILE: &'static str = "pr-open-cache.json";
+    type Slot = ();
 }
 
 /// A HashMap with a struct key can't serialize to JSON (object keys must be
@@ -25,11 +43,6 @@ struct PersistedPrOpenFile {
 struct PersistedPrOpenEntry {
     key: PrOpenCacheKey,
     entry: PrOpenCacheEntry,
-}
-
-fn pr_open_cache_path() -> Option<PathBuf> {
-    let dir = dirs::config_dir()?.join("er");
-    Some(dir.join("pr-open-cache.json"))
 }
 
 /// Build the persisted records from the live cache, applying the per-entry size
@@ -47,22 +60,6 @@ fn build_persisted_entries(
         .collect()
 }
 
-/// Parse persisted JSON into the live cache map. Pure (no I/O) so the version
-/// gate is testable. A wrong/missing version yields None (treated as no cache).
-fn parse_persisted(content: &str) -> Option<HashMap<PrOpenCacheKey, PrOpenCacheEntry>> {
-    let parsed: PersistedPrOpenFile = serde_json::from_str(content).ok()?;
-    if parsed.version != PR_OPEN_CACHE_SCHEMA_VERSION {
-        return None;
-    }
-    Some(
-        parsed
-            .entries
-            .into_iter()
-            .map(|e| (e.key, e.entry))
-            .collect(),
-    )
-}
-
 /// Retain only entries whose `(project_id, pr_number)` is in `keep`. Pure
 ///
 /// (operates on the borrowed map) so the policy is unit-testable without a lock,
@@ -77,35 +74,35 @@ pub fn prune_pr_open_cache(
     map.retain(|k, _| keep.contains(&(k.project_id.clone(), k.pr_number)));
 }
 
-/// Load the persisted open-diff cache. Missing file, version mismatch, or a
-/// corrupt/old file all yield Ok(None) so a bad file never crashes startup.
+/// Load the persisted open-diff cache. A missing record, a version mismatch, or
+/// a corrupt record all yield Ok(None) so a bad record never crashes startup.
 pub fn load_persisted_pr_open_cache() -> Result<Option<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>> {
-    let Some(path) = pr_open_cache_path() else {
-        return Ok(None);
+    let key = er_engine::app_store::key::<PersistedPrOpenFile>()?;
+    let parsed = match er_engine::app_store::store().read(&key)? {
+        Loaded::Found(stored) => stored.value,
+        Loaded::Absent | Loaded::Unreadable(_) => return Ok(None),
     };
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = std::fs::read_to_string(&path)?;
-    Ok(parse_persisted(&content))
+    Ok(Some(
+        parsed
+            .entries
+            .into_iter()
+            .map(|e| (e.key, e.entry))
+            .collect(),
+    ))
 }
 
-/// Persist the open-diff cache, skipping oversized entries (size guard). Writes
-/// atomically via a tmp file + rename. Best-effort: failures are silent.
+/// Persist the open-diff cache, skipping oversized entries (size guard).
+/// Best-effort: failures are logged.
 pub fn save_persisted_pr_open_cache(cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>) {
-    let Some(path) = pr_open_cache_path() else {
+    let Ok(key) = er_engine::app_store::key::<PersistedPrOpenFile>() else {
         return;
     };
     let cache_map = cache.lock().ok().map(|g| g.clone()).unwrap_or_default();
     let payload = PersistedPrOpenFile {
-        version: PR_OPEN_CACHE_SCHEMA_VERSION,
         entries: build_persisted_entries(&cache_map),
     };
-    if let Err(e) = crate::persist::save_json_atomic(&path, &payload) {
-        log::error!(
-            "[pr-open-cache] failed to persist open-diff cache at {}: {e}",
-            path.display()
-        );
+    if let Err(e) = er_engine::app_store::store().write(&key, &payload) {
+        log::error!("[pr-open-cache] failed to persist open-diff cache: {e}");
     }
 }
 
@@ -159,46 +156,52 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_entries() {
-        let mut cache: HashMap<PrOpenCacheKey, PrOpenCacheEntry> = HashMap::new();
-        cache.insert(
-            make_key(11),
-            make_entry("oid-11", "diff for 11".to_string()),
-        );
-        cache.insert(
-            make_key(22),
-            make_entry("oid-22", "diff for 22".to_string()),
-        );
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let mut cache: HashMap<PrOpenCacheKey, PrOpenCacheEntry> = HashMap::new();
+            cache.insert(
+                make_key(11),
+                make_entry("oid-11", "diff for 11".to_string()),
+            );
+            cache.insert(
+                make_key(22),
+                make_entry("oid-22", "diff for 22".to_string()),
+            );
+            save_persisted_pr_open_cache(&Arc::new(Mutex::new(cache)));
 
-        let payload = PersistedPrOpenFile {
-            version: PR_OPEN_CACHE_SCHEMA_VERSION,
-            entries: build_persisted_entries(&cache),
-        };
-        let json = serde_json::to_string_pretty(&payload).expect("serialize");
-        let loaded = parse_persisted(&json).expect("parse");
+            let loaded = load_persisted_pr_open_cache()
+                .expect("load")
+                .expect("a written cache");
 
-        assert_eq!(loaded.len(), 2);
+            assert_eq!(loaded.len(), 2);
 
-        let e11 = loaded.get(&make_key(11)).expect("entry 11 present");
-        assert_eq!(e11.raw_diff, "diff for 11");
-        assert_eq!(e11.freshness.head_oid, "oid-11");
-        let commits = e11.pr_commits.as_ref().expect("commits present");
-        assert_eq!(commits.len(), 2);
-        assert_eq!(commits[0].subject, "first commit");
-        assert_eq!(commits[1].subject, "second commit");
+            let e11 = loaded.get(&make_key(11)).expect("entry 11 present");
+            assert_eq!(e11.raw_diff, "diff for 11");
+            assert_eq!(e11.freshness.head_oid, "oid-11");
+            let commits = e11.pr_commits.as_ref().expect("commits present");
+            assert_eq!(commits.len(), 2);
+            assert_eq!(commits[0].subject, "first commit");
+            assert_eq!(commits[1].subject, "second commit");
 
-        let e22 = loaded.get(&make_key(22)).expect("entry 22 present");
-        assert_eq!(e22.raw_diff, "diff for 22");
-        assert_eq!(e22.freshness.head_oid, "oid-22");
+            let e22 = loaded.get(&make_key(22)).expect("entry 22 present");
+            assert_eq!(e22.raw_diff, "diff for 22");
+            assert_eq!(e22.freshness.head_oid, "oid-22");
+        });
     }
 
     #[test]
     fn schema_mismatch_returns_none() {
-        let payload = PersistedPrOpenFile {
-            version: PR_OPEN_CACHE_SCHEMA_VERSION + 99,
-            entries: Vec::new(),
-        };
-        let json = serde_json::to_string_pretty(&payload).expect("serialize");
-        assert!(parse_persisted(&json).is_none());
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let path = er_engine::app_store::path::<PersistedPrOpenFile>().expect("record path");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                path,
+                r#"{"kind":"pr-open-cache","version":100,"diff_hash":null,"producer":"host","written_at":"2026-01-01T00:00:00Z","payload":{"entries":[]}}"#,
+            )
+            .unwrap();
+            assert!(load_persisted_pr_open_cache().expect("load").is_none());
+        });
     }
 
     #[test]
@@ -211,12 +214,9 @@ mod tests {
         let huge = "x".repeat(PR_OPEN_CACHE_MAX_PERSISTED_DIFF_BYTES + 1);
         cache.insert(make_key(2), make_entry("huge-oid", huge));
 
-        let payload = PersistedPrOpenFile {
-            version: PR_OPEN_CACHE_SCHEMA_VERSION,
-            entries: build_persisted_entries(&cache),
-        };
-        let json = serde_json::to_string_pretty(&payload).expect("serialize");
-        let loaded = parse_persisted(&json).expect("parse");
+        let entries = build_persisted_entries(&cache);
+        let loaded: HashMap<PrOpenCacheKey, PrOpenCacheEntry> =
+            entries.into_iter().map(|e| (e.key, e.entry)).collect();
 
         assert_eq!(loaded.len(), 1, "only the small entry should persist");
         assert!(loaded.contains_key(&make_key(1)), "small entry survives");

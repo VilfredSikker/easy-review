@@ -14,10 +14,17 @@ pub fn registry() -> Registry {
     let mut registry = Registry::new();
     #[expect(
         clippy::expect_used,
-        reason = "the three annotation kinds are statically registered once; a duplicate fails the register test"
+        reason = "the kinds are statically registered once; a duplicate fails the register test"
     )]
-    crate::ai::annotation_store::register(&mut registry)
-        .expect("the annotation kinds register once");
+    {
+        crate::ai::annotation_store::register(&mut registry)
+            .expect("the annotation kinds register once");
+        registry
+            .register::<crate::projects_pins::ProjectsFile>()
+            .expect("the projects kind registers once");
+        crate::release_update::register(&mut registry)
+            .expect("the update-check kind registers once");
+    }
     registry
 }
 
@@ -31,12 +38,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_registry_registers_the_three_annotation_kinds() {
+    fn the_registry_registers_the_known_kinds() {
         let registry = registry();
         for (file, kind) in [
             ("questions.json", "questions"),
             ("notes.json", "notes"),
             ("github-comments.json", "github-comments"),
+            ("projects.json", "projects"),
+            ("update-check.json", "update-check"),
         ] {
             assert_eq!(
                 registry.kind_for(std::path::Path::new(file)),

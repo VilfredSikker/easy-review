@@ -1,35 +1,36 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::projects;
 use crate::snapshot::PrInfo;
 use anyhow::Result;
+use er_store::{Artifact, Loaded, Mode};
 
 pub type PrCacheMap = Arc<Mutex<HashMap<String, Vec<PrInfo>>>>;
 pub type PrCacheFetchedAtMap = Arc<Mutex<HashMap<String, u64>>>;
 
-const PR_CACHE_SCHEMA_VERSION: u32 = 1;
 /// If every configured remote was fetched within this window, skip the startup
 /// full multi-remote sweep (the active project's remote is still refreshed first).
 const PR_CACHE_STARTUP_MAX_AGE_MS: u64 = 10 * 60 * 1000;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 struct PersistedPrCacheFile {
-    version: u32,
     entries: Vec<PersistedPrCacheEntry>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 struct PersistedPrCacheEntry {
     remote: String,
     fetched_at_epoch_ms: u64,
     prs: Vec<PrInfo>,
 }
 
-fn pr_cache_path() -> Option<PathBuf> {
-    let dir = dirs::config_dir()?.join("er");
-    Some(dir.join("pr-cache.json"))
+impl Artifact for PersistedPrCacheFile {
+    const KIND: &'static str = "pr-cache";
+    const VERSION: u32 = 1;
+    const MODE: Mode = Mode::Enveloped;
+    const FILE: &'static str = "pr-cache.json";
+    type Slot = ();
 }
 
 fn now_epoch_ms() -> u64 {
@@ -44,17 +45,11 @@ fn now_epoch_ms() -> u64 {
 pub type PersistedPrCache = (HashMap<String, Vec<PrInfo>>, HashMap<String, u64>);
 
 pub fn load_persisted_pr_cache() -> Result<Option<PersistedPrCache>> {
-    let Some(path) = pr_cache_path() else {
-        return Ok(None);
+    let key = er_engine::app_store::key::<PersistedPrCacheFile>()?;
+    let parsed = match er_engine::app_store::store().read(&key)? {
+        Loaded::Found(stored) => stored.value,
+        Loaded::Absent | Loaded::Unreadable(_) => return Ok(None),
     };
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = std::fs::read_to_string(&path)?;
-    let parsed: PersistedPrCacheFile = serde_json::from_str(&content)?;
-    if parsed.version != PR_CACHE_SCHEMA_VERSION {
-        return Ok(None);
-    }
     let mut pr_map: HashMap<String, Vec<PrInfo>> = HashMap::new();
     let mut fetched_map: HashMap<String, u64> = HashMap::new();
     for entry in parsed.entries {
@@ -65,7 +60,7 @@ pub fn load_persisted_pr_cache() -> Result<Option<PersistedPrCache>> {
 }
 
 pub fn save_persisted_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtMap) {
-    let Some(path) = pr_cache_path() else {
+    let Ok(key) = er_engine::app_store::key::<PersistedPrCacheFile>() else {
         return;
     };
     let cache_map = cache.lock().ok().map(|g| g.clone()).unwrap_or_default();
@@ -82,15 +77,9 @@ pub fn save_persisted_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAt
             prs,
         })
         .collect();
-    let payload = PersistedPrCacheFile {
-        version: PR_CACHE_SCHEMA_VERSION,
-        entries,
-    };
-    if let Err(e) = crate::persist::save_json_atomic(&path, &payload) {
-        log::error!(
-            "[pr-cache] failed to persist PR cache at {}: {e}",
-            path.display()
-        );
+    let payload = PersistedPrCacheFile { entries };
+    if let Err(e) = er_engine::app_store::store().write(&key, &payload) {
+        log::error!("[pr-cache] failed to persist PR cache: {e}");
     }
 }
 

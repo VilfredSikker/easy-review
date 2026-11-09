@@ -51,12 +51,11 @@ pub fn spawn_background_check() -> std::sync::mpsc::Receiver<String> {
         return rx;
     }
     std::thread::spawn(move || {
-        let cache = release_update::check_cache_path();
-        let release = match release_update::load_cached_release(&cache, release_update::CHECK_TTL) {
+        let release = match release_update::load_cached_release(release_update::CHECK_TTL) {
             Some(r) => r,
             None => match fetch_latest() {
                 Ok(r) => {
-                    let _ = release_update::save_cached_release(&cache, &r);
+                    let _ = release_update::save_cached_release(&r);
                     r
                 }
                 Err(_) => return,
@@ -112,7 +111,7 @@ pub fn run() -> Result<()> {
         bail!("tar could not extract {asset}");
     }
     release_update::replace_executable(&exe, &work.path().join("er"))?;
-    let _ = release_update::save_cached_release(&release_update::check_cache_path(), &release);
+    let _ = release_update::save_cached_release(&release);
 
     println!(
         "Updated er {current} → {} at {}",

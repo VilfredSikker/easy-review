@@ -4,9 +4,10 @@
 //! `gh` login. See `docs/adr/0043-in-app-updates.md`.
 
 use anyhow::{anyhow, bail, Context, Result};
+use er_store::{Artifact, Loaded, Mode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const RELEASES_LATEST_API: &str =
@@ -19,7 +20,7 @@ pub const CHECKSUMS_ASSET: &str = "SHA256SUMS";
 /// requests an hour per IP, shared with every other tool on the machine.
 pub const CHECK_TTL: Duration = Duration::from_hours(6);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LatestRelease {
     pub tag: String,
     pub html_url: String,
@@ -166,14 +167,24 @@ pub fn replace_executable(target: &Path, new_bin: &Path) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct CheckCache {
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub(crate) struct CheckCache {
     checked_at_unix: u64,
     release: LatestRelease,
 }
 
-pub fn check_cache_path() -> PathBuf {
-    crate::storage::storage_root().join("update-check.json")
+impl Artifact for CheckCache {
+    const KIND: &'static str = "update-check";
+    const VERSION: u32 = 1;
+    const MODE: Mode = Mode::Enveloped;
+    const FILE: &'static str = "update-check.json";
+    type Slot = ();
+}
+
+pub(crate) fn register(
+    registry: &mut er_store::Registry,
+) -> std::result::Result<(), er_store::StoreError> {
+    registry.register::<CheckCache>()
 }
 
 fn unix_now() -> u64 {
@@ -183,31 +194,27 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
-pub fn load_cached_release(path: &Path, ttl: Duration) -> Option<LatestRelease> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    let cache: CheckCache = serde_json::from_str(&raw).ok()?;
+/// The cached release, when one was checked within `ttl`.
+pub fn load_cached_release(ttl: Duration) -> Option<LatestRelease> {
+    let key = crate::app_store::key::<CheckCache>().ok()?;
+    let cache = match crate::app_store::store().read(&key).ok()? {
+        Loaded::Found(stored) => stored.value,
+        Loaded::Absent | Loaded::Unreadable(_) => return None,
+    };
     (unix_now().saturating_sub(cache.checked_at_unix) < ttl.as_secs()).then_some(cache.release)
 }
 
-/// Written through a uniquely named temp file: every worktree runs its own
-/// `er`, and they can all save at once on launch.
-pub fn save_cached_release(path: &Path, release: &LatestRelease) -> Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
-    std::fs::create_dir_all(dir)?;
-    let body = serde_json::to_string(&CheckCache {
+/// Every worktree runs its own `er` and they can all save at once on launch;
+/// the store writes each save through a unique temp file.
+pub fn save_cached_release(release: &LatestRelease) -> Result<()> {
+    let key = crate::app_store::key::<CheckCache>()?;
+    let cache = CheckCache {
         checked_at_unix: unix_now(),
         release: release.clone(),
-    })?;
-    let mut staged = tempfile::Builder::new()
-        .prefix(".update-check-")
-        .tempfile_in(dir)?;
-    std::io::Write::write_all(&mut staged, body.as_bytes())?;
-    staged
-        .persist(path)
-        .map_err(|e| anyhow!("write {}: {}", path.display(), e.error))?;
-    Ok(())
+    };
+    crate::app_store::store()
+        .write(&key, &cache)
+        .map_err(|error| anyhow!("save update check: {error}"))
 }
 
 #[cfg(test)]
@@ -355,49 +362,71 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"old");
     }
 
+    fn with_store<F: FnOnce(&std::path::Path) -> R, R>(f: F) -> R {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", dir.path());
+        let result = f(dir.path());
+        std::env::remove_var("ER_STORAGE_ROOT");
+        result
+    }
+
     #[test]
     fn cache_round_trips_and_expires() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join("update-check.json");
-        let rel = LatestRelease {
-            tag: "v0.5.9".into(),
-            html_url: "https://x".into(),
-        };
-        save_cached_release(&path, &rel).unwrap();
-        assert_eq!(load_cached_release(&path, CHECK_TTL), Some(rel));
-        assert_eq!(load_cached_release(&path, Duration::ZERO), None);
+        with_store(|_| {
+            let rel = LatestRelease {
+                tag: "v0.5.9".into(),
+                html_url: "https://x".into(),
+            };
+            save_cached_release(&rel).unwrap();
+            assert_eq!(load_cached_release(CHECK_TTL), Some(rel));
+            assert_eq!(load_cached_release(Duration::ZERO), None);
+        });
     }
 
     #[test]
     fn concurrent_cache_saves_never_leave_a_torn_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("update-check.json");
-        // A long tag makes each write big enough for a plain overwrite to be
-        // observed half-written.
-        let rel = LatestRelease {
-            tag: format!("v0.5.9-{}", "x".repeat(256 * 1024)),
-            html_url: "https://x".into(),
-        };
-        save_cached_release(&path, &rel).unwrap();
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let writers: Vec<_> = (0..4)
-            .map(|_| {
-                let (path, rel, stop) = (path.clone(), rel.clone(), stop.clone());
-                std::thread::spawn(move || {
-                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                        save_cached_release(&path, &rel).unwrap();
-                    }
+        with_store(|root| {
+            // A long tag makes each write big enough for a plain overwrite to be
+            // observed half-written.
+            let rel = LatestRelease {
+                tag: format!("v0.5.9-{}", "x".repeat(256 * 1024)),
+                html_url: "https://x".into(),
+            };
+            save_cached_release(&rel).unwrap();
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let writers: Vec<_> = (0..4)
+                .map(|_| {
+                    let (rel, stop) = (rel.clone(), stop.clone());
+                    std::thread::spawn(move || {
+                        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            save_cached_release(&rel).unwrap();
+                        }
+                    })
                 })
-            })
-            .collect();
-        for _ in 0..200 {
-            assert_eq!(load_cached_release(&path, CHECK_TTL).as_ref(), Some(&rel));
-        }
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        for w in writers {
-            w.join().unwrap();
-        }
-        let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
-        assert_eq!(leftovers, 1, "staged temp files left behind");
+                .collect();
+            for _ in 0..200 {
+                assert_eq!(load_cached_release(CHECK_TTL).as_ref(), Some(&rel));
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            for w in writers {
+                w.join().unwrap();
+            }
+            let names: Vec<String> = std::fs::read_dir(root.join("app"))
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                !names.iter().any(|name| name.contains(".tmp")),
+                "staged temp files left behind: {names:?}"
+            );
+            assert!(
+                names.iter().any(|name| name == "update-check.json"),
+                "{names:?}"
+            );
+        });
     }
 }

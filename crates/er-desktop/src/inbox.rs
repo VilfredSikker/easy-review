@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use er_store::{Artifact, Loaded, Mode};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-const INBOX_SCHEMA_VERSION: u32 = 1;
 const MAX_ITEMS: usize = 200;
 const MAX_SEEN_NOTIFICATIONS: usize = 500;
 pub const CI_TTL_MS: u64 = 10 * 60 * 1000;
@@ -89,7 +89,7 @@ pub fn is_review_edge_kind(kind: &str) -> bool {
     )
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InboxTarget {
     pub project_id: Option<String>,
     pub repo_root: Option<String>,
@@ -99,7 +99,7 @@ pub struct InboxTarget {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InboxItem {
     pub id: String,
     pub kind: String,
@@ -113,7 +113,7 @@ pub struct InboxItem {
     pub dedupe_key: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct ObservedPrState {
     pub review_decision: Option<String>,
     pub requested_reviewers: Vec<String>,
@@ -134,16 +134,15 @@ pub struct ObservedPrState {
     pub latest_reviewer_states: Option<Vec<(String, String)>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ObservedCiState {
     pub fetched_at_ms: u64,
     pub check_state: String,
     pub failing_checks: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct InboxFile {
-    version: u32,
     items: Vec<InboxItem>,
     observed_pr: HashMap<String, ObservedPrState>,
     ci_state: HashMap<String, ObservedCiState>,
@@ -153,6 +152,14 @@ struct InboxFile {
     last_refresh_ms: u64,
     #[serde(default)]
     seen_notification_ids: Vec<String>,
+}
+
+impl Artifact for InboxFile {
+    const KIND: &'static str = "inbox";
+    const VERSION: u32 = 1;
+    const MODE: Mode = Mode::Enveloped;
+    const FILE: &'static str = "inbox.json";
+    type Slot = ();
 }
 
 #[derive(Debug, Clone, Default)]
@@ -596,11 +603,6 @@ pub fn should_remember_skipped_author(
     notification_matches_skip_pr(note, pr_number, skip_review_prs)
 }
 
-fn inbox_path() -> Option<PathBuf> {
-    let dir = dirs::config_dir()?.join("er");
-    Some(dir.join("inbox.json"))
-}
-
 pub fn now_epoch_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -610,18 +612,13 @@ pub fn now_epoch_ms() -> u64 {
 }
 
 pub fn load_inbox_state() -> InboxState {
-    let Some(path) = inbox_path() else {
+    let Ok(key) = er_engine::app_store::key::<InboxFile>() else {
         return InboxState::default();
     };
-    let Ok(raw) = std::fs::read_to_string(path) else {
+    let Ok(Loaded::Found(stored)) = er_engine::app_store::store().read(&key) else {
         return InboxState::default();
     };
-    let Ok(file) = serde_json::from_str::<InboxFile>(&raw) else {
-        return InboxState::default();
-    };
-    if file.version != INBOX_SCHEMA_VERSION {
-        return InboxState::default();
-    }
+    let file = stored.value;
     InboxState {
         items: file.items,
         observed_pr: file.observed_pr,
@@ -634,7 +631,7 @@ pub fn load_inbox_state() -> InboxState {
 }
 
 pub fn save_inbox_state(handle: &InboxHandle) {
-    let Some(path) = inbox_path() else {
+    let Ok(key) = er_engine::app_store::key::<InboxFile>() else {
         return;
     };
     let snapshot = match handle.lock() {
@@ -645,7 +642,6 @@ pub fn save_inbox_state(handle: &InboxHandle) {
         }
     };
     let payload = InboxFile {
-        version: INBOX_SCHEMA_VERSION,
         items: snapshot.items,
         observed_pr: snapshot.observed_pr,
         ci_state: snapshot.ci_state,
@@ -654,17 +650,55 @@ pub fn save_inbox_state(handle: &InboxHandle) {
         last_refresh_ms: snapshot.last_refresh_ms,
         seen_notification_ids: snapshot.seen_notification_ids,
     };
-    if let Err(e) = crate::persist::save_json_atomic(&path, &payload) {
-        log::error!(
-            "[inbox] failed to persist inbox state at {}: {e}",
-            path.display()
-        );
+    if let Err(e) = er_engine::app_store::store().write(&key, &payload) {
+        log::error!("[inbox] failed to persist inbox state: {e}");
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inbox_round_trip_through_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let handle: InboxHandle = Arc::new(Mutex::new(InboxState::default()));
+            {
+                let mut state = handle.lock().unwrap();
+                state.items.push(InboxItem {
+                    id: "i1".into(),
+                    kind: "pr_comment".into(),
+                    severity: "info".into(),
+                    title: "T".into(),
+                    body: "B".into(),
+                    source: "github".into(),
+                    target: InboxTarget {
+                        project_id: Some("p1".into()),
+                        repo_root: None,
+                        remote: Some("o/r".into()),
+                        pr_number: Some(7),
+                        branch: None,
+                        url: None,
+                    },
+                    created_at_ms: 1,
+                    read_at_ms: None,
+                    dedupe_key: "k".into(),
+                });
+                state.last_refresh_ms = 42;
+                state.notified_item_ids.insert("i1".into());
+            }
+
+            save_inbox_state(&handle);
+            let loaded = load_inbox_state();
+
+            assert_eq!(loaded.items.len(), 1);
+            assert_eq!(loaded.items[0].id, "i1");
+            assert_eq!(loaded.items[0].target.pr_number, Some(7));
+            assert_eq!(loaded.last_refresh_ms, 42);
+            assert!(loaded.notified_item_ids.contains("i1"));
+        });
+    }
 
     fn ctx() -> PrTransitionCtx<'static> {
         PrTransitionCtx {

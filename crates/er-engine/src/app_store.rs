@@ -10,7 +10,7 @@ use er_store::{Artifact, ArtifactKey, ArtifactStore, Scope, StoreError};
 
 /// The store the app's own records live in.
 pub fn store() -> ArtifactStore {
-    ArtifactStore::new(crate::storage::storage_root())
+    crate::store_registry::store()
 }
 
 /// The key for a single-file app record.
