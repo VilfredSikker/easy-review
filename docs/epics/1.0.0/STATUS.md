@@ -12,7 +12,7 @@
 | T1 | T5 GitHub port | [#393](https://github.com/VilfredSikker/easy-review/issues/393) P22 | F |
 | T2 | T4 git port | [#445](https://github.com/VilfredSikker/easy-review/issues/445) storage-slug parser | E |
 | D4 | T6 store core | [#388](https://github.com/VilfredSikker/easy-review/issues/388) P17 | C, E |
-| D1 | D6 | P16 follow-up (Self literals in comment_boundary) | C |
+| D1 | D6 | idle | – |
 | D2, D3, D5 | – | idle | – |
 
 **Phases 0 and 1 are complete; in phase 2, P14, P15, P16 and P23 are merged.** P17 (D4) and P22 (T1) run at the same time with #445 (T2); whichever merges second merges the release branch in. #441 is held until P17 and P22 merge, because it changes test sites across the engine. Next: P17 unblocks P18, which unblocks P19 and P20.
