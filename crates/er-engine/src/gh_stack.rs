@@ -200,10 +200,17 @@ impl StackSource {
 }
 
 /// Look up a stack from either source. Blocking — run on a worker thread.
+///
+/// Compatibility wrapper for the front ends; removed when they take the handle.
 pub fn load_from(source: &StackSource) -> StackInfo {
+    load_from_with(&*crate::github::default_handle(), source)
+}
+
+/// [`load_from`] through a caller-supplied GitHub handle.
+pub fn load_from_with(github: &dyn er_github::GitHub, source: &StackSource) -> StackInfo {
     match source {
-        StackSource::Checkout(root) => load(root),
-        StackSource::PrChain { repo, head } => match crate::github::gh_open_pr_refs_json(repo) {
+        StackSource::Checkout(root) => load_with(github, root),
+        StackSource::PrChain { repo, head } => match github.open_pr_refs_json(repo) {
             Ok(json) => match parse_pr_refs_json(&json) {
                 Ok(prs) => match stack_from_pr_chain(&prs, head) {
                     Some(stack) => StackInfo::Stack(stack),
@@ -315,7 +322,12 @@ pub fn stack_from_pr_chain(prs: &[ChainPr], head: &str) -> Option<Stack> {
 /// any stack becomes [`StackInfo::Unavailable`], and anything else
 /// [`StackInfo::Failed`].
 pub fn load(repo_root: &str) -> StackInfo {
-    match crate::github::gh_stack_view_json(repo_root) {
+    load_with(&*crate::github::default_handle(), repo_root)
+}
+
+/// [`load`] through a caller-supplied GitHub handle.
+pub fn load_with(github: &dyn er_github::GitHub, repo_root: &str) -> StackInfo {
+    match github.stack_view_json(repo_root) {
         Ok(json) => match parse_view_json(&json) {
             Ok(stack) => StackInfo::Stack(stack),
             Err(e) => StackInfo::Failed(compact_reason(&format!("unexpected stack output: {e}"))),

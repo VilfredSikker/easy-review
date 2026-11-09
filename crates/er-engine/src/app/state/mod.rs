@@ -1391,7 +1391,10 @@ impl TabState {
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{pr_number}/head"));
         tab.pr_number = Some(pr_number);
-        tab.remote_repo = crate::github::get_repo_info(&*tab.ports.git, &tab.repo_root)
+        tab.remote_repo = tab
+            .ports
+            .github
+            .get_repo_info(&*tab.ports.git, &tab.repo_root)
             .ok()
             .map(|(owner, repo)| format!("{owner}/{repo}"));
         tab.pr_data = pr_data;
@@ -1488,7 +1491,7 @@ impl TabState {
         // loaded via `gh pr diff`, so initial open does not need to fetch the PR
         // head ref into the local clone.
         let (base_branch, head_branch_name) =
-            crate::github::gh_pr_branch_names(pr_number, &repo_root)?;
+            ports.github.pr_branch_names(pr_number, &repo_root)?;
         let resolved_base =
             crate::github::ensure_base_ref_available(&*ports.git, &repo_root, &base_branch)?;
 
@@ -1500,11 +1503,17 @@ impl TabState {
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{}/head", pr_number));
         tab.pr_number = Some(pr_number);
-        tab.remote_repo = crate::github::get_repo_info(&*tab.ports.git, &tab.repo_root)
+        tab.remote_repo = tab
+            .ports
+            .github
+            .get_repo_info(&*tab.ports.git, &tab.repo_root)
             .ok()
             .map(|(owner, repo)| format!("{owner}/{repo}"));
-        tab.pr_commits =
-            crate::github::gh_pr_commits(&tab.repo_root, pr_number, 250).unwrap_or_default();
+        tab.pr_commits = tab
+            .ports
+            .github
+            .pr_commits(&tab.repo_root, pr_number, 250)
+            .unwrap_or_default();
         tab.mode = DiffMode::Branch;
         tab.sync_managed_storage();
         tab.refresh_diff()?;
@@ -1536,7 +1545,10 @@ impl TabState {
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{}/head", pr_number));
         tab.pr_number = Some(pr_number);
-        tab.remote_repo = crate::github::get_repo_info(&*tab.ports.git, &tab.repo_root)
+        tab.remote_repo = tab
+            .ports
+            .github
+            .get_repo_info(&*tab.ports.git, &tab.repo_root)
             .ok()
             .map(|(owner, repo)| format!("{owner}/{repo}"));
         tab.pr_data = pr_data;
@@ -1583,27 +1595,33 @@ impl TabState {
     pub fn new_remote(pr_ref: &crate::github::PrRef, ports: Ports) -> Result<Self> {
         // Get metadata (base/head branch names)
         let (base_branch, head_branch) =
-            crate::github::gh_pr_metadata_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
+            ports
+                .github
+                .pr_metadata_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
 
         // Get the diff from GitHub
-        let preview_head_oid =
-            crate::github::gh_pr_head_oid_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number).ok();
-        let raw = crate::github::gh_pr_diff_remote(
-            &*ports.git,
-            &pr_ref.owner,
-            &pr_ref.repo,
-            pr_ref.number,
-        )?;
-        let confirmed_preview_head =
-            crate::github::gh_pr_head_oid_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number).ok();
+        let preview_head_oid = ports
+            .github
+            .pr_head_oid_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)
+            .ok();
+        let raw =
+            ports
+                .github
+                .pr_diff_remote(&*ports.git, &pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
+        let confirmed_preview_head = ports
+            .github
+            .pr_head_oid_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)
+            .ok();
         let preview_head_oid = if preview_head_oid == confirmed_preview_head {
             preview_head_oid
         } else {
             None
         };
 
-        let pr_commits =
-            crate::github::gh_pr_commits_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number, 250);
+        let pr_commits = ports
+            .github
+            .commits_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number, 250)
+            .unwrap_or_default();
         let mut tab =
             Self::new_remote_with_data(pr_ref, base_branch, head_branch, raw, pr_commits, ports)?;
         tab.preview_head_oid = preview_head_oid;
@@ -2857,13 +2875,22 @@ impl TabState {
         git: &dyn er_git::Git,
         inputs: &PrRefreshInputs,
     ) -> Result<PrRefreshResult> {
+        Self::fetch_pr_refresh_with(&*crate::github::default_handle(), git, inputs)
+    }
+
+    /// [`Self::fetch_pr_refresh`] through a caller-supplied GitHub handle.
+    pub fn fetch_pr_refresh_with(
+        github: &dyn er_github::GitHub,
+        git: &dyn er_git::Git,
+        inputs: &PrRefreshInputs,
+    ) -> Result<PrRefreshResult> {
         let pr_number = inputs.pr_number;
         let repo_root = inputs.repo_root.as_str();
 
         let (head_result, lookup_result) = std::thread::scope(|s| {
             let head_handle =
                 s.spawn(move || crate::github::fetch_pr_head(git, pr_number, repo_root));
-            let lookup = crate::github::gh_pr_base_branch_and_commits(repo_root, pr_number, 250);
+            let lookup = github.pr_base_branch_and_commits(repo_root, pr_number, 250);
             let head_result = head_handle
                 .join()
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("pr head fetch thread panicked")));
@@ -2881,8 +2908,9 @@ impl TabState {
             // failure is fatal, a commit lookup failure is not (an empty list
             // keeps the existing one — see `apply_pr_commit_refresh`).
             Err(_) => (
-                crate::github::gh_pr_base_branch(pr_number, repo_root)?,
-                crate::github::gh_pr_commits(repo_root, pr_number, 250)
+                github.pr_base_branch(pr_number, repo_root)?,
+                github
+                    .pr_commits(repo_root, pr_number, 250)
                     .map_err(|e| {
                         eprintln!("sync: pr commits re-fetch failed for #{pr_number}: {e}");
                     })
@@ -2963,7 +2991,8 @@ impl TabState {
             // lookup overlap inside `fetch_pr_refresh`, so logging them
             // separately would report two intervals that share wall time.
             let t = Instant::now();
-            let result = Self::fetch_pr_refresh(&*self.ports.git, &inputs);
+            let result =
+                Self::fetch_pr_refresh_with(&*self.ports.github, &*self.ports.git, &inputs);
             log_branch_profile_phase(self, "fetch_pr_refresh", t);
             self.apply_pr_refresh(result?);
         } else if self.shows_branch_base_diff() {
@@ -3254,12 +3283,12 @@ impl TabState {
             if let Some(ref repo_slug) = self.remote_repo {
                 let parts: Vec<&str> = repo_slug.split('/').collect();
                 if parts.len() == 2 {
-                    return Some(crate::github::gh_pr_diff_remote(
-                        &*self.ports.git,
-                        parts[0],
-                        parts[1],
-                        pr_number,
-                    ));
+                    return Some(
+                        self.ports
+                            .github
+                            .pr_diff_remote(&*self.ports.git, parts[0], parts[1], pr_number)
+                            .map_err(anyhow::Error::from),
+                    );
                 }
             }
             return Some(Err(anyhow::anyhow!(
@@ -3269,11 +3298,12 @@ impl TabState {
         if self.repo_root.is_empty() {
             return None;
         }
-        Some(crate::github::gh_pr_diff(
-            &*self.ports.git,
-            pr_number,
-            &self.repo_root,
-        ))
+        Some(
+            self.ports
+                .github
+                .pr_diff(&*self.ports.git, pr_number, &self.repo_root)
+                .map_err(anyhow::Error::from),
+        )
     }
 
     /// Fetch raw unified-diff text using the same subprocess rules as `refresh_diff`.
@@ -6035,12 +6065,13 @@ impl App {
                     // Fetch PR head to a local ref without touching the working tree
                     let head_ref =
                         crate::github::fetch_pr_head(&*ports.git, pr_ref.number, &repo_root)?;
-                    let base = crate::github::gh_pr_base_branch(pr_ref.number, &repo_root)?;
+                    let base = ports.github.pr_base_branch(pr_ref.number, &repo_root)?;
                     let base =
                         crate::github::ensure_base_ref_available(&*ports.git, &repo_root, &base)?;
-                    let head_branch =
-                        crate::github::gh_pr_head_branch_name(pr_ref.number, &repo_root)
-                            .unwrap_or_else(|_| format!("pr/{}", pr_ref.number));
+                    let head_branch = ports
+                        .github
+                        .pr_head_branch_name(pr_ref.number, &repo_root)
+                        .unwrap_or_else(|_| format!("pr/{}", pr_ref.number));
 
                     let mut tab = TabState::new_with_base(repo_root, base, ports.clone())?;
                     tab.pr_head_ref = Some(head_ref);
@@ -6070,7 +6101,7 @@ impl App {
         let arena_registry = Self::init_arena_registry(Arc::new(|| {}));
 
         let mut app = Self {
-            ports,
+            ports: ports.clone(),
             tabs,
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -6105,7 +6136,9 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
-            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster),
+            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster::new(
+                ports.github.clone(),
+            )),
             pending_github_posts: std::collections::HashMap::new(),
         };
         // These tabs were built before the config loaded, so `push_tab` never
@@ -6130,7 +6163,7 @@ impl App {
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         let mut app = Self {
-            ports,
+            ports: ports.clone(),
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -6165,7 +6198,9 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
-            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster),
+            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster::new(
+                ports.github.clone(),
+            )),
             pending_github_posts: std::collections::HashMap::new(),
         };
         app.sync_repo_rules_to_tabs();
@@ -6186,7 +6221,7 @@ impl App {
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         let mut app = Self {
-            ports,
+            ports: ports.clone(),
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -6221,7 +6256,9 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
-            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster),
+            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster::new(
+                ports.github.clone(),
+            )),
             pending_github_posts: std::collections::HashMap::new(),
         };
         app.sync_repo_rules_to_tabs();
@@ -6245,7 +6282,7 @@ impl App {
     pub fn new_for_test_with_ports(files: Vec<crate::git::DiffFile>, ports: Ports) -> Self {
         let tab = TabState::new_for_test_with_ports(files, ports.clone());
         Self {
-            ports,
+            ports: ports.clone(),
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -6280,7 +6317,9 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
-            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster),
+            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster::new(
+                ports.github.clone(),
+            )),
             pending_github_posts: std::collections::HashMap::new(),
         }
     }
@@ -6656,8 +6695,12 @@ impl App {
         }
 
         let mut tab = TabState::new_remote(&pr_ref, self.ports.clone())?;
-        let pr_data =
-            crate::github::gh_pr_overview_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number);
+        let pr_data = self
+            .ports
+            .github
+            .overview_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)
+            .ok()
+            .flatten();
         if let Some(data) = pr_data {
             tab.pr_data = Some(data);
         }
@@ -12569,8 +12612,9 @@ mod tests {
     // ── get_line_anchor ──
 
     fn make_test_app(tab: TabState) -> App {
+        let ports = Ports::for_test();
         App {
-            ports: Ports::for_test(),
+            ports: ports.clone(),
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -12605,7 +12649,9 @@ mod tests {
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
-            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster),
+            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster::new(
+                ports.github.clone(),
+            )),
             pending_github_posts: std::collections::HashMap::new(),
         }
     }

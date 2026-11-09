@@ -629,10 +629,15 @@ fn debug_agent_log_enabled() -> bool {
 }
 
 /// Delete GitHub comments in order on a background thread, discarding results.
-fn spawn_github_comment_deletes(gh: ai::GitHubSyncState, ids: Vec<u64>, repo_root: String) {
+fn spawn_github_comment_deletes(
+    github: std::sync::Arc<dyn er_github::GitHub>,
+    gh: ai::GitHubSyncState,
+    ids: Vec<u64>,
+    repo_root: String,
+) {
     std::thread::spawn(move || {
         for id in ids {
-            let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, id, &repo_root);
+            let _ = github.delete_comment(&gh.owner, &gh.repo, id, &repo_root);
         }
     });
 }
@@ -1557,9 +1562,9 @@ impl App {
                 anyhow::bail!("Cannot edit AI-generated text");
             }
             if let (Some(gh_id), Some(gh)) = (github_id, gh_meta.as_ref()) {
-                crate::github::gh_pr_update_review_comment(
-                    &gh.owner, &gh.repo, gh_id, new_text, &repo_root,
-                )?;
+                self.ports
+                    .github
+                    .update_review_comment(&gh.owner, &gh.repo, gh_id, new_text, &repo_root)?;
             }
             if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
                 c.comment = new_text.to_string();
@@ -2204,6 +2209,7 @@ impl App {
     pub fn confirm_delete_comment(&mut self, comment_id: &str) -> Result<()> {
         let er_dir = self.tab().er_dir();
         let repo_root = self.tab().repo_root.clone();
+        let github = self.ports.github.clone();
 
         // Determine which file this comment lives in (by id prefix)
         if comment_id.starts_with("q-") {
@@ -2274,7 +2280,7 @@ impl App {
                 // poll and click queued behind a comment deletion.
                 if let (Some(gh_id), Some(gh)) = (github_id, gc.github.clone()) {
                     let ids = std::iter::once(gh_id).chain(reply_github_ids).collect();
-                    spawn_github_comment_deletes(gh, ids, repo_root);
+                    spawn_github_comment_deletes(github, gh, ids, repo_root);
                 }
 
                 self.adopt_github_comments(gc, &path);
@@ -2825,6 +2831,7 @@ impl App {
         });
 
         let log_tx = self.tab().log_tx.clone();
+        let github = self.ports.github.clone();
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
@@ -2932,7 +2939,7 @@ impl App {
                     // An unreadable summary is skipped, same as an empty one.
                     let summary = std::fs::read_to_string(&summary_path).unwrap_or_default();
                     if !summary.trim().is_empty() {
-                        crate::github::gh_pr_edit_body(&repo_root, &summary)?;
+                        github.edit_body(&repo_root, &summary)?;
                     }
                 }
 

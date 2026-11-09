@@ -338,7 +338,11 @@ impl App {
             .github_comment_intent()
             .ok_or_else(|| GitHubPostError::NotPosted("Nothing to post to GitHub".to_string()))?;
         let ctx = self.comment_post_context();
-        let pr = crate::github_post::resolve_post_target(&*self.ports.git, &ctx)?;
+        let pr = crate::github_post::resolve_post_target_with(
+            &*self.ports.github,
+            &*self.ports.git,
+            &ctx,
+        )?;
         let ticket = self.begin_github_comment_post(intent, pr, ctx, None)?;
         let poster = self.github_comment_poster();
         let execution = crate::github_post::execute_comment_post(
@@ -532,7 +536,7 @@ impl App {
     ) -> Result<PostedGitHubComment, GitHubPostError> {
         if matches!(ticket.request.target, GitHubPostTarget::General) {
             self.pending_github_posts.remove(&ticket.request.client_id);
-            crate::github::invalidate_pr_comments_cache();
+            self.ports.github.invalidate_comments();
             return Ok(PostedGitHubComment {
                 github_id,
                 store_id: None,
@@ -634,7 +638,7 @@ impl App {
                 tab.comment_client_id = None;
             }
         }
-        crate::github::invalidate_pr_comments_cache();
+        self.ports.github.invalidate_comments();
         Ok(PostedGitHubComment {
             github_id,
             store_id: Some(store_id),

@@ -100,9 +100,10 @@ pub fn collect(
             repo_slug,
             base_ref,
         } => {
-            let bytes =
-                crate::github::gh_file_at_ref(repo_slug, "REVIEW.md", base_ref, MAX_FILE_BYTES)
-                    .ok()?;
+            let bytes = ports
+                .github
+                .file_at_ref(repo_slug, "REVIEW.md", base_ref, MAX_FILE_BYTES)
+                .ok()?;
             let files = read_text(bytes)
                 .map(|t| vec![("REVIEW.md".to_string(), t)])
                 .unwrap_or_default();

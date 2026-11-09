@@ -81,15 +81,18 @@ pub struct PrTargetInput<'a> {
 pub fn resolve_pr_target(input: &PrTargetInput<'_>) -> Result<ResolvedPr> {
     let file = load_projects();
     let hints = project_hints(&file);
-    pr_resolve::resolve_pr_ref(&ResolvePrRefInput {
-        ref_str: input.ref_str,
-        pr_url: input.pr_url,
-        repo: input.repo,
-        project_id: input.project_id,
-        number: input.number,
-        projects: &hints,
-        active_project_id: file.active_id.as_deref(),
-    })
+    pr_resolve::resolve_pr_ref(
+        &*er_engine::github::default_handle(),
+        &ResolvePrRefInput {
+            ref_str: input.ref_str,
+            pr_url: input.pr_url,
+            repo: input.repo,
+            project_id: input.project_id,
+            number: input.number,
+            projects: &hints,
+            active_project_id: file.active_id.as_deref(),
+        },
+    )
 }
 
 /// Resolve `(owner, repo)` from explicit slug, project id, or active project.

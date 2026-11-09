@@ -114,7 +114,9 @@ impl TabState {
                 .as_deref()
                 .and_then(|slug| slug.split_once('/'))
                 .and_then(|(owner, repo)| {
-                    crate::github::gh_pr_head_oid_remote(owner, repo, self.pr_number.unwrap_or(0))
+                    self.ports
+                        .github
+                        .pr_head_oid_remote(owner, repo, self.pr_number.unwrap_or(0))
                         .ok()
                 })
         } else {
