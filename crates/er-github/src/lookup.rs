@@ -549,6 +549,95 @@ impl CliGitHub {
     }
 }
 
+/// Raw `gh pr view`/`gh pr list` reads the desktop parses with its own structs.
+impl CliGitHub {
+    /// `gh pr view <n> --json <fields>` bytes, in `dir` or from the current
+    /// directory when the PR lives in a remote repo (`repo_slug`).
+    pub(crate) fn pr_view_json(
+        &self,
+        repo_slug: Option<&str>,
+        dir: Option<&str>,
+        number: u64,
+        fields: &str,
+    ) -> Result<Vec<u8>, GhError> {
+        let mut args = vec!["pr".to_string(), "view".to_string(), number.to_string()];
+        if let Some(slug) = repo_slug {
+            args.push("--repo".to_string());
+            args.push(slug.to_string());
+        }
+        args.push("--json".to_string());
+        args.push(fields.to_string());
+        Ok(self.run_gh(&args, dir, None)?.body)
+    }
+
+    /// `gh pr list --repo <slug> --state <state> --json <fields> --limit <n>`
+    /// bytes. The 60 s bound replaces the desktop cache refresh's unbounded
+    /// wait: a stalled gh should fail the refresh, not pin the worker forever.
+    pub(crate) fn pr_list_json(
+        &self,
+        repo_slug: &str,
+        state: &str,
+        limit: usize,
+        fields: &str,
+    ) -> Result<Vec<u8>, GhError> {
+        let args = vec![
+            "pr".to_string(),
+            "list".to_string(),
+            "--repo".to_string(),
+            repo_slug.to_string(),
+            "--state".to_string(),
+            state.to_string(),
+            "--json".to_string(),
+            fields.to_string(),
+            "--limit".to_string(),
+            limit.to_string(),
+        ];
+        Ok(self
+            .run_gh_timed(&args, None, None, std::time::Duration::from_secs(60))?
+            .body)
+    }
+}
+
+/// Open a PR's page in the browser.
+impl CliGitHub {
+    /// Detached `gh pr view --web`; the child is not waited for, so the caller
+    /// gets only whether it started.
+    pub(crate) fn open_pr_in_browser(
+        &self,
+        dir: &str,
+        number: u64,
+        repo_slug: Option<&str>,
+    ) -> bool {
+        let mut args = vec![
+            "pr".to_string(),
+            "view".to_string(),
+            number.to_string(),
+            "--web".to_string(),
+        ];
+        if let Some(slug) = repo_slug {
+            args.push("-R".to_string());
+            args.push(slug.to_string());
+        }
+        self.run_detached(&args, Some(dir)).is_ok()
+    }
+}
+
+/// The signed-in token, used only by the desktop's image fetch.
+impl CliGitHub {
+    /// `gh auth token` for `hostname`. The token arrives on stdout, which no
+    /// error path copies, so a [`GhError`] never carries it.
+    pub(crate) fn auth_token(&self, hostname: &str) -> Result<String, GhError> {
+        let out = self.run_gh_args(&["auth", "token", "--hostname", hostname], None)?;
+        let token = String::from_utf8_lossy(&out.body).trim().to_string();
+        if token.is_empty() {
+            return Err(GhError::Local {
+                message: "empty auth token".to_string(),
+            });
+        }
+        Ok(token)
+    }
+}
+
 /// Compatibility wrappers for front ends and engine callers.
 pub fn gh_open_pr_number_for_head(owner: &str, repo: &str, head: &str) -> Result<Option<u64>> {
     default_handle()

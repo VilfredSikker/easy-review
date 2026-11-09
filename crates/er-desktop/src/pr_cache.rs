@@ -167,12 +167,13 @@ pub fn active_project_remote() -> Option<String> {
 /// Refresh a single remote and merge into the cache. Used at startup so the
 /// active project's PR list is hot before the full multi-remote sweep runs.
 pub async fn refresh_pr_cache_for_remote(
+    github: Arc<dyn er_engine::github::GitHub>,
     remote: &str,
     cache: &PrCacheMap,
     fetched_at: &PrCacheFetchedAtMap,
 ) -> bool {
     let t = std::time::Instant::now();
-    let result = fetch_prs_for_remote(remote, cache).await;
+    let result = fetch_prs_for_remote(github, remote, cache).await;
     let ms = t.elapsed().as_millis();
     let success = result.is_some();
     if let Some(ref prs) = result {
@@ -209,7 +210,11 @@ fn refreshable_remotes(file: &projects::ProjectsFile) -> Vec<String> {
 
 /// Refresh PRs for every project with a remote. Fetches all remotes in parallel.
 /// Preserves stale cache entries for remotes that fail.
-pub async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtMap) -> Vec<String> {
+pub async fn refresh_pr_cache(
+    github: Arc<dyn er_engine::github::GitHub>,
+    cache: &PrCacheMap,
+    fetched_at: &PrCacheFetchedAtMap,
+) -> Vec<String> {
     let file = projects::load();
     let remotes = refreshable_remotes(&file);
 
@@ -224,9 +229,10 @@ pub async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtM
         .map(|remote| {
             let remote = remote.clone();
             let cache = Arc::clone(cache);
+            let github = Arc::clone(&github);
             tokio::spawn(async move {
                 let rt = std::time::Instant::now();
-                let result = fetch_prs_for_remote(&remote, &cache).await;
+                let result = fetch_prs_for_remote(github, &remote, &cache).await;
                 (remote, result, rt.elapsed().as_millis())
             })
         })
@@ -295,13 +301,17 @@ static CLOSED_FETCHED_AT: std::sync::LazyLock<Mutex<HashMap<String, u64>>> =
 /// closed list only when it can have changed, so a routine refresh costs one
 /// `gh` call. When the closed call is skipped or fails, the cached closed
 /// entries are kept, so only a failed open call fails the refresh.
-pub async fn fetch_prs_for_remote(remote: &str, cache: &PrCacheMap) -> Option<Vec<PrInfo>> {
+pub async fn fetch_prs_for_remote(
+    github: Arc<dyn er_engine::github::GitHub>,
+    remote: &str,
+    cache: &PrCacheMap,
+) -> Option<Vec<PrInfo>> {
     let previous: Vec<PrInfo> = cache
         .lock()
         .ok()
         .and_then(|g| g.get(remote).cloned())
         .unwrap_or_default();
-    let open = run_pr_list(remote, "open", OPEN_PR_LIMIT).await?;
+    let open = run_pr_list(Arc::clone(&github), remote, "open", OPEN_PR_LIMIT).await?;
 
     let last_closed = CLOSED_FETCHED_AT
         .lock()
@@ -309,7 +319,7 @@ pub async fn fetch_prs_for_remote(remote: &str, cache: &PrCacheMap) -> Option<Ve
         .and_then(|g| g.get(remote).copied());
     let now = now_epoch_ms();
     let fetched_closed = if closed_fetch_needed(&previous, &open, last_closed, now) {
-        run_pr_list(remote, "closed", CLOSED_PR_LIMIT).await
+        run_pr_list(github, remote, "closed", CLOSED_PR_LIMIT).await
     } else {
         None
     };
@@ -370,30 +380,28 @@ fn merge_open_and_closed(open: Vec<PrInfo>, closed: Vec<PrInfo>) -> Vec<PrInfo> 
     out
 }
 
-async fn run_pr_list(remote: &str, state: &str, limit: usize) -> Option<Vec<PrInfo>> {
-    // statusCheckRollup is intentionally excluded — it forces GitHub to aggregate
-    // CI checks for every PR and is the dominant cause of latency (adds ~5s per fetch).
-    // Icon colors use reviewDecision instead, which is cheap.
-    let out = tokio::process::Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--repo",
-            remote,
-            "--state",
-            state,
-            "--json",
-            "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews",
-            "--limit",
-            &limit.to_string(),
-        ])
-        .output()
-        .await
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_pr_list(&out.stdout)
+/// Fields the cache lists. `statusCheckRollup` is intentionally excluded — it
+/// forces GitHub to aggregate CI checks for every PR and is the dominant cause
+/// of latency (adds ~5s per fetch). Icon colors use reviewDecision, which is
+/// cheap.
+const PR_LIST_FIELDS: &str = "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews";
+
+async fn run_pr_list(
+    github: Arc<dyn er_engine::github::GitHub>,
+    remote: &str,
+    state: &str,
+    limit: usize,
+) -> Option<Vec<PrInfo>> {
+    // The gh call blocks; take it off the async runtime's thread.
+    let remote = remote.to_string();
+    let state = state.to_string();
+    let out = tokio::task::spawn_blocking(move || {
+        github.pr_list_json(&remote, &state, limit, PR_LIST_FIELDS)
+    })
+    .await
+    .ok()?
+    .ok()?;
+    parse_pr_list(&out)
 }
 
 fn parse_pr_list(stdout: &[u8]) -> Option<Vec<PrInfo>> {
@@ -508,6 +516,39 @@ mod tests {
         pr.state = state.to_string();
         pr.updated_at = updated_at.to_string();
         pr
+    }
+
+    #[tokio::test]
+    async fn run_pr_list_parses_a_scripted_list() {
+        let json = br#"[{"number":1506,"title":"Stack bottom","headRefName":"a","baseRefName":"main","headRefOid":"abc","updatedAt":"2026-09-10T12:30:43Z","state":"OPEN","isDraft":false,"author":{"login":"will"},"assignees":[],"reviewRequests":[],"reviewDecision":null,"mergedAt":null,"latestReviews":[{"author":{"login":"bo"},"state":"APPROVED"}]}]"#;
+        let github =
+            Arc::new(er_engine::github::FakeGitHub::default().with_pr_list_json(Ok(json.to_vec())));
+
+        let prs = run_pr_list(github.clone(), "o/r", "open", 30)
+            .await
+            .expect("a scripted list");
+
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 1506);
+        assert_eq!(prs[0].author, "will");
+        let call = &github.calls()[0];
+        assert!(
+            call.starts_with("pr_list_json(repo_slug=\"o/r\", state=\"open\", limit=30"),
+            "{call}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_pr_list_returns_none_when_the_handle_errors() {
+        let github = Arc::new(
+            er_engine::github::FakeGitHub::default().with_pr_list_json(Err(
+                er_engine::github::GhError::NotFound {
+                    message: "nope".into(),
+                },
+            )),
+        );
+
+        assert!(run_pr_list(github, "o/r", "closed", 10).await.is_none());
     }
 
     #[test]

@@ -93,6 +93,11 @@ struct FakeState {
     current_login: Option<Result<Option<String>, GhError>>,
     stack_view_json: Option<Result<String, GhError>>,
     open_pr_refs_json: Option<Result<String, GhError>>,
+    pr_view_json: Option<Result<Vec<u8>, GhError>>,
+    pr_list_json: Option<Result<Vec<u8>, GhError>>,
+    repo_name_with_owner: Option<Result<String, GhError>>,
+    auth_token: Option<Result<String, GhError>>,
+    open_pr_in_browser: Option<bool>,
     pr_metadata_remote: Option<Result<(String, String), GhError>>,
     pr_status_remote: Option<Result<PrStatusBundle, GhError>>,
     pr_checks_remote: Option<Result<Vec<CheckRun>, GhError>>,
@@ -542,6 +547,36 @@ impl FakeGitHub {
     #[must_use]
     pub fn with_open_pr_refs_json(self, value: Result<String, GhError>) -> Self {
         self.lock().open_pr_refs_json = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_view_json(self, value: Result<Vec<u8>, GhError>) -> Self {
+        self.lock().pr_view_json = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_list_json(self, value: Result<Vec<u8>, GhError>) -> Self {
+        self.lock().pr_list_json = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_repo_name_with_owner(self, value: Result<String, GhError>) -> Self {
+        self.lock().repo_name_with_owner = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_auth_token(self, value: Result<String, GhError>) -> Self {
+        self.lock().auth_token = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_open_pr_in_browser(self, value: bool) -> Self {
+        self.lock().open_pr_in_browser = Some(value);
         self
     }
 
@@ -1430,6 +1465,60 @@ impl GitHub for FakeGitHub {
             .open_pr_refs_json
             .clone()
             .unwrap_or_else(|| Err(unscripted("open_pr_refs_json")))
+    }
+
+    fn pr_view_json(
+        &self,
+        repo_slug: Option<&str>,
+        dir: Option<&str>,
+        number: u64,
+        fields: &str,
+    ) -> Result<Vec<u8>, GhError> {
+        self.record(format!(
+            "pr_view_json(repo_slug={repo_slug:?}, dir={dir:?}, number={number:?}, \
+             fields={fields:?})"
+        ))
+        .pr_view_json
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_view_json")))
+    }
+
+    fn pr_list_json(
+        &self,
+        repo_slug: &str,
+        state: &str,
+        limit: usize,
+        fields: &str,
+    ) -> Result<Vec<u8>, GhError> {
+        self.record(format!(
+            "pr_list_json(repo_slug={repo_slug:?}, state={state:?}, limit={limit:?}, \
+             fields={fields:?})"
+        ))
+        .pr_list_json
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_list_json")))
+    }
+
+    fn repo_name_with_owner(&self, dir: &str) -> Result<String, GhError> {
+        self.record(format!("repo_name_with_owner(dir={dir:?})"))
+            .repo_name_with_owner
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("repo_name_with_owner")))
+    }
+
+    fn auth_token(&self, hostname: &str) -> Result<String, GhError> {
+        self.record(format!("auth_token(hostname={hostname:?})"))
+            .auth_token
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("auth_token")))
+    }
+
+    fn open_pr_in_browser(&self, dir: &str, number: u64, repo_slug: Option<&str>) -> bool {
+        self.record(format!(
+            "open_pr_in_browser(dir={dir:?}, number={number:?}, repo_slug={repo_slug:?})"
+        ))
+        .open_pr_in_browser
+        .unwrap_or(false)
     }
 
     fn pr_metadata_remote(

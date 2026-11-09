@@ -39,6 +39,33 @@ impl CliGitHub {
     }
 }
 
+/// A repository name asked of GitHub rather than read from git's remotes.
+impl CliGitHub {
+    /// `owner/repo` as `gh repo view` reports it for the checkout in `dir`.
+    /// This is the fallback for a checkout whose origin is not a GitHub remote
+    /// or does not parse; it costs one network round trip.
+    pub(crate) fn repo_name_with_owner(&self, dir: &str) -> Result<String, GhError> {
+        let out = self.run_gh_args(
+            &[
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "--jq",
+                ".nameWithOwner",
+            ],
+            Some(dir),
+        )?;
+        let name = String::from_utf8_lossy(&out.body).trim().to_string();
+        if name.is_empty() {
+            return Err(GhError::Local {
+                message: "empty repository name".to_string(),
+            });
+        }
+        Ok(name)
+    }
+}
+
 /// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn get_repo_info(git: &dyn Git, repo_root: &str) -> Result<(String, String)> {
     default_handle()

@@ -427,6 +427,32 @@ pub trait GitHub: Send + Sync {
     fn current_login(&self) -> Result<Option<String>, GhError>;
     fn stack_view_json(&self, repo_root: &str) -> Result<String, GhError>;
     fn open_pr_refs_json(&self, repo_slug: &str) -> Result<String, GhError>;
+
+    /// Raw `gh pr view --json <fields>` bytes; the caller keeps its own serde
+    /// shape. `dir` is the checkout to run in, for a PR of the local repo.
+    fn pr_view_json(
+        &self,
+        repo_slug: Option<&str>,
+        dir: Option<&str>,
+        number: u64,
+        fields: &str,
+    ) -> Result<Vec<u8>, GhError>;
+    /// Raw `gh pr list --json <fields>` bytes for one state window. Bounded at
+    /// 60 s: the desktop's cache refresh used to wait forever.
+    fn pr_list_json(
+        &self,
+        repo_slug: &str,
+        state: &str,
+        limit: usize,
+        fields: &str,
+    ) -> Result<Vec<u8>, GhError>;
+    /// `owner/repo` for the checkout in `dir`.
+    fn repo_name_with_owner(&self, dir: &str) -> Result<String, GhError>;
+    /// The signed-in token for `hostname`. Only the caller that fetches bytes
+    /// with it sees it; no error path carries it.
+    fn auth_token(&self, hostname: &str) -> Result<String, GhError>;
+    /// Open the PR's page, detached. False when `gh` could not be started.
+    fn open_pr_in_browser(&self, dir: &str, number: u64, repo_slug: Option<&str>) -> bool;
     fn pr_metadata_remote(
         &self,
         owner: &str,
