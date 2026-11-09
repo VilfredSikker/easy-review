@@ -1372,9 +1372,8 @@ mod tests {
     }
 
     #[test]
-    fn a_gh_no_pull_request_answer_maps_to_the_no_pr_sentence() {
-        let lookup =
-            crate::github::classify_pr_lookup_failure("no pull requests found for branch \"feat\"");
+    fn an_absent_lookup_maps_to_the_no_pr_sentence() {
+        let lookup = crate::github::PrLookup::Absent;
         let ctx = CommentPostContext {
             repo_root: "/repo".to_string(),
             is_remote: false,

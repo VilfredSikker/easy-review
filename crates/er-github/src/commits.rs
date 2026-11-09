@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::{default_handle, CliGitHub, GhError};
+use crate::{default_handle, with_gh_sentence, CliGitHub, GhError};
 
 /// Parse `gh pr view --json commits` output into commit metadata.
 ///
@@ -159,6 +159,12 @@ impl CliGitHub {
     }
 
     /// A PR's base branch and commit list, from one `gh pr view`.
+    ///
+    /// [`Self::pr_base_branch`] and [`Self::pr_commits`] are two `gh pr view
+    /// --json` invocations against the same PR, so asking for both costs two
+    /// network round trips (~0.6s each) to read two fields of one object.
+    /// Callers that need both — the desktop Sync path — should use this
+    /// instead.
     pub(crate) fn pr_base_branch_and_commits(
         &self,
         repo_root: &str,
@@ -203,7 +209,7 @@ pub fn gh_pr_commits(
 ) -> Result<Vec<er_git::CommitInfo>> {
     default_handle()
         .pr_commits(repo_root, number, limit)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence(format!("Failed to get PR #{number} commits"), error))
 }
 
 pub fn gh_pr_base_branch_and_commits(
@@ -213,19 +219,16 @@ pub fn gh_pr_base_branch_and_commits(
 ) -> Result<(String, Vec<er_git::CommitInfo>)> {
     default_handle()
         .pr_base_branch_and_commits(repo_root, number, limit)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence(format!("Failed to get PR #{number}"), error))
 }
 
-/// Fetch the list of commits on a remote PR (no local clone required).
-///
-/// Returns commits in reverse-chronological order (newest first), capped at
-/// `limit`, each with its diffstat — see [`PR_COMMITS_GRAPHQL`] for why this one
-/// listing is GraphQL rather than `gh pr view --json commits`.
-///
-/// On any failure (gh unavailable, no auth, etc.) returns an empty list so the
-/// caller degrades gracefully.
 impl CliGitHub {
-    /// The commits on a remote PR, through the paginated GraphQL query.
+    /// Fetch the list of commits on a remote PR (no local clone required),
+    /// through the paginated GraphQL query.
+    ///
+    /// Returns commits in reverse-chronological order (newest first), capped at
+    /// `limit`, each with its diffstat — see [`PR_COMMITS_GRAPHQL`] for why this
+    /// one listing is GraphQL rather than `gh pr view --json commits`.
     pub(crate) fn commits_remote(
         &self,
         owner: &str,
@@ -256,6 +259,9 @@ impl CliGitHub {
 }
 
 /// Compatibility wrapper for front ends and engine callers.
+///
+/// On any failure (gh unavailable, no auth, etc.) returns an empty list so the
+/// caller degrades gracefully.
 pub fn gh_pr_commits_remote(
     owner: &str,
     repo: &str,

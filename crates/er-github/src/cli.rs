@@ -82,6 +82,18 @@ impl CliGitHub {
         dir: Option<&str>,
         max_stdout: Option<usize>,
     ) -> Result<GhOutput, GhError> {
+        self.run_gh_with_env(args, dir, max_stdout, &[])
+    }
+
+    /// [`Self::run_gh`] with extra environment for the few commands that can
+    /// prompt (`gh stack` opens a TUI under a TTY).
+    pub(crate) fn run_gh_with_env(
+        &self,
+        args: &[String],
+        dir: Option<&str>,
+        max_stdout: Option<usize>,
+        env: &[(&str, &str)],
+    ) -> Result<GhOutput, GhError> {
         let include = args.first().is_some_and(|arg| arg == "api");
         let paginated = args.iter().any(|arg| arg == "--paginate");
         let mut final_args = args.to_vec();
@@ -93,6 +105,7 @@ impl CliGitHub {
             dir,
             timeout: er_git::proc::GH_TIMEOUT,
             max_stdout,
+            env,
         };
         let output = classify(self.runner.run(&call), include, paginated)?;
         if let Some(cap) = max_stdout {
@@ -617,15 +630,19 @@ impl GitHub for CliGitHub {
         CliGitHub::pr_branch_names(self, pr_number, repo_root)
     }
 
-    fn probe_pr_for_current_branch(&self, repo_root: &str) -> BranchPrProbe {
+    fn probe_pr_for_current_branch(&self, repo_root: &str) -> Result<BranchPrProbe, GhError> {
         CliGitHub::probe_pr_for_current_branch(self, repo_root)
     }
 
-    fn pr_for_current_branch(&self, repo_root: &str) -> Option<(u64, String)> {
+    fn pr_for_current_branch(&self, repo_root: &str) -> Result<Option<(u64, String)>, GhError> {
         CliGitHub::pr_for_current_branch(self, repo_root)
     }
 
-    fn lookup_pr_for_current_branch(&self, git: &dyn er_git::Git, repo_root: &str) -> PrLookup {
+    fn lookup_pr_for_current_branch(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<PrLookup, GhError> {
         CliGitHub::lookup_pr_for_current_branch(self, git, repo_root)
     }
 
@@ -638,7 +655,7 @@ impl GitHub for CliGitHub {
         CliGitHub::open_pr_number_for_head(self, owner, repo, head)
     }
 
-    fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Option<String> {
+    fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Result<Option<String>, GhError> {
         CliGitHub::pr_title(self, owner, repo, number)
     }
 
@@ -650,7 +667,7 @@ impl GitHub for CliGitHub {
         CliGitHub::get_pr_info(self, git, repo_root)
     }
 
-    fn current_login(&self) -> Option<String> {
+    fn current_login(&self) -> Result<Option<String>, GhError> {
         CliGitHub::current_login(self)
     }
 

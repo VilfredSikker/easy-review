@@ -1,7 +1,7 @@
 //! Lookups: PR URLs and refs, the checked-out branch's PR, notifications,
 //! the viewer, and the review-queue listing.
 
-use crate::with_prefix;
+use crate::{with_gh_sentence, with_prefix};
 use anyhow::{Context, Result};
 use er_git::Git;
 use serde::Deserialize;
@@ -135,13 +135,13 @@ pub fn ensure_gh_installed() -> Result<()> {
 pub fn gh_list_participating_notifications() -> Result<Vec<GhNotification>> {
     default_handle()
         .list_participating_notifications()
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence("Failed to fetch GitHub notifications", error))
 }
 
 pub fn gh_pr_base_branch(pr_number: u64, repo_root: &str) -> Result<String> {
     default_handle()
         .pr_base_branch(pr_number, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence(format!("Failed to get PR #{pr_number}"), error))
 }
 
 /// A GitHub notification thread from `GET /notifications`.
@@ -223,10 +223,12 @@ impl CliGitHub {
 pub fn gh_pr_branch_names(pr_number: u64, repo_root: &str) -> Result<(String, String)> {
     default_handle()
         .pr_branch_names(pr_number, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence(format!("Failed to get PR #{pr_number}"), error))
 }
 
-/// Three-way result of probing the checked-out branch's PR.
+/// Result of probing the checked-out branch's PR. gh's explicit "no pull
+/// request" answer is [`BranchPrProbe::Absent`]; a probe that could not ask is
+/// an `Err`, never a third variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchPrProbe {
     Present {
@@ -235,18 +237,13 @@ pub enum BranchPrProbe {
     },
     /// gh answered that this branch has no pull request.
     Absent,
-    /// The probe itself failed (offline, unauthenticated, timeout, …).
-    Unknown,
-}
-
-/// Whether gh's failure stderr means "this branch has no PR". Only that
-/// explicit answer counts: an offline or unauthenticated gh is unknown.
-fn gh_failure_is_absent(stderr: &str) -> bool {
-    stderr.to_lowercase().contains("no pull requests found")
 }
 
 impl CliGitHub {
-    pub(crate) fn probe_pr_for_current_branch(&self, repo_root: &str) -> BranchPrProbe {
+    pub(crate) fn probe_pr_for_current_branch(
+        &self,
+        repo_root: &str,
+    ) -> Result<BranchPrProbe, GhError> {
         // Use --jq to extract "number<tab>baseRefName" — robust against JSON formatting
         let out = match self.run_gh_args(
             &[
@@ -260,48 +257,64 @@ impl CliGitHub {
             Some(repo_root),
         ) {
             Ok(out) => out,
-            Err(error) if gh_failure_is_absent(&error.to_string()) => {
-                return BranchPrProbe::Absent;
+            Err(error) if crate::classify::is_no_pull_request_answer(&error) => {
+                return Ok(BranchPrProbe::Absent);
             }
-            Err(_) => return BranchPrProbe::Unknown,
+            Err(error) => return Err(error),
         };
 
         let text = String::from_utf8_lossy(&out.body);
         let text = text.trim();
         let Some((num_str, base)) = text.split_once('\t') else {
-            return BranchPrProbe::Unknown;
+            return Err(GhError::Local {
+                message: format!("Unexpected gh pr view output: {text}"),
+            });
         };
         let Ok(number) = num_str.parse::<u64>() else {
-            return BranchPrProbe::Unknown;
+            return Err(GhError::Local {
+                message: format!("Unexpected gh pr view output: {text}"),
+            });
         };
         if base.is_empty() {
-            return BranchPrProbe::Unknown;
+            return Err(GhError::Local {
+                message: format!("Unexpected gh pr view output: {text}"),
+            });
         }
-        BranchPrProbe::Present {
+        Ok(BranchPrProbe::Present {
             number,
             base: base.to_string(),
-        }
+        })
     }
 
-    /// The PR for the checked-out branch, if one can be read.
-    pub(crate) fn pr_for_current_branch(&self, repo_root: &str) -> Option<(u64, String)> {
-        match self.probe_pr_for_current_branch(repo_root) {
-            BranchPrProbe::Present { number, base } => Some((number, base)),
-            BranchPrProbe::Absent | BranchPrProbe::Unknown => None,
+    /// The PR for the checked-out branch, when gh says the branch has one.
+    ///
+    /// Prefer [`Self::probe_pr_for_current_branch`] when "no PR" and "could
+    /// not ask" must be told apart.
+    pub(crate) fn pr_for_current_branch(
+        &self,
+        repo_root: &str,
+    ) -> Result<Option<(u64, String)>, GhError> {
+        match self.probe_pr_for_current_branch(repo_root)? {
+            BranchPrProbe::Present { number, base } => Ok(Some((number, base))),
+            BranchPrProbe::Absent => Ok(None),
         }
     }
 }
 
 /// Compatibility wrappers for front ends and engine callers.
-pub fn probe_pr_for_current_branch(repo_root: &str) -> BranchPrProbe {
-    default_handle().probe_pr_for_current_branch(repo_root)
+pub fn probe_pr_for_current_branch(repo_root: &str) -> Result<BranchPrProbe> {
+    default_handle()
+        .probe_pr_for_current_branch(repo_root)
+        .map_err(anyhow::Error::from)
 }
 
-pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
-    default_handle().pr_for_current_branch(repo_root)
+pub fn gh_pr_for_current_branch(repo_root: &str) -> Result<Option<(u64, String)>> {
+    default_handle()
+        .pr_for_current_branch(repo_root)
+        .map_err(anyhow::Error::from)
 }
 
-/// Three-way result of a PR lookup for the checked-out branch.
+/// Result of a PR lookup for the checked-out branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrLookup {
     Present {
@@ -311,75 +324,63 @@ pub enum PrLookup {
     },
     /// gh answered that this branch has no pull request.
     Absent,
-    /// The lookup itself failed (offline, unauthenticated, timeout, …).
-    Unknown(String),
 }
 
-/// Classify a failed `gh pr view` by its stderr. Only gh's explicit answer
-/// counts as absent; everything else is unknown.
-pub fn classify_pr_lookup_failure(stderr: &str) -> PrLookup {
-    if gh_failure_is_absent(stderr) {
-        return PrLookup::Absent;
-    }
-    let detail = stderr.trim();
-    PrLookup::Unknown(if detail.is_empty() {
-        "gh pr view failed".to_string()
-    } else {
-        detail.to_string()
-    })
-}
-
-/// Resolve the checked-out branch's PR without collapsing "no PR" and
-/// "could not ask" into one answer.
 impl CliGitHub {
     /// Resolve the checked-out branch's PR without collapsing "no PR" and
     /// "could not ask" into one answer.
-    pub(crate) fn lookup_pr_for_current_branch(&self, git: &dyn Git, repo_root: &str) -> PrLookup {
+    pub(crate) fn lookup_pr_for_current_branch(
+        &self,
+        git: &dyn Git,
+        repo_root: &str,
+    ) -> Result<PrLookup, GhError> {
         let out = match self.run_gh_args(
             &["pr", "view", "--json", "number,headRepository"],
             Some(repo_root),
         ) {
             Ok(out) => out,
-            Err(error) => {
-                let text = error.to_string();
-                return if gh_failure_is_absent(&text) {
-                    PrLookup::Absent
-                } else {
-                    classify_pr_lookup_failure(&text)
-                };
+            Err(error) if crate::classify::is_no_pull_request_answer(&error) => {
+                return Ok(PrLookup::Absent);
             }
+            Err(error) => return Err(error),
         };
 
-        let v: serde_json::Value = match serde_json::from_slice(&out.body) {
-            Ok(v) => v,
-            Err(e) => return PrLookup::Unknown(format!("Failed to parse PR info JSON: {e}")),
-        };
+        let v: serde_json::Value =
+            serde_json::from_slice(&out.body).map_err(|error| GhError::Local {
+                message: format!("Failed to parse PR info JSON: {error}"),
+            })?;
         let Some(number) = v["number"].as_u64() else {
-            return PrLookup::Unknown("Missing PR number".to_string());
+            return Err(GhError::Local {
+                message: "Missing PR number".to_string(),
+            });
         };
         let owner = v["headRepository"]["owner"]["login"].as_str().unwrap_or("");
         let repo_name = v["headRepository"]["name"].as_str().unwrap_or("");
         if !owner.is_empty() && !repo_name.is_empty() {
-            return PrLookup::Present {
+            return Ok(PrLookup::Present {
                 owner: owner.to_string(),
                 repo: repo_name.to_string(),
                 number,
-            };
+            });
         }
         match parse_origin_remote(git, repo_root) {
-            Some((owner, repo)) => PrLookup::Present {
+            Some((owner, repo)) => Ok(PrLookup::Present {
                 owner,
                 repo,
                 number,
-            },
-            None => PrLookup::Unknown("Could not read the repository's origin remote".to_string()),
+            }),
+            None => Err(GhError::Local {
+                message: "Could not read the repository's origin remote".to_string(),
+            }),
         }
     }
 }
 
 /// Compatibility wrapper for front ends and engine callers.
-pub fn lookup_pr_for_current_branch(git: &dyn Git, repo_root: &str) -> PrLookup {
-    default_handle().lookup_pr_for_current_branch(git, repo_root)
+pub fn lookup_pr_for_current_branch(git: &dyn Git, repo_root: &str) -> Result<PrLookup> {
+    default_handle()
+        .lookup_pr_for_current_branch(git, repo_root)
+        .map_err(anyhow::Error::from)
 }
 
 impl CliGitHub {
@@ -419,28 +420,34 @@ impl CliGitHub {
             .and_then(|row| row.get("number").and_then(|v| v.as_u64())))
     }
 
-    /// PR title via `gh pr view --repo` (returns `None` when `gh` fails).
-    pub(crate) fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Option<String> {
+    /// PR title via `gh pr view --repo`; `None` when the JSON has no title.
+    pub(crate) fn pr_title(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Option<String>, GhError> {
         let slug = format!("{owner}/{repo}");
-        let out = self
-            .run_gh_args(
-                &[
-                    "pr",
-                    "view",
-                    &number.to_string(),
-                    "--repo",
-                    &slug,
-                    "--json",
-                    "title",
-                ],
-                None,
-            )
-            .ok()?;
-        let value: serde_json::Value = serde_json::from_slice(&out.body).ok()?;
-        value
+        let out = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &number.to_string(),
+                "--repo",
+                &slug,
+                "--json",
+                "title",
+            ],
+            None,
+        )?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.body).map_err(|error| GhError::Local {
+                message: format!("invalid gh pr view JSON: {error}"),
+            })?;
+        Ok(value
             .get("title")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(|s| s.to_string()))
     }
 
     /// Get PR info (owner, repo, number) for the current branch.
@@ -449,7 +456,12 @@ impl CliGitHub {
         git: &dyn Git,
         repo_root: &str,
     ) -> Result<(String, String, u64), GhError> {
-        match self.lookup_pr_for_current_branch(git, repo_root) {
+        let lookup = self
+            .lookup_pr_for_current_branch(git, repo_root)
+            .map_err(|error| GhError::Local {
+                message: format!("Failed to get PR info: {error}"),
+            })?;
+        match lookup {
             PrLookup::Present {
                 owner,
                 repo,
@@ -458,19 +470,16 @@ impl CliGitHub {
             PrLookup::Absent => Err(GhError::Local {
                 message: "No PR associated with current branch".to_string(),
             }),
-            PrLookup::Unknown(e) => Err(GhError::Local {
-                message: format!("Failed to get PR info: {e}"),
-            }),
         }
     }
 
     /// Login of the authenticated `gh` user.
     pub(crate) fn viewer_login(&self, repo_root: Option<&str>) -> Result<String, GhError> {
-        let output = self.run_gh_args(&["api", "user", "--jq", ".login"], repo_root)?;
-        let login = String::from_utf8_lossy(&output.body).trim().to_string();
+        let out = self.run_gh_args(&["api", "user", "--jq", ".login"], repo_root)?;
+        let login = String::from_utf8_lossy(&out.body).trim().to_string();
         if login.is_empty() {
             return Err(GhError::Local {
-                message: "Failed to read the gh user: empty login".to_string(),
+                message: "empty login".to_string(),
             });
         }
         Ok(login)
@@ -483,11 +492,25 @@ impl CliGitHub {
     /// stack, or the extension may not be installed — so `gh`'s stderr
     /// diagnostic is the error message.
     pub(crate) fn stack_view_json(&self, repo_root: &str) -> Result<String, GhError> {
-        let out = self.run_gh_args(&["stack", "view", "--json"], Some(repo_root))?;
+        // `gh stack view` opens an interactive TUI under a TTY; `--json` avoids
+        // it, and these keep any prompt from blocking the worker thread that
+        // runs this.
+        const ENV: &[(&str, &str)] = &[("GH_PROMPT_DISABLED", "1"), ("GH_NO_UPDATE_NOTIFIER", "1")];
+        let args = [
+            "stack".to_string(),
+            "view".to_string(),
+            "--json".to_string(),
+        ];
+        let out = self.run_gh_with_env(&args, Some(repo_root), None, ENV)?;
         Ok(String::from_utf8_lossy(&out.body).to_string())
     }
 
     /// Open PRs of `owner/repo` with just the refs needed to walk a stack chain.
+    /// Blocking; callers run it on a worker thread.
+    ///
+    /// A single `gh pr list` read, so it takes the same 10 s bound as every
+    /// other gh call: a worker stuck on a stalled gh is worse than a timeout
+    /// the caller can retry.
     pub(crate) fn open_pr_refs_json(&self, repo_slug: &str) -> Result<String, GhError> {
         let out = self.run_gh_args(
             &[
@@ -512,11 +535,13 @@ impl CliGitHub {
 pub fn gh_open_pr_number_for_head(owner: &str, repo: &str, head: &str) -> Result<Option<u64>> {
     default_handle()
         .open_pr_number_for_head(owner, repo, head)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence("gh pr list --head failed", error))
 }
 
-pub fn gh_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
-    default_handle().pr_title(owner, repo, number)
+pub fn gh_pr_title(owner: &str, repo: &str, number: u64) -> Result<Option<String>> {
+    default_handle()
+        .pr_title(owner, repo, number)
+        .map_err(anyhow::Error::from)
 }
 
 pub fn get_pr_info(git: &dyn Git, repo_root: &str) -> Result<(String, String, u64)> {
@@ -541,33 +566,35 @@ pub fn gh_stack_view_json(repo_root: &str) -> Result<String> {
 pub fn gh_open_pr_refs_json(repo_slug: &str) -> Result<String> {
     default_handle()
         .open_pr_refs_json(repo_slug)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence("gh pr list failed", error))
 }
 
-/// Login of the authenticated `gh` user, if available.
 impl CliGitHub {
-    pub(crate) fn current_login(&self) -> Option<String> {
-        let out = self
-            .run_gh_args(&["api", "user", "--jq", ".login"], None)
-            .ok()?;
+    /// Login of the authenticated `gh` user, when there is one.
+    pub(crate) fn current_login(&self) -> Result<Option<String>, GhError> {
+        let out = self.run_gh_args(&["api", "user", "--jq", ".login"], None)?;
         let login = String::from_utf8_lossy(&out.body).trim().to_string();
-        if login.is_empty() {
-            None
-        } else {
-            Some(login)
-        }
+        Ok((!login.is_empty()).then_some(login))
     }
 }
 
 /// Compatibility wrapper for front ends and engine callers.
-pub fn gh_current_login() -> Option<String> {
-    default_handle().current_login()
+pub fn gh_current_login() -> Result<Option<String>> {
+    default_handle()
+        .current_login()
+        .map_err(anyhow::Error::from)
 }
 
-/// List PRs for a repo with the fields the engine's review queue needs.
-///
-/// `state` is passed to `gh pr list --state` (`open`, `closed`, `merged`, `all`).
+// ─────────────────────────────────────────────────────────────────────────────
+// Review-queue listing (MCP / headless). Includes size + merge-state fields that
+// the desktop PR list intentionally omits for latency.
+// ─────────────────────────────────────────────────────────────────────────────
+
 impl CliGitHub {
+    /// List PRs for a repo with the fields the engine's review queue needs.
+    ///
+    /// `state` is passed to `gh pr list --state` (`open`, `closed`, `merged`,
+    /// `all`).
     pub(crate) fn pr_list_queue(
         &self,
         owner: &str,
@@ -592,7 +619,9 @@ impl CliGitHub {
             ],
             None,
         )?;
-        let me = self.current_login();
+        // A failed login lookup only loses the "review requested of me"
+        // decoration; the queue itself is still worth listing.
+        let me = self.current_login().ok().flatten();
         parse_pr_list_queue(&String::from_utf8_lossy(&out.body), me.as_deref())
             .map_err(GhError::from)
     }
@@ -607,7 +636,7 @@ pub fn gh_pr_list_queue(
 ) -> Result<Vec<crate::types::QueuePr>> {
     default_handle()
         .pr_list_queue(owner, repo, state, limit)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence("gh pr list failed", error))
 }
 
 /// Pure parser for `gh pr list --json …` review-queue payloads.

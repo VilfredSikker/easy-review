@@ -84,13 +84,13 @@ struct FakeState {
     list_participating_notifications: Option<Result<Vec<GhNotification>, GhError>>,
     pr_base_branch: Option<Result<String, GhError>>,
     pr_branch_names: Option<Result<(String, String), GhError>>,
-    probe_pr_for_current_branch: Option<BranchPrProbe>,
-    pr_for_current_branch: Option<Option<(u64, String)>>,
-    lookup_pr_for_current_branch: Option<PrLookup>,
+    probe_pr_for_current_branch: Option<Result<BranchPrProbe, GhError>>,
+    pr_for_current_branch: Option<Result<Option<(u64, String)>, GhError>>,
+    lookup_pr_for_current_branch: Option<Result<PrLookup, GhError>>,
     open_pr_number_for_head: Option<Result<Option<u64>, GhError>>,
-    pr_title: Option<Option<String>>,
+    pr_title: Option<Result<Option<String>, GhError>>,
     get_pr_info: Option<Result<(String, String, u64), GhError>>,
-    current_login: Option<Option<String>>,
+    current_login: Option<Result<Option<String>, GhError>>,
     stack_view_json: Option<Result<String, GhError>>,
     open_pr_refs_json: Option<Result<String, GhError>>,
     pr_metadata_remote: Option<Result<(String, String), GhError>>,
@@ -492,19 +492,19 @@ impl FakeGitHub {
     }
 
     #[must_use]
-    pub fn with_probe_pr_for_current_branch(self, value: BranchPrProbe) -> Self {
+    pub fn with_probe_pr_for_current_branch(self, value: Result<BranchPrProbe, GhError>) -> Self {
         self.lock().probe_pr_for_current_branch = Some(value);
         self
     }
 
     #[must_use]
-    pub fn with_pr_for_current_branch(self, value: Option<(u64, String)>) -> Self {
+    pub fn with_pr_for_current_branch(self, value: Result<Option<(u64, String)>, GhError>) -> Self {
         self.lock().pr_for_current_branch = Some(value);
         self
     }
 
     #[must_use]
-    pub fn with_lookup_pr_for_current_branch(self, value: PrLookup) -> Self {
+    pub fn with_lookup_pr_for_current_branch(self, value: Result<PrLookup, GhError>) -> Self {
         self.lock().lookup_pr_for_current_branch = Some(value);
         self
     }
@@ -516,7 +516,7 @@ impl FakeGitHub {
     }
 
     #[must_use]
-    pub fn with_pr_title(self, value: Option<String>) -> Self {
+    pub fn with_pr_title(self, value: Result<Option<String>, GhError>) -> Self {
         self.lock().pr_title = Some(value);
         self
     }
@@ -528,7 +528,7 @@ impl FakeGitHub {
     }
 
     #[must_use]
-    pub fn with_current_login(self, value: Option<String>) -> Self {
+    pub fn with_current_login(self, value: Result<Option<String>, GhError>) -> Self {
         self.lock().current_login = Some(value);
         self
     }
@@ -1348,29 +1348,33 @@ impl GitHub for FakeGitHub {
         .unwrap_or_else(|| Err(unscripted("pr_branch_names")))
     }
 
-    fn probe_pr_for_current_branch(&self, repo_root: &str) -> BranchPrProbe {
+    fn probe_pr_for_current_branch(&self, repo_root: &str) -> Result<BranchPrProbe, GhError> {
         self.record(format!(
             "probe_pr_for_current_branch(repo_root={repo_root:?})"
         ))
         .probe_pr_for_current_branch
         .clone()
-        .unwrap_or(BranchPrProbe::Unknown)
+        .unwrap_or_else(|| Err(unscripted("probe_pr_for_current_branch")))
     }
 
-    fn pr_for_current_branch(&self, repo_root: &str) -> Option<(u64, String)> {
+    fn pr_for_current_branch(&self, repo_root: &str) -> Result<Option<(u64, String)>, GhError> {
         self.record(format!("pr_for_current_branch(repo_root={repo_root:?})"))
             .pr_for_current_branch
             .clone()
-            .unwrap_or(None)
+            .unwrap_or_else(|| Err(unscripted("pr_for_current_branch")))
     }
 
-    fn lookup_pr_for_current_branch(&self, _git: &dyn er_git::Git, repo_root: &str) -> PrLookup {
+    fn lookup_pr_for_current_branch(
+        &self,
+        _git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<PrLookup, GhError> {
         self.record(format!(
             "lookup_pr_for_current_branch(repo_root={repo_root:?})"
         ))
         .lookup_pr_for_current_branch
         .clone()
-        .unwrap_or_else(|| PrLookup::Unknown("unscripted lookup".to_string()))
+        .unwrap_or_else(|| Err(unscripted("lookup_pr_for_current_branch")))
     }
 
     fn open_pr_number_for_head(
@@ -1387,13 +1391,13 @@ impl GitHub for FakeGitHub {
         .unwrap_or_else(|| Err(unscripted("open_pr_number_for_head")))
     }
 
-    fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Option<String> {
+    fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Result<Option<String>, GhError> {
         self.record(format!(
             "pr_title(owner={owner:?}, repo={repo:?}, number={number:?})"
         ))
         .pr_title
         .clone()
-        .unwrap_or(None)
+        .unwrap_or_else(|| Err(unscripted("pr_title")))
     }
 
     fn get_pr_info(
@@ -1407,11 +1411,11 @@ impl GitHub for FakeGitHub {
             .unwrap_or_else(|| Err(unscripted("get_pr_info")))
     }
 
-    fn current_login(&self) -> Option<String> {
+    fn current_login(&self) -> Result<Option<String>, GhError> {
         self.record("current_login()".to_string())
             .current_login
             .clone()
-            .unwrap_or(None)
+            .unwrap_or_else(|| Err(unscripted("current_login")))
     }
 
     fn stack_view_json(&self, repo_root: &str) -> Result<String, GhError> {

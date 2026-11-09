@@ -403,22 +403,26 @@ pub trait GitHub: Send + Sync {
     fn pr_base_branch(&self, pr_number: u64, repo_root: &str) -> Result<String, GhError>;
     fn pr_branch_names(&self, pr_number: u64, repo_root: &str)
         -> Result<(String, String), GhError>;
-    fn probe_pr_for_current_branch(&self, repo_root: &str) -> BranchPrProbe;
-    fn pr_for_current_branch(&self, repo_root: &str) -> Option<(u64, String)>;
-    fn lookup_pr_for_current_branch(&self, git: &dyn er_git::Git, repo_root: &str) -> PrLookup;
+    fn probe_pr_for_current_branch(&self, repo_root: &str) -> Result<BranchPrProbe, GhError>;
+    fn pr_for_current_branch(&self, repo_root: &str) -> Result<Option<(u64, String)>, GhError>;
+    fn lookup_pr_for_current_branch(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<PrLookup, GhError>;
     fn open_pr_number_for_head(
         &self,
         owner: &str,
         repo: &str,
         head: &str,
     ) -> Result<Option<u64>, GhError>;
-    fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Option<String>;
+    fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Result<Option<String>, GhError>;
     fn get_pr_info(
         &self,
         git: &dyn er_git::Git,
         repo_root: &str,
     ) -> Result<(String, String, u64), GhError>;
-    fn current_login(&self) -> Option<String>;
+    fn current_login(&self) -> Result<Option<String>, GhError>;
     fn stack_view_json(&self, repo_root: &str) -> Result<String, GhError>;
     fn open_pr_refs_json(&self, repo_slug: &str) -> Result<String, GhError>;
     fn pr_metadata_remote(
@@ -459,12 +463,47 @@ pub(crate) fn with_prefix(prefix: &str, error: GhError) -> anyhow::Error {
     anyhow::anyhow!("{prefix}: {error}")
 }
 
+/// [`with_prefix`] for a sentence that names the PR or size, and for errors
+/// that already read on their own: a spawn failure or a local sentence passes
+/// through unchanged, as it did before.
+pub(crate) fn with_gh_sentence(prefix: impl std::fmt::Display, error: GhError) -> anyhow::Error {
+    match error {
+        GhError::Local { .. }
+        | GhError::NotInstalled
+        | GhError::Timeout
+        | GhError::Tool { status: -1, .. } => anyhow::Error::from(error),
+        error => anyhow::anyhow!("{prefix}: {error}"),
+    }
+}
+
 static DEFAULT_HANDLE: OnceLock<Arc<CliGitHub>> = OnceLock::new();
 
-/// The process-wide handle the compatibility wrappers use. Tests build their
-/// own `CliGitHub` on a `ScriptedRunner` and never reach this one.
+#[cfg(test)]
+thread_local! {
+    /// The handle `with_test_handle` installed on this test thread. The
+    /// compatibility wrappers call `default_handle`, so tests that drive them
+    /// point it at a scripted runner instead of the process-wide one.
+    static TEST_HANDLE: std::cell::RefCell<Option<Arc<CliGitHub>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The process-wide handle the compatibility wrappers use.
 pub fn default_handle() -> Arc<CliGitHub> {
+    #[cfg(test)]
+    if let Some(handle) = TEST_HANDLE.with(|slot| slot.borrow().clone()) {
+        return handle;
+    }
     DEFAULT_HANDLE
         .get_or_init(|| Arc::new(CliGitHub::new(Arc::new(ProcessRunner))))
         .clone()
+}
+
+/// Run `f` with `handle` as this thread's default, then restore the previous
+/// one so a failing assertion cannot leak the handle into a later test.
+#[cfg(test)]
+pub(crate) fn with_test_handle<T>(handle: Arc<CliGitHub>, f: impl FnOnce() -> T) -> T {
+    let previous = TEST_HANDLE.with(|slot| slot.replace(Some(handle)));
+    let result = f();
+    TEST_HANDLE.with(|slot| slot.replace(previous));
+    result
 }

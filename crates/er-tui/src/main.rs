@@ -321,15 +321,15 @@ fn main() -> Result<()> {
             let (pr_tx, pr_rx) = mpsc::channel::<PrProbe>();
             std::thread::spawn(move || {
                 let (pr_num, pr_base) = match github::probe_pr_for_current_branch(&repo_root) {
-                    github::BranchPrProbe::Present { number, base } => (number, base),
+                    Ok(github::BranchPrProbe::Present { number, base }) => (number, base),
                     // gh answered that the branch has no PR; the tab now knows,
                     // so a key press can gate the composer without calling `gh`.
-                    github::BranchPrProbe::Absent => {
+                    Ok(github::BranchPrProbe::Absent) => {
                         let _ = pr_tx.send(PrProbe::Absent);
                         return;
                     }
                     // Offline, unauthenticated or a timeout: still unknown.
-                    github::BranchPrProbe::Unknown => {
+                    Err(_) => {
                         let _ = pr_tx.send(PrProbe::Failed);
                         return;
                     }

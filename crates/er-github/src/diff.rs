@@ -5,7 +5,7 @@ use anyhow::Result;
 use er_git::{Git, GitError};
 
 use crate::repo::parse_origin_remote;
-use crate::{default_handle, CliGitHub, GhError};
+use crate::{default_handle, with_gh_sentence, CliGitHub, GhError};
 
 /// Remote-only PRs above these limits are rejected up front with a clear message.
 /// The IPC line budget (SNAPSHOT_DIFF_LINE_BUDGET) enforces what reaches the UI;
@@ -59,28 +59,25 @@ impl CliGitHub {
     }
 }
 
-/// Whether a failed `gh pr diff` means GitHub refused to render the diff.
+/// Whether a failed `gh pr diff` means GitHub refused to render the diff. The
+/// stderr table that decides it lives in [`crate::classify`].
 fn diff_is_too_large(error: &GhError) -> bool {
-    match error {
-        GhError::TooLarge { .. } => true,
-        GhError::Tool { stderr, .. } => gh_diff_too_large(stderr),
-        _ => false,
-    }
+    matches!(error, GhError::TooLarge { .. })
 }
 
 /// Compatibility wrapper for front ends and engine callers.
 pub fn gh_pr_size_check_remote(owner: &str, repo: &str, number: u64) -> Result<()> {
     default_handle()
         .pr_size_check_remote(owner, repo, number)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence(format!("Failed to check PR #{number} size"), error))
 }
 
-/// Get raw unified diff for a PR via `gh pr diff N --repo owner/repo`.
-///
-/// Works without a local clone — uses GitHub API via gh CLI.
-/// Falls back to shallow clone + local git diff when the PR exceeds GitHub's
-/// API line limit (HTTP 406 / diff_too_large).
 impl CliGitHub {
+    /// Get raw unified diff for a PR via `gh pr diff N --repo owner/repo`.
+    ///
+    /// Works without a local clone — uses GitHub API via gh CLI. Falls back to
+    /// shallow clone + local git diff when the PR exceeds GitHub's API line
+    /// limit (HTTP 406 / diff_too_large).
     pub(crate) fn pr_diff_remote(
         &self,
         git: &dyn Git,
@@ -105,17 +102,17 @@ impl CliGitHub {
 pub fn gh_pr_diff_remote(git: &dyn Git, owner: &str, repo: &str, number: u64) -> Result<String> {
     default_handle()
         .pr_diff_remote(git, owner, repo, number)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence("Failed to get PR diff", error))
 }
 
-/// Get raw unified diff for a PR using the local repo context.
-///
-/// This intentionally delegates PR-source rendering to GitHub instead of
-/// reconstructing the range with local refs. GitHub PR diffs are not just
-/// "whatever local `origin/<base>...refs/pull/N/head` happens to produce" in
-/// every edge case, and using `gh pr diff` keeps Easy Review aligned with the
-/// Files changed view.
 impl CliGitHub {
+    /// Get raw unified diff for a PR using the local repo context.
+    ///
+    /// This intentionally delegates PR-source rendering to GitHub instead of
+    /// reconstructing the range with local refs. GitHub PR diffs are not just
+    /// "whatever local `origin/<base>...refs/pull/N/head` happens to produce"
+    /// in every edge case, and using `gh pr diff` keeps Easy Review aligned
+    /// with the Files changed view.
     pub(crate) fn pr_diff(
         &self,
         git: &dyn Git,
@@ -137,24 +134,13 @@ impl CliGitHub {
 pub fn gh_pr_diff(git: &dyn Git, pr_number: u64, repo_root: &str) -> Result<String> {
     default_handle()
         .pr_diff(git, pr_number, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence("Failed to get PR diff", error))
 }
 
-/// Whether `gh pr diff` stderr says GitHub refused to render the diff.
-///
-/// GitHub caps the diff endpoint by file count (300) and by size, and the cap
-/// has nothing to do with how many lines changed: a few thousand lines spread
-/// over more than 300 files is refused, as is a small change to one huge file.
-pub(crate) fn gh_diff_too_large(stderr: &str) -> bool {
-    stderr.contains("HTTP 406")
-        || stderr.contains("too_large")
-        || stderr.contains("exceeded the maximum number")
-}
-
-/// A PR the diff endpoint refused: build the diff from the local checkout, and
-/// only if that cannot work (no usable `origin`, a shallow clone with no merge
-/// base) clone the repo into a temp dir.
 impl CliGitHub {
+    /// A PR the diff endpoint refused: build the diff from the local checkout,
+    /// and only if that cannot work (no usable `origin`, a shallow clone with
+    /// no merge base) clone the repo into a temp dir.
     fn pr_diff_too_large_fallback(
         &self,
         git: &dyn Git,
@@ -242,11 +228,10 @@ pub(crate) fn git_merge_base_diff(
     }
 }
 
-/// Base and head commit SHAs for a PR (from `gh pr view`). Works for merged PRs and
-/// deleted head branches — unlike branch names, which may no longer exist on origin.
 impl CliGitHub {
     /// Base and head commit SHAs for a PR (from `gh pr view`). Works for merged
-    /// PRs and deleted head branches.
+    /// PRs and deleted head branches — unlike branch names, which may no longer
+    /// exist on origin.
     pub(crate) fn commit_shas_remote(
         &self,
         owner: &str,
@@ -286,7 +271,7 @@ impl CliGitHub {
 pub fn gh_pr_commit_shas_remote(owner: &str, repo: &str, number: u64) -> Result<(String, String)> {
     default_handle()
         .commit_shas_remote(owner, repo, number)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence(format!("Failed to get PR #{number} commit SHAs"), error))
 }
 
 impl CliGitHub {

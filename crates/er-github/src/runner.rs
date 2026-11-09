@@ -13,6 +13,8 @@ pub struct GhCall<'a> {
     pub timeout: Duration,
     /// Body cap; the process runner adds the header allowance.
     pub max_stdout: Option<usize>,
+    /// Extra environment for this call, for the few commands that prompt.
+    pub env: &'a [(&'a str, &'a str)],
 }
 
 pub trait GhRunner: Send + Sync {
@@ -27,6 +29,9 @@ impl GhRunner for ProcessRunner {
     fn run(&self, call: &GhCall<'_>) -> std::io::Result<Output> {
         let mut cmd = Command::new("gh");
         cmd.args(call.args);
+        for (key, value) in call.env {
+            cmd.env(key, value);
+        }
         if let Some(dir) = call.dir {
             cmd.current_dir(dir);
         }

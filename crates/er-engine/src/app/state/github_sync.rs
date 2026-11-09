@@ -106,11 +106,18 @@ impl App {
                 }
             }
         } else {
-            match self
+            let lookup = match self
                 .ports
                 .github
                 .lookup_pr_for_current_branch(&*self.ports.git, &repo_root)
             {
+                Ok(lookup) => lookup,
+                Err(e) => {
+                    self.notify(&format!("Could not read this branch's PR: {e}"));
+                    return Ok(());
+                }
+            };
+            match lookup {
                 crate::github::PrLookup::Present {
                     owner,
                     repo,
@@ -122,10 +129,6 @@ impl App {
                 crate::github::PrLookup::Absent => {
                     self.tab_mut().pr_absent = true;
                     self.notify("No PR found for current branch");
-                    return Ok(());
-                }
-                crate::github::PrLookup::Unknown(e) => {
-                    self.notify(&format!("Could not read this branch's PR: {e}"));
                     return Ok(());
                 }
             }
@@ -305,5 +308,42 @@ impl App {
             github_count, local_count
         ));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::App;
+    use er_github::{FakeGitHub, GhError};
+    use std::sync::Arc;
+
+    #[test]
+    fn comment_sync_reads_the_bundle_through_the_handle_and_surfaces_the_error() {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().remote_repo = Some("acme/widgets".into());
+        app.tab_mut().pr_number = Some(7);
+        let github = Arc::new(FakeGitHub::default().with_pr_comment_bundle_cached(Err(
+            GhError::Forbidden {
+                message: "nope".into(),
+            },
+        )));
+        app.ports.github = github.clone();
+
+        app.sync_github_comments().unwrap();
+
+        assert_eq!(
+            github.calls(),
+            vec![
+                "pr_comment_bundle_cached(owner=\"acme\", repo=\"widgets\", pr=7, \
+                 repo_root=None)"
+                    .to_string()
+            ]
+        );
+        let notification = app.notification.as_ref().expect("a sync error is shown");
+        assert!(
+            notification.message.contains("GitHub sync error: nope"),
+            "{}",
+            notification.message
+        );
     }
 }

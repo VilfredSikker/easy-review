@@ -321,11 +321,6 @@ pub fn stack_from_pr_chain(prs: &[ChainPr], head: &str) -> Option<Stack> {
 /// on a worker thread. Never fails — a missing extension or a branch outside
 /// any stack becomes [`StackInfo::Unavailable`], and anything else
 /// [`StackInfo::Failed`].
-pub fn load(repo_root: &str) -> StackInfo {
-    load_with(&*crate::github::default_handle(), repo_root)
-}
-
-/// [`load`] through a caller-supplied GitHub handle.
 pub fn load_with(github: &dyn er_github::GitHub, repo_root: &str) -> StackInfo {
     match github.stack_view_json(repo_root) {
         Ok(json) => match parse_view_json(&json) {

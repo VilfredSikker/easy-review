@@ -1,5 +1,18 @@
 use super::*;
 
+/// Push the summary file to the PR body. An unreadable summary is skipped, same
+/// as an empty one.
+fn push_summary_to_pr(github: &dyn er_github::GitHub, er_dir: &str, repo_root: &str) -> Result<()> {
+    let summary_path = std::path::Path::new(er_dir).join("summary.md");
+    let summary = std::fs::read_to_string(&summary_path).unwrap_or_default();
+    if summary.trim().is_empty() {
+        return Ok(());
+    }
+    github
+        .edit_body(repo_root, &summary)
+        .map_err(|error| anyhow::anyhow!("Failed to update PR body: {error}"))
+}
+
 /// Review agents never need a second checkout: they run inside the repo (or, for a remote PR
 /// whose repo is not checked out locally, work from the prepared diff plus `gh`). Cloning has
 /// only ever produced stray copies under `/tmp` that later runs then read stale code out of.
@@ -1564,7 +1577,8 @@ impl App {
             if let (Some(gh_id), Some(gh)) = (github_id, gh_meta.as_ref()) {
                 self.ports
                     .github
-                    .update_review_comment(&gh.owner, &gh.repo, gh_id, new_text, &repo_root)?;
+                    .update_review_comment(&gh.owner, &gh.repo, gh_id, new_text, &repo_root)
+                    .map_err(|error| anyhow::anyhow!("Failed to update comment: {error}"))?;
             }
             if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
                 c.comment = new_text.to_string();
@@ -2935,12 +2949,7 @@ impl App {
 
                 // Summary-specific: optionally push to PR body
                 if push_to_pr {
-                    let summary_path = std::path::Path::new(&er_dir).join("summary.md");
-                    // An unreadable summary is skipped, same as an empty one.
-                    let summary = std::fs::read_to_string(&summary_path).unwrap_or_default();
-                    if !summary.trim().is_empty() {
-                        github.edit_body(&repo_root, &summary)?;
-                    }
+                    push_summary_to_pr(&*github, &er_dir, &repo_root)?;
                 }
 
                 Ok(())
@@ -6112,5 +6121,138 @@ mod agent_stderr_snippet_tests {
         assert!(snippet.starts_with('…'));
         assert!(snippet.ends_with("final detail"));
         assert_eq!(snippet.chars().count(), 280);
+    }
+}
+
+/// The GitHub handle drives the comment edit and the PR-body write: a fake
+/// answers, and discarding the error at either site must fail these.
+#[cfg(test)]
+mod github_handle_tests {
+    use crate::ai;
+    use crate::app::App;
+    use crate::paths::ErRoot;
+    use er_github::{FakeGitHub, GhError};
+    use std::sync::Arc;
+
+    fn app_with_github_comments(tmp: &tempfile::TempDir) -> (App, String) {
+        let repo_root = tmp.path().to_string_lossy().to_string();
+        let mut app = App::new_for_test(vec![]);
+        let tab = app.tab_mut();
+        tab.repo_root = repo_root.clone();
+        tab.er_root = ErRoot::managed(format!("{repo_root}/.er"));
+        let er_dir = tab.er_dir();
+        std::fs::create_dir_all(&er_dir).unwrap();
+        let document = ai::ErGitHubComments {
+            version: 1,
+            diff_hash: String::new(),
+            github: Some(ai::GitHubSyncState {
+                pr_number: Some(7),
+                owner: "acme".into(),
+                repo: "widgets".into(),
+                last_synced: String::new(),
+            }),
+            comments: vec![ai::GitHubReviewComment {
+                id: "c-1".into(),
+                timestamp: String::new(),
+                file: "a.rs".into(),
+                hunk_index: None,
+                line_start: Some(1),
+                line_end: Some(1),
+                line_content: "x".into(),
+                comment: "old".into(),
+                in_reply_to: None,
+                resolved: false,
+                source: "github".into(),
+                github_id: Some(42),
+                author: "alice".into(),
+                outdated: false,
+                stale: false,
+                context_before: Vec::new(),
+                context_after: Vec::new(),
+                old_line_start: None,
+                hunk_header: String::new(),
+                anchor_status: "original".into(),
+                relocated_at_hash: String::new(),
+                finding_ref: None,
+                side: "RIGHT".into(),
+            }],
+        };
+        std::fs::write(
+            format!("{er_dir}/github-comments.json"),
+            serde_json::to_string_pretty(&document).unwrap(),
+        )
+        .unwrap();
+        (app, repo_root)
+    }
+
+    #[test]
+    fn a_failed_comment_edit_reaches_the_caller() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut app, repo_root) = app_with_github_comments(&tmp);
+        let github = Arc::new(FakeGitHub::default().with_update_review_comment(Err(
+            GhError::Forbidden {
+                message: "nope".into(),
+            },
+        )));
+        app.ports.github = github.clone();
+
+        let error = app.update_comment_text("c-1", "new").unwrap_err();
+        assert_eq!(error.to_string(), "Failed to update comment: nope");
+        assert_eq!(
+            github.calls(),
+            vec![format!(
+                "update_review_comment(owner=\"acme\", repo=\"widgets\", comment_id=42, \
+                 body=\"new\", repo_root={repo_root:?})"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_failed_pr_body_write_reaches_the_command_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut app, _) = app_with_github_comments(&tmp);
+        let er_dir = app.tab().er_dir();
+        std::fs::write(format!("{er_dir}/summary.md"), "# summary").unwrap();
+        app.config.summary.push_to_pr = true;
+        let github = Arc::new(
+            FakeGitHub::default().with_edit_body(Err(GhError::Forbidden {
+                message: "nope".into(),
+            })),
+        );
+        app.ports.github = github.clone();
+
+        app.spawn_command("summary", "true").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            app.check_commands();
+            match app.tab().command_status.get("summary") {
+                Some(super::CommandStatus::Failed(_)) => break,
+                Some(super::CommandStatus::Done) => {
+                    panic!("expected the body write to fail")
+                }
+                _ => {}
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "summary command did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let Some(super::CommandStatus::Failed(reason)) = app.tab().command_status.get("summary")
+        else {
+            unreachable!()
+        };
+        assert!(
+            reason.contains("Failed to update PR body: nope"),
+            "{reason}"
+        );
+        assert!(
+            github
+                .calls()
+                .iter()
+                .any(|call| call.starts_with("edit_body(")),
+            "{:?}",
+            github.calls()
+        );
     }
 }

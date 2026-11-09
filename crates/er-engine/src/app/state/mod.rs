@@ -2756,7 +2756,7 @@ impl TabState {
             log_branch_profile_phase(self, "enter_pr_diff.fetch_pr_head", t);
             let base = self.base_branch.clone();
             let t = Instant::now();
-            let base_ref = crate::github::fetch_pr_base_ref(
+            let base_ref = self.ports.github.fetch_pr_base_ref(
                 &*self.ports.git,
                 &self.repo_root,
                 pr_number,
@@ -2918,8 +2918,7 @@ impl TabState {
             ),
         };
 
-        let resolved_base =
-            crate::github::fetch_pr_base_ref(git, repo_root, pr_number, &base_branch)?;
+        let resolved_base = github.fetch_pr_base_ref(git, repo_root, pr_number, &base_branch)?;
         // The oid the diff is about to be computed against, so the desktop
         // freshness check can compare it to the latest PR head_oid.
         let last_diff_head_oid = crate::github::rev_parse_oid(git, repo_root, &head_ref);
@@ -6052,7 +6051,7 @@ impl App {
                     // GitHub PR URL — fetch head ref and open without checkout
                     let pr_ref = crate::github::parse_github_pr_url(path)
                         .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {}", path))?;
-                    crate::github::ensure_gh_installed()?;
+                    ports.github.ensure_installed()?;
 
                     // We need to be in the repo. Use cwd.
                     let repo_root = ports.git.repo_root_cwd().context(

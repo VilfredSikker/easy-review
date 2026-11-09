@@ -4,9 +4,11 @@
 //! fixtures. Private helpers they exercise are `pub(crate)` in their module.
 
 use crate::checkout::{fetch_pr_base_ref_with, pin_pr_base_commit};
+use crate::classify::is_no_pull_request_answer;
 use crate::comments::{parse_paginated, parse_review_threads_response, run_parallel};
-use crate::diff::{gh_diff_too_large, git_merge_base_diff};
+use crate::diff::git_merge_base_diff;
 use crate::repo::{owner_repo_matches_slug, parse_owner_repo_from_remote, remote_matches_repo};
+use crate::testing::ScriptedRunner;
 use crate::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1249,6 +1251,21 @@ fn comment_bundle_cache_serves_within_ttl_and_expires() {
 }
 
 #[test]
+fn comment_fetches_ask_gh_to_paginate() {
+    let runner = Arc::new(ScriptedRunner::new());
+    runner.script(&[], Ok(ScriptedRunner::output(0, "[]", "")));
+    let github = CliGitHub::new(runner.clone());
+
+    github.pr_comments("o", "r", 1, "/tmp").unwrap();
+
+    assert!(
+        runner.calls()[0].iter().any(|arg| arg == "--paginate"),
+        "{:?}",
+        runner.calls()
+    );
+}
+
+#[test]
 fn comment_bundle_cache_is_keyed_by_lowercased_owner_repo_pr() {
     let runner = Arc::new(crate::testing::ScriptedRunner::new());
     runner.script(
@@ -1436,16 +1453,63 @@ fn pr_number_from_notification_url_parses_pulls_and_issues() {
 }
 
 #[test]
-fn diff_too_large_matches_githubs_refusals_and_nothing_else() {
-    assert!(gh_diff_too_large(
-        "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum \
-         number of files (300). Consider using 'List pull requests files' API"
-    ));
-    assert!(gh_diff_too_large("PullRequest.diff too_large"));
-    assert!(!gh_diff_too_large("HTTP 404: Not Found"));
-    assert!(!gh_diff_too_large(
-        "no pull requests found for branch 14060"
-    ));
+fn diff_too_large_maps_to_too_large() {
+    let runner = Arc::new(ScriptedRunner::new());
+    let handle = CliGitHub::new(runner.clone());
+    let stderr = "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the \
+                  maximum number of files (300). Consider using 'List pull requests files' API";
+    for refusal in [stderr, "PullRequest.diff too_large"] {
+        runner.script(&[], Ok(ScriptedRunner::output(1, "", refusal)));
+        let error = handle.run_gh_args(&["pr", "diff", "1"], None).unwrap_err();
+        assert!(
+            matches!(error, GhError::TooLarge { .. }),
+            "{refusal}: {error:?}"
+        );
+    }
+    runner.script(
+        &[],
+        Ok(ScriptedRunner::output(1, "", "HTTP 404: Not Found")),
+    );
+    let error = handle.run_gh_args(&["pr", "diff", "1"], None).unwrap_err();
+    assert!(matches!(error, GhError::NotFound { .. }), "{error:?}");
+}
+
+#[test]
+fn pr_diff_falls_back_to_local_git_when_too_large() {
+    let runner = Arc::new(ScriptedRunner::new());
+    runner.script(
+        &["gh", "pr", "diff"],
+        Ok(ScriptedRunner::output(
+            1,
+            "",
+            "gh: HTTP 406: the diff exceeded the maximum number of files",
+        )),
+    );
+    runner.script(
+        &["gh", "pr", "view"],
+        Ok(ScriptedRunner::output(0, "base123\thead456", "")),
+    );
+    let github = CliGitHub::new(runner.clone());
+    let git = er_git::FakeGit::default()
+        .with_fetch(Ok(()))
+        .with_diff_revs(Ok("the local diff".into()));
+
+    let diff = github.pr_diff(&git, 7, "/tmp").unwrap();
+
+    assert_eq!(diff, "the local diff");
+    assert!(
+        git.calls().iter().any(|call| call.starts_with("fetch(")),
+        "{:?}",
+        git.calls()
+    );
+    assert!(
+        git.calls()
+            .iter()
+            .any(|call| call.starts_with("diff_revs(")),
+        "{:?}",
+        git.calls()
+    );
+    assert_eq!(runner.calls().len(), 2, "{:?}", runner.calls());
 }
 
 #[test]
@@ -1495,114 +1559,225 @@ fn parse_paginated_rejects_a_bad_chunk() {
 
 #[test]
 fn pr_lookup_absent_only_when_gh_says_no_pull_request() {
+    let runner = Arc::new(ScriptedRunner::new());
+    let handle = CliGitHub::new(runner.clone());
+    runner.script(
+        &[],
+        Ok(ScriptedRunner::output(
+            1,
+            "",
+            "no pull requests found for branch \"feat\"",
+        )),
+    );
     assert_eq!(
-        classify_pr_lookup_failure("no pull requests found for branch \"feat\""),
+        handle
+            .lookup_pr_for_current_branch(&er_git::CliGit, "/tmp")
+            .unwrap(),
         PrLookup::Absent
     );
-    assert!(matches!(
-        classify_pr_lookup_failure("gh: authentication required"),
-        PrLookup::Unknown(_)
-    ));
-    assert!(matches!(
-        classify_pr_lookup_failure("request timed out"),
-        PrLookup::Unknown(_)
-    ));
+
+    for failure in ["gh: authentication required", "request timed out"] {
+        runner.script(&[], Ok(ScriptedRunner::output(1, "", failure)));
+        let error = handle
+            .lookup_pr_for_current_branch(&er_git::CliGit, "/tmp")
+            .unwrap_err();
+        assert!(!is_no_pull_request_answer(&error), "{failure}: {error:?}");
+    }
 }
 
+fn scripted_timeout() -> Arc<CliGitHub> {
+    let runner = ScriptedRunner::new();
+    runner.script(&[], Err(std::io::Error::from(std::io::ErrorKind::TimedOut)));
+    Arc::new(CliGitHub::new(Arc::new(runner)))
+}
+
+/// A gh that answers every call with a plain failure status.
+fn scripted_failure() -> Arc<CliGitHub> {
+    let runner = ScriptedRunner::new();
+    runner.script(&[], Ok(ScriptedRunner::output(1, "", "boom")));
+    Arc::new(CliGitHub::new(Arc::new(runner)))
+}
+
+const TIMEOUT: &str = "GitHub CLI (`gh`) timed out after 10s.";
+
 fn prefixed(prefix: &str) -> String {
-    crate::with_prefix(
-        prefix,
-        GhError::Forbidden {
-            message: "Resource not accessible by integration".into(),
-        },
-    )
-    .to_string()
+    format!("{prefix}: {TIMEOUT}")
 }
 
 #[test]
 fn wrapper_prefix_fetch_pr_comments() {
-    assert_eq!(
-        prefixed("Failed to fetch PR comments"),
-        "Failed to fetch PR comments: Resource not accessible by integration"
-    );
+    let handle = scripted_timeout();
+    let error = crate::with_test_handle(handle, || gh_pr_comments("o", "r", 1, "/tmp"))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, prefixed("Failed to fetch PR comments"));
 }
 
 #[test]
 fn wrapper_prefix_get_head_sha() {
-    assert_eq!(
-        prefixed("Failed to get HEAD SHA from gh pr view"),
-        "Failed to get HEAD SHA from gh pr view: Resource not accessible by integration"
-    );
+    let handle = scripted_timeout();
+    let error = crate::with_test_handle(handle, || gh_pr_head_oid("o", "r", 1, Some("/tmp")))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, prefixed("Failed to get HEAD SHA from gh pr view"));
 }
 
 #[test]
 fn wrapper_prefix_push_comment() {
-    assert_eq!(
-        prefixed("Failed to push comment"),
-        "Failed to push comment: Resource not accessible by integration"
-    );
+    let comment = NewLineComment {
+        path: "a.rs",
+        line_start: 1,
+        line_end: None,
+        body: "hi",
+        side: "RIGHT",
+    };
+    let handle = scripted_timeout();
+    let error =
+        crate::with_test_handle(handle, || gh_pr_push_comment("o", "r", 1, comment, "/tmp"))
+            .unwrap_err()
+            .to_string();
+    assert_eq!(error, prefixed("Failed to push comment"));
 }
 
 #[test]
 fn wrapper_prefix_push_reply() {
-    assert_eq!(
-        prefixed("Failed to push reply"),
-        "Failed to push reply: Resource not accessible by integration"
-    );
+    let handle = scripted_timeout();
+    let error =
+        crate::with_test_handle(handle, || gh_pr_reply_comment("o", "r", 1, 2, "hi", "/tmp"))
+            .unwrap_err()
+            .to_string();
+    assert_eq!(error, prefixed("Failed to push reply"));
 }
 
 #[test]
 fn wrapper_prefix_post_general_comment() {
-    assert_eq!(
-        prefixed("Failed to post general comment"),
-        "Failed to post general comment: Resource not accessible by integration"
-    );
+    let handle = scripted_timeout();
+    let error = crate::with_test_handle(handle, || {
+        gh_pr_post_general("o", "r", 1, "hi", Some("/tmp"))
+    })
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, prefixed("Failed to post general comment"));
 }
 
 #[test]
 fn wrapper_prefix_fetch_pr_issue_comments() {
-    assert_eq!(
-        prefixed("Failed to fetch PR issue comments"),
-        "Failed to fetch PR issue comments: Resource not accessible by integration"
-    );
+    let handle = scripted_timeout();
+    let error = crate::with_test_handle(handle, || gh_pr_issue_comments("o", "r", 1, Some("/tmp")))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, prefixed("Failed to fetch PR issue comments"));
 }
 
 #[test]
 fn wrapper_prefix_read_gh_user() {
-    assert_eq!(
-        prefixed("Failed to read the gh user"),
-        "Failed to read the gh user: Resource not accessible by integration"
-    );
+    let handle = scripted_timeout();
+    let error = crate::with_test_handle(handle, || gh_viewer_login(Some("/tmp")))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, prefixed("Failed to read the gh user"));
 }
 
 #[test]
 fn wrapper_prefix_update_comment() {
-    assert_eq!(
-        prefixed("Failed to update comment"),
-        "Failed to update comment: Resource not accessible by integration"
-    );
+    let handle = scripted_timeout();
+    let error = crate::with_test_handle(handle, || {
+        gh_pr_update_review_comment("o", "r", 9, "new body", "/tmp")
+    })
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, prefixed("Failed to update comment"));
 }
 
 #[test]
 fn wrapper_prefix_delete_comment() {
-    assert_eq!(
-        prefixed("Failed to delete comment"),
-        "Failed to delete comment: Resource not accessible by integration"
-    );
+    let handle = scripted_timeout();
+    let error = crate::with_test_handle(handle, || gh_pr_delete_comment("o", "r", 9, "/tmp"))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, prefixed("Failed to delete comment"));
 }
 
 #[test]
 fn wrapper_prefix_update_pr_body() {
-    assert_eq!(
-        prefixed("Failed to update PR body"),
-        "Failed to update PR body: Resource not accessible by integration"
-    );
+    let handle = scripted_timeout();
+    let error = crate::with_test_handle(handle, || gh_pr_edit_body("/tmp", "new body"))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, prefixed("Failed to update PR body"));
 }
 
 #[test]
 fn wrapper_prefix_approve() {
-    assert_eq!(
-        prefixed("gh pr approve failed"),
-        "gh pr approve failed: Resource not accessible by integration"
-    );
+    let handle = scripted_timeout();
+    let error = crate::with_test_handle(handle, || gh_pr_approve("/tmp", None, None))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, prefixed("gh pr approve failed"));
+}
+
+#[test]
+fn diff_wrappers_keep_their_old_sentence() {
+    let local = crate::with_test_handle(scripted_failure(), || {
+        gh_pr_diff(&er_git::CliGit, 7, "/tmp")
+    })
+    .unwrap_err()
+    .to_string();
+    assert_eq!(local, "Failed to get PR diff: boom");
+
+    let error = crate::with_test_handle(scripted_failure(), || {
+        gh_pr_diff_remote(&er_git::CliGit, "o", "r", 7)
+    })
+    .unwrap_err()
+    .to_string();
+    assert_eq!(error, "Failed to get PR diff: boom");
+}
+
+#[test]
+fn list_wrappers_keep_their_old_sentence() {
+    let queue = crate::with_test_handle(scripted_failure(), || {
+        gh_pr_list_queue("o", "r", "open", 30)
+    })
+    .unwrap_err()
+    .to_string();
+    assert_eq!(queue, "gh pr list failed: boom");
+
+    let refs = crate::with_test_handle(scripted_failure(), || gh_open_pr_refs_json("o/r"))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(refs, "gh pr list failed: boom");
+}
+
+#[test]
+fn lookup_wrappers_keep_their_old_sentence() {
+    let notifications =
+        crate::with_test_handle(scripted_failure(), gh_list_participating_notifications)
+            .unwrap_err()
+            .to_string();
+    assert_eq!(notifications, "Failed to fetch GitHub notifications: boom");
+
+    let base = crate::with_test_handle(scripted_failure(), || gh_pr_base_branch(7, "/tmp"))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(base, "Failed to get PR #7: boom");
+}
+
+#[test]
+fn metadata_and_commit_wrappers_keep_their_old_sentence() {
+    let metadata =
+        crate::with_test_handle(scripted_failure(), || gh_pr_metadata_remote("o", "r", 7))
+            .unwrap_err()
+            .to_string();
+    assert_eq!(metadata, "Failed to get PR #7 metadata: boom");
+
+    let commits = crate::with_test_handle(scripted_failure(), || gh_pr_commits("/tmp", 7, 100))
+        .unwrap_err()
+        .to_string();
+    assert_eq!(commits, "Failed to get PR #7 commits: boom");
+
+    let shas =
+        crate::with_test_handle(scripted_failure(), || gh_pr_commit_shas_remote("o", "r", 7))
+            .unwrap_err()
+            .to_string();
+    assert_eq!(shas, "Failed to get PR #7 commit SHAs: boom");
 }

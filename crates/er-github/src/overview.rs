@@ -1,7 +1,7 @@
 //! PR overview and status: title, body, reviewers, CI checks, the combined
 //! status bundle, and the PR-wide writes that ride with it.
 
-use crate::with_prefix;
+use crate::{with_gh_sentence, with_prefix};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
@@ -199,6 +199,10 @@ impl CliGitHub {
         Ok(checks)
     }
 
+    // Rich GitHub status for the SourcesCard: review decision, mergeable,
+    // labels, checks, recent comments/reviews. Parsing lives in pure functions
+    // so it can be unit-tested against fixed JSON blobs.
+
     /// Get PR metadata (base branch, head branch) via `gh pr view --repo`.
     pub(crate) fn pr_metadata_remote(
         &self,
@@ -292,7 +296,7 @@ impl CliGitHub {
 pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(String, String)> {
     default_handle()
         .pr_metadata_remote(owner, repo, number)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence(format!("Failed to get PR #{number} metadata"), error))
 }
 
 pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
@@ -663,7 +667,9 @@ impl CliGitHub {
         number: u64,
     ) -> Result<Vec<CheckRun>, GhError> {
         let repo_slug = format!("{owner}/{repo}");
-        let Ok(out) = self.run_gh_args(
+        // No checks configured is an empty list; a gh that could not run at
+        // all is an error, not "no checks".
+        let out = match self.run_gh_args(
             &[
                 "pr",
                 "checks",
@@ -674,8 +680,17 @@ impl CliGitHub {
                 "name,state,bucket,link,startedAt,completedAt,description",
             ],
             None,
-        ) else {
-            return Ok(Vec::new());
+        ) {
+            Ok(out) => out,
+            Err(error)
+                if matches!(
+                    error,
+                    GhError::NotInstalled | GhError::Timeout | GhError::Tool { status: -1, .. }
+                ) =>
+            {
+                return Err(error);
+            }
+            Err(_) => return Ok(Vec::new()),
         };
         parse_pr_checks(&String::from_utf8_lossy(&out.body)).map_err(GhError::from)
     }
@@ -685,7 +700,7 @@ impl CliGitHub {
 pub fn gh_pr_status_remote(owner: &str, repo: &str, number: u64) -> Result<PrStatusBundle> {
     default_handle()
         .pr_status_remote(owner, repo, number)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_gh_sentence("gh pr view (status bundle) failed", error))
 }
 
 pub fn gh_pr_checks_remote(owner: &str, repo: &str, number: u64) -> Result<Vec<CheckRun>> {
@@ -751,8 +766,8 @@ fn check_run_is_pending(c: &CheckRun) -> bool {
     ) || matches!(conclusion.as_str(), "pending" | "in_progress" | "queued")
 }
 
-/// Fetch checks and return rollup state for a remote PR.
 impl CliGitHub {
+    /// Fetch checks and return rollup state for a remote PR.
     pub(crate) fn pr_checks_state_remote(
         &self,
         owner: &str,

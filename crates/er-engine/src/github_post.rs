@@ -411,15 +411,19 @@ pub fn resolve_post_target_with(
             repo_root: Some(ctx.repo_root.clone()),
         });
     }
-    post_target_from_lookup(
-        github.lookup_pr_for_current_branch(git, &ctx.repo_root),
-        ctx,
-    )
+    let lookup = github
+        .lookup_pr_for_current_branch(git, &ctx.repo_root)
+        .map_err(|error| {
+            GitHubPostError::NotPosted(format!(
+                "Could not read this branch's pull request: {error}"
+            ))
+        })?;
+    post_target_from_lookup(lookup, ctx)
 }
 
 /// Turn a PR lookup into a post target. Absent is the only case that gets the
-/// no-PR sentence; an unknown lookup names the failure so an offline `gh` does
-/// not read as a missing PR.
+/// no-PR sentence; a failed lookup stays an error so an offline `gh` does not
+/// read as a missing PR.
 pub(crate) fn post_target_from_lookup(
     lookup: crate::github::PrLookup,
     ctx: &CommentPostContext,
@@ -438,18 +442,26 @@ pub(crate) fn post_target_from_lookup(
         crate::github::PrLookup::Absent => {
             Err(GitHubPostError::NotPosted(NO_PR_FOR_COMMENT.to_string()))
         }
-        crate::github::PrLookup::Unknown(e) => Err(GitHubPostError::NotPosted(format!(
-            "Could not read this branch's pull request: {e}"
-        ))),
     }
 }
 
-fn is_http_4xx(error: &impl std::fmt::Display) -> bool {
-    format!("{error:#}").contains("(HTTP 4")
+fn is_http_4xx(error: &crate::github::GhError) -> bool {
+    use crate::github::GhError;
+    match error {
+        GhError::Unauthenticated { .. }
+        | GhError::NotFound { .. }
+        | GhError::Forbidden { .. }
+        | GhError::RateLimited { .. }
+        | GhError::TooLarge { .. }
+        | GhError::Conflict { .. }
+        | GhError::Unprocessable { .. } => true,
+        GhError::Tool { status, .. } => (400..500).contains(status),
+        _ => false,
+    }
 }
 
-fn classify_post_error(error: &impl std::fmt::Display) -> GitHubPostOutcome {
-    let message = format!("{error:#}");
+fn classify_post_error(prefix: &str, error: &crate::github::GhError) -> GitHubPostOutcome {
+    let message = format!("{prefix}: {error}");
     if message.to_lowercase().contains("one pending review") {
         GitHubPostOutcome::NotPosted {
             error: PENDING_REVIEW_BLOCKS_COMMENT.to_string(),
@@ -521,7 +533,7 @@ impl GitHubCommentPoster for GhCommentPoster {
                     Ok(commit_id) => commit_id,
                     Err(e) => {
                         return GitHubPostOutcome::NotPosted {
-                            error: format!("{e:#}"),
+                            error: format!("Failed to get HEAD SHA from gh pr view: {e}"),
                         }
                     }
                 };
@@ -541,7 +553,7 @@ impl GitHubCommentPoster for GhCommentPoster {
                         created_at: created.created_at,
                         author: created.author,
                     },
-                    Err(e) => classify_post_error(&e),
+                    Err(e) => classify_post_error("Failed to push comment", &e),
                 }
             }
             GitHubPostTarget::Reply { in_reply_to } => {
@@ -558,7 +570,7 @@ impl GitHubCommentPoster for GhCommentPoster {
                         created_at: created.created_at,
                         author: created.author,
                     },
-                    Err(e) => classify_post_error(&e),
+                    Err(e) => classify_post_error("Failed to push reply", &e),
                 }
             }
             GitHubPostTarget::General => {
@@ -571,7 +583,7 @@ impl GitHubCommentPoster for GhCommentPoster {
                         created_at: created.created_at,
                         author: created.author,
                     },
-                    Err(e) => classify_post_error(&e),
+                    Err(e) => classify_post_error("Failed to post general comment", &e),
                 }
             }
         }
@@ -583,20 +595,23 @@ impl GitHubCommentPoster for GhCommentPoster {
         let comments = match &request.target {
             GitHubPostTarget::General => self
                 .github
-                .issue_comments(&pr.owner, &pr.repo, pr.pr, repo_root)?
+                .issue_comments(&pr.owner, &pr.repo, pr.pr, repo_root)
+                .map_err(|error| anyhow::anyhow!("Failed to fetch PR issue comments: {error}"))?
                 .into_iter()
                 .map(listed_from_issue)
                 .collect(),
             _ => match repo_root {
                 Some(root) => self
                     .github
-                    .pr_comments(&pr.owner, &pr.repo, pr.pr, root)?
+                    .pr_comments(&pr.owner, &pr.repo, pr.pr, root)
+                    .map_err(|error| anyhow::anyhow!("Failed to fetch PR comments: {error}"))?
                     .into_iter()
                     .map(listed_from_github)
                     .collect(),
                 None => self
                     .github
-                    .pr_comments_remote(&pr.owner, &pr.repo, pr.pr)?
+                    .pr_comments_remote(&pr.owner, &pr.repo, pr.pr)
+                    .map_err(|error| anyhow::anyhow!("Failed to fetch PR comments: {error}"))?
                     .into_iter()
                     .map(listed_from_github)
                     .collect(),
@@ -608,7 +623,7 @@ impl GitHubCommentPoster for GhCommentPoster {
     fn viewer_login(&self, request: &GitHubPostRequest) -> Result<String> {
         self.github
             .viewer_login(request.pr.repo_root.as_deref())
-            .map_err(anyhow::Error::from)
+            .map_err(|error| anyhow::anyhow!("Failed to read the gh user: {error}"))
     }
 }
 
@@ -618,20 +633,33 @@ mod tests {
 
     #[test]
     fn classify_post_error_marks_a_4xx_as_not_posted() {
-        let error = anyhow::anyhow!("gh: Unprocessable Entity (HTTP 422)");
-        match classify_post_error(&error) {
+        let error = crate::github::GhError::Unprocessable {
+            message: "gh: Unprocessable Entity (HTTP 422)".into(),
+        };
+        match classify_post_error("Failed to push comment", &error) {
             GitHubPostOutcome::NotPosted { error } => {
                 assert!(error.contains("HTTP 422"), "{error}");
+                assert!(error.starts_with("Failed to push comment: "), "{error}");
             }
             other => panic!("expected NotPosted, got {other:?}"),
         }
+        let unclassified = crate::github::GhError::Tool {
+            status: 400,
+            stderr: "bad request".into(),
+        };
+        assert!(matches!(
+            classify_post_error("Failed to push comment", &unclassified),
+            GitHubPostOutcome::NotPosted { .. }
+        ));
     }
 
     #[test]
     fn classify_post_error_marks_a_pending_review_refusal_as_not_posted() {
-        let error = anyhow::anyhow!("user_id can only have one pending review per pull request");
+        let error = crate::github::GhError::Unprocessable {
+            message: "user_id can only have one pending review per pull request".into(),
+        };
         assert_eq!(
-            classify_post_error(&error),
+            classify_post_error("Failed to push reply", &error),
             GitHubPostOutcome::NotPosted {
                 error: PENDING_REVIEW_BLOCKS_COMMENT.to_string()
             }
@@ -640,10 +668,11 @@ mod tests {
 
     #[test]
     fn classify_post_error_marks_a_timeout_as_unknown() {
-        let error = anyhow::anyhow!("request timed out");
-        assert!(matches!(
-            classify_post_error(&error),
-            GitHubPostOutcome::UnknownOutcome { .. }
-        ));
+        let outcome = classify_post_error("Failed to push reply", &crate::github::GhError::Timeout);
+        assert!(matches!(outcome, GitHubPostOutcome::UnknownOutcome { .. }));
+        let GitHubPostOutcome::UnknownOutcome { error } = outcome else {
+            unreachable!()
+        };
+        assert!(error.starts_with("Failed to push reply: "), "{error}");
     }
 }

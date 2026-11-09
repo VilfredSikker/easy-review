@@ -905,11 +905,12 @@ pub fn summarize_thread_addressing_from_graphql(
     crate::types::ThreadAddressingSummary::from_thread_flags(&flags)
 }
 
-/// Fetch review threads and summarize whether feedback is already addressed.
-///
-/// Paginates GraphQL `reviewThreads` (100/page, up to 10 pages). If more threads
-/// remain after the cap, `truncated` is set and `all_addressed` is forced false.
 impl CliGitHub {
+    /// Fetch review threads and summarize whether feedback is already addressed.
+    ///
+    /// Paginates GraphQL `reviewThreads` (100/page, up to 10 pages). If more
+    /// threads remain after the cap, `truncated` is set and `all_addressed` is
+    /// forced false.
     pub(crate) fn pr_thread_addressing_remote(
         &self,
         owner: &str,
@@ -936,6 +937,16 @@ impl CliGitHub {
                 .run_gh_args(&["api", "graphql", "-f", &format!("query={query}")], None)
             {
                 Ok(out) => out,
+                // A gh that could not run at all is an error; a gh answer we
+                // cannot use degrades to the default summary.
+                Err(error)
+                    if matches!(
+                        error,
+                        GhError::NotInstalled | GhError::Timeout | GhError::Tool { status: -1, .. }
+                    ) =>
+                {
+                    return Err(error);
+                }
                 Err(_) => {
                     if page == 0 {
                         return Ok(crate::types::ThreadAddressingSummary::default());

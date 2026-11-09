@@ -412,6 +412,9 @@ fn stderr_error(stderr: &str, exit_code: i32) -> GhError {
     if lower.contains("could not resolve to a") {
         return GhError::NotFound { message };
     }
+    if lower.contains("too_large") || lower.contains("exceeded the maximum number") {
+        return GhError::TooLarge { message };
+    }
     if lower.contains("rate limit") {
         return GhError::RateLimited {
             reset_epoch_secs: None,
@@ -479,6 +482,15 @@ fn stderr_http_code(stderr: &str) -> Option<u16> {
 /// sentence around it.
 pub fn is_unknown_command(err: &GhError) -> bool {
     matches!(err, GhError::Tool { stderr, .. } if stderr.contains("unknown command"))
+}
+
+/// gh's explicit answer that the checked-out branch has no pull request. Only
+/// that answer counts; an offline, unauthenticated or timed-out gh is a probe
+/// failure, not a missing PR.
+pub fn is_no_pull_request_answer(err: &GhError) -> bool {
+    err.to_string()
+        .to_lowercase()
+        .contains("no pull requests found")
 }
 
 #[cfg(test)]
