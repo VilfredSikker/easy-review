@@ -13698,6 +13698,7 @@ mod tests {
             auto_triage_when: "new-and-push".to_string(),
             auto_triage_max_diff_kb: 0,
             review_ignore_globs: Vec::new(),
+            extra: Default::default(),
         }
     }
 

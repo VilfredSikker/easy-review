@@ -1,39 +1,15 @@
-//! Read Easy Review desktop project config (`~/.config/er/projects.json`).
+//! Read the Easy Review projects record from the app store.
 
 use anyhow::{Context, Result};
 use er_engine::pr_resolve::{self, ProjectHint, ResolvePrRefInput, ResolvedPrRef};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use er_engine::projects_pins::{ProjectRecord, ProjectsFile};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ProjectsFile {
-    #[serde(default)]
-    pub projects: Vec<ProjectRecord>,
-    #[serde(default)]
-    pub active_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectRecord {
-    pub id: String,
-    pub name: String,
-    pub root_path: String,
-    #[serde(default)]
-    pub remote: Option<String>,
-}
-
-fn projects_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("er").join("projects.json"))
-}
+/// The `projects_list` tool description. The macro needs an expression it can
+/// read, so the description lives here and the test below pins its wording.
+pub const PROJECTS_LIST_DESCRIPTION: &str = "List Easy Review projects from the app store.";
 
 pub fn load_projects() -> ProjectsFile {
-    let Some(path) = projects_path() else {
-        return ProjectsFile::default();
-    };
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return ProjectsFile::default();
-    };
-    serde_json::from_str(&content).unwrap_or_default()
+    er_engine::projects_pins::load()
 }
 
 pub fn project_hints(file: &ProjectsFile) -> Vec<ProjectHint> {
@@ -94,7 +70,7 @@ pub fn resolve_repo(
         let (o, r) = parse_repo_slug(slug)?;
         return Ok((o, r, None));
     }
-    let project = if let Some(id) = project_id {
+    let project: &ProjectRecord = if let Some(id) = project_id {
         file.projects
             .iter()
             .find(|p| p.id == id)
@@ -103,7 +79,7 @@ pub fn resolve_repo(
         file.projects
             .iter()
             .find(|p| p.id == active)
-            .context("active project missing from projects.json")?
+            .context("active project missing from projects")?
     } else {
         file.projects
             .first()
@@ -152,5 +128,15 @@ mod tests {
         .unwrap();
         assert_eq!(pr.number, 7);
         assert!(pr.bucket_path.contains("prs/pr-7"));
+    }
+
+    #[test]
+    fn mcp_projects_list_description_names_no_old_path() {
+        let description = PROJECTS_LIST_DESCRIPTION;
+        assert!(!description.contains(".config/er"), "{description}");
+        assert!(
+            description.to_lowercase().contains("store"),
+            "{description}"
+        );
     }
 }
