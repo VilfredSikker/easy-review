@@ -13,9 +13,11 @@ bucket or `prs/pr-<N>/`. `docs/adr/0004-per-view-artifact-scoping.md`.
 
 **`er` writes these:** `questions.json` (things you want answered),
 `notes.json` (instructions to hand an agent), `github-comments.json` (the shared
-GitHub threads, two-way synced). The first two are private. The questions and
-notes AI actions are the exception — each rewrites its store in the bucket,
-leaving a `.prev.json` beside it.
+GitHub threads, two-way synced). The first two are private. `annotation_store.rs`
+is the store-backed reader and writer for the three files; the promote paths use
+it. Agents rewrite the questions and notes files in place, which is why the kinds
+stay `Bare`; the AI actions leave a `.prev.json` beside them. `promote.rs` is the
+only conversion from a private annotation to a GitHub write.
 
 **AI-owned, read-only to `er` as a whole:** `review.json`, `order.json`,
 `summary.md`, `triage.json`, `professor.json`, `experts/*.json`, `tour.json`.

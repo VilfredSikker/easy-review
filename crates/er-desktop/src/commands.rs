@@ -2996,7 +2996,7 @@ fn mark_thread_resolved_in_files(
     notes_path: &str,
     gc_path: &str,
 ) -> Result<Option<String>, String> {
-    use er_engine::ai::{ErGitHubComments, ErNotes, ErQuestions};
+    use er_engine::ai::{ErGithubComments, ErNotes, ErQuestions};
     if let Ok(text) = std::fs::read_to_string(q_path) {
         if let Ok(mut qs) = serde_json::from_str::<ErQuestions>(&text) {
             if let Some(q) = qs.questions.iter_mut().find(|q| q.id == id) {
@@ -3022,7 +3022,7 @@ fn mark_thread_resolved_in_files(
     }
 
     if let Ok(text) = std::fs::read_to_string(gc_path) {
-        if let Ok(mut gc) = serde_json::from_str::<ErGitHubComments>(&text) {
+        if let Ok(mut gc) = serde_json::from_str::<ErGithubComments>(&text) {
             if let Some(c) = gc.comments.iter_mut().find(|c| c.id == id) {
                 if !c.resolved {
                     c.resolved = true;
@@ -4627,7 +4627,7 @@ fn eligible_github_comment_count(tab: &er_engine::app::TabState) -> usize {
     }
     let path = std::path::Path::new(&tab.er_dir()).join("github-comments.json");
     if let Ok(content) = std::fs::read_to_string(&path) {
-        if let Ok(gc) = serde_json::from_str::<er_engine::ai::ErGitHubComments>(&content) {
+        if let Ok(gc) = serde_json::from_str::<er_engine::ai::ErGithubComments>(&content) {
             return er_engine::ai::count_eligible_github_comments(&gc);
         }
     }
@@ -4944,22 +4944,6 @@ pub async fn set_ai_effort(
 
 // ── Promote question to GitHub comment ──────────────────────────────────────
 
-/// Compose a markdown body that includes the question's text plus any replies
-/// rendered as quoted blocks. Mirrors what the user sees in the inline thread.
-fn build_promoted_body(root_text: &str, replies: &[(&str, &str)]) -> String {
-    let mut out = root_text.trim().to_string();
-    for (author, body) in replies {
-        out.push_str("\n\n");
-        let quoted: String = body
-            .lines()
-            .map(|l| format!("> {l}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        out.push_str(&format!("> **{author}** replied:\n{quoted}"));
-    }
-    out
-}
-
 #[tauri::command]
 pub async fn promote_to_comment(
     id: String,
@@ -4968,96 +4952,74 @@ pub async fn promote_to_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
-        let (file, hunk_idx, line_start, text, side) = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-                return early;
-            }
-            // GitHub takes comments on diff lines only. Refuse before anything
-            // is written, so the source question or note is kept.
-            if app.document_anchor_of(&id).is_some() {
-                return Err(
-                    "This line is not in the diff, so it cannot become a GitHub comment"
-                        .to_string(),
-                );
-            }
+    run_blocking(move || promote_to_comment_impl(id, body, view, &state)).await
+}
 
-            let tab = app.tab();
-            // Both questions and notes use the `ReviewQuestion` shape; pick the
-            // collection by id prefix so notes can be promoted too.
-            let (items, item): (
-                &[er_engine::ai::ReviewQuestion],
-                &er_engine::ai::ReviewQuestion,
-            ) = if id.starts_with("n-") {
-                let ns = tab
-                    .ai
-                    .notes
-                    .as_ref()
-                    .ok_or_else(|| "No notes loaded".to_string())?;
-                let n = ns
-                    .notes
-                    .iter()
-                    .find(|n| n.id == id)
-                    .ok_or_else(|| format!("Note not found: {id}"))?;
-                (ns.notes.as_slice(), n)
-            } else {
-                let qs = tab
-                    .ai
-                    .questions
-                    .as_ref()
-                    .ok_or_else(|| "No questions loaded".to_string())?;
-                let q = qs
-                    .questions
-                    .iter()
-                    .find(|q| q.id == id)
-                    .ok_or_else(|| format!("Question not found: {id}"))?;
-                (qs.questions.as_slice(), q)
-            };
+fn promote_to_comment_impl(
+    id: String,
+    body: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
+    let promoted = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
+            return early;
+        }
 
-            let replies: Vec<(&str, &str)> = items
+        let tab = app.tab();
+        // Both questions and notes use the `PrivateAnnotation` shape; pick the
+        // collection by id prefix so notes can be promoted too.
+        let (items, item): (
+            &[er_engine::ai::PrivateAnnotation],
+            &er_engine::ai::PrivateAnnotation,
+        ) = if id.starts_with("n-") {
+            let ns = tab
+                .ai
+                .notes
+                .as_ref()
+                .ok_or_else(|| "No notes loaded".to_string())?;
+            let n = ns
+                .notes
                 .iter()
-                .filter(|r| r.in_reply_to.as_deref() == Some(&id))
-                .map(|r| (r.author.as_str(), r.text.as_str()))
-                .collect();
-            let default = build_promoted_body(&item.text, &replies);
-            let text = body.clone().unwrap_or(default);
-
-            (
-                item.file.clone(),
-                item.hunk_index.unwrap_or(0),
-                item.line_start,
-                text,
-                item.side.clone(),
-            )
+                .find(|n| n.id == id)
+                .ok_or_else(|| format!("Note not found: {id}"))?;
+            (ns.notes.as_slice(), n)
+        } else {
+            let qs = tab
+                .ai
+                .questions
+                .as_ref()
+                .ok_or_else(|| "No questions loaded".to_string())?;
+            let q = qs
+                .questions
+                .iter()
+                .find(|q| q.id == id)
+                .ok_or_else(|| format!("Question not found: {id}"))?;
+            (qs.questions.as_slice(), q)
         };
 
-        let posted = post_github_comment_flow(
-            &state,
-            er_engine::app::NewGitHubComment::Line {
-                file,
-                hunk_idx,
-                line_start,
-                line_end: None,
-                side: Some(side),
-                body: text,
-            },
-            Some(format!("c-promote-{id}")),
-        )?;
-        let request = posted.request.clone();
-        posted.finish(&state);
+        er_engine::ai::promote::promote_to_github(item, items, body)
+            .map_err(|error| error.to_string())?
+    };
 
-        // The source is replaced only once GitHub holds the comment, so a
-        // failure keeps it and a retry can post it again.
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Err(e) = app.delete_comment_direct(&id) {
-            // The comment is on GitHub; the next promote must adopt it.
-            app.remember_posted_for_retry(request);
-            return Err(e.to_string());
-        }
-        Ok(snap_from_confirmed(&app, &state))
-    })
-    .await
+    let posted = post_github_comment_flow(
+        state,
+        er_engine::app::NewGitHubComment::from(promoted),
+        Some(format!("c-promote-{id}")),
+    )?;
+    let request = posted.request.clone();
+    posted.finish(state);
+
+    // The source is replaced only once GitHub holds the comment, so a
+    // failure keeps it and a retry can post it again.
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if let Err(e) = app.delete_comment_direct(&id) {
+        // The comment is on GitHub; the next promote must adopt it.
+        app.remember_posted_for_retry(request);
+        return Err(e.to_string());
+    }
+    Ok(snap_from_confirmed(&app, state))
 }
 
 /// Promote a question to a local note. Notes are still private but framed as
@@ -5078,76 +5040,8 @@ pub async fn promote_to_note(
             return early;
         }
 
-        let (file, hunk_idx, line_start, default_body, side) = {
-            let tab = app.tab();
-            let qs = tab
-                .ai
-                .questions
-                .as_ref()
-                .ok_or_else(|| "No questions loaded".to_string())?;
-            let q = qs
-                .questions
-                .iter()
-                .find(|q| q.id == id)
-                .ok_or_else(|| format!("Question not found: {id}"))?;
-            let replies: Vec<(&str, &str)> = qs
-                .questions
-                .iter()
-                .filter(|r| r.in_reply_to.as_deref() == Some(&id))
-                .map(|r| (r.author.as_str(), r.text.as_str()))
-                .collect();
-            let default = build_promoted_body(&q.text, &replies);
-            (
-                q.file.clone(),
-                q.hunk_index.unwrap_or(0),
-                q.line_start,
-                default,
-                q.side.clone(),
-            )
-        };
-
-        let text = body.unwrap_or(default_body);
-
-        let existing_ids: std::collections::HashSet<String> = {
-            let tab = app.tab();
-            tab.ai
-                .notes
-                .as_ref()
-                .map(|ns| ns.notes.iter().map(|n| n.id.clone()).collect())
-                .unwrap_or_default()
-        };
-
-        app.tab_mut().comment_side = Some(side);
-        // A question on a document line keeps that line as a note.
-        app.tab_mut().comment_document_anchor = app.document_anchor_of(&id);
-        let submitted = app.submit_comment_text(
-            CommentTarget {
-                file,
-                hunk_idx,
-                line_num: line_start,
-                line_num_end: None,
-            },
-            text,
-            CommentType::Note,
-            None,
-            None,
-        );
-        app.tab_mut().comment_document_anchor = None;
-        submitted.map_err(|e| e.to_string())?;
-
-        let new_id: Option<String> = {
-            let tab = app.tab();
-            tab.ai.notes.as_ref().and_then(|ns| {
-                ns.notes
-                    .iter()
-                    .find(|n| !existing_ids.contains(&n.id))
-                    .map(|n| n.id.clone())
-            })
-        };
-
-        if new_id.is_some() {
-            app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-        }
+        app.promote_question_to_note(&id, body)
+            .map_err(|e| e.to_string())?;
 
         Ok(snap_from_confirmed(&app, &state))
     })
@@ -5391,7 +5285,7 @@ pub async fn send_note_to_agent(
 
         let (prompt, toast) = {
             let tab = app.tab();
-            let notes: &[er_engine::ai::ReviewQuestion] = tab
+            let notes: &[er_engine::ai::PrivateAnnotation] = tab
                 .ai
                 .notes
                 .as_ref()
@@ -5516,10 +5410,10 @@ fn ask_ai_impl(
         };
 
         if thread_id.starts_with("q-") || thread_id.starts_with("n-") {
-            // Questions and notes share the `ReviewQuestion` shape; pick the
+            // Questions and notes share the `PrivateAnnotation` shape; pick the
             // collection (and resulting CommentType) by id prefix.
             let is_note = thread_id.starts_with("n-");
-            let items: &[er_engine::ai::ReviewQuestion] = if is_note {
+            let items: &[er_engine::ai::PrivateAnnotation] = if is_note {
                 tab.ai
                     .notes
                     .as_ref()
@@ -9503,53 +9397,38 @@ fn promote_finding_to_comment_impl(
     view: Option<crate::snapshot::OptimisticView>,
     state: &AppState,
 ) -> Result<AppSnapshot, String> {
-    let (er_dir, file, hunk_idx, line_start, text) = {
+    let (er_dir, promoted) = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
             return early;
         }
 
         let er_dir = app.tab().er_dir();
-        let found = app.tab().ai.review.as_ref().and_then(|review| {
-            review.files.iter().find_map(|(path, file)| {
-                let f = file.findings.iter().find(|f| f.id == finding_id)?;
-                let default = if f.description.is_empty() {
-                    f.title.clone()
-                } else {
-                    format!("{}\n\n{}", f.title, f.description)
-                };
-                Some((
-                    path.clone(),
-                    f.hunk_index.unwrap_or(0),
-                    f.line_start,
-                    default,
-                ))
+        let review = app
+            .tab()
+            .ai
+            .review
+            .as_ref()
+            .ok_or_else(|| "No AI review loaded".to_string())?;
+        let (file, finding) = review
+            .files
+            .iter()
+            .find_map(|(path, file)| {
+                file.findings
+                    .iter()
+                    .find(|finding| finding.id == finding_id)
+                    .map(|finding| (path, finding))
             })
-        });
-
-        let (file, hunk_idx, line_start, default_body) =
-            found.ok_or_else(|| format!("Finding not found: {finding_id}"))?;
-        let text = match body.clone() {
-            Some(b) => b,
-            None => {
-                let promote_replies =
-                    er_engine::ai::collect_finding_promote_replies(&app.tab().ai, &finding_id);
-                er_engine::ai::append_promote_replies(default_body, &promote_replies)
-            }
-        };
-        (er_dir, file, hunk_idx, line_start, text)
+            .ok_or_else(|| format!("Finding not found: {finding_id}"))?;
+        let replies = er_engine::ai::collect_finding_promote_replies(&app.tab().ai, &finding_id);
+        let promoted = er_engine::ai::promote::promote_finding(file, finding, &replies, body)
+            .map_err(|error| error.to_string())?;
+        (er_dir, promoted)
     };
 
     let posted = post_github_comment_flow(
         state,
-        er_engine::app::NewGitHubComment::Line {
-            file,
-            hunk_idx,
-            line_start,
-            line_end: None,
-            side: None,
-            body: text,
-        },
+        er_engine::app::NewGitHubComment::from(promoted),
         Some(format!("c-promote-finding-{finding_id}")),
     )?;
     let request = posted.request.clone();
@@ -11641,8 +11520,8 @@ pub fn get_background_task_log(
 mod tests {
     use super::*;
     use er_engine::ai::{
-        load_ui_annotations, save_ui_annotations, ErGitHubComments, ErQuestions,
-        GitHubReviewComment, ReviewQuestion, UiAnnotation,
+        load_ui_annotations, save_ui_annotations, ErGithubComments, ErQuestions, GithubComment,
+        PrivateAnnotation, UiAnnotation,
     };
 
     #[test]
@@ -12713,7 +12592,7 @@ mod tests {
         let questions = ErQuestions {
             version: 1,
             diff_hash: "x".to_string(),
-            questions: vec![ReviewQuestion {
+            questions: vec![PrivateAnnotation {
                 id: "q-1".to_string(),
                 timestamp: "t".to_string(),
                 file: "a.rs".to_string(),
@@ -12760,11 +12639,11 @@ mod tests {
         let q_path = tmp.path().join("questions.json");
         let gc_path = tmp.path().join("github-comments.json");
         std::fs::write(&q_path, r#"{"version":1,"diff_hash":"x","questions":[]}"#).unwrap();
-        let comments = ErGitHubComments {
+        let comments = ErGithubComments {
             version: 1,
             diff_hash: "x".to_string(),
             github: None,
-            comments: vec![GitHubReviewComment {
+            comments: vec![GithubComment {
                 id: "c-1".to_string(),
                 timestamp: "t".to_string(),
                 file: "a.rs".to_string(),
@@ -12800,7 +12679,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(changed, Some(gc_path.to_string_lossy().to_string()));
-        let updated: ErGitHubComments =
+        let updated: ErGithubComments =
             serde_json::from_str(&std::fs::read_to_string(&gc_path).unwrap()).unwrap();
         assert!(updated.comments[0].resolved);
     }
@@ -13936,5 +13815,106 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("reply_to_github_thread"), "{error}");
+    }
+
+    struct PostingCommentPoster;
+
+    impl er_engine::github_post::GitHubCommentPoster for PostingCommentPoster {
+        fn post(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> er_engine::github_post::GitHubPostOutcome {
+            er_engine::github_post::GitHubPostOutcome::Posted {
+                github_id: 42,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                author: "you".to_string(),
+            }
+        }
+
+        fn list(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> anyhow::Result<Vec<er_engine::github_post::ListedGitHubComment>> {
+            Ok(Vec::new())
+        }
+
+        fn viewer_login(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> anyhow::Result<String> {
+            Ok("you".to_string())
+        }
+    }
+
+    #[test]
+    fn promote_to_comment_deletes_the_source_question() {
+        use std::sync::Arc;
+
+        let dir = ReviewFlowTestDir::new();
+        // The fixture's inner type changed with the release branch; a separate
+        // temp dir keeps this test independent of it.
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let state = review_flow_test_state(&dir);
+
+            let questions_path;
+            {
+                let mut app = state.app.lock().unwrap();
+                app.tab_mut().remote_repo = Some("owner/repo".to_string());
+                app.tab_mut().pr_number = Some(7);
+                let er_dir = app.tab().er_dir();
+                std::fs::create_dir_all(&er_dir).unwrap();
+                questions_path = std::path::Path::new(&er_dir).join("questions.json");
+                let payload: er_engine::ai::ErQuestions =
+                    serde_json::from_value(serde_json::json!({
+                        "version": 1,
+                        "diff_hash": "hash",
+                        "questions": [{
+                            "id": "q-1",
+                            "file": "src/lib.rs",
+                            "hunk_index": 0,
+                            "line_start": 1,
+                            "line_content": "new",
+                            "text": "why?",
+                            "side": "RIGHT",
+                            "author": "You"
+                        }]
+                    }))
+                    .unwrap();
+                std::fs::write(
+                    &questions_path,
+                    serde_json::to_string_pretty(&payload).unwrap(),
+                )
+                .unwrap();
+                app.tab_mut().ai.questions = Some(payload);
+                app.set_github_comment_poster(Arc::new(PostingCommentPoster));
+            }
+
+            promote_to_comment_impl(
+                "q-1".to_string(),
+                Some("promoted".to_string()),
+                None,
+                &state,
+            )
+            .unwrap();
+
+            {
+                let app = state.app.lock().unwrap();
+                assert!(
+                    app.tab()
+                        .ai
+                        .questions
+                        .as_ref()
+                        .is_none_or(|qs| qs.questions.iter().all(|q| q.id != "q-1")),
+                    "the source question is gone from memory"
+                );
+            }
+            let stored: er_engine::ai::ErQuestions =
+                serde_json::from_str(&std::fs::read_to_string(&questions_path).unwrap()).unwrap();
+            assert!(
+                stored.questions.iter().all(|q| q.id != "q-1"),
+                "the source question is gone from the file"
+            );
+        });
     }
 }

@@ -2178,12 +2178,12 @@ fn comment_ref_to_thread(
         er_engine::ai::CommentType::GitHubComment => "comment",
     };
     let source = match c {
-        CommentRef::GitHubComment(gc) => gc.source.clone(),
+        CommentRef::GithubComment(gc) => gc.source.clone(),
         _ => "local".to_string(),
     };
     let line = match c {
         CommentRef::Question(q) | CommentRef::Note(q) => q.line_start.unwrap_or(0),
-        CommentRef::GitHubComment(gc) => gc.line_start.unwrap_or(0),
+        CommentRef::GithubComment(gc) => gc.line_start.unwrap_or(0),
     };
     let line_end = c.line_end();
     let side = c
@@ -2192,7 +2192,7 @@ fn comment_ref_to_thread(
         .unwrap_or_else(default_thread_side);
     let author_kind = if c.author() == "You" { "you" } else { "human" };
     let github_id = match c {
-        CommentRef::GitHubComment(gc) => gc.github_id,
+        CommentRef::GithubComment(gc) => gc.github_id,
         _ => None,
     };
     ThreadSnapshot {
@@ -2205,7 +2205,7 @@ fn comment_ref_to_thread(
         source,
         stale: match c {
             CommentRef::Question(q) | CommentRef::Note(q) => q.stale,
-            CommentRef::GitHubComment(gc) => gc.stale || gc.outdated,
+            CommentRef::GithubComment(gc) => gc.stale || gc.outdated,
         },
         resolved: c.is_resolved(),
         root: ThreadMessage {
@@ -2223,7 +2223,7 @@ fn comment_ref_to_thread(
         replies: build_replies(c, tab, pending),
         promoted_to: match c {
             CommentRef::Question(q) | CommentRef::Note(q) => q.promoted_to.clone(),
-            CommentRef::GitHubComment(_) => None,
+            CommentRef::GithubComment(_) => None,
         },
         github_id,
     }
@@ -5034,7 +5034,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                     } else {
                         "human"
                     };
-                    let cref = CommentRef::GitHubComment(c);
+                    let cref = CommentRef::GithubComment(c);
                     result.push(ThreadSnapshot {
                         id: c.id.clone(),
                         kind: "comment".to_string(),
@@ -5408,7 +5408,7 @@ fn status_str(status: &FileStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
+    use er_engine::ai::{ErGithubComments, GithubComment};
 
     /// Snapshot builders reach git; a test app that exercises them uses the
     /// real adapter rather than the unscripted fake.
@@ -5987,8 +5987,8 @@ mod tests {
         tmp
     }
 
-    fn github_comment(outdated: bool, stale: bool) -> GitHubReviewComment {
-        GitHubReviewComment {
+    fn github_comment(outdated: bool, stale: bool) -> GithubComment {
+        GithubComment {
             id: "gh-1".to_string(),
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             file: "src/foo.rs".to_string(),
@@ -6018,7 +6018,7 @@ mod tests {
     #[test]
     fn ai_snapshot_marks_github_outdated_comment_stale_for_ui() {
         let mut tab = TabState::new_for_test(vec![]);
-        tab.ai.github_comments = Some(ErGitHubComments {
+        tab.ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "hash".to_string(),
             github: None,
@@ -6048,7 +6048,7 @@ mod tests {
         github_reply.id = "gh-3".to_string();
         github_reply.github_id = Some(3);
         github_reply.in_reply_to = Some("gh-2".to_string());
-        tab.ai.github_comments = Some(ErGitHubComments {
+        tab.ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "hash".to_string(),
             github: None,
@@ -6146,7 +6146,7 @@ mod tests {
         let comment = github_comment(true, false);
 
         let thread = comment_ref_to_thread(
-            &CommentRef::GitHubComment(&comment),
+            &CommentRef::GithubComment(&comment),
             "src/foo.rs",
             0,
             &tab,
@@ -7000,7 +7000,7 @@ mod tests {
         comment.file = "src/foo.rs".to_string();
         comment.hunk_index = Some(0);
         comment.line_start = Some(2);
-        app.tab_mut().ai.github_comments = Some(ErGitHubComments {
+        app.tab_mut().ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "hash".to_string(),
             github: None,
@@ -7729,7 +7729,7 @@ mod tests {
         author: &str,
         reply_to: Option<&str>,
         action: Option<&str>,
-    ) -> er_engine::ai::ReviewQuestion {
+    ) -> er_engine::ai::PrivateAnnotation {
         let mut v = serde_json::json!({
             "id": id,
             "timestamp": "2026-10-30T10:00:00Z",

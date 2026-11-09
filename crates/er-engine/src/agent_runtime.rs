@@ -1,7 +1,7 @@
 //! Shared provider/model invocation and artifact contracts for app-launched AI.
 
 use crate::ai::{
-    ErChecklist, ErGitHubComments, ErOrder, ErQuestions, ErReview, ErTour, ExpertReview,
+    ErChecklist, ErGithubComments, ErOrder, ErQuestions, ErReview, ErTour, ExpertReview,
     ProfessorReview, TriageReview,
 };
 use crate::config::{inject_provider_effort, ErConfig};
@@ -598,7 +598,7 @@ impl ArtifactBaseline {
                 )?;
                 validate_non_empty(output_dir.join("summary.md"))?;
             }
-            ArtifactContract::ValidateComments => validate_json_hash::<ErGitHubComments>(
+            ArtifactContract::ValidateComments => validate_json_hash::<ErGithubComments>(
                 output_dir,
                 "github-comments.json",
                 expected_hash.as_deref(),

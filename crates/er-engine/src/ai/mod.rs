@@ -1,3 +1,4 @@
+pub mod annotation_store;
 pub mod browser_annotations;
 pub mod browser_prompt;
 pub mod change_facts;
@@ -10,6 +11,7 @@ pub mod flow_providers;
 mod loader;
 pub mod prepared_diff;
 pub mod professor;
+pub mod promote;
 pub mod prompts;
 mod relocate;
 mod review;

@@ -1,4 +1,4 @@
-use super::comments::{ErGitHubComments, ErNotes, ErQuestions};
+use super::comments::{ErGithubComments, ErNotes, ErQuestions};
 use super::diagrams::{
     ErDiagram, DIAGRAM_KIND_FLOWS, DIAGRAM_KIND_MENTAL_MODEL, DIAGRAM_KIND_SUBSYSTEMS,
 };
@@ -296,7 +296,7 @@ pub fn load_ai_state_with_arbiter(
     // Load .er/github-comments.json (GitHub PR comments)
     let gh_comments_path = Path::new(er_dir).join("github-comments.json");
     if let Ok(content) = read_sidecar(&gh_comments_path) {
-        if let Ok(gh_comments) = serde_json::from_str::<ErGitHubComments>(&content) {
+        if let Ok(gh_comments) = serde_json::from_str::<ErGithubComments>(&content) {
             state.github_comments = Some(gh_comments);
         }
     }

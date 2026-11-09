@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-use crate::ai::{Confidence, Finding, GitHubReviewComment, ReviewQuestion, UiAnnotation};
+use crate::ai::{Confidence, Finding, GithubComment, PrivateAnnotation, UiAnnotation};
 use crate::app::TabState;
 
 /// Toggles for which annotation kinds to include in the export.
@@ -108,7 +108,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     if opts.include_questions {
         if let Some(qs) = tab.ai.questions.as_ref() {
             // Top-level only — replies are rendered nested under their parent.
-            let top_level: Vec<&ReviewQuestion> = qs
+            let top_level: Vec<&PrivateAnnotation> = qs
                 .questions
                 .iter()
                 .filter(|q| q.in_reply_to.is_none())
@@ -120,7 +120,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
                 if allow_list_excludes(opts.include_question_ids.as_deref(), &q.id) {
                     continue;
                 }
-                let replies: Vec<&ReviewQuestion> = qs
+                let replies: Vec<&PrivateAnnotation> = qs
                     .questions
                     .iter()
                     .filter(|r| r.in_reply_to.as_deref() == Some(q.id.as_str()))
@@ -133,7 +133,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     if opts.include_notes {
         if let Some(ns) = tab.ai.notes.as_ref() {
             // Top-level only — replies are rendered nested under their parent.
-            let top_level: Vec<&ReviewQuestion> = ns
+            let top_level: Vec<&PrivateAnnotation> = ns
                 .notes
                 .iter()
                 .filter(|n| n.in_reply_to.is_none())
@@ -145,7 +145,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
                 if allow_list_excludes(opts.include_note_ids.as_deref(), &n.id) {
                     continue;
                 }
-                let replies: Vec<&ReviewQuestion> = ns
+                let replies: Vec<&PrivateAnnotation> = ns
                     .notes
                     .iter()
                     .filter(|r| r.in_reply_to.as_deref() == Some(n.id.as_str()))
@@ -157,7 +157,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
 
     if opts.include_comments {
         if let Some(gc) = tab.ai.github_comments.as_ref() {
-            let top_level: Vec<&GitHubReviewComment> = gc
+            let top_level: Vec<&GithubComment> = gc
                 .comments
                 .iter()
                 .filter(|c| c.in_reply_to.is_none())
@@ -169,7 +169,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
                 if allow_list_excludes(opts.include_comment_ids.as_deref(), &c.id) {
                     continue;
                 }
-                let replies: Vec<&GitHubReviewComment> = gc
+                let replies: Vec<&GithubComment> = gc
                     .comments
                     .iter()
                     .filter(|r| r.in_reply_to.as_deref() == Some(c.id.as_str()))
@@ -354,9 +354,9 @@ fn render_ui_annotations(out: &mut String, annotations: &[UiAnnotation]) {
 }
 
 enum ItemBlock<'a> {
-    Question(&'a ReviewQuestion, Vec<&'a ReviewQuestion>),
-    Note(&'a ReviewQuestion, Vec<&'a ReviewQuestion>),
-    Comment(&'a GitHubReviewComment, Vec<&'a GitHubReviewComment>),
+    Question(&'a PrivateAnnotation, Vec<&'a PrivateAnnotation>),
+    Note(&'a PrivateAnnotation, Vec<&'a PrivateAnnotation>),
+    Comment(&'a GithubComment, Vec<&'a GithubComment>),
     Finding(&'a Finding),
 }
 
@@ -532,8 +532,8 @@ const fn ago_label(ts: &str) -> String {
 mod tests {
     use super::*;
     use crate::ai::{
-        AiState, ErFileReview, ErGitHubComments, ErQuestions, ErReview, GitHubReviewComment,
-        ReviewQuestion, RiskLevel,
+        AiState, ErFileReview, ErGithubComments, ErQuestions, ErReview, GithubComment,
+        PrivateAnnotation, RiskLevel,
     };
     use crate::app::TabState;
     use std::collections::HashMap;
@@ -621,8 +621,8 @@ mod tests {
         line: usize,
         text: &str,
         resolved: bool,
-    ) -> ReviewQuestion {
-        ReviewQuestion {
+    ) -> PrivateAnnotation {
+        PrivateAnnotation {
             id: id.into(),
             timestamp: String::new(),
             file: file.into(),
@@ -648,8 +648,8 @@ mod tests {
         }
     }
 
-    fn make_comment(id: &str, file: &str, line: usize, body: &str) -> GitHubReviewComment {
-        GitHubReviewComment {
+    fn make_comment(id: &str, file: &str, line: usize, body: &str) -> GithubComment {
+        GithubComment {
             id: id.into(),
             timestamp: String::new(),
             file: file.into(),
@@ -687,7 +687,7 @@ mod tests {
                 make_question("q-2", "packages/bar.ts", 22, "And this?", false),
             ],
         });
-        ai.github_comments = Some(ErGitHubComments {
+        ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: String::new(),
             github: None,
@@ -1083,7 +1083,7 @@ mod tests {
         parent.in_reply_to = None;
         let mut reply = make_comment("c-2", "a.ts", 1, "Nested reply");
         reply.in_reply_to = Some("c-1".to_string());
-        ai.github_comments = Some(ErGitHubComments {
+        ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: String::new(),
             github: None,
@@ -1113,7 +1113,7 @@ mod tests {
         parent.in_reply_to = None;
         let mut reply = make_comment("c-2", "a.ts", 1, "Orphan reply");
         reply.in_reply_to = Some("c-1".to_string());
-        ai.github_comments = Some(ErGitHubComments {
+        ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: String::new(),
             github: None,

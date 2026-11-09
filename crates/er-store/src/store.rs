@@ -308,6 +308,10 @@ impl ArtifactStore {
             Loaded::Unreadable(reason) => (None, Some(reason)),
         };
         let value = f(current).map_err(UpdateError::Apply)?;
+        // The guard must stay held from the read through the write. Dropping
+        // it after `f` but before the write lets a second writer interleave a
+        // read-modify-write between them, and no test reliably catches that
+        // window. Keep it alive until both write paths return.
         if durable {
             self.write_durable_locked(&guard, key, &value)?;
         } else {

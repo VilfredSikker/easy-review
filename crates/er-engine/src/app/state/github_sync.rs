@@ -167,16 +167,16 @@ impl App {
         let _ = std::fs::create_dir_all(&comments_dir);
         let comments_path = self.tab().github_comments_path();
         let diff_hash = self.tab().branch_diff_hash.clone();
-        let mut gc: ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+        let mut gc: ai::ErGithubComments = match std::fs::read_to_string(&comments_path) {
             Ok(content) => {
-                serde_json::from_str(&content).unwrap_or_else(|_| ai::ErGitHubComments {
+                serde_json::from_str(&content).unwrap_or_else(|_| ai::ErGithubComments {
                     version: 1,
                     diff_hash: diff_hash.clone(),
                     github: None,
                     comments: Vec::new(),
                 })
             }
-            Err(_) => ai::ErGitHubComments {
+            Err(_) => ai::ErGithubComments {
                 version: 1,
                 diff_hash,
                 github: None,
@@ -237,7 +237,7 @@ impl App {
             let state = thread_state.get(&gh.id).copied().unwrap_or_default();
             let outdated = merged_outdated_state(state, gh.outdated);
 
-            github_entries.push(ai::GitHubReviewComment {
+            github_entries.push(ai::GithubComment {
                 id: format!("gh-{}", gh.id),
                 timestamp: gh.created_at.clone(),
                 file: file_path,

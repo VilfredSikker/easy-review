@@ -2,7 +2,7 @@
 
 The desktop Preview shows a whole Markdown or text file, and a reviewer highlights passages in it to ask a question or leave a note. Most of what Preview shows is unchanged, so most highlights land on lines no hunk holds. Until now every anchor was a hunk line: the engine filled `line_content` and context from the hunk, and relocation searched hunks. An anchor on an unchanged line came out empty and was marked lost on the next relocation pass.
 
-A question or note made from a line outside the diff is stored with `hunk_index: None` and `line_start: Some`, with `line_content` and three lines of context taken from the file's full text. `ReviewQuestion::is_document_anchor` names that combination, and relocation skips it the same way it skips file-level items. No field was added: the two stores already serialize both fields as optional, and the TUI already lists a hunkless item with the file's unanchored comments, so older builds read these sidecars without change.
+A question or note made from a line outside the diff is stored with `hunk_index: None` and `line_start: Some`, with `line_content` and three lines of context taken from the file's full text. `PrivateAnnotation::is_document_anchor` names that combination, and relocation skips it the same way it skips file-level items. No field was added: the two stores already serialize both fields as optional, and the TUI already lists a hunkless item with the file's unanchored comments, so older builds read these sidecars without change.
 
 A highlight whose lines all sit in one hunk is stored as an ordinary hunk anchor. It shows in the diff view as well, and it can be a GitHub comment.
 

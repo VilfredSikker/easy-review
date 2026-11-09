@@ -116,7 +116,7 @@ fn build_split_rows(hunk: &er_engine::git::DiffHunk) -> Vec<TuiSplitRow<'_>> {
 const fn comment_layer_visible(tab: &TabState, comment: &CommentRef<'_>) -> bool {
     let visible = match comment {
         CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
-        CommentRef::GitHubComment(_) => tab.layers.show_github_comments,
+        CommentRef::GithubComment(_) => tab.layers.show_github_comments,
     };
     visible && !(tab.layers.hide_resolved && comment.is_resolved())
 }
@@ -542,7 +542,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         for comment in &unanchored {
             let visible = match comment {
                 CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
-                CommentRef::GitHubComment(_) => tab.layers.show_github_comments,
+                CommentRef::GithubComment(_) => tab.layers.show_github_comments,
             };
             if !visible {
                 continue;
@@ -832,7 +832,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         && tab.layers.show_github_comments
                         && !(tab.layers.hide_resolved && c.resolved)
                     {
-                        v.push(CommentRef::GitHubComment(c));
+                        v.push(CommentRef::GithubComment(c));
                     }
                 }
             }
@@ -1111,7 +1111,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         for comment in &unanchored {
             let visible = match comment {
                 CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
-                CommentRef::GitHubComment(_) => tab.layers.show_github_comments,
+                CommentRef::GithubComment(_) => tab.layers.show_github_comments,
             };
             if !visible {
                 continue;
@@ -3217,7 +3217,7 @@ mod finding_dispatch_tests {
 #[cfg(test)]
 mod github_comment_fold_tests {
     use super::*;
-    use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
+    use er_engine::ai::{ErGithubComments, GithubComment};
     use er_engine::git::{DiffFile, DiffHunk, DiffLine, FileStatus};
 
     fn line(lt: LineType, content: &str, old: Option<usize>, new: Option<usize>) -> DiffLine {
@@ -3257,8 +3257,8 @@ mod github_comment_fold_tests {
         }
     }
 
-    fn gh_comment_on_banner() -> GitHubReviewComment {
-        GitHubReviewComment {
+    fn gh_comment_on_banner() -> GithubComment {
+        GithubComment {
             id: "gh-1".to_string(),
             timestamp: String::new(),
             file: "page.svelte".to_string(),
@@ -3308,7 +3308,7 @@ mod github_comment_fold_tests {
             similarity: None,
         };
         let mut app = App::new_for_test(vec![file]);
-        app.tab_mut().ai.github_comments = Some(ErGitHubComments {
+        app.tab_mut().ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "h".to_string(),
             github: None,

@@ -26,21 +26,21 @@ pub enum HintType {
 /// Unified reference to a question, a note, or a GitHub comment.
 /// Used by query methods and UI rendering to handle all three uniformly.
 ///
-/// Notes reuse the [`ReviewQuestion`] struct (their fields are identical); the
+/// Notes reuse the [`PrivateAnnotation`] struct (their fields are identical); the
 /// `Note` variant exists so callers can distinguish a note from a question for
 /// icons, colors, and snapshot `kind` tagging.
 #[derive(Debug, Clone)]
 pub enum CommentRef<'a> {
-    Question(&'a ReviewQuestion),
-    Note(&'a ReviewQuestion),
-    GitHubComment(&'a GitHubReviewComment),
+    Question(&'a PrivateAnnotation),
+    Note(&'a PrivateAnnotation),
+    GithubComment(&'a GithubComment),
 }
 
 impl CommentRef<'_> {
     pub fn id(&self) -> &str {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.id,
-            CommentRef::GitHubComment(c) => &c.id,
+            CommentRef::GithubComment(c) => &c.id,
         }
     }
 
@@ -48,14 +48,14 @@ impl CommentRef<'_> {
         match self {
             CommentRef::Question(_) => CommentType::Question,
             CommentRef::Note(_) => CommentType::Note,
-            CommentRef::GitHubComment(_) => CommentType::GitHubComment,
+            CommentRef::GithubComment(_) => CommentType::GitHubComment,
         }
     }
 
     pub fn text(&self) -> &str {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.text,
-            CommentRef::GitHubComment(c) => &c.comment,
+            CommentRef::GithubComment(c) => &c.comment,
         }
     }
 
@@ -68,7 +68,7 @@ impl CommentRef<'_> {
                     &q.author
                 }
             }
-            CommentRef::GitHubComment(c) => {
+            CommentRef::GithubComment(c) => {
                 if c.author.is_empty() {
                     "You"
                 } else {
@@ -81,7 +81,7 @@ impl CommentRef<'_> {
     pub fn timestamp(&self) -> &str {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.timestamp,
-            CommentRef::GitHubComment(c) => &c.timestamp,
+            CommentRef::GithubComment(c) => &c.timestamp,
         }
     }
 
@@ -90,70 +90,70 @@ impl CommentRef<'_> {
     pub fn is_on_github(&self) -> bool {
         match self {
             CommentRef::Question(_) | CommentRef::Note(_) => false,
-            CommentRef::GitHubComment(c) => c.source == "github",
+            CommentRef::GithubComment(c) => c.source == "github",
         }
     }
 
     pub const fn is_resolved(&self) -> bool {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.resolved,
-            CommentRef::GitHubComment(c) => c.resolved,
+            CommentRef::GithubComment(c) => c.resolved,
         }
     }
 
     pub const fn is_stale(&self) -> bool {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.stale,
-            CommentRef::GitHubComment(c) => c.stale || c.outdated,
+            CommentRef::GithubComment(c) => c.stale || c.outdated,
         }
     }
 
     pub fn in_reply_to(&self) -> Option<&str> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.in_reply_to.as_deref(),
-            CommentRef::GitHubComment(c) => c.in_reply_to.as_deref(),
+            CommentRef::GithubComment(c) => c.in_reply_to.as_deref(),
         }
     }
 
     pub fn file(&self) -> &str {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.file,
-            CommentRef::GitHubComment(c) => &c.file,
+            CommentRef::GithubComment(c) => &c.file,
         }
     }
 
     pub const fn hunk_index(&self) -> Option<usize> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.hunk_index,
-            CommentRef::GitHubComment(c) => c.hunk_index,
+            CommentRef::GithubComment(c) => c.hunk_index,
         }
     }
 
     pub const fn line_start(&self) -> Option<usize> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.line_start,
-            CommentRef::GitHubComment(c) => c.line_start,
+            CommentRef::GithubComment(c) => c.line_start,
         }
     }
 
     pub const fn line_end(&self) -> Option<usize> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.line_end,
-            CommentRef::GitHubComment(c) => c.line_end,
+            CommentRef::GithubComment(c) => c.line_end,
         }
     }
 
     pub const fn old_line_start(&self) -> Option<usize> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.old_line_start,
-            CommentRef::GitHubComment(c) => c.old_line_start,
+            CommentRef::GithubComment(c) => c.old_line_start,
         }
     }
 
     /// GitHub review side. `LEFT` means `line_start` is an old-side number.
     pub const fn side(&self) -> Option<&str> {
         match self {
-            CommentRef::GitHubComment(c) => Some(c.side.as_str()),
+            CommentRef::GithubComment(c) => Some(c.side.as_str()),
             CommentRef::Question(q) | CommentRef::Note(q) => Some(q.side.as_str()),
         }
     }
@@ -161,7 +161,7 @@ impl CommentRef<'_> {
     pub fn anchor_status(&self) -> &str {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.anchor_status,
-            CommentRef::GitHubComment(c) => &c.anchor_status,
+            CommentRef::GithubComment(c) => &c.anchor_status,
         }
     }
 
@@ -169,7 +169,7 @@ impl CommentRef<'_> {
     pub const fn can_reply(&self) -> bool {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.in_reply_to.is_none(),
-            CommentRef::GitHubComment(c) => c.in_reply_to.is_none(),
+            CommentRef::GithubComment(c) => c.in_reply_to.is_none(),
         }
     }
 
@@ -179,39 +179,39 @@ impl CommentRef<'_> {
             CommentRef::Question(_) | CommentRef::Note(_) => true,
             // Local comments are stored with author "You" — ownership is inferred from
             // that display name, not from the GitHub identity.
-            CommentRef::GitHubComment(c) => c.source != "github" || c.author == "You",
+            CommentRef::GithubComment(c) => c.source != "github" || c.author == "You",
         }
     }
 }
 
 // ── .er-questions.json — personal review notes ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ErQuestions {
     pub version: u32,
     pub diff_hash: String,
     #[serde(default)]
-    pub questions: Vec<ReviewQuestion>,
+    pub questions: Vec<PrivateAnnotation>,
 }
 
 // ── notes.json — local actionable notes ──
 //
 // Notes are private (never pushed to GitHub) like questions, but framed as
-// instructions to hand off to a coding agent. They reuse the `ReviewQuestion`
+// instructions to hand off to a coding agent. They reuse the `PrivateAnnotation`
 // shape so all comment machinery (anchoring, replies, staleness) works
 // unchanged; the separate file + `n-` id prefix keep them distinct from
 // questions.
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ErNotes {
     pub version: u32,
     pub diff_hash: String,
     #[serde(default)]
-    pub notes: Vec<ReviewQuestion>,
+    pub notes: Vec<PrivateAnnotation>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReviewQuestion {
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PrivateAnnotation {
     pub id: String,
     #[serde(default)]
     pub timestamp: String,
@@ -282,7 +282,7 @@ pub const AI_ACTION_ASK: &str = "ask";
 /// An AI reply that rewrites its question or note into a self-contained one.
 pub const AI_ACTION_ELABORATE: &str = "elaborate";
 
-impl ReviewQuestion {
+impl PrivateAnnotation {
     /// Anchored to a line of the document rather than a hunk: written from the
     /// desktop preview on a line the diff does not show. Relocation searches
     /// hunks, so it would mark these lost on every pass; it leaves them alone.
@@ -298,7 +298,7 @@ impl ReviewQuestion {
 
 // ── .er-github-comments.json — GitHub PR comments ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct GitHubSyncState {
     #[serde(default)]
     pub pr_number: Option<u64>,
@@ -310,18 +310,18 @@ pub struct GitHubSyncState {
     pub last_synced: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErGitHubComments {
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ErGithubComments {
     pub version: u32,
     pub diff_hash: String,
     #[serde(default)]
     pub github: Option<GitHubSyncState>,
     #[serde(default)]
-    pub comments: Vec<GitHubReviewComment>,
+    pub comments: Vec<GithubComment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitHubReviewComment {
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct GithubComment {
     pub id: String,
     #[serde(default)]
     pub timestamp: String,
@@ -393,6 +393,47 @@ fn default_anchor_status() -> String {
 
 fn default_author() -> String {
     "You".to_string()
+}
+
+// ── Artifact kinds ──
+//
+// These three files stay Bare in 1.0: agents rewrite them in place, so the
+// store writes today's payload JSON with no envelope.
+
+impl er_store::Artifact for ErQuestions {
+    const KIND: &'static str = "questions";
+    const VERSION: u32 = 1;
+    const MODE: er_store::Mode = er_store::Mode::Bare;
+    const FILE: &'static str = "questions.json";
+    type Slot = ();
+
+    fn diff_hash(&self) -> Option<&str> {
+        Some(&self.diff_hash)
+    }
+}
+
+impl er_store::Artifact for ErNotes {
+    const KIND: &'static str = "notes";
+    const VERSION: u32 = 1;
+    const MODE: er_store::Mode = er_store::Mode::Bare;
+    const FILE: &'static str = "notes.json";
+    type Slot = ();
+
+    fn diff_hash(&self) -> Option<&str> {
+        Some(&self.diff_hash)
+    }
+}
+
+impl er_store::Artifact for ErGithubComments {
+    const KIND: &'static str = "github-comments";
+    const VERSION: u32 = 1;
+    const MODE: er_store::Mode = er_store::Mode::Bare;
+    const FILE: &'static str = "github-comments.json";
+    type Slot = ();
+
+    fn diff_hash(&self) -> Option<&str> {
+        Some(&self.diff_hash)
+    }
 }
 
 // ── .er/ui-annotations.json — browser-view annotations ──
@@ -473,12 +514,12 @@ pub fn save_ui_annotations(
 }
 
 /// Top-level GitHub comment eligible for batch validate / re-anchor.
-pub const fn github_comment_eligible_for_batch_validate(c: &GitHubReviewComment) -> bool {
+pub const fn github_comment_eligible_for_batch_validate(c: &GithubComment) -> bool {
     !c.resolved && !c.outdated && c.in_reply_to.is_none() && c.line_start.is_some()
 }
 
 /// Count GitHub comments eligible for batch validate.
-pub fn count_eligible_github_comments(gc: &ErGitHubComments) -> usize {
+pub fn count_eligible_github_comments(gc: &ErGithubComments) -> usize {
     gc.comments
         .iter()
         .filter(|c| github_comment_eligible_for_batch_validate(c))
@@ -489,8 +530,8 @@ pub fn count_eligible_github_comments(gc: &ErGitHubComments) -> usize {
 mod tests {
     use super::*;
 
-    fn sample_question() -> ReviewQuestion {
-        ReviewQuestion {
+    fn sample_question() -> PrivateAnnotation {
+        PrivateAnnotation {
             id: "q-1".into(),
             timestamp: "2026-01-01T00:00:00Z".into(),
             file: "src/foo.rs".into(),
@@ -516,8 +557,8 @@ mod tests {
         }
     }
 
-    fn sample_github_comment() -> GitHubReviewComment {
-        GitHubReviewComment {
+    fn sample_github_comment() -> GithubComment {
+        GithubComment {
             id: "gh-1".into(),
             timestamp: "2026-01-01T00:00:00Z".into(),
             file: "src/foo.rs".into(),
@@ -551,13 +592,13 @@ mod tests {
             !plain.contains("ai_action"),
             "a person's text writes no action"
         );
-        let read: ReviewQuestion = serde_json::from_str(&plain).unwrap();
+        let read: PrivateAnnotation = serde_json::from_str(&plain).unwrap();
         assert_eq!(read.ai_action, None);
 
         let mut reply = sample_question();
         reply.ai_action = Some("a-later-action".into());
         let json = serde_json::to_string(&reply).unwrap();
-        let read: ReviewQuestion = serde_json::from_str(&json).unwrap();
+        let read: PrivateAnnotation = serde_json::from_str(&json).unwrap();
         assert_eq!(read.ai_action.as_deref(), Some("a-later-action"));
     }
 
@@ -567,7 +608,7 @@ mod tests {
         q.promoted_to = Some("c-42".into());
 
         let json = serde_json::to_string(&q).unwrap();
-        let back: ReviewQuestion = serde_json::from_str(&json).unwrap();
+        let back: PrivateAnnotation = serde_json::from_str(&json).unwrap();
 
         assert_eq!(back.promoted_to.as_deref(), Some("c-42"));
     }
@@ -578,7 +619,7 @@ mod tests {
         c.outdated = true;
 
         let json = serde_json::to_string(&c).unwrap();
-        let back: GitHubReviewComment = serde_json::from_str(&json).unwrap();
+        let back: GithubComment = serde_json::from_str(&json).unwrap();
 
         assert!(back.outdated);
         assert!(!back.stale, "runtime stale state must not be persisted");
@@ -594,7 +635,7 @@ mod tests {
             "comment": "This changed upstream"
         }"#;
 
-        let c: GitHubReviewComment = serde_json::from_str(json).unwrap();
+        let c: GithubComment = serde_json::from_str(json).unwrap();
 
         assert!(!c.outdated);
     }
@@ -602,7 +643,7 @@ mod tests {
     #[test]
     fn github_comments_json_with_a_synced_field_still_loads() {
         // Old sidecars carry `synced`; serde ignores the unknown field.
-        let c: GitHubReviewComment = serde_json::from_str(
+        let c: GithubComment = serde_json::from_str(
             r#"{"id":"c","file":"a.rs","hunk_index":0,"line_start":1,"comment":"x","synced":true}"#,
         )
         .unwrap();
@@ -615,7 +656,7 @@ mod tests {
         c.source = "github".into();
         c.author = "octo".into();
 
-        let r = CommentRef::GitHubComment(&c);
+        let r = CommentRef::GithubComment(&c);
         assert_eq!(r.comment_type(), CommentType::GitHubComment);
         assert!(r.is_on_github());
         assert!(!r.can_delete());
@@ -624,7 +665,7 @@ mod tests {
         local.source = "local".into();
         local.author = "You".into();
 
-        let r = CommentRef::GitHubComment(&local);
+        let r = CommentRef::GithubComment(&local);
         assert!(!r.is_on_github());
         assert!(r.can_delete());
     }
@@ -733,7 +774,7 @@ mod tests {
 
     #[test]
     fn count_eligible_github_comments_counts_roots_only() {
-        let gc = ErGitHubComments {
+        let gc = ErGithubComments {
             version: 1,
             diff_hash: "h".into(),
             github: None,
@@ -788,7 +829,7 @@ mod tests {
             "line_start": 10,
             "text": "Hi?"
         }"#;
-        let q: ReviewQuestion = serde_json::from_str(json).unwrap();
+        let q: PrivateAnnotation = serde_json::from_str(json).unwrap();
         assert!(q.promoted_to.is_none());
     }
 }
