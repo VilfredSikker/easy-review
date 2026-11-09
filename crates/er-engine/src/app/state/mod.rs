@@ -9724,29 +9724,79 @@ pub fn cleanup_question_answers(er_dir: &str) {
 
 /// Delete AI review sidecar files. Errors are ignored (files may not exist).
 pub fn cleanup_reviews(er_dir: &str) {
-    let base = std::path::Path::new(er_dir);
-    let _ = std::fs::remove_file(base.join("review.json"));
-    let _ = std::fs::remove_file(base.join("order.json"));
-    let _ = std::fs::remove_file(base.join("checklist.json"));
-    let _ = std::fs::remove_file(base.join("summary.md"));
+    cleanup_sidecars(er_dir, false);
 }
 
 /// Delete triage sidecar only. Errors are ignored (file may not exist).
 pub fn cleanup_triage(er_dir: &str) {
-    let _ = std::fs::remove_file(std::path::Path::new(er_dir).join("triage.json"));
+    let store = crate::store_registry::store();
+    let Ok(scope) = er_store::Scope::dir(er_dir) else {
+        return;
+    };
+    let Ok(guard) = store.lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT) else {
+        return;
+    };
+    if let Ok(key) = er_store::ArtifactKey::<crate::ai::TriageReview>::new(scope, ()) {
+        let _ = store.delete_locked(&guard, &key);
+    }
 }
 
 /// Delete all AI review artifacts (general, expert, professor). Leaves triage intact.
 pub fn cleanup_review_artifacts(er_dir: &str) {
-    cleanup_reviews(er_dir);
-    let base = std::path::Path::new(er_dir);
-    let _ = std::fs::remove_file(base.join("professor.json"));
-    let experts_dir = base.join("experts");
+    cleanup_sidecars(er_dir, true);
+    // `experts/<id>.prev.json` is a scoped re-review snapshot, not a store kind,
+    // so it and any other JSON left in the directory go through the raw path.
+    let experts_dir = std::path::Path::new(er_dir).join("experts");
     if let Ok(entries) = std::fs::read_dir(&experts_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "json") {
                 let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
+/// Remove the sidecars under one lock hold; `artifacts` adds the professor file
+/// and every expert file, which only the full cleanup removes.
+fn cleanup_sidecars(er_dir: &str, artifacts: bool) {
+    if let Ok(scope) = er_store::Scope::dir(er_dir) {
+        if let Ok(guard) =
+            crate::store_registry::store().lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
+        {
+            delete_common_sidecars(&scope, &guard);
+            if artifacts {
+                delete_review_artifacts(&scope, &guard);
+            }
+        }
+    }
+    let _ = std::fs::remove_file(std::path::Path::new(er_dir).join("summary.md"));
+}
+
+fn delete_common_sidecars(scope: &er_store::Scope, guard: &er_store::ScopeGuard) {
+    let store = crate::store_registry::store();
+    if let Ok(key) = er_store::ArtifactKey::<crate::ai::ErReview>::new(scope.clone(), ()) {
+        let _ = store.delete_locked(guard, &key);
+    }
+    if let Ok(key) = er_store::ArtifactKey::<crate::ai::ErOrder>::new(scope.clone(), ()) {
+        let _ = store.delete_locked(guard, &key);
+    }
+    if let Ok(key) = er_store::ArtifactKey::<crate::ai::ErChecklist>::new(scope.clone(), ()) {
+        let _ = store.delete_locked(guard, &key);
+    }
+}
+
+fn delete_review_artifacts(scope: &er_store::Scope, guard: &er_store::ScopeGuard) {
+    let store = crate::store_registry::store();
+    if let Ok(key) = er_store::ArtifactKey::<crate::ai::ProfessorReview>::new(scope.clone(), ()) {
+        let _ = store.delete_locked(guard, &key);
+    }
+    if let Ok(slots) = store.list::<crate::ai::ExpertReview>(scope) {
+        for slot in slots {
+            if let Ok(key) =
+                er_store::ArtifactKey::<crate::ai::ExpertReview>::new(scope.clone(), slot)
+            {
+                let _ = store.delete_locked(guard, &key);
             }
         }
     }
@@ -16903,6 +16953,7 @@ mod tests {
         let experts = er.join("experts");
         std::fs::create_dir_all(&experts).unwrap();
         std::fs::write(experts.join("security.json"), "{}").unwrap();
+        std::fs::write(experts.join("security.prev.json"), "{}").unwrap();
 
         cleanup_review_artifacts(er.to_str().unwrap());
 
@@ -16913,6 +16964,7 @@ mod tests {
         assert!(!er.join("summary.md").exists());
         assert!(!er.join("professor.json").exists());
         assert!(!experts.join("security.json").exists());
+        assert!(!experts.join("security.prev.json").exists());
     }
 
     // ── Notifications ──
