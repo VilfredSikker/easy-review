@@ -88,6 +88,12 @@ fn type_path_name(ty: &syn::Type) -> Option<String> {
 fn comment_type(path: &Path, impl_owner: Option<&str>) -> Option<String> {
     let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
     let last = segments.last()?;
+    // A bare `Self { .. }` in an `impl` for one of the guarded structs.
+    if segments.len() == 1 && last == "Self" {
+        return impl_owner
+            .filter(|owner| matches!(*owner, "ReviewBatchEntry" | "NewLineComment"))
+            .map(str::to_string);
+    }
     let owner = if segments.first().is_some_and(|first| first == "Self") {
         impl_owner
     } else {
@@ -125,6 +131,16 @@ fn macro_comment_type(
             continue;
         };
         let name = ident.to_string();
+        if name == "Self"
+            && matches!(impl_owner, Some("ReviewBatchEntry" | "NewLineComment"))
+            && matches!(
+                trees.get(index + 1),
+                Some(proc_macro2::TokenTree::Group(group))
+                    if group.delimiter() == proc_macro2::Delimiter::Brace
+            )
+        {
+            return impl_owner.map(str::to_string);
+        }
         if matches!(name.as_str(), "NewLineComment" | "ReviewBatchEntry")
             && matches!(
                 trees.get(index + 1),
@@ -298,6 +314,38 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(
             found[0].message.contains("NewGitHubComment::Reply"),
+            "{}",
+            found[0].message
+        );
+    }
+
+    #[test]
+    fn a_self_literal_in_a_review_batch_entry_impl_is_flagged() {
+        let source = "impl From<Thing> for ReviewBatchEntry {\n\
+                      fn from(value: Thing) -> Self {\n\
+                          Self { file: String::new() }\n\
+                      }\n\
+                      }";
+        let found = findings(source);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].message.contains("ReviewBatchEntry"),
+            "{}",
+            found[0].message
+        );
+    }
+
+    #[test]
+    fn a_self_literal_in_a_new_line_comment_impl_is_flagged() {
+        let source = "impl<'a> From<Thing> for NewLineComment<'a> {\n\
+                      fn from(value: Thing) -> Self {\n\
+                          Self { path: \"a\" }\n\
+                      }\n\
+                      }";
+        let found = findings(source);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].message.contains("NewLineComment"),
             "{}",
             found[0].message
         );
