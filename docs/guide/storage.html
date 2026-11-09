@@ -28,9 +28,9 @@
     <table>
       <thead><tr><th>Platform</th><th>Storage root</th></tr></thead>
       <tbody>
-        <tr><td>Linux</td><td><code>~/.local/share/easy-review/</code></td></tr>
-        <tr><td>macOS</td><td><code>~/Library/Application Support/easy-review/</code></td></tr>
-        <tr><td>Windows</td><td><code>%APPDATA%\easy-review\</code></td></tr>
+        <tr><td>Linux</td><td><code>~/.local/share/easy-review/v1/</code></td></tr>
+        <tr><td>macOS</td><td><code>~/Library/Application Support/easy-review/v1/</code></td></tr>
+        <tr><td>Windows</td><td><code>%APPDATA%\easy-review\v1\</code></td></tr>
       </tbody>
     </table>
 
@@ -42,15 +42,18 @@
     </p>
     <pre><code>&lt;root&gt;/repos/&lt;repo-slug&gt;/branches/&lt;branch-slug&gt;/view-buckets/&lt;bucket&gt;/</code></pre>
     <p>where <code>&lt;bucket&gt;</code> is <code>branch</code>, <code>unstaged</code>, <code>staged</code>, or
-    <code>history</code>. For example, on Linux for the <code>easy-review</code> repo on <code>main</code>, branch diff:</p>
-    <pre><code>~/.local/share/easy-review/repos/easy-review/branches/main/view-buckets/branch/</code></pre>
+    <code>history</code>, and the repo and branch slugs end in a short hash so names that sanitize alike stay apart.
+    For example, on Linux for the <code>easy-review</code> repo on <code>main</code>, branch diff:</p>
+    <pre><code>~/.local/share/easy-review/v1/repos/&lt;owner&gt;-&lt;repo&gt;-&lt;8 hex&gt;/branches/main-&lt;8 hex&gt;/view-buckets/branch/</code></pre>
 
     <h2>Layout for PR diff mode</h2>
     <p>Pull request reviews are keyed by <code>owner/repo</code> and PR number, so a local clone and a remote PR tab share one location:</p>
-    <pre><code>&lt;root&gt;/repos/&lt;owner-repo-slug&gt;/prs/pr-&lt;N&gt;/</code></pre>
+    <pre><code>&lt;root&gt;/repos/&lt;owner-repo-slug&gt;-&lt;8 hex&gt;/prs/pr-&lt;N&gt;/</code></pre>
     <p>
-      The <code>&lt;repo-slug&gt;</code> comes from the <code>origin</code> remote name (falling back to the repo folder
-      name). Slashes in branch names become <code>-</code>.
+      The repo folder is <code>&lt;owner&gt;-&lt;repo&gt;-&lt;8 hex&gt;</code>, from the <code>origin</code> remote.
+      A clone with no <code>origin</code> gets <code>&lt;folder name&gt;-&lt;8 hex&gt;</code> from its canonical path.
+      Slashes in branch names become <code>-</code>, and the trailing hash keeps names that sanitize alike in separate
+      folders.
     </p>
 
     <h2>The sidecar files</h2>

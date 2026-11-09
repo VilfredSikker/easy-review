@@ -112,10 +112,12 @@ staleness. `branch_diff_hash` exists as the always-SHA-256 sibling for that reas
 
 ## Paths
 
-Storage root is `$ER_STORAGE_ROOT` or `<platform data dir>/easy-review` — on macOS
-`~/Library/Application Support/easy-review`. Sidecars resolve through the engine
-(`TabState::apply_managed_root()`, `er_engine::storage`); a hand-built path is how the
-desktop and TUI drift apart. There is no storage module in this crate.
+Storage root is `$ER_STORAGE_ROOT` or `<platform data dir>/easy-review/v1` — on macOS
+`~/Library/Application Support/easy-review/v1`. The `v1` segment keeps 1.0.0 data
+away from an older install's files, which are left untouched. Sidecars resolve
+through the engine (`TabState::apply_managed_root()`, `er_engine::storage`); a
+hand-built path is how the desktop and TUI drift apart. There is no storage module
+in this crate.
 `docs/adr/0003-managed-review-storage.md`, `docs/adr/0004-per-view-artifact-scoping.md`.
 
 `src/export.rs` is a re-export shim over `er_engine::export`; the Markdown renderer

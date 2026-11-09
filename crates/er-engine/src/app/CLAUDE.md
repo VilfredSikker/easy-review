@@ -23,7 +23,10 @@ runtime in whichever one the change was not written for.
 Sidecars resolve through `crates/er-engine/src/storage.rs`: one bucket per view
 under `<storage_root>/repos/<repo>/branches/<branch>/`, with PR artifacts
 separately at `<storage_root>/repos/<repo>/prs/pr-<N>/`. `storage_root` is
-`$ER_STORAGE_ROOT`, else the platform app-data dir plus `easy-review`.
+`$ER_STORAGE_ROOT` as given, else the platform app-data dir plus
+`easy-review/v1`; an older install's data stays beside it and is not read
+(ADR 0003). Repo and branch folders carry a hash suffix, so build them with
+`repo_storage_slug_from_root`/`slug_branch`, never by concatenation.
 
 | Sidecar | Resolves to |
 |---|---|
@@ -36,8 +39,9 @@ when nothing is reviewed. Scoping exceptions and why they exist:
 `docs/adr/0004-per-view-artifact-scoping.md`,
 `docs/adr/0007-three-comment-stores.md`.
 
-Config is global-only at `<storage_root>/config.toml`. `~/.config/er/config.toml`
-is not read. There is no per-repo config file; do not add one back.
+Config is global-only at `<storage_root>/config.toml` (under `easy-review/v1/`).
+`~/.config/er/config.toml` and the pre-1.0 `<base>/config.toml` are not read.
+There is no per-repo config file; do not add one back.
 `docs/adr/0005-global-only-config.md`.
 
 Nothing imports a repo `.er/`; review files always live under managed storage.

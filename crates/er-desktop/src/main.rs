@@ -939,6 +939,7 @@ fn main() {
         }
     }
 
+    app.announce_legacy_root();
     // Register every unique repo root / remote referenced by open tabs.
     projects::sync_projects_from_tabs(&app.tabs);
     if projects::load().projects.is_empty() {
