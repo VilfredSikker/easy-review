@@ -4948,68 +4948,74 @@ pub async fn promote_to_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
-        let promoted = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-                return early;
-            }
+    run_blocking(move || promote_to_comment_impl(id, body, view, &state)).await
+}
 
-            let tab = app.tab();
-            // Both questions and notes use the `PrivateAnnotation` shape; pick the
-            // collection by id prefix so notes can be promoted too.
-            let (items, item): (
-                &[er_engine::ai::PrivateAnnotation],
-                &er_engine::ai::PrivateAnnotation,
-            ) = if id.starts_with("n-") {
-                let ns = tab
-                    .ai
-                    .notes
-                    .as_ref()
-                    .ok_or_else(|| "No notes loaded".to_string())?;
-                let n = ns
-                    .notes
-                    .iter()
-                    .find(|n| n.id == id)
-                    .ok_or_else(|| format!("Note not found: {id}"))?;
-                (ns.notes.as_slice(), n)
-            } else {
-                let qs = tab
-                    .ai
-                    .questions
-                    .as_ref()
-                    .ok_or_else(|| "No questions loaded".to_string())?;
-                let q = qs
-                    .questions
-                    .iter()
-                    .find(|q| q.id == id)
-                    .ok_or_else(|| format!("Question not found: {id}"))?;
-                (qs.questions.as_slice(), q)
-            };
+fn promote_to_comment_impl(
+    id: String,
+    body: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
+    let promoted = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
+            return early;
+        }
 
-            er_engine::ai::promote::promote_to_github(item, items, body)
-                .map_err(|error| error.to_string())?
+        let tab = app.tab();
+        // Both questions and notes use the `PrivateAnnotation` shape; pick the
+        // collection by id prefix so notes can be promoted too.
+        let (items, item): (
+            &[er_engine::ai::PrivateAnnotation],
+            &er_engine::ai::PrivateAnnotation,
+        ) = if id.starts_with("n-") {
+            let ns = tab
+                .ai
+                .notes
+                .as_ref()
+                .ok_or_else(|| "No notes loaded".to_string())?;
+            let n = ns
+                .notes
+                .iter()
+                .find(|n| n.id == id)
+                .ok_or_else(|| format!("Note not found: {id}"))?;
+            (ns.notes.as_slice(), n)
+        } else {
+            let qs = tab
+                .ai
+                .questions
+                .as_ref()
+                .ok_or_else(|| "No questions loaded".to_string())?;
+            let q = qs
+                .questions
+                .iter()
+                .find(|q| q.id == id)
+                .ok_or_else(|| format!("Question not found: {id}"))?;
+            (qs.questions.as_slice(), q)
         };
 
-        let posted = post_github_comment_flow(
-            &state,
-            er_engine::app::NewGitHubComment::from(promoted),
-            Some(format!("c-promote-{id}")),
-        )?;
-        let request = posted.request.clone();
-        posted.finish(&state);
+        er_engine::ai::promote::promote_to_github(item, items, body)
+            .map_err(|error| error.to_string())?
+    };
 
-        // The source is replaced only once GitHub holds the comment, so a
-        // failure keeps it and a retry can post it again.
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Err(e) = app.delete_comment_direct(&id) {
-            // The comment is on GitHub; the next promote must adopt it.
-            app.remember_posted_for_retry(request);
-            return Err(e.to_string());
-        }
-        Ok(snap_from_confirmed(&app, &state))
-    })
-    .await
+    let posted = post_github_comment_flow(
+        state,
+        er_engine::app::NewGitHubComment::from(promoted),
+        Some(format!("c-promote-{id}")),
+    )?;
+    let request = posted.request.clone();
+    posted.finish(state);
+
+    // The source is replaced only once GitHub holds the comment, so a
+    // failure keeps it and a retry can post it again.
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if let Err(e) = app.delete_comment_direct(&id) {
+        // The comment is on GitHub; the next promote must adopt it.
+        app.remember_posted_for_retry(request);
+        return Err(e.to_string());
+    }
+    Ok(snap_from_confirmed(&app, state))
 }
 
 /// Promote a question to a local note. Notes are still private but framed as
@@ -13694,5 +13700,104 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("reply_to_github_thread"), "{error}");
+    }
+
+    struct PostingCommentPoster;
+
+    impl er_engine::github_post::GitHubCommentPoster for PostingCommentPoster {
+        fn post(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> er_engine::github_post::GitHubPostOutcome {
+            er_engine::github_post::GitHubPostOutcome::Posted {
+                github_id: 42,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                author: "you".to_string(),
+            }
+        }
+
+        fn list(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> anyhow::Result<Vec<er_engine::github_post::ListedGitHubComment>> {
+            Ok(Vec::new())
+        }
+
+        fn viewer_login(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> anyhow::Result<String> {
+            Ok("you".to_string())
+        }
+    }
+
+    #[test]
+    fn promote_to_comment_deletes_the_source_question() {
+        use std::sync::Arc;
+
+        let dir = ReviewFlowTestDir::new();
+        let storage = dir.0.join("storage");
+        std::fs::create_dir_all(&storage).unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", &storage);
+        let state = review_flow_test_state(&dir);
+
+        let questions_path;
+        {
+            let mut app = state.app.lock().unwrap();
+            app.tab_mut().remote_repo = Some("owner/repo".to_string());
+            app.tab_mut().pr_number = Some(7);
+            let er_dir = app.tab().er_dir();
+            std::fs::create_dir_all(&er_dir).unwrap();
+            questions_path = std::path::Path::new(&er_dir).join("questions.json");
+            let payload: er_engine::ai::ErQuestions = serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "diff_hash": "hash",
+                "questions": [{
+                    "id": "q-1",
+                    "file": "src/lib.rs",
+                    "hunk_index": 0,
+                    "line_start": 1,
+                    "line_content": "new",
+                    "text": "why?",
+                    "side": "RIGHT",
+                    "author": "You"
+                }]
+            }))
+            .unwrap();
+            std::fs::write(
+                &questions_path,
+                serde_json::to_string_pretty(&payload).unwrap(),
+            )
+            .unwrap();
+            app.tab_mut().ai.questions = Some(payload);
+            app.set_github_comment_poster(Arc::new(PostingCommentPoster));
+        }
+
+        promote_to_comment_impl(
+            "q-1".to_string(),
+            Some("promoted".to_string()),
+            None,
+            &state,
+        )
+        .unwrap();
+
+        {
+            let app = state.app.lock().unwrap();
+            assert!(
+                app.tab()
+                    .ai
+                    .questions
+                    .as_ref()
+                    .is_none_or(|qs| qs.questions.iter().all(|q| q.id != "q-1")),
+                "the source question is gone from memory"
+            );
+        }
+        let stored: er_engine::ai::ErQuestions =
+            serde_json::from_str(&std::fs::read_to_string(&questions_path).unwrap()).unwrap();
+        assert!(
+            stored.questions.iter().all(|q| q.id != "q-1"),
+            "the source question is gone from the file"
+        );
+        std::env::remove_var("ER_STORAGE_ROOT");
     }
 }
