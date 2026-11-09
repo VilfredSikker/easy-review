@@ -130,19 +130,26 @@ mod tests {
 
     #[test]
     fn parses_every_remote_form_git_writes() {
-        for input in [
-            "git@github.com:Acme/My-Repo.git",
-            "https://github.com/Acme/My-Repo.git",
-            "http://github.com/Acme/My-Repo",
-            "ssh://git@github.com/Acme/My-Repo.git",
-            "ssh://git@github.com:22/Acme/My-Repo",
-            "git://github.com/Acme/My-Repo",
-            "https://user@github.com/Acme/My-Repo.git",
-            "https://github.com/Acme/My-Repo/",
+        for (input, owner, repo) in [
+            ("git@github.com:Acme/My-Repo.git", "Acme", "My-Repo"),
+            ("https://github.com/Acme/My-Repo.git", "Acme", "My-Repo"),
+            ("http://github.com/Acme/My-Repo", "Acme", "My-Repo"),
+            ("ssh://git@github.com/Acme/My-Repo.git", "Acme", "My-Repo"),
+            ("ssh://git@github.com:22/Acme/My-Repo", "Acme", "My-Repo"),
+            ("git://github.com/Acme/My-Repo", "Acme", "My-Repo"),
+            (
+                "https://user@github.com/Acme/My-Repo.git",
+                "Acme",
+                "My-Repo",
+            ),
+            ("https://github.com/Acme/My-Repo/", "Acme", "My-Repo"),
+            // One-letter hosts are hosts, not drive letters, without `:/`.
+            ("a:o/r.git", "o", "r"),
+            ("git@a:o/r.git", "o", "r"),
         ] {
             let slug = parsed(input);
-            assert_eq!(slug.owner, "Acme", "{input}");
-            assert_eq!(slug.repo, "My-Repo", "{input}");
+            assert_eq!(slug.owner, owner, "{input}");
+            assert_eq!(slug.repo, repo, "{input}");
         }
     }
 
