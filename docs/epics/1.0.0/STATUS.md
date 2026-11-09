@@ -10,7 +10,7 @@
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
 | T1 | T5 GitHub port | [#382](https://github.com/VilfredSikker/easy-review/issues/382) P11: #431 fixes pushed, #433 ready; both in review | E |
-| T2 | T4 git port | [#386](https://github.com/VilfredSikker/easy-review/issues/386) P15, finishing gates (was blocked by a full disk) | C, E |
+| T2 | T4 git port | [#386](https://github.com/VilfredSikker/easy-review/issues/386) P15, PR #435 in review | C, E |
 | D4 | T6 store core | [#394](https://github.com/VilfredSikker/easy-review/issues/394) P23, PR #434 in review | C |
 | D1 | – | idle (P16 waits on P23, P15, P11) | – |
 | D2, D3, D5 | – | idle | – |
@@ -39,7 +39,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P12 | [#383](https://github.com/VilfredSikker/easy-review/issues/383) Front-end gh calls, gh guardrail | C/F | opus | ⬜ | | after P11 |
 | P13 | [#384](https://github.com/VilfredSikker/easy-review/issues/384) One remote-slug parser | F | sonnet | ⬜ | | after P11 |
 | P14 | [#385](https://github.com/VilfredSikker/easy-review/issues/385) Create er-store | C | opus | ✅ | [#429](https://github.com/VilfredSikker/easy-review/pull/429), [#430](https://github.com/VilfredSikker/easy-review/pull/430) | two parts; amendment C on #401 |
-| P15 | [#386](https://github.com/VilfredSikker/easy-review/issues/386) Move to the v1 root | C/E | sonnet | 🟡 | | T2 |
+| P15 | [#386](https://github.com/VilfredSikker/easy-review/issues/386) Move to the v1 root | C/E | sonnet | 🔵 | [#435](https://github.com/VilfredSikker/easy-review/pull/435) | T2; in review |
 | P16 | [#387](https://github.com/VilfredSikker/easy-review/issues/387) Comments and notes through the store | C/E/F | opus | ⬜ | | after P23, P15, P11 |
 | P17 | [#388](https://github.com/VilfredSikker/easy-review/issues/388) Session state through the store | C/E | opus | ⬜ | | after P16 |
 | P18 | [#389](https://github.com/VilfredSikker/easy-review/issues/389) Review artifacts through the store | E | opus | ⬜ | | after P17 |
