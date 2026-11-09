@@ -8,6 +8,7 @@ pub mod artifact;
 pub mod envelope;
 pub mod error;
 pub mod key;
+pub mod registry;
 pub mod store;
 pub mod time;
 
@@ -17,6 +18,7 @@ pub use error::StoreError;
 pub use key::{
     ArtifactKey, BranchView, BucketDir, DiagramId, ExpertId, RelPath, Scope, SlotName, Slug,
 };
+pub use registry::{Pattern, Registry};
 pub use store::{ArtifactStore, MAX_ARTIFACT_BYTES};
 pub use time::format_rfc3339_utc;
 
@@ -69,6 +71,19 @@ pub(crate) mod test_support {
         const MODE: Mode = Mode::Bare;
         const FILE: &'static str = "experts/{slot}.json";
         type Slot = ExpertId;
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestExpertSingleton {
+        pub value: u32,
+    }
+
+    impl Artifact for TestExpertSingleton {
+        const KIND: &'static str = "test-expert-singleton";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "experts/security.json";
+        type Slot = ();
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -184,6 +199,60 @@ pub(crate) mod test_support {
         const VERSION: u32 = 1;
         const MODE: Mode = Mode::Bare;
         const FILE: &'static str = "bad.json";
+        type Slot = ExpertId;
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestAbsoluteTemplate {
+        pub value: u32,
+    }
+
+    impl Artifact for TestAbsoluteTemplate {
+        const KIND: &'static str = "test-absolute-template";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "/absolute.json";
+        type Slot = ();
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestDotDotTemplate {
+        pub value: u32,
+    }
+
+    impl Artifact for TestDotDotTemplate {
+        const KIND: &'static str = "test-dotdot-template";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "nested/../escape.json";
+        type Slot = ();
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestGeneral {
+        pub value: u32,
+    }
+
+    impl Artifact for TestGeneral {
+        const KIND: &'static str = "test-general";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "general.json";
+        type Slot = ();
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestExpertAlt {
+        pub version: u32,
+        pub diff_hash: String,
+        pub value: u32,
+    }
+
+    impl Artifact for TestExpertAlt {
+        const KIND: &'static str = "test-expert";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "experts-alt/{slot}.json";
         type Slot = ExpertId;
     }
 
