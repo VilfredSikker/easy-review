@@ -9,9 +9,9 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| T1 | T5 GitHub port | idle | – |
+| T1 | T5 GitHub port | next P12 (#383) when P13 merges | – |
 | T2 | T4 git port | [#384](https://github.com/VilfredSikker/easy-review/issues/384) P13 | F |
-| D4 | T6 store core | [#438](https://github.com/VilfredSikker/easy-review/issues/438) flaky test, PR #440 in review; next P12 after P13 | F |
+| D4 | T6 store core | [#438](https://github.com/VilfredSikker/easy-review/issues/438) flaky test, PR #440 in review | F |
 | D1 | D6 | [#387](https://github.com/VilfredSikker/easy-review/issues/387) P16 | C, E, F |
 | D2, D3, D5 | – | idle | – |
 
