@@ -940,6 +940,7 @@ fn main() {
     }
 
     // Register every unique repo root / remote referenced by open tabs.
+    app.announce_legacy_root();
     projects::sync_projects_from_tabs(&app.tabs);
     if projects::load().projects.is_empty() {
         let root = app.tab().repo_root.clone();
