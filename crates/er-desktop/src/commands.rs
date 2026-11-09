@@ -13854,66 +13854,67 @@ mod tests {
         // The fixture's inner type changed with the release branch; a separate
         // temp dir keeps this test independent of it.
         let storage = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", storage.path());
-        let state = review_flow_test_state(&dir);
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let state = review_flow_test_state(&dir);
 
-        let questions_path;
-        {
-            let mut app = state.app.lock().unwrap();
-            app.tab_mut().remote_repo = Some("owner/repo".to_string());
-            app.tab_mut().pr_number = Some(7);
-            let er_dir = app.tab().er_dir();
-            std::fs::create_dir_all(&er_dir).unwrap();
-            questions_path = std::path::Path::new(&er_dir).join("questions.json");
-            let payload: er_engine::ai::ErQuestions = serde_json::from_value(serde_json::json!({
-                "version": 1,
-                "diff_hash": "hash",
-                "questions": [{
-                    "id": "q-1",
-                    "file": "src/lib.rs",
-                    "hunk_index": 0,
-                    "line_start": 1,
-                    "line_content": "new",
-                    "text": "why?",
-                    "side": "RIGHT",
-                    "author": "You"
-                }]
-            }))
-            .unwrap();
-            std::fs::write(
-                &questions_path,
-                serde_json::to_string_pretty(&payload).unwrap(),
+            let questions_path;
+            {
+                let mut app = state.app.lock().unwrap();
+                app.tab_mut().remote_repo = Some("owner/repo".to_string());
+                app.tab_mut().pr_number = Some(7);
+                let er_dir = app.tab().er_dir();
+                std::fs::create_dir_all(&er_dir).unwrap();
+                questions_path = std::path::Path::new(&er_dir).join("questions.json");
+                let payload: er_engine::ai::ErQuestions =
+                    serde_json::from_value(serde_json::json!({
+                        "version": 1,
+                        "diff_hash": "hash",
+                        "questions": [{
+                            "id": "q-1",
+                            "file": "src/lib.rs",
+                            "hunk_index": 0,
+                            "line_start": 1,
+                            "line_content": "new",
+                            "text": "why?",
+                            "side": "RIGHT",
+                            "author": "You"
+                        }]
+                    }))
+                    .unwrap();
+                std::fs::write(
+                    &questions_path,
+                    serde_json::to_string_pretty(&payload).unwrap(),
+                )
+                .unwrap();
+                app.tab_mut().ai.questions = Some(payload);
+                app.set_github_comment_poster(Arc::new(PostingCommentPoster));
+            }
+
+            promote_to_comment_impl(
+                "q-1".to_string(),
+                Some("promoted".to_string()),
+                None,
+                &state,
             )
             .unwrap();
-            app.tab_mut().ai.questions = Some(payload);
-            app.set_github_comment_poster(Arc::new(PostingCommentPoster));
-        }
 
-        promote_to_comment_impl(
-            "q-1".to_string(),
-            Some("promoted".to_string()),
-            None,
-            &state,
-        )
-        .unwrap();
-
-        {
-            let app = state.app.lock().unwrap();
+            {
+                let app = state.app.lock().unwrap();
+                assert!(
+                    app.tab()
+                        .ai
+                        .questions
+                        .as_ref()
+                        .is_none_or(|qs| qs.questions.iter().all(|q| q.id != "q-1")),
+                    "the source question is gone from memory"
+                );
+            }
+            let stored: er_engine::ai::ErQuestions =
+                serde_json::from_str(&std::fs::read_to_string(&questions_path).unwrap()).unwrap();
             assert!(
-                app.tab()
-                    .ai
-                    .questions
-                    .as_ref()
-                    .is_none_or(|qs| qs.questions.iter().all(|q| q.id != "q-1")),
-                "the source question is gone from memory"
+                stored.questions.iter().all(|q| q.id != "q-1"),
+                "the source question is gone from the file"
             );
-        }
-        let stored: er_engine::ai::ErQuestions =
-            serde_json::from_str(&std::fs::read_to_string(&questions_path).unwrap()).unwrap();
-        assert!(
-            stored.questions.iter().all(|q| q.id != "q-1"),
-            "the source question is gone from the file"
-        );
-        std::env::remove_var("ER_STORAGE_ROOT");
+        });
     }
 }
