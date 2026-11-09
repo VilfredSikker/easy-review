@@ -274,7 +274,7 @@ fn select_project<'a>(
         return projects
             .iter()
             .find(|p| p.id == active)
-            .with_context(|| format!("active project missing from projects.json: {active}"));
+            .with_context(|| format!("active project missing from projects: {active}"));
     }
     if let Some(first) = projects.first() {
         return Ok(first);

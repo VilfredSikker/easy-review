@@ -118,6 +118,8 @@ sidecar-fs-deny = [
   "crates/er-engine/src/ai/promote.rs",
   "crates/er-engine/src/ai/checklist_store.rs",
   "crates/er-engine/src/app/state/session_store.rs",
+  "crates/er-engine/src/projects_pins.rs",
+  "crates/er-desktop/src/projects.rs",
 ]
 
 # A hand-built GitHub comment intent is an error outside these files; every

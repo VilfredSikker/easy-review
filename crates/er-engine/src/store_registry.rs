@@ -4,7 +4,9 @@
 //! managed storage root. Callers address artifacts through `ArtifactKey`s and
 //! never build a store path by hand.
 
-use er_store::{ArtifactStore, Registry};
+use std::path::PathBuf;
+
+use er_store::{Artifact, ArtifactKey, ArtifactStore, Registry, Scope, StoreError};
 
 /// The engine's registered artifact kinds.
 ///
@@ -24,6 +26,9 @@ pub fn registry() -> Registry {
         #[cfg(feature = "ui")]
         crate::app::session_store::register(&mut registry)
             .expect("the session kinds register once");
+        registry
+            .register::<crate::projects_pins::ProjectsFile>()
+            .expect("the projects kind registers once");
     }
     registry
 }
@@ -31,6 +36,25 @@ pub fn registry() -> Registry {
 /// The artifact store rooted at managed storage.
 pub fn store() -> ArtifactStore {
     ArtifactStore::new(crate::storage::storage_root())
+}
+
+/// The key for a single-file, app-scoped record.
+pub fn app_key<T: Artifact<Slot = ()>>() -> Result<ArtifactKey<T>, StoreError> {
+    ArtifactKey::new(Scope::App, ())
+}
+
+/// Path of a single-file app record. `None` only when the kind's constant file
+/// template is invalid, which the register test above rejects.
+pub fn app_path<T: Artifact<Slot = ()>>() -> Option<PathBuf> {
+    app_key::<T>().ok().map(|key| store().path(&key))
+}
+
+/// Last-modified time of an app record, for callers that watch it. This is the
+/// one filesystem read the store's own module allows: the record itself is
+/// still read through [`ArtifactStore::read`].
+pub fn app_modified<T: Artifact<Slot = ()>>() -> Option<std::time::SystemTime> {
+    let path = app_path::<T>()?;
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 #[cfg(test)]
@@ -48,6 +72,7 @@ mod tests {
             ("reviewed.json", "reviewed"),
             ("order.json", "order"),
             ("checklist.json", "checklist"),
+            ("projects.json", "projects"),
         ] {
             assert_eq!(
                 registry.kind_for(std::path::Path::new(file)),
