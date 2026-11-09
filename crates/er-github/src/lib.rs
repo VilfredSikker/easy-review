@@ -8,16 +8,24 @@
 
 pub mod actions;
 mod cache;
+mod checkout;
 pub mod classify;
 mod cli;
+mod comments;
+mod commits;
+mod diff;
 mod error;
 mod fake;
-mod legacy;
+mod lookup;
+mod overview;
 pub mod pending_review;
+mod repo;
 pub mod review;
 mod runner;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod tests;
 pub mod types;
 
 pub use actions::{
@@ -25,16 +33,22 @@ pub use actions::{
     cached_viewer_can_bypass, gh_delete_remote_branch, gh_pr_in_merge_queue, gh_pr_state,
     gh_restore_remote_branch, run_pr_action, MergeMethod, PrAction, RepoMergeSettings,
 };
+pub use checkout::*;
 pub use classify::{classify, is_unknown_command, split_pages, GhHeaders, GhOutput};
 pub use cli::{Caches, CliGitHub};
+pub use comments::*;
+pub use commits::*;
+pub use diff::*;
 pub use error::GhError;
 pub use fake::FakeGitHub;
-pub use legacy::*;
+pub use lookup::*;
+pub use overview::*;
 pub use pending_review::{
     gh_pending_review, gh_pending_review_add_comment, gh_pending_review_remove_comment,
     gh_pending_review_submit, review_body_required, PendingReview, PendingReviewComment,
     ReviewRequest,
 };
+pub use repo::*;
 pub use review::{
     gh_pr_head_oid_remote, gh_pr_submit_review, gh_pr_submit_review_remote, ReviewBatchEntry,
 };
@@ -167,7 +181,7 @@ pub trait GitHub: Send + Sync {
             return None;
         }
         let (owner, repo) = self.get_repo_info(git, repo_root).ok()?;
-        crate::legacy::owner_repo_matches_slug(&owner, &repo, remote_repo)
+        crate::repo::owner_repo_matches_slug(&owner, &repo, remote_repo)
             .then(|| repo_root.to_string())
     }
 
@@ -327,6 +341,139 @@ pub trait GitHub: Send + Sync {
 
     /// One bounded `gh api` read whose body is returned without headers.
     fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError>;
+
+    fn fetch_pr_base_ref(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+        pr_number: u64,
+        base_branch: &str,
+    ) -> Result<String, GhError>;
+    fn pr_head_branch_name(&self, number: u64, root: &str) -> Result<String, GhError>;
+
+    fn pr_size_check_remote(&self, owner: &str, repo: &str, number: u64) -> Result<(), GhError>;
+    fn pr_diff_remote(
+        &self,
+        git: &dyn er_git::Git,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<String, GhError>;
+    fn pr_diff(
+        &self,
+        git: &dyn er_git::Git,
+        pr_number: u64,
+        repo_root: &str,
+    ) -> Result<String, GhError>;
+    fn commit_shas_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(String, String), GhError>;
+    fn file_at_ref(
+        &self,
+        repo_slug: &str,
+        path: &str,
+        git_ref: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, GhError>;
+    fn pr_commits(
+        &self,
+        repo_root: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<er_git::CommitInfo>, GhError>;
+    fn pr_base_branch_and_commits(
+        &self,
+        repo_root: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<(String, Vec<er_git::CommitInfo>), GhError>;
+    fn commits_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<er_git::CommitInfo>, GhError>;
+
+    fn ensure_installed(&self) -> Result<(), GhError>;
+    fn list_participating_notifications(&self) -> Result<Vec<GhNotification>, GhError>;
+    fn pr_base_branch(&self, pr_number: u64, repo_root: &str) -> Result<String, GhError>;
+    fn pr_branch_names(&self, pr_number: u64, repo_root: &str)
+        -> Result<(String, String), GhError>;
+    fn probe_pr_for_current_branch(&self, repo_root: &str) -> Result<BranchPrProbe, GhError>;
+    fn pr_for_current_branch(&self, repo_root: &str) -> Result<Option<(u64, String)>, GhError>;
+    fn lookup_pr_for_current_branch(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<PrLookup, GhError>;
+    fn open_pr_number_for_head(
+        &self,
+        owner: &str,
+        repo: &str,
+        head: &str,
+    ) -> Result<Option<u64>, GhError>;
+    fn pr_title(&self, owner: &str, repo: &str, number: u64) -> Result<Option<String>, GhError>;
+    fn get_pr_info(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<(String, String, u64), GhError>;
+    fn current_login(&self) -> Result<Option<String>, GhError>;
+    fn stack_view_json(&self, repo_root: &str) -> Result<String, GhError>;
+    fn open_pr_refs_json(&self, repo_slug: &str) -> Result<String, GhError>;
+    fn pr_metadata_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<(String, String), GhError>;
+    fn pr_status_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<PrStatusBundle, GhError>;
+    fn pr_checks_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Vec<CheckRun>, GhError>;
+    fn pr_checks_state_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<&'static str, GhError>;
+    fn pr_thread_addressing_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<ThreadAddressingSummary, GhError>;
+}
+
+/// The prefix the old free functions put in front of gh's reason, kept so
+/// callers that match the rendered text keep working.
+pub(crate) fn with_prefix(prefix: &str, error: GhError) -> anyhow::Error {
+    anyhow::anyhow!("{prefix}: {error}")
+}
+
+/// [`with_prefix`] for a sentence that names the PR or size, and for errors
+/// that already read on their own: a spawn failure or a local sentence passes
+/// through unchanged, as it did before.
+pub(crate) fn with_gh_sentence(prefix: impl std::fmt::Display, error: GhError) -> anyhow::Error {
+    match error {
+        GhError::Local { .. }
+        | GhError::NotInstalled
+        | GhError::Timeout
+        | GhError::Tool { status: -1, .. } => anyhow::Error::from(error),
+        error => anyhow::anyhow!("{prefix}: {error}"),
+    }
 }
 
 static DEFAULT_HANDLE: OnceLock<Arc<CliGitHub>> = OnceLock::new();

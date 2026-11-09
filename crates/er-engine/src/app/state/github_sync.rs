@@ -1,7 +1,6 @@
 use anyhow::Result;
 
 use crate::ai;
-use crate::github;
 
 // The pure sync core (no App dependency) lives in `crate::sync`; re-exported
 // here so existing `crate::app::...` paths keep working.
@@ -93,7 +92,11 @@ impl App {
                 return Ok(());
             }
         } else if let Some(number) = explicit_pr_number {
-            match crate::github::get_repo_info(&*self.ports.git, &repo_root) {
+            match self
+                .ports
+                .github
+                .get_repo_info(&*self.ports.git, &repo_root)
+            {
                 Ok((owner, repo)) => (owner, repo, number),
                 Err(e) => {
                     self.notify(&format!(
@@ -103,7 +106,18 @@ impl App {
                 }
             }
         } else {
-            match crate::github::lookup_pr_for_current_branch(&*self.ports.git, &repo_root) {
+            let lookup = match self
+                .ports
+                .github
+                .lookup_pr_for_current_branch(&*self.ports.git, &repo_root)
+            {
+                Ok(lookup) => lookup,
+                Err(e) => {
+                    self.notify(&format!("Could not read this branch's PR: {e}"));
+                    return Ok(());
+                }
+            };
+            match lookup {
                 crate::github::PrLookup::Present {
                     owner,
                     repo,
@@ -117,6 +131,8 @@ impl App {
                     self.notify("No PR found for current branch");
                     return Ok(());
                 }
+                // The handle reports a failed lookup as `Err`; the variant is
+                // here for the wrapper's old shape and never produced by it.
                 crate::github::PrLookup::Unknown(e) => {
                     self.notify(&format!("Could not read this branch's PR: {e}"));
                     return Ok(());
@@ -127,9 +143,16 @@ impl App {
         // The hover prefetch warms this bundle: the
         // two gh calls cost ~2.5–3 s on a cold cache, ~0 ms on a warm one.
         let bundle = if is_remote {
-            github::gh_pr_comment_bundle_cached(&owner, &repo_name, pr_number, None)
+            self.ports
+                .github
+                .pr_comment_bundle_cached(&owner, &repo_name, pr_number, None)
         } else {
-            github::gh_pr_comment_bundle_cached(&owner, &repo_name, pr_number, Some(&repo_root))
+            self.ports.github.pr_comment_bundle_cached(
+                &owner,
+                &repo_name,
+                pr_number,
+                Some(&repo_root),
+            )
         };
         let (gh_comments, thread_state) = match &bundle {
             Ok(b) => (b.comments.clone(), b.threads.clone()),
@@ -263,14 +286,26 @@ impl App {
         // Refresh PR overview data (CI checks + reviewer status)
         let pr_number_for_overview = self.tab().pr_number;
         if is_remote {
-            if let Some(pr_data) = github::gh_pr_overview_remote(
-                &owner,
-                &repo_name,
-                pr_number_for_overview.unwrap_or(pr_number),
-            ) {
+            if let Some(pr_data) = self
+                .ports
+                .github
+                .overview_remote(
+                    &owner,
+                    &repo_name,
+                    pr_number_for_overview.unwrap_or(pr_number),
+                )
+                .ok()
+                .flatten()
+            {
                 self.tab_mut().pr_data = Some(pr_data);
             }
-        } else if let Some(pr_data) = github::gh_pr_overview(&repo_root, pr_number_for_overview) {
+        } else if let Some(pr_data) = self
+            .ports
+            .github
+            .overview(&repo_root, pr_number_for_overview)
+            .ok()
+            .flatten()
+        {
             self.tab_mut().pr_data = Some(pr_data);
         }
 
@@ -279,5 +314,42 @@ impl App {
             github_count, local_count
         ));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::App;
+    use er_github::{FakeGitHub, GhError};
+    use std::sync::Arc;
+
+    #[test]
+    fn comment_sync_reads_the_bundle_through_the_handle_and_surfaces_the_error() {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().remote_repo = Some("acme/widgets".into());
+        app.tab_mut().pr_number = Some(7);
+        let github = Arc::new(FakeGitHub::default().with_pr_comment_bundle_cached(Err(
+            GhError::Forbidden {
+                message: "nope".into(),
+            },
+        )));
+        app.ports.github = github.clone();
+
+        app.sync_github_comments().unwrap();
+
+        assert_eq!(
+            github.calls(),
+            vec![
+                "pr_comment_bundle_cached(owner=\"acme\", repo=\"widgets\", pr=7, \
+                 repo_root=None)"
+                    .to_string()
+            ]
+        );
+        let notification = app.notification.as_ref().expect("a sync error is shown");
+        assert!(
+            notification.message.contains("GitHub sync error: nope"),
+            "{}",
+            notification.message
+        );
     }
 }

@@ -99,7 +99,11 @@ pub fn fetch_branch_scope_raw(
             }
         } else if let Some(head_ref) = inputs.pr_head_ref.as_deref() {
             if let Some(pr_number) = inputs.pr_number {
-                crate::github::gh_pr_diff(&*inputs.ports.git, pr_number, &inputs.repo_root)
+                inputs
+                    .ports
+                    .github
+                    .pr_diff(&*inputs.ports.git, pr_number, &inputs.repo_root)
+                    .map_err(anyhow::Error::from)
             } else {
                 inputs
                     .ports
@@ -113,7 +117,11 @@ pub fn fetch_branch_scope_raw(
             // what the consume-time fetch produces once the refs land, so the
             // preload stays valid across the ref-fetch drift (and doesn't
             // silently fail when the branch isn't checked out locally).
-            crate::github::gh_pr_diff(&*inputs.ports.git, pr_number, &inputs.repo_root)
+            inputs
+                .ports
+                .github
+                .pr_diff(&*inputs.ports.git, pr_number, &inputs.repo_root)
+                .map_err(anyhow::Error::from)
         } else {
             inputs
                 .ports
@@ -129,12 +137,11 @@ pub fn fetch_branch_scope_raw(
             let owner = parts[0];
             let repo = parts[1];
             if let Some(pr_number) = inputs.pr_number {
-                return crate::github::gh_pr_diff_remote(
-                    &*inputs.ports.git,
-                    owner,
-                    repo,
-                    pr_number,
-                );
+                return inputs
+                    .ports
+                    .github
+                    .pr_diff_remote(&*inputs.ports.git, owner, repo, pr_number)
+                    .map_err(anyhow::Error::from);
             }
         }
         anyhow::bail!("Remote tab missing owner/repo or pr_number");
