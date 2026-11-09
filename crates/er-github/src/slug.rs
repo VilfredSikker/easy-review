@@ -29,6 +29,13 @@ impl RepoSlug {
         host.eq_ignore_ascii_case("github.com").then_some(slug)
     }
 
+    /// The remote forms only: a bare `owner/repo` has no host to return.
+    pub(crate) fn parse_remote(input: &str) -> Option<Self> {
+        let (host, slug) = Self::parse_with_host(input)?;
+        host?;
+        Some(slug)
+    }
+
     /// Lowercase `owner/repo`, the key caches and config tables use.
     pub fn key(&self) -> String {
         format!("{}/{}", self.owner, self.repo).to_ascii_lowercase()
@@ -93,6 +100,8 @@ impl fmt::Display for RepoSlug {
 
 /// Split `owner/repo`, stripping one trailing `/` and one trailing `.git`.
 fn split_owner_repo(path: &str, exact: bool) -> Option<(String, String)> {
+    // Remote forms may carry a leading slash (`git@host:/o/r`, `host//o/r`).
+    let path = path.trim_start_matches('/');
     let path = path.strip_suffix('/').unwrap_or(path);
     let path = path.strip_suffix(".git").unwrap_or(path);
     let mut segments = path.split('/');
@@ -143,6 +152,13 @@ mod tests {
     }
 
     #[test]
+    fn leading_slash_forms_parse_the_same() {
+        for input in ["git@github.com:/o/r.git", "https://github.com//o/r"] {
+            assert_eq!(parsed(input).to_string(), "o/r", "{input}");
+        }
+    }
+
+    #[test]
     fn url_forms_ignore_path_past_the_second_segment() {
         for input in [
             "https://github.com/o/r/pull/3",
@@ -184,12 +200,30 @@ mod tests {
 
     #[test]
     fn parse_accepts_any_host_but_parse_github_com_does_not() {
-        for input in ["https://github.mycorp.com/o/r", "https://gitlab.com/o/r"] {
+        for input in [
+            "https://github.mycorp.com/o/r",
+            "https://gitlab.com/o/r",
+            "git@ghe.corp.example.com:team/service.git",
+            "git@bitbucket.org:team/app.git",
+        ] {
             assert!(RepoSlug::parse(input).is_some(), "{input}");
             assert!(RepoSlug::parse_github_com(input).is_none(), "{input}");
         }
         assert!(RepoSlug::parse_github_com("https://GitHub.com/o/r").is_some());
         assert!(RepoSlug::parse_github_com("o/r").is_none());
+    }
+
+    #[test]
+    fn a_relative_origin_is_not_a_remote() {
+        let relative = er_git::FakeGit::default().with_remote_url(Ok("vendor/lib".into()));
+        assert!(crate::repo::parse_origin_remote(&relative, "/repo").is_none());
+
+        let remote =
+            er_git::FakeGit::default().with_remote_url(Ok("git@github.com:o/r.git".into()));
+        assert_eq!(
+            crate::repo::parse_origin_remote(&remote, "/repo"),
+            Some(("o".to_string(), "r".to_string()))
+        );
     }
 
     #[test]

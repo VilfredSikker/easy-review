@@ -86,8 +86,9 @@ pub fn parse_remote_url(url: &str) -> Option<(String, String)> {
 /// Parse `(owner, repo)` from the `origin` remote of the given repo root.
 ///
 /// Runs `git -C <repo_root> remote get-url origin`. Returns `None` if the
-/// remote is absent, unreachable, or the URL cannot be parsed.
+/// remote is absent, unreachable, or is not a remote: an origin that names a
+/// host is required, so a relative path like `vendor/lib` is not a repository.
 pub fn parse_origin_remote(git: &dyn Git, repo_root: &str) -> Option<(String, String)> {
     let url = git.remote_url(repo_root, "origin").ok()?;
-    parse_remote_url(&url)
+    RepoSlug::parse_remote(&url).map(|slug| (slug.owner, slug.repo))
 }
