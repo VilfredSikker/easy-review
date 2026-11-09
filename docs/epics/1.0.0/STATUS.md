@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-09 00:15 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-09 09:10 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,9 +9,9 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| T1 | T5 GitHub port | [#382](https://github.com/VilfredSikker/easy-review/issues/382) P11: part 1 (#431) fixing review findings, part 2 (#433) draft | E |
-| T2 | T4 git port | [#386](https://github.com/VilfredSikker/easy-review/issues/386) P15 | C, E |
-| D4 | T6 store core | [#394](https://github.com/VilfredSikker/easy-review/issues/394) P23 | C |
+| T1 | T5 GitHub port | [#382](https://github.com/VilfredSikker/easy-review/issues/382) P11: #431 fixes pushed, #433 ready; both in review | E |
+| T2 | T4 git port | [#386](https://github.com/VilfredSikker/easy-review/issues/386) P15, finishing gates (was blocked by a full disk) | C, E |
+| D4 | T6 store core | [#394](https://github.com/VilfredSikker/easy-review/issues/394) P23, PR #434 in review | C |
 | D1 | – | idle (P16 waits on P23, P15, P11) | – |
 | D2, D3, D5 | – | idle | – |
 
@@ -35,7 +35,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P08 | [#379](https://github.com/VilfredSikker/easy-review/issues/379) Engine git calls behind the port | E/F | sonnet | ✅ | [#424](https://github.com/VilfredSikker/easy-review/pull/424), [#426](https://github.com/VilfredSikker/easy-review/pull/426) | two stacked PRs |
 | P09 | [#380](https://github.com/VilfredSikker/easy-review/issues/380) Front-end git calls, git guardrail | C/F | sonnet | ✅ | [#428](https://github.com/VilfredSikker/easy-review/pull/428) | follow-up #432 merged |
 | P10 | [#381](https://github.com/VilfredSikker/easy-review/issues/381) Create er-github | C/E | opus | ✅ | [#425](https://github.com/VilfredSikker/easy-review/pull/425), [#427](https://github.com/VilfredSikker/easy-review/pull/427) | two parts; real `gh` captures; all #408 rules pinned by planted breaks |
-| P11 | [#382](https://github.com/VilfredSikker/easy-review/issues/382) Move github.rs into er-github | E | opus | 🔧 | [#431](https://github.com/VilfredSikker/easy-review/pull/431), [#433](https://github.com/VilfredSikker/easy-review/pull/433) | T1; part 1 fix-then-merge, part 2 draft (legacy.rs split pending) |
+| P11 | [#382](https://github.com/VilfredSikker/easy-review/issues/382) Move github.rs into er-github | E | opus | 🔵 | [#431](https://github.com/VilfredSikker/easy-review/pull/431), [#433](https://github.com/VilfredSikker/easy-review/pull/433) | T1; part 1 re-review, part 2 in review |
 | P12 | [#383](https://github.com/VilfredSikker/easy-review/issues/383) Front-end gh calls, gh guardrail | C/F | opus | ⬜ | | after P11 |
 | P13 | [#384](https://github.com/VilfredSikker/easy-review/issues/384) One remote-slug parser | F | sonnet | ⬜ | | after P11 |
 | P14 | [#385](https://github.com/VilfredSikker/easy-review/issues/385) Create er-store | C | opus | ✅ | [#429](https://github.com/VilfredSikker/easy-review/pull/429), [#430](https://github.com/VilfredSikker/easy-review/pull/430) | two parts; amendment C on #401 |
@@ -47,7 +47,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P20 | [#391](https://github.com/VilfredSikker/easy-review/issues/391) Findings projection | E | sonnet | ⬜ | | after P18 |
 | P21 | [#392](https://github.com/VilfredSikker/easy-review/issues/392) Scoped re-review as its own artifact | E/F | opus | ⬜ | | after P20 |
 | P22 | [#393](https://github.com/VilfredSikker/easy-review/issues/393) App records through the store | F | opus | ⬜ | | after P13, P15 |
-| P23 | [#394](https://github.com/VilfredSikker/easy-review/issues/394) Cross-process locks, change notifications | C | opus | 🟡 | | D4 |
+| P23 | [#394](https://github.com/VilfredSikker/easy-review/issues/394) Cross-process locks, change notifications | C | opus | 🔵 | [#434](https://github.com/VilfredSikker/easy-review/pull/434) | D4; in review; ADR 0057 |
 | P24 | [#395](https://github.com/VilfredSikker/easy-review/issues/395) MCP uploads through the store | C | opus | ⬜ | | after P19, P23 |
 
 ## Designs
