@@ -1,11 +1,13 @@
 //! Read/write `Finding.responses` in `review.json` (AI validation replies on findings).
 
-use super::experts::{expert_by_id, load_expert_reviews, ExpertReview};
-use super::finding_cleanup::matches_finding_id;
-use super::professor::{load_professor_review, PROFESSOR_ID_PREFIX};
+use super::experts::{expert_by_id, ExpertReview};
+use super::finding_cleanup::{matches_finding_id, sidecar_update, SidecarWrite};
+use super::professor::{ProfessorReview, PROFESSOR_ID_PREFIX};
 use super::review::{AiResponse, AiState, ErReview, Finding};
+#[cfg(test)]
 use std::path::Path;
 
+#[cfg(test)]
 fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(value)?;
@@ -100,41 +102,37 @@ fn with_finding_mut<F>(er_dir: &str, finding_id: &str, f: F) -> anyhow::Result<(
 where
     F: FnOnce(&mut Finding) -> anyhow::Result<()>,
 {
-    let er = Path::new(er_dir);
+    let store = crate::store_registry::store();
+    let scope = er_store::Scope::dir(er_dir)?;
     let mut f = Some(f);
 
     // General findings keep their original id in `review.json` (no prefix). A
     // corrupt/unreadable review.json falls through to the other sidecars rather
     // than aborting — the finding may live in an expert/professor file (mirrors
     // `remove_finding_from_sidecars`).
-    let review_path = er.join("review.json");
-    if let Some(mut review) = std::fs::read_to_string(&review_path)
-        .ok()
-        .and_then(|c| serde_json::from_str::<ErReview>(&c).ok())
-    {
+    let written = sidecar_update::<ErReview, _>(&store, &scope, (), |review| {
         let mut files: Vec<&mut Vec<Finding>> = review
             .files
             .values_mut()
             .map(|fr| &mut fr.findings)
             .collect();
-        if apply_to_findings(&mut files, finding_id, None, &mut f)? {
-            write_json_atomic(&review_path, &review)?;
-            return Ok(());
-        }
+        apply_to_findings(&mut files, finding_id, None, &mut f)
+    })?;
+    if written == SidecarWrite::Written {
+        return Ok(());
     }
 
     // Professor insights merge with a `prof-` id prefix.
-    let prof_path = er.join("professor.json");
-    if let Some(mut prof) = load_professor_review(er_dir) {
+    let written = sidecar_update::<ProfessorReview, _>(&store, &scope, (), |prof| {
         let mut files: Vec<&mut Vec<Finding>> = prof
             .files
             .values_mut()
             .map(|pfr| &mut pfr.findings)
             .collect();
-        if apply_to_findings(&mut files, finding_id, Some(PROFESSOR_ID_PREFIX), &mut f)? {
-            write_json_atomic(&prof_path, &prof)?;
-            return Ok(());
-        }
+        apply_to_findings(&mut files, finding_id, Some(PROFESSOR_ID_PREFIX), &mut f)
+    })?;
+    if written == SidecarWrite::Written {
+        return Ok(());
     }
 
     // Each expert merges findings with its own id prefix (`sec-`, `api-`, …).
@@ -142,22 +140,22 @@ where
     // their findings into the in-memory review, so they can't be a validation
     // target — and matching with a `None` prefix would collapse to bare-id
     // equality and risk writing to the wrong sidecar.
-    for expert in load_expert_reviews(er_dir) {
-        let Some(def) = expert_by_id(&expert.expert_id) else {
-            continue;
-        };
-        let path = er
-            .join("experts")
-            .join(format!("{}.json", expert.expert_id));
-        let mut review: ExpertReview = expert;
-        let mut files: Vec<&mut Vec<Finding>> = review
-            .files
-            .values_mut()
-            .map(|efr| &mut efr.findings)
-            .collect();
-        if apply_to_findings(&mut files, finding_id, Some(def.id_prefix), &mut f)? {
-            write_json_atomic(&path, &review)?;
-            return Ok(());
+    if let Ok(slots) = store.list::<ExpertReview>(&scope) {
+        for slot in slots {
+            let Some(def) = expert_by_id(slot.as_str()) else {
+                continue;
+            };
+            let written = sidecar_update::<ExpertReview, _>(&store, &scope, slot, |expert| {
+                let mut files: Vec<&mut Vec<Finding>> = expert
+                    .files
+                    .values_mut()
+                    .map(|efr| &mut efr.findings)
+                    .collect();
+                apply_to_findings(&mut files, finding_id, Some(def.id_prefix), &mut f)
+            })?;
+            if written == SidecarWrite::Written {
+                return Ok(());
+            }
         }
     }
 

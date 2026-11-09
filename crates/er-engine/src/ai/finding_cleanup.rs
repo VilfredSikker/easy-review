@@ -1,13 +1,14 @@
 //! Persisted removal and resolution of findings, and removal of linked validation threads.
 
 use super::annotation_store;
-use super::experts::{expert_by_id, load_expert_reviews, ExpertReview};
-use super::professor::{load_professor_review, PROFESSOR_ID_PREFIX};
+use super::experts::{expert_by_id, ExpertReview};
+use super::professor::{ProfessorReview, PROFESSOR_ID_PREFIX};
 use super::review::AiState;
 use super::review::{ErReview, Finding};
 use crate::store_registry;
 use anyhow::Context;
 use std::collections::HashSet;
+#[cfg(test)]
 use std::path::Path;
 
 /// Root thread id (question or github comment) linked to a finding via `finding_ref`.
@@ -68,6 +69,7 @@ fn retain_findings(findings: &mut Vec<Finding>, target_id: &str, id_prefix: Opti
     findings.len() < before
 }
 
+#[cfg(test)]
 fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(value)?;
@@ -75,66 +77,113 @@ fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Re
     std::fs::rename(&tmp, path)
 }
 
+/// What an update closure decided about one sidecar.
+enum SidecarStop {
+    /// The file is absent or unreadable; leave it alone.
+    Missing,
+    /// The file was read but the edit changed nothing.
+    NotHere,
+}
+
+/// The result of one update-under-lock pass over a sidecar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SidecarWrite {
+    /// The closure returned a changed value and the store wrote it.
+    Written,
+    /// Nothing was written: absent, unreadable, newer, or no change.
+    Skipped,
+}
+
+/// Read, apply and write one sidecar under a single lock hold.
+///
+/// `apply` reports whether it changed the value; a `false` or an unreadable file
+/// leaves the bytes untouched.
+pub(crate) fn sidecar_update<T, A>(
+    store: &er_store::ArtifactStore,
+    scope: &er_store::Scope,
+    slot: T::Slot,
+    apply: A,
+) -> anyhow::Result<SidecarWrite>
+where
+    T: er_store::Artifact,
+    A: FnOnce(&mut T) -> anyhow::Result<bool>,
+{
+    let key = er_store::ArtifactKey::<T>::new(scope.clone(), slot)?;
+    let mut failure = None;
+    let outcome = store.update(&key, er_store::DEFAULT_LOCK_TIMEOUT, |current| {
+        let Some(mut value) = current else {
+            return Err(SidecarStop::Missing);
+        };
+        match apply(&mut value) {
+            Ok(true) => Ok(value),
+            Ok(false) => Err(SidecarStop::NotHere),
+            Err(error) => {
+                failure = Some(error);
+                Err(SidecarStop::NotHere)
+            }
+        }
+    });
+    match outcome {
+        Ok(_) => Ok(SidecarWrite::Written),
+        Err(er_store::UpdateError::Apply(SidecarStop::NotHere)) => match failure {
+            Some(error) => Err(error),
+            None => Ok(SidecarWrite::Skipped),
+        },
+        Err(er_store::UpdateError::Apply(SidecarStop::Missing)) => Ok(SidecarWrite::Skipped),
+        Err(er_store::UpdateError::Store(er_store::StoreError::NewerVersion { .. })) => {
+            Ok(SidecarWrite::Skipped)
+        }
+        Err(er_store::UpdateError::Store(error)) => Err(error.into()),
+    }
+}
+
 /// Apply `edit` to the findings of every sidecar that can own a finding —
 /// `review.json`, `professor.json` and `experts/*.json` — writing back each file
 /// the edit reports as changed. `edit` gets the id prefix the loader adds to that
 /// sidecar's ids, so it can match the merged id the UI holds.
+///
+/// Each file is read and written under one lock hold, and a file that cannot be
+/// read is skipped, never overwritten.
 fn edit_finding_sidecars<F>(er_dir: &str, mut edit: F) -> std::io::Result<bool>
 where
     F: FnMut(&mut Vec<Finding>, Option<&str>) -> bool,
 {
-    let er = Path::new(er_dir);
+    let store = store_registry::store();
+    let scope = er_store::Scope::dir(er_dir).map_err(io_error)?;
     let mut changed = false;
 
-    let review_path = er.join("review.json");
-    if review_path.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&review_path) {
-            if let Ok(mut review) = serde_json::from_str::<ErReview>(&content) {
-                let mut file_changed = false;
-                for fr in review.files.values_mut() {
-                    file_changed |= edit(&mut fr.findings, None);
-                }
-                if file_changed {
-                    write_json_atomic(&review_path, &review)?;
-                    changed = true;
-                }
-            }
+    let review = sidecar_update::<ErReview, _>(&store, &scope, (), |review| {
+        let mut edited = false;
+        for fr in review.files.values_mut() {
+            edited |= edit(&mut fr.findings, None);
         }
-    }
+        Ok(edited)
+    })
+    .map_err(io_error)?;
+    changed |= review == SidecarWrite::Written;
 
-    let prof_path = er.join("professor.json");
-    if prof_path.is_file() {
-        if let Some(mut prof) = load_professor_review(er_dir) {
-            let mut file_changed = false;
-            for pfr in prof.files.values_mut() {
-                file_changed |= edit(&mut pfr.findings, Some(PROFESSOR_ID_PREFIX));
-            }
-            if file_changed {
-                write_json_atomic(&prof_path, &prof)?;
-                changed = true;
-            }
+    let professor = sidecar_update::<ProfessorReview, _>(&store, &scope, (), |prof| {
+        let mut edited = false;
+        for pfr in prof.files.values_mut() {
+            edited |= edit(&mut pfr.findings, Some(PROFESSOR_ID_PREFIX));
         }
-    }
+        Ok(edited)
+    })
+    .map_err(io_error)?;
+    changed |= professor == SidecarWrite::Written;
 
-    for expert in load_expert_reviews(er_dir) {
-        let prefix = expert_by_id(&expert.expert_id).map(|d| d.id_prefix);
-        let path = er
-            .join("experts")
-            .join(format!("{}.json", expert.expert_id));
-        if !path.is_file() {
-            continue;
-        }
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(mut er) = serde_json::from_str::<ExpertReview>(&content) {
-                let mut file_changed = false;
-                for efr in er.files.values_mut() {
-                    file_changed |= edit(&mut efr.findings, prefix);
+    if let Ok(slots) = store.list::<ExpertReview>(&scope) {
+        for slot in slots {
+            let prefix = expert_by_id(slot.as_str()).map(|def| def.id_prefix);
+            let written = sidecar_update::<ExpertReview, _>(&store, &scope, slot, |expert| {
+                let mut edited = false;
+                for efr in expert.files.values_mut() {
+                    edited |= edit(&mut efr.findings, prefix);
                 }
-                if file_changed {
-                    write_json_atomic(&path, &er)?;
-                    changed = true;
-                }
-            }
+                Ok(edited)
+            })
+            .map_err(io_error)?;
+            changed |= written == SidecarWrite::Written;
         }
     }
 
@@ -476,6 +525,46 @@ mod tests {
         )
         .unwrap();
         assert!(expert2.files["a.rs"].findings.is_empty());
+    }
+
+    #[test]
+    fn a_held_bucket_lock_keeps_the_finding_file_unchanged() {
+        let dir = tempdir().unwrap();
+        let er = dir.path().to_str().unwrap();
+        let review = ErReview {
+            version: 1,
+            diff_hash: "h".into(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: std::iter::once((
+                "a.rs".to_string(),
+                crate::ai::review::ErFileReview {
+                    risk: RiskLevel::Info,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings: vec![sample_finding("f-1")],
+                },
+            ))
+            .collect(),
+            file_hashes: Default::default(),
+        };
+        write_json_atomic(&Path::new(er).join("review.json"), &review).unwrap();
+        let before = std::fs::read_to_string(Path::new(er).join("review.json")).unwrap();
+
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(er).unwrap();
+        let guard = store
+            .lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
+            .unwrap();
+        let result = set_finding_resolved(er, "f-1", true);
+        drop(guard);
+
+        assert!(result.is_err(), "a held lock must block the rewrite");
+        assert_eq!(
+            std::fs::read_to_string(Path::new(er).join("review.json")).unwrap(),
+            before
+        );
     }
 
     fn write_expert_with(er: &str, finding: Finding) {
