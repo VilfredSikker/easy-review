@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-09 09:10 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-09 10:30 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -10,12 +10,12 @@
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
 | T1 | T5 GitHub port | [#382](https://github.com/VilfredSikker/easy-review/issues/382) P11: #431 fixes pushed, #433 ready; both in review | E |
-| T2 | T4 git port | [#386](https://github.com/VilfredSikker/easy-review/issues/386) P15, PR #435 in review | C, E |
+| T2 | T4 git port | P15 follow-up (.git-strip test); next #383/#384 after P11 | – |
 | D4 | T6 store core | [#394](https://github.com/VilfredSikker/easy-review/issues/394) P23, PR #434 in review | C |
 | D1 | – | idle (P16 waits on P23, P15, P11) | – |
 | D2, D3, D5 | – | idle | – |
 
-**Phase 0, P08, P09, P10 and P14 are merged.** P11, P15 and P23 run at the same time; the regions they share (`er-desktop/src/main.rs`, `app/state/mod.rs`, `er-store/CLAUDE.md`) are small, so whichever PR merges second merges the release branch in. Next: #382 unblocks #383 (P12) and #384 (P13); #386 and #384 unblock #393 (P22); #394, #386 and #382 unblock #387 (P16).
+**Phase 0, P08, P09, P10, P14 and P15 are merged.** P11 and P23 are in review; the regions they share (`er-desktop/src/main.rs`, `app/state/mod.rs`, `er-store/CLAUDE.md`) are small, so whichever PR merges second merges the release branch in. Next: #382 unblocks #383 (P12) and #384 (P13); #386 and #384 unblock #393 (P22); #394, #386 and #382 unblock #387 (P16).
 
 ## Progress
 
@@ -39,7 +39,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P12 | [#383](https://github.com/VilfredSikker/easy-review/issues/383) Front-end gh calls, gh guardrail | C/F | opus | ⬜ | | after P11 |
 | P13 | [#384](https://github.com/VilfredSikker/easy-review/issues/384) One remote-slug parser | F | sonnet | ⬜ | | after P11 |
 | P14 | [#385](https://github.com/VilfredSikker/easy-review/issues/385) Create er-store | C | opus | ✅ | [#429](https://github.com/VilfredSikker/easy-review/pull/429), [#430](https://github.com/VilfredSikker/easy-review/pull/430) | two parts; amendment C on #401 |
-| P15 | [#386](https://github.com/VilfredSikker/easy-review/issues/386) Move to the v1 root | C/E | sonnet | 🔵 | [#435](https://github.com/VilfredSikker/easy-review/pull/435) | T2; in review |
+| P15 | [#386](https://github.com/VilfredSikker/easy-review/issues/386) Move to the v1 root | C/E | sonnet | ✅ | [#435](https://github.com/VilfredSikker/easy-review/pull/435) | follow-up: .git-strip test (T2) |
 | P16 | [#387](https://github.com/VilfredSikker/easy-review/issues/387) Comments and notes through the store | C/E/F | opus | ⬜ | | after P23, P15, P11 |
 | P17 | [#388](https://github.com/VilfredSikker/easy-review/issues/388) Session state through the store | C/E | opus | ⬜ | | after P16 |
 | P18 | [#389](https://github.com/VilfredSikker/easy-review/issues/389) Review artifacts through the store | E | opus | ⬜ | | after P17 |
