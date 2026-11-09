@@ -17,11 +17,41 @@ const ROOT_VERSION_DIR: &str = "v1";
 /// Longest readable part of a hashed slug, in bytes.
 const READABLE_MAX_BYTES: usize = 80;
 
+#[cfg(feature = "test-support")]
+thread_local! {
+    static TEST_STORAGE_ROOT: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with the storage root overridden on this thread.
+///
+/// Tests that need an isolated root use this instead of setting
+/// `ER_STORAGE_ROOT`: `set_var` rewrites the process environment while
+/// parallel tests read it, which is a data race.
+#[cfg(feature = "test-support")]
+pub fn with_test_storage_root<R>(root: impl Into<PathBuf>, f: impl FnOnce() -> R) -> R {
+    struct Reset(Option<PathBuf>);
+
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_STORAGE_ROOT.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+
+    let previous = TEST_STORAGE_ROOT.with(|slot| slot.borrow_mut().replace(root.into()));
+    let _reset = Reset(previous);
+    f()
+}
+
 /// The storage base: the directory that holds `v1/` and any older data.
 ///
 /// Overridden by `ER_STORAGE_ROOT` when set — used by tests to write under a
 /// temporary directory without touching the real user data dir.
 pub fn storage_base() -> PathBuf {
+    #[cfg(feature = "test-support")]
+    if let Some(root) = TEST_STORAGE_ROOT.with(|slot| slot.borrow().clone()) {
+        return root;
+    }
     storage_base_from(
         std::env::var("ER_STORAGE_ROOT").ok().as_deref(),
         dirs::data_dir(),
@@ -35,6 +65,10 @@ pub fn storage_base() -> PathBuf {
 /// `ER_STORAGE_ROOT` is used as given so every test that points it at a temp
 /// directory keeps that directory as the root.
 pub fn storage_root() -> PathBuf {
+    #[cfg(feature = "test-support")]
+    if let Some(root) = TEST_STORAGE_ROOT.with(|slot| slot.borrow().clone()) {
+        return root;
+    }
     storage_root_from(
         std::env::var("ER_STORAGE_ROOT").ok().as_deref(),
         dirs::data_dir(),

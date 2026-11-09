@@ -436,20 +436,13 @@ mod tests {
             active_idx: 1,
         };
 
-        let path = std::env::temp_dir().join(format!(
-            "er-tabs-test-{}-{}.json",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tabs.json");
         let json = serde_json::to_string_pretty(&file).expect("serialize");
         std::fs::write(&path, &json).expect("write");
 
         let loaded_raw = std::fs::read_to_string(&path).expect("read");
         let loaded: TabsFile = serde_json::from_str(&loaded_raw).expect("deserialize");
-        let _ = std::fs::remove_file(&path);
 
         assert_eq!(loaded.tabs.len(), 4);
         assert_eq!(loaded.tabs, tabs);
@@ -583,53 +576,54 @@ mod tests {
     #[test]
     fn lazy_local_pr_stub_loads_ai_sidecars() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        init_git_repo(tmp.path());
-        let root = tmp.path().to_string_lossy().to_string();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            init_git_repo(tmp.path());
+            let root = tmp.path().to_string_lossy().to_string();
 
-        let mut probe = er_engine::app::TabState::new_with_base_unloaded(
-            root.clone(),
-            "main".to_string(),
-            er_engine::ports::Ports::cli(),
-        )
-        .expect("probe");
-        probe.pr_number = Some(99);
-        probe.local_branch_view = Some("feat-ai-stub".to_string());
-        probe.sync_managed_storage_light();
-        let er = probe.er_dir();
-        std::fs::create_dir_all(&er).expect("er dir");
-        std::fs::write(
-            std::path::Path::new(&er).join("questions.json"),
-            r#"{"version":1,"diff_hash":"","questions":[{"id":"q-1","file":"a.rs","hunk_index":0,"line_start":1,"line_content":"c","text":"why","resolved":false}]}"#,
-        )
-        .expect("write questions");
+            let mut probe = er_engine::app::TabState::new_with_base_unloaded(
+                root.clone(),
+                "main".to_string(),
+                er_engine::ports::Ports::cli(),
+            )
+            .expect("probe");
+            probe.pr_number = Some(99);
+            probe.local_branch_view = Some("feat-ai-stub".to_string());
+            probe.sync_managed_storage_light();
+            let er = probe.er_dir();
+            std::fs::create_dir_all(&er).expect("er dir");
+            std::fs::write(
+                std::path::Path::new(&er).join("questions.json"),
+                r#"{"version":1,"diff_hash":"","questions":[{"id":"q-1","file":"a.rs","hunk_index":0,"line_start":1,"line_content":"c","text":"why","resolved":false}]}"#,
+            )
+            .expect("write questions");
 
-        let d = TabDescriptor {
-            kind: TabKind::LocalPr,
-            repo_root: root,
-            branch: Some("feat-ai-stub".to_string()),
-            pr_owner: None,
-            pr_repo: None,
-            pr_number: Some(99),
-            pr_head_ref: None,
-            base_ref: Some("main".to_string()),
-            browser_url: None,
-            browser_layout: None,
-        };
-        let tab = rebuild_local_pr(&d, true, &er_engine::ports::Ports::cli()).expect("stub");
-        assert_eq!(
-            tab.mode,
-            er_engine::app::DiffMode::PrDiff,
-            "restored PR stubs open on PR Diff, matching new_stub_pr_tab"
-        );
-        assert!(tab.needs_initial_refresh, "lazy stub still defers git diff");
-        let qs = tab
-            .ai
-            .questions
-            .as_ref()
-            .expect("questions sidecar loaded without refresh_diff");
-        assert_eq!(qs.questions.len(), 1);
-        assert_eq!(qs.questions[0].id, "q-1");
+            let d = TabDescriptor {
+                kind: TabKind::LocalPr,
+                repo_root: root,
+                branch: Some("feat-ai-stub".to_string()),
+                pr_owner: None,
+                pr_repo: None,
+                pr_number: Some(99),
+                pr_head_ref: None,
+                base_ref: Some("main".to_string()),
+                browser_url: None,
+                browser_layout: None,
+            };
+            let tab = rebuild_local_pr(&d, true, &er_engine::ports::Ports::cli()).expect("stub");
+            assert_eq!(
+                tab.mode,
+                er_engine::app::DiffMode::PrDiff,
+                "restored PR stubs open on PR Diff, matching new_stub_pr_tab"
+            );
+            assert!(tab.needs_initial_refresh, "lazy stub still defers git diff");
+            let qs = tab
+                .ai
+                .questions
+                .as_ref()
+                .expect("questions sidecar loaded without refresh_diff");
+            assert_eq!(qs.questions.len(), 1);
+            assert_eq!(qs.questions[0].id, "q-1");
+        });
     }
 
     #[test]
