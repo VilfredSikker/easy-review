@@ -145,6 +145,18 @@ pub fn build_card_ai_argv(inv: &CardAiInvocation, system: &str, user: &str) -> V
     args
 }
 
+/// The fake sentinel, from this thread's test override or the environment.
+fn fake_claude() -> Option<String> {
+    #[cfg(feature = "test-support")]
+    {
+        crate::test_support::var("ER_FAKE_CLAUDE")
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        std::env::var("ER_FAKE_CLAUDE").ok()
+    }
+}
+
 /// Run card AI subprocess; honors `ER_FAKE_CLAUDE` for tests.
 pub fn run_card_ai_subprocess(
     inv: &CardAiInvocation,
@@ -152,7 +164,7 @@ pub fn run_card_ai_subprocess(
     user: &str,
     model_override: Option<&str>,
 ) -> String {
-    if let Ok(fake) = std::env::var("ER_FAKE_CLAUDE") {
+    if let Some(fake) = fake_claude() {
         return match fake.as_str() {
             "fail" => "Pending — invoke via CLI (error: ER_FAKE_CLAUDE=fail)".to_string(),
             "ok" => "mocked ok".to_string(),

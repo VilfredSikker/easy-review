@@ -1058,11 +1058,9 @@ fn render_pr_overview<'a>(
     let max_w = area.width.saturating_sub(3) as usize;
     if !pr.url.is_empty() {
         // Short display that fits narrow panels: "owner/repo#N"
-        let display = pr
-            .url
-            .strip_prefix("https://github.com/")
-            .unwrap_or(&pr.url)
-            .replace("/pull/", "#");
+        let display = er_engine::github::parse_github_pr_url(&pr.url)
+            .map(|pr_ref| format!("{}/{}#{}", pr_ref.owner, pr_ref.repo, pr_ref.number))
+            .unwrap_or_else(|| pr.url.clone());
         let url_style = Style::default()
             .fg(styles::DIM())
             .add_modifier(Modifier::UNDERLINED);

@@ -116,30 +116,23 @@ fn record_recent_pr_on_project(proj: &mut ProjectRecord, pr_number: u64, title: 
 /// Normalize a GitHub remote reference (URL or `owner/repo`) to a lowercase
 /// `owner/repo` slug. Does not validate the shape — see [`valid_remote_slug`].
 pub fn normalize_remote_slug(remote: &str) -> String {
-    remote_slug_as_written(remote).to_ascii_lowercase()
+    er_engine::github::RepoSlug::parse(remote)
+        .map(|slug| slug.key())
+        .unwrap_or_else(|| remote_slug_as_written(remote).to_ascii_lowercase())
 }
 
 /// [`normalize_remote_slug`] without the lowercasing. Caches keyed by the
 /// spelling the sidebar passes need this form to hit.
-pub fn remote_slug_as_written(remote: &str) -> &str {
-    let trimmed = remote.trim();
-    trimmed
-        .strip_prefix("https://github.com/")
-        .or_else(|| trimmed.strip_prefix("http://github.com/"))
-        .unwrap_or(trimmed)
-        .trim_end_matches(".git")
-        .trim_matches('/')
+pub fn remote_slug_as_written(remote: &str) -> String {
+    er_engine::github::RepoSlug::parse(remote)
+        .map(|slug| slug.to_string())
+        .unwrap_or_else(|| remote.trim().to_string())
 }
 
 /// Like [`normalize_remote_slug`], but returns `None` unless the result is a
 /// well-formed `owner/repo` slug.
 fn valid_remote_slug(remote: &str) -> Option<String> {
-    let slug = normalize_remote_slug(remote);
-    if !slug.is_empty() && slug.split('/').count() == 2 {
-        Some(slug)
-    } else {
-        None
-    }
+    er_engine::github::RepoSlug::parse(remote).map(|slug| slug.key())
 }
 
 fn remote_project_id(remote: &str) -> String {
@@ -407,25 +400,12 @@ fn current_branch(git: &dyn er_engine::git::Git, root_path: &str) -> Option<Stri
 /// reduce to a GitHub slug. One `gh repo view` costs ~590ms of network on top
 /// of a ~50ms process spawn, so callers on the snapshot path must not reach
 /// this in the common case.
-fn query_remote(root_path: &str) -> Option<String> {
-    // Bounded, because `build_worktrees` reaches this with the App lock held:
-    // an unresponsive GitHub must return `None` rather than stall every command
-    // in the app.
-    let mut cmd = std::process::Command::new("gh");
-    cmd.args([
-        "repo",
-        "view",
-        "--json",
-        "nameWithOwner",
-        "--jq",
-        ".nameWithOwner",
-    ])
-    .current_dir(root_path);
-    let out = er_engine::proc::run_with_timeout(&mut cmd, er_engine::proc::GH_TIMEOUT).ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+fn query_remote(github: &dyn er_engine::github::GitHub, root_path: &str) -> Option<String> {
+    // Bounded by the handle's timeout, because `build_worktrees` reaches this
+    // with the App lock held: an unresponsive GitHub must return `None` rather
+    // than stall every command in the app.
+    let s = github.repo_name_with_owner(root_path).ok()?;
+    let s = s.trim().to_string();
     if s.is_empty() {
         None
     } else {
@@ -445,52 +425,7 @@ fn query_remote(root_path: &str) -> Option<String> {
 /// weight: `gh` fails on a non-GitHub remote, so callers expect `None` there,
 /// and a local-path origin would otherwise reduce to something like `Users/me`.
 pub fn slug_from_remote_url(url: &str) -> Option<String> {
-    let url = url.trim();
-    if url.is_empty() {
-        return None;
-    }
-
-    // Split into (host, path), for both `scheme://[user@]host[:port]/path` and
-    // the scp-like `[user@]host:path` form git uses for ssh remotes.
-    let (host, path) = match url.split_once("://") {
-        Some((_, rest)) => {
-            let (authority, path) = rest.split_once('/')?;
-            let host = authority
-                .rsplit_once('@')
-                .map(|(_, h)| h)
-                .unwrap_or(authority);
-            let host = host.split_once(':').map(|(h, _)| h).unwrap_or(host);
-            (host, path)
-        }
-        None => {
-            let after_user = url.split_once('@').map(|(_, r)| r).unwrap_or(url);
-            let (host, path) = after_user.split_once(':')?;
-            // A '/' before the ':' means a path, not a `host:path` pair.
-            if host.contains('/') {
-                return None;
-            }
-            (host, path)
-        }
-    };
-
-    // github.com only. `gh repo view` exits non-zero on every other host, so a
-    // GitLab remote, a local-path origin, and a GitHub Enterprise host must all
-    // return `None` rather than a slug: `prUrl.ts` accepts any slug holding a
-    // slash, so a junk one renders a broken PR link instead of no link.
-    // Enterprise hosts fall back to `gh`, which knows how to reach them.
-    if !host.eq_ignore_ascii_case("github.com") {
-        return None;
-    }
-
-    let path = path.trim_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path);
-    let path = path.trim_matches('/');
-
-    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    Some(format!("{}/{}", parts[0], parts[1]))
+    er_engine::github::RepoSlug::parse_github_com(url).map(|slug| slug.to_string())
 }
 
 /// The repository's own remote URL, read from git config with no network call.
@@ -537,11 +472,15 @@ fn local_remote_url(git: &dyn er_engine::git::Git, root_path: &str) -> Option<St
 /// same remote `gh` reads and costs ~24ms instead of a ~640ms network round
 /// trip. `gh` runs only when there is no remote or the URL does not reduce to
 /// a slug, so offline use and unparseable remotes keep the previous behaviour.
-pub fn resolve_repo_remote(git: &dyn er_engine::git::Git, root_path: &str) -> Option<String> {
+pub fn resolve_repo_remote(
+    github: &dyn er_engine::github::GitHub,
+    git: &dyn er_engine::git::Git,
+    root_path: &str,
+) -> Option<String> {
     if let Some(slug) = local_remote_url(git, root_path).and_then(|u| slug_from_remote_url(&u)) {
         return Some(slug);
     }
-    query_remote(root_path).filter(|s| !s.is_empty())
+    query_remote(github, root_path).filter(|s| !s.is_empty())
 }
 
 /// Lightweight tab identity for project registration (testable without git/gh).
@@ -640,10 +579,11 @@ pub fn sync_projects_from_tabs(tabs: &[er_engine::app::TabState]) {
     use std::collections::HashSet;
     let refs: Vec<TabProjectRef> = tabs.iter().map(TabProjectRef::from_tab).collect();
     let git = &*tabs[0].ports.git;
+    let github = &*tabs[0].ports.github;
     let mut seen_roots = HashSet::new();
     for r in &refs {
         if !r.repo_root.is_empty() && seen_roots.insert(r.repo_root.clone()) {
-            let _ = auto_register(git, &r.repo_root);
+            let _ = auto_register(github, git, &r.repo_root);
         }
     }
     let mut seen_remotes = HashSet::new();
@@ -683,7 +623,11 @@ fn project_root_for(git: &dyn er_engine::git::Git, path: &str) -> Option<String>
 
 /// Register the repository containing `root_path`, or `None` when the path
 /// isn't in a repository. Returns the existing row when one already covers it.
-pub fn auto_register(git: &dyn er_engine::git::Git, root_path: &str) -> Option<ProjectRecord> {
+pub fn auto_register(
+    github: &dyn er_engine::github::GitHub,
+    git: &dyn er_engine::git::Git,
+    root_path: &str,
+) -> Option<ProjectRecord> {
     let root_path = project_root_for(git, root_path)?;
     let root_path = root_path.as_str();
     let mut file = load();
@@ -702,7 +646,7 @@ pub fn auto_register(git: &dyn er_engine::git::Git, root_path: &str) -> Option<P
         .unwrap_or("project")
         .to_string();
     let id = sanitize_id(&folder);
-    let remote = query_remote(root_path);
+    let remote = query_remote(github, root_path);
 
     // Upsert by root_path — an existing row here has `remote == None` (the fast
     // path returned otherwise), so save only when the remote is actually filled.
@@ -1410,35 +1354,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn slug_from_remote_url_rejects_anything_that_is_not_owner_and_repo() {
-        // Every one of these must fall through to the `gh` fallback. A wrong
-        // slug is worse than no slug: it keys PR lookups and the project row on
-        // a repository that does not exist, with no error anywhere.
-        for url in [
-            "",
-            "   ",
-            "git@github.com",
-            "git@github.com:onlyowner.git",
-            "https://github.com/a/b/c.git",
-            "https://github.com/VilfredSikker/easy-review/issues",
-            "/local/path/to/repo",
-            // Non-GitHub hosts must fall through to `gh`. Handing a slug to the
-            // callers instead would be a behaviour change: they see `None`
-            // today, and `prUrl.ts` accepts any slug with a slash, so this one
-            // would render a wrong PR link rather than no link.
-            "git@ghe.corp.example.com:team/service.git",
-            "https://gitlab.com/team/app.git",
-            "https://bitbucket.org/team/app.git",
-        ] {
-            assert_eq!(
-                slug_from_remote_url(url),
-                None,
-                "{url} must not reduce to a slug"
-            );
-        }
-    }
-
     /// Build a throwaway repo with the given remotes, in order.
     fn repo_with_remotes(remotes: &[(&str, &str)]) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1501,9 +1416,9 @@ mod tests {
             "git@github.com:er-test-no-such-org-zz9/no-such-repo.git",
         )]);
         let root = tmp.path().join("repo");
+        let ports = er_engine::ports::Ports::cli();
         assert_eq!(
-            resolve_repo_remote(&*er_engine::ports::Ports::cli().git, root.to_str().unwrap())
-                .as_deref(),
+            resolve_repo_remote(&*ports.github, &*ports.git, root.to_str().unwrap()).as_deref(),
             Some("er-test-no-such-org-zz9/no-such-repo")
         );
     }

@@ -8,11 +8,10 @@
 //! CDN URL.
 
 use std::io::Read as _;
+use std::sync::Arc;
 use std::time::Duration;
 
-use er_engine::proc::CommandTimeoutExt as _;
-
-use crate::commands::run_blocking;
+use crate::commands::{run_blocking, AppState};
 
 /// Larger attachments are screenshots of a whole screen at most; a cap keeps a
 /// hostile body from streaming an unbounded response into memory.
@@ -52,15 +51,9 @@ fn route(url: &str) -> Option<Auth> {
     }
 }
 
-fn gh_token() -> Option<String> {
-    let output = std::process::Command::new("gh")
-        .args(["auth", "token", "--hostname", "github.com"])
-        .output_timed(er_engine::proc::GH_TIMEOUT)
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let token = String::from_utf8(output.stdout).ok()?.trim().to_string();
+fn gh_token(github: &dyn er_engine::github::GitHub) -> Option<String> {
+    let token = github.auth_token("github.com").ok()?;
+    let token = token.trim().to_string();
     (!token.is_empty()).then_some(token)
 }
 
@@ -71,7 +64,7 @@ fn image_mime(content_type: &str) -> Option<String> {
     mime.starts_with("image/").then_some(mime)
 }
 
-fn fetch(url: &str) -> Result<String, String> {
+fn fetch(github: &dyn er_engine::github::GitHub, url: &str) -> Result<String, String> {
     let auth = route(url).ok_or("Not a GitHub image URL")?;
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
@@ -79,7 +72,7 @@ fn fetch(url: &str) -> Result<String, String> {
     let agent = ureq::Agent::new_with_config(config);
     let mut request = agent.get(url).header("User-Agent", "easy-review-desktop");
     if auth == Auth::Token {
-        if let Some(token) = gh_token() {
+        if let Some(token) = gh_token(github) {
             request = request.header("Authorization", &format!("token {token}"));
         }
     }
@@ -109,8 +102,12 @@ fn fetch(url: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn fetch_github_image(url: String) -> Result<String, String> {
-    run_blocking(move || fetch(&url)).await
+pub async fn fetch_github_image(
+    url: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let github = Arc::clone(&state.ports.github);
+    run_blocking(move || fetch(&*github, &url)).await
 }
 
 #[cfg(test)]

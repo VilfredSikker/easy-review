@@ -17,13 +17,35 @@ const ROOT_VERSION_DIR: &str = "v1";
 /// Longest readable part of a hashed slug, in bytes.
 const READABLE_MAX_BYTES: usize = 80;
 
+/// Run `f` with the storage root overridden on this thread.
+///
+/// Tests that need an isolated root use this instead of setting
+/// `ER_STORAGE_ROOT`: `set_var` rewrites the process environment while
+/// parallel tests read it, which is a data race.
+#[cfg(feature = "test-support")]
+pub fn with_test_storage_root<R>(root: impl Into<PathBuf>, f: impl FnOnce() -> R) -> R {
+    let root = root.into();
+    crate::test_support::with_var("ER_STORAGE_ROOT", root.to_string_lossy().into_owned(), f)
+}
+
+fn storage_root_override() -> Option<String> {
+    #[cfg(feature = "test-support")]
+    {
+        crate::test_support::var("ER_STORAGE_ROOT")
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        std::env::var("ER_STORAGE_ROOT").ok()
+    }
+}
+
 /// The storage base: the directory that holds `v1/` and any older data.
 ///
 /// Overridden by `ER_STORAGE_ROOT` when set — used by tests to write under a
 /// temporary directory without touching the real user data dir.
 pub fn storage_base() -> PathBuf {
     storage_base_from(
-        std::env::var("ER_STORAGE_ROOT").ok().as_deref(),
+        storage_root_override().as_deref(),
         dirs::data_dir(),
         dirs::home_dir(),
     )
@@ -36,7 +58,7 @@ pub fn storage_base() -> PathBuf {
 /// directory keeps that directory as the root.
 pub fn storage_root() -> PathBuf {
     storage_root_from(
-        std::env::var("ER_STORAGE_ROOT").ok().as_deref(),
+        storage_root_override().as_deref(),
         dirs::data_dir(),
         dirs::home_dir(),
     )

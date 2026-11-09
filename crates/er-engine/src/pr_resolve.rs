@@ -296,16 +296,10 @@ fn find_project_for_slug<'a>(
 }
 
 fn parse_repo_slug_pair(s: &str) -> Option<(String, String)> {
-    let trimmed = s.trim().trim_end_matches('/');
-    let (owner, repo) = trimmed.split_once('/')?;
-    if owner.is_empty() || repo.is_empty() || owner.contains('\\') {
+    if s.contains(':') {
         return None;
     }
-    // Avoid treating filesystem paths as slugs.
-    if trimmed.starts_with('/') || trimmed.starts_with('~') || trimmed.starts_with('.') {
-        return None;
-    }
-    Some((owner.to_string(), repo.trim_end_matches(".git").to_string()))
+    crate::github::RepoSlug::parse(s).map(|slug| (slug.owner, slug.repo))
 }
 
 fn parse_repo_number(s: &str) -> Option<(String, String, u64)> {
