@@ -66,3 +66,84 @@ impl FileWatcher {
         })
     }
 }
+
+/// A debounced watcher over the managed store root.
+///
+/// It reports registered store files as [`er_store::StoreEvent`]s. Nothing
+/// consumes the channel yet; mtime polling stays until phase 4.
+pub struct StoreWatcher {
+    _watcher: notify_debouncer_mini::Debouncer<RecommendedWatcher>,
+}
+
+impl StoreWatcher {
+    /// Start watching a store root. Registered changes are sent on `tx`.
+    pub fn new(
+        root: &Path,
+        registry: er_store::Registry,
+        ignore: Vec<er_store::Pattern>,
+        debounce_ms: u64,
+        tx: mpsc::Sender<er_store::StoreEvent>,
+    ) -> Result<Self> {
+        std::fs::create_dir_all(root)?;
+        let root = std::fs::canonicalize(root)?;
+        let watched_root = root.clone();
+        let mut debouncer = new_debouncer(
+            Duration::from_millis(debounce_ms),
+            move |result: std::result::Result<
+                Vec<notify_debouncer_mini::DebouncedEvent>,
+                notify::Error,
+            >| {
+                if let Ok(events) = result {
+                    for event in events
+                        .iter()
+                        .filter(|event| event.kind == DebouncedEventKind::Any)
+                    {
+                        if let Some(store_event) =
+                            er_store::event_for_path(&watched_root, &event.path, &registry, &ignore)
+                        {
+                            let _ = tx.send(store_event);
+                        }
+                    }
+                }
+            },
+        )?;
+        debouncer.watcher().watch(&root, RecursiveMode::Recursive)?;
+        Ok(Self {
+            _watcher: debouncer,
+        })
+    }
+}
+
+#[cfg(test)]
+mod store_watcher_tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use er_store::{ArtifactStore, BranchView, Pattern, Registry, RelPath, Scope, Slug};
+
+    use super::StoreWatcher;
+
+    #[test]
+    fn store_watcher_reports_a_bucket_write() {
+        let root = tempfile::TempDir::new().unwrap();
+        let mut registry = Registry::new();
+        registry.register_text("test", "notes.txt").unwrap();
+        let ignore = vec![Pattern::new(".lock"), Pattern::new(".lease")];
+        let (tx, rx) = mpsc::channel();
+        let _watcher = StoreWatcher::new(root.path(), registry, ignore, 100, tx).unwrap();
+
+        let store = ArtifactStore::new(root.path());
+        let scope = Scope::Branch {
+            repo: Slug::new("my-repo").unwrap(),
+            branch: Slug::new("feature-x").unwrap(),
+            view: BranchView::Branch,
+        };
+        store
+            .write_text(&scope, &RelPath::new("notes.txt").unwrap(), "hi")
+            .unwrap();
+
+        let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(event.scope, scope);
+        assert_eq!(event.kind, "test");
+    }
+}
