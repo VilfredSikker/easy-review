@@ -279,6 +279,39 @@ pub fn rebuild_comment_store(
     gc
 }
 
+/// Merge one fetched pull into the comments file under the store lock.
+///
+/// The caller must fetch before calling this. Rebuilding from `current` inside
+/// the update closure is what keeps a local reply written since the fetch; the
+/// background sync and the TUI's manual pull both come through here.
+pub fn write_pulled_comments(
+    ctx: &CommentSyncContext,
+    gh_comments: &[github::GitHubComment],
+    thread_state: &std::collections::HashMap<u64, ReviewThreadState>,
+) -> Result<ai::ErGithubComments> {
+    let comments_path = std::path::Path::new(&ctx.comments_path);
+    let comments_dir = comments_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("invalid comments path: {}", ctx.comments_path))?;
+    let store = crate::store_registry::store();
+    let scope = er_store::Scope::dir(comments_dir)?;
+    let updated = crate::ai::annotation_store::update_github_comments(&store, &scope, |current| {
+        Ok::<_, std::convert::Infallible>(rebuild_comment_store(
+            ctx,
+            current.unwrap_or_else(|| ai::ErGithubComments {
+                version: 1,
+                diff_hash: ctx.diff_hash.clone(),
+                github: None,
+                comments: Vec::new(),
+            }),
+            gh_comments,
+            thread_state,
+        ))
+    })
+    .map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok(updated.value)
+}
+
 pub(crate) const fn merged_outdated_state(
     thread_state: ReviewThreadState,
     rest_outdated: bool,
@@ -353,29 +386,9 @@ fn fetch_comment_sync_data_with(
     });
     let (gh_comments, thread_state) = bundle?;
 
-    // The fetch above ran outside every lock; rebuilding from `current` here
-    // keeps a local reply written since the fetch.
-    let comments_path = std::path::Path::new(&ctx.comments_path);
-    let comments_dir = comments_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("invalid comments path: {}", ctx.comments_path))?;
-    let store = crate::store_registry::store();
-    let scope = er_store::Scope::dir(comments_dir)?;
-    let updated = crate::ai::annotation_store::update_github_comments(&store, &scope, |current| {
-        Ok::<_, std::convert::Infallible>(rebuild_comment_store(
-            ctx,
-            current.unwrap_or_else(|| ai::ErGithubComments {
-                version: 1,
-                diff_hash: ctx.diff_hash.clone(),
-                github: None,
-                comments: Vec::new(),
-            }),
-            &gh_comments,
-            &thread_state,
-        ))
-    })
-    .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let gc = updated.value;
+    // The fetch above ran outside every lock; rebuilding from `current` in the
+    // shared write keeps a local reply written since the fetch.
+    let gc = write_pulled_comments(ctx, &gh_comments, &thread_state)?;
     let github_count = gc.comments.iter().filter(|c| c.source == "github").count();
     let local_count = gc.comments.iter().filter(|c| keep_on_pull(c)).count();
 

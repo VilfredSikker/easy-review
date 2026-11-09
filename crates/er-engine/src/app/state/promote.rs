@@ -117,8 +117,7 @@ impl App {
         let source_id_for_delete = source_id.to_string();
         let questions_updated =
             annotation_store::update_questions(&store, &scope, move |current| {
-                let mut questions =
-                    current.context("the questions file is missing or unreadable")?;
+                let mut questions = current.context("questions.json is missing or unreadable")?;
                 questions.questions.retain(|question| {
                     question.id != source_id_for_delete
                         && question.in_reply_to.as_deref() != Some(source_id_for_delete.as_str())

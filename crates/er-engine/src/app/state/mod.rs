@@ -4004,8 +4004,8 @@ impl TabState {
             {
                 adopted = Some(updated.value);
             }
-            if migrated {
-                // Drop the orphan file so the migration runs once.
+            if adopted.is_some() && migrated {
+                // Drop the orphan file only after the merged write succeeded.
                 if let Ok(orphan_scope) = er_store::Scope::dir(er_dir) {
                     let _ =
                         ai::annotation_store::delete::<ai::ErGithubComments>(&store, &orphan_scope);
@@ -11159,6 +11159,47 @@ mod tests {
             "the orphan file is removed"
         );
         std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_pr_bucket_write_keeps_the_orphan_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let er_dir = tmp.path().join("branch");
+        let gh_dir = tmp.path().join("pr");
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::create_dir_all(&gh_dir).unwrap();
+        let orphan_path = er_dir.join("github-comments.json");
+        let orphan = ai::ErGithubComments {
+            version: 1,
+            diff_hash: "h".into(),
+            github: None,
+            comments: vec![make_local_comment("c-orphan")],
+        };
+        std::fs::write(&orphan_path, serde_json::to_string_pretty(&orphan).unwrap()).unwrap();
+        // The lock can be opened; the temp write cannot be created.
+        std::fs::write(gh_dir.join(".lock"), "").unwrap();
+        let mut perms = std::fs::metadata(&gh_dir).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&gh_dir, perms).unwrap();
+
+        let adopted = TabState::adopt_pr_bucket_comments(
+            Some(orphan),
+            gh_dir.to_str().unwrap(),
+            er_dir.to_str().unwrap(),
+        );
+
+        let mut restore = std::fs::metadata(&gh_dir).unwrap().permissions();
+        restore.set_mode(0o755);
+        std::fs::set_permissions(&gh_dir, restore).unwrap();
+
+        assert!(adopted.is_none(), "the failed write adopts nothing");
+        assert!(
+            orphan_path.exists(),
+            "the orphan file is kept when the merge write fails"
+        );
     }
 
     // ── refresh_finding_staleness ──

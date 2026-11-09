@@ -1,7 +1,5 @@
 use anyhow::Result;
 
-use crate::ai;
-
 // The pure sync core (no App dependency) lives in `crate::sync`; re-exported
 // here so existing `crate::app::...` paths keep working.
 pub use crate::sync::{
@@ -165,27 +163,7 @@ impl App {
         };
 
         let ctx = self.snapshot_for_comment_sync(owner.clone(), repo_name.clone(), pr_number)?;
-        let comments_path = std::path::Path::new(&ctx.comments_path);
-        let comments_dir = comments_path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("invalid comments path: {}", ctx.comments_path))?;
-        let store = crate::store_registry::store();
-        let scope = er_store::Scope::dir(comments_dir)?;
-        let updated = ai::annotation_store::update_github_comments(&store, &scope, |current| {
-            Ok::<_, std::convert::Infallible>(crate::sync::rebuild_comment_store(
-                &ctx,
-                current.unwrap_or_else(|| ai::ErGithubComments {
-                    version: 1,
-                    diff_hash: ctx.diff_hash.clone(),
-                    github: None,
-                    comments: Vec::new(),
-                }),
-                &gh_comments,
-                &thread_state,
-            ))
-        })
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-        let gc = updated.value;
+        let gc = crate::sync::write_pulled_comments(&ctx, &gh_comments, &thread_state)?;
         let github_count = gc.comments.iter().filter(|c| c.source == "github").count();
         let local_count = gc
             .comments

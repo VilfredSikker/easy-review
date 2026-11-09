@@ -6131,6 +6131,25 @@ mod background_queue_tests {
     }
 
     #[test]
+    fn a_delete_of_a_corrupt_notes_file_writes_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().er_root =
+            crate::paths::ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
+        let er_dir = app.tab().er_dir();
+        std::fs::create_dir_all(&er_dir).unwrap();
+        let path = std::path::Path::new(&er_dir).join("notes.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        assert!(app.confirm_delete_comment("n-1").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{ not json",
+            "the corrupt file is not overwritten with a fresh payload"
+        );
+    }
+
+    #[test]
     fn a_delete_of_a_missing_file_writes_nothing() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut app = App::new_for_test(vec![]);
