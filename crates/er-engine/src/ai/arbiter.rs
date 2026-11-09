@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 /// `.er/arbiter.json`
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ArbiterReview {
     pub version: u32,
     pub diff_hash: String,
@@ -26,7 +26,7 @@ pub struct ArbiterReview {
 }
 
 /// What the arbiter decided about one finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ArbiterRuling {
     Kept,
@@ -37,7 +37,7 @@ pub enum ArbiterRuling {
     Dropped,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ArbiterVerdict {
     /// Content-addressed, so a verdict cannot attach to a different claim
     /// wearing a recycled positional id.
@@ -64,10 +64,21 @@ pub struct ArbiterVerdict {
 
 const MAX_SIDECAR_BYTES: u64 = 10_000_000;
 
+impl er_store::Artifact for ArbiterReview {
+    const KIND: &'static str = "arbiter";
+    const VERSION: u32 = 1;
+    const MODE: er_store::Mode = er_store::Mode::Bare;
+    const FILE: &'static str = "arbiter.json";
+    type Slot = ();
+
+    fn diff_hash(&self) -> Option<&str> {
+        Some(&self.diff_hash)
+    }
+}
+
 /// Read `<er_dir>/arbiter.json`. Absent or malformed reads as "no verdicts".
 pub fn load_arbiter_review(er_dir: &str) -> Option<ArbiterReview> {
-    let bytes = arbiter_overlay_stamp(er_dir)?;
-    serde_json::from_slice(&bytes).ok()
+    crate::store_registry::read_found::<ArbiterReview>(er_dir, ())
 }
 
 /// Capture the exact bytes used for both overlay loading and change detection.
@@ -83,11 +94,10 @@ pub fn arbiter_overlay_stamp(er_dir: &str) -> Option<Vec<u8>> {
 
 /// Serialize verdicts for `<er_dir>/arbiter.json`, atomically.
 pub fn write_arbiter_review(er_dir: &str, review: &ArbiterReview) -> anyhow::Result<()> {
-    let path = std::path::Path::new(er_dir).join("arbiter.json");
-    let json = serde_json::to_string_pretty(review)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json.as_bytes())?;
-    std::fs::rename(&tmp, &path)?;
+    let store = crate::store_registry::store();
+    let scope = er_store::Scope::dir(er_dir)?;
+    let key = er_store::ArtifactKey::<ArbiterReview>::new(scope, ())?;
+    store.write(&key, review)?;
     Ok(())
 }
 
@@ -351,6 +361,20 @@ mod tests {
             run_id: "arena-1".to_string(),
             verdicts,
         }
+    }
+
+    #[test]
+    fn writing_the_arbiter_file_keeps_the_bare_bytes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let review = arbiter(HASH, vec![verdict(ArbiterRuling::Kept, None)]);
+
+        write_arbiter_review(dir.path().to_str().unwrap(), &review).unwrap();
+
+        let raw = std::fs::read_to_string(dir.path().join("arbiter.json")).unwrap();
+        assert_eq!(raw, serde_json::to_string_pretty(&review).unwrap());
+        let loaded = load_arbiter_review(dir.path().to_str().unwrap()).expect("the written file");
+        assert_eq!(loaded.diff_hash, HASH);
+        assert_eq!(loaded.verdicts.len(), 1);
     }
 
     #[test]

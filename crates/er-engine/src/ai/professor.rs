@@ -2,14 +2,13 @@
 
 use super::review::{ErFileReview, ErReview, Finding, RiskLevel};
 use std::collections::HashMap;
-use std::path::Path;
 
 pub const PROFESSOR_ID: &str = "professor";
 pub const PROFESSOR_LABEL: &str = "Professor";
 pub const PROFESSOR_ID_PREFIX: &str = "prof";
 
 /// `.er/professor.json` — teaching insights anchored to hunks.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ProfessorReview {
     pub version: u32,
     pub diff_hash: String,
@@ -26,25 +25,26 @@ pub struct ProfessorReview {
     pub files: HashMap<String, ProfessorFileReview>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ProfessorFileReview {
     #[serde(default, deserialize_with = "super::review::lenient_findings")]
     pub findings: Vec<Finding>,
 }
 
-const MAX_SIDECAR_BYTES: u64 = 10_000_000;
+impl er_store::Artifact for ProfessorReview {
+    const KIND: &'static str = "professor";
+    const VERSION: u32 = 1;
+    const MODE: er_store::Mode = er_store::Mode::Bare;
+    const FILE: &'static str = "professor.json";
+    type Slot = ();
 
-fn read_professor_sidecar(path: &Path) -> Option<ProfessorReview> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.len() > MAX_SIDECAR_BYTES {
-        return None;
+    fn diff_hash(&self) -> Option<&str> {
+        Some(&self.diff_hash)
     }
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
 }
 
 pub fn load_professor_review(er_dir: &str) -> Option<ProfessorReview> {
-    read_professor_sidecar(&Path::new(er_dir).join("professor.json"))
+    crate::store_registry::read_found::<ProfessorReview>(er_dir, ())
 }
 
 fn prefix_finding_id(id: &str) -> String {

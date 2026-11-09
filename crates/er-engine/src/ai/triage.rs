@@ -1,14 +1,15 @@
 //! Triage reviewer — fast branch scan in `.er/triage.json` (routing verdict, not findings).
 
 use super::review::RiskLevel;
-use std::path::Path;
 
 pub const TRIAGE_ID: &str = "triage";
 pub const TRIAGE_LABEL: &str = "Triage";
 pub const TRIAGE_SKILL: &str = "er-triage";
 
 /// Recommended next review step from triage.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum TriageVerdictPrimary {
     #[default]
@@ -20,7 +21,7 @@ pub enum TriageVerdictPrimary {
 }
 
 /// `.er/triage.json` — first impression + routing verdict + priority files.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TriageReview {
     pub version: u32,
     pub diff_hash: String,
@@ -45,13 +46,25 @@ pub struct TriageReview {
     pub sensitive: TriageSensitive,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+impl er_store::Artifact for TriageReview {
+    const KIND: &'static str = "triage";
+    const VERSION: u32 = 1;
+    const MODE: er_store::Mode = er_store::Mode::Bare;
+    const FILE: &'static str = "triage.json";
+    type Slot = ();
+
+    fn diff_hash(&self) -> Option<&str> {
+        Some(&self.diff_hash)
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TriageSensitive {
     #[serde(default)]
     pub reasons: Vec<TriageSensitiveReason>,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TriageSensitiveReason {
     #[serde(default)]
     pub kind: String,
@@ -69,7 +82,7 @@ impl TriageSensitive {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TriageDiffStats {
     #[serde(default)]
     pub files_changed: u32,
@@ -79,7 +92,7 @@ pub struct TriageDiffStats {
     pub domains: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TriageVerdict {
     #[serde(default)]
     pub primary: TriageVerdictPrimary,
@@ -91,7 +104,7 @@ pub struct TriageVerdict {
     pub confidence: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TriagePriorityFile {
     pub path: String,
     #[serde(default)]
@@ -101,7 +114,17 @@ pub struct TriagePriorityFile {
 }
 
 /// How far a change reaches into code that existed before it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ReachLevel {
     /// New code that nothing existing calls into, apart from wiring.
@@ -128,7 +151,7 @@ impl ReachLevel {
 
 /// Triage's reach call. Engine facts (`change-facts.md`) feed it; the agent
 /// judges it. `docs/adr/0039-reach-is-judged-from-engine-facts.md`.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TriageReach {
     #[serde(default, deserialize_with = "lenient_reach_level")]
     pub level: ReachLevel,
@@ -143,7 +166,7 @@ pub struct TriageReach {
 }
 
 /// A switch that keeps the new code off until someone turns it on.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct TriageGuard {
     /// `feature_flag`, `permission`, `config`, `unrouted`, or another word.
     #[serde(default)]
@@ -198,19 +221,8 @@ where
         .unwrap_or_default())
 }
 
-const MAX_SIDECAR_BYTES: u64 = 10_000_000;
-
-fn read_triage_sidecar(path: &Path) -> Option<TriageReview> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.len() > MAX_SIDECAR_BYTES {
-        return None;
-    }
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
 pub fn load_triage_review(er_dir: &str) -> Option<TriageReview> {
-    read_triage_sidecar(&Path::new(er_dir).join("triage.json"))
+    crate::store_registry::read_found::<TriageReview>(er_dir, ())
 }
 
 pub fn triage_is_fresh(triage: &TriageReview, current_diff_hash: &str) -> bool {

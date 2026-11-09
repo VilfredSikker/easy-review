@@ -180,14 +180,14 @@ pub fn artifacts_branch_mismatch(er_dir: &Path, scope: &str) -> bool {
     if !branch_declaration_is_real(scope) {
         return false;
     }
-    let review_path = er_dir.join("review.json");
-    if let Ok(content) = read_sidecar(&review_path) {
-        if let Ok(review) = serde_json::from_str::<ErReview>(&content) {
-            if branch_declaration_is_real(&review.head_branch)
-                && !storage_branches_match(scope, &review.head_branch)
-            {
-                return true;
-            }
+    if let Some(review) = er_dir
+        .to_str()
+        .and_then(|dir| crate::store_registry::read_found::<ErReview>(dir, ()))
+    {
+        if branch_declaration_is_real(&review.head_branch)
+            && !storage_branches_match(scope, &review.head_branch)
+        {
+            return true;
         }
     }
     let summary_path = er_dir.join("summary.md");
@@ -228,17 +228,13 @@ pub fn load_ai_state_with_arbiter(
         }
     }
 
-    // Load .er/review.json
-    let review_path = er_path.join("review.json");
-    if let Ok(content) = read_sidecar(&review_path) {
-        // A sidecar that fails to deserialize is treated the same as an absent file.
-        if let Ok(mut review) = serde_json::from_str::<ErReview>(&content) {
-            // Attribute findings from sidecars written before `Finding.lens`,
-            // before the expert/professor merges below add their own.
-            backfill_finding_lenses(&mut review);
-            state.is_stale = review.diff_hash != current_diff_hash;
-            state.review = Some(review);
-        }
+    // Load .er/review.json. A sidecar that cannot be used reads as absent.
+    if let Some(mut review) = crate::store_registry::read_found::<ErReview>(er_dir, ()) {
+        // Attribute findings from sidecars written before `Finding.lens`,
+        // before the expert/professor merges below add their own.
+        backfill_finding_lenses(&mut review);
+        state.is_stale = review.diff_hash != current_diff_hash;
+        state.review = Some(review);
     }
 
     // The store-backed sidecars share one scope; an invalid directory skips them.
@@ -1169,6 +1165,55 @@ mod tests {
         let summaries: Vec<&str> = state.agent_summaries.values().map(String::as_str).collect();
         assert!(summaries.contains(&"Rel summary"));
         assert!(!summaries.contains(&"Old summary"));
+    }
+
+    #[test]
+    fn a_stale_review_still_loads_and_is_marked_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "old",
+            "files": {
+                "a.rs": {
+                    "risk": "medium",
+                    "findings": [{
+                        "id": "1",
+                        "title": "claim",
+                        "severity": "medium",
+                        "hunk_index": 0
+                    }]
+                }
+            }
+        });
+        std::fs::write(
+            dir.path().join("review.json"),
+            serde_json::to_string(&review).unwrap(),
+        )
+        .unwrap();
+
+        let state = load_ai_state(dir.path().to_str().unwrap(), "new", None);
+
+        assert!(state.is_stale);
+        let review = state.review.expect("a stale review still loads");
+        assert_eq!(review.diff_hash, "old");
+        assert_eq!(review.files["a.rs"].findings.len(), 1);
+    }
+
+    #[test]
+    fn a_review_from_a_newer_version_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("review.json"),
+            r#"{"version":2,"diff_hash":"new","files":{}}"#,
+        )
+        .unwrap();
+
+        let state = load_ai_state(dir.path().to_str().unwrap(), "new", None);
+
+        assert!(
+            state.review.is_none(),
+            "a newer schema is ignored, never guessed at"
+        );
     }
 
     #[test]
