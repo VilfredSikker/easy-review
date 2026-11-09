@@ -115,17 +115,13 @@ fn ensure_remote_project_in_file(file: &mut ProjectsFile, remote: &str) -> anyho
 }
 
 pub fn ensure_remote_project(remote: &str) -> anyhow::Result<String> {
-    let mut file = load();
-    let before = file.projects.len();
-    let project_id = ensure_remote_project_in_file(&mut file, remote)?;
-    // Persist only when a new record was actually appended. The lookup path
-    // (a project for this remote already exists) is a pure no-op, and an
-    // unconditional save() here invalidates the mtime load cache on every PR
-    // open — forcing the next snapshot poll to re-parse projects.json.
-    if file.projects.len() != before {
-        save(&file)?;
-    }
-    Ok(project_id)
+    let mut project_id = None;
+    update_file(|file| {
+        let before = file.projects.len();
+        project_id = Some(ensure_remote_project_in_file(file, remote)?);
+        Ok(file.projects.len() != before)
+    })?;
+    project_id.ok_or_else(|| anyhow::anyhow!("project id missing after register"))
 }
 
 fn delete_project_in_file(file: &mut ProjectsFile, project_id: &str) -> anyhow::Result<()> {
@@ -141,9 +137,10 @@ fn delete_project_in_file(file: &mut ProjectsFile, project_id: &str) -> anyhow::
 }
 
 pub fn delete_project(project_id: &str) -> anyhow::Result<()> {
-    let mut file = load();
-    delete_project_in_file(&mut file, project_id)?;
-    save(&file)
+    update_file(|file| {
+        delete_project_in_file(file, project_id)?;
+        Ok(true)
+    })
 }
 
 /// Rewrite persisted project order to match `ordered_ids`. Unknown ids in the
@@ -267,17 +264,6 @@ pub fn load() -> ProjectsFile {
         *guard = Some((mtime, parsed.clone()));
     }
     parsed
-}
-
-pub fn save(file: &ProjectsFile) -> anyhow::Result<()> {
-    save_unlocked(file)
-}
-
-fn save_unlocked(file: &ProjectsFile) -> anyhow::Result<()> {
-    er_engine::projects_pins::save(file)?;
-    invalidate_load_cache();
-    PROJECTS_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
-    Ok(())
 }
 
 /// Load-mutate-save under the store's scope lock, so this writer cannot
@@ -555,7 +541,7 @@ pub fn auto_register(
 ) -> Option<ProjectRecord> {
     let root_path = project_root_for(git, root_path)?;
     let root_path = root_path.as_str();
-    let mut file = load();
+    let file = load();
 
     // Fast path: already registered with a known remote. Skip both the
     // `gh repo view` subprocess and the disk write — pure waste on re-open.
@@ -572,59 +558,48 @@ pub fn auto_register(
         .to_string();
     let id = sanitize_id(&folder);
     let remote = query_remote(github, root_path);
-
-    // Upsert by root_path — an existing row here has `remote == None` (the fast
-    // path returned otherwise), so save only when the remote is actually filled.
-    if let Some(existing) = file.projects.iter_mut().find(|p| p.root_path == root_path) {
-        let changed = if existing.remote.is_none() && remote.is_some() {
-            existing.remote = remote;
-            true
-        } else {
-            false
-        };
-        let record = existing.clone();
-        if changed {
-            let _ = save(&file);
-        }
-        return Some(record);
-    }
-
-    // Ensure id uniqueness
-    let mut unique_id = id.clone();
-    let mut n = 2;
-    while file.projects.iter().any(|p| p.id == unique_id) {
-        unique_id = format!("{}-{}", id, n);
-        n += 1;
-    }
-
     let tracked_branches = current_branch(git, root_path)
         .map(|b| vec![b])
         .unwrap_or_default();
 
-    let record = ProjectRecord {
-        id: unique_id,
-        name: folder,
-        root_path: root_path.to_string(),
-        remote,
-        dismissed_prs: Vec::new(),
-        tracked_prs: Vec::new(),
-        tracked_branches,
-        dismissed_branches: Vec::new(),
-        recent_prs: Vec::new(),
-        saved_prs: Vec::new(),
-        auto_triage: false,
-        auto_triage_own_prs: false,
-        auto_triage_when: default_auto_triage_when(),
-        auto_triage_max_diff_kb: 0,
-        review_ignore_globs: Vec::new(),
-        extra: Default::default(),
-    };
-    file.projects.push(record.clone());
-    if file.active_id.is_none() {
-        file.active_id = Some(record.id.clone());
-    }
-    let _ = save(&file);
-    Some(record)
+    let mut record = None;
+    let _ = update_file(|file| {
+        // Upsert by root_path — an existing row here has `remote == None` (the
+        // fast path returned otherwise), so only a filled remote is a change.
+        if let Some(existing) = file.projects.iter_mut().find(|p| p.root_path == root_path) {
+            let changed = if existing.remote.is_none() && remote.is_some() {
+                existing.remote = remote.clone();
+                true
+            } else {
+                false
+            };
+            record = Some(existing.clone());
+            return Ok(changed);
+        }
+
+        let mut unique_id = id.clone();
+        let mut n = 2;
+        while file.projects.iter().any(|p| p.id == unique_id) {
+            unique_id = format!("{}-{}", id, n);
+            n += 1;
+        }
+        let created = ProjectRecord {
+            id: unique_id,
+            name: folder.clone(),
+            root_path: root_path.to_string(),
+            remote: remote.clone(),
+            tracked_branches: tracked_branches.clone(),
+            auto_triage_when: default_auto_triage_when(),
+            ..Default::default()
+        };
+        file.projects.push(created.clone());
+        if file.active_id.is_none() {
+            file.active_id = Some(created.id.clone());
+        }
+        record = Some(created);
+        Ok(true)
+    });
+    record
 }
 
 pub fn dismiss_pr(project_id: &str, pr_number: u64) {
@@ -654,43 +629,39 @@ pub fn undismiss_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
 }
 
 pub fn track_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
-    let mut file = load();
-    let proj = file
-        .projects
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    let mut changed = if !proj.tracked_prs.contains(&pr_number) {
-        proj.tracked_prs.push(pr_number);
-        true
-    } else {
-        false
-    };
-    // Explicit tracking overrides a prior dismiss.
-    let before = proj.dismissed_prs.len();
-    proj.dismissed_prs.retain(|n| n != &pr_number);
-    if proj.dismissed_prs.len() != before {
-        changed = true;
-    }
-    if changed {
-        save(&file)?;
-    }
-    Ok(())
+    update_file(|file| {
+        let proj = file
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+        let mut changed = if !proj.tracked_prs.contains(&pr_number) {
+            proj.tracked_prs.push(pr_number);
+            true
+        } else {
+            false
+        };
+        // Explicit tracking overrides a prior dismiss.
+        let before = proj.dismissed_prs.len();
+        proj.dismissed_prs.retain(|n| n != &pr_number);
+        if proj.dismissed_prs.len() != before {
+            changed = true;
+        }
+        Ok(changed)
+    })
 }
 
 pub fn untrack_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
-    let mut file = load();
-    let proj = file
-        .projects
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    let before = proj.tracked_prs.len();
-    proj.tracked_prs.retain(|n| n != &pr_number);
-    if proj.tracked_prs.len() != before {
-        save(&file)?;
-    }
-    Ok(())
+    update_file(|file| {
+        let proj = file
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+        let before = proj.tracked_prs.len();
+        proj.tracked_prs.retain(|n| n != &pr_number);
+        Ok(proj.tracked_prs.len() != before)
+    })
 }
 
 fn add_tracked_branch_on_project(proj: &mut ProjectRecord, name: &str) -> bool {
@@ -709,16 +680,14 @@ fn add_tracked_branch_on_project(proj: &mut ProjectRecord, name: &str) -> bool {
 }
 
 pub fn add_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()> {
-    let mut file = load();
-    let proj = file
-        .projects
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    if add_tracked_branch_on_project(proj, name) {
-        save(&file)?;
-    }
-    Ok(())
+    update_file(|file| {
+        let proj = file
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+        Ok(add_tracked_branch_on_project(proj, name))
+    })
 }
 
 fn remove_tracked_branch_on_project(proj: &mut ProjectRecord, name: &str) -> bool {
@@ -736,24 +705,25 @@ fn remove_tracked_branch_on_project(proj: &mut ProjectRecord, name: &str) -> boo
 }
 
 pub fn remove_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()> {
-    let mut file = load();
-    let proj = file
-        .projects
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    if remove_tracked_branch_on_project(proj, name) {
-        save(&file)?;
-    }
-    Ok(())
+    update_file(|file| {
+        let proj = file
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+        Ok(remove_tracked_branch_on_project(proj, name))
+    })
 }
 
 pub fn set_active(id: &str) {
-    let mut file = load();
-    if file.projects.iter().any(|p| p.id == id) {
-        file.active_id = Some(id.to_string());
-        let _ = save(&file);
-    }
+    let _ = update_file(|file| {
+        if file.projects.iter().any(|p| p.id == id) {
+            file.active_id = Some(id.to_string());
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    });
 }
 
 pub fn set_auto_triage(project_id: &str, enabled: bool) -> anyhow::Result<()> {
@@ -791,66 +761,63 @@ pub fn patch_project_review_settings(
     project_id: &str,
     patch: ProjectReviewSettingsPatch,
 ) -> anyhow::Result<()> {
-    let mut file = load();
-    let proj = file
-        .projects
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    let mut changed = false;
+    update_file(|file| {
+        let proj = file
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+        let mut changed = false;
 
-    if let Some(enabled) = patch.auto_triage {
-        if proj.auto_triage != enabled {
-            proj.auto_triage = enabled;
-            changed = true;
+        if let Some(enabled) = patch.auto_triage {
+            if proj.auto_triage != enabled {
+                proj.auto_triage = enabled;
+                changed = true;
+            }
+            if !enabled && proj.auto_triage_own_prs {
+                proj.auto_triage_own_prs = false;
+                changed = true;
+            }
         }
-        if !enabled && proj.auto_triage_own_prs {
-            proj.auto_triage_own_prs = false;
-            changed = true;
+        if let Some(enabled) = patch.auto_triage_own_prs {
+            if enabled && !proj.auto_triage {
+                anyhow::bail!("Enable auto-triage before including your own PRs");
+            }
+            if proj.auto_triage_own_prs != enabled {
+                proj.auto_triage_own_prs = enabled;
+                changed = true;
+            }
         }
-    }
-    if let Some(enabled) = patch.auto_triage_own_prs {
-        if enabled && !proj.auto_triage {
-            anyhow::bail!("Enable auto-triage before including your own PRs");
+        if let Some(when) = patch.auto_triage_when {
+            if !AUTO_TRIAGE_WHEN_OPTIONS.contains(&when.as_str()) {
+                anyhow::bail!("Invalid auto_triage_when: {when}");
+            }
+            if proj.auto_triage_when != when {
+                proj.auto_triage_when = when;
+                changed = true;
+            }
         }
-        if proj.auto_triage_own_prs != enabled {
-            proj.auto_triage_own_prs = enabled;
-            changed = true;
+        if let Some(max_kb) = patch.auto_triage_max_diff_kb {
+            if proj.auto_triage_max_diff_kb != max_kb {
+                proj.auto_triage_max_diff_kb = max_kb;
+                changed = true;
+            }
         }
-    }
-    if let Some(when) = patch.auto_triage_when {
-        if !AUTO_TRIAGE_WHEN_OPTIONS.contains(&when.as_str()) {
-            anyhow::bail!("Invalid auto_triage_when: {when}");
+        if let Some(glob) = patch.review_ignore_glob_add {
+            let glob = glob.trim().to_string();
+            if !glob.is_empty() && !proj.review_ignore_globs.iter().any(|g| g == &glob) {
+                proj.review_ignore_globs.push(glob);
+                changed = true;
+            }
         }
-        if proj.auto_triage_when != when {
-            proj.auto_triage_when = when;
-            changed = true;
+        if let Some(index) = patch.review_ignore_glob_remove {
+            if index < proj.review_ignore_globs.len() {
+                proj.review_ignore_globs.remove(index);
+                changed = true;
+            }
         }
-    }
-    if let Some(max_kb) = patch.auto_triage_max_diff_kb {
-        if proj.auto_triage_max_diff_kb != max_kb {
-            proj.auto_triage_max_diff_kb = max_kb;
-            changed = true;
-        }
-    }
-    if let Some(glob) = patch.review_ignore_glob_add {
-        let glob = glob.trim().to_string();
-        if !glob.is_empty() && !proj.review_ignore_globs.iter().any(|g| g == &glob) {
-            proj.review_ignore_globs.push(glob);
-            changed = true;
-        }
-    }
-    if let Some(index) = patch.review_ignore_glob_remove {
-        if index < proj.review_ignore_globs.len() {
-            proj.review_ignore_globs.remove(index);
-            changed = true;
-        }
-    }
-
-    if changed {
-        save(&file)?;
-    }
-    Ok(())
+        Ok(changed)
+    })
 }
 
 /// Resolve a configured project id from inbox target hints (explicit id preferred by caller).
@@ -930,11 +897,16 @@ mod tests {
         er_engine::storage::with_test_storage_root(tmp.path(), || {
             let mut record = local_project("local", Some("owner/repo"));
             record.tracked_prs = vec![99];
-            save(&ProjectsFile {
-                projects: vec![record],
-                active_id: Some("local".into()),
-            })
-            .unwrap();
+            let key = er_engine::app_store::key::<ProjectsFile>().unwrap();
+            er_engine::app_store::store()
+                .write_durable(
+                    &key,
+                    &ProjectsFile {
+                        projects: vec![record],
+                        active_id: Some("local".into()),
+                    },
+                )
+                .unwrap();
 
             // The engine function is what MCP's pin tool calls.
             let pinned = er_engine::projects_pins::pin_pr("local", 5, "Pinned").unwrap();

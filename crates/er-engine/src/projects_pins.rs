@@ -160,25 +160,21 @@ pub fn load() -> ProjectsFile {
 /// written either way so a read-modify-write stays a single locked step.
 pub fn update(op: impl FnOnce(&mut ProjectsFile) -> Result<bool>) -> Result<()> {
     let key = projects_key()?;
-    let result =
-        crate::app_store::store().update_durable(&key, er_store::DEFAULT_LOCK_TIMEOUT, |current| {
-            let mut file = current.unwrap_or_default();
-            op(&mut file)?;
-            Ok(file)
-        });
+    let store = crate::app_store::store();
+    let result = store.update_durable(&key, er_store::DEFAULT_LOCK_TIMEOUT, |current| {
+        // `update` cannot tell absent from unreadable, but the file can.
+        if current.is_none() && store.exists(&key) {
+            return Err(anyhow::anyhow!("the projects record is unreadable"));
+        }
+        let mut file = current.unwrap_or_default();
+        op(&mut file)?;
+        Ok(file)
+    });
     match result {
         Ok(_) => Ok(()),
         Err(UpdateError::Apply(error)) => Err(error),
         Err(UpdateError::Store(error)) => Err(error.into()),
     }
-}
-
-/// Write the record as given.
-pub fn save(file: &ProjectsFile) -> Result<()> {
-    let key = projects_key()?;
-    crate::app_store::store()
-        .write_durable(&key, file)
-        .map_err(|error| anyhow::anyhow!("save projects: {error}"))
 }
 
 /// Normalize a GitHub remote reference to a lowercase `owner/repo` slug.
@@ -529,6 +525,24 @@ mod tests {
             let (id, name) = resolve_project_for_pin(Some("local-1"), "acme", "widgets").unwrap();
             assert_eq!(id, "local-1");
             assert_eq!(name, "Local");
+        });
+    }
+
+    #[test]
+    fn update_refuses_an_unreadable_record_without_replacing_it() {
+        with_temp_store(|| {
+            let path = projects_artifact_path().unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"{").unwrap();
+
+            let error = update(|_| Ok(true)).unwrap_err();
+
+            assert!(error.to_string().contains("unreadable"), "{error}");
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                b"{",
+                "the unreadable record must not be replaced"
+            );
         });
     }
 
