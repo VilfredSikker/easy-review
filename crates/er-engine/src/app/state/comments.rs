@@ -2433,15 +2433,11 @@ impl App {
         }
         tab.ai.toggle_checklist_item(index);
 
-        // Persist atomically via temp file + rename, so a reader never sees a
-        // half-written document.
         if let Some(checklist) = tab.ai.checklist.as_ref() {
-            let checklist_path = format!("{}/checklist.json", tab.er_dir());
-            let tmp_path = format!("{}.tmp", checklist_path);
-            let json = serde_json::to_string_pretty(checklist)?;
-            std::fs::write(&tmp_path, json)?;
-            std::fs::rename(&tmp_path, &checklist_path)?;
-            tab.mark_sidecar_written(&checklist_path);
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(tab.er_dir())?;
+            let path = crate::ai::checklist_store::save_checklist(&store, &scope, checklist)?;
+            tab.mark_sidecar_written(&path.to_string_lossy());
         }
 
         Ok(tab

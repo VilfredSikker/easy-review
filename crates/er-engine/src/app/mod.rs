@@ -5,6 +5,7 @@ mod state;
 pub use state::preview::{
     image_mime, FilePreviewRequest, ImagePreviewRequest, MAX_IMAGE_PREVIEW_BYTES, MAX_PREVIEW_BYTES,
 };
+pub use state::session_store;
 
 pub use card_ai_context::{build_card_ai_system_context, CardAiContextParams};
 pub use card_ai_spawn::{plan_card_ai_invocation, run_card_ai_subprocess, CardAiInvocation};

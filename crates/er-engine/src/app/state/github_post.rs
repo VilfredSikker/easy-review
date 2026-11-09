@@ -1235,8 +1235,7 @@ mod tests {
             tab.comment_finding_ref = Some("f-1".to_string());
             tab.comment_client_id = Some("c-restored".to_string());
         }
-        let session = app.tab().capture_session();
-        session.save(&app.tab().er_root.session_path()).unwrap();
+        app.tab().save_session();
 
         let mut restored = App::new_for_test(vec![sample_file()]);
         restored.tab_mut().er_root =
