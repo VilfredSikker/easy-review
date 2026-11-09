@@ -42,3 +42,7 @@ changes, which is why it can watch a linked worktree instead of the repo root.
 - Send failures are dropped on purpose — a dead receiver means the loop exited.
 - Consumers drain non-blocking with `try_recv()`. A refresh auto-unmarks the
   reviewed files whose diff content actually changed.
+- inotify only watches directories that exist when the watch starts, and it
+  does not replay files written into a directory before that watch lands. A
+  write into a bucket created after the watch starts can be missed until the
+  directory is armed.

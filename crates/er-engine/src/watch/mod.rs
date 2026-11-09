@@ -132,8 +132,6 @@ mod store_watcher_tests {
             branch: Slug::new("feature-x").unwrap(),
             view: BranchView::Branch,
         };
-        // inotify only watches directories that exist when the watch starts.
-        std::fs::create_dir_all(store.scope_dir(&scope)).unwrap();
 
         let mut registry = Registry::new();
         registry.register_text("test", "notes.txt").unwrap();
@@ -141,6 +139,8 @@ mod store_watcher_tests {
         let (tx, rx) = mpsc::channel();
         let _watcher = StoreWatcher::new(root.path(), registry, ignore, 100, tx).unwrap();
 
+        // The bucket does not exist yet; its files are written before inotify
+        // arms the new directory.
         store
             .write_text(&scope, &RelPath::new("notes.txt").unwrap(), "hi")
             .unwrap();

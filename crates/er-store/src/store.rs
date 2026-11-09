@@ -266,22 +266,7 @@ impl ArtifactStore {
         T: Artifact,
         F: FnOnce(Option<T>) -> Result<T, E>,
     {
-        let guard = self.lock_scope(key.scope(), timeout)?;
-        let (current, unreadable) = match self.read(key)? {
-            Loaded::Found(stored) => (Some(stored.value), None),
-            Loaded::Absent => (None, None),
-            Loaded::Unreadable(Unreadable::NewerVersion { found }) => {
-                return Err(UpdateError::Store(StoreError::NewerVersion {
-                    path: self.path(key),
-                    found,
-                    expected: T::VERSION,
-                }));
-            }
-            Loaded::Unreadable(reason) => (None, Some(reason)),
-        };
-        let value = f(current).map_err(UpdateError::Apply)?;
-        self.write_locked(&guard, key, &value)?;
-        Ok((value, unreadable))
+        self.update_with(key, timeout, false, f)
     }
 
     /// [`Self::update`] with the durable write path.
@@ -289,6 +274,20 @@ impl ArtifactStore {
         &self,
         key: &ArtifactKey<T>,
         timeout: Duration,
+        f: F,
+    ) -> Result<(T, Option<Unreadable>), UpdateError<E>>
+    where
+        T: Artifact,
+        F: FnOnce(Option<T>) -> Result<T, E>,
+    {
+        self.update_with(key, timeout, true, f)
+    }
+
+    fn update_with<T, E, F>(
+        &self,
+        key: &ArtifactKey<T>,
+        timeout: Duration,
+        durable: bool,
         f: F,
     ) -> Result<(T, Option<Unreadable>), UpdateError<E>>
     where
@@ -309,7 +308,11 @@ impl ArtifactStore {
             Loaded::Unreadable(reason) => (None, Some(reason)),
         };
         let value = f(current).map_err(UpdateError::Apply)?;
-        self.write_durable_locked(&guard, key, &value)?;
+        if durable {
+            self.write_durable_locked(&guard, key, &value)?;
+        } else {
+            self.write_locked(&guard, key, &value)?;
+        }
         Ok((value, unreadable))
     }
 

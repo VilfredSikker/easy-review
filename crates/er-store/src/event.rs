@@ -138,7 +138,12 @@ mod tests {
     #[test]
     fn event_for_path_skips_ignored_paths() {
         let root = Path::new("/store");
-        let registry = registry();
+        let mut registry = registry();
+        registry.register_text("lock", ".lock").unwrap();
+        registry.register_text("lease", ".lease").unwrap();
+        registry
+            .register_text("tmp", "experts/x.json.123.0.tmp")
+            .unwrap();
         let ignore = ignore_patterns();
         let base = root.join("repos/my-repo/branches/feature-x/view-buckets/unstaged");
         for relative in [

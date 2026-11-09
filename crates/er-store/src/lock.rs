@@ -278,6 +278,8 @@ mod tests {
     }
 
     fn increment(current: Option<TestCounter>) -> Result<TestCounter, std::convert::Infallible> {
+        // Widen the read-to-write window a lost update would need.
+        std::thread::sleep(Duration::from_millis(2));
         Ok(TestCounter {
             version: TestCounter::VERSION,
             diff_hash: "h".to_string(),
@@ -326,7 +328,7 @@ mod tests {
             .unwrap()
     }
 
-    fn wait_for_locked(mut child: std::process::Child) -> std::process::Child {
+    fn wait_for_line(mut child: std::process::Child, expected: &str) -> std::process::Child {
         let stdout = child.stdout.take().unwrap();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -344,14 +346,38 @@ mod tests {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match rx.recv_timeout(remaining) {
-                Ok(line) if line.trim() == "LOCKED" => return child,
+                Ok(line) if line.trim() == expected => return child,
                 Ok(_) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => panic!("helper did not report LOCKED"),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("helper did not report {expected}")
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    panic!("helper stdout closed before LOCKED")
+                    panic!("helper stdout closed before {expected}")
                 }
             }
         }
+    }
+
+    fn spawn_increment_helper(root: &Path, mode: &str) -> std::process::Child {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["lock_helper_child", "--nocapture"])
+            .env("ER_STORE_LOCK_HELPER", root)
+            .env("ER_STORE_LOCK_HELPER_MODE", mode)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    fn start_increment_helper(directory: &TempDir, mode: &str) -> std::process::Child {
+        let child = spawn_increment_helper(directory.path(), mode);
+        let ready = directory.path().join("ready");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "the helper never became ready");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::fs::write(directory.path().join("start"), "go").unwrap();
+        child
     }
 
     #[test]
@@ -400,11 +426,28 @@ mod tests {
     #[test]
     fn two_threads_increment_under_update() {
         let (directory, store) = temp_store();
-        let mut child = spawn_helper(directory.path(), "increment");
+        let mut child = start_increment_helper(&directory, "increment");
         let counter = ArtifactKey::<TestCounter>::new(Scope::App, ()).unwrap();
         for _ in 0..INCREMENT_ROUNDS {
             store
                 .update(&counter, Duration::from_secs(10), increment)
+                .unwrap();
+        }
+        assert!(child.wait().unwrap().success());
+        match store.read(&counter).unwrap() {
+            Loaded::Found(stored) => assert_eq!(stored.value.value, 2 * INCREMENT_ROUNDS),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_threads_increment_under_update_durable() {
+        let (directory, store) = temp_store();
+        let mut child = start_increment_helper(&directory, "increment_durable");
+        let counter = ArtifactKey::<TestCounter>::new(Scope::App, ()).unwrap();
+        for _ in 0..INCREMENT_ROUNDS {
+            store
+                .update_durable(&counter, Duration::from_secs(10), increment)
                 .unwrap();
         }
         assert!(child.wait().unwrap().success());
@@ -632,9 +675,31 @@ mod tests {
     }
 
     #[test]
+    fn update_durable_refuses_a_newer_file() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let key = key::<TestEnveloped>(&scope, ());
+        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
+        let newer = r#"{"kind":"test-enveloped","version":99,"payload":{"value":1}}"#;
+        std::fs::write(store.path(&key), newer).unwrap();
+        let called = Arc::new(AtomicBool::new(false));
+        let flag = called.clone();
+        let result = store.update_durable(&key, Duration::from_secs(5), move |_current| {
+            flag.store(true, Ordering::Relaxed);
+            Ok::<_, std::convert::Infallible>(TestEnveloped { value: 2 })
+        });
+        assert!(matches!(
+            result,
+            Err(UpdateError::Store(StoreError::NewerVersion { .. }))
+        ));
+        assert!(!called.load(Ordering::Relaxed));
+        assert_eq!(std::fs::read_to_string(store.path(&key)).unwrap(), newer);
+    }
+
+    #[test]
     fn dead_holder_releases_the_lock() {
         let (directory, store) = temp_store();
-        let mut child = wait_for_locked(spawn_helper(directory.path(), "write"));
+        let mut child = wait_for_line(spawn_helper(directory.path(), "write"), "LOCKED");
         child.kill().unwrap();
         child.wait().unwrap();
         let guard = store
@@ -648,7 +713,7 @@ mod tests {
     fn windows_dead_holder_releases_the_lock() {
         // No CI job runs this; the Windows lock path is unverified.
         let (directory, store) = temp_store();
-        let mut child = wait_for_locked(spawn_helper(directory.path(), "write"));
+        let mut child = wait_for_line(spawn_helper(directory.path(), "write"), "LOCKED");
         child.kill().unwrap();
         child.wait().unwrap();
         let guard = store
@@ -691,7 +756,7 @@ mod tests {
     #[test]
     fn lease_is_free_after_its_holder_dies() {
         let (directory, store) = temp_store();
-        let mut child = wait_for_locked(spawn_helper(directory.path(), "lease"));
+        let mut child = wait_for_line(spawn_helper(directory.path(), "lease"), "LOCKED");
         child.kill().unwrap();
         child.wait().unwrap();
         let lease = store
@@ -742,7 +807,7 @@ mod tests {
             return;
         };
         let mode = std::env::var("ER_STORE_LOCK_HELPER_MODE").unwrap_or_default();
-        let store = ArtifactStore::new(root);
+        let store = ArtifactStore::new(&root);
         match mode.as_str() {
             "write" => {
                 let _guard = store
@@ -758,14 +823,27 @@ mod tests {
                 println!("LOCKED");
                 std::thread::sleep(Duration::from_secs(30));
             }
-            "increment" => {
+            "increment" | "increment_durable" => {
+                let durable = mode == "increment_durable";
                 let key = ArtifactKey::<TestCounter>::new(Scope::App, ()).unwrap();
-                for _ in 0..INCREMENT_ROUNDS {
-                    store
-                        .update(&key, Duration::from_secs(30), increment)
-                        .unwrap();
+                std::fs::write(Path::new(&root).join("ready"), "ready").unwrap();
+                let start = Path::new(&root).join("start");
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !start.exists() {
+                    assert!(Instant::now() < deadline, "the parent never started");
+                    std::thread::sleep(Duration::from_millis(5));
                 }
-                println!("DONE");
+                for _ in 0..INCREMENT_ROUNDS {
+                    if durable {
+                        store
+                            .update_durable(&key, Duration::from_secs(30), increment)
+                            .unwrap();
+                    } else {
+                        store
+                            .update(&key, Duration::from_secs(30), increment)
+                            .unwrap();
+                    }
+                }
             }
             _ => {}
         }
