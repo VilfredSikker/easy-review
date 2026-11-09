@@ -12,7 +12,10 @@ mod review_flow;
 mod review_flow_admission;
 mod review_flow_output;
 mod review_flow_progress;
+pub mod session_store;
 pub(super) mod tour_navigation;
+
+pub use session_store::SessionState;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, FileKindRepoConfig, RiskRules, WatchedConfig};
@@ -1152,125 +1155,6 @@ pub struct SymbolRefsState {
     pub in_diff: Vec<SymbolRefEntry>,
     pub external: Vec<SymbolRefEntry>,
     pub cursor: usize,
-}
-
-// ── Session Persistence ──
-
-/// Serializable session state for restoring review progress across restarts.
-/// Keyed by diff hash — only restored when the diff hasn't changed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionState {
-    /// SHA-256 hash of the diff this session was saved against
-    pub diff_hash: String,
-
-    /// Current branch name (for sanity check on restore)
-    #[serde(default)]
-    pub branch: String,
-
-    /// Index of the selected file
-    #[serde(default)]
-    pub selected_file: usize,
-
-    /// Current hunk index
-    #[serde(default)]
-    pub current_hunk: usize,
-
-    /// Current line index within hunk (None = hunk-level)
-    #[serde(default)]
-    pub current_line: Option<usize>,
-
-    /// Vertical scroll offset in diff view
-    #[serde(default)]
-    pub diff_scroll: u16,
-
-    /// Horizontal scroll offset
-    #[serde(default)]
-    pub h_scroll: u16,
-
-    /// Active diff viewing mode
-    #[serde(default)]
-    pub diff_mode: String,
-
-    /// Active filter expression
-    #[serde(default)]
-    pub filter_expr: String,
-
-    /// Filter history (most recent first)
-    #[serde(default)]
-    pub filter_history: Vec<String>,
-
-    /// Whether showing only unreviewed files
-    #[serde(default)]
-    pub show_unreviewed_only: bool,
-
-    /// Whether sorting by mtime
-    #[serde(default)]
-    pub sort_by_mtime: bool,
-
-    /// In-progress comment draft text (empty if none)
-    #[serde(default)]
-    pub comment_draft: String,
-
-    /// Comment draft target file
-    #[serde(default)]
-    pub comment_draft_file: String,
-
-    /// Comment draft target hunk
-    #[serde(default)]
-    pub comment_draft_hunk: usize,
-
-    /// Comment draft target line
-    #[serde(default)]
-    pub comment_draft_line: Option<usize>,
-
-    /// Comment draft type ("question" or "github")
-    #[serde(default)]
-    pub comment_draft_type: String,
-
-    /// Comment draft reply target, so a restored reply is still a reply.
-    #[serde(default)]
-    pub comment_draft_reply_to: Option<String>,
-
-    /// Finding the draft replies to. Without it a restored finding reply would
-    /// post as a public line comment.
-    #[serde(default)]
-    pub comment_draft_finding_ref: Option<String>,
-
-    /// Comment being edited, so a restored edit stays an edit.
-    #[serde(default)]
-    pub comment_draft_edit_id: Option<String>,
-
-    /// Review side of the draft ("LEFT" / "RIGHT").
-    #[serde(default)]
-    pub comment_draft_side: Option<String>,
-
-    /// Inclusive end line of a multi-line draft.
-    #[serde(default)]
-    pub comment_draft_line_end: Option<usize>,
-
-    /// Client id of the draft's GitHub post, reused by a retry.
-    #[serde(default)]
-    pub comment_draft_client_id: Option<String>,
-}
-
-impl SessionState {
-    /// Save session to the given path, writing atomically via tmp+rename.
-    pub fn save(&self, session_path: &str) -> Result<()> {
-        if let Some(dir) = std::path::Path::new(session_path).parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp_path = format!("{}.tmp", session_path);
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(&tmp_path, &json)?;
-        std::fs::rename(&tmp_path, session_path)?;
-        Ok(())
-    }
-
-    /// Load session from the given path. Returns None if file doesn't exist or is invalid.
-    pub fn load(session_path: &str) -> Option<Self> {
-        let content = std::fs::read_to_string(session_path).ok()?;
-        serde_json::from_str(&content).ok()
-    }
 }
 
 /// Precomputed cumulative line offsets for each hunk in the selected file
@@ -2598,7 +2482,7 @@ impl TabState {
     /// Apply managed storage, migrate legacy paths, and load reviewed markers.
     pub fn finish_storage_setup(&mut self) {
         self.apply_managed_root();
-        self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+        self.reload_reviewed();
     }
 
     /// Re-resolve managed storage for this tab's branch/PR and reload sidecars.
@@ -2614,7 +2498,7 @@ impl TabState {
     /// third per open.
     pub fn sync_managed_storage_light(&mut self) {
         self.apply_managed_root();
-        self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+        self.reload_reviewed();
         if !self.active_diff_files().is_empty() {
             self.prune_reviewed_not_in_diff();
         }
@@ -2779,7 +2663,7 @@ impl TabState {
 
         self.mode = DiffMode::PrDiff;
         self.apply_managed_root();
-        self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+        self.reload_reviewed();
         let t = Instant::now();
         self.reload_ai_state();
         log_branch_profile_phase(self, "enter_pr_diff.reload_ai_state", t);
@@ -2831,7 +2715,7 @@ impl TabState {
 
         self.mode = DiffMode::PrDiff;
         self.apply_managed_root();
-        self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+        self.reload_reviewed();
         if !defer_ai_reload {
             self.reload_ai_state();
         }
@@ -5322,7 +5206,7 @@ impl TabState {
             // Must run before refresh_diff_mode_switch() and before the selection restore.
             if self.review_bucket() != prev_bucket {
                 self.apply_managed_root();
-                self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+                self.reload_reviewed();
                 self.reload_ai_state();
             }
 
@@ -5616,25 +5500,13 @@ impl TabState {
         Some((reviewed, total))
     }
 
-    fn load_reviewed_files_from_path(path: &str) -> HashMap<String, String> {
-        match std::fs::read_to_string(path) {
-            Ok(content) => content
-                .lines()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty())
-                .map(|l| {
-                    // New format: "path\thash". Old format: "path" (no tab).
-                    // Old-format entries get an empty-string hash sentinel — they are
-                    // never auto-unmarked so existing reviewed state is preserved.
-                    if let Some((p, h)) = l.split_once('\t') {
-                        (p.to_string(), h.to_string())
-                    } else {
-                        (l.to_string(), String::new())
-                    }
-                })
-                .collect(),
-            Err(_) => HashMap::new(),
-        }
+    /// Reload the reviewed marks for this tab's current bucket.
+    fn reload_reviewed(&mut self) {
+        let store = crate::store_registry::store();
+        self.reviewed = er_store::Scope::dir(self.er_root.er_dir())
+            .ok()
+            .and_then(|scope| session_store::load_reviewed(&store, &scope).ok())
+            .unwrap_or_default();
     }
 
     pub fn save_reviewed_files(&self) -> Result<()> {
@@ -5645,22 +5517,9 @@ impl TabState {
         if self.is_remote() && self.review_bucket() != ReviewBucket::Pr {
             return Ok(());
         }
-        let path = self.er_root.reviewed_path();
-        if self.reviewed.is_empty() {
-            // Remove file if no reviewed files
-            let _ = std::fs::remove_file(&path);
-            return Ok(());
-        }
-        let er_dir = self.er_root.er_dir();
-        std::fs::create_dir_all(&er_dir)?;
-        let mut entries: Vec<(&String, &String)> = self.reviewed.iter().collect();
-        entries.sort_by_key(|(p, _)| p.as_str());
-        let content = entries
-            .iter()
-            .map(|(p, h)| format!("{}\t{}", p, h))
-            .collect::<Vec<_>>()
-            .join("\n");
-        std::fs::write(&path, format!("{}\n", content))?;
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(self.er_root.er_dir())?;
+        session_store::save_reviewed(&store, &scope, &self.reviewed)?;
         Ok(())
     }
 
@@ -5816,9 +5675,12 @@ impl TabState {
         if self.is_remote() {
             return false;
         }
-        let session = match SessionState::load(&self.er_root.session_path()) {
-            Some(s) => s,
-            None => return false,
+        let store = crate::store_registry::store();
+        let Ok(scope) = er_store::Scope::dir(self.er_root.er_dir()) else {
+            return false;
+        };
+        let Some(session) = session_store::load_session(&store, &scope) else {
+            return false;
         };
 
         // Only restore if the diff hasn't changed
@@ -5895,7 +5757,10 @@ impl TabState {
             return;
         }
         let session = self.capture_session();
-        let _ = session.save(&self.er_root.session_path());
+        let store = crate::store_registry::store();
+        if let Ok(scope) = er_store::Scope::dir(self.er_root.er_dir()) {
+            let _ = session_store::save_session(&store, &scope, &session);
+        }
     }
 }
 
@@ -14767,13 +14632,15 @@ mod tests {
         let repo_slug =
             crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root);
         let branch_slug = crate::storage::slug_branch("claude/dev-5067");
-        // Phase 1: reviewed file is inside the view-bucket subdir
-        let expected =
-            crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch").join("reviewed");
-        assert_eq!(tab.er_root.reviewed_path(), expected.to_string_lossy());
-        assert!(!tab
-            .er_root
-            .reviewed_path()
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(tab.er_dir()).unwrap();
+        let key = session_store::key::<session_store::ReviewedFiles>(&scope).unwrap();
+        let expected = crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch")
+            .join("reviewed.json");
+        assert_eq!(store.path(&key), expected);
+        assert!(!store
+            .path(&key)
+            .to_string_lossy()
             .contains(&crate::storage::slug_branch("main")));
     }
 
@@ -14803,10 +14670,19 @@ mod tests {
             &crate::storage::slug_branch("feature"),
             "branch",
         );
-        std::fs::create_dir_all(&main_dir).unwrap();
-        std::fs::create_dir_all(&feature_dir).unwrap();
-        std::fs::write(main_dir.join("reviewed"), "a.rs\thash-main\n").unwrap();
-        std::fs::write(feature_dir.join("reviewed"), "b.rs\thash-feat\n").unwrap();
+        let store = crate::store_registry::store();
+        session_store::save_reviewed(
+            &store,
+            &er_store::Scope::dir(&main_dir).unwrap(),
+            &HashMap::from([("a.rs".to_string(), "hash-main".to_string())]),
+        )
+        .unwrap();
+        session_store::save_reviewed(
+            &store,
+            &er_store::Scope::dir(&feature_dir).unwrap(),
+            &HashMap::from([("b.rs".to_string(), "hash-feat".to_string())]),
+        )
+        .unwrap();
 
         tab.reviewed
             .insert("a.rs".to_string(), "hash-main".to_string());
@@ -14829,10 +14705,10 @@ mod tests {
         tab.current_branch = "main".to_string();
         tab.local_branch_view = Some("feature/x".to_string());
         tab.sync_managed_storage();
-        let path_before = tab.er_root.reviewed_path();
+        let path_before = tab.er_root.er_dir();
         tab.reviewed.insert("only.rs".to_string(), "h".to_string());
         tab.sync_storage_if_checkout_branch_changed().unwrap();
-        assert_eq!(tab.er_root.reviewed_path(), path_before);
+        assert_eq!(tab.er_root.er_dir(), path_before);
         assert!(tab.reviewed.contains_key("only.rs"));
     }
 
@@ -16158,6 +16034,30 @@ mod tests {
     /// Reviewed entries must be isolated per view bucket on disk.
     ///
     /// Sequence:
+    #[test]
+    fn reviewed_marks_survive_mark_and_reload() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut app = App::new_for_test(vec![make_file("src/a.rs", vec![], 1, 0)]);
+        app.tab_mut().repo_root = "/home/user/my-project".to_string();
+        app.tab_mut().current_branch = "main".to_string();
+        app.tab_mut().apply_managed_root();
+        app.toggle_reviewed().unwrap();
+        assert!(app.tab().reviewed.contains_key("src/a.rs"));
+
+        app.tab_mut().sync_managed_storage();
+        assert_eq!(
+            app.tab().reviewed.get("src/a.rs").map(String::as_str),
+            Some("")
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
     ///   1. Branch bucket: save "a.rs" reviewed.
     ///   2. Switch to Unstaged bucket (mode + sync_managed_storage): "a.rs" must NOT appear.
     ///   3. Switch back to Branch bucket: "a.rs" must reappear.
@@ -16937,7 +16837,7 @@ mod tests {
     ///
     /// Concretely: construct a remote-mode tab, insert a reviewed entry, call
     /// save_reviewed_files(), and assert the file exists at
-    /// `<storage_root>/repos/<owner-repo>/prs/pr-<N>/reviewed`.
+    /// `<storage_root>/repos/<owner-repo>/prs/pr-<N>/reviewed.json`.
     #[test]
     fn remote_reviewed_persists_to_pr_bucket_dir() {
         let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
@@ -16959,7 +16859,7 @@ mod tests {
 
         let expected =
             crate::storage::pr_bucket_dir(&crate::storage::repo_storage_slug("owner", "repo"), 42)
-                .join("reviewed");
+                .join("reviewed.json");
 
         assert!(
             expected.exists(),
