@@ -308,10 +308,22 @@ pub trait GitHub: Send + Sync {
     ) -> Result<Arc<PrCommentBundle>, GhError>;
     fn invalidate_comments(&self);
 
-    fn overview(&self, repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData>;
-    fn overview_no_checks(&self, repo_root: &str, pr_number: Option<u64>)
-        -> Option<PrOverviewData>;
-    fn overview_remote(&self, owner: &str, repo: &str, number: u64) -> Option<PrOverviewData>;
+    fn overview(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError>;
+    fn overview_no_checks(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError>;
+    fn overview_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Option<PrOverviewData>, GhError>;
 
     /// One bounded `gh api` read whose body is returned without headers.
     fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError>;

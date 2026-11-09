@@ -1179,7 +1179,8 @@ pub struct NewLineComment<'a> {
 }
 
 impl CliGitHub {
-    /// Head oid of a PR: from a local checkout when one is given, remote otherwise.
+    /// Head oid of a PR: from a local checkout when one is given, remote
+    /// otherwise. Review comments need the latest commit SHA.
     pub(crate) fn pr_head_oid(
         &self,
         owner: &str,
@@ -1426,19 +1427,22 @@ impl CliGitHub {
         &self,
         repo_root: &str,
         pr_number: Option<u64>,
-    ) -> Option<PrOverviewData> {
-        self.overview_impl(repo_root, pr_number, true)
+    ) -> Result<Option<PrOverviewData>, GhError> {
+        Ok(self.overview_impl(repo_root, pr_number, true))
     }
 
     /// Like [`Self::overview`], but skips the separate `gh pr checks`
     /// subprocess (`checks` is always empty in the result). Use this when the
-    /// caller already has a fresher CI-checks source for the same PR.
+    /// caller already has a fresher CI-checks source for the same PR — e.g. the
+    /// desktop's 30s gh-status loop (`fetch_github_status` / `gh_status_cache`)
+    /// — and only needs title/state/author/branch/reviewer metadata, to avoid a
+    /// duplicate `gh pr checks` call on every tick.
     pub(crate) fn overview_no_checks(
         &self,
         repo_root: &str,
         pr_number: Option<u64>,
-    ) -> Option<PrOverviewData> {
-        self.overview_impl(repo_root, pr_number, false)
+    ) -> Result<Option<PrOverviewData>, GhError> {
+        Ok(self.overview_impl(repo_root, pr_number, false))
     }
 
     fn overview_impl(
@@ -1968,25 +1972,27 @@ impl CliGitHub {
         owner: &str,
         repo: &str,
         number: u64,
-    ) -> Option<PrOverviewData> {
+    ) -> Result<Option<PrOverviewData>, GhError> {
         let repo_slug = format!("{owner}/{repo}");
         let number_arg = number.to_string();
-        let view_output = self
-            .run_gh_args(
-                &[
-                    "pr",
-                    "view",
-                    &number_arg,
-                    "--repo",
-                    &repo_slug,
-                    "--json",
-                    "number,title,body,state,author,url,baseRefName,headRefName,reviews",
-                ],
-                None,
-            )
-            .ok()?;
+        let Ok(view_output) = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &number_arg,
+                "--repo",
+                &repo_slug,
+                "--json",
+                "number,title,body,state,author,url,baseRefName,headRefName,reviews",
+            ],
+            None,
+        ) else {
+            return Ok(None);
+        };
         let json_str = String::from_utf8_lossy(&view_output.body);
-        let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json_str) else {
+            return Ok(None);
+        };
 
         let number = v["number"].as_u64().unwrap_or(0);
         let title = v["title"].as_str().unwrap_or("").to_string();
@@ -2004,7 +2010,7 @@ impl CliGitHub {
         };
 
         // Skip CI checks for remote (would need --repo flag on gh pr checks too)
-        Some(PrOverviewData {
+        Ok(Some(PrOverviewData {
             number,
             title,
             body,
@@ -2015,21 +2021,30 @@ impl CliGitHub {
             head_branch,
             checks: Vec::new(),
             reviewers,
-        })
+        }))
     }
 }
 
 /// Compatibility wrappers for front ends and engine callers.
 pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
-    default_handle().overview(repo_root, pr_number)
+    default_handle()
+        .overview(repo_root, pr_number)
+        .ok()
+        .flatten()
 }
 
 pub fn gh_pr_overview_no_checks(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
-    default_handle().overview_no_checks(repo_root, pr_number)
+    default_handle()
+        .overview_no_checks(repo_root, pr_number)
+        .ok()
+        .flatten()
 }
 
 pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
-    default_handle().overview_remote(owner, repo, number)
+    default_handle()
+        .overview_remote(owner, repo, number)
+        .ok()
+        .flatten()
 }
 
 impl CliGitHub {
@@ -2133,7 +2148,14 @@ impl CliGitHub {
                 let stdout = String::from_utf8_lossy(&output.body);
                 parse_review_threads_response(&stdout).map_err(GhError::from)
             }
-            Err(_) => Ok(HashMap::new()),
+            // A spawn or timeout failure is not "no threads"; only a gh answer
+            // that is a non-zero exit falls back to all-unresolved.
+            Err(error) => match error {
+                GhError::NotInstalled | GhError::Timeout | GhError::Tool { status: -1, .. } => {
+                    Err(error)
+                }
+                _ => Ok(HashMap::new()),
+            },
         }
     }
 
@@ -2150,7 +2172,14 @@ impl CliGitHub {
                 let stdout = String::from_utf8_lossy(&output.body);
                 parse_review_threads_response(&stdout).map_err(GhError::from)
             }
-            Err(_) => Ok(HashMap::new()),
+            // A spawn or timeout failure is not "no threads"; only a gh answer
+            // that is a non-zero exit falls back to all-unresolved.
+            Err(error) => match error {
+                GhError::NotInstalled | GhError::Timeout | GhError::Tool { status: -1, .. } => {
+                    Err(error)
+                }
+                _ => Ok(HashMap::new()),
+            },
         }
     }
 }
@@ -2251,6 +2280,7 @@ impl CliGitHub {
 }
 
 /// Compatibility wrappers for front ends; removed when they take the handle.
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn fetch_pr_comment_bundle(
     owner: &str,
     repo: &str,
@@ -2262,6 +2292,7 @@ pub fn fetch_pr_comment_bundle(
         .map_err(anyhow::Error::from)
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_comment_bundle_cached(
     owner: &str,
     repo: &str,
@@ -2344,7 +2375,14 @@ impl CliGitHub {
     }
 }
 
+/// The prefix the old free functions put in front of gh's reason, kept so
+/// callers that match the rendered text keep working.
+fn with_prefix(prefix: &str, error: GhError) -> anyhow::Error {
+    anyhow::anyhow!("{prefix}: {error}")
+}
+
 /// Compatibility wrappers for front ends and engine callers.
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_push_comment_remote(
     owner: &str,
     repo: &str,
@@ -2353,9 +2391,10 @@ pub fn gh_pr_push_comment_remote(
 ) -> Result<u64> {
     default_handle()
         .push_comment_remote(owner, repo, pr, comment)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to push comment", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_general_comment(
     owner: &str,
     repo: &str,
@@ -2365,13 +2404,14 @@ pub fn gh_pr_general_comment(
 ) -> Result<u64> {
     default_handle()
         .general_comment(owner, repo, pr, body, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to post general comment", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_general_comment_remote(owner: &str, repo: &str, pr: u64, body: &str) -> Result<u64> {
     default_handle()
         .general_comment_remote(owner, repo, pr, body)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to post general comment", error))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2834,6 +2874,7 @@ pub fn parse_origin_remote(git: &dyn Git, repo_root: &str) -> Option<(String, St
 }
 
 /// Push a reply to an existing review comment on a remote PR.
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_reply_comment_remote(
     owner: &str,
     repo: &str,
@@ -2843,7 +2884,7 @@ pub fn gh_pr_reply_comment_remote(
 ) -> Result<u64> {
     default_handle()
         .reply_comment_remote(owner, repo, pr, in_reply_to, body)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to push reply", error))
 }
 
 impl CliGitHub {
@@ -2862,6 +2903,7 @@ impl CliGitHub {
 }
 
 // Compatibility wrappers, kept until the callers take the handle.
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_comments(
     owner: &str,
     repo: &str,
@@ -2870,15 +2912,17 @@ pub fn gh_pr_comments(
 ) -> Result<Vec<GitHubComment>> {
     default_handle()
         .pr_comments(owner, repo, pr, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to fetch PR comments", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_comments_remote(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComment>> {
     default_handle()
         .pr_comments_remote(owner, repo, pr)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to fetch PR comments", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_review_threads(
     owner: &str,
     repo: &str,
@@ -2890,6 +2934,7 @@ pub fn gh_pr_review_threads(
         .map_err(anyhow::Error::from)
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_review_threads_remote(
     owner: &str,
     repo: &str,
@@ -2900,12 +2945,14 @@ pub fn gh_pr_review_threads_remote(
         .map_err(anyhow::Error::from)
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_head_oid(owner: &str, repo: &str, pr: u64, repo_root: Option<&str>) -> Result<String> {
     default_handle()
         .pr_head_oid(owner, repo, pr, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to get HEAD SHA from gh pr view", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_post_line_comment(
     owner: &str,
     repo: &str,
@@ -2916,9 +2963,10 @@ pub fn gh_pr_post_line_comment(
 ) -> Result<CreatedComment> {
     default_handle()
         .post_line_comment(owner, repo, pr, comment, commit_id, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to push comment", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_post_reply(
     owner: &str,
     repo: &str,
@@ -2929,9 +2977,10 @@ pub fn gh_pr_post_reply(
 ) -> Result<CreatedComment> {
     default_handle()
         .post_reply(owner, repo, pr, in_reply_to, body, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to push reply", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_post_general(
     owner: &str,
     repo: &str,
@@ -2941,9 +2990,10 @@ pub fn gh_pr_post_general(
 ) -> Result<CreatedComment> {
     default_handle()
         .post_general(owner, repo, pr, body, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to post general comment", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_issue_comments(
     owner: &str,
     repo: &str,
@@ -2952,15 +3002,17 @@ pub fn gh_pr_issue_comments(
 ) -> Result<Vec<IssueComment>> {
     default_handle()
         .issue_comments(owner, repo, pr, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to fetch PR issue comments", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_viewer_login(repo_root: Option<&str>) -> Result<String> {
     default_handle()
         .viewer_login(repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to read the gh user", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_push_comment(
     owner: &str,
     repo: &str,
@@ -2970,9 +3022,10 @@ pub fn gh_pr_push_comment(
 ) -> Result<u64> {
     default_handle()
         .push_comment(owner, repo, pr, comment, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to push comment", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_reply_comment(
     owner: &str,
     repo: &str,
@@ -2983,9 +3036,10 @@ pub fn gh_pr_reply_comment(
 ) -> Result<u64> {
     default_handle()
         .reply_comment(owner, repo, pr, in_reply_to, body, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to push reply", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_update_review_comment(
     owner: &str,
     repo: &str,
@@ -2995,9 +3049,10 @@ pub fn gh_pr_update_review_comment(
 ) -> Result<()> {
     default_handle()
         .update_review_comment(owner, repo, comment_id, body, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to update comment", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_delete_comment(
     owner: &str,
     repo: &str,
@@ -3006,15 +3061,17 @@ pub fn gh_pr_delete_comment(
 ) -> Result<()> {
     default_handle()
         .delete_comment(owner, repo, comment_id, repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to delete comment", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_edit_body(repo_root: &str, body: &str) -> Result<()> {
     default_handle()
         .edit_body(repo_root, body)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to update PR body", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_approve(
     repo_root: &str,
     remote_repo: Option<&str>,
@@ -3022,7 +3079,7 @@ pub fn gh_pr_approve(
 ) -> Result<()> {
     default_handle()
         .approve(repo_root, remote_repo, pr_number)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("gh pr approve failed", error))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4819,5 +4876,103 @@ mod tests {
             classify_pr_lookup_failure("request timed out"),
             PrLookup::Unknown(_)
         ));
+    }
+
+    fn prefixed(prefix: &str) -> String {
+        with_prefix(
+            prefix,
+            GhError::Forbidden {
+                message: "Resource not accessible by integration".into(),
+            },
+        )
+        .to_string()
+    }
+
+    #[test]
+    fn wrapper_prefix_fetch_pr_comments() {
+        assert_eq!(
+            prefixed("Failed to fetch PR comments"),
+            "Failed to fetch PR comments: Resource not accessible by integration"
+        );
+    }
+
+    #[test]
+    fn wrapper_prefix_get_head_sha() {
+        assert_eq!(
+            prefixed("Failed to get HEAD SHA from gh pr view"),
+            "Failed to get HEAD SHA from gh pr view: Resource not accessible by integration"
+        );
+    }
+
+    #[test]
+    fn wrapper_prefix_push_comment() {
+        assert_eq!(
+            prefixed("Failed to push comment"),
+            "Failed to push comment: Resource not accessible by integration"
+        );
+    }
+
+    #[test]
+    fn wrapper_prefix_push_reply() {
+        assert_eq!(
+            prefixed("Failed to push reply"),
+            "Failed to push reply: Resource not accessible by integration"
+        );
+    }
+
+    #[test]
+    fn wrapper_prefix_post_general_comment() {
+        assert_eq!(
+            prefixed("Failed to post general comment"),
+            "Failed to post general comment: Resource not accessible by integration"
+        );
+    }
+
+    #[test]
+    fn wrapper_prefix_fetch_pr_issue_comments() {
+        assert_eq!(
+            prefixed("Failed to fetch PR issue comments"),
+            "Failed to fetch PR issue comments: Resource not accessible by integration"
+        );
+    }
+
+    #[test]
+    fn wrapper_prefix_read_gh_user() {
+        assert_eq!(
+            prefixed("Failed to read the gh user"),
+            "Failed to read the gh user: Resource not accessible by integration"
+        );
+    }
+
+    #[test]
+    fn wrapper_prefix_update_comment() {
+        assert_eq!(
+            prefixed("Failed to update comment"),
+            "Failed to update comment: Resource not accessible by integration"
+        );
+    }
+
+    #[test]
+    fn wrapper_prefix_delete_comment() {
+        assert_eq!(
+            prefixed("Failed to delete comment"),
+            "Failed to delete comment: Resource not accessible by integration"
+        );
+    }
+
+    #[test]
+    fn wrapper_prefix_update_pr_body() {
+        assert_eq!(
+            prefixed("Failed to update PR body"),
+            "Failed to update PR body: Resource not accessible by integration"
+        );
+    }
+
+    #[test]
+    fn wrapper_prefix_approve() {
+        assert_eq!(
+            prefixed("gh pr approve failed"),
+            "gh pr approve failed: Resource not accessible by integration"
+        );
     }
 }

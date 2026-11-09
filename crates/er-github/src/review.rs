@@ -271,7 +271,7 @@ mod tests {
                     .unwrap()
                     .push(std::fs::read_to_string(path)?);
             }
-            if call.args.get(1).is_some_and(|arg| arg == "api") {
+            if call.args.first().is_some_and(|arg| arg == "api") {
                 Ok(output(0, "{}", ""))
             } else {
                 Ok(output(0, "abc123\n", ""))
