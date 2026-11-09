@@ -186,8 +186,7 @@ pub fn repo_storage_slug_for(
         .map(str::trim)
         .filter(|remote| !remote.is_empty())
     {
-        Some(remote) => crate::github::RepoSlug::parse_remote(remote)
-            .or_else(|| crate::github::RepoSlug::parse(remote))
+        Some(remote) => crate::github::RepoSlug::parse(remote)
             .map(|slug| repo_storage_slug(&slug.owner, &slug.repo))
             .unwrap_or_else(|| repo_storage_slug_from_root(git, repo_root)),
         None => repo_storage_slug_from_root(git, repo_root),
@@ -607,12 +606,20 @@ mod tests {
     }
 
     #[test]
-    fn a_windows_style_remote_matches_the_origin_path() {
-        let git = er_git::FakeGit::default();
-        assert_eq!(
-            repo_storage_slug_for(&git, "/repo", Some("C:/Users/me/repo")),
-            "users-me-ac2becef"
-        );
+    fn windows_paths_are_not_read_as_github_repos() {
+        let git = er_git::FakeGit::default()
+            .with_remote_url(Ok("git@github.com:acme/widgets.git".into()));
+        let github_users_me = repo_storage_slug("users", "me");
+
+        for remote in ["C:/Users/me/repo", "C:/Users/me/other", "D:/Users/me/x"] {
+            let key = repo_storage_slug_for(&git, "/repo", Some(remote));
+            assert_eq!(key, "acme-widgets-d782c874", "{remote}: clone fallback");
+            assert_ne!(
+                key, github_users_me,
+                "{remote}: must not collide with GitHub"
+            );
+        }
+        assert_ne!(github_users_me, "acme-widgets-d782c874");
     }
 
     #[test]

@@ -30,7 +30,7 @@ impl RepoSlug {
     }
 
     /// The remote forms only: a bare `owner/repo` has no host to return.
-    pub fn parse_remote(input: &str) -> Option<Self> {
+    pub(crate) fn parse_remote(input: &str) -> Option<Self> {
         let (host, slug) = Self::parse_with_host(input)?;
         host?;
         Some(slug)
@@ -69,7 +69,11 @@ impl RepoSlug {
             (Some(host.to_string()), path)
         } else if let Some((left, right)) = trimmed.split_once(':') {
             // scp-like `[user@]host:path`; a slash before the colon means a path.
-            if left.contains('/') || right.is_empty() {
+            // A drive letter (`C:/…`, `C:\…`) is a path too, not a host.
+            let drive_letter = left.len() == 1
+                && left.chars().all(|c| c.is_ascii_alphabetic())
+                && (right.starts_with('/') || right.starts_with('\\'));
+            if left.contains('/') || right.is_empty() || drive_letter {
                 return None;
             }
             let host = left.rsplit_once('@').map(|(_, host)| host).unwrap_or(left);
