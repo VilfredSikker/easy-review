@@ -22,6 +22,7 @@ pub mod pending_review;
 mod repo;
 pub mod review;
 mod runner;
+mod slug;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -53,6 +54,7 @@ pub use review::{
     gh_pr_head_oid_remote, gh_pr_submit_review, gh_pr_submit_review_remote, ReviewBatchEntry,
 };
 pub use runner::{GhCall, GhRunner, ProcessRunner};
+pub use slug::RepoSlug;
 pub use types::{parse_github_updated_at, QueuePr, ThreadAddressingSummary};
 
 pub mod testing {
