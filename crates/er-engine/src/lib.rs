@@ -28,6 +28,7 @@ pub mod github;
 pub mod github_post;
 #[cfg(feature = "highlight")]
 pub mod highlight;
+mod legacy_projects;
 pub mod model_discovery;
 pub mod paths;
 pub mod ports;

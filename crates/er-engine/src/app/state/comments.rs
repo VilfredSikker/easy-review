@@ -769,8 +769,13 @@ struct ReplyAttribution {
 /// The one-time notice that the previous version's data was left behind.
 ///
 /// `None` when there is nothing from a previous version. The old settings path
-/// is named only when a `config.toml` is among the entries.
-fn legacy_root_notice(base: &std::path::Path, entries: &[std::path::PathBuf]) -> Option<String> {
+/// is named only when a `config.toml` is among the entries; the project list is
+/// named when the one-time import ran.
+fn legacy_root_notice(
+    base: &std::path::Path,
+    entries: &[std::path::PathBuf],
+    projects_imported: bool,
+) -> Option<String> {
     if entries.is_empty() {
         return None;
     }
@@ -783,8 +788,13 @@ fn legacy_root_notice(base: &std::path::Path, entries: &[std::path::PathBuf]) ->
     } else {
         String::new()
     };
+    let projects = if projects_imported {
+        " Your project list was imported into this version."
+    } else {
+        ""
+    };
     Some(format!(
-        "Easy Review 1.0 starts with empty storage. Data from the previous version is untouched in {base_text}{settings}. It is not read any more; delete it when you no longer need it."
+        "Easy Review 1.0 starts with empty storage. Data from the previous version is untouched in {base_text}{settings}. It is not read any more; delete it when you no longer need it.{projects}"
     ))
 }
 
@@ -2738,6 +2748,9 @@ impl App {
     /// The marker lives in the new root, so whichever front end runs first
     /// shows the notice and every later launch stays quiet.
     pub fn announce_legacy_root(&mut self) {
+        // The import is a no-op once the projects record exists; running it
+        // here means the notice can name the import on the launch that made it.
+        crate::projects_pins::import_legacy_projects_once();
         let base = crate::storage::storage_base();
         let root = crate::storage::storage_root();
         self.announce_legacy_root_in(&base, &root);
@@ -2754,7 +2767,8 @@ impl App {
             return;
         }
         let entries = crate::storage::legacy_root_entries_in(base, false);
-        let Some(message) = legacy_root_notice(base, &entries) else {
+        let projects_imported = root.join(crate::legacy_projects::IMPORTED_MARKER).exists();
+        let Some(message) = legacy_root_notice(base, &entries, projects_imported) else {
             return;
         };
         let _ = std::fs::create_dir_all(root);
@@ -6513,14 +6527,18 @@ mod legacy_root_notice_tests {
     fn legacy_root_notice_names_the_base_and_the_old_config() {
         let base = std::path::PathBuf::from("/data/easy-review");
         let with_config = [base.join("repos"), base.join("config.toml")];
-        let text = legacy_root_notice(&base, &with_config).expect("a notice");
+        let text = legacy_root_notice(&base, &with_config, false).expect("a notice");
         assert!(text.contains("/data/easy-review"), "{text}");
         assert!(text.contains("/data/easy-review/config.toml"), "{text}");
+        assert!(!text.contains("project list"), "{text}");
 
         let without_config = [base.join("repos")];
-        let text = legacy_root_notice(&base, &without_config).expect("a notice");
+        let text = legacy_root_notice(&base, &without_config, false).expect("a notice");
         assert!(text.contains("/data/easy-review"), "{text}");
         assert!(!text.contains("config.toml"), "{text}");
+
+        let text = legacy_root_notice(&base, &without_config, true).expect("a notice");
+        assert!(text.contains("project list was imported"), "{text}");
     }
 
     #[test]

@@ -25,7 +25,19 @@ const READABLE_MAX_BYTES: usize = 80;
 #[cfg(feature = "test-support")]
 pub fn with_test_storage_root<R>(root: impl Into<PathBuf>, f: impl FnOnce() -> R) -> R {
     let root = root.into();
-    crate::test_support::with_var("ER_STORAGE_ROOT", root.to_string_lossy().into_owned(), f)
+    crate::test_support::with_var(
+        "ER_STORAGE_ROOT",
+        root.to_string_lossy().into_owned(),
+        || {
+            // A scoped storage root also scopes the pre-1.0 project import: a test
+            // must not read the developer's real project list.
+            crate::test_support::with_var(
+                "ER_LEGACY_CONFIG_DIR",
+                root.join("legacy-config").to_string_lossy().into_owned(),
+                f,
+            )
+        },
+    )
 }
 
 fn storage_root_override() -> Option<String> {
