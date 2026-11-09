@@ -7,15 +7,15 @@ use crate::actions::{PrAction, RepoMergeSettings};
 use crate::cache::TtlCache;
 use crate::classify::{classify, GhOutput};
 use crate::error::GhError;
-use crate::legacy::{
-    BranchPrProbe, CheckRun, CreatedComment, GhNotification, GitHubComment, IssueComment,
-    NewLineComment, PrCommentBundle, PrLookup, PrOverviewData, PrStatusBundle, ReviewThreadState,
-};
 use crate::pending_review::PendingReview;
 use crate::review::ReviewBatchEntry;
 use crate::runner::{GhCall, GhRunner};
 use crate::types::ThreadAddressingSummary;
 use crate::GitHub;
+use crate::{
+    BranchPrProbe, CheckRun, CreatedComment, GhNotification, GitHubComment, IssueComment,
+    NewLineComment, PrCommentBundle, PrLookup, PrOverviewData, PrStatusBundle, ReviewThreadState,
+};
 use std::collections::HashMap;
 
 /// The caches `CliGitHub` owns. Each has its own generation counter.
@@ -26,7 +26,7 @@ pub struct Caches {
     /// path.
     pub repo_info: TtlCache<String, Arc<(String, String)>>,
     /// PR comment sync bundle, warmed by the sidebar hover prefetch.
-    pub pr_comments: TtlCache<(String, String, u64), Arc<crate::legacy::PrCommentBundle>>,
+    pub pr_comments: TtlCache<(String, String, u64), Arc<crate::comments::PrCommentBundle>>,
     pub merge_queue: TtlCache<String, bool>,
     pub bypass: TtlCache<String, bool>,
     pub branch_exists: TtlCache<String, bool>,

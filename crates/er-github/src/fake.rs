@@ -2,14 +2,14 @@
 
 use crate::actions::{PrAction, RepoMergeSettings};
 use crate::error::GhError;
-use crate::legacy::{
-    BranchPrProbe, CheckRun, CreatedComment, GhNotification, GitHubComment, IssueComment,
-    NewLineComment, PrCommentBundle, PrLookup, PrOverviewData, PrStatusBundle, ReviewThreadState,
-};
 use crate::pending_review::PendingReview;
 use crate::review::ReviewBatchEntry;
 use crate::types::ThreadAddressingSummary;
 use crate::GitHub;
+use crate::{
+    BranchPrProbe, CheckRun, CreatedComment, GhNotification, GitHubComment, IssueComment,
+    NewLineComment, PrCommentBundle, PrLookup, PrOverviewData, PrStatusBundle, ReviewThreadState,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 

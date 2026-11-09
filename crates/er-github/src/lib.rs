@@ -8,16 +8,24 @@
 
 pub mod actions;
 mod cache;
+mod checkout;
 pub mod classify;
 mod cli;
+mod comments;
+mod commits;
+mod diff;
 mod error;
 mod fake;
-mod legacy;
+mod lookup;
+mod overview;
 pub mod pending_review;
+mod repo;
 pub mod review;
 mod runner;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod tests;
 pub mod types;
 
 pub use actions::{
@@ -25,16 +33,22 @@ pub use actions::{
     cached_viewer_can_bypass, gh_delete_remote_branch, gh_pr_in_merge_queue, gh_pr_state,
     gh_restore_remote_branch, run_pr_action, MergeMethod, PrAction, RepoMergeSettings,
 };
+pub use checkout::*;
 pub use classify::{classify, is_unknown_command, split_pages, GhHeaders, GhOutput};
 pub use cli::{Caches, CliGitHub};
+pub use comments::*;
+pub use commits::*;
+pub use diff::*;
 pub use error::GhError;
 pub use fake::FakeGitHub;
-pub use legacy::*;
+pub use lookup::*;
+pub use overview::*;
 pub use pending_review::{
     gh_pending_review, gh_pending_review_add_comment, gh_pending_review_remove_comment,
     gh_pending_review_submit, review_body_required, PendingReview, PendingReviewComment,
     ReviewRequest,
 };
+pub use repo::*;
 pub use review::{
     gh_pr_head_oid_remote, gh_pr_submit_review, gh_pr_submit_review_remote, ReviewBatchEntry,
 };
@@ -167,7 +181,7 @@ pub trait GitHub: Send + Sync {
             return None;
         }
         let (owner, repo) = self.get_repo_info(git, repo_root).ok()?;
-        crate::legacy::owner_repo_matches_slug(&owner, &repo, remote_repo)
+        crate::repo::owner_repo_matches_slug(&owner, &repo, remote_repo)
             .then(|| repo_root.to_string())
     }
 
