@@ -331,10 +331,32 @@ pub trait GitHub: Send + Sync {
 
 static DEFAULT_HANDLE: OnceLock<Arc<CliGitHub>> = OnceLock::new();
 
-/// The process-wide handle the compatibility wrappers use. Tests build their
-/// own `CliGitHub` on a `ScriptedRunner` and never reach this one.
+#[cfg(test)]
+thread_local! {
+    /// The handle `with_test_handle` installed on this test thread. The
+    /// compatibility wrappers call `default_handle`, so tests that drive them
+    /// point it at a scripted runner instead of the process-wide one.
+    static TEST_HANDLE: std::cell::RefCell<Option<Arc<CliGitHub>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The process-wide handle the compatibility wrappers use.
 pub fn default_handle() -> Arc<CliGitHub> {
+    #[cfg(test)]
+    if let Some(handle) = TEST_HANDLE.with(|slot| slot.borrow().clone()) {
+        return handle;
+    }
     DEFAULT_HANDLE
         .get_or_init(|| Arc::new(CliGitHub::new(Arc::new(ProcessRunner))))
         .clone()
+}
+
+/// Run `f` with `handle` as this thread's default, then restore the previous
+/// one so a failing assertion cannot leak the handle into a later test.
+#[cfg(test)]
+pub(crate) fn with_test_handle<T>(handle: Arc<CliGitHub>, f: impl FnOnce() -> T) -> T {
+    let previous = TEST_HANDLE.with(|slot| slot.replace(Some(handle)));
+    let result = f();
+    TEST_HANDLE.with(|slot| slot.replace(previous));
+    result
 }

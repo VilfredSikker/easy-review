@@ -1206,7 +1206,7 @@ impl CliGitHub {
         let commit_id = String::from_utf8_lossy(&out.body).trim().to_string();
         if commit_id.is_empty() {
             return Err(GhError::Local {
-                message: "Failed to get HEAD SHA from gh pr view: empty output".to_string(),
+                message: "empty output".to_string(),
             });
         }
         Ok(commit_id)
@@ -1322,7 +1322,7 @@ impl CliGitHub {
         let login = String::from_utf8_lossy(&output.body).trim().to_string();
         if login.is_empty() {
             return Err(GhError::Local {
-                message: "Failed to read the gh user: empty login".to_string(),
+                message: "empty login".to_string(),
             });
         }
         Ok(login)
@@ -2025,7 +2025,7 @@ impl CliGitHub {
     }
 }
 
-/// Compatibility wrappers for front ends and engine callers.
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
     default_handle()
         .overview(repo_root, pr_number)
@@ -2033,6 +2033,7 @@ pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverv
         .flatten()
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_overview_no_checks(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
     default_handle()
         .overview_no_checks(repo_root, pr_number)
@@ -2040,6 +2041,7 @@ pub fn gh_pr_overview_no_checks(repo_root: &str, pr_number: Option<u64>) -> Opti
         .flatten()
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
     default_handle()
         .overview_remote(owner, repo, number)
@@ -2279,7 +2281,6 @@ impl CliGitHub {
     }
 }
 
-/// Compatibility wrappers for front ends; removed when they take the handle.
 /// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn fetch_pr_comment_bundle(
     owner: &str,
@@ -2381,7 +2382,6 @@ fn with_prefix(prefix: &str, error: GhError) -> anyhow::Error {
     anyhow::anyhow!("{prefix}: {error}")
 }
 
-/// Compatibility wrappers for front ends and engine callers.
 /// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_push_comment_remote(
     owner: &str,
@@ -3382,6 +3382,8 @@ pub fn gh_pr_thread_addressing_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::ScriptedRunner;
+    use crate::with_test_handle;
 
     #[test]
     fn run_parallel_overlaps_independent_work() {
@@ -4878,101 +4880,185 @@ mod tests {
         ));
     }
 
+    fn scripted_timeout() -> Arc<CliGitHub> {
+        let runner = ScriptedRunner::new();
+        runner.script(&[], Err(std::io::Error::from(std::io::ErrorKind::TimedOut)));
+        Arc::new(CliGitHub::new(Arc::new(runner)))
+    }
+
+    const TIMEOUT: &str = "GitHub CLI (`gh`) timed out after 10s.";
+
     fn prefixed(prefix: &str) -> String {
-        with_prefix(
-            prefix,
-            GhError::Forbidden {
-                message: "Resource not accessible by integration".into(),
-            },
-        )
-        .to_string()
+        format!("{prefix}: {TIMEOUT}")
     }
 
     #[test]
     fn wrapper_prefix_fetch_pr_comments() {
-        assert_eq!(
-            prefixed("Failed to fetch PR comments"),
-            "Failed to fetch PR comments: Resource not accessible by integration"
-        );
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || gh_pr_comments("o", "r", 1, "/tmp"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, prefixed("Failed to fetch PR comments"));
     }
 
     #[test]
     fn wrapper_prefix_get_head_sha() {
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || gh_pr_head_oid("o", "r", 1, Some("/tmp")))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, prefixed("Failed to get HEAD SHA from gh pr view"));
+    }
+
+    #[test]
+    fn head_sha_wrapper_does_not_repeat_its_prefix() {
+        let runner = ScriptedRunner::new();
+        runner.script(&[], Ok(ScriptedRunner::output(0, "", "")));
+        let handle = Arc::new(CliGitHub::new(Arc::new(runner)));
+        let error = with_test_handle(handle, || gh_pr_head_oid("o", "r", 1, Some("/tmp")))
+            .unwrap_err()
+            .to_string();
         assert_eq!(
-            prefixed("Failed to get HEAD SHA from gh pr view"),
-            "Failed to get HEAD SHA from gh pr view: Resource not accessible by integration"
+            error,
+            "Failed to get HEAD SHA from gh pr view: empty output"
         );
+    }
+
+    #[test]
+    fn viewer_login_wrapper_does_not_repeat_its_prefix() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            &[],
+            Ok(ScriptedRunner::output(0, "HTTP/2.0 200 OK\r\n\r\n", "")),
+        );
+        let handle = Arc::new(CliGitHub::new(Arc::new(runner)));
+        let error = with_test_handle(handle, || gh_viewer_login(Some("/tmp")))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "Failed to read the gh user: empty login");
     }
 
     #[test]
     fn wrapper_prefix_push_comment() {
-        assert_eq!(
-            prefixed("Failed to push comment"),
-            "Failed to push comment: Resource not accessible by integration"
-        );
+        let comment = NewLineComment {
+            path: "a.rs",
+            line_start: 1,
+            line_end: None,
+            body: "hi",
+            side: "RIGHT",
+        };
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || gh_pr_push_comment("o", "r", 1, comment, "/tmp"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, prefixed("Failed to push comment"));
     }
 
     #[test]
     fn wrapper_prefix_push_reply() {
-        assert_eq!(
-            prefixed("Failed to push reply"),
-            "Failed to push reply: Resource not accessible by integration"
-        );
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || gh_pr_reply_comment("o", "r", 1, 2, "hi", "/tmp"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, prefixed("Failed to push reply"));
     }
 
     #[test]
     fn wrapper_prefix_post_general_comment() {
-        assert_eq!(
-            prefixed("Failed to post general comment"),
-            "Failed to post general comment: Resource not accessible by integration"
-        );
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || {
+            gh_pr_post_general("o", "r", 1, "hi", Some("/tmp"))
+        })
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, prefixed("Failed to post general comment"));
     }
 
     #[test]
     fn wrapper_prefix_fetch_pr_issue_comments() {
-        assert_eq!(
-            prefixed("Failed to fetch PR issue comments"),
-            "Failed to fetch PR issue comments: Resource not accessible by integration"
-        );
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || gh_pr_issue_comments("o", "r", 1, Some("/tmp")))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, prefixed("Failed to fetch PR issue comments"));
     }
 
     #[test]
     fn wrapper_prefix_read_gh_user() {
-        assert_eq!(
-            prefixed("Failed to read the gh user"),
-            "Failed to read the gh user: Resource not accessible by integration"
-        );
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || gh_viewer_login(Some("/tmp")))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, prefixed("Failed to read the gh user"));
     }
 
     #[test]
     fn wrapper_prefix_update_comment() {
-        assert_eq!(
-            prefixed("Failed to update comment"),
-            "Failed to update comment: Resource not accessible by integration"
-        );
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || {
+            gh_pr_update_review_comment("o", "r", 9, "new body", "/tmp")
+        })
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, prefixed("Failed to update comment"));
     }
 
     #[test]
     fn wrapper_prefix_delete_comment() {
-        assert_eq!(
-            prefixed("Failed to delete comment"),
-            "Failed to delete comment: Resource not accessible by integration"
-        );
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || gh_pr_delete_comment("o", "r", 9, "/tmp"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, prefixed("Failed to delete comment"));
     }
 
     #[test]
     fn wrapper_prefix_update_pr_body() {
-        assert_eq!(
-            prefixed("Failed to update PR body"),
-            "Failed to update PR body: Resource not accessible by integration"
-        );
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || gh_pr_edit_body("/tmp", "new body"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, prefixed("Failed to update PR body"));
     }
 
     #[test]
     fn wrapper_prefix_approve() {
+        let handle = scripted_timeout();
+        let error = with_test_handle(handle, || gh_pr_approve("/tmp", None, None))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, prefixed("gh pr approve failed"));
+    }
+
+    #[test]
+    fn review_threads_reports_a_timeout_instead_of_no_threads() {
+        let runner = Arc::new(ScriptedRunner::new());
+        runner.script(&[], Err(std::io::Error::from(std::io::ErrorKind::TimedOut)));
+        let github = CliGitHub::new(runner);
+        let error = github.review_threads("o", "r", 1, "/tmp").unwrap_err();
+        assert_eq!(error, GhError::Timeout);
+    }
+
+    #[test]
+    fn an_api_read_over_the_cap_is_too_large() {
+        let runner = Arc::new(ScriptedRunner::new());
+        runner.script(
+            &[],
+            Ok(ScriptedRunner::output(
+                0,
+                "HTTP/2.0 200 OK\r\n\r\n0123456789",
+                "",
+            )),
+        );
+        let github = CliGitHub::new(runner);
+        let error = github
+            .api_get_bounded("repos/o/r/contents/x", 4)
+            .unwrap_err();
         assert_eq!(
-            prefixed("gh pr approve failed"),
-            "gh pr approve failed: Resource not accessible by integration"
+            error,
+            GhError::TooLarge {
+                message: "command output exceeds byte limit".into()
+            }
         );
     }
 }
