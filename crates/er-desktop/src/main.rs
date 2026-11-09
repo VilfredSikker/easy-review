@@ -945,7 +945,7 @@ fn main() {
     if projects::load().projects.is_empty() {
         let root = app.tab().repo_root.clone();
         if !root.is_empty() {
-            let _ = projects::auto_register(&*ports.git, &root);
+            let _ = projects::auto_register(&*ports.github, &*ports.git, &root);
         }
     }
 
@@ -987,17 +987,11 @@ fn main() {
     // Don't block startup; if it fails, leave as None.
     {
         let gh_user_bg = Arc::clone(&gh_user);
+        let github = Arc::clone(&ports.github);
         std::thread::spawn(move || {
-            let Ok(out) = std::process::Command::new("gh")
-                .args(["api", "user", "--jq", ".login"])
-                .output()
-            else {
+            let Ok(Some(login)) = github.current_login() else {
                 return;
             };
-            if !out.status.success() {
-                return;
-            }
-            let login = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if login.is_empty() {
                 return;
             }
@@ -1241,6 +1235,7 @@ fn main() {
         let probe_app = Arc::clone(&app_arc);
         let probe_pr_cache = Arc::clone(&pr_cache);
         let probe_rev = Arc::clone(&desktop_revision);
+        let probe_github = Arc::clone(&ports.github);
         std::thread::spawn(move || {
             // (slug, pr_number) -> when we last actually probed. Throttles the
             // gh subprocess to once per 60s per PR even though the loop ticks
@@ -1269,30 +1264,13 @@ fn main() {
                 }
 
                 // Phase 2: no lock — ask gh for the PR's latest head oid.
-                let out = std::process::Command::new("gh")
-                    .args([
-                        "pr",
-                        "view",
-                        &pr_number.to_string(),
-                        "--repo",
-                        &slug,
-                        "--json",
-                        "headRefOid",
-                        "--jq",
-                        ".headRefOid",
-                    ])
-                    .output();
-                let oid = match out {
-                    Ok(o) if o.status.success() => {
-                        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s)
-                        }
-                    }
-                    _ => None,
+                let Some((owner, repo)) = slug.split_once('/') else {
+                    continue;
                 };
+                let oid = probe_github
+                    .pr_head_oid_remote(owner, repo, pr_number)
+                    .ok()
+                    .filter(|oid| !oid.is_empty());
                 // A failed/empty probe is NOT recorded into probe_throttle —
                 // a persistently-failing PR keeps retrying every 30s rather
                 // than being throttled to 60s on top of already being broken.
@@ -1512,6 +1490,7 @@ fn main() {
     let bg_inbox = Arc::clone(&inbox);
     let bg_handle = Arc::clone(&tauri_app_handle);
     let bg_app = Arc::clone(&app_arc);
+    let bg_github = Arc::clone(&ports.github);
     std::thread::spawn(move || {
         // Inbox native notifications need `tauri_app_handle`; setup stores it after
         // this thread starts (release builds are especially tight on timing).
@@ -1534,8 +1513,9 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = true;
             }
-            let failed =
-                rt.block_on(async { pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at).await });
+            let failed = rt.block_on(async {
+                pr_cache::refresh_pr_cache(Arc::clone(&bg_github), &bg_cache, &bg_fetched_at).await
+            });
             let prefs = commands::clone_inbox_prefs(&bg_app);
             let handles = commands::InboxRefreshHandles {
                 pr_cache: &bg_cache,
@@ -1561,8 +1541,13 @@ fn main() {
                 f.pr_list = true;
             }
             let success = rt.block_on(async {
-                pr_cache::refresh_pr_cache_for_remote(&active_remote, &bg_cache, &bg_fetched_at)
-                    .await
+                pr_cache::refresh_pr_cache_for_remote(
+                    Arc::clone(&bg_github),
+                    &active_remote,
+                    &bg_cache,
+                    &bg_fetched_at,
+                )
+                .await
             });
             let prefs = commands::clone_inbox_prefs(&bg_app);
             let handles = commands::InboxRefreshHandles {

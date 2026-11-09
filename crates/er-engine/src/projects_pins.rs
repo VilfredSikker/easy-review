@@ -43,26 +43,17 @@ fn now_epoch_ms() -> u64 {
 }
 
 /// Normalize a GitHub remote reference to a lowercase `owner/repo` slug.
+///
+/// Input the parser cannot read falls back to the old trimmed, lowercased
+/// text, so a caller keyed on garbage keeps its previous key.
 pub fn normalize_remote_slug(remote: &str) -> String {
-    let trimmed = remote.trim();
-    let without_scheme = trimmed
-        .strip_prefix("https://github.com/")
-        .or_else(|| trimmed.strip_prefix("http://github.com/"))
-        .or_else(|| trimmed.strip_prefix("git@github.com:"))
-        .unwrap_or(trimmed);
-    without_scheme
-        .trim_end_matches(".git")
-        .trim_matches('/')
-        .to_ascii_lowercase()
+    crate::github::RepoSlug::parse(remote)
+        .map(|slug| slug.key())
+        .unwrap_or_else(|| remote.trim().to_ascii_lowercase())
 }
 
 fn valid_remote_slug(remote: &str) -> Option<String> {
-    let slug = normalize_remote_slug(remote);
-    if !slug.is_empty() && slug.split('/').count() == 2 {
-        Some(slug)
-    } else {
-        None
-    }
+    crate::github::RepoSlug::parse(remote).map(|slug| slug.key())
 }
 
 fn sanitize_id(name: &str) -> String {

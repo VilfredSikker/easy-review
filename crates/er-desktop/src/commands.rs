@@ -1830,13 +1830,7 @@ fn github_file_url_for_tab(
 }
 
 fn parse_github_slug(remote: &str) -> Option<String> {
-    let normalized = remote.trim_end_matches(".git");
-    if let Some(rest) = normalized.strip_prefix("git@github.com:") {
-        return Some(rest.to_string());
-    }
-    normalized
-        .split_once("github.com/")
-        .map(|(_, slug)| slug.to_string())
+    er_engine::github::RepoSlug::parse_github_com(remote).map(|slug| slug.to_string())
 }
 
 fn normalize_check_state(checks: &[er_engine::github::CheckRun]) -> (String, Vec<String>) {
@@ -3466,7 +3460,12 @@ fn gh_review_submit_err(e: anyhow::Error) -> String {
         return own_pr_approval_error();
     }
     let mut hints = Vec::new();
-    if raw.contains("422") || raw.to_lowercase().contains("unprocessable") {
+    // Typed, not textual: a PR number or SHA containing "422" used to earn
+    // these hints for a failure GitHub never called unprocessable.
+    if matches!(
+        e.downcast_ref::<er_engine::github::GhError>(),
+        Some(er_engine::github::GhError::Unprocessable { .. })
+    ) {
         hints.push("blank review payload");
         hints.push("invalid or stale line anchor");
         hints.push("comment position no longer matches PR head");
@@ -3490,8 +3489,6 @@ pub fn submit_github_pr_decision(
     summary: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    use er_engine::github;
-
     let event = match mode.as_str() {
         "APPROVE" | "REQUEST_CHANGES" | "COMMENT" => mode.as_str(),
         _ => {
@@ -3530,10 +3527,15 @@ pub fn submit_github_pr_decision(
         (owner, repo, number, is_remote, repo_root)
     };
 
+    // Call the handle rather than the wrapper: the wrapper renders the error
+    // as text, and the 422 hint below needs the typed `GhError` in the chain.
     let submit_result = if is_remote {
-        github::gh_pr_submit_review_remote(&owner, &repo, number, &[], event, &summary_trimmed)
+        state
+            .ports
+            .github
+            .submit_review_remote(&owner, &repo, number, &[], event, &summary_trimmed)
     } else {
-        github::gh_pr_submit_review(
+        state.ports.github.submit_review(
             &owner,
             &repo,
             number,
@@ -3543,7 +3545,9 @@ pub fn submit_github_pr_decision(
             &summary_trimmed,
         )
     };
-    submit_result.map_err(gh_review_submit_err)?;
+    submit_result
+        .map_err(anyhow::Error::from)
+        .map_err(gh_review_submit_err)?;
 
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
@@ -6316,7 +6320,11 @@ fn now_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn fetch_single_pr_for_remote(remote: &str, pr_number: u64) -> Result<PrInfo, String> {
+fn fetch_single_pr_for_remote(
+    github: &dyn er_engine::github::GitHub,
+    remote: &str,
+    pr_number: u64,
+) -> Result<PrInfo, String> {
     #[derive(serde::Deserialize)]
     struct RawAuthor {
         login: Option<String>,
@@ -6363,26 +6371,15 @@ fn fetch_single_pr_for_remote(remote: &str, pr_number: u64) -> Result<PrInfo, St
         latest_reviews: Vec<RawReview>,
     }
 
-    let out = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--repo",
-            remote,
-            "--json",
+    let out = github
+        .pr_view_json(
+            Some(remote),
+            None,
+            pr_number,
             "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run gh pr view for {remote}#{pr_number}: {e}"))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!(
-            "Failed to fetch PR #{pr_number} for {remote}: {}",
-            stderr.trim()
-        ));
-    }
-    let raw: RawPr = serde_json::from_slice(&out.stdout)
+        )
+        .map_err(|e| format!("Failed to fetch PR #{pr_number} for {remote}: {e}"))?;
+    let raw: RawPr = serde_json::from_slice(&out)
         .map_err(|e| format!("Failed to parse gh pr view output for {remote}#{pr_number}: {e}"))?;
     let latest_reviewer_states = raw
         .latest_reviews
@@ -6429,7 +6426,7 @@ fn cache_single_pr_for_remote(
             return Ok(pr.clone());
         }
     }
-    let fetched_pr = fetch_single_pr_for_remote(remote, pr_number)?;
+    let fetched_pr = fetch_single_pr_for_remote(&*state.ports.github, remote, pr_number)?;
     if let Ok(mut cache) = state.pr_cache.lock() {
         let entry = cache.entry(remote.to_string()).or_default();
         if let Some(idx) = entry.iter().position(|pr| pr.number == pr_number) {
@@ -6550,7 +6547,7 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.open_tab(new_tab);
     crate::tabs::persist_app_tabs(&app);
-    let _ = projects::auto_register(&*state.ports.git, &path_str);
+    let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path_str);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     Ok(snap_from(&app, &state))
 }
@@ -6642,7 +6639,7 @@ fn build_local_branch_tab_for_repo(
     tab.mode = er_engine::app::DiffMode::Branch;
     // The tab's own remote is the repo actually being viewed, not whichever
     // project's remote happens to be active in the app.
-    tab.remote_repo = projects::resolve_repo_remote(&*ports.git, repo_root);
+    tab.remote_repo = projects::resolve_repo_remote(&*ports.github, &*ports.git, repo_root);
     Ok(tab)
 }
 
@@ -6986,7 +6983,11 @@ fn remember_pr_open_entry(
     crate::pr_open_cache::save_persisted_pr_open_cache(cache);
 }
 
-fn run_gh_pr_view_for_open(repo_root: &str, pr_number: u64) -> Result<PrOpenMetadata, String> {
+fn run_gh_pr_view_for_open(
+    github: &dyn er_engine::github::GitHub,
+    repo_root: &str,
+    pr_number: u64,
+) -> Result<PrOpenMetadata, String> {
     #[derive(serde::Deserialize)]
     struct RawAuthor {
         login: Option<String>,
@@ -7017,26 +7018,18 @@ fn run_gh_pr_view_for_open(repo_root: &str, pr_number: u64) -> Result<PrOpenMeta
         reviews: Vec<RawReview>,
     }
 
-    let out = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
+    let out = github
+        .pr_view_json(
+            None,
+            Some(repo_root),
+            pr_number,
             "number,title,body,state,author,url,baseRefName,headRefName,headRefOid,updatedAt,reviews,commits",
-        ])
-        .current_dir(repo_root)
-        .output()
-        .map_err(|e| format!("Failed to run gh pr view: {e}"))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("Failed to get PR #{pr_number}: {}", stderr.trim()));
-    }
-    let raw: RawView = serde_json::from_slice(&out.stdout)
+        )
+        .map_err(|e| format!("Failed to get PR #{pr_number}: {e}"))?;
+    let raw: RawView = serde_json::from_slice(&out)
         .map_err(|e| format!("Failed to parse gh pr view for PR #{pr_number}: {e}"))?;
-    let pr_commits =
-        er_engine::github::parse_pr_commits_view_json(&out.stdout, PR_COMMIT_CACHE_LIMIT)
-            .unwrap_or_default();
+    let pr_commits = er_engine::github::parse_pr_commits_view_json(&out, PR_COMMIT_CACHE_LIMIT)
+        .unwrap_or_default();
     let reviewers = raw
         .reviews
         .into_iter()
@@ -7424,7 +7417,7 @@ fn load_pr_open_inputs(
         .unwrap_or(false);
     if has_cache_entry {
         let t_view = std::time::Instant::now();
-        let metadata = run_gh_pr_view_for_open(&repo_root, pr_number)?;
+        let metadata = run_gh_pr_view_for_open(&*state.ports.github, &repo_root, pr_number)?;
         log::info!(
             "branch_open project={} branch={} phase=gh_pr_view ms={} cache=probe",
             project_id,
@@ -7529,9 +7522,10 @@ fn load_pr_open_inputs(
     let (metadata_res, diff_res, view_ms, diff_ms) = std::thread::scope(|s| {
         let view_root = repo_root.clone();
         let diff_root = repo_root.clone();
+        let view_github = Arc::clone(&state.ports.github);
         let view = s.spawn(move || {
             let t = std::time::Instant::now();
-            let res = run_gh_pr_view_for_open(&view_root, pr_number);
+            let res = run_gh_pr_view_for_open(&*view_github, &view_root, pr_number);
             (res, t.elapsed().as_millis())
         });
         let diff = s.spawn(move || {
@@ -8295,6 +8289,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
         let inbox = Arc::clone(&state.inbox);
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
         let app = Arc::clone(&state.app);
+        let github = Arc::clone(&state.ports.github);
         std::thread::spawn(move || {
             #[expect(
                 clippy::expect_used,
@@ -8304,10 +8299,9 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime");
-            let failed =
-                rt.block_on(
-                    async move { crate::pr_cache::refresh_pr_cache(&cache, &fetched_at).await },
-                );
+            let failed = rt.block_on(async move {
+                crate::pr_cache::refresh_pr_cache(github, &cache, &fetched_at).await
+            });
             let prefs = clone_inbox_prefs(&app);
             let handles = InboxRefreshHandles {
                 pr_cache: &pr_cache,
@@ -8369,6 +8363,7 @@ pub fn refresh_project_pr_list(
         let inbox = Arc::clone(&state.inbox);
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
         let app = Arc::clone(&state.app);
+        let github = Arc::clone(&state.ports.github);
         std::thread::spawn(move || {
             #[expect(
                 clippy::expect_used,
@@ -8380,8 +8375,13 @@ pub fn refresh_project_pr_list(
                 .expect("failed to build tokio runtime");
             let remote_clone = remote.clone();
             let success = rt.block_on(async move {
-                crate::pr_cache::refresh_pr_cache_for_remote(&remote_clone, &cache, &fetched_at)
-                    .await
+                crate::pr_cache::refresh_pr_cache_for_remote(
+                    github,
+                    &remote_clone,
+                    &cache,
+                    &fetched_at,
+                )
+                .await
             });
             let prefs = clone_inbox_prefs(&app);
             let handles = InboxRefreshHandles {
@@ -8637,12 +8637,7 @@ fn inbox_open_target_in(
 /// Split a project remote into `(owner, repo)` keeping its spelling, which is
 /// what the sidebar passes and so what the remote open cache is keyed by.
 fn remote_owner_repo(remote: &str) -> Option<(String, String)> {
-    let slug = projects::remote_slug_as_written(remote);
-    let (owner, repo) = slug.split_once('/')?;
-    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
-        return None;
-    }
-    Some((owner.to_string(), repo.to_string()))
+    er_engine::github::RepoSlug::parse(remote).map(|slug| (slug.owner, slug.repo))
 }
 
 fn inbox_item_target(id: &str, state: &AppState) -> Option<InboxTarget> {
@@ -12494,6 +12489,129 @@ mod tests {
         assert!(review_comment_body("  \n").is_err());
     }
 
+    fn github_pr_json() -> &'static [u8] {
+        br#"{"number":7,"title":"Tidy up","headRefName":"feat/x","baseRefName":"main","headRefOid":"abc123","updatedAt":"2026-01-02T03:04:05Z","state":"OPEN","isDraft":false,"author":{"login":"alice"},"assignees":[{"login":"bob"}],"reviewRequests":[{"login":"carol"}],"reviewDecision":"APPROVED","mergedAt":null,"latestReviews":[{"author":{"login":"dan"},"state":"APPROVED"}]}"#
+    }
+
+    #[test]
+    fn fetch_single_pr_for_remote_parses_the_handle_output() {
+        let github = er_engine::github::FakeGitHub::default()
+            .with_pr_view_json(Ok(github_pr_json().to_vec()));
+
+        let pr = fetch_single_pr_for_remote(&github, "o/r", 7).unwrap();
+
+        assert_eq!(pr.number, 7);
+        assert_eq!(pr.title, "Tidy up");
+        assert_eq!(pr.head_ref, "feat/x");
+        assert_eq!(pr.base_ref, "main");
+        assert_eq!(pr.head_oid, "abc123");
+        assert_eq!(pr.author, "alice");
+        assert_eq!(pr.assignees, vec!["bob".to_string()]);
+        assert_eq!(pr.reviewers, vec!["carol".to_string()]);
+        assert_eq!(pr.review_decision.as_deref(), Some("APPROVED"));
+        assert_eq!(
+            pr.latest_reviewer_states,
+            vec![("dan".to_string(), "APPROVED".to_string())]
+        );
+        assert_eq!(
+            github.calls(),
+            vec![format!(
+                "pr_view_json(repo_slug=Some({:?}), dir=None, number=7, fields={:?})",
+                "o/r",
+                "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews"
+            )]
+        );
+    }
+
+    #[test]
+    fn fetch_single_pr_for_remote_prefixes_a_gh_error() {
+        let github = er_engine::github::FakeGitHub::default().with_pr_view_json(Err(
+            er_engine::github::GhError::NotFound {
+                message: "nope".into(),
+            },
+        ));
+
+        let error = fetch_single_pr_for_remote(&github, "o/r", 7).unwrap_err();
+
+        assert_eq!(error, "Failed to fetch PR #7 for o/r: nope");
+    }
+
+    #[test]
+    fn run_gh_pr_view_for_open_parses_the_handle_output() {
+        let json = br#"{"number":7,"title":"Tidy up","body":"why","state":"OPEN","author":{"login":"alice"},"url":"https://github.com/o/r/pull/7","baseRefName":"main","headRefName":"feat/x","headRefOid":"abc123","updatedAt":"2026-01-02T03:04:05Z","reviews":[{"author":{"login":"dan"},"state":"APPROVED"}],"commits":[]}"#;
+        let github = er_engine::github::FakeGitHub::default().with_pr_view_json(Ok(json.to_vec()));
+
+        let metadata = run_gh_pr_view_for_open(&github, "/tmp/repo", 7).unwrap();
+
+        assert_eq!(metadata.freshness.base_branch, "main");
+        assert_eq!(metadata.freshness.head_branch, "feat/x");
+        assert_eq!(metadata.freshness.head_oid, "abc123");
+        assert_eq!(metadata.pr_data.title, "Tidy up");
+        assert_eq!(metadata.pr_data.body, "why");
+        assert_eq!(metadata.pr_data.author, "alice");
+        assert_eq!(metadata.pr_data.reviewers.len(), 1);
+        assert_eq!(metadata.pr_data.reviewers[0].login, "dan");
+        assert_eq!(metadata.pr_data.reviewers[0].state, "APPROVED");
+        assert_eq!(
+            github.calls(),
+            vec![format!(
+                "pr_view_json(repo_slug=None, dir=Some({:?}), number=7, fields={:?})",
+                "/tmp/repo",
+                "number,title,body,state,author,url,baseRefName,headRefName,headRefOid,updatedAt,reviews,commits"
+            )]
+        );
+    }
+
+    #[cfg(unix)]
+    fn classified_review_fixture() -> er_engine::github::GhError {
+        use std::os::unix::process::ExitStatusExt;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../er-github/tests/fixtures/gh/api_422_review_string_errors.synthetic");
+        let stdout = std::fs::read(dir.join("stdout")).unwrap();
+        let stderr = std::fs::read(dir.join("stderr")).unwrap();
+        let exit: i32 = std::fs::read_to_string(dir.join("exit"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(exit << 8),
+            stdout,
+            stderr,
+        };
+        er_engine::github::classify(Ok(output), true, false).unwrap_err()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unprocessable_keeps_githubs_message_for_the_message_checks() {
+        let error = classified_review_fixture();
+        assert!(matches!(
+            error,
+            er_engine::github::GhError::Unprocessable { .. }
+        ));
+        let message = error.to_string();
+        assert!(is_one_pending_review_error(&message), "{message}");
+        assert!(is_own_pr_approval_error(&message), "{message}");
+        assert_eq!(
+            gh_review_submit_err(anyhow::Error::from(error)),
+            "GitHub does not allow approving your own pull request."
+        );
+    }
+
+    #[test]
+    fn the_422_hint_needs_a_typed_error() {
+        let textual = gh_review_submit_err(anyhow::anyhow!("gh: failed on PR #4220 (HTTP 500)"));
+        assert!(!textual.contains("Likely causes"), "{textual}");
+
+        let typed = gh_review_submit_err(anyhow::Error::from(
+            er_engine::github::GhError::Unprocessable {
+                message: "pull_request_review_thread.line must be part of the diff".into(),
+            },
+        ));
+        assert!(typed.contains("Likely causes"), "{typed}");
+    }
+
     #[test]
     fn one_pending_review_refusal_is_detected_from_github_422() {
         let raw = r#"gh: Unprocessable Entity (HTTP 422) ({"message":"Unprocessable Entity","errors":["user_id can only have one pending review per pull request"]})"#;
@@ -12669,6 +12787,24 @@ mod tests {
             Some("owner/repo")
         );
         assert_eq!(parse_github_slug("https://gitlab.com/owner/repo"), None);
+    }
+
+    #[test]
+    fn git_at_github_com_colon_form_parses_the_same_everywhere() {
+        let remote = "git@github.com:Acme/Widgets.git";
+        assert_eq!(
+            er_engine::github::parse_remote_url(remote),
+            Some(("Acme".to_string(), "Widgets".to_string()))
+        );
+        assert_eq!(
+            er_engine::projects_pins::normalize_remote_slug(remote),
+            "acme/widgets"
+        );
+        assert_eq!(
+            crate::projects::slug_from_remote_url(remote).as_deref(),
+            Some("Acme/Widgets")
+        );
+        assert_eq!(parse_github_slug(remote).as_deref(), Some("Acme/Widgets"));
     }
 
     fn write_pkg(dir: &std::path::Path, body: &str) {

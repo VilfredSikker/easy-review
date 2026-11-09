@@ -7,7 +7,7 @@ use crate::checkout::{fetch_pr_base_ref_with, pin_pr_base_commit};
 use crate::classify::is_no_pull_request_answer;
 use crate::comments::{parse_paginated, parse_review_threads_response, run_parallel};
 use crate::diff::git_merge_base_diff;
-use crate::repo::{owner_repo_matches_slug, parse_owner_repo_from_remote, remote_matches_repo};
+use crate::repo::{owner_repo_matches_slug, remote_matches_repo};
 use crate::testing::ScriptedRunner;
 use crate::*;
 use std::collections::HashMap;
@@ -51,18 +51,6 @@ fn run_parallel_overlaps_independent_work() {
 }
 
 // ── local checkout matching (remote PR reviews) ──
-
-#[test]
-fn ssh_and_https_origins_resolve_to_the_same_slug() {
-    for remote in [
-        "git@github.com:Acme/discovery.git",
-        "https://github.com/Acme/discovery.git",
-        "https://github.com/Acme/discovery",
-    ] {
-        let (owner, repo) = parse_owner_repo_from_remote(remote).unwrap();
-        assert_eq!((owner.as_str(), repo.as_str()), ("Acme", "discovery"));
-    }
-}
 
 #[test]
 fn slug_match_is_case_insensitive() {
@@ -852,62 +840,6 @@ fn parse_pr_checks_empty_array() {
     assert!(parse_pr_checks("[]").unwrap().is_empty());
 }
 
-// ── parse_remote_url ──
-
-#[test]
-fn parse_remote_url_ssh_scp_style() {
-    let (owner, repo) = parse_remote_url("git@github.com:Acme/My-Repo.git").unwrap();
-    assert_eq!(owner, "Acme");
-    assert_eq!(repo, "My-Repo");
-}
-
-#[test]
-fn parse_remote_url_https() {
-    let (owner, repo) = parse_remote_url("https://github.com/Acme/My-Repo.git").unwrap();
-    assert_eq!(owner, "Acme");
-    assert_eq!(repo, "My-Repo");
-}
-
-#[test]
-fn parse_remote_url_https_no_git_suffix() {
-    let (owner, repo) = parse_remote_url("https://github.com/Acme/My-Repo").unwrap();
-    assert_eq!(owner, "Acme");
-    assert_eq!(repo, "My-Repo");
-}
-
-#[test]
-fn parse_remote_url_ssh_scheme() {
-    let (owner, repo) = parse_remote_url("ssh://git@github.com/Acme/My-Repo.git").unwrap();
-    assert_eq!(owner, "Acme");
-    assert_eq!(repo, "My-Repo");
-}
-
-#[test]
-fn parse_remote_url_same_owner_repo_for_ssh_and_https() {
-    // Both forms of the same origin must resolve identically.
-    let ssh = parse_remote_url("git@github.com:Acme/My-Repo.git").unwrap();
-    let https = parse_remote_url("https://github.com/Acme/My-Repo.git").unwrap();
-    assert_eq!(ssh, https);
-    assert_eq!(ssh, ("Acme".to_string(), "My-Repo".to_string()));
-}
-
-#[test]
-fn parse_remote_url_preserves_case() {
-    let (owner, repo) = parse_remote_url("https://github.com/UPPER/lower.git").unwrap();
-    assert_eq!(owner, "UPPER");
-    assert_eq!(repo, "lower");
-}
-
-#[test]
-fn parse_remote_url_invalid_no_slash() {
-    assert!(parse_remote_url("https://github.com/only-one-segment").is_none());
-}
-
-#[test]
-fn parse_remote_url_empty() {
-    assert!(parse_remote_url("").is_none());
-}
-
 #[cfg(test)]
 fn git(root: &std::path::Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
@@ -1248,6 +1180,124 @@ fn comment_bundle_cache_serves_within_ttl_and_expires() {
         cache.get(&("o".into(), "r".into(), 1u64)).is_none(),
         "expired entry must miss"
     );
+}
+
+#[test]
+fn pr_view_json_runs_the_callers_fields_in_the_right_place() {
+    let runner = Arc::new(ScriptedRunner::new());
+    runner.script(&[], Ok(ScriptedRunner::output(0, r#"{"number":7}"#, "")));
+    runner.script(&[], Ok(ScriptedRunner::output(0, r#"{"number":8}"#, "")));
+    let github = CliGitHub::new(runner.clone());
+
+    let body = github
+        .pr_view_json(Some("o/r"), None, 7, "number,title")
+        .unwrap();
+    assert_eq!(body, br#"{"number":7}"#);
+    assert_eq!(
+        runner.calls()[0],
+        vec![
+            "gh",
+            "pr",
+            "view",
+            "7",
+            "--repo",
+            "o/r",
+            "--json",
+            "number,title"
+        ]
+    );
+
+    github
+        .pr_view_json(None, Some("/tmp/repo"), 8, "body")
+        .unwrap();
+    assert_eq!(
+        runner.calls()[1],
+        vec!["gh", "pr", "view", "8", "--json", "body"]
+    );
+}
+
+#[test]
+fn pr_list_json_runs_the_callers_window() {
+    let runner = Arc::new(ScriptedRunner::new());
+    runner.script(&[], Ok(ScriptedRunner::output(0, "[]", "")));
+    let github = CliGitHub::new(runner.clone());
+
+    github.pr_list_json("o/r", "open", 30, "number").unwrap();
+
+    assert_eq!(
+        runner.calls()[0],
+        vec![
+            "gh", "pr", "list", "--repo", "o/r", "--state", "open", "--json", "number", "--limit",
+            "30"
+        ]
+    );
+    assert_eq!(
+        runner.timeouts(),
+        vec![std::time::Duration::from_secs(60)],
+        "the cache listing used to run unbounded; it keeps a 60 s bound"
+    );
+}
+
+#[test]
+fn repo_name_with_owner_trims_the_answer() {
+    let runner = Arc::new(ScriptedRunner::new());
+    runner.script(&[], Ok(ScriptedRunner::output(0, "acme/widgets\n", "")));
+    let github = CliGitHub::new(runner.clone());
+
+    assert_eq!(
+        github.repo_name_with_owner("/tmp/repo").unwrap(),
+        "acme/widgets"
+    );
+    assert_eq!(
+        runner.calls()[0],
+        vec![
+            "gh",
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "--jq",
+            ".nameWithOwner"
+        ]
+    );
+}
+
+#[test]
+fn auth_token_returns_the_token_and_never_puts_it_in_an_error() {
+    let runner = Arc::new(ScriptedRunner::new());
+    runner.script(&[], Ok(ScriptedRunner::output(0, "ghp_secret\n", "")));
+    let github = CliGitHub::new(runner.clone());
+
+    assert_eq!(github.auth_token("github.com").unwrap(), "ghp_secret");
+    assert_eq!(
+        runner.calls()[0],
+        vec!["gh", "auth", "token", "--hostname", "github.com"]
+    );
+
+    let runner = Arc::new(ScriptedRunner::new());
+    runner.script(
+        &[],
+        Ok(ScriptedRunner::output(1, "ghp_secret", "no oauth token")),
+    );
+    let github = CliGitHub::new(runner);
+    let error = github.auth_token("github.com").unwrap_err();
+    let rendered = format!("{error} {error:?}");
+    assert!(!rendered.contains("ghp_secret"), "{rendered}");
+}
+
+#[test]
+fn open_pr_in_browser_passes_dash_r_only_for_a_remote() {
+    let runner = Arc::new(ScriptedRunner::new());
+    let github = CliGitHub::new(runner.clone());
+
+    assert!(github.open_pr_in_browser("/tmp/repo", 7, Some("o/r")));
+    assert_eq!(
+        runner.calls()[0],
+        vec!["gh", "pr", "view", "7", "--web", "-R", "o/r"]
+    );
+
+    assert!(github.open_pr_in_browser("/tmp/repo", 8, None));
+    assert_eq!(runner.calls()[1], vec!["gh", "pr", "view", "8", "--web"]);
 }
 
 #[test]

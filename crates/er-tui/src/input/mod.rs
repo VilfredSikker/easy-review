@@ -315,40 +315,6 @@ fn open_review_flow_results(app: &mut App, er_dir: &str, run_id: &str, selected:
     }
 }
 
-/// Open a PR on GitHub via `gh pr view --web`.
-///
-/// `gh` outlives the caller, so the child is spawned detached and reaped on its
-/// own thread; the TUI never waits on a browser launch. `remote_repo` is the
-/// `owner/repo` slug passed as `-R` when the PR is not in the current repo.
-/// Returns whether the process was spawned.
-fn spawn_gh_pr_view_web(repo_root: &str, pr_number: u64, remote_repo: Option<&str>) -> bool {
-    let mut args = vec![
-        "pr".to_string(),
-        "view".to_string(),
-        pr_number.to_string(),
-        "--web".to_string(),
-    ];
-    if let Some(slug) = remote_repo {
-        args.push("-R".to_string());
-        args.push(slug.to_string());
-    }
-    match std::process::Command::new("gh")
-        .args(&args)
-        .current_dir(repo_root)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(mut child) => {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-            true
-        }
-        Err(_) => false,
-    }
-}
-
 pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
     match action {
         HubAction::Noop => {}
@@ -700,7 +666,9 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             if let Some(pr_number) = app.tab().pr_number {
                 let repo_root = app.tab().repo_root.clone();
                 let remote_repo = app.tab().remote_repo.clone();
-                spawn_gh_pr_view_web(&repo_root, pr_number, remote_repo.as_deref());
+                app.ports
+                    .github
+                    .open_pr_in_browser(&repo_root, pr_number, remote_repo.as_deref());
                 app.notify("Opening PR in browser...");
             }
         }
@@ -727,7 +695,11 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             // remote PR), so prefer the URL's slug over the tab's remote.
             let slug =
                 github::parse_github_pr_url(&pr_url).map(|r| format!("{}/{}", r.owner, r.repo));
-            if spawn_gh_pr_view_web(&repo_root, pr_number, slug.as_deref()) {
+            if app
+                .ports
+                .github
+                .open_pr_in_browser(&repo_root, pr_number, slug.as_deref())
+            {
                 app.notify(&format!("Opening {branch} (#{pr_number}) in browser..."));
             }
         }

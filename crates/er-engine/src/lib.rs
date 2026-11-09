@@ -33,7 +33,6 @@ pub mod paths;
 pub mod ports;
 pub mod pr_resolve;
 pub mod pr_review_feedback;
-pub use er_git::proc;
 pub mod projects_pins;
 pub mod release_update;
 pub mod review_queue;
