@@ -47,6 +47,7 @@ objc2-user-notifications = { version = "0.3", features = [
 block2 = "0.6"
 
 [dev-dependencies]
+er-engine = { path = "../er-engine", features = ["test-support"] }
 er-git = { path = "../er-git" }
 tempfile = "3"
 
