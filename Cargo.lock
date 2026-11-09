@@ -1378,11 +1378,13 @@ dependencies = [
  "dirs 6.0.0",
  "er-git",
  "er-github",
+ "er-store",
  "glob",
  "libc",
  "notify",
  "notify-debouncer-mini",
  "png",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha1",
@@ -1443,6 +1445,16 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "er-store"
+version = "0.6.5"
+dependencies = [
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

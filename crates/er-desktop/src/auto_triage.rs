@@ -99,12 +99,11 @@ fn resolve_er_dir(
     repo_root: &str,
     pr_number: u64,
 ) -> Result<String, String> {
-    let slug = if !repo_root.is_empty() {
-        er_engine::github::canonical_owner_repo_slug(git, repo_root)
-            .unwrap_or_else(|| er_engine::storage::slug_branch(&remote.to_lowercase()))
-    } else {
-        er_engine::storage::slug_branch(&remote.to_lowercase())
-    };
+    let slug = er_engine::storage::repo_storage_slug_for(
+        git,
+        repo_root,
+        (!remote.is_empty()).then_some(remote),
+    );
     let er_root = er_engine::storage::resolve_managed_root_for_pr_bucket(&slug, pr_number);
     let er_dir = er_root.er_dir();
     if er_dir.is_empty() {
@@ -293,8 +292,11 @@ fn run_branch_triage_once(
         return Err("Nothing to triage on this branch".to_string());
     }
 
-    let slug = er_engine::github::canonical_owner_repo_slug(&*ports.git, repo_root)
-        .unwrap_or_else(|| er_engine::storage::slug_branch(&remote.to_lowercase()));
+    let slug = er_engine::storage::repo_storage_slug_for(
+        &*ports.git,
+        repo_root,
+        (!remote.is_empty()).then_some(remote),
+    );
     let branch_slug = er_engine::storage::slug_branch(branch);
     let er_dir =
         er_engine::storage::resolve_managed_root_for_view_bucket(&slug, &branch_slug, "branch")

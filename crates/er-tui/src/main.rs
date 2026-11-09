@@ -233,6 +233,7 @@ fn main() -> Result<()> {
         // The remote branch below reaches git through the same handle.
         let pr_data = github::gh_pr_overview_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number);
         let mut app = App::new_remote(tab, pr_data, ports);
+        app.announce_legacy_root();
         app.tab_mut().reload_remote_comments();
 
         // Open additional remote PR tabs
@@ -273,6 +274,7 @@ fn main() -> Result<()> {
 
     // Init app state (detects repo, branch, base branch, runs initial diff)
     let mut app = App::new_with_args(&cli.paths, ports)?;
+    app.announce_legacy_root();
 
     // Initialize theme from config
     ui::themes::set_theme_by_name(&app.config.display.theme);

@@ -27,8 +27,8 @@
     </table>
     <p>
       There is <strong>one</strong> config file, shared by every repo — there is no per-repo override. On macOS it lives
-      at <code>~/Library/Application Support/easy-review/config.toml</code>; elsewhere it is the platform app-data
-      directory plus <code>easy-review</code>. <code>ER_CONFIG_PATH</code> overrides the file and
+      at <code>~/Library/Application Support/easy-review/v1/config.toml</code>; elsewhere it is the platform app-data
+      directory plus <code>easy-review/v1</code>. <code>ER_CONFIG_PATH</code> overrides the file and
       <code>ER_STORAGE_ROOT</code> moves the whole data directory, config included.
     </p>
     <p>
@@ -139,7 +139,7 @@ effort_levels = [<span class="tok-str">"low"</span>, <span class="tok-str">"medi
       not rewrite your file.</li>
       <li>Each release ships a preset list per provider. <strong>Refresh models</strong> adds what the provider CLI itself lists, for Codex, Cursor and OpenCode. The Claude CLI has no listing, so Claude offers the presets of the release you run. A preset dropped from the catalog is dropped from the loaded config too, and a default that pointed at it moves to its successor.</li>
       <li>The selected default provider/model applies to every ordinary AI Hub action, including review, triage, tours, experts, Professor, validation, questions, summary, and card AI. Explicit review-run selections apply only to that run.</li>
-      <li>Built-in Claude, Codex, Cursor Agent, and OpenCode launches can read and write managed review storage. On macOS this is <code>~/Library/Application Support/easy-review/</code>; OpenCode uses <code>--auto</code> plus an <code>OPENCODE_PERMISSION</code> object that denies other external paths and allows only the active review bucket. Card AI keeps <code>--auto</code> with a read-only permission object. Custom provider commands are left unchanged.</li>
+      <li>Built-in Claude, Codex, Cursor Agent, and OpenCode launches can read and write managed review storage. On macOS this is <code>~/Library/Application Support/easy-review/v1/</code>; OpenCode uses <code>--auto</code> plus an <code>OPENCODE_PERMISSION</code> object that denies other external paths and allows only the active review bucket. Card AI keeps <code>--auto</code> with a read-only permission object. Custom provider commands are left unchanged.</li>
     </ul>
 
     <h2><code>[summary]</code> — diff summaries</h2>
