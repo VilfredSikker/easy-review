@@ -21,6 +21,13 @@ AI sidecars never arrive this way: they sit outside the repo root, under
 managed storage. They are polled instead, by `check_ai_files_changed()`
 comparing `er_dir()` mtimes.
 
+## The store root
+
+`StoreWatcher::new(root, registry, ignore, debounce_ms, tx)` watches the managed
+store root recursively and sends a `StoreEvent` for each registered file that
+changes; ignored and unregistered paths are dropped. Nothing consumes its
+channel yet — mtime polling stays until phase 4.
+
 ## Kept alive by RAII, started automatically
 
 Holding the `FileWatcher` is what keeps it running. The TUI holds
