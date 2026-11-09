@@ -5,11 +5,11 @@
 //! files that still do; the list may only shrink, because an entry with no
 //! findings fails as stale.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
-use syn::{Attribute, Expr, ExprCall, ExprLit, Item, Lit};
+use syn::{Attribute, Expr, ExprCall, ExprLit, Item, Lit, UseTree};
 
 use crate::attrs::is_cfg_test;
 use crate::diagnostics::Diagnostic;
@@ -26,6 +26,7 @@ pub struct Finding {
 
 struct SpawnFinder<'a> {
     program: &'a str,
+    aliases: BTreeSet<String>,
     findings: Vec<Finding>,
 }
 
@@ -38,7 +39,7 @@ impl<'ast> Visit<'ast> for SpawnFinder<'_> {
     }
 
     fn visit_expr_call(&mut self, call: &'ast ExprCall) {
-        if is_command_new(&call.func) {
+        if is_command_new(&call.func, &self.aliases) {
             if let Some(Expr::Lit(ExprLit {
                 lit: Lit::Str(literal),
                 ..
@@ -61,12 +62,49 @@ pub fn findings(source: &str, program: &str) -> Vec<Finding> {
     let Ok(file) = syn::parse_file(source) else {
         return Vec::new();
     };
+    let mut collector = AliasCollector::default();
+    collector.visit_file(&file);
     let mut finder = SpawnFinder {
         program,
+        aliases: collector.aliases,
         findings: Vec::new(),
     };
     finder.visit_file(&file);
     finder.findings
+}
+
+/// Collects the local names `Command` is imported under, so a renamed import
+/// cannot hide a spawn from the rule.
+#[derive(Default)]
+struct AliasCollector {
+    aliases: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for AliasCollector {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if item_attrs(item).is_some_and(is_cfg_test) {
+            return;
+        }
+        if let Item::Use(item_use) = item {
+            collect_use_aliases(&item_use.tree, &mut self.aliases);
+        }
+        visit::visit_item(self, item);
+    }
+}
+
+fn collect_use_aliases(tree: &UseTree, aliases: &mut BTreeSet<String>) {
+    match tree {
+        UseTree::Path(path) => collect_use_aliases(&path.tree, aliases),
+        UseTree::Group(group) => {
+            for tree in &group.items {
+                collect_use_aliases(tree, aliases);
+            }
+        }
+        UseTree::Rename(rename) if rename.ident == "Command" => {
+            aliases.insert(rename.rename.to_string());
+        }
+        _ => {}
+    }
 }
 
 /// Turn findings into gate diagnostics. A file under `home` is the owner; a
@@ -120,7 +158,7 @@ fn error(file: &str, line: usize, code: &str, message: &str) -> Diagnostic {
     }
 }
 
-fn is_command_new(func: &Expr) -> bool {
+fn is_command_new(func: &Expr, aliases: &BTreeSet<String>) -> bool {
     let Expr::Path(path) = func else {
         return false;
     };
@@ -128,7 +166,9 @@ fn is_command_new(func: &Expr) -> bool {
     if segments.len() < 2 {
         return false;
     }
-    segments[segments.len() - 2].ident == "Command" && segments[segments.len() - 1].ident == "new"
+    let owner = &segments[segments.len() - 2].ident;
+    (owner == "Command" || aliases.contains(&owner.to_string()))
+        && segments[segments.len() - 1].ident == "new"
 }
 
 fn item_attrs(item: &Item) -> Option<&[Attribute]> {
@@ -192,6 +232,22 @@ mod tests {
         ] {
             assert!(findings(source, "git").is_empty(), "{source}");
         }
+    }
+
+    #[test]
+    fn renamed_command_import_is_flagged() {
+        for source in [
+            "use std::process::Command as Cmd; fn f() { Cmd::new(\"git\"); }",
+            "use tokio::process::Command as TokioCmd; fn f() { TokioCmd::new(\"git\"); }",
+        ] {
+            assert_eq!(findings(source, "git").len(), 1, "{source}");
+        }
+    }
+
+    #[test]
+    fn grouped_renamed_command_import_is_flagged() {
+        let source = "use std::process::{Command as C}; fn f() { C::new(\"git\"); }";
+        assert_eq!(findings(source, "git").len(), 1, "{source}");
     }
 
     #[test]

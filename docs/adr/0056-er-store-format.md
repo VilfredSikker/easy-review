@@ -29,6 +29,10 @@ version goes through `Artifact::migrate`; with no migration it reads as
 `UnknownVersion`. An Enveloped kind accepts a legacy bare file only when the
 kind declares `WAS_BARE_BEFORE`.
 
+Adding an optional payload field needs no bump. A new enum variant does: an
+older binary has no arm for it and reads the file as malformed, unless the
+variant is covered by `#[serde(other)]`.
+
 ## Diff hashes
 
 The store never compares `diff_hash` on read or write. A stale file loads and

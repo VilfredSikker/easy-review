@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::lock::HolderInfo;
 use crate::store::MAX_ARTIFACT_BYTES;
 
 /// Every failure the store reports to a caller.
@@ -25,6 +26,20 @@ pub enum StoreError {
     },
     /// A payload or text file is over the store's size limit.
     TooLarge { bytes: u64 },
+    /// Another process or thread holds the bucket's write lock.
+    Locked {
+        path: PathBuf,
+        holder: Option<HolderInfo>,
+    },
+    /// Another process or thread holds the bucket's lease.
+    LeaseHeld {
+        path: PathBuf,
+        holder: Option<HolderInfo>,
+    },
+    /// A lock guard does not cover the key's scope.
+    WrongScope { guard: PathBuf, key: PathBuf },
+    /// The current thread already holds this bucket's lock.
+    AlreadyLocked { path: PathBuf },
 }
 
 impl std::fmt::Display for StoreError {
@@ -53,8 +68,32 @@ impl std::fmt::Display for StoreError {
                 f,
                 "artifact is {bytes} bytes, over the {MAX_ARTIFACT_BYTES} limit"
             ),
+            Self::Locked { path, holder } => {
+                write!(f, "{} is locked", path.display())?;
+                write_holder(f, holder.as_ref())
+            }
+            Self::LeaseHeld { path, holder } => {
+                write!(f, "{} has a lease", path.display())?;
+                write_holder(f, holder.as_ref())
+            }
+            Self::WrongScope { guard, key } => write!(
+                f,
+                "lock guard for {} does not cover {}",
+                guard.display(),
+                key.display()
+            ),
+            Self::AlreadyLocked { path } => {
+                write!(f, "the current thread already holds {}", path.display())
+            }
         }
     }
+}
+
+fn write_holder(f: &mut std::fmt::Formatter<'_>, holder: Option<&HolderInfo>) -> std::fmt::Result {
+    if let Some(holder) = holder {
+        write!(f, " by pid {} ({})", holder.pid, holder.label)?;
+    }
+    Ok(())
 }
 
 impl std::error::Error for StoreError {
@@ -76,5 +115,36 @@ impl From<std::io::Error> for StoreError {
 impl From<serde_json::Error> for StoreError {
     fn from(error: serde_json::Error) -> Self {
         Self::Serialize(error)
+    }
+}
+
+/// A read-modify-write failure: the store, or the caller's closure.
+#[derive(Debug)]
+pub enum UpdateError<E> {
+    Store(StoreError),
+    Apply(E),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for UpdateError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(error) => write!(f, "{error}"),
+            Self::Apply(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for UpdateError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Store(error) => Some(error),
+            Self::Apply(error) => Some(error),
+        }
+    }
+}
+
+impl<E> From<StoreError> for UpdateError<E> {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
     }
 }

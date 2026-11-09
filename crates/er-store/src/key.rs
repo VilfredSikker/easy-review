@@ -108,6 +108,16 @@ impl BranchView {
             Self::History => "history",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "branch" => Some(Self::Branch),
+            "unstaged" => Some(Self::Unstaged),
+            "staged" => Some(Self::Staged),
+            "history" => Some(Self::History),
+            _ => None,
+        }
+    }
 }
 
 /// Where an artifact lives.
