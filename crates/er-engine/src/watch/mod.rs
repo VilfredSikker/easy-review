@@ -93,17 +93,22 @@ impl StoreWatcher {
                 Vec<notify_debouncer_mini::DebouncedEvent>,
                 notify::Error,
             >| {
-                if let Ok(events) = result {
-                    for event in events
-                        .iter()
-                        .filter(|event| event.kind == DebouncedEventKind::Any)
-                    {
-                        if let Some(store_event) =
-                            er_store::event_for_path(&watched_root, &event.path, &registry, &ignore)
-                        {
-                            let _ = tx.send(store_event);
-                        }
-                    }
+                let Ok(events) = result else { return };
+                let mut found = Vec::new();
+                for event in events
+                    .iter()
+                    .filter(|event| event.kind == DebouncedEventKind::Any)
+                {
+                    collect_store_events(
+                        &watched_root,
+                        &event.path,
+                        &registry,
+                        &ignore,
+                        &mut found,
+                    );
+                }
+                for store_event in found {
+                    let _ = tx.send(store_event);
                 }
             },
         )?;
@@ -111,6 +116,48 @@ impl StoreWatcher {
         Ok(Self {
             _watcher: debouncer,
         })
+    }
+}
+
+/// A directory event can arrive for a bucket that was created after the watch
+/// started, before inotify has armed its files; report the files already inside.
+fn collect_store_events(
+    root: &Path,
+    path: &Path,
+    registry: &er_store::Registry,
+    ignore: &[er_store::Pattern],
+    out: &mut Vec<er_store::StoreEvent>,
+) {
+    if path.is_dir() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                collect_store_events(root, &entry.path(), registry, ignore, out);
+            } else if file_type.is_file() {
+                push_event(root, &entry.path(), registry, ignore, out);
+            }
+        }
+    } else {
+        push_event(root, path, registry, ignore, out);
+    }
+}
+
+fn push_event(
+    root: &Path,
+    path: &Path,
+    registry: &er_store::Registry,
+    ignore: &[er_store::Pattern],
+    out: &mut Vec<er_store::StoreEvent>,
+) {
+    if let Some(event) = er_store::event_for_path(root, path, registry, ignore) {
+        if !out.contains(&event) {
+            out.push(event);
+        }
     }
 }
 
