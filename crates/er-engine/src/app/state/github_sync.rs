@@ -131,6 +131,12 @@ impl App {
                     self.notify("No PR found for current branch");
                     return Ok(());
                 }
+                // The handle reports a failed lookup as `Err`; the variant is
+                // here for the wrapper's old shape and never produced by it.
+                crate::github::PrLookup::Unknown(e) => {
+                    self.notify(&format!("Could not read this branch's PR: {e}"));
+                    return Ok(());
+                }
             }
         };
 

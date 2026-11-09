@@ -228,7 +228,7 @@ pub fn gh_pr_branch_names(pr_number: u64, repo_root: &str) -> Result<(String, St
 
 /// Result of probing the checked-out branch's PR. gh's explicit "no pull
 /// request" answer is [`BranchPrProbe::Absent`]; a probe that could not ask is
-/// an `Err`, never a third variant.
+/// [`BranchPrProbe::Unknown`] for the old wrappers, an `Err` for the handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchPrProbe {
     Present {
@@ -237,6 +237,8 @@ pub enum BranchPrProbe {
     },
     /// gh answered that this branch has no pull request.
     Absent,
+    /// The probe itself failed (offline, unauthenticated, timeout, …).
+    Unknown,
 }
 
 impl CliGitHub {
@@ -296,22 +298,26 @@ impl CliGitHub {
     ) -> Result<Option<(u64, String)>, GhError> {
         match self.probe_pr_for_current_branch(repo_root)? {
             BranchPrProbe::Present { number, base } => Ok(Some((number, base))),
-            BranchPrProbe::Absent => Ok(None),
+            // The handle reports a failed probe as `Err`; the variant is the
+            // wrapper's old shape.
+            BranchPrProbe::Absent | BranchPrProbe::Unknown => Ok(None),
         }
     }
 }
 
-/// Compatibility wrappers for front ends and engine callers.
-pub fn probe_pr_for_current_branch(repo_root: &str) -> Result<BranchPrProbe> {
+/// Compatibility wrapper for front ends; removed when they take the handle.
+pub fn probe_pr_for_current_branch(repo_root: &str) -> BranchPrProbe {
     default_handle()
         .probe_pr_for_current_branch(repo_root)
-        .map_err(anyhow::Error::from)
+        .unwrap_or(BranchPrProbe::Unknown)
 }
 
-pub fn gh_pr_for_current_branch(repo_root: &str) -> Result<Option<(u64, String)>> {
+/// Compatibility wrapper for front ends; removed when they take the handle.
+pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
     default_handle()
         .pr_for_current_branch(repo_root)
-        .map_err(anyhow::Error::from)
+        .ok()
+        .flatten()
 }
 
 /// Result of a PR lookup for the checked-out branch.
@@ -324,6 +330,8 @@ pub enum PrLookup {
     },
     /// gh answered that this branch has no pull request.
     Absent,
+    /// The lookup itself failed (offline, unauthenticated, timeout, …).
+    Unknown(String),
 }
 
 impl CliGitHub {
@@ -376,11 +384,11 @@ impl CliGitHub {
     }
 }
 
-/// Compatibility wrapper for front ends and engine callers.
-pub fn lookup_pr_for_current_branch(git: &dyn Git, repo_root: &str) -> Result<PrLookup> {
+/// Compatibility wrapper for front ends; removed when they take the handle.
+pub fn lookup_pr_for_current_branch(git: &dyn Git, repo_root: &str) -> PrLookup {
     default_handle()
         .lookup_pr_for_current_branch(git, repo_root)
-        .map_err(anyhow::Error::from)
+        .unwrap_or_else(|error| PrLookup::Unknown(error.to_string()))
 }
 
 impl CliGitHub {
@@ -470,6 +478,11 @@ impl CliGitHub {
             PrLookup::Absent => Err(GhError::Local {
                 message: "No PR associated with current branch".to_string(),
             }),
+            // The handle reports a failed lookup as `Err`; the variant is the
+            // wrapper's old shape.
+            PrLookup::Unknown(e) => Err(GhError::Local {
+                message: format!("Failed to get PR info: {e}"),
+            }),
         }
     }
 
@@ -484,7 +497,11 @@ impl CliGitHub {
         }
         Ok(login)
     }
+}
 
+/// Stack lookups the TUI's hub uses: the extension's own view, and the open-PR
+/// list it falls back to when no checkout exists.
+impl CliGitHub {
     /// Run `gh stack view --json` (github/gh-stack extension) for the repo at
     /// `repo_root` and return its stdout.
     ///
@@ -512,21 +529,22 @@ impl CliGitHub {
     /// other gh call: a worker stuck on a stalled gh is worse than a timeout
     /// the caller can retry.
     pub(crate) fn open_pr_refs_json(&self, repo_slug: &str) -> Result<String, GhError> {
-        let out = self.run_gh_args(
-            &[
-                "pr",
-                "list",
-                "--repo",
-                repo_slug,
-                "--state",
-                "open",
-                "--limit",
-                "200",
-                "--json",
-                "number,url,headRefName,baseRefName",
-            ],
-            None,
-        )?;
+        // Same prompt guards as `gh stack view`: this runs on a worker thread
+        // with no terminal, so a prompt would block it.
+        const ENV: &[(&str, &str)] = &[("GH_PROMPT_DISABLED", "1"), ("GH_NO_UPDATE_NOTIFIER", "1")];
+        let args = vec![
+            "pr".to_string(),
+            "list".to_string(),
+            "--repo".to_string(),
+            repo_slug.to_string(),
+            "--state".to_string(),
+            "open".to_string(),
+            "--limit".to_string(),
+            "200".to_string(),
+            "--json".to_string(),
+            "number,url,headRefName,baseRefName".to_string(),
+        ];
+        let out = self.run_gh_with_env(&args, None, None, ENV)?;
         Ok(String::from_utf8_lossy(&out.body).to_string())
     }
 }
@@ -538,10 +556,11 @@ pub fn gh_open_pr_number_for_head(owner: &str, repo: &str, head: &str) -> Result
         .map_err(|error| with_gh_sentence("gh pr list --head failed", error))
 }
 
-pub fn gh_pr_title(owner: &str, repo: &str, number: u64) -> Result<Option<String>> {
+pub fn gh_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
     default_handle()
         .pr_title(owner, repo, number)
-        .map_err(anyhow::Error::from)
+        .ok()
+        .flatten()
 }
 
 pub fn get_pr_info(git: &dyn Git, repo_root: &str) -> Result<(String, String, u64)> {
@@ -579,10 +598,8 @@ impl CliGitHub {
 }
 
 /// Compatibility wrapper for front ends and engine callers.
-pub fn gh_current_login() -> Result<Option<String>> {
-    default_handle()
-        .current_login()
-        .map_err(anyhow::Error::from)
+pub fn gh_current_login() -> Option<String> {
+    default_handle().current_login().ok().flatten()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

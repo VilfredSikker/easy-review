@@ -348,8 +348,6 @@ fn query_repo_args(target: &PrRefFields) -> (Option<&str>, Option<&str>) {
 
 fn fetch_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
     er_engine::github::gh_pr_title(owner, repo, number)
-        .ok()
-        .flatten()
 }
 
 fn pinned_sidecar_json(

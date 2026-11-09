@@ -6308,6 +6308,39 @@ mod github_handle_tests {
             github.calls()
         );
     }
+
+    #[test]
+    fn deleting_github_comments_goes_through_the_handle() {
+        let github = Arc::new(FakeGitHub::default());
+        let gh = ai::GitHubSyncState {
+            pr_number: Some(7),
+            owner: "acme".into(),
+            repo: "widgets".into(),
+            last_synced: String::new(),
+        };
+
+        super::spawn_github_comment_deletes(github.clone(), gh, vec![42, 43], "/tmp".into());
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while github.calls().len() < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the deletes did not run"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            github.calls(),
+            vec![
+                "delete_comment(owner=\"acme\", repo=\"widgets\", comment_id=42, \
+                 repo_root=\"/tmp\")"
+                    .to_string(),
+                "delete_comment(owner=\"acme\", repo=\"widgets\", comment_id=43, \
+                 repo_root=\"/tmp\")"
+                    .to_string(),
+            ]
+        );
+    }
 }
 
 #[cfg(test)]

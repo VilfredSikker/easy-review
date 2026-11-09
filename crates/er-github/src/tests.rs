@@ -1251,6 +1251,54 @@ fn comment_bundle_cache_serves_within_ttl_and_expires() {
 }
 
 #[test]
+fn a_missing_gh_names_the_install_url() {
+    let runner = Arc::new(ScriptedRunner::new());
+    runner.script(
+        &["gh", "--version"],
+        Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+    );
+    let github = CliGitHub::new(runner);
+
+    let error = github.ensure_installed().unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "GitHub CLI (gh) is not installed. Install it: https://cli.github.com"
+    );
+}
+
+#[test]
+fn an_installed_and_authenticated_gh_passes_the_check() {
+    let runner = Arc::new(ScriptedRunner::new());
+    runner.script(
+        &["gh", "--version"],
+        Ok(ScriptedRunner::output(0, "gh version 2.0.0", "")),
+    );
+    runner.script(
+        &["gh", "auth", "status"],
+        Ok(ScriptedRunner::output(0, "", "")),
+    );
+    let github = CliGitHub::new(runner);
+
+    github.ensure_installed().unwrap();
+}
+
+#[test]
+fn remote_commits_ask_gh_to_paginate() {
+    let runner = Arc::new(ScriptedRunner::new());
+    runner.script(&[], Ok(ScriptedRunner::output(0, "{}", "")));
+    let github = CliGitHub::new(runner.clone());
+
+    let _ = github.commits_remote("o", "r", 7, 100);
+
+    let call = &runner.calls()[0];
+    assert!(
+        call.iter().any(|arg| arg == "--paginate"),
+        "the GraphQL commit listing must paginate: {call:?}"
+    );
+}
+
+#[test]
 fn comment_fetches_ask_gh_to_paginate() {
     let runner = Arc::new(ScriptedRunner::new());
     runner.script(&[], Ok(ScriptedRunner::output(0, "[]", "")));

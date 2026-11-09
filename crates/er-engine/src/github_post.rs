@@ -442,6 +442,9 @@ pub(crate) fn post_target_from_lookup(
         crate::github::PrLookup::Absent => {
             Err(GitHubPostError::NotPosted(NO_PR_FOR_COMMENT.to_string()))
         }
+        crate::github::PrLookup::Unknown(e) => Err(GitHubPostError::NotPosted(format!(
+            "Could not read this branch's pull request: {e}"
+        ))),
     }
 }
 
@@ -663,6 +666,48 @@ mod tests {
             GitHubPostOutcome::NotPosted {
                 error: PENDING_REVIEW_BLOCKS_COMMENT.to_string()
             }
+        );
+    }
+
+    #[test]
+    fn an_existing_pending_review_blocks_a_line_comment_before_any_post() {
+        use crate::github::{FakeGitHub, PendingReview};
+        use std::sync::Arc;
+
+        let github = Arc::new(FakeGitHub::default().with_pending_review(Ok(PendingReview {
+            review_id: Some(9),
+            review_node_id: Some("PRR_9".into()),
+            comments: Vec::new(),
+            viewer: Some("alice".into()),
+            review_request: None,
+        })));
+        let poster = GhCommentPoster::new(github.clone());
+        let request = GitHubPostRequest {
+            client_id: "c-1".into(),
+            pr: PrPostTarget {
+                owner: "acme".into(),
+                repo: "widgets".into(),
+                pr: 7,
+                repo_root: Some("/tmp".into()),
+            },
+            target: GitHubPostTarget::Line {
+                path: "a.rs".into(),
+                line_start: 1,
+                line_end: 1,
+                side: "RIGHT".into(),
+            },
+            body: "hi".into(),
+        };
+
+        assert_eq!(
+            poster.post(&request),
+            GitHubPostOutcome::NotPosted {
+                error: PENDING_REVIEW_BLOCKS_COMMENT.to_string()
+            }
+        );
+        assert_eq!(
+            github.calls(),
+            vec!["pending_review(owner=\"acme\", repo=\"widgets\", pr=7)".to_string()]
         );
     }
 
