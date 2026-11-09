@@ -7,13 +7,13 @@
 | Location | Path |
 |---|---|
 | Live config | `<storage_root>/config.toml` |
-| macOS | `~/Library/Application Support/easy-review/config.toml` |
+| macOS | `~/Library/Application Support/easy-review/v1/config.toml` |
 
-`storage_root` is `$ER_STORAGE_ROOT` or `dirs::data_dir()/easy-review` — the same root that holds review sidecars (`crates/er-engine/src/storage.rs`).
+`storage_root` is `$ER_STORAGE_ROOT` as given, or `dirs::data_dir()/easy-review/v1` — the same root that holds review sidecars (`crates/er-engine/src/storage.rs`). Data from an older version stays beside it under `easy-review/` and is not read (ADR 0003).
 
 | Variable | Effect |
 |---|---|
-| `ER_STORAGE_ROOT` | Replaces the storage root. Config and review sidecars both move with it; tests use it to write under a temp dir. |
+| `ER_STORAGE_ROOT` | Replaces the storage root outright; no `v1` is appended. Config and review sidecars both move with it; tests use it to write under a temp dir. |
 | `ER_CONFIG_PATH` | Replaces the config path outright — a full file path, not a directory. |
 
 An old `~/.config/er/config.toml` (`$XDG_CONFIG_HOME/er/config.toml`) is not read.
@@ -145,7 +145,7 @@ Rules:
 
 ## Review sidecars
 
-Sidecars live in managed storage, never in the repo under review: `<storage_root>/repos/<repo_slug>/branches/<branch_slug>/view-buckets/<bucket>/`, with the PR bucket kept separate at `<storage_root>/repos/<owner_repo_slug>/prs/pr-<N>/`. The TUI and the desktop resolve the same path for the same branch. See `docs/adr/0003-managed-review-storage.md`; the split per view bucket is `docs/adr/0004-per-view-artifact-scoping.md`.
+Sidecars live in managed storage, never in the repo under review: `<storage_root>/repos/<repo_slug>/branches/<branch_slug>/view-buckets/<bucket>/`, with the PR bucket kept separate at `<storage_root>/repos/<owner_repo_slug>/prs/pr-<N>/`. Repo and branch folders are `<readable, at most 80 bytes>-<8 hex of a SHA-256>`, so two names that slugify alike stay apart. The TUI and the desktop resolve the same path for the same branch. See `docs/adr/0003-managed-review-storage.md`; the split per view bucket is `docs/adr/0004-per-view-artifact-scoping.md`.
 
 | File | Written by |
 |---|---|

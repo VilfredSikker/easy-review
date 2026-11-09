@@ -773,6 +773,28 @@ struct ReplyAttribution {
     ai_action: Option<String>,
 }
 
+/// The one-time notice that the previous version's data was left behind.
+///
+/// `None` when there is nothing from a previous version. The old settings path
+/// is named only when a `config.toml` is among the entries.
+fn legacy_root_notice(base: &std::path::Path, entries: &[std::path::PathBuf]) -> Option<String> {
+    if entries.is_empty() {
+        return None;
+    }
+    let base_text = base.display();
+    let settings = if entries
+        .iter()
+        .any(|entry| entry.file_name().and_then(|name| name.to_str()) == Some("config.toml"))
+    {
+        format!(" (old settings: {base_text}/config.toml)")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "Easy Review 1.0 starts with empty storage. Data from the previous version is untouched in {base_text}{settings}. It is not read any more; delete it when you no longer need it."
+    ))
+}
+
 impl App {
     // ── Comment System ──
 
@@ -2728,6 +2750,37 @@ impl App {
     /// on [`Notification::seq`] and lets the message sit in the snapshot.
     pub fn clear_notification(&mut self) {
         self.notification = None;
+    }
+
+    /// Tell the user once per machine that 1.0.0 starts with empty storage and
+    /// leaves the previous version's data untouched.
+    ///
+    /// The marker lives in the new root, so whichever front end runs first
+    /// shows the notice and every later launch stays quiet.
+    pub fn announce_legacy_root(&mut self) {
+        let base = crate::storage::storage_base();
+        let root = crate::storage::storage_root();
+        self.announce_legacy_root_in(&base, &root);
+    }
+
+    fn announce_legacy_root_in(&mut self, base: &std::path::Path, root: &std::path::Path) {
+        // With the override set, base and root are the same directory and
+        // there is no previous version's data.
+        if base == root {
+            return;
+        }
+        let marker = root.join(".legacy-root-noticed");
+        if marker.exists() {
+            return;
+        }
+        let entries = crate::storage::legacy_root_entries_in(base, false);
+        let Some(message) = legacy_root_notice(base, &entries) else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(root);
+        // A failed write means the notice shows again next launch.
+        let _ = std::fs::write(&marker, b"");
+        self.notify_long(&message);
     }
 
     // ── Background Commands ──
@@ -6254,5 +6307,50 @@ mod github_handle_tests {
             "{:?}",
             github.calls()
         );
+    }
+}
+
+#[cfg(test)]
+mod legacy_root_notice_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_root_notice_names_the_base_and_the_old_config() {
+        let base = std::path::PathBuf::from("/data/easy-review");
+        let with_config = [base.join("repos"), base.join("config.toml")];
+        let text = legacy_root_notice(&base, &with_config).expect("a notice");
+        assert!(text.contains("/data/easy-review"), "{text}");
+        assert!(text.contains("/data/easy-review/config.toml"), "{text}");
+
+        let without_config = [base.join("repos")];
+        let text = legacy_root_notice(&base, &without_config).expect("a notice");
+        assert!(text.contains("/data/easy-review"), "{text}");
+        assert!(!text.contains("config.toml"), "{text}");
+    }
+
+    #[test]
+    fn announce_legacy_root_notifies_once_and_writes_the_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(base.join("repos")).unwrap();
+        let mut app = App::new_for_test(Vec::new());
+
+        app.announce_legacy_root_in(&base, &root);
+
+        let notice = app.notification.as_ref().expect("the notice");
+        assert!(notice.long);
+        assert!(
+            notice
+                .message
+                .contains(&base.to_string_lossy().into_owned()),
+            "{}",
+            notice.message
+        );
+        assert!(root.join(".legacy-root-noticed").exists());
+
+        app.clear_notification();
+        app.announce_legacy_root_in(&base, &root);
+        assert!(app.notification.is_none());
     }
 }

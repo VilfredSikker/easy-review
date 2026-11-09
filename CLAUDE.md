@@ -79,8 +79,8 @@ docs and release chores do land on `main`.
 
 ## Things that will bite
 
-- **Config is global-only and lives in managed storage** — `<app data>/easy-review/config.toml`
-  (on macOS `~/Library/Application Support/easy-review/config.toml`). There is no
+- **Config is global-only and lives in managed storage** — `<app data>/easy-review/v1/config.toml`
+  (on macOS `~/Library/Application Support/easy-review/v1/config.toml`). There is no
   repo-local `.er-config.toml`; do not reintroduce one, and do not add a reload
   path that overwrites live config. ADR 0005 records what those two cost.
 - **The agent-slot cap covers review agents, not every subprocess.** A spawn

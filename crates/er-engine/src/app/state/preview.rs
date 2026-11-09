@@ -637,6 +637,31 @@ mod tests {
     use super::*;
     use crate::git;
 
+    #[test]
+    fn a_too_large_github_read_reports_the_preview_limit() {
+        let error = gh_read_error(
+            crate::github::GhError::TooLarge {
+                message: "command output exceeds byte limit".into(),
+            },
+            2 * 1024 * 1024,
+        );
+        assert_eq!(error.to_string(), "File exceeds the 2 MiB preview limit");
+    }
+
+    #[test]
+    fn other_github_read_errors_keep_their_reason() {
+        let error = gh_read_error(
+            crate::github::GhError::NotFound {
+                message: "Not Found".into(),
+            },
+            1024,
+        );
+        assert_eq!(
+            error.to_string(),
+            "Document source could not be read: Not Found"
+        );
+    }
+
     fn tab(raw: &str, root: &Path, mode: DiffMode) -> TabState {
         let mut tab = super::super::tests::make_test_tab(git::parse_diff(raw));
         tab.ports = crate::ports::Ports::cli();

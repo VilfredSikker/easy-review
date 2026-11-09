@@ -2473,7 +2473,9 @@ impl TabState {
     /// Return the directory path for AI files (review.json, questions.json,
     /// github-comments.json, etc.).
     ///
-    /// Defaults to managed app-data storage (`~/.local/share/easy-review/...`).
+    /// Defaults to managed app-data storage
+    /// (`~/.local/share/easy-review/v1/repos/<repo_slug>/...`; the repo and
+    /// branch slugs end in a short hash).
     pub fn er_dir(&self) -> String {
         self.er_root.er_dir()
     }
@@ -2491,7 +2493,11 @@ impl TabState {
     fn pr_bucket_er_dir(&self) -> Option<String> {
         let pr_num = self.pr_number?;
         let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
-            crate::storage::slug_branch(&remote_repo.to_lowercase())
+            crate::storage::repo_storage_slug_for(
+                &*self.ports.git,
+                &self.repo_root,
+                Some(remote_repo),
+            )
         } else {
             crate::github::canonical_owner_repo_slug(&*self.ports.git, &self.repo_root)?
         };
@@ -2523,7 +2529,11 @@ impl TabState {
         // Remote tabs have no local working tree — the PR bucket is their only bucket.
         if let Some(ref remote_repo) = self.remote_repo {
             let pr_num = self.pr_number?;
-            let owner_repo_slug = crate::storage::slug_branch(&remote_repo.to_lowercase());
+            let owner_repo_slug = crate::storage::repo_storage_slug_for(
+                &*self.ports.git,
+                &self.repo_root,
+                Some(remote_repo),
+            );
             return Some(
                 crate::storage::pr_bucket_dir(&owner_repo_slug, pr_num)
                     .to_string_lossy()
@@ -2538,7 +2548,8 @@ impl TabState {
         if branch.is_empty() || self.repo_root.is_empty() {
             return None;
         }
-        let repo_slug = crate::storage::slug_repo(&*self.ports.git, &self.repo_root);
+        let repo_slug =
+            crate::storage::repo_storage_slug_from_root(&*self.ports.git, &self.repo_root);
         let branch_slug = crate::storage::slug_branch(&branch);
         Some(
             crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch")
@@ -2560,7 +2571,11 @@ impl TabState {
         if let Some(pr_num) = self.pr_number {
             if self.review_bucket() == ReviewBucket::Pr {
                 let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
-                    Some(crate::storage::slug_branch(&remote_repo.to_lowercase()))
+                    Some(crate::storage::repo_storage_slug_for(
+                        &*self.ports.git,
+                        &self.repo_root,
+                        Some(remote_repo),
+                    ))
                 } else {
                     crate::github::canonical_owner_repo_slug(&*self.ports.git, &self.repo_root)
                 };
@@ -2583,7 +2598,8 @@ impl TabState {
         if branch.is_empty() || self.repo_root.is_empty() {
             return;
         }
-        let repo_slug = crate::storage::slug_repo(&*self.ports.git, &self.repo_root);
+        let repo_slug =
+            crate::storage::repo_storage_slug_from_root(&*self.ports.git, &self.repo_root);
         let branch_slug = crate::storage::slug_branch(&branch);
         let bucket = self.review_bucket_name();
 
@@ -14340,7 +14356,7 @@ mod tests {
         tab.pr_number = Some(42);
         tab.apply_managed_root();
         let expected =
-            crate::storage::pr_bucket_dir(&crate::storage::slug_branch("owner/repo"), 42);
+            crate::storage::pr_bucket_dir(&crate::storage::repo_storage_slug("owner", "repo"), 42);
         assert_eq!(tab.comments_dir(), expected.to_string_lossy());
     }
 
@@ -14354,7 +14370,8 @@ mod tests {
         tab.current_branch = "main".to_string();
         tab.local_branch_view = Some("claude/dev-5067".to_string());
         tab.sync_managed_storage();
-        let repo_slug = crate::storage::slug_repo(&*tab.ports.git, &tab.repo_root);
+        let repo_slug =
+            crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root);
         let branch_slug = crate::storage::slug_branch("claude/dev-5067");
         // Phase 1: storage is now in a view-bucket subdir, not the branch root
         let expected = crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch");
@@ -14380,7 +14397,8 @@ mod tests {
         tab.current_branch = "main".to_string();
         tab.local_branch_view = Some("claude/dev-5067".to_string());
         tab.sync_managed_storage();
-        let repo_slug = crate::storage::slug_repo(&*tab.ports.git, &tab.repo_root);
+        let repo_slug =
+            crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root);
         let branch_slug = crate::storage::slug_branch("claude/dev-5067");
         // Phase 1: reviewed file is inside the view-bucket subdir
         let expected =
@@ -14405,7 +14423,8 @@ mod tests {
         tab.current_branch = "main".to_string();
         tab.sync_managed_storage();
 
-        let repo_slug = crate::storage::slug_repo(&*tab.ports.git, &tab.repo_root);
+        let repo_slug =
+            crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root);
         // Phase 1: reviewed files live inside the view-bucket subdir, not the branch root
         let main_dir = crate::storage::view_bucket_dir(
             &repo_slug,
@@ -14481,7 +14500,8 @@ mod tests {
         tab.remote_repo = Some("owner/repo".to_string());
         tab.pr_number = Some(7);
         tab.apply_managed_root();
-        let dir = crate::storage::pr_bucket_dir(&crate::storage::slug_branch("owner/repo"), 7);
+        let dir =
+            crate::storage::pr_bucket_dir(&crate::storage::repo_storage_slug("owner", "repo"), 7);
         assert_eq!(
             tab.github_comments_path(),
             format!("{}/github-comments.json", dir.to_string_lossy())
@@ -14497,9 +14517,14 @@ mod tests {
         tab.remote_repo = Some("my-org/my-repo".to_string());
         tab.pr_number = Some(1);
         tab.apply_managed_root();
-        let expected =
-            crate::storage::pr_bucket_dir(&crate::storage::slug_branch("my-org/my-repo"), 1);
+        let expected = crate::storage::pr_bucket_dir("my-org-my-repo-bcc89b7f", 1);
         assert_eq!(tab.comments_dir(), expected.to_string_lossy());
+        assert!(
+            tab.comments_dir()
+                .contains("repos/my-org-my-repo-bcc89b7f/prs/pr-1"),
+            "the slash must become a dash: {}",
+            tab.comments_dir()
+        );
     }
 
     #[test]
@@ -15820,9 +15845,9 @@ mod tests {
     /// same repo, and mixed-case variants must resolve to the same directory.
     ///
     /// `canonical_owner_repo_slug` requires a real git remote; we test the slug
-    /// logic directly — both paths execute `slug_branch(&owner_repo.to_lowercase())`,
-    /// so equality of inputs guarantees equality of outputs and therefore the same
-    /// storage directory.
+    /// logic directly — both paths ask `repo_storage_slug` for the same
+    /// `owner/repo`, so equality of inputs guarantees equality of outputs and
+    /// therefore the same storage directory.
     #[test]
     fn pr_bucket_convergence_case_insensitive() {
         let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
@@ -15831,25 +15856,27 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         std::env::set_var("ER_STORAGE_ROOT", tmp.path());
 
-        // The slug that apply_managed_root() produces for a remote tab is:
-        //   slug_branch(&remote_repo.to_lowercase())
+        // The slug apply_managed_root() produces for a remote tab is:
+        //   repo_storage_slug_for(git, repo_root, Some(remote_repo))
         // where remote_repo comes from the GitHub URL owner/repo string.
-        let remote_slug = crate::storage::slug_branch(&"Acme/My-Repo".to_lowercase());
+        let remote_slug = crate::storage::repo_storage_slug("Acme", "My-Repo");
 
         // A local clone tab routes via canonical_owner_repo_slug(repo_root), which
-        // internally does: slug_branch(&format!("{}/{}", owner, repo).to_lowercase()).
-        // Simulate that — same expression, known-good values from URL parsing.
-        let clone_slug = crate::storage::slug_branch(&"acme/my-repo".to_lowercase());
+        // asks repo_storage_slug for the origin's owner/repo.
+        let clone_slug = crate::storage::repo_storage_slug("acme", "my-repo");
 
         // Both must resolve to the same slug so they share the same pr-bucket dir.
         assert_eq!(
             remote_slug, clone_slug,
             "remote slug and clone slug must match so the PR bucket is shared"
         );
-        assert_eq!(remote_slug, "acme-my-repo", "canonical PR bucket slug");
+        assert!(
+            remote_slug.starts_with("acme-my-repo-"),
+            "canonical PR bucket slug: {remote_slug}"
+        );
 
         // Mixed-case variant must also converge.
-        let mixed_slug = crate::storage::slug_branch(&"acme/my-repo".to_lowercase());
+        let mixed_slug = crate::storage::repo_storage_slug("acme", "my-repo");
         assert_eq!(
             remote_slug, mixed_slug,
             "lowercase PR URL must resolve to the same bucket"
@@ -15891,7 +15918,7 @@ mod tests {
             tab.apply_managed_root();
 
             let expected = crate::storage::view_bucket_dir(
-                &crate::storage::slug_repo(&*tab.ports.git, &tab.repo_root),
+                &crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root),
                 &crate::storage::slug_branch("feat/buckets"),
                 bucket,
             )
@@ -15909,10 +15936,12 @@ mod tests {
         for mode in [DiffMode::Branch, DiffMode::PrDiff] {
             tab.mode = mode;
             tab.apply_managed_root();
-            let expected =
-                crate::storage::pr_bucket_dir(&crate::storage::slug_branch("owner/repo"), 99)
-                    .to_string_lossy()
-                    .into_owned();
+            let expected = crate::storage::pr_bucket_dir(
+                &crate::storage::repo_storage_slug("owner", "repo"),
+                99,
+            )
+            .to_string_lossy()
+            .into_owned();
             assert_eq!(tab.er_dir(), expected, "{mode:?} should use PR bucket");
         }
 
@@ -16119,7 +16148,7 @@ mod tests {
         tab.apply_managed_root();
 
         let expected = crate::storage::view_bucket_dir(
-            &crate::storage::slug_repo(&*tab.ports.git, &tab.repo_root),
+            &crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root),
             &crate::storage::slug_branch("feat/foo"),
             "branch",
         )
@@ -16562,7 +16591,7 @@ mod tests {
         tab.save_reviewed_files().unwrap();
 
         let expected =
-            crate::storage::pr_bucket_dir(&crate::storage::slug_branch("owner/repo"), 42)
+            crate::storage::pr_bucket_dir(&crate::storage::repo_storage_slug("owner", "repo"), 42)
                 .join("reviewed");
 
         assert!(

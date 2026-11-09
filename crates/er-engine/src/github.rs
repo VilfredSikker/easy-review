@@ -9,18 +9,14 @@ pub use er_github::*;
 /// Derive the canonical owner/repo slug for a local clone, matching the slug
 /// produced by `er --remote` for the same repository.
 ///
-/// Parses `(owner, repo)` from `origin`, then slugifies `"owner/repo"` using
-/// the same `crate::storage::slug_branch` function the storage layer uses, so a
-/// local clone and a remote session always resolve the same directory name.
+/// Parses `(owner, repo)` from `origin`, then asks [`crate::storage::repo_storage_slug`]
+/// for the folder name, so a local clone and a remote session resolve the same
+/// directory even when the host differs.
 ///
 /// Returns `None` when the origin remote is absent or unparseable.
 pub fn canonical_owner_repo_slug(git: &dyn er_git::Git, repo_root: &str) -> Option<String> {
     let (owner, repo) = parse_origin_remote(git, repo_root)?;
-    // Lowercase before slugging so that "Acme/My-Repo" and "acme/my-repo" resolve
-    // to the same directory.  GitHub owner/repo names are case-insensitive.
-    Some(crate::storage::slug_branch(
-        &format!("{}/{}", owner, repo).to_lowercase(),
-    ))
+    Some(crate::storage::repo_storage_slug(&owner, &repo))
 }
 
 /// Production-vs-noise line stats for a remote PR (fetches `gh pr diff`).
@@ -34,9 +30,9 @@ pub fn gh_pr_prod_diff_stats(
     Ok(crate::git::ProdDiffStats::from_raw_diff(&raw))
 }
 
-/// Owner/repo slug used for managed PR buckets (`owner-repo`).
+/// Owner/repo slug used for managed PR buckets (`owner-repo-<8 hex>`).
 pub fn owner_repo_storage_slug(owner: &str, repo: &str) -> String {
-    crate::storage::slug_branch(&format!("{}/{}", owner, repo).to_lowercase())
+    crate::storage::repo_storage_slug(owner, repo)
 }
 
 #[cfg(test)]
@@ -48,37 +44,33 @@ mod tests {
     #[test]
     fn canonical_slug_matches_for_ssh_and_https_urls() {
         // Test the slug produced by the same logic canonical_owner_repo_slug uses,
-        // without needing a real git repo: parse URL → slug_branch(lower("owner/repo")).
+        // without needing a real git repo: parse URL → repo_storage_slug.
         let (ssh_owner, ssh_repo) = parse_remote_url("git@github.com:Acme/My-Repo.git").unwrap();
         let (https_owner, https_repo) =
             parse_remote_url("https://github.com/Acme/My-Repo.git").unwrap();
 
-        let slug_ssh =
-            crate::storage::slug_branch(&format!("{}/{}", ssh_owner, ssh_repo).to_lowercase());
-        let slug_https =
-            crate::storage::slug_branch(&format!("{}/{}", https_owner, https_repo).to_lowercase());
+        let slug_ssh = crate::storage::repo_storage_slug(&ssh_owner, &ssh_repo);
+        let slug_https = crate::storage::repo_storage_slug(&https_owner, &https_repo);
 
-        // Both forms must produce the same slug.
+        // Both forms must produce the same slug, and it is the hashed name.
         assert_eq!(slug_ssh, slug_https);
-        // After lowercasing, slug_branch replaces '/' with '-'.
-        assert_eq!(slug_ssh, "acme-my-repo");
+        assert_eq!(slug_ssh, "acme-my-repo-80b59845");
     }
 
     #[test]
     fn canonical_slug_is_case_insensitive() {
         // "Acme/My-Repo" and "acme/my-repo" must resolve to the same directory.
-        let slug_upper = crate::storage::slug_branch(&"Acme/My-Repo".to_lowercase());
-        let slug_lower = crate::storage::slug_branch(&"acme/my-repo".to_lowercase());
+        let slug_upper = crate::storage::repo_storage_slug("Acme", "My-Repo");
+        let slug_lower = crate::storage::repo_storage_slug("acme", "my-repo");
         assert_eq!(slug_upper, slug_lower);
-        assert_eq!(slug_upper, "acme-my-repo");
+        assert_eq!(slug_upper, "acme-my-repo-80b59845");
     }
 
     #[test]
     fn canonical_slug_lowercased() {
         let (owner, repo) = parse_remote_url("https://github.com/UPPER/lower.git").unwrap();
-        let slug = crate::storage::slug_branch(&format!("{}/{}", owner, repo).to_lowercase());
-        // After lowercasing, all characters are lowercase.
-        assert_eq!(slug, "upper-lower");
+        let slug = crate::storage::repo_storage_slug(&owner, &repo);
+        assert_eq!(slug, "upper-lower-eacd0cf6");
     }
 
     #[test]
@@ -99,6 +91,6 @@ mod tests {
             .unwrap();
         let slug = canonical_owner_repo_slug(&er_git::CliGit, root.to_str().unwrap())
             .expect("slug from origin");
-        assert_eq!(slug, "acme-my-repo");
+        assert_eq!(slug, crate::storage::repo_storage_slug("Acme", "My-Repo"));
     }
 }
