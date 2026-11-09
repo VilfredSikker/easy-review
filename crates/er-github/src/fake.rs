@@ -2,10 +2,15 @@
 
 use crate::actions::{PrAction, RepoMergeSettings};
 use crate::error::GhError;
+use crate::legacy::{
+    CreatedComment, GitHubComment, IssueComment, NewLineComment, PrCommentBundle, PrOverviewData,
+    ReviewThreadState,
+};
 use crate::pending_review::PendingReview;
 use crate::review::ReviewBatchEntry;
 use crate::GitHub;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[derive(Debug, Default)]
 pub struct FakeGitHub {
@@ -39,6 +44,31 @@ struct FakeState {
     submit_review: Option<Result<(), GhError>>,
     submit_review_remote: Option<Result<(), GhError>>,
     pr_head_oid_remote: Option<Result<String, GhError>>,
+    get_repo_info: Option<Result<(String, String), GhError>>,
+    pr_comments: Option<Result<Vec<GitHubComment>, GhError>>,
+    pr_comments_remote: Option<Result<Vec<GitHubComment>, GhError>>,
+    review_threads: Option<Result<HashMap<u64, ReviewThreadState>, GhError>>,
+    review_threads_remote: Option<Result<HashMap<u64, ReviewThreadState>, GhError>>,
+    pr_head_oid: Option<Result<String, GhError>>,
+    post_line_comment: Option<Result<CreatedComment, GhError>>,
+    post_reply: Option<Result<CreatedComment, GhError>>,
+    post_general: Option<Result<CreatedComment, GhError>>,
+    issue_comments: Option<Result<Vec<IssueComment>, GhError>>,
+    viewer_login: Option<Result<String, GhError>>,
+    push_comment: Option<Result<u64, GhError>>,
+    push_comment_remote: Option<Result<u64, GhError>>,
+    reply_comment: Option<Result<u64, GhError>>,
+    reply_comment_remote: Option<Result<u64, GhError>>,
+    update_review_comment: Option<Result<(), GhError>>,
+    delete_comment: Option<Result<(), GhError>>,
+    edit_body: Option<Result<(), GhError>>,
+    approve: Option<Result<(), GhError>>,
+    fetch_pr_comment_bundle: Option<Result<PrCommentBundle, GhError>>,
+    pr_comment_bundle_cached: Option<Result<Arc<PrCommentBundle>, GhError>>,
+    overview: Option<Result<Option<PrOverviewData>, GhError>>,
+    overview_no_checks: Option<Result<Option<PrOverviewData>, GhError>>,
+    overview_remote: Option<Result<Option<PrOverviewData>, GhError>>,
+    api_get_bounded: Option<Result<Vec<u8>, GhError>>,
 }
 
 fn unscripted(method: &str) -> GhError {
@@ -180,6 +210,165 @@ impl FakeGitHub {
     #[must_use]
     pub fn with_pr_head_oid_remote(self, value: Result<String, GhError>) -> Self {
         self.lock().pr_head_oid_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_get_repo_info(self, value: Result<(String, String), GhError>) -> Self {
+        self.lock().get_repo_info = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_comments(self, value: Result<Vec<GitHubComment>, GhError>) -> Self {
+        self.lock().pr_comments = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_comments_remote(self, value: Result<Vec<GitHubComment>, GhError>) -> Self {
+        self.lock().pr_comments_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_review_threads(
+        self,
+        value: Result<HashMap<u64, ReviewThreadState>, GhError>,
+    ) -> Self {
+        self.lock().review_threads = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_review_threads_remote(
+        self,
+        value: Result<HashMap<u64, ReviewThreadState>, GhError>,
+    ) -> Self {
+        self.lock().review_threads_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_head_oid(self, value: Result<String, GhError>) -> Self {
+        self.lock().pr_head_oid = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_post_line_comment(self, value: Result<CreatedComment, GhError>) -> Self {
+        self.lock().post_line_comment = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_post_reply(self, value: Result<CreatedComment, GhError>) -> Self {
+        self.lock().post_reply = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_post_general(self, value: Result<CreatedComment, GhError>) -> Self {
+        self.lock().post_general = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_issue_comments(self, value: Result<Vec<IssueComment>, GhError>) -> Self {
+        self.lock().issue_comments = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_viewer_login(self, value: Result<String, GhError>) -> Self {
+        self.lock().viewer_login = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_push_comment(self, value: Result<u64, GhError>) -> Self {
+        self.lock().push_comment = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_push_comment_remote(self, value: Result<u64, GhError>) -> Self {
+        self.lock().push_comment_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_reply_comment(self, value: Result<u64, GhError>) -> Self {
+        self.lock().reply_comment = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_reply_comment_remote(self, value: Result<u64, GhError>) -> Self {
+        self.lock().reply_comment_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_update_review_comment(self, value: Result<(), GhError>) -> Self {
+        self.lock().update_review_comment = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_delete_comment(self, value: Result<(), GhError>) -> Self {
+        self.lock().delete_comment = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_edit_body(self, value: Result<(), GhError>) -> Self {
+        self.lock().edit_body = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_approve(self, value: Result<(), GhError>) -> Self {
+        self.lock().approve = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_fetch_pr_comment_bundle(self, value: Result<PrCommentBundle, GhError>) -> Self {
+        self.lock().fetch_pr_comment_bundle = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pr_comment_bundle_cached(
+        self,
+        value: Result<Arc<PrCommentBundle>, GhError>,
+    ) -> Self {
+        self.lock().pr_comment_bundle_cached = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_overview(self, value: Result<Option<PrOverviewData>, GhError>) -> Self {
+        self.lock().overview = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_overview_no_checks(self, value: Result<Option<PrOverviewData>, GhError>) -> Self {
+        self.lock().overview_no_checks = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_overview_remote(self, value: Result<Option<PrOverviewData>, GhError>) -> Self {
+        self.lock().overview_remote = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub fn with_api_get_bounded(self, value: Result<Vec<u8>, GhError>) -> Self {
+        self.lock().api_get_bounded = Some(value);
         self
     }
 }
@@ -426,6 +615,361 @@ impl GitHub for FakeGitHub {
         .pr_head_oid_remote
         .clone()
         .unwrap_or_else(|| Err(unscripted("pr_head_oid_remote")))
+    }
+
+    fn get_repo_info(
+        &self,
+        _git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<(String, String), GhError> {
+        self.record(format!("get_repo_info(repo_root={repo_root:?})"))
+            .get_repo_info
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("get_repo_info")))
+    }
+
+    fn pr_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: &str,
+    ) -> Result<Vec<GitHubComment>, GhError> {
+        self.record(format!(
+            "pr_comments(owner={owner:?}, repo={repo:?}, pr={pr:?}, repo_root={repo_root:?})"
+        ))
+        .pr_comments
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_comments")))
+    }
+
+    fn pr_comments_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<Vec<GitHubComment>, GhError> {
+        self.record(format!(
+            "pr_comments_remote(owner={owner:?}, repo={repo:?}, pr={pr:?})"
+        ))
+        .pr_comments_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_comments_remote")))
+    }
+
+    fn review_threads(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: &str,
+    ) -> Result<HashMap<u64, ReviewThreadState>, GhError> {
+        self.record(format!(
+            "review_threads(owner={owner:?}, repo={repo:?}, pr={pr:?}, repo_root={repo_root:?})"
+        ))
+        .review_threads
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("review_threads")))
+    }
+
+    fn review_threads_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<HashMap<u64, ReviewThreadState>, GhError> {
+        self.record(format!(
+            "review_threads_remote(owner={owner:?}, repo={repo:?}, pr={pr:?})"
+        ))
+        .review_threads_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("review_threads_remote")))
+    }
+
+    fn pr_head_oid(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<String, GhError> {
+        self.record(format!(
+            "pr_head_oid(owner={owner:?}, repo={repo:?}, pr={pr:?}, repo_root={repo_root:?})"
+        ))
+        .pr_head_oid
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_head_oid")))
+    }
+
+    fn post_line_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+        commit_id: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError> {
+        self.record(format!(
+            "post_line_comment(owner={owner:?}, repo={repo:?}, pr={pr:?}, comment={comment:?}, commit_id={commit_id:?}, repo_root={repo_root:?})"
+        ))
+        .post_line_comment
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("post_line_comment")))
+    }
+
+    fn post_reply(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError> {
+        self.record(format!(
+            "post_reply(owner={owner:?}, repo={repo:?}, pr={pr:?}, in_reply_to={in_reply_to:?}, body={body:?}, repo_root={repo_root:?})"
+        ))
+        .post_reply
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("post_reply")))
+    }
+
+    fn post_general(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        body: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError> {
+        self.record(format!(
+            "post_general(owner={owner:?}, repo={repo:?}, pr={pr:?}, body={body:?}, repo_root={repo_root:?})"
+        ))
+        .post_general
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("post_general")))
+    }
+
+    fn issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<Vec<IssueComment>, GhError> {
+        self.record(format!(
+            "issue_comments(owner={owner:?}, repo={repo:?}, pr={pr:?}, repo_root={repo_root:?})"
+        ))
+        .issue_comments
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("issue_comments")))
+    }
+
+    fn viewer_login(&self, repo_root: Option<&str>) -> Result<String, GhError> {
+        self.record(format!("viewer_login(repo_root={repo_root:?})"))
+            .viewer_login
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("viewer_login")))
+    }
+
+    fn push_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+        repo_root: &str,
+    ) -> Result<u64, GhError> {
+        self.record(format!(
+            "push_comment(owner={owner:?}, repo={repo:?}, pr={pr:?}, comment={comment:?}, repo_root={repo_root:?})"
+        ))
+        .push_comment
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("push_comment")))
+    }
+
+    fn push_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+    ) -> Result<u64, GhError> {
+        self.record(format!(
+            "push_comment_remote(owner={owner:?}, repo={repo:?}, pr={pr:?}, comment={comment:?})"
+        ))
+        .push_comment_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("push_comment_remote")))
+    }
+
+    fn reply_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<u64, GhError> {
+        self.record(format!(
+            "reply_comment(owner={owner:?}, repo={repo:?}, pr={pr:?}, in_reply_to={in_reply_to:?}, body={body:?}, repo_root={repo_root:?})"
+        ))
+        .reply_comment
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("reply_comment")))
+    }
+
+    fn reply_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+    ) -> Result<u64, GhError> {
+        self.record(format!(
+            "reply_comment_remote(owner={owner:?}, repo={repo:?}, pr={pr:?}, in_reply_to={in_reply_to:?}, body={body:?})"
+        ))
+        .reply_comment_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("reply_comment_remote")))
+    }
+
+    fn update_review_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<(), GhError> {
+        self.record(format!(
+            "update_review_comment(owner={owner:?}, repo={repo:?}, comment_id={comment_id:?}, body={body:?}, repo_root={repo_root:?})"
+        ))
+        .update_review_comment
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("update_review_comment")))
+    }
+
+    fn delete_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        repo_root: &str,
+    ) -> Result<(), GhError> {
+        self.record(format!(
+            "delete_comment(owner={owner:?}, repo={repo:?}, comment_id={comment_id:?}, repo_root={repo_root:?})"
+        ))
+        .delete_comment
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("delete_comment")))
+    }
+
+    fn edit_body(&self, repo_root: &str, body: &str) -> Result<(), GhError> {
+        self.record(format!("edit_body(repo_root={repo_root:?}, body={body:?})"))
+            .edit_body
+            .clone()
+            .unwrap_or_else(|| Err(unscripted("edit_body")))
+    }
+
+    fn approve(
+        &self,
+        repo_root: &str,
+        remote_repo: Option<&str>,
+        pr_number: Option<u64>,
+    ) -> Result<(), GhError> {
+        self.record(format!(
+            "approve(repo_root={repo_root:?}, remote_repo={remote_repo:?}, pr_number={pr_number:?})"
+        ))
+        .approve
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("approve")))
+    }
+
+    fn fetch_pr_comment_bundle(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<PrCommentBundle, GhError> {
+        self.record(format!(
+            "fetch_pr_comment_bundle(owner={owner:?}, repo={repo:?}, pr={pr:?}, repo_root={repo_root:?})"
+        ))
+        .fetch_pr_comment_bundle
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("fetch_pr_comment_bundle")))
+    }
+
+    fn pr_comment_bundle_cached(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<Arc<PrCommentBundle>, GhError> {
+        self.record(format!(
+            "pr_comment_bundle_cached(owner={owner:?}, repo={repo:?}, pr={pr:?}, repo_root={repo_root:?})"
+        ))
+        .pr_comment_bundle_cached
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("pr_comment_bundle_cached")))
+    }
+
+    fn invalidate_comments(&self) {
+        drop(self.record("invalidate_comments()".to_string()));
+    }
+
+    fn overview(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError> {
+        self.record(format!(
+            "overview(repo_root={repo_root:?}, pr_number={pr_number:?})"
+        ))
+        .overview
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("overview")))
+    }
+
+    fn overview_no_checks(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError> {
+        self.record(format!(
+            "overview_no_checks(repo_root={repo_root:?}, pr_number={pr_number:?})"
+        ))
+        .overview_no_checks
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("overview_no_checks")))
+    }
+
+    fn overview_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Option<PrOverviewData>, GhError> {
+        self.record(format!(
+            "overview_remote(owner={owner:?}, repo={repo:?}, number={number:?})"
+        ))
+        .overview_remote
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("overview_remote")))
+    }
+
+    fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError> {
+        self.record(format!(
+            "api_get_bounded(path={path:?}, max_bytes={max_bytes:?})"
+        ))
+        .api_get_bounded
+        .clone()
+        .unwrap_or_else(|| Err(unscripted("api_get_bounded")))
     }
 }
 

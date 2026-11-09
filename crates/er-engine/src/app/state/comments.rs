@@ -3225,6 +3225,7 @@ impl App {
         let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
         let prompt_owned = prompt.to_string();
         let git_handle = self.ports.git.clone();
+        let github_handle = self.ports.github.clone();
 
         // Send status log entry before spawning
         let _ = self.tab().log_tx.send(AgentLogEntry {
@@ -3320,7 +3321,7 @@ impl App {
                 // back to the artifact dir. Output dirs are absolute either way.
                 let remote_checkout = if is_remote {
                     remote_repo.as_deref().and_then(|slug| {
-                        crate::github::local_checkout_for_repo(&*git_handle, &repo_root, slug)
+                        github_handle.local_checkout_for_repo(&*git_handle, &repo_root, slug)
                     })
                 } else {
                     None
@@ -4072,6 +4073,7 @@ impl App {
         let run_for_task = std::sync::Arc::clone(&run);
         let progress_notify = self.background_progress_notify.clone();
         let git_handle = self.ports.git.clone();
+        let github_handle = self.ports.github.clone();
         std::thread::spawn(move || {
             let mut progress_signal = NotifyBackgroundProgressOnDrop {
                 result_tx: Some(result_tx),
@@ -4134,7 +4136,7 @@ impl App {
                 // agent can verify against real code rather than hunting the filesystem.
                 let remote_checkout = if execution_root.is_none() && is_remote {
                     remote_repo.as_deref().and_then(|slug| {
-                        crate::github::local_checkout_for_repo(&*git_handle, &repo_root, slug)
+                        github_handle.local_checkout_for_repo(&*git_handle, &repo_root, slug)
                     })
                 } else {
                     None

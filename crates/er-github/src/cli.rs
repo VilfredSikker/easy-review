@@ -7,13 +7,25 @@ use crate::actions::{PrAction, RepoMergeSettings};
 use crate::cache::TtlCache;
 use crate::classify::{classify, GhOutput};
 use crate::error::GhError;
+use crate::legacy::{
+    CreatedComment, GitHubComment, IssueComment, NewLineComment, PrCommentBundle, PrOverviewData,
+    ReviewThreadState,
+};
 use crate::pending_review::PendingReview;
 use crate::review::ReviewBatchEntry;
 use crate::runner::{GhCall, GhRunner};
 use crate::GitHub;
+use std::collections::HashMap;
 
 /// The caches `CliGitHub` owns. Each has its own generation counter.
 pub struct Caches {
+    /// Origin `owner/repo` per repo root. `git remote get-url` runs on every
+    /// agent spawn of a remote PR via `local_checkout_for_repo`; the remote is
+    /// effectively static, so a short TTL keeps the subprocess off the hot
+    /// path.
+    pub repo_info: TtlCache<String, Arc<(String, String)>>,
+    /// PR comment sync bundle, warmed by the sidebar hover prefetch.
+    pub pr_comments: TtlCache<(String, String, u64), Arc<crate::legacy::PrCommentBundle>>,
     pub merge_queue: TtlCache<String, bool>,
     pub bypass: TtlCache<String, bool>,
     pub branch_exists: TtlCache<String, bool>,
@@ -25,6 +37,8 @@ impl Caches {
         // Repo settings rarely change, and the status loop runs every 30s; one
         // query per repo per TTL keeps it off the rate limit (ADR 0026).
         Self {
+            repo_info: TtlCache::new(Duration::from_secs(60), Some(64)),
+            pr_comments: TtlCache::new(Duration::from_secs(60), Some(32)),
             merge_queue: TtlCache::new(Duration::from_mins(15), None),
             bypass: TtlCache::new(Duration::from_mins(15), None),
             // A merged PR's branch rarely changes, but the status loop asks
@@ -82,9 +96,8 @@ impl CliGitHub {
         let output = classify(self.runner.run(&call), include, paginated)?;
         if let Some(cap) = max_stdout {
             if output.body.len() > cap {
-                return Err(GhError::Tool {
-                    status: -1,
-                    stderr: "command output exceeds byte limit".into(),
+                return Err(GhError::TooLarge {
+                    message: "command output exceeds byte limit".into(),
                 });
             }
         }
@@ -94,6 +107,16 @@ impl CliGitHub {
     pub(crate) fn gh_ok(&self, args: &[String], dir: Option<&str>) -> Result<String, GhError> {
         let output = self.run_gh(args, dir, None)?;
         Ok(String::from_utf8_lossy(&output.body).into_owned())
+    }
+
+    /// The moved bodies spell their arguments as literals.
+    pub(crate) fn run_gh_args(
+        &self,
+        args: &[&str],
+        dir: Option<&str>,
+    ) -> Result<GhOutput, GhError> {
+        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        self.run_gh(&args, dir, None)
     }
 
     pub(crate) fn graphql(
@@ -251,6 +274,242 @@ impl GitHub for CliGitHub {
 
     fn pr_head_oid_remote(&self, owner: &str, repo: &str, pr: u64) -> Result<String, GhError> {
         CliGitHub::pr_head_oid_remote(self, owner, repo, pr)
+    }
+
+    fn get_repo_info(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<(String, String), GhError> {
+        CliGitHub::get_repo_info(self, git, repo_root)
+    }
+
+    fn pr_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: &str,
+    ) -> Result<Vec<GitHubComment>, GhError> {
+        CliGitHub::pr_comments(self, owner, repo, pr, repo_root)
+    }
+
+    fn pr_comments_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<Vec<GitHubComment>, GhError> {
+        CliGitHub::pr_comments_remote(self, owner, repo, pr)
+    }
+
+    fn review_threads(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: &str,
+    ) -> Result<HashMap<u64, ReviewThreadState>, GhError> {
+        CliGitHub::review_threads(self, owner, repo, pr, repo_root)
+    }
+
+    fn review_threads_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<HashMap<u64, ReviewThreadState>, GhError> {
+        CliGitHub::review_threads_remote(self, owner, repo, pr)
+    }
+
+    fn pr_head_oid(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<String, GhError> {
+        CliGitHub::pr_head_oid(self, owner, repo, pr, repo_root)
+    }
+
+    fn post_line_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+        commit_id: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError> {
+        CliGitHub::post_line_comment(self, owner, repo, pr, comment, commit_id, repo_root)
+    }
+
+    fn post_reply(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError> {
+        CliGitHub::post_reply(self, owner, repo, pr, in_reply_to, body, repo_root)
+    }
+
+    fn post_general(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        body: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError> {
+        CliGitHub::post_general(self, owner, repo, pr, body, repo_root)
+    }
+
+    fn issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<Vec<IssueComment>, GhError> {
+        CliGitHub::issue_comments(self, owner, repo, pr, repo_root)
+    }
+
+    fn viewer_login(&self, repo_root: Option<&str>) -> Result<String, GhError> {
+        CliGitHub::viewer_login(self, repo_root)
+    }
+
+    fn push_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+        repo_root: &str,
+    ) -> Result<u64, GhError> {
+        CliGitHub::push_comment(self, owner, repo, pr, comment, repo_root)
+    }
+
+    fn push_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+    ) -> Result<u64, GhError> {
+        CliGitHub::push_comment_remote(self, owner, repo, pr, comment)
+    }
+
+    fn reply_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<u64, GhError> {
+        CliGitHub::reply_comment(self, owner, repo, pr, in_reply_to, body, repo_root)
+    }
+
+    fn reply_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+    ) -> Result<u64, GhError> {
+        CliGitHub::reply_comment_remote(self, owner, repo, pr, in_reply_to, body)
+    }
+
+    fn update_review_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<(), GhError> {
+        CliGitHub::update_review_comment(self, owner, repo, comment_id, body, repo_root)
+    }
+
+    fn delete_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        repo_root: &str,
+    ) -> Result<(), GhError> {
+        CliGitHub::delete_comment(self, owner, repo, comment_id, repo_root)
+    }
+
+    fn edit_body(&self, repo_root: &str, body: &str) -> Result<(), GhError> {
+        CliGitHub::edit_body(self, repo_root, body)
+    }
+
+    fn approve(
+        &self,
+        repo_root: &str,
+        remote_repo: Option<&str>,
+        pr_number: Option<u64>,
+    ) -> Result<(), GhError> {
+        CliGitHub::approve(self, repo_root, remote_repo, pr_number)
+    }
+
+    fn fetch_pr_comment_bundle(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<PrCommentBundle, GhError> {
+        CliGitHub::fetch_pr_comment_bundle(self, owner, repo, pr, repo_root)
+    }
+
+    fn pr_comment_bundle_cached(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<Arc<PrCommentBundle>, GhError> {
+        CliGitHub::pr_comment_bundle_cached(self, owner, repo, pr, repo_root)
+    }
+
+    fn invalidate_comments(&self) {
+        CliGitHub::invalidate_comments(self);
+    }
+
+    fn overview(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError> {
+        CliGitHub::overview(self, repo_root, pr_number)
+    }
+
+    fn overview_no_checks(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError> {
+        CliGitHub::overview_no_checks(self, repo_root, pr_number)
+    }
+
+    fn overview_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Option<PrOverviewData>, GhError> {
+        CliGitHub::overview_remote(self, owner, repo, number)
+    }
+
+    fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError> {
+        CliGitHub::api_get_bounded(self, path, max_bytes)
     }
 }
 

@@ -36,6 +36,7 @@ impl App {
             anchor_hash: tab.diff_hash.clone(),
             files: tab.files.clone(),
             pr_number_for_overview: tab.pr_number,
+            github: tab.ports.github.clone(),
         }
     }
 

@@ -119,6 +119,8 @@ pub struct CommentSyncContext {
     pub files: Vec<git::DiffFile>,
     /// pr_number from the tab field (may differ from pr_number in local mode)
     pub pr_number_for_overview: Option<u64>,
+    /// The GitHub handle the sync reads through; a fake in tests.
+    pub github: std::sync::Arc<dyn er_github::GitHub>,
 }
 
 /// Pre-processed results ready to apply to App state.
@@ -316,21 +318,13 @@ fn fetch_comment_sync_data_with(
     let (bundle, pr_data) = std::thread::scope(|s| {
         let bundle_h = s.spawn(|| {
             if use_cache {
-                github::gh_pr_comment_bundle_cached(
-                    &ctx.owner,
-                    &ctx.repo_name,
-                    ctx.pr_number,
-                    repo_root,
-                )
-                .map(|b| (b.comments.clone(), b.threads.clone()))
+                ctx.github
+                    .pr_comment_bundle_cached(&ctx.owner, &ctx.repo_name, ctx.pr_number, repo_root)
+                    .map(|b| (b.comments.clone(), b.threads.clone()))
             } else {
-                github::fetch_pr_comment_bundle(
-                    &ctx.owner,
-                    &ctx.repo_name,
-                    ctx.pr_number,
-                    repo_root,
-                )
-                .map(|b| (b.comments, b.threads))
+                ctx.github
+                    .fetch_pr_comment_bundle(&ctx.owner, &ctx.repo_name, ctx.pr_number, repo_root)
+                    .map(|b| (b.comments.clone(), b.threads.clone()))
             }
         });
         // Overview is independent of comments. Remote skips CI checks (no
@@ -338,14 +332,22 @@ fn fetch_comment_sync_data_with(
         // gh-status loop already polls `gh pr checks` for this PR.
         let overview_h = s.spawn(|| {
             if ctx.is_remote {
-                github::gh_pr_overview_remote(&ctx.owner, &ctx.repo_name, overview_pr)
+                ctx.github
+                    .overview_remote(&ctx.owner, &ctx.repo_name, overview_pr)
+                    .ok()
+                    .flatten()
             } else {
-                github::gh_pr_overview_no_checks(&ctx.repo_root, ctx.pr_number_for_overview)
+                ctx.github
+                    .overview_no_checks(&ctx.repo_root, ctx.pr_number_for_overview)
+                    .ok()
+                    .flatten()
             }
         });
-        let bundle = bundle_h
-            .join()
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("comment bundle fetch panicked")));
+        let bundle = bundle_h.join().unwrap_or_else(|_| {
+            Err(er_github::GhError::Local {
+                message: "comment bundle fetch panicked".to_string(),
+            })
+        });
         let pr_data = overview_h.join().ok().flatten();
         (bundle, pr_data)
     });
@@ -985,6 +987,7 @@ mod tests {
             anchor_hash: "hash".to_string(),
             files: Vec::new(),
             pr_number_for_overview: Some(7),
+            github: std::sync::Arc::new(crate::github::FakeGitHub::default()),
         };
         let mut gc = ai::ErGitHubComments {
             version: 1,
@@ -1013,5 +1016,113 @@ mod tests {
         assert_eq!(matching.len(), 1, "exactly one gh-42 entry");
         assert_eq!(matching[0].id, "gh-42");
         assert_eq!(gc.comments.len(), 1, "the pushed local copy is not kept");
+    }
+
+    fn comment_sync_context(
+        github: std::sync::Arc<dyn crate::github::GitHub>,
+    ) -> CommentSyncContext {
+        CommentSyncContext {
+            owner: "owner".into(),
+            repo_name: "repo".into(),
+            pr_number: 7,
+            is_remote: true,
+            repo_root: String::new(),
+            comments_path: std::env::temp_dir()
+                .join("er-sync-test-unused.json")
+                .to_string_lossy()
+                .into_owned(),
+            diff_hash: "hash".into(),
+            anchor_hash: "hash".into(),
+            files: Vec::new(),
+            pr_number_for_overview: Some(7),
+            github,
+        }
+    }
+
+    #[test]
+    fn comment_sync_reads_the_bundle_and_overview_through_the_handle() {
+        let listed: crate::github::GitHubComment = serde_json::from_value(serde_json::json!({
+            "id": 42,
+            "body": "text",
+            "path": "src/a.rs",
+            "line": 2,
+            "user": { "login": "viewer" },
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "diff_hunk": null
+        }))
+        .unwrap();
+        let mut threads = std::collections::HashMap::new();
+        threads.insert(
+            42u64,
+            crate::github::ReviewThreadState {
+                resolved: true,
+                outdated: false,
+            },
+        );
+        let fake = std::sync::Arc::new(
+            crate::github::FakeGitHub::default()
+                .with_pr_comment_bundle_cached(Ok(std::sync::Arc::new(
+                    crate::github::PrCommentBundle {
+                        comments: vec![listed],
+                        threads,
+                    },
+                )))
+                .with_overview_remote(Ok(Some(crate::github::PrOverviewData {
+                    number: 7,
+                    title: "T".into(),
+                    body: String::new(),
+                    state: "OPEN".into(),
+                    author: "a".into(),
+                    url: "u".into(),
+                    base_branch: "main".into(),
+                    head_branch: "f".into(),
+                    checks: Vec::new(),
+                    reviewers: Vec::new(),
+                }))),
+        );
+        let ctx = comment_sync_context(fake.clone());
+        let result = fetch_comment_sync_data_cached(&ctx).expect("sync");
+        let stored = result
+            .gc
+            .comments
+            .iter()
+            .find(|comment| comment.github_id == Some(42))
+            .unwrap_or_else(|| panic!("gh-42 missing from {:?}", result.gc.comments));
+        assert!(
+            stored.resolved,
+            "the scripted thread is resolved: {stored:?}"
+        );
+        assert_eq!(result.pr_data.as_ref().map(|p| p.title.as_str()), Some("T"));
+        let bundle_calls = fake
+            .calls()
+            .iter()
+            .filter(|call| call.starts_with("pr_comment_bundle_cached"))
+            .count();
+        assert_eq!(bundle_calls, 1, "{:?}", fake.calls());
+    }
+
+    #[test]
+    fn comment_sync_reports_a_rate_limited_bundle() {
+        let fake = std::sync::Arc::new(
+            crate::github::FakeGitHub::default()
+                .with_pr_comment_bundle_cached(Err(crate::github::GhError::RateLimited {
+                    reset_epoch_secs: Some(1),
+                    message: String::new(),
+                }))
+                .with_overview_remote(Ok(None)),
+        );
+        let ctx = comment_sync_context(fake);
+        let error = match fetch_comment_sync_data_cached(&ctx) {
+            Ok(_) => panic!("a rate-limited bundle must fail the sync"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error.downcast_ref::<crate::github::GhError>(),
+                Some(crate::github::GhError::RateLimited { .. })
+            ),
+            "{error}"
+        );
     }
 }

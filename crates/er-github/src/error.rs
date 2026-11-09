@@ -83,3 +83,17 @@ impl fmt::Display for GhError {
 }
 
 impl std::error::Error for GhError {}
+
+/// Bridge for the legacy `gh` bodies, which express their own failures as
+/// `anyhow` messages. A wrapped `GhError` keeps its variant; anything else
+/// becomes `Local` with the rendered text.
+impl From<anyhow::Error> for GhError {
+    fn from(error: anyhow::Error) -> Self {
+        match error.downcast::<GhError>() {
+            Ok(gh) => gh,
+            Err(error) => Self::Local {
+                message: error.to_string(),
+            },
+        }
+    }
+}

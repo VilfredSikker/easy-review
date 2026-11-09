@@ -1034,6 +1034,7 @@ mod tests {
             anchor_hash: "diff-hash".to_string(),
             files: Vec::new(),
             pr_number_for_overview: Some(7),
+            github: f.app.tab().ports.github.clone(),
         };
         let threads: HashMap<u64, crate::github::ReviewThreadState> = HashMap::new();
         let rebuilt = crate::sync::rebuild_comment_store(&ctx, gc, &[listed], &threads);

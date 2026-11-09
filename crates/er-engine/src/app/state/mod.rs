@@ -4789,7 +4789,7 @@ impl TabState {
             };
         }
         match self.remote_repo.as_deref() {
-            Some(slug) => match crate::github::local_checkout_for_repo(
+            Some(slug) => match self.ports.github.local_checkout_for_repo(
                 &*self.ports.git,
                 &self.repo_root,
                 slug,

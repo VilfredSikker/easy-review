@@ -12,11 +12,13 @@ pub mod classify;
 mod cli;
 mod error;
 mod fake;
+mod legacy;
 pub mod pending_review;
 pub mod review;
 mod runner;
 #[cfg(test)]
 mod test_support;
+pub mod types;
 
 pub use actions::{
     cached_base_has_merge_queue, cached_remote_branch_exists, cached_repo_merge_settings,
@@ -27,6 +29,7 @@ pub use classify::{classify, is_unknown_command, split_pages, GhHeaders, GhOutpu
 pub use cli::{Caches, CliGitHub};
 pub use error::GhError;
 pub use fake::FakeGitHub;
+pub use legacy::*;
 pub use pending_review::{
     gh_pending_review, gh_pending_review_add_comment, gh_pending_review_remove_comment,
     gh_pending_review_submit, review_body_required, PendingReview, PendingReviewComment,
@@ -36,11 +39,13 @@ pub use review::{
     gh_pr_head_oid_remote, gh_pr_submit_review, gh_pr_submit_review_remote, ReviewBatchEntry,
 };
 pub use runner::{GhCall, GhRunner, ProcessRunner};
+pub use types::{parse_github_updated_at, QueuePr, ThreadAddressingSummary};
 
 pub mod testing {
     pub use crate::runner::testing::ScriptedRunner;
 }
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 /// One method per public function that spawns `gh`.
@@ -136,14 +141,222 @@ pub trait GitHub: Send + Sync {
         body: &str,
     ) -> Result<(), GhError>;
     fn pr_head_oid_remote(&self, owner: &str, repo: &str, pr: u64) -> Result<String, GhError>;
+
+    fn get_repo_info(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+    ) -> Result<(String, String), GhError>;
+
+    /// The local checkout to run a remote PR review in, when `repo_root`'s
+    /// `origin` is the same GitHub repository the PR belongs to (`remote_repo`
+    /// is an `"owner/repo"` slug).
+    ///
+    /// Remote reviews otherwise run from the managed artifact directory with no
+    /// repository around them, which pushes the agent into hunting the
+    /// filesystem for a copy of the code. Returns `None` whenever the match
+    /// cannot be established — no origin, unparseable remote, or a different
+    /// repository — so the caller keeps the artifact-dir behaviour.
+    fn local_checkout_for_repo(
+        &self,
+        git: &dyn er_git::Git,
+        repo_root: &str,
+        remote_repo: &str,
+    ) -> Option<String> {
+        if repo_root.is_empty() || remote_repo.is_empty() {
+            return None;
+        }
+        let (owner, repo) = self.get_repo_info(git, repo_root).ok()?;
+        crate::legacy::owner_repo_matches_slug(&owner, &repo, remote_repo)
+            .then(|| repo_root.to_string())
+    }
+
+    fn pr_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: &str,
+    ) -> Result<Vec<GitHubComment>, GhError>;
+    fn pr_comments_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<Vec<GitHubComment>, GhError>;
+    fn review_threads(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: &str,
+    ) -> Result<HashMap<u64, ReviewThreadState>, GhError>;
+    fn review_threads_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+    ) -> Result<HashMap<u64, ReviewThreadState>, GhError>;
+    fn pr_head_oid(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<String, GhError>;
+    fn post_line_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+        commit_id: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError>;
+    fn post_reply(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError>;
+    fn post_general(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        body: &str,
+        repo_root: Option<&str>,
+    ) -> Result<CreatedComment, GhError>;
+    fn issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<Vec<IssueComment>, GhError>;
+    fn viewer_login(&self, repo_root: Option<&str>) -> Result<String, GhError>;
+    fn push_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+        repo_root: &str,
+    ) -> Result<u64, GhError>;
+    fn push_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        comment: NewLineComment<'_>,
+    ) -> Result<u64, GhError>;
+    fn reply_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<u64, GhError>;
+    fn reply_comment_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        in_reply_to: u64,
+        body: &str,
+    ) -> Result<u64, GhError>;
+    fn update_review_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+        repo_root: &str,
+    ) -> Result<(), GhError>;
+    fn delete_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        repo_root: &str,
+    ) -> Result<(), GhError>;
+    fn edit_body(&self, repo_root: &str, body: &str) -> Result<(), GhError>;
+    fn approve(
+        &self,
+        repo_root: &str,
+        remote_repo: Option<&str>,
+        pr_number: Option<u64>,
+    ) -> Result<(), GhError>;
+    fn fetch_pr_comment_bundle(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<PrCommentBundle, GhError>;
+    fn pr_comment_bundle_cached(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr: u64,
+        repo_root: Option<&str>,
+    ) -> Result<Arc<PrCommentBundle>, GhError>;
+    fn invalidate_comments(&self);
+
+    fn overview(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError>;
+    fn overview_no_checks(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError>;
+    fn overview_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Option<PrOverviewData>, GhError>;
+
+    /// One bounded `gh api` read whose body is returned without headers.
+    fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError>;
 }
 
 static DEFAULT_HANDLE: OnceLock<Arc<CliGitHub>> = OnceLock::new();
 
-/// The process-wide handle the compatibility wrappers use. Tests build their
-/// own `CliGitHub` on a `ScriptedRunner` and never reach this one.
+#[cfg(test)]
+thread_local! {
+    /// The handle `with_test_handle` installed on this test thread. The
+    /// compatibility wrappers call `default_handle`, so tests that drive them
+    /// point it at a scripted runner instead of the process-wide one.
+    static TEST_HANDLE: std::cell::RefCell<Option<Arc<CliGitHub>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The process-wide handle the compatibility wrappers use.
 pub fn default_handle() -> Arc<CliGitHub> {
+    #[cfg(test)]
+    if let Some(handle) = TEST_HANDLE.with(|slot| slot.borrow().clone()) {
+        return handle;
+    }
     DEFAULT_HANDLE
         .get_or_init(|| Arc::new(CliGitHub::new(Arc::new(ProcessRunner))))
         .clone()
+}
+
+/// Run `f` with `handle` as this thread's default, then restore the previous
+/// one so a failing assertion cannot leak the handle into a later test.
+#[cfg(test)]
+pub(crate) fn with_test_handle<T>(handle: Arc<CliGitHub>, f: impl FnOnce() -> T) -> T {
+    let previous = TEST_HANDLE.with(|slot| slot.replace(Some(handle)));
+    let result = f();
+    TEST_HANDLE.with(|slot| slot.replace(previous));
+    result
 }
