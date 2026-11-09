@@ -241,10 +241,16 @@ pub fn load_ai_state_with_arbiter(
         }
     }
 
-    // Load .er/order.json
-    let order_path = Path::new(er_dir).join("order.json");
-    if let Ok(content) = read_sidecar(&order_path) {
-        if let Ok(order) = serde_json::from_str::<ErOrder>(&content) {
+    // The store-backed sidecars share one scope; an invalid directory skips them.
+    let store = crate::store_registry::store();
+    let scope = er_store::Scope::dir(er_dir).ok();
+
+    // Load order.json through the store.
+    if let Some(scope) = &scope {
+        if let Ok(er_store::Loaded::Found(stored)) =
+            super::checklist_store::load_order(&store, scope)
+        {
+            let order = stored.value;
             // Check staleness against review hash or independently
             if !state.is_stale && order.diff_hash != current_diff_hash {
                 state.is_stale = true;
@@ -265,10 +271,12 @@ pub fn load_ai_state_with_arbiter(
         }
     }
 
-    // Load .er/checklist.json
-    let checklist_path = Path::new(er_dir).join("checklist.json");
-    if let Ok(content) = read_sidecar(&checklist_path) {
-        if let Ok(checklist) = serde_json::from_str::<ErChecklist>(&content) {
+    // Load checklist.json through the store.
+    if let Some(scope) = &scope {
+        if let Ok(er_store::Loaded::Found(stored)) =
+            super::checklist_store::load_checklist(&store, scope)
+        {
+            let checklist = stored.value;
             if !state.is_stale && checklist.diff_hash != current_diff_hash {
                 state.is_stale = true;
             }
@@ -277,20 +285,19 @@ pub fn load_ai_state_with_arbiter(
     }
 
     // Load the three annotation sidecars through their single writer.
-    let store = crate::store_registry::store();
-    if let Ok(scope) = er_store::Scope::dir(er_dir) {
+    if let Some(scope) = &scope {
         if let Ok(er_store::Loaded::Found(stored)) =
-            super::annotation_store::load_questions(&store, &scope)
+            super::annotation_store::load_questions(&store, scope)
         {
             state.questions = Some(stored.value);
         }
         if let Ok(er_store::Loaded::Found(stored)) =
-            super::annotation_store::load_notes(&store, &scope)
+            super::annotation_store::load_notes(&store, scope)
         {
             state.notes = Some(stored.value);
         }
         if let Ok(er_store::Loaded::Found(stored)) =
-            super::annotation_store::load_github_comments(&store, &scope)
+            super::annotation_store::load_github_comments(&store, scope)
         {
             state.github_comments = Some(stored.value);
         }
@@ -1162,6 +1169,38 @@ mod tests {
         let summaries: Vec<&str> = state.agent_summaries.values().map(String::as_str).collect();
         assert!(summaries.contains(&"Rel summary"));
         assert!(!summaries.contains(&"Old summary"));
+    }
+
+    #[test]
+    fn a_malformed_order_json_is_ignored_and_the_other_kinds_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("order.json"), "{ bad").unwrap();
+        std::fs::write(
+            dir.path().join("review.json"),
+            serde_json::json!({"version": 1, "diff_hash": "abc", "files": {}}).to_string(),
+        )
+        .unwrap();
+
+        let state = load_ai_state(er_dir, "abc", None);
+        assert!(state.order.is_none());
+        assert!(state.review.is_some());
+    }
+
+    #[test]
+    fn a_malformed_checklist_json_is_ignored_and_the_other_kinds_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("checklist.json"), "{ bad").unwrap();
+        std::fs::write(
+            dir.path().join("review.json"),
+            serde_json::json!({"version": 1, "diff_hash": "abc", "files": {}}).to_string(),
+        )
+        .unwrap();
+
+        let state = load_ai_state(er_dir, "abc", None);
+        assert!(state.checklist.is_none());
+        assert!(state.review.is_some());
     }
 
     #[test]

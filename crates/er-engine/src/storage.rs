@@ -186,10 +186,9 @@ pub fn repo_storage_slug_for(
         .map(str::trim)
         .filter(|remote| !remote.is_empty())
     {
-        Some(remote) => match remote.split_once('/') {
-            Some((owner, repo)) => repo_storage_slug(owner, repo),
-            None => repo_storage_slug_from_root(git, repo_root),
-        },
+        Some(remote) => crate::github::RepoSlug::parse(remote)
+            .map(|slug| repo_storage_slug(&slug.owner, &slug.repo))
+            .unwrap_or_else(|| repo_storage_slug_from_root(git, repo_root)),
         None => repo_storage_slug_from_root(git, repo_root),
     }
 }
@@ -564,6 +563,85 @@ mod tests {
         assert!(one.starts_with("same-name-"), "{one}");
         assert_eq!(one.len(), "same-name-".len() + 8, "{one}");
         assert_ne!(one, two, "two canonical paths must get different folders");
+    }
+
+    #[test]
+    fn a_bare_remote_keeps_its_folder() {
+        let git = er_git::FakeGit::default();
+        for remote in [
+            "Acme/Widgets",
+            "Acme/Widgets.git",
+            "acme/widgets",
+            "vendor/lib",
+        ] {
+            let expected = repo_storage_slug("acme", "widgets");
+            let key = repo_storage_slug_for(&git, "/repo", Some(remote));
+            if remote == "vendor/lib" {
+                assert_eq!(key, "vendor-lib-87fb7046", "{remote}");
+            } else {
+                assert_eq!(key, expected, "{remote}");
+            }
+        }
+    }
+
+    #[test]
+    fn origin_forms_and_their_owner_repo_share_the_folder() {
+        let git = er_git::FakeGit::default();
+        let expected = "acme-widgets-d782c874";
+        for remote in [
+            "Acme/Widgets",
+            "git@github.com:Acme/Widgets.git",
+            "https://github.com/Acme/Widgets.git",
+            "ssh://git@github.com:22/Acme/Widgets",
+            "git@github.com:/Acme/Widgets.git",
+            "https://github.com//Acme/Widgets",
+            "git+ssh://git@github.com/Acme/Widgets.git",
+        ] {
+            assert_eq!(
+                repo_storage_slug_for(&git, "/repo", Some(remote)),
+                expected,
+                "{remote}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_paths_are_not_read_as_github_repos() {
+        let git = er_git::FakeGit::default()
+            .with_remote_url(Ok("git@github.com:acme/widgets.git".into()));
+        let github_users_me = repo_storage_slug("users", "me");
+
+        for remote in ["C:/Users/me/repo", "C:/Users/me/other", "D:/Users/me/x"] {
+            let key = repo_storage_slug_for(&git, "/repo", Some(remote));
+            assert_eq!(key, "acme-widgets-d782c874", "{remote}: clone fallback");
+            assert_ne!(
+                key, github_users_me,
+                "{remote}: must not collide with GitHub"
+            );
+        }
+        assert_ne!(github_users_me, "acme-widgets-d782c874");
+    }
+
+    #[test]
+    fn unparseable_remotes_fall_back_to_the_clone_folder() {
+        let git = er_git::FakeGit::default()
+            .with_remote_url(Ok("git@github.com:acme/widgets.git".into()));
+        for remote in [
+            "/Users/me/x.git",
+            "/srv/git/w.git",
+            "file:///srv/git/w.git",
+            "~/x/y",
+            "../a/b",
+            "./a/b",
+            "a/b/c",
+            "",
+        ] {
+            assert_eq!(
+                repo_storage_slug_for(&git, "/repo", Some(remote)),
+                "acme-widgets-d782c874",
+                "{remote}"
+            );
+        }
     }
 
     #[test]

@@ -2,6 +2,7 @@ pub mod annotation_store;
 pub mod browser_annotations;
 pub mod browser_prompt;
 pub mod change_facts;
+pub mod checklist_store;
 pub mod comments;
 pub mod diagrams;
 pub mod experts;

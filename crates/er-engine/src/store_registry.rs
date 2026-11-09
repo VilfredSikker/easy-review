@@ -16,11 +16,16 @@ pub fn registry() -> Registry {
     let mut registry = Registry::new();
     #[expect(
         clippy::expect_used,
-        reason = "the kinds are statically registered once; a duplicate fails the register test"
+        reason = "every kind is statically registered once; a duplicate fails the register test"
     )]
     {
         crate::ai::annotation_store::register(&mut registry)
             .expect("the annotation kinds register once");
+        crate::ai::checklist_store::register(&mut registry)
+            .expect("the checklist kinds register once");
+        #[cfg(feature = "ui")]
+        crate::app::session_store::register(&mut registry)
+            .expect("the session kinds register once");
         registry
             .register::<crate::projects_pins::ProjectsFile>()
             .expect("the projects kind registers once");
@@ -57,12 +62,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_registry_registers_the_known_kinds() {
+    fn the_registry_registers_every_kind() {
         let registry = registry();
         for (file, kind) in [
             ("questions.json", "questions"),
             ("notes.json", "notes"),
             ("github-comments.json", "github-comments"),
+            ("session.json", "session"),
+            ("reviewed.json", "reviewed"),
+            ("order.json", "order"),
+            ("checklist.json", "checklist"),
             ("projects.json", "projects"),
         ] {
             assert_eq!(
@@ -74,8 +83,10 @@ mod tests {
     }
 
     #[test]
-    fn registering_the_annotation_kinds_twice_fails() {
+    fn registering_a_kind_twice_fails() {
         let mut registry = registry();
         assert!(crate::ai::annotation_store::register(&mut registry).is_err());
+        assert!(crate::ai::checklist_store::register(&mut registry).is_err());
+        assert!(crate::app::session_store::register(&mut registry).is_err());
     }
 }

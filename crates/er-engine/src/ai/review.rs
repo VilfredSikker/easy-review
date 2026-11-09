@@ -524,7 +524,7 @@ pub struct AiResponse {
 
 // ── .er-order.json ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ErOrder {
     pub version: u32,
     pub diff_hash: String,
@@ -534,7 +534,7 @@ pub struct ErOrder {
     pub groups: HashMap<String, OrderGroup>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OrderEntry {
     pub path: String,
     #[serde(default)]
@@ -543,7 +543,7 @@ pub struct OrderEntry {
     pub group: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OrderGroup {
     #[serde(default)]
     pub label: String,
@@ -741,7 +741,7 @@ impl ErTour {
 
 // ── .er-checklist.json ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ErChecklist {
     pub version: u32,
     pub diff_hash: String,
@@ -749,7 +749,7 @@ pub struct ErChecklist {
     pub items: Vec<ChecklistItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChecklistItem {
     pub id: String,
     pub text: String,
