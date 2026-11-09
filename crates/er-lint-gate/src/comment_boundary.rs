@@ -33,6 +33,9 @@ pub struct Finding {
 
 struct CommentFinder {
     findings: Vec<Finding>,
+    /// The type whose `impl` is being visited, so `Self::Reply { .. }` inside
+    /// `impl From<..> for NewGitHubComment` is resolved to its owner.
+    impl_owner: Option<String>,
 }
 
 impl<'ast> Visit<'ast> for CommentFinder {
@@ -43,8 +46,15 @@ impl<'ast> Visit<'ast> for CommentFinder {
         visit::visit_item(self, item);
     }
 
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        let previous = self.impl_owner.take();
+        self.impl_owner = type_path_name(&item.self_ty);
+        visit::visit_item_impl(self, item);
+        self.impl_owner = previous;
+    }
+
     fn visit_expr_struct(&mut self, expr: &'ast ExprStruct) {
-        if let Some(built) = comment_type(&expr.path) {
+        if let Some(built) = comment_type(&expr.path, self.impl_owner.as_deref()) {
             self.findings.push(Finding {
                 line: expr.span().start().line,
                 message: format!("`{built} {{ .. }}`"),
@@ -52,15 +62,41 @@ impl<'ast> Visit<'ast> for CommentFinder {
         }
         visit::visit_expr_struct(self, expr);
     }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if let Some(built) = macro_comment_type(mac.tokens.clone(), self.impl_owner.as_deref()) {
+            self.findings.push(Finding {
+                line: mac.span().start().line,
+                message: format!("`{built} {{ .. }}`"),
+            });
+        }
+        visit::visit_macro(self, mac);
+    }
+}
+
+/// The last path segment of a type, when it is a named path type.
+fn type_path_name(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(path) => path.path.segments.last().map(|s| s.ident.to_string()),
+        _ => None,
+    }
 }
 
 /// The comment type `path` builds, when it is one of the guarded ones. The
 /// last segment names the type or enum variant, so a qualified or aliased
-/// module path cannot hide it.
-fn comment_type(path: &Path) -> Option<String> {
+/// module path cannot hide it. `Self` resolves through the enclosing `impl`.
+fn comment_type(path: &Path, impl_owner: Option<&str>) -> Option<String> {
     let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
     let last = segments.last()?;
-    let owner = segments.len().checked_sub(2).and_then(|i| segments.get(i));
+    let owner = if segments.first().is_some_and(|first| first == "Self") {
+        impl_owner
+    } else {
+        segments
+            .len()
+            .checked_sub(2)
+            .and_then(|index| segments.get(index))
+            .map(String::as_str)
+    };
     let is_new_github_comment = owner.is_some_and(|owner| owner == "NewGitHubComment");
     match last.as_str() {
         "Line" | "Reply" | "General" if is_new_github_comment => {
@@ -71,6 +107,67 @@ fn comment_type(path: &Path) -> Option<String> {
     }
 }
 
+/// A guarded construction inside a macro's token stream, e.g.
+/// `vec![NewGitHubComment::Line { .. }]`. `syn` does not parse macro tokens as
+/// expressions, so the tokens are walked directly.
+fn macro_comment_type(
+    tokens: proc_macro2::TokenStream,
+    impl_owner: Option<&str>,
+) -> Option<String> {
+    let trees: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+    for (index, tree) in trees.iter().enumerate() {
+        if let proc_macro2::TokenTree::Group(group) = tree {
+            if let Some(built) = macro_comment_type(group.stream(), impl_owner) {
+                return Some(built);
+            }
+        }
+        let proc_macro2::TokenTree::Ident(ident) = tree else {
+            continue;
+        };
+        let name = ident.to_string();
+        if matches!(name.as_str(), "NewLineComment" | "ReviewBatchEntry")
+            && matches!(
+                trees.get(index + 1),
+                Some(proc_macro2::TokenTree::Group(group))
+                    if group.delimiter() == proc_macro2::Delimiter::Brace
+            )
+        {
+            return Some(name);
+        }
+        if let (
+            Some(proc_macro2::TokenTree::Punct(colon_one)),
+            Some(proc_macro2::TokenTree::Punct(colon_two)),
+            Some(proc_macro2::TokenTree::Ident(variant)),
+            Some(proc_macro2::TokenTree::Group(brace)),
+        ) = (
+            trees.get(index + 1),
+            trees.get(index + 2),
+            trees.get(index + 3),
+            trees.get(index + 4),
+        ) {
+            if colon_one.as_char() == ':'
+                && colon_two.as_char() == ':'
+                && brace.delimiter() == proc_macro2::Delimiter::Brace
+            {
+                let owner = if name == "Self" {
+                    impl_owner
+                        .map(str::to_string)
+                        .unwrap_or_else(|| name.clone())
+                } else {
+                    name.clone()
+                };
+                let variant = variant.to_string();
+                if owner == "NewGitHubComment"
+                    && matches!(variant.as_str(), "Line" | "Reply" | "General")
+                {
+                    return Some(format!("NewGitHubComment::{variant}"));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Findings for one source file. A file that does not parse yields none.
 pub fn findings(source: &str) -> Vec<Finding> {
     let Ok(file) = syn::parse_file(source) else {
@@ -78,6 +175,7 @@ pub fn findings(source: &str) -> Vec<Finding> {
     };
     let mut finder = CommentFinder {
         findings: Vec::new(),
+        impl_owner: None,
     };
     finder.visit_file(&file);
     finder.findings
@@ -176,6 +274,43 @@ mod tests {
         ] {
             assert_eq!(findings(source).len(), 1, "{source}");
         }
+    }
+
+    #[test]
+    fn a_literal_inside_a_vec_macro_is_flagged() {
+        for source in [
+            "fn f() { let _ = vec![NewGitHubComment::Line { body: String::new() }]; }",
+            "fn f() { let _ = vec![NewLineComment { path: \"a\" }]; }",
+            "fn f() { let _ = vec![ReviewBatchEntry { file: String::new() }]; }",
+        ] {
+            assert_eq!(findings(source).len(), 1, "{source}");
+        }
+    }
+
+    #[test]
+    fn a_self_literal_in_a_new_github_comment_impl_is_flagged() {
+        let source = "impl From<PromotedComment> for NewGitHubComment {\n\
+                      fn from(value: PromotedComment) -> Self {\n\
+                          Self::Reply { parent_id: String::new(), body: String::new() }\n\
+                      }\n\
+                      }";
+        let found = findings(source);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].message.contains("NewGitHubComment::Reply"),
+            "{}",
+            found[0].message
+        );
+    }
+
+    #[test]
+    fn a_self_literal_in_another_impl_is_ignored() {
+        let source = "impl Thing {\n\
+                      fn make() -> Self {\n\
+                          Self { value: 1 }\n\
+                      }\n\
+                      }";
+        assert!(findings(source).is_empty());
     }
 
     #[test]
