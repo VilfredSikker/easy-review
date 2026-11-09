@@ -32,6 +32,7 @@ Every implementer and reviewer agent reads this first. Your GitHub issue is your
   - Never `pkill` or `killall` a pattern such as `cargo`, `node`, `bun` or `vitest`. Stop only processes you started, by PID.
   - A timeout that happens only under load, in a test that passes when run alone, is not a failure. Report the test names.
   - Do not start a dev server unless your PR needs one; reuse a running one (`lsof -ti tcp:<port>`).
+- **Disk.** Each worktree's `target/` grows to 6–13 GB, and a full disk stops every session at once (2026-11-09). When the coordinator tells you your PR is merged, free your old worktree's build output before you start the next issue: run `cargo clean --manifest-path <worktree>/Cargo.toml --target-dir <worktree>/target/tui`, the same for `target/desktop`, and `ER_CARGO_GC_MAX_GB=0 <worktree>/scripts/cargo-gc.sh` for the legacy `target/debug`. Recursive `rm` is blocked by a hook; these commands are the supported path.
 
 ## Verification before you push
 
