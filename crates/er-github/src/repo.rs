@@ -4,26 +4,8 @@ use anyhow::Result;
 use er_git::{Git, GitError};
 use std::sync::Arc;
 
+use crate::slug::RepoSlug;
 use crate::{default_handle, CliGitHub, GhError};
-
-/// Parse owner/repo from a git remote URL
-pub(crate) fn parse_owner_repo_from_remote(remote: &str) -> Result<(String, String)> {
-    // SSH: git@github.com:owner/repo.git
-    // HTTPS: https://github.com/owner/repo.git
-    let stripped = remote
-        .strip_prefix("https://github.com/")
-        .or_else(|| remote.strip_prefix("http://github.com/"))
-        .or_else(|| remote.strip_prefix("git@github.com:"))
-        .unwrap_or(remote);
-
-    let stripped = stripped.strip_suffix(".git").unwrap_or(stripped);
-    let parts: Vec<&str> = stripped.split('/').collect();
-    if parts.len() >= 2 {
-        Ok((parts[0].to_string(), parts[1].to_string()))
-    } else {
-        anyhow::bail!("Cannot parse owner/repo from remote: {}", remote);
-    }
-}
 
 impl CliGitHub {
     /// Get GitHub owner/repo from the repository's `origin` remote, cached for
@@ -45,9 +27,10 @@ impl CliGitHub {
                         message: format!("Failed to get origin remote: {detail}"),
                     }
                 })?;
-                let parsed =
-                    parse_owner_repo_from_remote(&remote).map_err(|error| GhError::Local {
-                        message: error.to_string(),
+                let parsed = RepoSlug::parse(&remote)
+                    .map(|slug| (slug.owner, slug.repo))
+                    .ok_or_else(|| GhError::Local {
+                        message: format!("Cannot parse owner/repo from remote: {remote}"),
                     })?;
                 Ok(Arc::new(parsed))
             },
@@ -66,74 +49,46 @@ pub fn get_repo_info(git: &dyn Git, repo_root: &str) -> Result<(String, String)>
 /// True when `owner`/`repo` name the same GitHub repository as the `"owner/repo"` slug.
 /// GitHub treats owner and repo names case-insensitively.
 pub(crate) fn owner_repo_matches_slug(owner: &str, repo: &str, slug: &str) -> bool {
-    let (slug_owner, slug_repo) = match slug.split_once('/') {
-        Some(parts) => parts,
-        None => return false,
+    let Some(slug) = RepoSlug::parse(slug) else {
+        return false;
     };
-    let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    let slug_repo = slug_repo.strip_suffix(".git").unwrap_or(slug_repo);
-    owner.eq_ignore_ascii_case(slug_owner) && repo.eq_ignore_ascii_case(slug_repo)
+    let expected = RepoSlug {
+        owner: owner.to_string(),
+        repo: repo.strip_suffix(".git").unwrap_or(repo).to_string(),
+    };
+    expected.eq_ignore_case(&slug)
 }
 
 /// Test whether a remote URL belongs to the given owner/repo.
-/// HTTPS URLs contain "/owner/repo" and SSH URLs contain ":owner/repo".
+///
+/// The comparison is exact and case-insensitive, so a remote for
+/// `owner/repo-fork` does not match `owner/repo`.
 pub(crate) fn remote_matches_repo(remote: &str, owner: &str, repo: &str) -> bool {
-    let expected = format!("{}/{}", owner, repo);
-    remote.contains(&format!("/{}", expected)) || remote.contains(&format!(":{}", expected))
+    let Some(slug) = RepoSlug::parse(remote) else {
+        return false;
+    };
+    let expected = RepoSlug {
+        owner: owner.to_string(),
+        repo: repo.strip_suffix(".git").unwrap_or(repo).to_string(),
+    };
+    expected.eq_ignore_case(&slug)
 }
 
 /// Parse a git remote URL into `(owner, repo)` without making any network call.
 ///
-/// Handles:
-/// - HTTPS:  `https://github.com/owner/repo[.git]`
-/// - SSH:    `git@github.com:owner/repo[.git]`
-/// - ssh://: `ssh://git@github.com/owner/repo[.git]`
-///
-/// Returns `None` if the URL cannot be parsed into at least two path components.
+/// Handles HTTPS, `ssh://`, `git://`, the scp-like `git@host:owner/repo`, and a
+/// bare `owner/repo`. Returns `None` for anything that does not reduce to an
+/// owner and a repo.
 pub fn parse_remote_url(url: &str) -> Option<(String, String)> {
-    let url = url.trim();
-
-    // SCP-style SSH: git@host:owner/repo[.git]
-    // Detected by: a colon present, no "://" scheme marker.
-    if !url.contains("://") {
-        if let Some((_, after_colon)) = url.split_once(':') {
-            return parse_path_components(after_colon);
-        }
-    }
-
-    // Strip scheme: https://, http://, ssh://, git://
-    let rest = if let Some(r) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .or_else(|| url.strip_prefix("ssh://"))
-        .or_else(|| url.strip_prefix("git://"))
-    {
-        r
-    } else {
-        url
-    };
-
-    // Drop the host portion (everything up to and including the first `/`).
-    let path = rest.split_once('/')?.1;
-    parse_path_components(path)
-}
-
-/// Split `owner/repo[.git]` path into `(owner, repo)`.
-fn parse_path_components(path: &str) -> Option<(String, String)> {
-    let path = path.strip_suffix(".git").unwrap_or(path);
-    // Accept paths with leading slashes (e.g. ssh:// URLs may have /owner/repo)
-    let path = path.trim_start_matches('/');
-    let mut parts = path.splitn(3, '/');
-    let owner = parts.next().filter(|s| !s.is_empty())?.to_string();
-    let repo = parts.next().filter(|s| !s.is_empty())?.to_string();
-    Some((owner, repo))
+    RepoSlug::parse(url).map(|slug| (slug.owner, slug.repo))
 }
 
 /// Parse `(owner, repo)` from the `origin` remote of the given repo root.
 ///
 /// Runs `git -C <repo_root> remote get-url origin`. Returns `None` if the
-/// remote is absent, unreachable, or the URL cannot be parsed.
+/// remote is absent, unreachable, or is not a remote: an origin that names a
+/// host is required, so a relative path like `vendor/lib` is not a repository.
 pub fn parse_origin_remote(git: &dyn Git, repo_root: &str) -> Option<(String, String)> {
     let url = git.remote_url(repo_root, "origin").ok()?;
-    parse_remote_url(&url)
+    RepoSlug::parse_remote(&url).map(|slug| (slug.owner, slug.repo))
 }

@@ -1830,13 +1830,7 @@ fn github_file_url_for_tab(
 }
 
 fn parse_github_slug(remote: &str) -> Option<String> {
-    let normalized = remote.trim_end_matches(".git");
-    if let Some(rest) = normalized.strip_prefix("git@github.com:") {
-        return Some(rest.to_string());
-    }
-    normalized
-        .split_once("github.com/")
-        .map(|(_, slug)| slug.to_string())
+    er_engine::github::RepoSlug::parse_github_com(remote).map(|slug| slug.to_string())
 }
 
 fn normalize_check_state(checks: &[er_engine::github::CheckRun]) -> (String, Vec<String>) {
@@ -8704,12 +8698,7 @@ fn inbox_open_target_in(
 /// Split a project remote into `(owner, repo)` keeping its spelling, which is
 /// what the sidebar passes and so what the remote open cache is keyed by.
 fn remote_owner_repo(remote: &str) -> Option<(String, String)> {
-    let slug = projects::remote_slug_as_written(remote);
-    let (owner, repo) = slug.split_once('/')?;
-    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
-        return None;
-    }
-    Some((owner.to_string(), repo.to_string()))
+    er_engine::github::RepoSlug::parse(remote).map(|slug| (slug.owner, slug.repo))
 }
 
 fn inbox_item_target(id: &str, state: &AppState) -> Option<InboxTarget> {
@@ -12745,6 +12734,24 @@ mod tests {
             Some("owner/repo")
         );
         assert_eq!(parse_github_slug("https://gitlab.com/owner/repo"), None);
+    }
+
+    #[test]
+    fn git_at_github_com_colon_form_parses_the_same_everywhere() {
+        let remote = "git@github.com:Acme/Widgets.git";
+        assert_eq!(
+            er_engine::github::parse_remote_url(remote),
+            Some(("Acme".to_string(), "Widgets".to_string()))
+        );
+        assert_eq!(
+            er_engine::projects_pins::normalize_remote_slug(remote),
+            "acme/widgets"
+        );
+        assert_eq!(
+            crate::projects::slug_from_remote_url(remote).as_deref(),
+            Some("Acme/Widgets")
+        );
+        assert_eq!(parse_github_slug(remote).as_deref(), Some("Acme/Widgets"));
     }
 
     fn write_pkg(dir: &std::path::Path, body: &str) {

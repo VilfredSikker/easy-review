@@ -50,19 +50,8 @@ pub fn project_hints(file: &ProjectsFile) -> Vec<ProjectHint> {
 
 /// Normalize `owner/repo` or a GitHub URL into `(owner, repo)`.
 pub fn parse_repo_slug(remote: &str) -> Result<(String, String)> {
-    er_engine::github::parse_remote_url(remote)
-        .or_else(|| {
-            let trimmed = remote.trim().trim_end_matches('/');
-            let parts: Vec<_> = trimmed.split('/').collect();
-            if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-                Some((
-                    parts[0].to_string(),
-                    parts[1].trim_end_matches(".git").to_string(),
-                ))
-            } else {
-                None
-            }
-        })
+    er_engine::github::RepoSlug::parse(remote)
+        .map(|slug| (slug.owner, slug.repo))
         .with_context(|| format!("invalid repo slug: {remote}"))
 }
 

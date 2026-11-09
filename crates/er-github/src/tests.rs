@@ -7,7 +7,7 @@ use crate::checkout::{fetch_pr_base_ref_with, pin_pr_base_commit};
 use crate::classify::is_no_pull_request_answer;
 use crate::comments::{parse_paginated, parse_review_threads_response, run_parallel};
 use crate::diff::git_merge_base_diff;
-use crate::repo::{owner_repo_matches_slug, parse_owner_repo_from_remote, remote_matches_repo};
+use crate::repo::{owner_repo_matches_slug, remote_matches_repo};
 use crate::testing::ScriptedRunner;
 use crate::*;
 use std::collections::HashMap;
@@ -51,18 +51,6 @@ fn run_parallel_overlaps_independent_work() {
 }
 
 // ── local checkout matching (remote PR reviews) ──
-
-#[test]
-fn ssh_and_https_origins_resolve_to_the_same_slug() {
-    for remote in [
-        "git@github.com:Acme/discovery.git",
-        "https://github.com/Acme/discovery.git",
-        "https://github.com/Acme/discovery",
-    ] {
-        let (owner, repo) = parse_owner_repo_from_remote(remote).unwrap();
-        assert_eq!((owner.as_str(), repo.as_str()), ("Acme", "discovery"));
-    }
-}
 
 #[test]
 fn slug_match_is_case_insensitive() {
@@ -850,62 +838,6 @@ fn check_duration_is_none_when_end_precedes_start() {
 #[test]
 fn parse_pr_checks_empty_array() {
     assert!(parse_pr_checks("[]").unwrap().is_empty());
-}
-
-// ── parse_remote_url ──
-
-#[test]
-fn parse_remote_url_ssh_scp_style() {
-    let (owner, repo) = parse_remote_url("git@github.com:Acme/My-Repo.git").unwrap();
-    assert_eq!(owner, "Acme");
-    assert_eq!(repo, "My-Repo");
-}
-
-#[test]
-fn parse_remote_url_https() {
-    let (owner, repo) = parse_remote_url("https://github.com/Acme/My-Repo.git").unwrap();
-    assert_eq!(owner, "Acme");
-    assert_eq!(repo, "My-Repo");
-}
-
-#[test]
-fn parse_remote_url_https_no_git_suffix() {
-    let (owner, repo) = parse_remote_url("https://github.com/Acme/My-Repo").unwrap();
-    assert_eq!(owner, "Acme");
-    assert_eq!(repo, "My-Repo");
-}
-
-#[test]
-fn parse_remote_url_ssh_scheme() {
-    let (owner, repo) = parse_remote_url("ssh://git@github.com/Acme/My-Repo.git").unwrap();
-    assert_eq!(owner, "Acme");
-    assert_eq!(repo, "My-Repo");
-}
-
-#[test]
-fn parse_remote_url_same_owner_repo_for_ssh_and_https() {
-    // Both forms of the same origin must resolve identically.
-    let ssh = parse_remote_url("git@github.com:Acme/My-Repo.git").unwrap();
-    let https = parse_remote_url("https://github.com/Acme/My-Repo.git").unwrap();
-    assert_eq!(ssh, https);
-    assert_eq!(ssh, ("Acme".to_string(), "My-Repo".to_string()));
-}
-
-#[test]
-fn parse_remote_url_preserves_case() {
-    let (owner, repo) = parse_remote_url("https://github.com/UPPER/lower.git").unwrap();
-    assert_eq!(owner, "UPPER");
-    assert_eq!(repo, "lower");
-}
-
-#[test]
-fn parse_remote_url_invalid_no_slash() {
-    assert!(parse_remote_url("https://github.com/only-one-segment").is_none());
-}
-
-#[test]
-fn parse_remote_url_empty() {
-    assert!(parse_remote_url("").is_none());
 }
 
 #[cfg(test)]

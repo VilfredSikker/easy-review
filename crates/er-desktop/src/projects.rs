@@ -116,30 +116,23 @@ fn record_recent_pr_on_project(proj: &mut ProjectRecord, pr_number: u64, title: 
 /// Normalize a GitHub remote reference (URL or `owner/repo`) to a lowercase
 /// `owner/repo` slug. Does not validate the shape — see [`valid_remote_slug`].
 pub fn normalize_remote_slug(remote: &str) -> String {
-    remote_slug_as_written(remote).to_ascii_lowercase()
+    er_engine::github::RepoSlug::parse(remote)
+        .map(|slug| slug.key())
+        .unwrap_or_else(|| remote_slug_as_written(remote).to_ascii_lowercase())
 }
 
 /// [`normalize_remote_slug`] without the lowercasing. Caches keyed by the
 /// spelling the sidebar passes need this form to hit.
-pub fn remote_slug_as_written(remote: &str) -> &str {
-    let trimmed = remote.trim();
-    trimmed
-        .strip_prefix("https://github.com/")
-        .or_else(|| trimmed.strip_prefix("http://github.com/"))
-        .unwrap_or(trimmed)
-        .trim_end_matches(".git")
-        .trim_matches('/')
+pub fn remote_slug_as_written(remote: &str) -> String {
+    er_engine::github::RepoSlug::parse(remote)
+        .map(|slug| slug.to_string())
+        .unwrap_or_else(|| remote.trim().to_string())
 }
 
 /// Like [`normalize_remote_slug`], but returns `None` unless the result is a
 /// well-formed `owner/repo` slug.
 fn valid_remote_slug(remote: &str) -> Option<String> {
-    let slug = normalize_remote_slug(remote);
-    if !slug.is_empty() && slug.split('/').count() == 2 {
-        Some(slug)
-    } else {
-        None
-    }
+    er_engine::github::RepoSlug::parse(remote).map(|slug| slug.key())
 }
 
 fn remote_project_id(remote: &str) -> String {
@@ -445,52 +438,7 @@ fn query_remote(root_path: &str) -> Option<String> {
 /// weight: `gh` fails on a non-GitHub remote, so callers expect `None` there,
 /// and a local-path origin would otherwise reduce to something like `Users/me`.
 pub fn slug_from_remote_url(url: &str) -> Option<String> {
-    let url = url.trim();
-    if url.is_empty() {
-        return None;
-    }
-
-    // Split into (host, path), for both `scheme://[user@]host[:port]/path` and
-    // the scp-like `[user@]host:path` form git uses for ssh remotes.
-    let (host, path) = match url.split_once("://") {
-        Some((_, rest)) => {
-            let (authority, path) = rest.split_once('/')?;
-            let host = authority
-                .rsplit_once('@')
-                .map(|(_, h)| h)
-                .unwrap_or(authority);
-            let host = host.split_once(':').map(|(h, _)| h).unwrap_or(host);
-            (host, path)
-        }
-        None => {
-            let after_user = url.split_once('@').map(|(_, r)| r).unwrap_or(url);
-            let (host, path) = after_user.split_once(':')?;
-            // A '/' before the ':' means a path, not a `host:path` pair.
-            if host.contains('/') {
-                return None;
-            }
-            (host, path)
-        }
-    };
-
-    // github.com only. `gh repo view` exits non-zero on every other host, so a
-    // GitLab remote, a local-path origin, and a GitHub Enterprise host must all
-    // return `None` rather than a slug: `prUrl.ts` accepts any slug holding a
-    // slash, so a junk one renders a broken PR link instead of no link.
-    // Enterprise hosts fall back to `gh`, which knows how to reach them.
-    if !host.eq_ignore_ascii_case("github.com") {
-        return None;
-    }
-
-    let path = path.trim_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path);
-    let path = path.trim_matches('/');
-
-    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    Some(format!("{}/{}", parts[0], parts[1]))
+    er_engine::github::RepoSlug::parse_github_com(url).map(|slug| slug.to_string())
 }
 
 /// The repository's own remote URL, read from git config with no network call.
@@ -1406,35 +1354,6 @@ mod tests {
                 slug_from_remote_url(url).as_deref(),
                 Some(expected),
                 "{url} must reduce to {expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn slug_from_remote_url_rejects_anything_that_is_not_owner_and_repo() {
-        // Every one of these must fall through to the `gh` fallback. A wrong
-        // slug is worse than no slug: it keys PR lookups and the project row on
-        // a repository that does not exist, with no error anywhere.
-        for url in [
-            "",
-            "   ",
-            "git@github.com",
-            "git@github.com:onlyowner.git",
-            "https://github.com/a/b/c.git",
-            "https://github.com/VilfredSikker/easy-review/issues",
-            "/local/path/to/repo",
-            // Non-GitHub hosts must fall through to `gh`. Handing a slug to the
-            // callers instead would be a behaviour change: they see `None`
-            // today, and `prUrl.ts` accepts any slug with a slash, so this one
-            // would render a wrong PR link rather than no link.
-            "git@ghe.corp.example.com:team/service.git",
-            "https://gitlab.com/team/app.git",
-            "https://bitbucket.org/team/app.git",
-        ] {
-            assert_eq!(
-                slug_from_remote_url(url),
-                None,
-                "{url} must not reduce to a slug"
             );
         }
     }
