@@ -1231,6 +1231,11 @@ fn pr_list_json_runs_the_callers_window() {
             "30"
         ]
     );
+    assert_eq!(
+        runner.timeouts(),
+        vec![std::time::Duration::from_secs(60)],
+        "the cache listing used to run unbounded; it keeps a 60 s bound"
+    );
 }
 
 #[test]

@@ -51,11 +51,50 @@ impl GhRunner for ProcessRunner {
         if let Some(dir) = dir {
             cmd.current_dir(dir);
         }
-        cmd.stdin(Stdio::null())
+        let child = cmd
+            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
+        drop(reap_on_a_thread(child));
         Ok(())
+    }
+}
+
+/// Wait for a detached child on its own thread: `gh` outlives the caller (it
+/// hands the URL to the browser), the caller must not block on that launch, and
+/// the child must not linger as a zombie until the app exits.
+fn reap_on_a_thread(mut child: std::process::Child) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A reaper that returned without waiting would leave `gh` a zombie; this
+    /// child must be alive when the thread is joined.
+    #[test]
+    fn the_detached_reaper_waits_for_the_child() {
+        let child = Command::new("sh")
+            .args(["-c", "sleep 0.3"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let start = Instant::now();
+        reap_on_a_thread(child).join().unwrap();
+
+        assert!(
+            start.elapsed() >= Duration::from_millis(250),
+            "the reaper returned before the child exited after {:?}",
+            start.elapsed()
+        );
     }
 }
 
@@ -72,6 +111,8 @@ pub mod testing {
     pub struct ScriptedRunner {
         scripts: Mutex<VecDeque<(Vec<String>, io::Result<Output>)>>,
         calls: Mutex<Vec<Vec<String>>>,
+        /// One entry per `run`, in call order.
+        timeouts: Mutex<Vec<std::time::Duration>>,
     }
 
     impl ScriptedRunner {
@@ -98,6 +139,14 @@ pub mod testing {
                 .clone()
         }
 
+        /// The timeout each `run` was given, in call order.
+        pub fn timeouts(&self) -> Vec<std::time::Duration> {
+            self.timeouts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+
         pub fn output(exit: i32, stdout: impl Into<Vec<u8>>, stderr: impl Into<Vec<u8>>) -> Output {
             Output {
                 status: exit_status(exit),
@@ -114,6 +163,10 @@ pub mod testing {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(argv.clone());
+            self.timeouts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(call.timeout);
             let mut scripts = self.scripts.lock().unwrap_or_else(PoisonError::into_inner);
             let index = scripts.iter().position(|(prefix, _)| {
                 argv.len() >= prefix.len()
