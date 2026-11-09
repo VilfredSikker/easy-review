@@ -10,7 +10,7 @@
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
 | T1 | T5 GitHub port | [#382](https://github.com/VilfredSikker/easy-review/issues/382) P11: #431 fixes pushed, #433 ready; both in review | E |
-| T2 | T4 git port | P15 follow-up (.git-strip test); next #383/#384 after P11 | – |
+| T2 | T4 git port | idle; next #383/#384 after P11 | – |
 | D4 | T6 store core | [#394](https://github.com/VilfredSikker/easy-review/issues/394) P23, PR #434 in review | C |
 | D1 | – | idle (P16 waits on P23, P15, P11) | – |
 | D2, D3, D5 | – | idle | – |
@@ -35,11 +35,11 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P08 | [#379](https://github.com/VilfredSikker/easy-review/issues/379) Engine git calls behind the port | E/F | sonnet | ✅ | [#424](https://github.com/VilfredSikker/easy-review/pull/424), [#426](https://github.com/VilfredSikker/easy-review/pull/426) | two stacked PRs |
 | P09 | [#380](https://github.com/VilfredSikker/easy-review/issues/380) Front-end git calls, git guardrail | C/F | sonnet | ✅ | [#428](https://github.com/VilfredSikker/easy-review/pull/428) | follow-up #432 merged |
 | P10 | [#381](https://github.com/VilfredSikker/easy-review/issues/381) Create er-github | C/E | opus | ✅ | [#425](https://github.com/VilfredSikker/easy-review/pull/425), [#427](https://github.com/VilfredSikker/easy-review/pull/427) | two parts; real `gh` captures; all #408 rules pinned by planted breaks |
-| P11 | [#382](https://github.com/VilfredSikker/easy-review/issues/382) Move github.rs into er-github | E | opus | 🔵 | [#431](https://github.com/VilfredSikker/easy-review/pull/431), [#433](https://github.com/VilfredSikker/easy-review/pull/433) | T1; part 1 re-review, part 2 in review |
+| P11 | [#382](https://github.com/VilfredSikker/easy-review/issues/382) Move github.rs into er-github | E | opus | 🔧 | [#431](https://github.com/VilfredSikker/easy-review/pull/431), [#433](https://github.com/VilfredSikker/easy-review/pull/433) | T1; both parts fix-then-merge; Step 7 commit in review |
 | P12 | [#383](https://github.com/VilfredSikker/easy-review/issues/383) Front-end gh calls, gh guardrail | C/F | opus | ⬜ | | after P11 |
 | P13 | [#384](https://github.com/VilfredSikker/easy-review/issues/384) One remote-slug parser | F | sonnet | ⬜ | | after P11 |
 | P14 | [#385](https://github.com/VilfredSikker/easy-review/issues/385) Create er-store | C | opus | ✅ | [#429](https://github.com/VilfredSikker/easy-review/pull/429), [#430](https://github.com/VilfredSikker/easy-review/pull/430) | two parts; amendment C on #401 |
-| P15 | [#386](https://github.com/VilfredSikker/easy-review/issues/386) Move to the v1 root | C/E | sonnet | ✅ | [#435](https://github.com/VilfredSikker/easy-review/pull/435) | follow-up: .git-strip test (T2) |
+| P15 | [#386](https://github.com/VilfredSikker/easy-review/issues/386) Move to the v1 root | C/E | sonnet | ✅ | [#435](https://github.com/VilfredSikker/easy-review/pull/435) | follow-up #436 merged |
 | P16 | [#387](https://github.com/VilfredSikker/easy-review/issues/387) Comments and notes through the store | C/E/F | opus | ⬜ | | after P23, P15, P11 |
 | P17 | [#388](https://github.com/VilfredSikker/easy-review/issues/388) Session state through the store | C/E | opus | ⬜ | | after P16 |
 | P18 | [#389](https://github.com/VilfredSikker/easy-review/issues/389) Review artifacts through the store | E | opus | ⬜ | | after P17 |
