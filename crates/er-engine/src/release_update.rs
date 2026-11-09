@@ -387,6 +387,27 @@ mod tests {
     }
 
     #[test]
+    fn update_check_ttl_respected_through_store() {
+        with_store(|_| {
+            let fresh = LatestRelease {
+                tag: "v1".into(),
+                html_url: "https://x".into(),
+            };
+            save_cached_release(&fresh).unwrap();
+            assert_eq!(load_cached_release(CHECK_TTL), Some(fresh));
+
+            // Rewrite the stored check with an old timestamp: the TTL rejects it.
+            let path = crate::app_store::path::<CheckCache>().expect("record path");
+            std::fs::write(
+                &path,
+                r#"{"kind":"update-check","version":1,"diff_hash":null,"producer":"host","written_at":"2026-01-01T00:00:00Z","payload":{"checked_at_unix":0,"release":{"tag":"v1","html_url":"https://x"}}}"#,
+            )
+            .unwrap();
+            assert_eq!(load_cached_release(CHECK_TTL), None);
+        });
+    }
+
+    #[test]
     fn concurrent_cache_saves_never_leave_a_torn_file() {
         with_store(|root| {
             // A long tag makes each write big enough for a plain overwrite to be
