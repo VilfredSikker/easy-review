@@ -466,6 +466,10 @@ mod tests {
         assert_eq!(slug, "acme-widgets-d782c874");
         assert_eq!(slug.len(), "acme-widgets-".len() + 8);
         assert_ne!(slug, repo_storage_slug("other", "widgets"));
+        assert_eq!(
+            repo_storage_slug("Acme", "My-Repo.git"),
+            "acme-my-repo-80b59845"
+        );
     }
 
     #[test]
