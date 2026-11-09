@@ -14472,11 +14472,14 @@ mod tests {
         tab.remote_repo = Some("my-org/my-repo".to_string());
         tab.pr_number = Some(1);
         tab.apply_managed_root();
-        let expected = crate::storage::pr_bucket_dir(
-            &crate::storage::repo_storage_slug("my-org", "my-repo"),
-            1,
-        );
+        let expected = crate::storage::pr_bucket_dir("my-org-my-repo-bcc89b7f", 1);
         assert_eq!(tab.comments_dir(), expected.to_string_lossy());
+        assert!(
+            tab.comments_dir()
+                .contains("repos/my-org-my-repo-bcc89b7f/prs/pr-1"),
+            "the slash must become a dash: {}",
+            tab.comments_dir()
+        );
     }
 
     #[test]

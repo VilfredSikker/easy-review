@@ -131,7 +131,8 @@ pub fn slug_repo(git: &dyn er_git::Git, repo_root: &str) -> String {
 /// with no host, so SSH, HTTPS and an SSH host alias of one remote resolve to
 /// the same folder. Two owners with the same repo name get different folders.
 pub fn repo_storage_slug(owner: &str, repo: &str) -> String {
-    let raw = format!("{}/{}", owner, repo.trim_end_matches(".git")).to_lowercase();
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    let raw = format!("{owner}/{repo}").to_lowercase();
     named_slug(&raw, &readable_part(&raw))
 }
 
@@ -440,8 +441,7 @@ mod tests {
     #[test]
     fn slug_branch_replaces_slashes_and_hashes_the_raw_name() {
         let slug = slug_branch("feature/foo");
-        assert!(slug.starts_with("feature-foo-"), "{slug}");
-        assert_eq!(slug.len(), "feature-foo-".len() + 8);
+        assert_eq!(slug, "feature-foo-f9320326");
         assert_eq!(slug, slug_branch("feature/foo"));
     }
 
@@ -462,11 +462,10 @@ mod tests {
 
     #[test]
     fn different_owners_with_the_same_repo_name_get_different_folders() {
-        assert_ne!(
-            repo_storage_slug("acme", "widgets"),
-            repo_storage_slug("other", "widgets")
-        );
-        assert!(repo_storage_slug("acme", "widgets").starts_with("acme-widgets-"));
+        let slug = repo_storage_slug("acme", "widgets");
+        assert_eq!(slug, "acme-widgets-d782c874");
+        assert_eq!(slug.len(), "acme-widgets-".len() + 8);
+        assert_ne!(slug, repo_storage_slug("other", "widgets"));
     }
 
     #[test]
@@ -505,7 +504,7 @@ mod tests {
         let tmp = repo_with_origin("git@github.com:acme/widgets.git");
         let root = tmp.path().to_str().unwrap();
         let git = er_git::CliGit;
-        let expected = repo_storage_slug("acme", "widgets");
+        let expected = "acme-widgets-d782c874";
 
         assert_eq!(
             crate::github::owner_repo_storage_slug("acme", "widgets"),
@@ -513,7 +512,7 @@ mod tests {
         );
         assert_eq!(
             crate::github::canonical_owner_repo_slug(&git, root).as_deref(),
-            Some(expected.as_str())
+            Some(expected)
         );
         assert_eq!(repo_storage_slug_for(&git, root, None), expected);
         assert_eq!(
@@ -521,6 +520,24 @@ mod tests {
             expected
         );
         assert_eq!(repo_storage_slug_from_root(&git, root), expected);
+    }
+
+    #[test]
+    fn a_clone_without_a_remote_hashes_its_canonical_path() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        std::fs::create_dir_all(first.path().join("same-name")).unwrap();
+        std::fs::create_dir_all(second.path().join("same-name")).unwrap();
+        let git = er_git::FakeGit::default();
+
+        let one =
+            repo_storage_slug_from_root(&git, first.path().join("same-name").to_str().unwrap());
+        let two =
+            repo_storage_slug_from_root(&git, second.path().join("same-name").to_str().unwrap());
+
+        assert!(one.starts_with("same-name-"), "{one}");
+        assert_eq!(one.len(), "same-name-".len() + 8, "{one}");
+        assert_ne!(one, two, "two canonical paths must get different folders");
     }
 
     #[test]

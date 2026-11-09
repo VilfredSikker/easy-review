@@ -4245,9 +4245,9 @@ mod tests {
         let slug_ssh = crate::storage::repo_storage_slug(&ssh_owner, &ssh_repo);
         let slug_https = crate::storage::repo_storage_slug(&https_owner, &https_repo);
 
-        // Both forms must produce the same slug.
+        // Both forms must produce the same slug, and it is the hashed name.
         assert_eq!(slug_ssh, slug_https);
-        assert!(slug_ssh.starts_with("acme-my-repo-"), "{slug_ssh}");
+        assert_eq!(slug_ssh, "acme-my-repo-80b59845");
     }
 
     #[test]
@@ -4256,18 +4256,14 @@ mod tests {
         let slug_upper = crate::storage::repo_storage_slug("Acme", "My-Repo");
         let slug_lower = crate::storage::repo_storage_slug("acme", "my-repo");
         assert_eq!(slug_upper, slug_lower);
-        assert!(slug_upper.starts_with("acme-my-repo-"), "{slug_upper}");
+        assert_eq!(slug_upper, "acme-my-repo-80b59845");
     }
 
     #[test]
     fn canonical_slug_lowercased() {
         let (owner, repo) = parse_remote_url("https://github.com/UPPER/lower.git").unwrap();
         let slug = crate::storage::repo_storage_slug(&owner, &repo);
-        assert!(slug.starts_with("upper-lower-"), "{slug}");
-        let readable = slug
-            .rsplit_once('-')
-            .map_or(slug.as_str(), |(readable, _)| readable);
-        assert!(!readable.chars().any(char::is_uppercase), "{slug}");
+        assert_eq!(slug, "upper-lower-eacd0cf6");
     }
 
     #[test]
