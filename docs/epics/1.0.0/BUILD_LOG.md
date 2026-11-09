@@ -159,3 +159,4 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - Routing after P16: D4 takes P17 (#388), T1 takes P22 (#393; its lane F rule is now satisfied), and T2 takes #445. #441 is held until P17 and P22 merge, because it changes about 152 engine test sites.
 - Merged PR #447 (P16c): `er::comment_boundary` flags a `Self { .. }` literal for every guarded type.
 - P17 (#388) ruling: `save_reviewed_files` through the store measures about 2.9× its old cost (about 1.4 ms p95). That is accepted under the 5 ms absolute budget; the 2× relative gate cannot pass against an unlocked baseline. Saving without the P23 lock was rejected.
+- Gate item for #396: the store registry differs per build and misses desktop-owned records (P17's session kinds are `ui`-only; P22's five desktop records are unregistered). This is latent while `Registry::unaccounted` runs only in er-store tests.
