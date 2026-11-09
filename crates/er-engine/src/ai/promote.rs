@@ -3,7 +3,8 @@
 //!
 //! `PromotedComment` has private fields, so only the functions here build one.
 //! There is no `From`/`Into` between `PrivateAnnotation` and the GitHub write
-//! types; the lint rule `er::comment_boundary` guards hand-built intents.
+//! types; the compile-fail doctests below pin that, and the lint rule
+//! `er::comment_boundary` guards hand-built intents.
 
 use crate::ai::annotation_store;
 use crate::ai::Finding;
@@ -36,6 +37,20 @@ use crate::ai::Finding;
 /// use er_github::NewLineComment;
 /// let question: PrivateAnnotation = todo!();
 /// let _ = NewLineComment::from(&question);
+/// ```
+///
+/// ```compile_fail
+/// use er_engine::ai::PrivateAnnotation;
+/// use er_engine::app::NewGitHubComment;
+/// let question: PrivateAnnotation = todo!();
+/// let _ = NewGitHubComment::from(&question);
+/// ```
+///
+/// ```compile_fail
+/// use er_engine::ai::PrivateAnnotation;
+/// use er_github::NewLineComment;
+/// let question: PrivateAnnotation = todo!();
+/// let _ = NewLineComment::from(question);
 /// ```
 ///
 /// ```compile_fail
@@ -325,6 +340,16 @@ mod tests {
         source.line_start = None;
         assert_eq!(
             promote_to_github(&source, std::slice::from_ref(&source), None).unwrap_err(),
+            PromoteError::NoLine
+        );
+    }
+
+    #[test]
+    fn promoting_a_finding_without_a_line_is_refused() {
+        let mut finding = finding();
+        finding.line_start = None;
+        assert_eq!(
+            promote_finding("a.rs", &finding, &[], None).unwrap_err(),
             PromoteError::NoLine
         );
     }

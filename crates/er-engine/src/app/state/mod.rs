@@ -13990,6 +13990,50 @@ mod tests {
         assert_eq!(n.line_start, Some(6));
         assert_eq!(n.line_content, "delta");
         assert_eq!(n.context_before, vec!["alpha", "beta", "gamma"]);
+        assert!(
+            app.tab()
+                .ai
+                .questions
+                .as_ref()
+                .is_none_or(|qs| qs.questions.iter().all(|q| q.id != id)),
+            "the source question is gone from memory"
+        );
+        let path = std::path::Path::new(&app.tab().er_dir()).join("questions.json");
+        let stored: crate::ai::ErQuestions =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            stored.questions.iter().all(|q| q.id != id),
+            "the source question is gone from the file"
+        );
+    }
+
+    #[test]
+    fn promote_to_note_leaves_a_corrupt_questions_file_alone() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = document_app(&tmp);
+        app.submit_document_comment(
+            document_target(6),
+            "Why delta?".to_string(),
+            CommentType::Question,
+            DOCUMENT,
+        )
+        .unwrap();
+        let id = app.tab().ai.questions.as_ref().unwrap().questions[0]
+            .id
+            .clone();
+        let path = std::path::Path::new(&app.tab().er_dir()).join("questions.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        assert!(
+            app.promote_question_to_note(&id, Some("Rename delta".to_string()))
+                .is_err(),
+            "a corrupt source file refuses the source delete"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{ not json",
+            "the corrupt file is not overwritten with a fresh payload"
+        );
     }
 
     #[test]

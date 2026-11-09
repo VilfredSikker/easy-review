@@ -25,3 +25,30 @@ pub fn registry() -> Registry {
 pub fn store() -> ArtifactStore {
     ArtifactStore::new(crate::storage::storage_root())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_registry_registers_the_three_annotation_kinds() {
+        let registry = registry();
+        for (file, kind) in [
+            ("questions.json", "questions"),
+            ("notes.json", "notes"),
+            ("github-comments.json", "github-comments"),
+        ] {
+            assert_eq!(
+                registry.kind_for(std::path::Path::new(file)),
+                Some(kind),
+                "{file}"
+            );
+        }
+    }
+
+    #[test]
+    fn registering_the_annotation_kinds_twice_fails() {
+        let mut registry = registry();
+        assert!(crate::ai::annotation_store::register(&mut registry).is_err());
+    }
+}

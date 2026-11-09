@@ -16,8 +16,9 @@ bucket or `prs/pr-<N>/`. `docs/adr/0004-per-view-artifact-scoping.md`.
 GitHub threads, two-way synced). The first two are private. `annotation_store.rs`
 is the only reader and writer of the three; every other module goes through it,
 and the questions and notes AI actions rewrite their store through it too,
-leaving a `.prev.json` beside it. `promote.rs` is the only conversion from a
-private annotation to a GitHub write.
+leaving a `.prev.json` beside it. Agents rewrite the files in place, which is why
+the kinds stay `Bare`. `promote.rs` is the only conversion from a private
+annotation to a GitHub write.
 
 **AI-owned, read-only to `er` as a whole:** `review.json`, `order.json`,
 `summary.md`, `triage.json`, `professor.json`, `experts/*.json`, `tour.json`.

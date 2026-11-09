@@ -23,6 +23,28 @@ impl App {
         source_id: &str,
         body: Option<String>,
     ) -> Result<()> {
+        // The notes file is keyed by the branch diff hash; compute it when the
+        // tab has none yet (non-Branch views start empty).
+        if self.tab().branch_diff_hash.is_empty() && !self.tab().is_remote() {
+            let (base_branch, repo_root, pr_head_ref) = {
+                let tab = self.tab();
+                (
+                    tab.base_branch.clone(),
+                    tab.repo_root.clone(),
+                    tab.pr_head_ref.clone(),
+                )
+            };
+            if let Ok(raw) = self.tab().ports.git.diff_raw(
+                "branch",
+                &base_branch,
+                &repo_root,
+                pr_head_ref.as_deref(),
+            ) {
+                let hash = crate::ai::compute_diff_hash(&raw);
+                self.tab_mut().branch_diff_hash = hash;
+            }
+        }
+
         let (source, thread, file, anchor, diff_hash, branch_diff_hash) = {
             let tab = self.tab();
             let questions = tab.ai.questions.as_ref().context("No questions loaded")?;
@@ -74,6 +96,7 @@ impl App {
         };
 
         let note = promote::promote_to_note(&source, &thread, body, file, anchor, diff_hash);
+        let text = note.text.clone();
 
         let store = store_registry::store();
         let scope = er_store::Scope::dir(self.tab().er_dir())?;
@@ -92,15 +115,17 @@ impl App {
         .map_err(|error| anyhow!("{error}"))?;
 
         let source_id_for_delete = source_id.to_string();
-        annotation_store::update_questions(&store, &scope, move |current| {
-            let mut questions = current.context("the questions file is missing or unreadable")?;
-            questions.questions.retain(|question| {
-                question.id != source_id_for_delete
-                    && question.in_reply_to.as_deref() != Some(source_id_for_delete.as_str())
-            });
-            Ok::<_, anyhow::Error>(questions)
-        })
-        .map_err(|error| anyhow!("{error}"))?;
+        let questions_updated =
+            annotation_store::update_questions(&store, &scope, move |current| {
+                let mut questions =
+                    current.context("the questions file is missing or unreadable")?;
+                questions.questions.retain(|question| {
+                    question.id != source_id_for_delete
+                        && question.in_reply_to.as_deref() != Some(source_id_for_delete.as_str())
+                });
+                Ok::<_, anyhow::Error>(questions)
+            })
+            .map_err(|error| anyhow!("{error}"))?;
 
         let path = annotation_store::path_of::<ErNotes>(&store, &scope)?;
         if updated.was_unreadable {
@@ -108,13 +133,16 @@ impl App {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("notes file");
-            self.notify(&format!("Warning: {name} is invalid JSON — starting fresh"));
+            self.notify(&format!(
+                "Warning: .er/{name} is invalid JSON — starting fresh"
+            ));
         }
         let tab = self.tab_mut();
         tab.ai.notes = Some(updated.value);
+        tab.ai.questions = Some(questions_updated.value);
         tab.ai.rebuild_comment_index();
         tab.mark_sidecar_written(&path.to_string_lossy());
-        self.notify("Note added");
+        self.notify(&format!("Note added: {}", super::truncate(&text, 40)));
         Ok(())
     }
 }

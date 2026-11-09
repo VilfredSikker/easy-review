@@ -307,9 +307,12 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(
-            error,
+            &error,
             UpdateError::Store(StoreError::NewerVersion { found: 99, .. })
         ));
+        let message = error.to_string();
+        assert!(message.contains("questions.json"), "{message}");
+        assert!(message.contains("99"), "{message}");
         assert_eq!(
             std::fs::read_to_string(path).unwrap(),
             r#"{"version":99,"diff_hash":"hash","questions":[]}"#
@@ -332,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn github_comments_use_the_pr_bucket_even_in_a_branch_view() {
+    fn github_comments_live_in_the_pr_bucket() {
         let tmp = TempDir::new().unwrap();
         let pr_bucket = tmp.path().join("repos/r/prs/pr-7");
         let scope = Scope::dir(&pr_bucket).unwrap();
