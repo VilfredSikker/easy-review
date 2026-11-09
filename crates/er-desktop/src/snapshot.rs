@@ -4475,9 +4475,7 @@ fn build_projects_cache_key(
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let projects_mtime_ns = projects::config_path()
-        .and_then(|path| std::fs::metadata(path).ok())
-        .and_then(|m| m.modified().ok())
+    let projects_mtime_ns = er_engine::projects_pins::modified()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos())
         .unwrap_or(0);
