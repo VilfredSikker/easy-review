@@ -6,8 +6,6 @@ use er_engine::watch::{FileWatcher, WatchEvent};
 use std::path::Path;
 use std::sync::mpsc;
 
-use super::sync_github_comments;
-
 pub fn handle_normal_input(
     app: &mut App,
     key: KeyEvent,
@@ -472,7 +470,7 @@ pub fn handle_normal_input(
 
         // GitHub comment sync (pull)
         KeyCode::Char('G') => {
-            sync_github_comments(app)?;
+            app.sync_github_comments()?;
             return Ok(());
         }
 

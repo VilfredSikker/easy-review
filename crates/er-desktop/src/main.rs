@@ -1437,10 +1437,14 @@ fn main() {
                     // head_oid forward (instead of re-reading it after
                     // the fetch) so a push landing mid-fetch isn't
                     // mistaken for "already synced" on the next tick.
-                    (
-                        guard.snapshot_for_comment_sync(owner, repo, number),
-                        head_oid,
-                    )
+                    let ctx = match guard.snapshot_for_comment_sync(owner, repo, number) {
+                        Ok(ctx) => ctx,
+                        Err(e) => {
+                            log::error!("comment sync snapshot failed: {e}");
+                            continue;
+                        }
+                    };
+                    (ctx, head_oid)
                 };
 
                 // Phase 2: network I/O — no lock held.

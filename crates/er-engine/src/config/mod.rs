@@ -2139,8 +2139,8 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
             action_id: "copy_review_json",
         },
         ConfigItem::Action {
-            label: "Copy questions.json".into(),
-            description: "Copy questions.json to clipboard".into(),
+            label: "Copy questions file".into(),
+            description: "Copy the questions sidecar to clipboard".into(),
             action_id: "copy_questions_json",
         },
     ]

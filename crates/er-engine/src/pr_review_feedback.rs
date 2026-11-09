@@ -84,26 +84,29 @@ fn pr_diff_hash(er_dir: &str) -> String {
             return compute_diff_hash(&content);
         }
     }
-    for name in ["review.json", "questions.json", "notes.json"] {
-        let path = Path::new(er_dir).join(name);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if name == "review.json" {
-                if let Ok(review) = serde_json::from_str::<crate::ai::ErReview>(&content) {
-                    if !review.diff_hash.is_empty() {
-                        return review.diff_hash;
-                    }
-                }
-            } else if name == "questions.json" {
-                if let Ok(qs) = serde_json::from_str::<ErQuestions>(&content) {
-                    if !qs.diff_hash.is_empty() {
-                        return qs.diff_hash;
-                    }
-                }
-            } else if let Ok(ns) = serde_json::from_str::<ErNotes>(&content) {
-                if !ns.diff_hash.is_empty() {
-                    return ns.diff_hash;
-                }
+    let review_path = Path::new(er_dir).join("review.json");
+    if let Ok(content) = std::fs::read_to_string(&review_path) {
+        if let Ok(review) = serde_json::from_str::<crate::ai::ErReview>(&content) {
+            if !review.diff_hash.is_empty() {
+                return review.diff_hash;
             }
+        }
+    }
+    let Ok((store, scope)) = store_for(er_dir) else {
+        return String::new();
+    };
+    if let Ok(er_store::Loaded::Found(stored)) =
+        crate::ai::annotation_store::load_questions(&store, &scope)
+    {
+        if !stored.value.diff_hash.is_empty() {
+            return stored.value.diff_hash;
+        }
+    }
+    if let Ok(er_store::Loaded::Found(stored)) =
+        crate::ai::annotation_store::load_notes(&store, &scope)
+    {
+        if !stored.value.diff_hash.is_empty() {
+            return stored.value.diff_hash;
         }
     }
     String::new()
@@ -171,6 +174,7 @@ fn finding_to_item(file: &str, f: &Finding) -> PrFindingItem {
     }
 }
 
+#[cfg(test)]
 fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(value)?;
@@ -179,31 +183,43 @@ fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> 
     Ok(())
 }
 
+/// The store and bucket scope for one review bucket.
+fn store_for(er_dir: &str) -> Result<(er_store::ArtifactStore, er_store::Scope)> {
+    Ok((
+        crate::store_registry::store(),
+        er_store::Scope::dir(er_dir)?,
+    ))
+}
+
 fn load_questions(er_dir: &str) -> Result<ErQuestions> {
-    let path = Path::new(er_dir).join("questions.json");
-    match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content)
-            .with_context(|| format!("parse corrupt questions.json at {}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ErQuestions {
+    let (store, scope) = store_for(er_dir)?;
+    match crate::ai::annotation_store::load_questions(&store, &scope)? {
+        er_store::Loaded::Found(stored) => Ok(stored.value),
+        er_store::Loaded::Absent => Ok(ErQuestions {
             version: 1,
             diff_hash: String::new(),
             questions: Vec::new(),
         }),
-        Err(e) => Err(e.into()),
+        er_store::Loaded::Unreadable(reason) => {
+            let path = crate::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
+            bail!("parse corrupt annotation at {}: {reason:?}", path.display())
+        }
     }
 }
 
 fn load_notes(er_dir: &str) -> Result<ErNotes> {
-    let path = Path::new(er_dir).join("notes.json");
-    match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content)
-            .with_context(|| format!("parse corrupt notes.json at {}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ErNotes {
+    let (store, scope) = store_for(er_dir)?;
+    match crate::ai::annotation_store::load_notes(&store, &scope)? {
+        er_store::Loaded::Found(stored) => Ok(stored.value),
+        er_store::Loaded::Absent => Ok(ErNotes {
             version: 1,
             diff_hash: String::new(),
             notes: Vec::new(),
         }),
-        Err(e) => Err(e.into()),
+        er_store::Loaded::Unreadable(reason) => {
+            let path = crate::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
+            bail!("parse corrupt annotation at {}: {reason:?}", path.display())
+        }
     }
 }
 
@@ -228,16 +244,9 @@ fn append_question_reply(
     text: &str,
     author: &str,
 ) -> Result<String> {
-    let mut questions = load_questions(er_dir)?;
     let diff_hash = pr_diff_hash(er_dir);
-    // Record the new diff hash whenever we have one or none is stored yet
-    // (assigning an equal value is a no-op, so the inequality guard adds nothing).
-    if questions.diff_hash.is_empty() || !diff_hash.is_empty() {
-        questions.diff_hash = diff_hash;
-    }
-
     let id = crate::ai::annotation_store::new_annotation_id("q-");
-    questions.questions.push(PrivateAnnotation {
+    let reply = PrivateAnnotation {
         id: id.clone(),
         timestamp: chrono_now(),
         file: parent.file.clone(),
@@ -260,10 +269,22 @@ fn append_question_reply(
         promoted_to: None,
         finding_ref: parent.finding_ref.clone(),
         ai_action: None,
-    });
+    };
 
-    std::fs::create_dir_all(er_dir)?;
-    write_json_atomic(&Path::new(er_dir).join("questions.json"), &questions)?;
+    let (store, scope) = store_for(er_dir)?;
+    let path = crate::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
+    let message = format!("{} is missing or unreadable", path.display());
+    crate::ai::annotation_store::update_questions(&store, &scope, move |current| {
+        let mut questions = current.context(message)?;
+        // Record the new diff hash whenever we have one or none is stored yet
+        // (assigning an equal value is a no-op, so the inequality guard adds nothing).
+        if questions.diff_hash.is_empty() || !diff_hash.is_empty() {
+            questions.diff_hash = diff_hash;
+        }
+        questions.questions.push(reply);
+        Ok::<_, anyhow::Error>(questions)
+    })
+    .map_err(|error| anyhow::anyhow!("{error}"))?;
     Ok(id)
 }
 
@@ -273,16 +294,9 @@ fn append_note_reply(
     text: &str,
     author: &str,
 ) -> Result<String> {
-    let mut notes = load_notes(er_dir)?;
     let diff_hash = pr_diff_hash(er_dir);
-    // Record the new diff hash whenever we have one or none is stored yet
-    // (assigning an equal value is a no-op, so the inequality guard adds nothing).
-    if notes.diff_hash.is_empty() || !diff_hash.is_empty() {
-        notes.diff_hash = diff_hash;
-    }
-
     let id = crate::ai::annotation_store::new_annotation_id("n-");
-    notes.notes.push(PrivateAnnotation {
+    let reply = PrivateAnnotation {
         id: id.clone(),
         timestamp: chrono_now(),
         file: parent.file.clone(),
@@ -305,10 +319,22 @@ fn append_note_reply(
         promoted_to: None,
         finding_ref: parent.finding_ref.clone(),
         ai_action: None,
-    });
+    };
 
-    std::fs::create_dir_all(er_dir)?;
-    write_json_atomic(&Path::new(er_dir).join("notes.json"), &notes)?;
+    let (store, scope) = store_for(er_dir)?;
+    let path = crate::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
+    let message = format!("{} is missing or unreadable", path.display());
+    crate::ai::annotation_store::update_notes(&store, &scope, move |current| {
+        let mut notes = current.context(message)?;
+        // Record the new diff hash whenever we have one or none is stored yet
+        // (assigning an equal value is a no-op, so the inequality guard adds nothing).
+        if notes.diff_hash.is_empty() || !diff_hash.is_empty() {
+            notes.diff_hash = diff_hash;
+        }
+        notes.notes.push(reply);
+        Ok::<_, anyhow::Error>(notes)
+    })
+    .map_err(|error| anyhow::anyhow!("{error}"))?;
     Ok(id)
 }
 
@@ -505,7 +531,16 @@ pub fn resolve_question_in_dir(er_dir: &str, question_id: &str) -> Result<PrFeed
     let mut questions = load_questions(er_dir)?;
     let already_resolved = mark_thread_resolved(&mut questions.questions, question_id, "question")?;
     if !already_resolved {
-        write_json_atomic(&Path::new(er_dir).join("questions.json"), &questions)?;
+        let (store, scope) = store_for(er_dir)?;
+        let path = crate::ai::annotation_store::path_of::<ErQuestions>(&store, &scope)?;
+        let message = format!("{} is missing or unreadable", path.display());
+        let id = question_id.to_string();
+        crate::ai::annotation_store::update_questions(&store, &scope, move |current| {
+            let mut questions = current.context(message)?;
+            mark_thread_resolved(&mut questions.questions, &id, "question")?;
+            Ok::<_, anyhow::Error>(questions)
+        })
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     }
     Ok(PrFeedbackResolve {
         id: question_id.to_string(),
@@ -519,7 +554,16 @@ pub fn resolve_note_in_dir(er_dir: &str, note_id: &str) -> Result<PrFeedbackReso
     let mut notes = load_notes(er_dir)?;
     let already_resolved = mark_thread_resolved(&mut notes.notes, note_id, "note")?;
     if !already_resolved {
-        write_json_atomic(&Path::new(er_dir).join("notes.json"), &notes)?;
+        let (store, scope) = store_for(er_dir)?;
+        let path = crate::ai::annotation_store::path_of::<ErNotes>(&store, &scope)?;
+        let message = format!("{} is missing or unreadable", path.display());
+        let id = note_id.to_string();
+        crate::ai::annotation_store::update_notes(&store, &scope, move |current| {
+            let mut notes = current.context(message)?;
+            mark_thread_resolved(&mut notes.notes, &id, "note")?;
+            Ok::<_, anyhow::Error>(notes)
+        })
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     }
     Ok(PrFeedbackResolve {
         id: note_id.to_string(),
@@ -782,5 +826,73 @@ mod tests {
             .unwrap();
             assert_eq!(feedback.questions.len(), 2);
         });
+    }
+
+    #[test]
+    fn an_mcp_reply_to_a_question_writes_todays_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_string_lossy().to_string();
+        let qs = ErQuestions {
+            version: 1,
+            diff_hash: "hash".into(),
+            questions: vec![sample_question("q-root")],
+        };
+        write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+
+        reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
+
+        let raw = std::fs::read_to_string(Path::new(&er_dir).join("questions.json")).unwrap();
+        let stored: ErQuestions = serde_json::from_str(&raw).unwrap();
+        assert_eq!(raw, serde_json::to_string_pretty(&stored).unwrap());
+        assert_eq!(stored.questions.len(), 2);
+        assert_eq!(stored.questions[1].in_reply_to.as_deref(), Some("q-root"));
+    }
+
+    #[test]
+    fn an_mcp_reply_id_starts_with_its_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_string_lossy().to_string();
+        let qs = ErQuestions {
+            version: 1,
+            diff_hash: "hash".into(),
+            questions: vec![sample_question("q-root")],
+        };
+        write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+        let notes = ErNotes {
+            version: 1,
+            diff_hash: "hash".into(),
+            notes: vec![sample_question("n-root")],
+        };
+        write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
+
+        let question = reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
+        let note = reply_to_note_in_dir(&er_dir, "n-root", "Because.", None).unwrap();
+
+        assert!(question.id.starts_with("q-"), "{}", question.id);
+        assert!(note.id.starts_with("n-"), "{}", note.id);
+        assert!(
+            question.id.trim_start_matches("q-").contains('-'),
+            "q-<millis>-<seq>: {}",
+            question.id
+        );
+    }
+
+    #[test]
+    fn an_mcp_reply_to_a_corrupt_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_string_lossy().to_string();
+        let path = Path::new(&er_dir).join("questions.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        let error = reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap_err();
+        assert!(
+            error.to_string().contains("parse corrupt"),
+            "a corrupt file must be reported as corrupt, not as a missing parent: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{ not json",
+            "a corrupt file is left alone"
+        );
     }
 }

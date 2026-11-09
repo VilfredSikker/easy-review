@@ -93,7 +93,7 @@ impl App {
 
         let source_id_for_delete = source_id.to_string();
         annotation_store::update_questions(&store, &scope, move |current| {
-            let mut questions = current.context("questions.json is missing or unreadable")?;
+            let mut questions = current.context("the questions file is missing or unreadable")?;
             questions.questions.retain(|question| {
                 question.id != source_id_for_delete
                     && question.in_reply_to.as_deref() != Some(source_id_for_delete.as_str())
@@ -102,10 +102,14 @@ impl App {
         })
         .map_err(|error| anyhow!("{error}"))?;
 
-        if updated.was_unreadable {
-            self.notify("Warning: notes.json is invalid JSON — starting fresh");
-        }
         let path = annotation_store::path_of::<ErNotes>(&store, &scope)?;
+        if updated.was_unreadable {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("notes file");
+            self.notify(&format!("Warning: {name} is invalid JSON — starting fresh"));
+        }
         let tab = self.tab_mut();
         tab.ai.notes = Some(updated.value);
         tab.ai.rebuild_comment_index();

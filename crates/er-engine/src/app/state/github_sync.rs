@@ -7,9 +7,7 @@ use crate::ai;
 pub use crate::sync::{
     fetch_comment_sync_data, fetch_comment_sync_data_cached, CommentSyncContext, CommentSyncResult,
 };
-use crate::sync::{find_local_line_for_diff_hunk, merged_outdated_state, resolve_anchor};
 
-use super::chrono_now;
 use super::App;
 
 // ── Two-phase background comment sync (App wrappers) ──────────────────────────
@@ -22,21 +20,28 @@ impl App {
         owner: String,
         repo_name: String,
         pr_number: u64,
-    ) -> CommentSyncContext {
+    ) -> Result<CommentSyncContext> {
         let tab = self.tab();
-        CommentSyncContext {
+        let comments_dir = tab.github_comments_dir();
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(comments_dir.as_str())?;
+        let comments_path =
+            crate::ai::annotation_store::path_of::<crate::ai::ErGithubComments>(&store, &scope)?
+                .to_string_lossy()
+                .into_owned();
+        Ok(CommentSyncContext {
             owner,
             repo_name,
             pr_number,
             is_remote: tab.is_remote(),
             repo_root: tab.repo_root.clone(),
-            comments_path: tab.github_comments_path(),
+            comments_path,
             diff_hash: tab.branch_diff_hash.clone(),
             anchor_hash: tab.diff_hash.clone(),
             files: tab.files.clone(),
             pr_number_for_overview: tab.pr_number,
             github: tab.ports.github.clone(),
-        }
+        })
     }
 
     /// Apply pre-fetched comment sync results. Finds the correct tab by identity
@@ -140,142 +145,53 @@ impl App {
             }
         };
 
-        // The hover prefetch warms this bundle: the
-        // two gh calls cost ~2.5–3 s on a cold cache, ~0 ms on a warm one.
-        let bundle = if is_remote {
+        // The TUI's manual sync always hits GitHub: a hover-prefetch bundle can
+        // be stale by the time the user asks for a pull.
+        let repo_root_arg = if is_remote {
+            None
+        } else {
+            Some(repo_root.as_str())
+        };
+        let bundle =
             self.ports
                 .github
-                .pr_comment_bundle_cached(&owner, &repo_name, pr_number, None)
-        } else {
-            self.ports.github.pr_comment_bundle_cached(
-                &owner,
-                &repo_name,
-                pr_number,
-                Some(&repo_root),
-            )
-        };
-        let (gh_comments, thread_state) = match &bundle {
-            Ok(b) => (b.comments.clone(), b.threads.clone()),
+                .fetch_pr_comment_bundle(&owner, &repo_name, pr_number, repo_root_arg);
+        let (gh_comments, thread_state) = match bundle {
+            Ok(b) => (b.comments, b.threads),
             Err(e) => {
                 self.notify(&format!("GitHub sync error: {}", e));
                 return Ok(());
             }
         };
 
-        // Load existing github-comments.json (PR-scoped: shared PR bucket for PR tabs)
-        let comments_dir = self.tab().github_comments_dir();
-        let _ = std::fs::create_dir_all(&comments_dir);
-        let comments_path = self.tab().github_comments_path();
-        let diff_hash = self.tab().branch_diff_hash.clone();
-        let mut gc: ai::ErGithubComments = match std::fs::read_to_string(&comments_path) {
-            Ok(content) => {
-                serde_json::from_str(&content).unwrap_or_else(|_| ai::ErGithubComments {
+        let ctx = self.snapshot_for_comment_sync(owner.clone(), repo_name.clone(), pr_number)?;
+        let comments_path = std::path::Path::new(&ctx.comments_path);
+        let comments_dir = comments_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("invalid comments path: {}", ctx.comments_path))?;
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(comments_dir)?;
+        let updated = ai::annotation_store::update_github_comments(&store, &scope, |current| {
+            Ok::<_, std::convert::Infallible>(crate::sync::rebuild_comment_store(
+                &ctx,
+                current.unwrap_or_else(|| ai::ErGithubComments {
                     version: 1,
-                    diff_hash: diff_hash.clone(),
+                    diff_hash: ctx.diff_hash.clone(),
                     github: None,
                     comments: Vec::new(),
-                })
-            }
-            Err(_) => ai::ErGithubComments {
-                version: 1,
-                diff_hash,
-                github: None,
-                comments: Vec::new(),
-            },
-        };
-
-        gc.github = Some(ai::GitHubSyncState {
-            pr_number: Some(pr_number),
-            owner: owner.clone(),
-            repo: repo_name.clone(),
-            last_synced: chrono_now(),
-        });
-
-        let local_kept: Vec<_> = gc
+                }),
+                &gh_comments,
+                &thread_state,
+            ))
+        })
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let gc = updated.value;
+        let github_count = gc.comments.iter().filter(|c| c.source == "github").count();
+        let local_count = gc
             .comments
-            .into_iter()
-            .filter(crate::sync::keep_on_pull)
-            .collect();
-
-        // Build fresh GitHub entries from API response
-        let tab_files = self.tab().files.clone();
-        let diff_hash_for_anchor = self.tab().diff_hash.clone();
-        let mut github_entries = Vec::new();
-
-        for gh in &gh_comments {
-            let file_path = gh.path.clone().unwrap_or_default();
-
-            // Prefer content-based matching via diff_hunk — robust against line-number drift when
-            // main has advanced since the PR was filed.
-            let stable_line = gh.original_line.or(gh.line);
-            let resolved_line: Option<usize> = if let (Some(diff_hunk), Some(f)) = (
-                &gh.diff_hunk,
-                tab_files.iter().find(|f| f.path == file_path),
-            ) {
-                find_local_line_for_diff_hunk(diff_hunk, f)
-                    .map(|(_, ln)| ln)
-                    .or(stable_line)
-            } else {
-                stable_line
-            };
-
-            let (
-                hunk_index,
-                anchor_line_content,
-                anchor_ctx_before,
-                anchor_ctx_after,
-                anchor_old_line,
-                anchor_hunk_header,
-            ) = resolve_anchor(
-                resolved_line,
-                &file_path,
-                &tab_files,
-                gh.diff_hunk.as_deref(),
-            );
-
-            let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
-            let state = thread_state.get(&gh.id).copied().unwrap_or_default();
-            let outdated = merged_outdated_state(state, gh.outdated);
-
-            github_entries.push(ai::GithubComment {
-                id: format!("gh-{}", gh.id),
-                timestamp: gh.created_at.clone(),
-                file: file_path,
-                hunk_index,
-                line_start: resolved_line,
-                line_end: None,
-                line_content: anchor_line_content,
-                comment: gh.body.clone(),
-                in_reply_to,
-                resolved: state.resolved,
-                source: "github".to_string(),
-                github_id: Some(gh.id),
-                author: gh.user.login.clone(),
-                outdated,
-                stale: outdated,
-                context_before: anchor_ctx_before,
-                context_after: anchor_ctx_after,
-                old_line_start: anchor_old_line,
-                hunk_header: anchor_hunk_header,
-                anchor_status: "original".to_string(),
-                relocated_at_hash: diff_hash_for_anchor.clone(),
-                finding_ref: None,
-                side: gh.side.clone().unwrap_or_else(|| "RIGHT".to_string()),
-            });
-        }
-
-        let github_count = github_entries.len();
-        let local_count = local_kept.len();
-        gc.comments = local_kept;
-        gc.comments.extend(github_entries);
-
-        if let Some(dir) = std::path::Path::new(&comments_path).parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let json = serde_json::to_string_pretty(&gc)?;
-        let tmp_path = format!("{}.tmp", comments_path);
-        std::fs::write(&tmp_path, &json)?;
-        std::fs::rename(&tmp_path, &comments_path)?;
+            .iter()
+            .filter(|c| crate::sync::keep_on_pull(c))
+            .count();
 
         if is_remote {
             self.tab_mut().reload_remote_comments();
@@ -328,7 +244,7 @@ mod tests {
         let mut app = App::new_for_test(vec![]);
         app.tab_mut().remote_repo = Some("acme/widgets".into());
         app.tab_mut().pr_number = Some(7);
-        let github = Arc::new(FakeGitHub::default().with_pr_comment_bundle_cached(Err(
+        let github = Arc::new(FakeGitHub::default().with_fetch_pr_comment_bundle(Err(
             GhError::Forbidden {
                 message: "nope".into(),
             },
@@ -340,7 +256,7 @@ mod tests {
         assert_eq!(
             github.calls(),
             vec![
-                "pr_comment_bundle_cached(owner=\"acme\", repo=\"widgets\", pr=7, \
+                "fetch_pr_comment_bundle(owner=\"acme\", repo=\"widgets\", pr=7, \
                  repo_root=None)"
                     .to_string()
             ]
@@ -350,6 +266,55 @@ mod tests {
             notification.message.contains("GitHub sync error: nope"),
             "{}",
             notification.message
+        );
+    }
+
+    #[test]
+    fn the_tui_sync_keeps_the_checks_refresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(vec![]);
+        {
+            let tab = app.tab_mut();
+            tab.repo_root = tmp.path().to_string_lossy().into_owned();
+            tab.er_root = crate::paths::ErRoot::managed(
+                tmp.path().join(".er").to_string_lossy().into_owned(),
+            );
+            tab.pr_number = Some(7);
+        }
+        let github = Arc::new(
+            FakeGitHub::default()
+                .with_get_repo_info(Ok(("acme".into(), "widgets".into())))
+                .with_fetch_pr_comment_bundle(Ok(er_github::PrCommentBundle {
+                    comments: Vec::new(),
+                    threads: std::collections::HashMap::new(),
+                }))
+                .with_overview(Ok(Some(er_github::PrOverviewData {
+                    number: 7,
+                    title: "T".into(),
+                    body: String::new(),
+                    state: "OPEN".into(),
+                    author: "a".into(),
+                    url: "u".into(),
+                    base_branch: "main".into(),
+                    head_branch: "f".into(),
+                    checks: Vec::new(),
+                    reviewers: Vec::new(),
+                }))),
+        );
+        app.ports.github = github.clone();
+
+        app.sync_github_comments().unwrap();
+
+        let calls = github.calls();
+        assert!(
+            calls.iter().any(|call| call.starts_with("overview(")),
+            "the manual TUI sync refreshes CI checks: {calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.starts_with("overview_no_checks")),
+            "the manual TUI sync must not use the checks-free variant: {calls:?}"
         );
     }
 }
