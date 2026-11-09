@@ -45,20 +45,6 @@ fn profile_branch_enabled() -> bool {
     std::env::var("ER_DESKTOP_PROFILE_BRANCH").as_deref() == Ok("1")
 }
 
-/// Write `github-comments.json` under `gh_dir` through a temp file, ignoring
-/// failures: the caller keeps the comments in memory either way.
-fn write_github_comments_best_effort(
-    gh_dir: &str,
-    gh_path: &std::path::Path,
-    gc: &ai::ErGithubComments,
-) {
-    let _ = std::fs::create_dir_all(gh_dir);
-    if let Ok(json) = serde_json::to_string_pretty(gc) {
-        let tmp = format!("{}.tmp", gh_path.to_string_lossy());
-        let _ = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, gh_path));
-    }
-}
-
 fn log_branch_profile_phase(tab: &TabState, phase: &str, started_at: Instant) {
     // Must stay behind the env gate: unconditional eprintln! corrupts the TUI.
     if !profile_branch_enabled() {
@@ -3982,6 +3968,58 @@ impl TabState {
         migrated
     }
 
+    /// Adopt the PR bucket's github comments after a tab gains its PR number.
+    ///
+    /// `orphaned` came from the active bucket (written while the tab had no
+    /// PR). Local comments in it are merged into the PR bucket's `current`
+    /// under the store lock, so a comment written there since the tab opened
+    /// is kept; the orphan file is then deleted. Without local orphans this
+    /// only reads the PR bucket.
+    fn adopt_pr_bucket_comments(
+        orphaned: Option<ai::ErGithubComments>,
+        gh_dir: &str,
+        er_dir: &str,
+    ) -> Option<ai::ErGithubComments> {
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(gh_dir).ok()?;
+        let has_local_orphans = orphaned
+            .as_ref()
+            .is_some_and(|gc| gc.comments.iter().any(|c| c.source == "local"));
+        let mut migrated = false;
+        let mut adopted = None;
+        if has_local_orphans {
+            if let Ok(updated) =
+                ai::annotation_store::update_github_comments(&store, &scope, |current| {
+                    let mut pr_comments = current;
+                    migrated = Self::migrate_orphaned_github_comments(orphaned, &mut pr_comments);
+                    Ok::<_, std::convert::Infallible>(pr_comments.unwrap_or_else(|| {
+                        ai::ErGithubComments {
+                            version: 1,
+                            diff_hash: String::new(),
+                            github: None,
+                            comments: Vec::new(),
+                        }
+                    }))
+                })
+            {
+                adopted = Some(updated.value);
+            }
+            if adopted.is_some() && migrated {
+                // Drop the orphan file only after the merged write succeeded.
+                if let Ok(orphan_scope) = er_store::Scope::dir(er_dir) {
+                    let _ =
+                        ai::annotation_store::delete::<ai::ErGithubComments>(&store, &orphan_scope);
+                }
+            }
+        }
+        adopted.or_else(
+            || match ai::annotation_store::load_github_comments(&store, &scope) {
+                Ok(er_store::Loaded::Found(stored)) => Some(stored.value),
+                _ => None,
+            },
+        )
+    }
+
     pub fn reload_ai_state(&mut self) {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         let er_dir = self.er_dir();
@@ -4037,22 +4075,8 @@ impl TabState {
                     // er_dir then). The PR bucket is now authoritative, so migrate any
                     // such local comments into it instead of discarding them.
                     let orphaned = self.ai.github_comments.take();
-                    let gh_path = std::path::Path::new(&gh_dir).join("github-comments.json");
-                    let mut pr_comments = std::fs::read_to_string(&gh_path)
-                        .ok()
-                        .and_then(|c| serde_json::from_str::<ai::ErGithubComments>(&c).ok());
-                    let migrated =
-                        Self::migrate_orphaned_github_comments(orphaned, &mut pr_comments);
-                    if let Some(gc) = pr_comments.as_ref().filter(|_| migrated) {
-                        write_github_comments_best_effort(&gh_dir, &gh_path, gc);
-                    }
-                    if migrated {
-                        // Drop the orphan file so the migration runs only once.
-                        let orphan_path =
-                            std::path::Path::new(&er_dir).join("github-comments.json");
-                        let _ = std::fs::remove_file(&orphan_path);
-                    }
-                    self.ai.github_comments = pr_comments;
+                    self.ai.github_comments =
+                        Self::adopt_pr_bucket_comments(orphaned, &gh_dir, er_dir);
                     self.ai.rebuild_comment_index();
                 }
             } else if self.ai.github_comments.take().is_some() {
@@ -4100,18 +4124,64 @@ impl TabState {
     /// Reload github comments from cache in remote mode.
     /// Unlike reload_ai_state() which reads from .er/, this reads from the remote cache dir.
     pub fn reload_remote_comments(&mut self) {
-        let path = self.github_comments_path();
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(gc) = serde_json::from_str::<ai::ErGithubComments>(&content) {
-                self.ai.github_comments = Some(gc);
-                self.ai.rebuild_comment_index();
-            }
+        let comments_dir = self.github_comments_dir();
+        let store = crate::store_registry::store();
+        let Ok(scope) = er_store::Scope::dir(comments_dir.as_str()) else {
+            return;
+        };
+        if let Ok(er_store::Loaded::Found(stored)) =
+            ai::annotation_store::load_github_comments(&store, &scope)
+        {
+            self.ai.github_comments = Some(stored.value);
+            self.ai.rebuild_comment_index();
         }
     }
 
     /// Relocate all comments to their new positions after a diff change.
     pub fn relocate_all_comments(&mut self) {
         let current_hash = self.diff_hash.clone();
+
+        // The per-id anchor changes to re-apply to `current` when writing back.
+        #[derive(Clone)]
+        struct AnchorUpdate {
+            hunk_index: Option<usize>,
+            line_start: Option<usize>,
+            anchor_status: String,
+            relocated_at_hash: String,
+            stale: bool,
+        }
+        let mut question_updates: std::collections::HashMap<String, AnchorUpdate> =
+            std::collections::HashMap::new();
+        let mut note_updates: std::collections::HashMap<String, AnchorUpdate> =
+            std::collections::HashMap::new();
+        let mut comment_updates: std::collections::HashMap<String, AnchorUpdate> =
+            std::collections::HashMap::new();
+        macro_rules! record {
+            ($map:ident, $item:expr) => {
+                $map.insert(
+                    $item.id.clone(),
+                    AnchorUpdate {
+                        hunk_index: $item.hunk_index,
+                        line_start: $item.line_start,
+                        anchor_status: $item.anchor_status.clone(),
+                        relocated_at_hash: $item.relocated_at_hash.clone(),
+                        stale: $item.stale,
+                    },
+                );
+            };
+        }
+        fn apply_updates<T>(
+            items: &mut [T],
+            updates: &std::collections::HashMap<String, AnchorUpdate>,
+            id_of: impl Fn(&T) -> &str,
+            apply: impl Fn(&mut T, &AnchorUpdate),
+        ) {
+            for item in items.iter_mut() {
+                if let Some(update) = updates.get(id_of(item)) {
+                    apply(item, update);
+                }
+            }
+        }
 
         // Build rename map: old path → new path
         let rename_map: std::collections::HashMap<String, String> = self
@@ -4187,6 +4257,7 @@ impl TabState {
                         q.relocated_at_hash = current_hash.clone();
                         q.stale = false;
                         changed = true;
+                        record!(question_updates, q);
                     }
                     ai::RelocationResult::Relocated {
                         new_hunk_index,
@@ -4198,12 +4269,14 @@ impl TabState {
                         q.relocated_at_hash = current_hash.clone();
                         q.stale = false;
                         changed = true;
+                        record!(question_updates, q);
                     }
                     ai::RelocationResult::Lost => {
                         q.anchor_status = "lost".to_string();
                         q.stale = true;
                         q.relocated_at_hash = current_hash.clone();
                         changed = true;
+                        record!(question_updates, q);
                     }
                 }
             }
@@ -4245,6 +4318,7 @@ impl TabState {
                         n.relocated_at_hash = current_hash.clone();
                         n.stale = false;
                         changed = true;
+                        record!(note_updates, n);
                     }
                     ai::RelocationResult::Relocated {
                         new_hunk_index,
@@ -4256,12 +4330,14 @@ impl TabState {
                         n.relocated_at_hash = current_hash.clone();
                         n.stale = false;
                         changed = true;
+                        record!(note_updates, n);
                     }
                     ai::RelocationResult::Lost => {
                         n.anchor_status = "lost".to_string();
                         n.stale = true;
                         n.relocated_at_hash = current_hash.clone();
                         changed = true;
+                        record!(note_updates, n);
                     }
                 }
             }
@@ -4307,6 +4383,7 @@ impl TabState {
                         c.relocated_at_hash = current_hash.clone();
                         c.stale = false;
                         changed = true;
+                        record!(comment_updates, c);
                     }
                     ai::RelocationResult::Relocated {
                         new_hunk_index,
@@ -4318,12 +4395,14 @@ impl TabState {
                         c.relocated_at_hash = current_hash.clone();
                         c.stale = false;
                         changed = true;
+                        record!(comment_updates, c);
                     }
                     ai::RelocationResult::Lost => {
                         c.anchor_status = "lost".to_string();
                         c.stale = true;
                         c.relocated_at_hash = current_hash.clone();
                         changed = true;
+                        record!(comment_updates, c);
                     }
                 }
             }
@@ -4333,33 +4412,72 @@ impl TabState {
         };
 
         // Write back to disk if anything changed. Write failures are ignored — the
-        // next refresh re-relocates the same comments from scratch.
+        // next refresh re-relocates the same comments from scratch. Each write
+        // re-applies the id's anchor change to `current`, so a comment added
+        // since the in-memory pass is not lost.
         if questions_changed {
-            if let Some(ref qs) = self.ai.questions {
-                let path = format!("{}/questions.json", self.er_dir());
-                if let Ok(json) = serde_json::to_string_pretty(qs) {
-                    let tmp = format!("{}.tmp", path);
-                    let _ = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path));
-                }
+            if let Ok(scope) = er_store::Scope::dir(self.er_dir()) {
+                let store = crate::store_registry::store();
+                let _ = ai::annotation_store::update_questions(&store, &scope, move |current| {
+                    let mut qs = current.context("the questions file is missing or unreadable")?;
+                    apply_updates(
+                        &mut qs.questions,
+                        &question_updates,
+                        |q| q.id.as_str(),
+                        |q, update| {
+                            q.hunk_index = update.hunk_index;
+                            q.line_start = update.line_start;
+                            q.anchor_status = update.anchor_status.clone();
+                            q.relocated_at_hash = update.relocated_at_hash.clone();
+                            q.stale = update.stale;
+                        },
+                    );
+                    Ok::<_, anyhow::Error>(qs)
+                });
             }
         }
         if notes_changed {
-            if let Some(ref ns) = self.ai.notes {
-                let path = format!("{}/notes.json", self.er_dir());
-                if let Ok(json) = serde_json::to_string_pretty(ns) {
-                    let tmp = format!("{}.tmp", path);
-                    let _ = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path));
-                }
+            if let Ok(scope) = er_store::Scope::dir(self.er_dir()) {
+                let store = crate::store_registry::store();
+                let _ = ai::annotation_store::update_notes(&store, &scope, move |current| {
+                    let mut ns = current.context("the notes file is missing or unreadable")?;
+                    apply_updates(
+                        &mut ns.notes,
+                        &note_updates,
+                        |n| n.id.as_str(),
+                        |n, update| {
+                            n.hunk_index = update.hunk_index;
+                            n.line_start = update.line_start;
+                            n.anchor_status = update.anchor_status.clone();
+                            n.relocated_at_hash = update.relocated_at_hash.clone();
+                            n.stale = update.stale;
+                        },
+                    );
+                    Ok::<_, anyhow::Error>(ns)
+                });
             }
         }
         if comments_changed {
-            if let Some(ref gc) = self.ai.github_comments {
-                let path = self.github_comments_path();
-                if let Ok(json) = serde_json::to_string_pretty(gc) {
-                    let _ = std::fs::create_dir_all(self.github_comments_dir());
-                    let tmp = format!("{}.tmp", path);
-                    let _ = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path));
-                }
+            if let Ok(scope) = er_store::Scope::dir(self.github_comments_dir()) {
+                let store = crate::store_registry::store();
+                let _ =
+                    ai::annotation_store::update_github_comments(&store, &scope, move |current| {
+                        let mut gc =
+                            current.context("the GitHub comments file is missing or unreadable")?;
+                        apply_updates(
+                            &mut gc.comments,
+                            &comment_updates,
+                            |c| c.id.as_str(),
+                            |c, update| {
+                                c.hunk_index = update.hunk_index;
+                                c.line_start = update.line_start;
+                                c.anchor_status = update.anchor_status.clone();
+                                c.relocated_at_hash = update.relocated_at_hash.clone();
+                                c.stale = update.stale;
+                            },
+                        );
+                        Ok::<_, anyhow::Error>(gc)
+                    });
             }
         }
 
@@ -7433,7 +7551,7 @@ impl App {
                 label: "Cleanup questions & notes".into(),
                 hint: "z".into(),
                 description: if has_questions_or_notes {
-                    "Delete questions.json + notes.json".into()
+                    "Delete the question and note files".into()
                 } else {
                     "no questions or notes to clean up".into()
                 },
@@ -9676,10 +9794,14 @@ pub use crate::sync::chrono_now;
 /// Remove the private local-draft sidecars: questions and notes. Both are
 /// user-authored, never-pushed drafts, so the `z` cleanup clears them together.
 pub fn cleanup_questions_and_notes(er_dir: &str) {
+    let store = crate::store_registry::store();
+    if let Ok(scope) = er_store::Scope::dir(er_dir) {
+        let _ = crate::ai::annotation_store::delete::<crate::ai::ErQuestions>(&store, &scope);
+        let _ = crate::ai::annotation_store::delete::<crate::ai::ErNotes>(&store, &scope);
+    }
+    // The `.prev.json` backups stay plain files.
     let base = std::path::Path::new(er_dir);
-    let _ = std::fs::remove_file(base.join("questions.json"));
     let _ = std::fs::remove_file(base.join("questions.prev.json"));
-    let _ = std::fs::remove_file(base.join("notes.json"));
     let _ = std::fs::remove_file(base.join("notes.prev.json"));
 }
 
@@ -9705,37 +9827,34 @@ fn cleanup_claude_replies(items: &mut Vec<crate::ai::PrivateAnnotation>) {
     }
 }
 
-fn write_sidecar_json<T: serde::Serialize>(path: &std::path::Path, value: &T) {
-    if let Ok(json) = serde_json::to_string_pretty(value) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
-        }
-    }
-}
-
-/// Remove AI-generated replies from notes.json, keeping human notes intact.
+/// Remove AI-generated replies from the notes file, keeping human notes intact.
 /// Unmarks resolved status on notes whose replies are removed.
 pub fn cleanup_note_replies(er_dir: &str) {
-    let path = std::path::Path::new(er_dir).join("notes.json");
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        if let Ok(mut ns) = serde_json::from_str::<crate::ai::ErNotes>(&content) {
-            cleanup_claude_replies(&mut ns.notes);
-            write_sidecar_json(&path, &ns);
-        }
-    }
+    let store = crate::store_registry::store();
+    let Ok(scope) = er_store::Scope::dir(er_dir) else {
+        return;
+    };
+    let _ = crate::ai::annotation_store::update_notes(&store, &scope, |current| {
+        let mut ns =
+            current.ok_or_else(|| anyhow::anyhow!("the notes file is missing or unreadable"))?;
+        cleanup_claude_replies(&mut ns.notes);
+        Ok::<_, anyhow::Error>(ns)
+    });
 }
 
-/// Remove AI-generated answers from questions.json, keeping human questions intact.
+/// Remove AI-generated answers from the questions file, keeping human questions intact.
 /// Unmarks resolved status on questions whose answers are removed.
 pub fn cleanup_question_answers(er_dir: &str) {
-    let path = std::path::Path::new(er_dir).join("questions.json");
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        if let Ok(mut qs) = serde_json::from_str::<crate::ai::ErQuestions>(&content) {
-            cleanup_claude_replies(&mut qs.questions);
-            write_sidecar_json(&path, &qs);
-        }
-    }
+    let store = crate::store_registry::store();
+    let Ok(scope) = er_store::Scope::dir(er_dir) else {
+        return;
+    };
+    let _ = crate::ai::annotation_store::update_questions(&store, &scope, |current| {
+        let mut qs = current
+            .ok_or_else(|| anyhow::anyhow!("the questions file is missing or unreadable"))?;
+        cleanup_claude_replies(&mut qs.questions);
+        Ok::<_, anyhow::Error>(qs)
+    });
 }
 
 /// Delete AI review sidecar files. Errors are ignored (files may not exist).
@@ -10870,6 +10989,217 @@ mod tests {
         assert!(c.stale);
         assert_eq!(c.anchor_status, "lost");
         assert_eq!(c.relocated_at_hash, "current-hash");
+    }
+
+    #[test]
+    fn the_relocation_reapplies_by_id_and_keeps_a_concurrent_reply() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut tab = make_test_tab(vec![make_file("other.rs", vec![], 1, 1)]);
+        tab.er_root = ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
+        tab.repo_root = tmp.path().to_string_lossy().into_owned();
+        tab.diff_hash = "current-hash".to_string();
+        let er_dir = tab.er_dir();
+        std::fs::create_dir_all(&er_dir).unwrap();
+        let path = std::path::Path::new(&er_dir).join("questions.json");
+
+        let root = ai::PrivateAnnotation {
+            id: "q-root".into(),
+            timestamp: String::new(),
+            file: "missing.rs".into(),
+            hunk_index: Some(0),
+            line_start: Some(10),
+            line_end: None,
+            line_content: String::new(),
+            text: "why".into(),
+            resolved: false,
+            stale: false,
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+            old_line_start: None,
+            side: "RIGHT".into(),
+            hunk_header: String::new(),
+            anchor_status: "original".into(),
+            relocated_at_hash: "old-hash".into(),
+            in_reply_to: None,
+            author: "You".into(),
+            promoted_to: None,
+            finding_ref: None,
+            ai_action: None,
+        };
+        let mut reply = root.clone();
+        reply.id = "q-reply".into();
+        reply.in_reply_to = Some("q-root".into());
+        let loaded = ai::ErQuestions {
+            version: 1,
+            diff_hash: "old-hash".into(),
+            questions: vec![root.clone()],
+        };
+        std::fs::write(&path, serde_json::to_string_pretty(&loaded).unwrap()).unwrap();
+        tab.ai.questions = Some(loaded);
+
+        // Written after the in-memory pass, so a wholesale write would lose it.
+        let with_reply = ai::ErQuestions {
+            version: 1,
+            diff_hash: "old-hash".into(),
+            questions: vec![root, reply],
+        };
+        std::fs::write(&path, serde_json::to_string_pretty(&with_reply).unwrap()).unwrap();
+
+        tab.relocate_all_comments();
+
+        let after: ai::ErQuestions =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            after.questions.iter().any(|q| q.id == "q-reply"),
+            "the concurrent reply survives"
+        );
+        let root = after.questions.iter().find(|q| q.id == "q-root").unwrap();
+        assert_eq!(root.anchor_status, "lost");
+    }
+
+    fn make_local_comment(id: &str) -> ai::GithubComment {
+        ai::GithubComment {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: "a.rs".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(1),
+            line_end: None,
+            line_content: String::new(),
+            comment: "local".to_string(),
+            in_reply_to: None,
+            resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            outdated: false,
+            stale: false,
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_orphan_migration_merges_into_current() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+        }
+        let mut app = App::new_for_test_with_ports(vec![], crate::ports::Ports::cli());
+        {
+            let tab = app.tab_mut();
+            tab.repo_root = tmp.path().to_string_lossy().into_owned();
+            tab.current_branch = "main".to_string();
+            tab.pr_number = Some(7);
+            tab.apply_managed_root();
+        }
+        let er_dir = app.tab().er_dir();
+        let gh_dir = app.tab().github_comments_dir();
+        assert_ne!(er_dir, gh_dir, "a PR tab writes comments in the PR bucket");
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::create_dir_all(&gh_dir).unwrap();
+
+        let orphan = ai::ErGithubComments {
+            version: 1,
+            diff_hash: "h".into(),
+            github: None,
+            comments: vec![make_local_comment("c-orphan")],
+        };
+        std::fs::write(
+            std::path::Path::new(&er_dir).join("github-comments.json"),
+            serde_json::to_string_pretty(&orphan).unwrap(),
+        )
+        .unwrap();
+        let existing = ai::ErGithubComments {
+            version: 1,
+            diff_hash: "h".into(),
+            github: None,
+            comments: vec![make_local_comment("c-existing")],
+        };
+        std::fs::write(
+            std::path::Path::new(&gh_dir).join("github-comments.json"),
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
+
+        app.tab_mut().reload_ai_state();
+
+        let merged: ai::ErGithubComments = serde_json::from_str(
+            &std::fs::read_to_string(std::path::Path::new(&gh_dir).join("github-comments.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        let ids: Vec<&str> = merged.comments.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(&"c-orphan"), "orphan migrated: {ids:?}");
+        assert!(
+            ids.contains(&"c-existing"),
+            "a comment already in the PR bucket is kept: {ids:?}"
+        );
+        assert!(
+            !std::path::Path::new(&er_dir)
+                .join("github-comments.json")
+                .exists(),
+            "the orphan file is removed"
+        );
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_pr_bucket_write_keeps_the_orphan_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let er_dir = tmp.path().join("branch");
+        let gh_dir = tmp.path().join("pr");
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::create_dir_all(&gh_dir).unwrap();
+        let orphan_path = er_dir.join("github-comments.json");
+        let orphan = ai::ErGithubComments {
+            version: 1,
+            diff_hash: "h".into(),
+            github: None,
+            comments: vec![make_local_comment("c-orphan")],
+        };
+        std::fs::write(&orphan_path, serde_json::to_string_pretty(&orphan).unwrap()).unwrap();
+        // The lock can be opened; the temp write cannot be created.
+        std::fs::write(gh_dir.join(".lock"), "").unwrap();
+        let mut perms = std::fs::metadata(&gh_dir).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&gh_dir, perms).unwrap();
+
+        let adopted = TabState::adopt_pr_bucket_comments(
+            Some(orphan),
+            gh_dir.to_str().unwrap(),
+            er_dir.to_str().unwrap(),
+        );
+
+        let mut restore = std::fs::metadata(&gh_dir).unwrap().permissions();
+        restore.set_mode(0o755);
+        std::fs::set_permissions(&gh_dir, restore).unwrap();
+
+        assert!(adopted.is_none(), "the failed write adopts nothing");
+        assert!(
+            orphan_path.exists(),
+            "the orphan file is kept when the merge write fails"
+        );
     }
 
     // ── refresh_finding_staleness ──

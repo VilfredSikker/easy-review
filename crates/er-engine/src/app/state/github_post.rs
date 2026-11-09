@@ -236,8 +236,15 @@ impl App {
 
         let (comments_path, branch_diff_hash, diff_hash) = {
             let tab = self.tab();
+            let store = crate::store_registry::store();
+            let comments_dir = tab.github_comments_dir();
+            let scope = er_store::Scope::dir(comments_dir.as_str())
+                .map_err(|e| GitHubPostError::NotPosted(format!("Invalid comments path: {e}")))?;
             (
-                tab.github_comments_path(),
+                crate::ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &scope)
+                    .map_err(|e| GitHubPostError::NotPosted(format!("Invalid comments path: {e}")))?
+                    .to_string_lossy()
+                    .into_owned(),
                 tab.branch_diff_hash.clone(),
                 tab.diff_hash.clone(),
             )
@@ -493,11 +500,23 @@ impl App {
 
     fn known_github_ids(&self) -> HashSet<u64> {
         let tab = self.tab();
-        let path = tab.github_comments_path();
-        let from_file = std::fs::read_to_string(&path)
+        let comments_dir = tab.github_comments_dir();
+        let store = crate::store_registry::store();
+        let from_file = er_store::Scope::dir(comments_dir.as_str())
             .ok()
-            .and_then(|content| serde_json::from_str::<ai::ErGithubComments>(&content).ok())
-            .map(|gc| gc.comments.iter().filter_map(|c| c.github_id).collect());
+            .and_then(|scope| {
+                match crate::ai::annotation_store::load_github_comments(&store, &scope) {
+                    Ok(er_store::Loaded::Found(stored)) => Some(
+                        stored
+                            .value
+                            .comments
+                            .iter()
+                            .filter_map(|c| c.github_id)
+                            .collect(),
+                    ),
+                    _ => None,
+                }
+            });
         if let Some(ids) = from_file {
             return ids;
         }
@@ -557,86 +576,86 @@ impl App {
             });
         }
 
-        let mut gc: ai::ErGithubComments = match std::fs::read_to_string(&ticket.comments_path) {
-            Ok(content) => match serde_json::from_str(&content) {
-                Ok(gc) => gc,
-                Err(_) => ai::ErGithubComments {
+        let store = crate::store_registry::store();
+        let Some(comments_dir) = std::path::Path::new(&ticket.comments_path).parent() else {
+            return Err(GitHubPostError::RecordFailed(format!(
+                "invalid comments path: {}",
+                ticket.comments_path
+            )));
+        };
+        let scope = er_store::Scope::dir(comments_dir)
+            .map_err(|e| GitHubPostError::RecordFailed(format!("{e}")))?;
+        let comments_path =
+            crate::ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &scope)
+                .map_err(|e| GitHubPostError::RecordFailed(format!("{e}")))?;
+        let store_id = format!("gh-{github_id}");
+        let location = &ticket.location;
+        let new_comment = ai::GithubComment {
+            id: store_id.clone(),
+            timestamp: created_at,
+            file: location.file.clone(),
+            hunk_index: location.hunk_index,
+            line_start: location.line_start,
+            line_end: location.line_end,
+            line_content: location.line_content.clone(),
+            comment: body,
+            in_reply_to: location.in_reply_to.clone(),
+            resolved: false,
+            source: "github".to_string(),
+            github_id: Some(github_id),
+            author,
+            outdated: false,
+            stale: false,
+            context_before: location.context_before.clone(),
+            context_after: location.context_after.clone(),
+            old_line_start: location.old_line_start,
+            hunk_header: location.hunk_header.clone(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: ticket.diff_hash.clone(),
+            finding_ref: None,
+            side: location.side.clone(),
+        };
+        let diff_hash_for_write = ticket.branch_diff_hash.clone();
+        let written =
+            crate::ai::annotation_store::update_github_comments(&store, &scope, move |current| {
+                let mut gc = current.unwrap_or_else(|| ai::ErGithubComments {
                     version: 1,
-                    diff_hash: ticket.branch_diff_hash.clone(),
+                    diff_hash: diff_hash_for_write.clone(),
                     github: None,
                     comments: Vec::new(),
-                },
-            },
-            Err(_) => ai::ErGithubComments {
-                version: 1,
-                diff_hash: ticket.branch_diff_hash.clone(),
-                github: None,
-                comments: Vec::new(),
-            },
-        };
-        gc.diff_hash = ticket.branch_diff_hash.clone();
-        let store_id = format!("gh-{github_id}");
-        if !gc.comments.iter().any(|c| c.github_id == Some(github_id)) {
-            let location = &ticket.location;
-            gc.comments.push(ai::GithubComment {
-                id: store_id.clone(),
-                timestamp: created_at,
-                file: location.file.clone(),
-                hunk_index: location.hunk_index,
-                line_start: location.line_start,
-                line_end: location.line_end,
-                line_content: location.line_content.clone(),
-                comment: body,
-                in_reply_to: location.in_reply_to.clone(),
-                resolved: false,
-                source: "github".to_string(),
-                github_id: Some(github_id),
-                author,
-                outdated: false,
-                stale: false,
-                context_before: location.context_before.clone(),
-                context_after: location.context_after.clone(),
-                old_line_start: location.old_line_start,
-                hunk_header: location.hunk_header.clone(),
-                anchor_status: "original".to_string(),
-                relocated_at_hash: ticket.diff_hash.clone(),
-                finding_ref: None,
-                side: location.side.clone(),
-            });
-        }
-
-        let write = (|| {
-            if let Some(dir) = std::path::Path::new(&ticket.comments_path).parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            let json = serde_json::to_string_pretty(&gc)?;
-            let tmp_path = format!("{}.tmp", ticket.comments_path);
-            std::fs::write(&tmp_path, json)?;
-            std::fs::rename(&tmp_path, &ticket.comments_path)
-        })();
-        if let Err(e) = write {
-            // GitHub holds the comment, so the retry must reconcile rather
-            // than post it again. Keep an existing record: replacing it would
-            // discard the first attempt's start time and bodies, and a later
-            // retry could miss the earlier comment. Only the wait is cleared,
-            // because the comment already exists.
-            match self.pending_github_posts.get_mut(&ticket.request.client_id) {
-                Some(pending) => pending.not_before_epoch = 0,
-                None => {
-                    self.pending_github_posts.insert(
-                        ticket.request.client_id.clone(),
-                        PendingGitHubPost {
-                            started_at: ticket.started_at.clone(),
-                            not_before_epoch: 0,
-                            known_ids: ticket.known_ids.clone(),
-                            bodies: vec![ticket.request.body.clone()],
-                            request: ticket.request.clone(),
-                        },
-                    );
+                });
+                gc.diff_hash = diff_hash_for_write;
+                if !gc.comments.iter().any(|c| c.github_id == Some(github_id)) {
+                    gc.comments.push(new_comment);
                 }
+                Ok::<_, std::convert::Infallible>(gc)
+            });
+        let gc = match written {
+            Ok(updated) => updated.value,
+            Err(e) => {
+                // GitHub holds the comment, so the retry must reconcile rather
+                // than post it again. Keep an existing record: replacing it would
+                // discard the first attempt's start time and bodies, and a later
+                // retry could miss the earlier comment. Only the wait is cleared,
+                // because the comment already exists.
+                match self.pending_github_posts.get_mut(&ticket.request.client_id) {
+                    Some(pending) => pending.not_before_epoch = 0,
+                    None => {
+                        self.pending_github_posts.insert(
+                            ticket.request.client_id.clone(),
+                            PendingGitHubPost {
+                                started_at: ticket.started_at.clone(),
+                                not_before_epoch: 0,
+                                known_ids: ticket.known_ids.clone(),
+                                bodies: vec![ticket.request.body.clone()],
+                                request: ticket.request.clone(),
+                            },
+                        );
+                    }
+                }
+                return Err(GitHubPostError::RecordFailed(format!("{e:#}")));
             }
-            return Err(GitHubPostError::RecordFailed(format!("{e:#}")));
-        }
+        };
 
         self.pending_github_posts.remove(&ticket.request.client_id);
         if let Some(tab) = self.tabs.iter_mut().find(|t| {
@@ -646,7 +665,7 @@ impl App {
         }) {
             tab.ai.github_comments = Some(gc);
             tab.ai.rebuild_comment_index();
-            tab.mark_sidecar_written(&ticket.comments_path);
+            tab.mark_sidecar_written(comments_path.to_string_lossy().as_ref());
             if tab.comment_client_id.as_deref() == Some(ticket.request.client_id.as_str()) {
                 tab.comment_client_id = None;
             }

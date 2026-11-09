@@ -19,6 +19,45 @@ pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// Whether an item only exists in a test build: `#[cfg(test)]`, or a test
+/// harness attribute such as `#[test]` / `#[tokio::test]`.
+///
+/// A file that is itself a test-only module (`#[cfg(test)] mod tests;`) has no
+/// cfg attribute inside it, so its `#[test]` functions are the only signal a
+/// per-file scan can see.
+pub(crate) fn is_test_item(attrs: &[syn::Attribute]) -> bool {
+    is_cfg_test(attrs)
+        || attrs.iter().any(|attr| {
+            attr.path()
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "test")
+        })
+}
+
+/// The attributes an item can carry. `None` for items that cannot be
+/// conditionally compiled, which no rule needs to inspect.
+pub(crate) fn item_attrs(item: &syn::Item) -> Option<&[syn::Attribute]> {
+    match item {
+        syn::Item::Const(item) => Some(&item.attrs),
+        syn::Item::Enum(item) => Some(&item.attrs),
+        syn::Item::ExternCrate(item) => Some(&item.attrs),
+        syn::Item::Fn(item) => Some(&item.attrs),
+        syn::Item::ForeignMod(item) => Some(&item.attrs),
+        syn::Item::Impl(item) => Some(&item.attrs),
+        syn::Item::Macro(item) => Some(&item.attrs),
+        syn::Item::Mod(item) => Some(&item.attrs),
+        syn::Item::Static(item) => Some(&item.attrs),
+        syn::Item::Struct(item) => Some(&item.attrs),
+        syn::Item::Trait(item) => Some(&item.attrs),
+        syn::Item::TraitAlias(item) => Some(&item.attrs),
+        syn::Item::Type(item) => Some(&item.attrs),
+        syn::Item::Union(item) => Some(&item.attrs),
+        syn::Item::Use(item) => Some(&item.attrs),
+        _ => None,
+    }
+}
+
 /// True when the predicate cannot hold outside a test build.
 ///
 /// `all` holds only when every arm holds, so one test-only arm keeps the whole
@@ -71,5 +110,14 @@ mod tests {
     #[test]
     fn cfg_all_test_and_unix_is_test_code() {
         assert!(is_cfg_test(&fn_attrs("#[cfg(all(test, unix))] fn f() {}")));
+    }
+
+    #[test]
+    fn the_test_harness_attribute_is_test_code() {
+        assert!(is_test_item(&fn_attrs("#[test] fn f() {}")));
+        assert!(is_test_item(&fn_attrs("#[tokio::test] async fn f() {}")));
+        assert!(!is_test_item(&fn_attrs(
+            "#[cfg(feature = \"x\")] fn f() {}"
+        )));
     }
 }

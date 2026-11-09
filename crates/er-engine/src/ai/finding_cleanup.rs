@@ -1,10 +1,13 @@
 //! Persisted removal and resolution of findings, and removal of linked validation threads.
 
-use super::comments::{ErGithubComments, ErNotes, ErQuestions};
+use super::annotation_store;
 use super::experts::{expert_by_id, load_expert_reviews, ExpertReview};
 use super::professor::{load_professor_review, PROFESSOR_ID_PREFIX};
 use super::review::AiState;
 use super::review::{ErReview, Finding};
+use crate::store_registry;
+use anyhow::Context;
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Root thread id (question or github comment) linked to a finding via `finding_ref`.
@@ -184,98 +187,121 @@ pub fn set_finding_resolved(
     Ok(found)
 }
 
-/// Delete question/github threads created for finding validation (`finding_ref`).
-pub fn delete_threads_linked_to_finding(er_dir: &str, finding_id: &str) -> std::io::Result<bool> {
-    let er = Path::new(er_dir);
+fn io_error(error: impl std::fmt::Display) -> std::io::Error {
+    std::io::Error::other(format!("{error}"))
+}
+
+fn remove_unlinked<T>(
+    items: &mut Vec<T>,
+    id_of: impl Fn(&T) -> &str,
+    reply_to_of: impl Fn(&T) -> Option<&str>,
+    finding_ref_of: impl Fn(&T) -> Option<&str>,
+    finding_id: &str,
+) -> bool {
+    let roots: Vec<String> = items
+        .iter()
+        .filter(|item| finding_ref_of(item) == Some(finding_id) && reply_to_of(item).is_none())
+        .map(|item| id_of(item).to_string())
+        .collect();
+    if roots.is_empty() {
+        return false;
+    }
+    let root_set: HashSet<&str> = roots.iter().map(String::as_str).collect();
+    items.retain(|item| {
+        !root_set.contains(id_of(item))
+            && !reply_to_of(item).is_some_and(|parent| root_set.contains(parent))
+            && finding_ref_of(item) != Some(finding_id)
+    });
+    true
+}
+
+/// Delete question, note and GitHub-comment threads created for finding
+/// validation (`finding_ref`).
+///
+/// The read only decides whether a write is needed; the delete itself is
+/// applied to `current` inside the store's update closure, and an absent or
+/// unreadable file is left alone.
+pub fn delete_threads_linked_to_finding(
+    er_dir: &str,
+    github_comments_dir: &str,
+    finding_id: &str,
+) -> std::io::Result<bool> {
+    let store = store_registry::store();
+    let scope = er_store::Scope::dir(er_dir).map_err(io_error)?;
+    let gh_scope = er_store::Scope::dir(github_comments_dir).map_err(io_error)?;
     let mut changed = false;
 
-    let q_path = er.join("questions.json");
-    if q_path.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&q_path) {
-            if let Ok(mut qs) = serde_json::from_str::<ErQuestions>(&content) {
-                let roots: Vec<String> = qs
-                    .questions
-                    .iter()
-                    .filter(|q| {
-                        q.finding_ref.as_deref() == Some(finding_id) && q.in_reply_to.is_none()
-                    })
-                    .map(|q| q.id.clone())
-                    .collect();
-                if !roots.is_empty() {
-                    let root_set: std::collections::HashSet<&str> =
-                        roots.iter().map(|s| s.as_str()).collect();
-                    qs.questions.retain(|q| {
-                        !root_set.contains(q.id.as_str())
-                            && !q
-                                .in_reply_to
-                                .as_deref()
-                                .is_some_and(|parent| root_set.contains(parent))
-                            && q.finding_ref.as_deref() != Some(finding_id)
-                    });
-                    write_json_atomic(&q_path, &qs)?;
-                    changed = true;
-                }
-            }
+    if let er_store::Loaded::Found(stored) =
+        annotation_store::load_questions(&store, &scope).map_err(io_error)?
+    {
+        let has_roots = stored.value.questions.iter().any(|question| {
+            question.finding_ref.as_deref() == Some(finding_id) && question.in_reply_to.is_none()
+        });
+        if has_roots {
+            let finding = finding_id.to_string();
+            annotation_store::update_questions(&store, &scope, move |current| {
+                let mut questions =
+                    current.context("the questions file is missing or unreadable")?;
+                remove_unlinked(
+                    &mut questions.questions,
+                    |question| question.id.as_str(),
+                    |question| question.in_reply_to.as_deref(),
+                    |question| question.finding_ref.as_deref(),
+                    &finding,
+                );
+                Ok::<_, anyhow::Error>(questions)
+            })
+            .map_err(io_error)?;
+            changed = true;
         }
     }
 
-    let notes_path = er.join("notes.json");
-    if notes_path.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&notes_path) {
-            if let Ok(mut ns) = serde_json::from_str::<ErNotes>(&content) {
-                let roots: Vec<String> = ns
-                    .notes
-                    .iter()
-                    .filter(|n| {
-                        n.finding_ref.as_deref() == Some(finding_id) && n.in_reply_to.is_none()
-                    })
-                    .map(|n| n.id.clone())
-                    .collect();
-                if !roots.is_empty() {
-                    let root_set: std::collections::HashSet<&str> =
-                        roots.iter().map(|s| s.as_str()).collect();
-                    ns.notes.retain(|n| {
-                        !root_set.contains(n.id.as_str())
-                            && !n
-                                .in_reply_to
-                                .as_deref()
-                                .is_some_and(|parent| root_set.contains(parent))
-                            && n.finding_ref.as_deref() != Some(finding_id)
-                    });
-                    write_json_atomic(&notes_path, &ns)?;
-                    changed = true;
-                }
-            }
+    if let er_store::Loaded::Found(stored) =
+        annotation_store::load_notes(&store, &scope).map_err(io_error)?
+    {
+        let has_roots = stored.value.notes.iter().any(|note| {
+            note.finding_ref.as_deref() == Some(finding_id) && note.in_reply_to.is_none()
+        });
+        if has_roots {
+            let finding = finding_id.to_string();
+            annotation_store::update_notes(&store, &scope, move |current| {
+                let mut notes = current.context("the notes file is missing or unreadable")?;
+                remove_unlinked(
+                    &mut notes.notes,
+                    |note| note.id.as_str(),
+                    |note| note.in_reply_to.as_deref(),
+                    |note| note.finding_ref.as_deref(),
+                    &finding,
+                );
+                Ok::<_, anyhow::Error>(notes)
+            })
+            .map_err(io_error)?;
+            changed = true;
         }
     }
 
-    let gc_path = er.join("github-comments.json");
-    if gc_path.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&gc_path) {
-            if let Ok(mut gc) = serde_json::from_str::<ErGithubComments>(&content) {
-                let roots: Vec<String> = gc
-                    .comments
-                    .iter()
-                    .filter(|c| {
-                        c.finding_ref.as_deref() == Some(finding_id) && c.in_reply_to.is_none()
-                    })
-                    .map(|c| c.id.clone())
-                    .collect();
-                if !roots.is_empty() {
-                    let root_set: std::collections::HashSet<&str> =
-                        roots.iter().map(|s| s.as_str()).collect();
-                    gc.comments.retain(|c| {
-                        !root_set.contains(c.id.as_str())
-                            && !c
-                                .in_reply_to
-                                .as_deref()
-                                .is_some_and(|parent| root_set.contains(parent))
-                            && c.finding_ref.as_deref() != Some(finding_id)
-                    });
-                    write_json_atomic(&gc_path, &gc)?;
-                    changed = true;
-                }
-            }
+    if let er_store::Loaded::Found(stored) =
+        annotation_store::load_github_comments(&store, &gh_scope).map_err(io_error)?
+    {
+        let has_roots = stored.value.comments.iter().any(|comment| {
+            comment.finding_ref.as_deref() == Some(finding_id) && comment.in_reply_to.is_none()
+        });
+        if has_roots {
+            let finding = finding_id.to_string();
+            annotation_store::update_github_comments(&store, &gh_scope, move |current| {
+                let mut comments =
+                    current.context("the GitHub comments file is missing or unreadable")?;
+                remove_unlinked(
+                    &mut comments.comments,
+                    |comment| comment.id.as_str(),
+                    |comment| comment.in_reply_to.as_deref(),
+                    |comment| comment.finding_ref.as_deref(),
+                    &finding,
+                );
+                Ok::<_, anyhow::Error>(comments)
+            })
+            .map_err(io_error)?;
+            changed = true;
         }
     }
 

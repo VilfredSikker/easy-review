@@ -19,6 +19,7 @@ pub mod review_flow;
 pub mod review_md;
 pub mod scoped_merge;
 pub mod triage;
+pub mod ui_annotations;
 
 pub mod accepted_provenance;
 pub mod arbiter;
@@ -39,3 +40,4 @@ pub use relocate::*;
 pub use review::*;
 pub use scoped_merge::*;
 pub use triage::*;
+pub use ui_annotations::*;

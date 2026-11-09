@@ -3,7 +3,8 @@
 //!
 //! `PromotedComment` has private fields, so only the functions here build one.
 //! There is no `From`/`Into` between `PrivateAnnotation` and the GitHub write
-//! types; the compile-fail doctests below pin that.
+//! types; the compile-fail doctests below pin that, and the lint rule
+//! `er::comment_boundary` guards hand-built intents.
 
 use crate::ai::annotation_store;
 use crate::ai::Finding;

@@ -126,10 +126,16 @@ impl App {
             })
             .map_err(|error| anyhow!("{error}"))?;
 
-        if updated.was_unreadable {
-            self.notify("Warning: .er/notes.json is invalid JSON — starting fresh");
-        }
         let path = annotation_store::path_of::<ErNotes>(&store, &scope)?;
+        if updated.was_unreadable {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("notes file");
+            self.notify(&format!(
+                "Warning: .er/{name} is invalid JSON — starting fresh"
+            ));
+        }
         let tab = self.tab_mut();
         tab.ai.notes = Some(updated.value);
         tab.ai.questions = Some(questions_updated.value);

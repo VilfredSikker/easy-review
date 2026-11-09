@@ -1,4 +1,3 @@
-use super::comments::{ErGithubComments, ErNotes, ErQuestions};
 use super::diagrams::{
     ErDiagram, DIAGRAM_KIND_FLOWS, DIAGRAM_KIND_MENTAL_MODEL, DIAGRAM_KIND_SUBSYSTEMS,
 };
@@ -277,27 +276,23 @@ pub fn load_ai_state_with_arbiter(
         }
     }
 
-    // Load .er/questions.json (personal review questions)
-    let questions_path = Path::new(er_dir).join("questions.json");
-    if let Ok(content) = read_sidecar(&questions_path) {
-        if let Ok(questions) = serde_json::from_str::<ErQuestions>(&content) {
-            state.questions = Some(questions);
+    // Load the three annotation sidecars through their single writer.
+    let store = crate::store_registry::store();
+    if let Ok(scope) = er_store::Scope::dir(er_dir) {
+        if let Ok(er_store::Loaded::Found(stored)) =
+            super::annotation_store::load_questions(&store, &scope)
+        {
+            state.questions = Some(stored.value);
         }
-    }
-
-    // Load .er/notes.json (local actionable notes)
-    let notes_path = Path::new(er_dir).join("notes.json");
-    if let Ok(content) = read_sidecar(&notes_path) {
-        if let Ok(notes) = serde_json::from_str::<ErNotes>(&content) {
-            state.notes = Some(notes);
+        if let Ok(er_store::Loaded::Found(stored)) =
+            super::annotation_store::load_notes(&store, &scope)
+        {
+            state.notes = Some(stored.value);
         }
-    }
-
-    // Load .er/github-comments.json (GitHub PR comments)
-    let gh_comments_path = Path::new(er_dir).join("github-comments.json");
-    if let Ok(content) = read_sidecar(&gh_comments_path) {
-        if let Ok(gh_comments) = serde_json::from_str::<ErGithubComments>(&content) {
-            state.github_comments = Some(gh_comments);
+        if let Ok(er_store::Loaded::Found(stored)) =
+            super::annotation_store::load_github_comments(&store, &scope)
+        {
+            state.github_comments = Some(stored.value);
         }
     }
 

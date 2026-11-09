@@ -2604,14 +2604,14 @@ fn add_comment_impl(
     }
     let posted = post_github_comment_flow(
         state,
-        er_engine::app::NewGitHubComment::Line {
+        crate::github_comment_builders::line_intent(
             file,
             hunk_idx,
-            line_start: line_num,
-            line_end: line_num_end,
+            line_num,
+            line_num_end,
             side,
-            body: text,
-        },
+            text,
+        ),
         id,
     )?;
     let kept_earlier_body = posted.posted.kept_earlier_body;
@@ -2877,10 +2877,7 @@ pub async fn reply_to_github_thread(
     run_blocking(move || {
         let posted = post_github_comment_flow(
             &state,
-            er_engine::app::NewGitHubComment::Reply {
-                parent_id,
-                body: text,
-            },
+            crate::github_comment_builders::reply_intent(parent_id, text),
             Some(id),
         )?;
         let kept_earlier_body = posted.posted.kept_earlier_body;
@@ -2960,8 +2957,12 @@ pub async fn remove_finding_thread(
         let er_dir = app.tab().er_dir();
 
         let pending_ids = finding_linked_thread_ids(&app.tab().ai, &finding_id);
-        er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id)
-            .map_err(|e| format!("Failed to remove finding thread: {e}"))?;
+        er_engine::ai::delete_threads_linked_to_finding(
+            &er_dir,
+            &app.tab().github_comments_dir(),
+            &finding_id,
+        )
+        .map_err(|e| format!("Failed to remove finding thread: {e}"))?;
 
         if let Ok(mut p) = state.pending_ai_replies.lock() {
             for id in pending_ids {
@@ -2980,11 +2981,8 @@ pub async fn remove_finding_thread(
     .await
 }
 
-fn write_json_atomic<T: serde::Serialize>(path: &str, value: &T) -> Result<(), String> {
-    let tmp = format!("{path}.tmp");
-    let body = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+fn scope_for_sidecar_dir(dir: &str) -> Result<er_store::Scope, String> {
+    er_store::Scope::dir(dir).map_err(|e| e.to_string())
 }
 
 /// Mark a thread root resolved in whichever sidecar holds it. Returns the path
@@ -2992,44 +2990,100 @@ fn write_json_atomic<T: serde::Serialize>(path: &str, value: &T) -> Result<(), S
 /// or `None` when no sidecar knows the id.
 fn mark_thread_resolved_in_files(
     id: &str,
-    q_path: &str,
-    notes_path: &str,
-    gc_path: &str,
+    er_dir: &str,
+    gc_dir: &str,
 ) -> Result<Option<String>, String> {
-    use er_engine::ai::{ErGithubComments, ErNotes, ErQuestions};
-    if let Ok(text) = std::fs::read_to_string(q_path) {
-        if let Ok(mut qs) = serde_json::from_str::<ErQuestions>(&text) {
-            if let Some(q) = qs.questions.iter_mut().find(|q| q.id == id) {
-                if !q.resolved {
-                    q.resolved = true;
-                    write_json_atomic(q_path, &qs)?;
-                }
-                return Ok(Some(q_path.to_string()));
+    let store = er_engine::store_registry::store();
+    let q_path = er_engine::ai::annotation_store::path_of::<er_engine::ai::ErQuestions>(
+        &store,
+        &scope_for_sidecar_dir(er_dir)?,
+    )
+    .map_err(|e| e.to_string())?;
+    let notes_path = er_engine::ai::annotation_store::path_of::<er_engine::ai::ErNotes>(
+        &store,
+        &scope_for_sidecar_dir(er_dir)?,
+    )
+    .map_err(|e| e.to_string())?;
+    let gc_path = er_engine::ai::annotation_store::path_of::<er_engine::ai::ErGithubComments>(
+        &store,
+        &scope_for_sidecar_dir(gc_dir)?,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let scope = scope_for_sidecar_dir(er_dir)?;
+    if let Ok(er_store::Loaded::Found(stored)) =
+        er_engine::ai::annotation_store::load_questions(&store, &scope)
+    {
+        if stored.value.questions.iter().any(|q| q.id == id) {
+            let id = id.to_string();
+            if stored
+                .value
+                .questions
+                .iter()
+                .any(|q| q.id == id && !q.resolved)
+            {
+                er_engine::ai::annotation_store::update_questions(&store, &scope, move |current| {
+                    let mut qs =
+                        current.ok_or_else(|| anyhow::anyhow!("the questions file vanished"))?;
+                    if let Some(q) = qs.questions.iter_mut().find(|q| q.id == id) {
+                        q.resolved = true;
+                    }
+                    Ok::<_, anyhow::Error>(qs)
+                })
+                .map_err(|e| e.to_string())?;
             }
+            return Ok(Some(q_path.to_string_lossy().into_owned()));
         }
     }
 
-    if let Ok(text) = std::fs::read_to_string(notes_path) {
-        if let Ok(mut ns) = serde_json::from_str::<ErNotes>(&text) {
-            if let Some(n) = ns.notes.iter_mut().find(|n| n.id == id) {
-                if !n.resolved {
-                    n.resolved = true;
-                    write_json_atomic(notes_path, &ns)?;
-                }
-                return Ok(Some(notes_path.to_string()));
+    let scope = scope_for_sidecar_dir(er_dir)?;
+    if let Ok(er_store::Loaded::Found(stored)) =
+        er_engine::ai::annotation_store::load_notes(&store, &scope)
+    {
+        if stored.value.notes.iter().any(|n| n.id == id) {
+            let id = id.to_string();
+            if stored.value.notes.iter().any(|n| n.id == id && !n.resolved) {
+                er_engine::ai::annotation_store::update_notes(&store, &scope, move |current| {
+                    let mut ns =
+                        current.ok_or_else(|| anyhow::anyhow!("the notes file vanished"))?;
+                    if let Some(n) = ns.notes.iter_mut().find(|n| n.id == id) {
+                        n.resolved = true;
+                    }
+                    Ok::<_, anyhow::Error>(ns)
+                })
+                .map_err(|e| e.to_string())?;
             }
+            return Ok(Some(notes_path.to_string_lossy().into_owned()));
         }
     }
 
-    if let Ok(text) = std::fs::read_to_string(gc_path) {
-        if let Ok(mut gc) = serde_json::from_str::<ErGithubComments>(&text) {
-            if let Some(c) = gc.comments.iter_mut().find(|c| c.id == id) {
-                if !c.resolved {
-                    c.resolved = true;
-                    write_json_atomic(gc_path, &gc)?;
-                }
-                return Ok(Some(gc_path.to_string()));
+    let scope = scope_for_sidecar_dir(gc_dir)?;
+    if let Ok(er_store::Loaded::Found(stored)) =
+        er_engine::ai::annotation_store::load_github_comments(&store, &scope)
+    {
+        if stored.value.comments.iter().any(|c| c.id == id) {
+            let id = id.to_string();
+            if stored
+                .value
+                .comments
+                .iter()
+                .any(|c| c.id == id && !c.resolved)
+            {
+                er_engine::ai::annotation_store::update_github_comments(
+                    &store,
+                    &scope,
+                    move |current| {
+                        let mut gc = current
+                            .ok_or_else(|| anyhow::anyhow!("the GitHub comments file vanished"))?;
+                        if let Some(c) = gc.comments.iter_mut().find(|c| c.id == id) {
+                            c.resolved = true;
+                        }
+                        Ok::<_, anyhow::Error>(gc)
+                    },
+                )
+                .map_err(|e| e.to_string())?;
             }
+            return Ok(Some(gc_path.to_string_lossy().into_owned()));
         }
     }
     Ok(None)
@@ -3070,11 +3124,9 @@ pub async fn resolve_thread(
         }
 
         let tab = app.tab();
-        let q_path = format!("{}/questions.json", tab.er_dir());
-        let notes_path = format!("{}/notes.json", tab.er_dir());
-        let gc_path = tab.github_comments_path();
-        let Some(touched) = mark_thread_resolved_in_files(&id, &q_path, &notes_path, &gc_path)?
-        else {
+        let er_dir = tab.er_dir();
+        let gc_dir = tab.github_comments_dir();
+        let Some(touched) = mark_thread_resolved_in_files(&id, &er_dir, &gc_dir)? else {
             return Err(format!("Thread not found or already resolved: {id}"));
         };
         {
@@ -3319,7 +3371,9 @@ fn pull_github_comments_blocking(state: &AppState, force: bool) -> Result<AppSna
         let tab = app.tab();
         let remote_repo = tab.remote_repo.clone();
         let explicit_pr = tab.pr_number;
-        let ctx = app.snapshot_for_comment_sync(String::new(), String::new(), 0);
+        let ctx = app
+            .snapshot_for_comment_sync(String::new(), String::new(), 0)
+            .map_err(|e| e.to_string())?;
         (ctx, remote_repo, explicit_pr)
     };
 
@@ -3580,25 +3634,13 @@ pub struct ReviewLineTarget {
 
 impl ReviewLineTarget {
     fn batch_entry(&self, body: &str) -> Result<er_engine::github::ReviewBatchEntry, String> {
-        if self.file.is_empty() {
-            return Err("A review comment needs a file and line".to_string());
-        }
-        let side = match self.side.as_deref() {
-            None | Some("RIGHT") => "RIGHT",
-            Some("LEFT") => "LEFT",
-            Some(other) => return Err(format!("Invalid diff side: {other}")),
-        };
-        let end = self
-            .line_num_end
-            .filter(|e| *e > self.line_num)
-            .unwrap_or(self.line_num);
-        Ok(er_engine::github::ReviewBatchEntry {
-            file: self.file.clone(),
-            line: end,
-            start_line: (end > self.line_num).then_some(self.line_num),
-            body: body.to_string(),
-            side: side.to_string(),
-        })
+        crate::github_comment_builders::review_batch_entry(
+            &self.file,
+            self.line_num,
+            self.line_num_end,
+            self.side.as_deref(),
+            body,
+        )
     }
 }
 
@@ -3805,13 +3847,7 @@ pub async fn post_github_line_comment(
         {
             return Err(pending_review_blocks_single_comment());
         }
-        let comment = er_engine::github::NewLineComment {
-            path: &entry.file,
-            line_start: entry.start_line.unwrap_or(entry.line),
-            line_end: Some(entry.line),
-            body: &entry.body,
-            side: &entry.side,
-        };
+        let comment = crate::github_comment_builders::line_comment(&entry);
         er_engine::github::gh_pr_push_comment_remote(&owner, &repo, number, comment).map_err(
             |e| {
                 let raw = format!("{e:#}");
@@ -4625,10 +4661,13 @@ fn eligible_github_comment_count(tab: &er_engine::app::TabState) -> usize {
     if let Some(gc) = tab.ai.github_comments.as_ref() {
         return er_engine::ai::count_eligible_github_comments(gc);
     }
-    let path = std::path::Path::new(&tab.er_dir()).join("github-comments.json");
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        if let Ok(gc) = serde_json::from_str::<er_engine::ai::ErGithubComments>(&content) {
-            return er_engine::ai::count_eligible_github_comments(&gc);
+    let store = er_engine::store_registry::store();
+    let comments_dir = tab.github_comments_dir();
+    if let Ok(scope) = er_store::Scope::dir(comments_dir.as_str()) {
+        if let Ok(er_store::Loaded::Found(stored)) =
+            er_engine::ai::annotation_store::load_github_comments(&store, &scope)
+        {
+            return er_engine::ai::count_eligible_github_comments(&stored.value);
         }
     }
     0
@@ -9315,7 +9354,11 @@ pub async fn dismiss_finding(
             return Err(format!("Finding not found: {finding_id}"));
         }
 
-        let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
+        let _ = er_engine::ai::delete_threads_linked_to_finding(
+            &er_dir,
+            &app.tab().github_comments_dir(),
+            &finding_id,
+        );
 
         let mut promotions = load_finding_promotions(&er_dir);
         if promotions.remove(&finding_id).is_some() {
@@ -9442,7 +9485,11 @@ fn promote_finding_to_comment_impl(
         app.remember_posted_for_retry(request);
         return Err(format!("Failed to remove finding after promote: {e}"));
     }
-    let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
+    let _ = er_engine::ai::delete_threads_linked_to_finding(
+        &er_dir,
+        &app.tab().github_comments_dir(),
+        &finding_id,
+    );
     let mut promotions = load_finding_promotions(&er_dir);
     if promotions.remove(&finding_id).is_some() {
         let _ = save_finding_promotions(&er_dir, &promotions);
@@ -12622,9 +12669,8 @@ mod tests {
 
         let changed = mark_thread_resolved_in_files(
             "q-1",
-            &q_path.to_string_lossy(),
-            &tmp.path().join("notes.json").to_string_lossy(),
-            &gc_path.to_string_lossy(),
+            &tmp.path().to_string_lossy(),
+            &tmp.path().to_string_lossy(),
         )
         .unwrap();
         assert_eq!(changed, Some(q_path.to_string_lossy().to_string()));
@@ -12673,9 +12719,8 @@ mod tests {
 
         let changed = mark_thread_resolved_in_files(
             "c-1",
-            &q_path.to_string_lossy(),
-            &tmp.path().join("notes.json").to_string_lossy(),
-            &gc_path.to_string_lossy(),
+            &tmp.path().to_string_lossy(),
+            &tmp.path().to_string_lossy(),
         )
         .unwrap();
         assert_eq!(changed, Some(gc_path.to_string_lossy().to_string()));

@@ -1045,33 +1045,6 @@ impl App {
 
         let (hunk_index, anchor) = self.take_comment_anchor(hunk_index, comment_line_num);
 
-        // Load or create questions.json
-        let questions_path = format!("{}/questions.json", er_dir);
-        let mut questions: ai::ErQuestions = match std::fs::read_to_string(&questions_path) {
-            Ok(content) => match serde_json::from_str(&content) {
-                Ok(qs) => qs,
-                Err(_) => {
-                    self.notify("Warning: .er/questions.json is invalid JSON — starting fresh");
-                    ai::ErQuestions {
-                        version: 1,
-                        diff_hash: diff_hash.clone(),
-                        questions: Vec::new(),
-                    }
-                }
-            },
-            Err(_) => ai::ErQuestions {
-                version: 1,
-                diff_hash: diff_hash.clone(),
-                questions: Vec::new(),
-            },
-        };
-
-        // If diff hash changed, update it but preserve existing questions
-        // (the relocation system handles comment drift)
-        if questions.diff_hash != diff_hash {
-            questions.diff_hash = diff_hash;
-        }
-
         let id = take_comment_id(self.tab_mut(), "q-");
 
         let is_reply = reply_to.is_some();
@@ -1086,7 +1059,7 @@ impl App {
             .comment_side
             .take()
             .unwrap_or_else(|| "RIGHT".to_string());
-        questions.questions.push(ai::PrivateAnnotation {
+        let question = ai::PrivateAnnotation {
             id,
             timestamp: chrono_now(),
             file: file_path,
@@ -1109,22 +1082,34 @@ impl App {
             promoted_to: None,
             finding_ref,
             ai_action: self.tab_mut().comment_ai_action_override.take(),
-        });
+        };
 
-        // Write atomically
-        std::fs::create_dir_all(&er_dir)?;
-        let json = serde_json::to_string_pretty(&questions)?;
-        let tmp_path = format!("{}.tmp", questions_path);
-        std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, &questions_path)?;
-
-        self.tab_mut().ai.questions = Some(questions);
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(er_dir.as_str())?;
+        let questions_path = ai::annotation_store::path_of::<ai::ErQuestions>(&store, &scope)?;
+        let updated = ai::annotation_store::update_questions(&store, &scope, move |current| {
+            let mut questions = current.unwrap_or_else(|| ai::ErQuestions {
+                version: 1,
+                diff_hash: diff_hash.clone(),
+                questions: Vec::new(),
+            });
+            // Preserve the stored questions; the relocation system handles drift.
+            questions.diff_hash = diff_hash;
+            questions.questions.push(question);
+            Ok::<_, std::convert::Infallible>(questions)
+        })
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        self.tab_mut().ai.questions = Some(updated.value);
         self.tab_mut().ai.rebuild_comment_index();
-        self.tab_mut().mark_sidecar_written(&questions_path);
+        self.tab_mut()
+            .mark_sidecar_written(questions_path.to_string_lossy().as_ref());
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
         let label = if is_reply { "Reply" } else { "Question" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
+        if updated.was_unreadable {
+            self.notify_invalid_json_warning(&questions_path);
+        }
         Ok(())
     }
 
@@ -1157,31 +1142,6 @@ impl App {
 
         let (hunk_index, anchor) = self.take_comment_anchor(hunk_index, comment_line_num);
 
-        // Load or create notes.json
-        let notes_path = format!("{}/notes.json", er_dir);
-        let mut notes: ai::ErNotes = match std::fs::read_to_string(&notes_path) {
-            Ok(content) => match serde_json::from_str(&content) {
-                Ok(ns) => ns,
-                Err(_) => {
-                    self.notify("Warning: .er/notes.json is invalid JSON — starting fresh");
-                    ai::ErNotes {
-                        version: 1,
-                        diff_hash: diff_hash.clone(),
-                        notes: Vec::new(),
-                    }
-                }
-            },
-            Err(_) => ai::ErNotes {
-                version: 1,
-                diff_hash: diff_hash.clone(),
-                notes: Vec::new(),
-            },
-        };
-
-        if notes.diff_hash != diff_hash {
-            notes.diff_hash = diff_hash;
-        }
-
         let id = take_comment_id(self.tab_mut(), "n-");
 
         let is_reply = reply_to.is_some();
@@ -1196,7 +1156,7 @@ impl App {
             .comment_side
             .take()
             .unwrap_or_else(|| "RIGHT".to_string());
-        notes.notes.push(ai::PrivateAnnotation {
+        let note = ai::PrivateAnnotation {
             id,
             timestamp: chrono_now(),
             file: file_path,
@@ -1219,22 +1179,33 @@ impl App {
             promoted_to: None,
             finding_ref,
             ai_action: self.tab_mut().comment_ai_action_override.take(),
-        });
+        };
 
-        // Write atomically
-        std::fs::create_dir_all(&er_dir)?;
-        let json = serde_json::to_string_pretty(&notes)?;
-        let tmp_path = format!("{}.tmp", notes_path);
-        std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, &notes_path)?;
-
-        self.tab_mut().ai.notes = Some(notes);
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(er_dir.as_str())?;
+        let notes_path = ai::annotation_store::path_of::<ai::ErNotes>(&store, &scope)?;
+        let updated = ai::annotation_store::update_notes(&store, &scope, move |current| {
+            let mut notes = current.unwrap_or_else(|| ai::ErNotes {
+                version: 1,
+                diff_hash: diff_hash.clone(),
+                notes: Vec::new(),
+            });
+            notes.diff_hash = diff_hash;
+            notes.notes.push(note);
+            Ok::<_, std::convert::Infallible>(notes)
+        })
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        self.tab_mut().ai.notes = Some(updated.value);
         self.tab_mut().ai.rebuild_comment_index();
-        self.tab_mut().mark_sidecar_written(&notes_path);
+        self.tab_mut()
+            .mark_sidecar_written(notes_path.to_string_lossy().as_ref());
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
         let label = if is_reply { "Reply" } else { "Note" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
+        if updated.was_unreadable {
+            self.notify_invalid_json_warning(&notes_path);
+        }
         Ok(())
     }
 
@@ -1251,37 +1222,6 @@ impl App {
 
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
-        // Load or create github-comments.json (uses cache dir in remote mode)
-        let comments_path = self.tab().github_comments_path();
-        let mut gh_comments: ai::ErGithubComments = match std::fs::read_to_string(&comments_path) {
-            Ok(content) => match serde_json::from_str(&content) {
-                Ok(gc) => gc,
-                Err(_) => {
-                    self.notify(
-                        "Warning: .er/github-comments.json is invalid JSON — starting fresh",
-                    );
-                    ai::ErGithubComments {
-                        version: 1,
-                        diff_hash: diff_hash.clone(),
-                        github: None,
-                        comments: Vec::new(),
-                    }
-                }
-            },
-            Err(_) => ai::ErGithubComments {
-                version: 1,
-                diff_hash: diff_hash.clone(),
-                github: None,
-                comments: Vec::new(),
-            },
-        };
-
-        // If diff hash changed, update it but preserve existing comments
-        // (the relocation system handles comment drift)
-        if gh_comments.diff_hash != diff_hash {
-            gh_comments.diff_hash = diff_hash;
-        }
-
         let id = take_comment_id(self.tab_mut(), "c-");
 
         let is_reply = reply_to.is_some();
@@ -1295,7 +1235,7 @@ impl App {
             .comment_side
             .take()
             .unwrap_or_else(|| "RIGHT".to_string());
-        gh_comments.comments.push(ai::GithubComment {
+        let comment = ai::GithubComment {
             id,
             timestamp: chrono_now(),
             file: file_path,
@@ -1319,26 +1259,41 @@ impl App {
             relocated_at_hash: self.tab().diff_hash.clone(),
             finding_ref,
             side,
-        });
+        };
 
-        // Write atomically (github-comments.json is PR-scoped — shared PR bucket)
+        // github-comments.json is PR-scoped: the shared PR bucket for PR tabs.
         let comments_dir = self.tab().github_comments_dir();
-        std::fs::create_dir_all(&comments_dir)?;
-        let json = serde_json::to_string_pretty(&gh_comments)?;
-        let tmp_path = format!("{}.tmp", comments_path);
-        std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, &comments_path)?;
-
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(comments_dir.as_str())?;
+        let comments_path = ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &scope)?;
+        let updated =
+            ai::annotation_store::update_github_comments(&store, &scope, move |current| {
+                let mut gc = current.unwrap_or_else(|| ai::ErGithubComments {
+                    version: 1,
+                    diff_hash: diff_hash.clone(),
+                    github: None,
+                    comments: Vec::new(),
+                });
+                // Preserve the stored comments; the relocation system handles drift.
+                gc.diff_hash = diff_hash;
+                gc.comments.push(comment);
+                Ok::<_, std::convert::Infallible>(gc)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
         // Keep the in-memory copy. `reload_ai_state()` re-reads every sidecar
         // (review/experts/tour/…) and is what made each local inline comment
         // feel like a GitHub round-trip. The comment is local and unpushed.
-        self.tab_mut().ai.github_comments = Some(gh_comments);
+        self.tab_mut().ai.github_comments = Some(updated.value);
         self.tab_mut().ai.rebuild_comment_index();
-        self.tab_mut().mark_sidecar_written(&comments_path);
+        self.tab_mut()
+            .mark_sidecar_written(comments_path.to_string_lossy().as_ref());
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
         let label = if is_reply { "Reply" } else { "Comment" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
+        if updated.was_unreadable {
+            self.notify_invalid_json_warning(&comments_path);
+        }
         Ok(())
     }
 
@@ -1533,51 +1488,62 @@ impl App {
         let repo_root = self.tab().repo_root.clone();
 
         if comment_id.starts_with("q-") {
-            let path = format!("{}/questions.json", er_dir);
-            let content =
-                std::fs::read_to_string(&path).with_context(|| format!("Failed to read {path}"))?;
-            let mut qs: ai::ErQuestions =
-                serde_json::from_str(&content).context("Failed to parse questions.json")?;
-            let q = qs
-                .questions
-                .iter_mut()
-                .find(|q| q.id == comment_id)
-                .context("Question not found")?;
-            if q.author == "ai" {
-                anyhow::bail!("Cannot edit AI-generated text");
-            }
-            q.text = new_text.to_string();
-            let json = serde_json::to_string_pretty(&qs)?;
-            let tmp = format!("{path}.tmp");
-            std::fs::write(&tmp, json)?;
-            std::fs::rename(&tmp, &path)?;
-            self.adopt_questions(qs, &path);
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(er_dir.as_str())?;
+            let id = comment_id.to_string();
+            let text = new_text.to_string();
+            let updated = ai::annotation_store::update_questions(&store, &scope, move |current| {
+                let mut qs = current.context("the questions file is missing or unreadable")?;
+                let q = qs
+                    .questions
+                    .iter_mut()
+                    .find(|q| q.id == id)
+                    .context("Question not found")?;
+                if q.author == "ai" {
+                    anyhow::bail!("Cannot edit AI-generated text");
+                }
+                q.text = text;
+                Ok::<_, anyhow::Error>(qs)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            let path = ai::annotation_store::path_of::<ai::ErQuestions>(&store, &scope)?;
+            self.adopt_questions(updated.value, path.to_string_lossy().as_ref());
         } else if comment_id.starts_with("n-") {
-            let path = format!("{}/notes.json", er_dir);
-            let content =
-                std::fs::read_to_string(&path).with_context(|| format!("Failed to read {path}"))?;
-            let mut ns: ai::ErNotes =
-                serde_json::from_str(&content).context("Failed to parse notes.json")?;
-            let n = ns
-                .notes
-                .iter_mut()
-                .find(|n| n.id == comment_id)
-                .context("Note not found")?;
-            if n.author == "ai" {
-                anyhow::bail!("Cannot edit AI-generated text");
-            }
-            n.text = new_text.to_string();
-            let json = serde_json::to_string_pretty(&ns)?;
-            let tmp = format!("{path}.tmp");
-            std::fs::write(&tmp, json)?;
-            std::fs::rename(&tmp, &path)?;
-            self.adopt_notes(ns, &path);
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(er_dir.as_str())?;
+            let id = comment_id.to_string();
+            let text = new_text.to_string();
+            let updated = ai::annotation_store::update_notes(&store, &scope, move |current| {
+                let mut ns = current.context("the notes file is missing or unreadable")?;
+                let n = ns
+                    .notes
+                    .iter_mut()
+                    .find(|n| n.id == id)
+                    .context("Note not found")?;
+                if n.author == "ai" {
+                    anyhow::bail!("Cannot edit AI-generated text");
+                }
+                n.text = text;
+                Ok::<_, anyhow::Error>(ns)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            let path = ai::annotation_store::path_of::<ai::ErNotes>(&store, &scope)?;
+            self.adopt_notes(updated.value, path.to_string_lossy().as_ref());
         } else {
-            let path = self.tab().github_comments_path();
-            let content =
-                std::fs::read_to_string(&path).with_context(|| format!("Failed to read {path}"))?;
-            let mut gc: ai::ErGithubComments =
-                serde_json::from_str(&content).context("Failed to parse github-comments.json")?;
+            let comments_dir = self.tab().github_comments_dir();
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(comments_dir.as_str())?;
+            let comments_path =
+                ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &scope)?;
+            let gc = match ai::annotation_store::load_github_comments(&store, &scope)? {
+                er_store::Loaded::Found(stored) => stored.value,
+                er_store::Loaded::Absent => {
+                    anyhow::bail!("Failed to read {}", comments_path.display())
+                }
+                er_store::Loaded::Unreadable(reason) => {
+                    anyhow::bail!("Failed to parse {}: {reason:?}", comments_path.display())
+                }
+            };
             let (github_id, gh_meta, author) = {
                 let c = gc
                     .comments
@@ -1589,20 +1555,26 @@ impl App {
             if author == "ai" {
                 anyhow::bail!("Cannot edit AI-generated text");
             }
+            // The GitHub edit runs before the store update, never inside it.
             if let (Some(gh_id), Some(gh)) = (github_id, gh_meta.as_ref()) {
                 self.ports
                     .github
                     .update_review_comment(&gh.owner, &gh.repo, gh_id, new_text, &repo_root)
                     .map_err(|error| anyhow::anyhow!("Failed to update comment: {error}"))?;
             }
-            if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
-                c.comment = new_text.to_string();
-            }
-            let json = serde_json::to_string_pretty(&gc)?;
-            let tmp = format!("{path}.tmp");
-            std::fs::write(&tmp, json)?;
-            std::fs::rename(&tmp, &path)?;
-            self.adopt_github_comments(gc, &path);
+            let id = comment_id.to_string();
+            let text = new_text.to_string();
+            let updated =
+                ai::annotation_store::update_github_comments(&store, &scope, move |current| {
+                    let mut gc =
+                        current.context("the GitHub comments file is missing or unreadable")?;
+                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == id) {
+                        c.comment = text;
+                    }
+                    Ok::<_, anyhow::Error>(gc)
+                })
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            self.adopt_github_comments(updated.value, comments_path.to_string_lossy().as_ref());
         }
 
         Ok(())
@@ -1670,74 +1642,73 @@ impl App {
         let diff_hash = self.tab().diff_hash.clone();
 
         if comment_id.starts_with("q-") {
-            let path = format!("{}/questions.json", er_dir);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
-                    if let Some(q) = qs.questions.iter_mut().find(|q| q.id == comment_id) {
-                        q.text = new_text.clone();
-                        q.line_start = anchor.line_start;
-                        q.line_content = anchor.line_content.clone();
-                        q.context_before = anchor.context_before.clone();
-                        q.context_after = anchor.context_after.clone();
-                        q.old_line_start = anchor.old_line_start;
-                        q.hunk_header = anchor.hunk_header;
-                        q.hunk_index = Some(hunk_index);
-                        q.anchor_status = "original".to_string();
-                        q.relocated_at_hash = diff_hash;
-                        q.stale = false;
-                    }
-                    let json = serde_json::to_string_pretty(&qs)?;
-                    let tmp = format!("{}.tmp", path);
-                    std::fs::write(&tmp, json)?;
-                    std::fs::rename(&tmp, &path)?;
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(er_dir.as_str())?;
+            let text = new_text.clone();
+            ai::annotation_store::update_questions(&store, &scope, move |current| {
+                let mut qs = current.context("the questions file is missing or unreadable")?;
+                if let Some(q) = qs.questions.iter_mut().find(|q| q.id == comment_id) {
+                    q.text = text;
+                    q.line_start = anchor.line_start;
+                    q.line_content = anchor.line_content;
+                    q.context_before = anchor.context_before;
+                    q.context_after = anchor.context_after;
+                    q.old_line_start = anchor.old_line_start;
+                    q.hunk_header = anchor.hunk_header;
+                    q.hunk_index = Some(hunk_index);
+                    q.anchor_status = "original".to_string();
+                    q.relocated_at_hash = diff_hash;
+                    q.stale = false;
                 }
-            }
+                Ok::<_, anyhow::Error>(qs)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
         } else if comment_id.starts_with("n-") {
-            let path = format!("{}/notes.json", er_dir);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(mut ns) = serde_json::from_str::<ai::ErNotes>(&content) {
-                    if let Some(n) = ns.notes.iter_mut().find(|n| n.id == comment_id) {
-                        n.text = new_text.clone();
-                        n.line_start = anchor.line_start;
-                        n.line_content = anchor.line_content.clone();
-                        n.context_before = anchor.context_before.clone();
-                        n.context_after = anchor.context_after.clone();
-                        n.old_line_start = anchor.old_line_start;
-                        n.hunk_header = anchor.hunk_header;
-                        n.hunk_index = Some(hunk_index);
-                        n.anchor_status = "original".to_string();
-                        n.relocated_at_hash = diff_hash;
-                        n.stale = false;
-                    }
-                    let json = serde_json::to_string_pretty(&ns)?;
-                    let tmp = format!("{}.tmp", path);
-                    std::fs::write(&tmp, json)?;
-                    std::fs::rename(&tmp, &path)?;
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(er_dir.as_str())?;
+            let text = new_text.clone();
+            ai::annotation_store::update_notes(&store, &scope, move |current| {
+                let mut ns = current.context("the notes file is missing or unreadable")?;
+                if let Some(n) = ns.notes.iter_mut().find(|n| n.id == comment_id) {
+                    n.text = text;
+                    n.line_start = anchor.line_start;
+                    n.line_content = anchor.line_content;
+                    n.context_before = anchor.context_before;
+                    n.context_after = anchor.context_after;
+                    n.old_line_start = anchor.old_line_start;
+                    n.hunk_header = anchor.hunk_header;
+                    n.hunk_index = Some(hunk_index);
+                    n.anchor_status = "original".to_string();
+                    n.relocated_at_hash = diff_hash;
+                    n.stale = false;
                 }
-            }
+                Ok::<_, anyhow::Error>(ns)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
         } else {
-            let path = self.tab().github_comments_path();
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(mut gc) = serde_json::from_str::<ai::ErGithubComments>(&content) {
-                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
-                        c.comment = new_text.clone();
-                        c.line_start = anchor.line_start;
-                        c.line_content = anchor.line_content.clone();
-                        c.context_before = anchor.context_before.clone();
-                        c.context_after = anchor.context_after.clone();
-                        c.old_line_start = anchor.old_line_start;
-                        c.hunk_header = anchor.hunk_header;
-                        c.hunk_index = Some(hunk_index);
-                        c.anchor_status = "original".to_string();
-                        c.relocated_at_hash = diff_hash;
-                        c.stale = false;
-                    }
-                    let json = serde_json::to_string_pretty(&gc)?;
-                    let tmp = format!("{}.tmp", path);
-                    std::fs::write(&tmp, json)?;
-                    std::fs::rename(&tmp, &path)?;
+            let comments_dir = self.tab().github_comments_dir();
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(comments_dir.as_str())?;
+            let text = new_text.clone();
+            ai::annotation_store::update_github_comments(&store, &scope, move |current| {
+                let mut gc =
+                    current.context("the GitHub comments file is missing or unreadable")?;
+                if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
+                    c.comment = text;
+                    c.line_start = anchor.line_start;
+                    c.line_content = anchor.line_content;
+                    c.context_before = anchor.context_before;
+                    c.context_after = anchor.context_after;
+                    c.old_line_start = anchor.old_line_start;
+                    c.hunk_header = anchor.hunk_header;
+                    c.hunk_index = Some(hunk_index);
+                    c.anchor_status = "original".to_string();
+                    c.relocated_at_hash = diff_hash;
+                    c.stale = false;
                 }
-            }
+                Ok::<_, anyhow::Error>(gc)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
         }
 
         self.tab_mut().comment_textarea = TextArea::default();
@@ -2213,6 +2184,16 @@ impl App {
     /// every sidecar (review.json, experts, tour, …) to learn about a change
     /// this process just made. That is what keeps `submit_github_comment` fast;
     /// delete/edit/resolve follow the same path.
+    fn notify_invalid_json_warning(&mut self, path: &std::path::Path) {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("annotation file");
+        self.notify(&format!(
+            "Warning: .er/{name} is invalid JSON — starting fresh"
+        ));
+    }
+
     fn adopt_questions(&mut self, qs: ai::ErQuestions, path: &str) {
         let tab = self.tab_mut();
         tab.ai.questions = Some(qs);
@@ -2242,78 +2223,81 @@ impl App {
 
         // Determine which file this comment lives in (by id prefix)
         if comment_id.starts_with("q-") {
-            // Delete from questions.json
-            let path = format!("{}/questions.json", er_dir);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
-                    qs.questions.retain(|q| {
-                        q.id != comment_id && q.in_reply_to.as_deref() != Some(comment_id)
-                    });
-                    let json = serde_json::to_string_pretty(&qs)?;
-                    let tmp_path = format!("{}.tmp", path);
-                    std::fs::write(&tmp_path, &json)?;
-                    std::fs::rename(&tmp_path, &path)?;
-                    self.adopt_questions(qs, &path);
-                }
-            }
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(er_dir.as_str())?;
+            let id = comment_id.to_string();
+            let updated = ai::annotation_store::update_questions(&store, &scope, move |current| {
+                let mut qs = current.context("the questions file is missing or unreadable")?;
+                qs.questions
+                    .retain(|q| q.id != id && q.in_reply_to.as_deref() != Some(id.as_str()));
+                Ok::<_, anyhow::Error>(qs)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            let path = ai::annotation_store::path_of::<ai::ErQuestions>(&store, &scope)?;
+            self.adopt_questions(updated.value, path.to_string_lossy().as_ref());
         } else if comment_id.starts_with("n-") {
-            // Delete from notes.json (cascade replies)
-            let path = format!("{}/notes.json", er_dir);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(mut ns) = serde_json::from_str::<ai::ErNotes>(&content) {
-                    ns.notes.retain(|n| {
-                        n.id != comment_id && n.in_reply_to.as_deref() != Some(comment_id)
-                    });
-                    let json = serde_json::to_string_pretty(&ns)?;
-                    let tmp_path = format!("{}.tmp", path);
-                    std::fs::write(&tmp_path, &json)?;
-                    std::fs::rename(&tmp_path, &path)?;
-                    self.adopt_notes(ns, &path);
-                }
-            }
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(er_dir.as_str())?;
+            let id = comment_id.to_string();
+            let updated = ai::annotation_store::update_notes(&store, &scope, move |current| {
+                let mut ns = current.context("the notes file is missing or unreadable")?;
+                ns.notes
+                    .retain(|n| n.id != id && n.in_reply_to.as_deref() != Some(id.as_str()));
+                Ok::<_, anyhow::Error>(ns)
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            let path = ai::annotation_store::path_of::<ai::ErNotes>(&store, &scope)?;
+            self.adopt_notes(updated.value, path.to_string_lossy().as_ref());
         } else {
-            // Delete from github-comments.json (uses cache dir in remote mode)
-            let path = self.tab().github_comments_path();
-            if let Some(mut gc) = std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|content| serde_json::from_str::<ai::ErGithubComments>(&content).ok())
-            {
-                // Check if the comment has a github_id for API deletion
-                let github_id = gc
-                    .comments
-                    .iter()
-                    .find(|c| c.id == comment_id)
-                    .and_then(|c| c.github_id);
-
-                let reply_github_ids: Vec<u64> = gc
-                    .comments
-                    .iter()
-                    .filter(|c| {
-                        c.in_reply_to.as_deref() == Some(comment_id) && c.github_id.is_some()
-                    })
-                    .filter_map(|c| c.github_id)
-                    .collect();
-
-                // Remove comment and cascade replies
-                gc.comments
-                    .retain(|c| c.id != comment_id && c.in_reply_to.as_deref() != Some(comment_id));
-
-                let json = serde_json::to_string_pretty(&gc)?;
-                let tmp_path = format!("{}.tmp", path);
-                std::fs::write(&tmp_path, &json)?;
-                std::fs::rename(&tmp_path, &path)?;
-
-                // Delete from GitHub off this thread. The results were already
-                // discarded (`let _ =`), and running `gh` inline held the
-                // desktop's app lock for the whole network round trip, so every
-                // poll and click queued behind a comment deletion.
-                if let (Some(gh_id), Some(gh)) = (github_id, gc.github.clone()) {
-                    let ids = std::iter::once(gh_id).chain(reply_github_ids).collect();
-                    spawn_github_comment_deletes(github, gh, ids, repo_root);
+            let comments_dir = self.tab().github_comments_dir();
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(comments_dir.as_str())?;
+            let comments_path =
+                ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &scope)?;
+            let gc = match ai::annotation_store::load_github_comments(&store, &scope)? {
+                er_store::Loaded::Found(stored) => stored.value,
+                er_store::Loaded::Absent => {
+                    anyhow::bail!("Failed to read {}", comments_path.display())
                 }
+                er_store::Loaded::Unreadable(reason) => {
+                    anyhow::bail!("Failed to parse {}: {reason:?}", comments_path.display())
+                }
+            };
 
-                self.adopt_github_comments(gc, &path);
+            // Check if the comment has a github_id for API deletion
+            let github_id = gc
+                .comments
+                .iter()
+                .find(|c| c.id == comment_id)
+                .and_then(|c| c.github_id);
+
+            let reply_github_ids: Vec<u64> = gc
+                .comments
+                .iter()
+                .filter(|c| c.in_reply_to.as_deref() == Some(comment_id) && c.github_id.is_some())
+                .filter_map(|c| c.github_id)
+                .collect();
+
+            // Delete from GitHub off this thread, before the store update. The
+            // results were already discarded (`let _ =`), and running `gh`
+            // inline held the desktop's app lock for the whole network round
+            // trip, so every poll and click queued behind a deletion.
+            if let (Some(gh_id), Some(gh)) = (github_id, gc.github.clone()) {
+                let ids = std::iter::once(gh_id).chain(reply_github_ids).collect();
+                spawn_github_comment_deletes(github, gh, ids, repo_root);
             }
+
+            let id = comment_id.to_string();
+            let updated =
+                ai::annotation_store::update_github_comments(&store, &scope, move |current| {
+                    let mut gc =
+                        current.context("the GitHub comments file is missing or unreadable")?;
+                    gc.comments
+                        .retain(|c| c.id != id && c.in_reply_to.as_deref() != Some(id.as_str()));
+                    Ok::<_, anyhow::Error>(gc)
+                })
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            self.adopt_github_comments(updated.value, comments_path.to_string_lossy().as_ref());
         }
 
         self.input_mode = InputMode::Normal;
@@ -2485,18 +2469,25 @@ impl App {
         Ok(())
     }
 
-    /// Copy the current questions.json to the system clipboard
+    /// Copy the current questions file to the system clipboard
     pub fn copy_questions_json(&mut self) -> Result<()> {
         let er_dir = self.tab().er_dir();
-        let path = std::path::Path::new(&er_dir).join("questions.json");
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(er_dir.as_str())?;
+        let path = ai::annotation_store::path_of::<ai::ErQuestions>(&store, &scope)?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("annotation file");
         if !path.exists() {
-            self.notify("No questions.json found");
+            self.notify(&format!("No {name} found"));
             return Ok(());
         }
-        let content = std::fs::read_to_string(&path).context("Failed to read questions.json")?;
+        let content =
+            std::fs::read_to_string(&path).with_context(|| format!("Failed to read {name}"))?;
         let bytes = content.len();
         Self::copy_to_clipboard(&content)?;
-        self.notify(&format!("Copied questions.json ({} bytes)", bytes));
+        self.notify(&format!("Copied {name} ({} bytes)", bytes));
         Ok(())
     }
 
@@ -2806,9 +2797,13 @@ impl App {
                 }
             }
             "questions" => {
-                let questions_path = er_dir.join("questions.json");
-                if let Ok(content) = std::fs::read_to_string(&questions_path) {
-                    if let Ok(qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
+                let store = crate::store_registry::store();
+                let Ok(scope) = er_store::Scope::dir(tab.er_dir()) else {
+                    return "Questions done — but no questions file found".into();
+                };
+                match ai::annotation_store::load_questions(&store, &scope) {
+                    Ok(er_store::Loaded::Found(stored)) => {
+                        let qs = stored.value;
                         let answered = qs
                             .questions
                             .iter()
@@ -2820,11 +2815,14 @@ impl App {
                             .filter(|q| q.in_reply_to.is_none())
                             .count();
                         format!("Questions done — {} of {} answered", answered, total)
-                    } else {
-                        "Questions done — questions.json written but could not be parsed".into()
                     }
-                } else {
-                    "Questions done — but no questions.json found".into()
+                    Ok(er_store::Loaded::Absent) => {
+                        "Questions done — but no questions file found".into()
+                    }
+                    Ok(er_store::Loaded::Unreadable(_)) | Err(_) => {
+                        "Questions done — the questions file was written but could not be read"
+                            .into()
+                    }
                 }
             }
             _ => format!("{} done", name),
@@ -5991,6 +5989,181 @@ mod background_queue_tests {
         assert!(!on_disk.contains("\"q-1\"") && on_disk.contains("\"q-2\""));
 
         std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    fn sidecar_app(_tmp: &tempfile::TempDir) -> App {
+        let mut app = App::new_for_test(vec![]);
+        {
+            let tab = app.tab_mut();
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "main".to_string();
+            tab.apply_managed_root();
+        }
+        std::fs::create_dir_all(app.tab().er_dir()).unwrap();
+        app
+    }
+
+    fn submit(app: &mut App, text: &str, comment_type: crate::ai::CommentType) {
+        app.submit_comment_text(
+            crate::app::CommentTarget {
+                file: "a.rs".to_string(),
+                hunk_idx: 0,
+                line_num: Some(1),
+                line_num_end: None,
+            },
+            text.to_string(),
+            comment_type,
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_malformed_questions_file_warns_and_starts_fresh_like_before() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let mut app = sidecar_app(&tmp);
+        let er_dir = app.tab().er_dir();
+        let path = format!("{er_dir}/questions.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        submit(&mut app, "Why?", crate::ai::CommentType::Question);
+
+        let message = app
+            .notification
+            .as_ref()
+            .expect("a notification")
+            .message
+            .clone();
+        assert!(
+            message.contains("invalid JSON — starting fresh"),
+            "{message}"
+        );
+        let stored: crate::ai::ErQuestions =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored.questions.len(), 1, "the corrupt file is replaced");
+        assert_eq!(stored.questions[0].text, "Why?");
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn a_malformed_notes_file_warns_and_starts_fresh_like_before() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let mut app = sidecar_app(&tmp);
+        let er_dir = app.tab().er_dir();
+        let path = format!("{er_dir}/notes.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        submit(&mut app, "Do this", crate::ai::CommentType::Note);
+
+        let message = app
+            .notification
+            .as_ref()
+            .expect("a notification")
+            .message
+            .clone();
+        assert!(
+            message.contains("invalid JSON — starting fresh"),
+            "{message}"
+        );
+        let stored: crate::ai::ErNotes =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored.notes.len(), 1, "the corrupt file is replaced");
+        assert_eq!(stored.notes[0].text, "Do this");
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn a_malformed_github_comments_file_warns_and_starts_fresh_like_before() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let mut app = sidecar_app(&tmp);
+        let er_dir = app.tab().github_comments_dir();
+        let path = format!("{er_dir}/github-comments.json");
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+
+        submit(&mut app, "Comment", crate::ai::CommentType::GitHubComment);
+
+        let message = app
+            .notification
+            .as_ref()
+            .expect("a notification")
+            .message
+            .clone();
+        assert!(
+            message.contains("invalid JSON — starting fresh"),
+            "{message}"
+        );
+        let stored: crate::ai::ErGithubComments =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored.comments.len(), 1, "the corrupt file is replaced");
+        assert_eq!(stored.comments[0].comment, "Comment");
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn an_edit_of_a_missing_file_writes_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().er_root =
+            crate::paths::ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
+        let er_dir = app.tab().er_dir();
+
+        assert!(app.update_comment_text("q-1", "edited").is_err());
+        assert!(
+            !std::path::Path::new(&er_dir)
+                .join("questions.json")
+                .exists(),
+            "a missing file must not be created"
+        );
+    }
+
+    #[test]
+    fn a_delete_of_a_corrupt_notes_file_writes_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().er_root =
+            crate::paths::ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
+        let er_dir = app.tab().er_dir();
+        std::fs::create_dir_all(&er_dir).unwrap();
+        let path = std::path::Path::new(&er_dir).join("notes.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        assert!(app.confirm_delete_comment("n-1").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{ not json",
+            "the corrupt file is not overwritten with a fresh payload"
+        );
+    }
+
+    #[test]
+    fn a_delete_of_a_missing_file_writes_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().er_root =
+            crate::paths::ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
+        let er_dir = app.tab().er_dir();
+
+        assert!(app.confirm_delete_comment("q-1").is_err());
+        assert!(
+            !std::path::Path::new(&er_dir)
+                .join("questions.json")
+                .exists(),
+            "a missing file must not be created"
+        );
     }
 }
 
