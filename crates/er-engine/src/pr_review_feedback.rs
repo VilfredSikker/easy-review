@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai::{
     append_finding_response, compute_diff_hash, load_ai_state, ErNotes, ErQuestions, Finding,
-    ReviewQuestion, RiskLevel,
+    PrivateAnnotation, RiskLevel,
 };
 use crate::github::owner_repo_storage_slug;
 use crate::storage::resolve_managed_root_for_pr_bucket;
@@ -44,8 +44,8 @@ pub struct PrReviewFeedback {
     pub number: u64,
     pub bucket_path: String,
     pub diff_hash: String,
-    pub questions: Vec<ReviewQuestion>,
-    pub notes: Vec<ReviewQuestion>,
+    pub questions: Vec<PrivateAnnotation>,
+    pub notes: Vec<PrivateAnnotation>,
     pub findings: Vec<PrFindingItem>,
 }
 
@@ -207,21 +207,11 @@ fn load_notes(er_dir: &str) -> Result<ErNotes> {
     }
 }
 
-fn next_thread_id(prefix: &str) -> String {
-    format!(
-        "{prefix}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    )
-}
-
 fn validate_parent_thread<'a>(
-    items: &'a [ReviewQuestion],
+    items: &'a [PrivateAnnotation],
     parent_id: &str,
     kind: &str,
-) -> Result<&'a ReviewQuestion> {
+) -> Result<&'a PrivateAnnotation> {
     let parent = items
         .iter()
         .find(|q| q.id == parent_id)
@@ -234,7 +224,7 @@ fn validate_parent_thread<'a>(
 
 fn append_question_reply(
     er_dir: &str,
-    parent: &ReviewQuestion,
+    parent: &PrivateAnnotation,
     text: &str,
     author: &str,
 ) -> Result<String> {
@@ -246,8 +236,8 @@ fn append_question_reply(
         questions.diff_hash = diff_hash;
     }
 
-    let id = next_thread_id("q");
-    questions.questions.push(ReviewQuestion {
+    let id = crate::ai::annotation_store::new_annotation_id("q-");
+    questions.questions.push(PrivateAnnotation {
         id: id.clone(),
         timestamp: chrono_now(),
         file: parent.file.clone(),
@@ -279,7 +269,7 @@ fn append_question_reply(
 
 fn append_note_reply(
     er_dir: &str,
-    parent: &ReviewQuestion,
+    parent: &PrivateAnnotation,
     text: &str,
     author: &str,
 ) -> Result<String> {
@@ -291,8 +281,8 @@ fn append_note_reply(
         notes.diff_hash = diff_hash;
     }
 
-    let id = next_thread_id("n");
-    notes.notes.push(ReviewQuestion {
+    let id = crate::ai::annotation_store::new_annotation_id("n-");
+    notes.notes.push(PrivateAnnotation {
         id: id.clone(),
         timestamp: chrono_now(),
         file: parent.file.clone(),
@@ -324,7 +314,7 @@ fn append_note_reply(
 
 /// Resolve sets `resolved` on the root only, so a reply under a resolved root
 /// is dropped by its parent rather than by its own flag.
-fn open_threads(items: Vec<ReviewQuestion>, include_resolved: bool) -> Vec<ReviewQuestion> {
+fn open_threads(items: Vec<PrivateAnnotation>, include_resolved: bool) -> Vec<PrivateAnnotation> {
     if include_resolved {
         return items;
     }
@@ -496,7 +486,7 @@ pub fn reply_to_pr_finding(
 }
 
 /// Mark the top-level thread `id` resolved. Returns whether it already was.
-fn mark_thread_resolved(items: &mut [ReviewQuestion], id: &str, kind: &str) -> Result<bool> {
+fn mark_thread_resolved(items: &mut [PrivateAnnotation], id: &str, kind: &str) -> Result<bool> {
     let root = items
         .iter_mut()
         .find(|q| q.id == id)
@@ -569,8 +559,8 @@ mod tests {
         std::env::remove_var("ER_STORAGE_ROOT");
     }
 
-    fn sample_question(id: &str) -> ReviewQuestion {
-        ReviewQuestion {
+    fn sample_question(id: &str) -> PrivateAnnotation {
+        PrivateAnnotation {
             id: id.to_string(),
             timestamp: "2026-01-01T00:00:00Z".into(),
             file: "src/a.rs".into(),

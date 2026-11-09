@@ -725,14 +725,7 @@ fn agent_stderr_snippet(stderr_lines: &[String]) -> String {
 }
 
 fn mint_comment_id(prefix: &str) -> String {
-    let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "{prefix}{}-{seq}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    )
+    crate::ai::annotation_store::new_annotation_id(prefix)
 }
 
 /// Anchor on 1-based `line` of a whole document, with the same three lines of
@@ -1093,7 +1086,7 @@ impl App {
             .comment_side
             .take()
             .unwrap_or_else(|| "RIGHT".to_string());
-        questions.questions.push(ai::ReviewQuestion {
+        questions.questions.push(ai::PrivateAnnotation {
             id,
             timestamp: chrono_now(),
             file: file_path,
@@ -1203,7 +1196,7 @@ impl App {
             .comment_side
             .take()
             .unwrap_or_else(|| "RIGHT".to_string());
-        notes.notes.push(ai::ReviewQuestion {
+        notes.notes.push(ai::PrivateAnnotation {
             id,
             timestamp: chrono_now(),
             file: file_path,
@@ -1260,14 +1253,14 @@ impl App {
 
         // Load or create github-comments.json (uses cache dir in remote mode)
         let comments_path = self.tab().github_comments_path();
-        let mut gh_comments: ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+        let mut gh_comments: ai::ErGithubComments = match std::fs::read_to_string(&comments_path) {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(gc) => gc,
                 Err(_) => {
                     self.notify(
                         "Warning: .er/github-comments.json is invalid JSON — starting fresh",
                     );
-                    ai::ErGitHubComments {
+                    ai::ErGithubComments {
                         version: 1,
                         diff_hash: diff_hash.clone(),
                         github: None,
@@ -1275,7 +1268,7 @@ impl App {
                     }
                 }
             },
-            Err(_) => ai::ErGitHubComments {
+            Err(_) => ai::ErGithubComments {
                 version: 1,
                 diff_hash: diff_hash.clone(),
                 github: None,
@@ -1302,7 +1295,7 @@ impl App {
             .comment_side
             .take()
             .unwrap_or_else(|| "RIGHT".to_string());
-        gh_comments.comments.push(ai::GitHubReviewComment {
+        gh_comments.comments.push(ai::GithubComment {
             id,
             timestamp: chrono_now(),
             file: file_path,
@@ -1583,7 +1576,7 @@ impl App {
             let path = self.tab().github_comments_path();
             let content =
                 std::fs::read_to_string(&path).with_context(|| format!("Failed to read {path}"))?;
-            let mut gc: ai::ErGitHubComments =
+            let mut gc: ai::ErGithubComments =
                 serde_json::from_str(&content).context("Failed to parse github-comments.json")?;
             let (github_id, gh_meta, author) = {
                 let c = gc
@@ -1725,7 +1718,7 @@ impl App {
         } else {
             let path = self.tab().github_comments_path();
             if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
+                if let Ok(mut gc) = serde_json::from_str::<ai::ErGithubComments>(&content) {
                     if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
                         c.comment = new_text.clone();
                         c.line_start = anchor.line_start;
@@ -2234,7 +2227,7 @@ impl App {
         tab.mark_sidecar_written(path);
     }
 
-    fn adopt_github_comments(&mut self, gc: ai::ErGitHubComments, path: &str) {
+    fn adopt_github_comments(&mut self, gc: ai::ErGithubComments, path: &str) {
         let tab = self.tab_mut();
         tab.ai.github_comments = Some(gc);
         tab.ai.rebuild_comment_index();
@@ -2283,7 +2276,7 @@ impl App {
             let path = self.tab().github_comments_path();
             if let Some(mut gc) = std::fs::read_to_string(&path)
                 .ok()
-                .and_then(|content| serde_json::from_str::<ai::ErGitHubComments>(&content).ok())
+                .and_then(|content| serde_json::from_str::<ai::ErGithubComments>(&content).ok())
             {
                 // Check if the comment has a github_id for API deletion
                 let github_id = gc
@@ -6195,7 +6188,7 @@ mod github_handle_tests {
         tab.er_root = ErRoot::managed(format!("{repo_root}/.er"));
         let er_dir = tab.er_dir();
         std::fs::create_dir_all(&er_dir).unwrap();
-        let document = ai::ErGitHubComments {
+        let document = ai::ErGithubComments {
             version: 1,
             diff_hash: String::new(),
             github: Some(ai::GitHubSyncState {
@@ -6204,7 +6197,7 @@ mod github_handle_tests {
                 repo: "widgets".into(),
                 last_synced: String::new(),
             }),
-            comments: vec![ai::GitHubReviewComment {
+            comments: vec![ai::GithubComment {
                 id: "c-1".into(),
                 timestamp: String::new(),
                 file: "a.rs".into(),

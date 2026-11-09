@@ -3217,7 +3217,7 @@ mod finding_dispatch_tests {
 #[cfg(test)]
 mod github_comment_fold_tests {
     use super::*;
-    use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
+    use er_engine::ai::{ErGithubComments, GithubComment};
     use er_engine::git::{DiffFile, DiffHunk, DiffLine, FileStatus};
 
     fn line(lt: LineType, content: &str, old: Option<usize>, new: Option<usize>) -> DiffLine {
@@ -3257,8 +3257,8 @@ mod github_comment_fold_tests {
         }
     }
 
-    fn gh_comment_on_banner() -> GitHubReviewComment {
-        GitHubReviewComment {
+    fn gh_comment_on_banner() -> GithubComment {
+        GithubComment {
             id: "gh-1".to_string(),
             timestamp: String::new(),
             file: "page.svelte".to_string(),
@@ -3308,7 +3308,7 @@ mod github_comment_fold_tests {
             similarity: None,
         };
         let mut app = App::new_for_test(vec![file]);
-        app.tab_mut().ai.github_comments = Some(ErGitHubComments {
+        app.tab_mut().ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "h".to_string(),
             github: None,

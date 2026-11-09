@@ -7,6 +7,7 @@ pub mod github_sync;
 pub(super) mod navigation;
 pub(super) mod preload;
 pub mod preview;
+mod promote;
 mod review_flow;
 mod review_flow_admission;
 mod review_flow_output;
@@ -30,8 +31,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use tui_textarea::TextArea;
 
-static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
-
 /// Source of [`Notification::seq`]. Process-wide so a number is never handed out
 /// twice, even across an `App` rebuild — a UI that remembers the last seq it
 /// showed must never see that seq again, or it will swallow the message.
@@ -51,7 +50,7 @@ fn profile_branch_enabled() -> bool {
 fn write_github_comments_best_effort(
     gh_dir: &str,
     gh_path: &std::path::Path,
-    gc: &ai::ErGitHubComments,
+    gc: &ai::ErGithubComments,
 ) {
     let _ = std::fs::create_dir_all(gh_dir);
     if let Ok(json) = serde_json::to_string_pretty(gc) {
@@ -3949,14 +3948,14 @@ impl TabState {
     /// Returns `true` when at least one comment was migrated, signalling the
     /// caller to persist `pr_comments` and remove the orphan file.
     fn migrate_orphaned_github_comments(
-        orphaned: Option<ai::ErGitHubComments>,
-        pr_comments: &mut Option<ai::ErGitHubComments>,
+        orphaned: Option<ai::ErGithubComments>,
+        pr_comments: &mut Option<ai::ErGithubComments>,
     ) -> bool {
         let orphaned = match orphaned {
             Some(o) => o,
             None => return false,
         };
-        let to_migrate: Vec<ai::GitHubReviewComment> = orphaned
+        let to_migrate: Vec<ai::GithubComment> = orphaned
             .comments
             .into_iter()
             .filter(|c| c.source == "local")
@@ -3965,7 +3964,7 @@ impl TabState {
             return false;
         }
 
-        let target = pr_comments.get_or_insert_with(|| ai::ErGitHubComments {
+        let target = pr_comments.get_or_insert_with(|| ai::ErGithubComments {
             version: 1,
             diff_hash: orphaned.diff_hash.clone(),
             github: None,
@@ -4041,7 +4040,7 @@ impl TabState {
                     let gh_path = std::path::Path::new(&gh_dir).join("github-comments.json");
                     let mut pr_comments = std::fs::read_to_string(&gh_path)
                         .ok()
-                        .and_then(|c| serde_json::from_str::<ai::ErGitHubComments>(&c).ok());
+                        .and_then(|c| serde_json::from_str::<ai::ErGithubComments>(&c).ok());
                     let migrated =
                         Self::migrate_orphaned_github_comments(orphaned, &mut pr_comments);
                     if let Some(gc) = pr_comments.as_ref().filter(|_| migrated) {
@@ -4103,7 +4102,7 @@ impl TabState {
     pub fn reload_remote_comments(&mut self) {
         let path = self.github_comments_path();
         if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
+            if let Ok(gc) = serde_json::from_str::<ai::ErGithubComments>(&content) {
                 self.ai.github_comments = Some(gc);
                 self.ai.rebuild_comment_index();
             }
@@ -9685,7 +9684,7 @@ pub fn cleanup_questions_and_notes(er_dir: &str) {
 }
 
 /// Strip Claude-authored replies from a local draft thread list and un-resolve parents.
-fn cleanup_claude_replies(items: &mut Vec<crate::ai::ReviewQuestion>) {
+fn cleanup_claude_replies(items: &mut Vec<crate::ai::PrivateAnnotation>) {
     let reply_ids: std::collections::HashSet<String> = items
         .iter()
         .filter(|q| q.author == "Claude")
@@ -10793,8 +10792,8 @@ mod tests {
         }
     }
 
-    fn make_gh_comment(file: &str, line: usize) -> ai::GitHubReviewComment {
-        ai::GitHubReviewComment {
+    fn make_gh_comment(file: &str, line: usize) -> ai::GithubComment {
+        ai::GithubComment {
             id: "gh-1".to_string(),
             timestamp: String::new(),
             file: file.to_string(),
@@ -10833,7 +10832,7 @@ mod tests {
         let mut tab = make_test_tab(vec![stub]);
         tab.lazy_mode = true;
         tab.diff_hash = "current-hash".to_string();
-        tab.ai.github_comments = Some(ai::ErGitHubComments {
+        tab.ai.github_comments = Some(ai::ErGithubComments {
             version: 1,
             diff_hash: "old-hash".to_string(),
             github: None,
@@ -10858,7 +10857,7 @@ mod tests {
     fn relocate_marks_comment_lost_when_file_is_absent_from_diff() {
         let mut tab = make_test_tab(vec![make_file("other.rs", vec![], 1, 1)]);
         tab.diff_hash = "current-hash".to_string();
-        tab.ai.github_comments = Some(ai::ErGitHubComments {
+        tab.ai.github_comments = Some(ai::ErGithubComments {
             version: 1,
             diff_hash: "old-hash".to_string(),
             github: None,
@@ -13692,16 +13691,10 @@ mod tests {
             .id
             .clone();
 
-        // What `promote_to_note` does before it submits the note.
-        app.tab_mut().comment_document_anchor = app.document_anchor_of(&id);
-        app.submit_comment_text(
-            document_target(6),
-            "Rename delta".to_string(),
-            CommentType::Note,
-            None,
-            None,
-        )
-        .unwrap();
+        // The promote path builds the note from the current diff and deletes
+        // the source question.
+        app.promote_question_to_note(&id, Some("Rename delta".to_string()))
+            .unwrap();
 
         let n = &app.tab().ai.notes.as_ref().unwrap().notes[0];
         assert_eq!(n.hunk_index, None);
@@ -13749,7 +13742,7 @@ mod tests {
         tab.ai.questions = Some(crate::ai::ErQuestions {
             version: 1,
             diff_hash: String::new(),
-            questions: vec![crate::ai::ReviewQuestion {
+            questions: vec![crate::ai::PrivateAnnotation {
                 id: "q-123-0".to_string(),
                 timestamp: String::new(),
                 file: "src/main.rs".to_string(),

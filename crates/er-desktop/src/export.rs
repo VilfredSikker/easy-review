@@ -89,10 +89,10 @@ fn resolve_exclusions(tab: &TabState, opts: &ExportOpts) -> EngineExportOpts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use er_engine::ai::{AiState, ErQuestions, ReviewQuestion};
+    use er_engine::ai::{AiState, ErQuestions, PrivateAnnotation};
 
-    fn question(id: &str, text: &str, resolved: bool) -> ReviewQuestion {
-        ReviewQuestion {
+    fn question(id: &str, text: &str, resolved: bool) -> PrivateAnnotation {
+        PrivateAnnotation {
             id: id.into(),
             timestamp: String::new(),
             file: "src/lib.rs".into(),

@@ -5405,7 +5405,7 @@ fn status_str(status: &FileStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
+    use er_engine::ai::{ErGithubComments, GithubComment};
 
     /// Snapshot builders reach git; a test app that exercises them uses the
     /// real adapter rather than the unscripted fake.
@@ -5984,8 +5984,8 @@ mod tests {
         tmp
     }
 
-    fn github_comment(outdated: bool, stale: bool) -> GitHubReviewComment {
-        GitHubReviewComment {
+    fn github_comment(outdated: bool, stale: bool) -> GithubComment {
+        GithubComment {
             id: "gh-1".to_string(),
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             file: "src/foo.rs".to_string(),
@@ -6015,7 +6015,7 @@ mod tests {
     #[test]
     fn ai_snapshot_marks_github_outdated_comment_stale_for_ui() {
         let mut tab = TabState::new_for_test(vec![]);
-        tab.ai.github_comments = Some(ErGitHubComments {
+        tab.ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "hash".to_string(),
             github: None,
@@ -6045,7 +6045,7 @@ mod tests {
         github_reply.id = "gh-3".to_string();
         github_reply.github_id = Some(3);
         github_reply.in_reply_to = Some("gh-2".to_string());
-        tab.ai.github_comments = Some(ErGitHubComments {
+        tab.ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "hash".to_string(),
             github: None,
@@ -6997,7 +6997,7 @@ mod tests {
         comment.file = "src/foo.rs".to_string();
         comment.hunk_index = Some(0);
         comment.line_start = Some(2);
-        app.tab_mut().ai.github_comments = Some(ErGitHubComments {
+        app.tab_mut().ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "hash".to_string(),
             github: None,
@@ -7726,7 +7726,7 @@ mod tests {
         author: &str,
         reply_to: Option<&str>,
         action: Option<&str>,
-    ) -> er_engine::ai::ReviewQuestion {
+    ) -> er_engine::ai::PrivateAnnotation {
         let mut v = serde_json::json!({
             "id": id,
             "timestamp": "2026-10-30T10:00:00Z",

@@ -125,7 +125,7 @@ pub struct CommentSyncContext {
 
 /// Pre-processed results ready to apply to App state.
 pub struct CommentSyncResult {
-    pub gc: ai::ErGitHubComments,
+    pub gc: ai::ErGithubComments,
     pub pr_data: Option<PrOverviewData>,
     pub github_count: usize,
     pub local_count: usize,
@@ -190,7 +190,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 /// comment with a `github_id` was posted individually by an older version; the
 /// pull rebuilds it as `gh-<id>`. A comment posted on create is already
 /// `source: "github"`.
-pub fn keep_on_pull(c: &ai::GitHubReviewComment) -> bool {
+pub fn keep_on_pull(c: &ai::GithubComment) -> bool {
     c.source == "local" && c.github_id.is_none()
 }
 
@@ -198,10 +198,10 @@ pub fn keep_on_pull(c: &ai::GitHubReviewComment) -> bool {
 /// entries and rebuilding every GitHub entry. The caller writes the result.
 pub fn rebuild_comment_store(
     ctx: &CommentSyncContext,
-    mut gc: ai::ErGitHubComments,
+    mut gc: ai::ErGithubComments,
     gh_comments: &[github::GitHubComment],
     thread_state: &std::collections::HashMap<u64, github::ReviewThreadState>,
-) -> ai::ErGitHubComments {
+) -> ai::ErGithubComments {
     gc.github = Some(ai::GitHubSyncState {
         pr_number: Some(ctx.pr_number),
         owner: ctx.owner.clone(),
@@ -247,7 +247,7 @@ pub fn rebuild_comment_store(
         let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
         let state = thread_state.get(&gh.id).copied().unwrap_or_default();
         let outdated = merged_outdated_state(state, gh.outdated);
-        github_entries.push(ai::GitHubReviewComment {
+        github_entries.push(ai::GithubComment {
             id: format!("gh-{}", gh.id),
             timestamp: gh.created_at.clone(),
             file: file_path,
@@ -353,14 +353,14 @@ fn fetch_comment_sync_data_with(
     });
     let (gh_comments, thread_state) = bundle?;
 
-    let gc: ai::ErGitHubComments = match std::fs::read_to_string(&ctx.comments_path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| ai::ErGitHubComments {
+    let gc: ai::ErGithubComments = match std::fs::read_to_string(&ctx.comments_path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| ai::ErGithubComments {
             version: 1,
             diff_hash: ctx.diff_hash.clone(),
             github: None,
             comments: Vec::new(),
         }),
-        Err(_) => ai::ErGitHubComments {
+        Err(_) => ai::ErGithubComments {
             version: 1,
             diff_hash: ctx.diff_hash.clone(),
             github: None,
@@ -948,7 +948,7 @@ mod tests {
         assert_eq!(header, "@@ -1,25 +1,26 @@");
     }
 
-    fn stored_comment(id: &str, source: &str, github_id: Option<u64>) -> ai::GitHubReviewComment {
+    fn stored_comment(id: &str, source: &str, github_id: Option<u64>) -> ai::GithubComment {
         serde_json::from_value(serde_json::json!({
             "id": id,
             "file": "src/a.rs",
@@ -989,7 +989,7 @@ mod tests {
             pr_number_for_overview: Some(7),
             github: std::sync::Arc::new(crate::github::FakeGitHub::default()),
         };
-        let mut gc = ai::ErGitHubComments {
+        let mut gc = ai::ErGithubComments {
             version: 1,
             diff_hash: "hash".to_string(),
             github: None,

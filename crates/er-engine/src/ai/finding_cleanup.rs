@@ -1,6 +1,6 @@
 //! Persisted removal and resolution of findings, and removal of linked validation threads.
 
-use super::comments::{ErGitHubComments, ErNotes, ErQuestions};
+use super::comments::{ErGithubComments, ErNotes, ErQuestions};
 use super::experts::{expert_by_id, load_expert_reviews, ExpertReview};
 use super::professor::{load_professor_review, PROFESSOR_ID_PREFIX};
 use super::review::AiState;
@@ -252,7 +252,7 @@ pub fn delete_threads_linked_to_finding(er_dir: &str, finding_id: &str) -> std::
     let gc_path = er.join("github-comments.json");
     if gc_path.is_file() {
         if let Ok(content) = std::fs::read_to_string(&gc_path) {
-            if let Ok(mut gc) = serde_json::from_str::<ErGitHubComments>(&content) {
+            if let Ok(mut gc) = serde_json::from_str::<ErGithubComments>(&content) {
                 let roots: Vec<String> = gc
                     .comments
                     .iter()
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn find_finding_thread_root_prefers_question_over_github() {
         use super::super::comments::{
-            ErGitHubComments, ErQuestions, GitHubReviewComment, ReviewQuestion,
+            ErGithubComments, ErQuestions, GithubComment, PrivateAnnotation,
         };
         use super::super::review::AiState;
 
@@ -328,7 +328,7 @@ mod tests {
         ai.questions = Some(ErQuestions {
             version: 1,
             diff_hash: "h".into(),
-            questions: vec![ReviewQuestion {
+            questions: vec![PrivateAnnotation {
                 id: "q-root".into(),
                 timestamp: String::new(),
                 file: "a.rs".into(),
@@ -353,11 +353,11 @@ mod tests {
                 ai_action: None,
             }],
         });
-        ai.github_comments = Some(ErGitHubComments {
+        ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "h".into(),
             github: None,
-            comments: vec![GitHubReviewComment {
+            comments: vec![GithubComment {
                 id: "c-root".into(),
                 timestamp: String::new(),
                 file: "a.rs".into(),

@@ -853,7 +853,7 @@ mod tests {
         app.tab_mut().ai.questions = Some(er_engine::ai::ErQuestions {
             version: 1,
             diff_hash: String::new(),
-            questions: vec![er_engine::ai::ReviewQuestion {
+            questions: vec![er_engine::ai::PrivateAnnotation {
                 id: "q-abc".to_string(),
                 timestamp: String::new(),
                 file: "test.rs".to_string(),

@@ -764,7 +764,7 @@ pub struct ChecklistItem {
 }
 
 // Comment types and question/GitHub comment data are in comments.rs.
-use super::comments::{CommentRef, ErGitHubComments, ErNotes, ErQuestions, HintType};
+use super::comments::{CommentRef, ErGithubComments, ErNotes, ErQuestions, HintType};
 
 // ── AiReview navigation ──
 
@@ -833,7 +833,7 @@ pub struct AiState {
     /// Local actionable notes (notes.json) — private, agent hand-off oriented
     pub notes: Option<ErNotes>,
     /// GitHub PR comments (.er-github-comments.json)
-    pub github_comments: Option<ErGitHubComments>,
+    pub github_comments: Option<ErGithubComments>,
     /// Fast branch triage (`.er/triage.json`) — routing verdict, not merged into review.
     pub triage: Option<super::triage::TriageReview>,
     /// Mermaid diagrams of the diff (`diagrams/*.json`), newest preset state only.
@@ -1754,7 +1754,7 @@ impl AiState {
     reason = "tests build fixtures by mutating a default one field at a time"
 )]
 mod tests {
-    use super::super::comments::{GitHubReviewComment, ReviewQuestion};
+    use super::super::comments::{GithubComment, PrivateAnnotation};
     use super::*;
     use crate::git::LineType;
     use std::collections::HashMap;
@@ -2633,7 +2633,7 @@ mod tests {
     #[test]
     fn comments_for_hunk_matching_file_and_hunk_returned() {
         let mut state = AiState::default();
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -2652,7 +2652,7 @@ mod tests {
     #[test]
     fn comments_for_hunk_wrong_file_returns_empty() {
         let mut state = AiState::default();
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -2672,7 +2672,7 @@ mod tests {
         let mut line_20 = make_github_comment("c2", "a.rs", Some(0), None);
         line_20.line_start = Some(20);
         let hunk_level = make_github_comment("c3", "a.rs", Some(0), None); // no line
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -2689,7 +2689,7 @@ mod tests {
         let mut parent = make_github_comment("parent", "a.rs", Some(0), None);
         parent.line_start = Some(10);
         let reply = make_github_comment("reply", "a.rs", Some(0), Some(&parent.id));
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -2770,7 +2770,7 @@ mod tests {
         let mut state = AiState::default();
         let mut c = make_github_comment("c1", "pipeline.py", Some(0), None);
         c.line_start = Some(222);
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -2800,7 +2800,7 @@ mod tests {
         let mut c = make_github_comment("c1", "pipeline.py", Some(0), None);
         c.line_start = Some(222);
         c.side = "RIGHT".to_string();
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -2823,7 +2823,7 @@ mod tests {
         let mut state = AiState::default();
         let mut c = make_github_comment("c1", "pipeline.py", Some(1), None);
         c.line_start = Some(222);
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -2850,7 +2850,7 @@ mod tests {
         c.line_start = Some(222);
         c.old_line_start = Some(222);
         c.side = "LEFT".to_string();
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -2895,7 +2895,7 @@ mod tests {
         c.line_start = Some(10);
         c.old_line_start = Some(10);
         c.side = "LEFT".to_string();
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -2917,7 +2917,7 @@ mod tests {
         c.line_start = Some(288);
         c.side = "RIGHT".to_string();
         let mut state = AiState::default();
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "h".to_string(),
             github: None,
@@ -2984,7 +2984,7 @@ mod tests {
         let hunk_level = make_github_comment("c1", "a.rs", Some(0), None);
         let mut line_level = make_github_comment("c2", "a.rs", Some(0), None);
         line_level.line_start = Some(10);
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3000,7 +3000,7 @@ mod tests {
         let mut state = AiState::default();
         let parent = make_github_comment("parent", "a.rs", Some(0), None);
         let reply = make_github_comment("reply", "a.rs", Some(0), Some(&parent.id));
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3018,7 +3018,7 @@ mod tests {
         let parent = make_github_comment("parent", "a.rs", Some(0), None);
         let parent_id = parent.id.clone();
         let reply = make_github_comment("reply", "a.rs", Some(0), Some(&parent_id));
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3032,7 +3032,7 @@ mod tests {
     #[test]
     fn replies_to_no_replies_returns_empty() {
         let mut state = AiState::default();
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3203,8 +3203,8 @@ mod tests {
 
     // ── Helpers for question / github comment tests ──
 
-    fn make_question(id: &str, file: &str, hunk_index: Option<usize>) -> ReviewQuestion {
-        ReviewQuestion {
+    fn make_question(id: &str, file: &str, hunk_index: Option<usize>) -> PrivateAnnotation {
+        PrivateAnnotation {
             id: id.to_string(),
             timestamp: String::new(),
             file: file.to_string(),
@@ -3235,8 +3235,8 @@ mod tests {
         file: &str,
         hunk_index: Option<usize>,
         in_reply_to: Option<&str>,
-    ) -> GitHubReviewComment {
-        GitHubReviewComment {
+    ) -> GithubComment {
+        GithubComment {
             id: id.to_string(),
             timestamp: String::new(),
             file: file.to_string(),
@@ -3298,7 +3298,7 @@ mod tests {
         let mut state = AiState::default();
         let parent = make_github_comment("c1", "a.rs", Some(0), None);
         let reply = make_github_comment("c2", "a.rs", Some(0), Some("c1"));
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3317,7 +3317,7 @@ mod tests {
             diff_hash: "test".to_string(),
             questions: vec![make_question("q1", "a.rs", Some(0))],
         });
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3428,7 +3428,7 @@ mod tests {
         let mut state = AiState::default();
         let parent = make_github_comment("c1", "a.rs", Some(0), None);
         let reply = make_github_comment("c2", "a.rs", Some(0), Some("c1"));
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3441,7 +3441,7 @@ mod tests {
     #[test]
     fn file_github_comment_count_correct_per_file() {
         let mut state = AiState::default();
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3486,7 +3486,7 @@ mod tests {
         let mut outdated = make_github_comment("c3", "a.rs", Some(0), None);
         outdated.outdated = true;
         let active = make_github_comment("c4", "a.rs", Some(0), None);
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,
@@ -3567,7 +3567,7 @@ mod tests {
         let reply0 = make_github_comment("c-reply0", "a.rs", Some(0), Some("c-parent0"));
         let parent1 = make_github_comment("c-parent1", "a.rs", Some(1), None);
         let reply1 = make_github_comment("c-reply1", "a.rs", Some(1), Some("c-parent1"));
-        state.github_comments = Some(ErGitHubComments {
+        state.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "test".to_string(),
             github: None,

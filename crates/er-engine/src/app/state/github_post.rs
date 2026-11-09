@@ -42,6 +42,19 @@ pub enum NewGitHubComment {
     },
 }
 
+impl From<crate::ai::promote::PromotedComment> for NewGitHubComment {
+    fn from(promoted: crate::ai::promote::PromotedComment) -> Self {
+        Self::Line {
+            file: promoted.path().to_string(),
+            hunk_idx: promoted.hunk_index().unwrap_or(0),
+            line_start: Some(promoted.line_start()),
+            line_end: promoted.line_end(),
+            side: Some(promoted.side().to_string()),
+            body: promoted.body().to_string(),
+        }
+    }
+}
+
 /// Where a posted comment belongs in `github-comments.json`.
 #[derive(Debug, Clone, Default)]
 pub struct PostedGitHubCommentLocation {
@@ -483,7 +496,7 @@ impl App {
         let path = tab.github_comments_path();
         let from_file = std::fs::read_to_string(&path)
             .ok()
-            .and_then(|content| serde_json::from_str::<ai::ErGitHubComments>(&content).ok())
+            .and_then(|content| serde_json::from_str::<ai::ErGithubComments>(&content).ok())
             .map(|gc| gc.comments.iter().filter_map(|c| c.github_id).collect());
         if let Some(ids) = from_file {
             return ids;
@@ -544,17 +557,17 @@ impl App {
             });
         }
 
-        let mut gc: ai::ErGitHubComments = match std::fs::read_to_string(&ticket.comments_path) {
+        let mut gc: ai::ErGithubComments = match std::fs::read_to_string(&ticket.comments_path) {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(gc) => gc,
-                Err(_) => ai::ErGitHubComments {
+                Err(_) => ai::ErGithubComments {
                     version: 1,
                     diff_hash: ticket.branch_diff_hash.clone(),
                     github: None,
                     comments: Vec::new(),
                 },
             },
-            Err(_) => ai::ErGitHubComments {
+            Err(_) => ai::ErGithubComments {
                 version: 1,
                 diff_hash: ticket.branch_diff_hash.clone(),
                 github: None,
@@ -565,7 +578,7 @@ impl App {
         let store_id = format!("gh-{github_id}");
         if !gc.comments.iter().any(|c| c.github_id == Some(github_id)) {
             let location = &ticket.location;
-            gc.comments.push(ai::GitHubReviewComment {
+            gc.comments.push(ai::GithubComment {
                 id: store_id.clone(),
                 timestamp: created_at,
                 file: location.file.clone(),
@@ -902,12 +915,12 @@ mod tests {
         .unwrap()
     }
 
-    fn store(app: &App) -> ai::ErGitHubComments {
+    fn store(app: &App) -> ai::ErGithubComments {
         let path = app.tab().github_comments_path();
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
     }
 
-    fn write_store(app: &App, gc: &ai::ErGitHubComments) {
+    fn write_store(app: &App, gc: &ai::ErGithubComments) {
         let path = app.tab().github_comments_path();
         if let Some(dir) = std::path::Path::new(&path).parent() {
             std::fs::create_dir_all(dir).unwrap();
@@ -915,8 +928,8 @@ mod tests {
         std::fs::write(&path, serde_json::to_string_pretty(gc).unwrap()).unwrap();
     }
 
-    fn empty_store() -> ai::ErGitHubComments {
-        ai::ErGitHubComments {
+    fn empty_store() -> ai::ErGithubComments {
+        ai::ErGithubComments {
             version: 1,
             diff_hash: "branch-hash".to_string(),
             github: None,
@@ -924,7 +937,7 @@ mod tests {
         }
     }
 
-    fn recorded_comment(id: &str, github_id: u64, body: &str) -> ai::GitHubReviewComment {
+    fn recorded_comment(id: &str, github_id: u64, body: &str) -> ai::GithubComment {
         serde_json::from_value(serde_json::json!({
             "id": id,
             "file": "src/a.rs",
@@ -1464,5 +1477,38 @@ mod tests {
         let after = f.app.pending_github_posts.get(client).cloned().unwrap();
         assert_eq!(after.not_before_epoch, before.not_before_epoch);
         assert_eq!(after.bodies, before.bodies);
+    }
+
+    #[test]
+    fn a_promoted_comment_converts_to_the_post_intent() {
+        let source: crate::ai::PrivateAnnotation = serde_json::from_value(serde_json::json!({
+            "id": "q-1",
+            "file": "a.rs",
+            "hunk_index": 2,
+            "line_start": 4,
+            "text": "text"
+        }))
+        .unwrap();
+        let promoted =
+            crate::ai::promote::promote_to_github(&source, std::slice::from_ref(&source), None)
+                .unwrap();
+        match NewGitHubComment::from(promoted) {
+            NewGitHubComment::Line {
+                file,
+                hunk_idx,
+                line_start,
+                line_end,
+                side,
+                body,
+            } => {
+                assert_eq!(file, "a.rs");
+                assert_eq!(hunk_idx, 2);
+                assert_eq!(line_start, Some(4));
+                assert_eq!(line_end, None);
+                assert_eq!(side.as_deref(), Some("RIGHT"));
+                assert_eq!(body, "text");
+            }
+            other => panic!("expected a line intent, got {other:?}"),
+        }
     }
 }

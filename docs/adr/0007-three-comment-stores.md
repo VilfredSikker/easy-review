@@ -1,6 +1,6 @@
 # Three separate comment stores, private by default
 
-A review produces three kinds of annotation that look alike but have different audiences, so each lives in its own file: `questions.json` for things you want answered, `notes.json` for instructions to an agent, and `github-comments.json` for the shared, two-way-synced GitHub review threads. Questions and notes are private, and no push path can reach them: separate files make privacy a property of which file the data is in, so a private review note cannot reach a pull request even when someone later adds a new push path or forgets a filter. Promote-to-comment (`promote_to_comment`) is the single deliberate crossing from private to shared, and it is always an explicit act by the reviewer.
+A review produces three kinds of annotation that look alike but have different audiences, so each lives in its own file: `questions.json` for things you want answered, `notes.json` for instructions to an agent, and `github-comments.json` for the shared, two-way-synced GitHub review threads. Questions and notes are private, and no push path can reach them: separate files make privacy a property of which file the data is in, so a private review note cannot reach a pull request even when someone later adds a new push path or forgets a filter. `ai/annotation_store.rs` is the only reader and writer of the three files; every other module goes through it. Promote-to-comment (`ai::promote::promote_to_github`, reached through the `promote_to_comment` command) is the single deliberate crossing from private to shared, and it is always an explicit act by the reviewer.
 
 ## Considered Options
 
@@ -8,4 +8,6 @@ A review produces three kinds of annotation that look alike but have different a
 
 ## Consequences
 
-The split is at the file level only: notes reuse the `ReviewQuestion` struct with an `n-` id prefix, and both private stores share the desktop Notes panel. One struct behind two stores is deliberate — do not collapse the stores on the assumption that the shared struct and shared panel already make them one thing.
+The split is at the file level only: notes reuse the `PrivateAnnotation` struct with an `n-` id prefix, and both private stores share the desktop Notes panel. One struct behind two stores is deliberate — do not collapse the stores on the assumption that the shared struct and shared panel already make them one thing.
+
+`ai/annotation_store.rs` is the only writer of the three files. `ai/promote.rs` is the only conversion from a private annotation to a GitHub write; there is no `From`/`Into` between `PrivateAnnotation` and the write types, and `er::comment_boundary` guards hand-built GitHub intents.
