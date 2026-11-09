@@ -130,7 +130,7 @@ pub fn run_models_command(cmd: &[String]) -> Result<String> {
     }
     let program = &cmd[0];
     let args = &cmd[1..];
-    let output = crate::proc::run_with_timeout(Command::new(program).args(args), COMMAND_TIMEOUT)
+    let output = er_git::proc::run_with_timeout(Command::new(program).args(args), COMMAND_TIMEOUT)
         .with_context(|| format!("failed to run models_command: {program}"))?;
 
     if !output.status.success() {

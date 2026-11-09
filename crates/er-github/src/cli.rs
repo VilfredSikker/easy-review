@@ -94,6 +94,29 @@ impl CliGitHub {
         max_stdout: Option<usize>,
         env: &[(&str, &str)],
     ) -> Result<GhOutput, GhError> {
+        self.run_gh_call(args, dir, max_stdout, env, er_git::proc::GH_TIMEOUT)
+    }
+
+    /// [`Self::run_gh`] with its own timeout, for the one listing that used to
+    /// run unbounded (the desktop PR cache).
+    pub(crate) fn run_gh_timed(
+        &self,
+        args: &[String],
+        dir: Option<&str>,
+        max_stdout: Option<usize>,
+        timeout: std::time::Duration,
+    ) -> Result<GhOutput, GhError> {
+        self.run_gh_call(args, dir, max_stdout, &[], timeout)
+    }
+
+    fn run_gh_call(
+        &self,
+        args: &[String],
+        dir: Option<&str>,
+        max_stdout: Option<usize>,
+        env: &[(&str, &str)],
+        timeout: std::time::Duration,
+    ) -> Result<GhOutput, GhError> {
         let include = args.first().is_some_and(|arg| arg == "api");
         let paginated = args.iter().any(|arg| arg == "--paginate");
         let mut final_args = args.to_vec();
@@ -103,7 +126,7 @@ impl CliGitHub {
         let call = GhCall {
             args: &final_args,
             dir,
-            timeout: er_git::proc::GH_TIMEOUT,
+            timeout,
             max_stdout,
             env,
         };
@@ -116,6 +139,11 @@ impl CliGitHub {
             }
         }
         Ok(output)
+    }
+
+    /// Start `gh` and return without waiting (opening a browser).
+    pub(crate) fn run_detached(&self, args: &[String], dir: Option<&str>) -> std::io::Result<()> {
+        self.runner.spawn_detached(args, dir)
     }
 
     pub(crate) fn gh_ok(&self, args: &[String], dir: Option<&str>) -> Result<String, GhError> {
@@ -677,6 +705,38 @@ impl GitHub for CliGitHub {
 
     fn open_pr_refs_json(&self, repo_slug: &str) -> Result<String, GhError> {
         CliGitHub::open_pr_refs_json(self, repo_slug)
+    }
+
+    fn pr_view_json(
+        &self,
+        repo_slug: Option<&str>,
+        dir: Option<&str>,
+        number: u64,
+        fields: &str,
+    ) -> Result<Vec<u8>, GhError> {
+        CliGitHub::pr_view_json(self, repo_slug, dir, number, fields)
+    }
+
+    fn pr_list_json(
+        &self,
+        repo_slug: &str,
+        state: &str,
+        limit: usize,
+        fields: &str,
+    ) -> Result<Vec<u8>, GhError> {
+        CliGitHub::pr_list_json(self, repo_slug, state, limit, fields)
+    }
+
+    fn repo_name_with_owner(&self, dir: &str) -> Result<String, GhError> {
+        CliGitHub::repo_name_with_owner(self, dir)
+    }
+
+    fn auth_token(&self, hostname: &str) -> Result<String, GhError> {
+        CliGitHub::auth_token(self, hostname)
+    }
+
+    fn open_pr_in_browser(&self, dir: &str, number: u64, repo_slug: Option<&str>) -> bool {
+        CliGitHub::open_pr_in_browser(self, dir, number, repo_slug)
     }
 
     fn pr_metadata_remote(

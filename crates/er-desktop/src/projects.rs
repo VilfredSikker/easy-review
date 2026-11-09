@@ -400,25 +400,12 @@ fn current_branch(git: &dyn er_engine::git::Git, root_path: &str) -> Option<Stri
 /// reduce to a GitHub slug. One `gh repo view` costs ~590ms of network on top
 /// of a ~50ms process spawn, so callers on the snapshot path must not reach
 /// this in the common case.
-fn query_remote(root_path: &str) -> Option<String> {
-    // Bounded, because `build_worktrees` reaches this with the App lock held:
-    // an unresponsive GitHub must return `None` rather than stall every command
-    // in the app.
-    let mut cmd = std::process::Command::new("gh");
-    cmd.args([
-        "repo",
-        "view",
-        "--json",
-        "nameWithOwner",
-        "--jq",
-        ".nameWithOwner",
-    ])
-    .current_dir(root_path);
-    let out = er_engine::proc::run_with_timeout(&mut cmd, er_engine::proc::GH_TIMEOUT).ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+fn query_remote(github: &dyn er_engine::github::GitHub, root_path: &str) -> Option<String> {
+    // Bounded by the handle's timeout, because `build_worktrees` reaches this
+    // with the App lock held: an unresponsive GitHub must return `None` rather
+    // than stall every command in the app.
+    let s = github.repo_name_with_owner(root_path).ok()?;
+    let s = s.trim().to_string();
     if s.is_empty() {
         None
     } else {
@@ -485,11 +472,15 @@ fn local_remote_url(git: &dyn er_engine::git::Git, root_path: &str) -> Option<St
 /// same remote `gh` reads and costs ~24ms instead of a ~640ms network round
 /// trip. `gh` runs only when there is no remote or the URL does not reduce to
 /// a slug, so offline use and unparseable remotes keep the previous behaviour.
-pub fn resolve_repo_remote(git: &dyn er_engine::git::Git, root_path: &str) -> Option<String> {
+pub fn resolve_repo_remote(
+    github: &dyn er_engine::github::GitHub,
+    git: &dyn er_engine::git::Git,
+    root_path: &str,
+) -> Option<String> {
     if let Some(slug) = local_remote_url(git, root_path).and_then(|u| slug_from_remote_url(&u)) {
         return Some(slug);
     }
-    query_remote(root_path).filter(|s| !s.is_empty())
+    query_remote(github, root_path).filter(|s| !s.is_empty())
 }
 
 /// Lightweight tab identity for project registration (testable without git/gh).
@@ -588,10 +579,11 @@ pub fn sync_projects_from_tabs(tabs: &[er_engine::app::TabState]) {
     use std::collections::HashSet;
     let refs: Vec<TabProjectRef> = tabs.iter().map(TabProjectRef::from_tab).collect();
     let git = &*tabs[0].ports.git;
+    let github = &*tabs[0].ports.github;
     let mut seen_roots = HashSet::new();
     for r in &refs {
         if !r.repo_root.is_empty() && seen_roots.insert(r.repo_root.clone()) {
-            let _ = auto_register(git, &r.repo_root);
+            let _ = auto_register(github, git, &r.repo_root);
         }
     }
     let mut seen_remotes = HashSet::new();
@@ -631,7 +623,11 @@ fn project_root_for(git: &dyn er_engine::git::Git, path: &str) -> Option<String>
 
 /// Register the repository containing `root_path`, or `None` when the path
 /// isn't in a repository. Returns the existing row when one already covers it.
-pub fn auto_register(git: &dyn er_engine::git::Git, root_path: &str) -> Option<ProjectRecord> {
+pub fn auto_register(
+    github: &dyn er_engine::github::GitHub,
+    git: &dyn er_engine::git::Git,
+    root_path: &str,
+) -> Option<ProjectRecord> {
     let root_path = project_root_for(git, root_path)?;
     let root_path = root_path.as_str();
     let mut file = load();
@@ -650,7 +646,7 @@ pub fn auto_register(git: &dyn er_engine::git::Git, root_path: &str) -> Option<P
         .unwrap_or("project")
         .to_string();
     let id = sanitize_id(&folder);
-    let remote = query_remote(root_path);
+    let remote = query_remote(github, root_path);
 
     // Upsert by root_path — an existing row here has `remote == None` (the fast
     // path returned otherwise), so save only when the remote is actually filled.
@@ -1420,9 +1416,9 @@ mod tests {
             "git@github.com:er-test-no-such-org-zz9/no-such-repo.git",
         )]);
         let root = tmp.path().join("repo");
+        let ports = er_engine::ports::Ports::cli();
         assert_eq!(
-            resolve_repo_remote(&*er_engine::ports::Ports::cli().git, root.to_str().unwrap())
-                .as_deref(),
+            resolve_repo_remote(&*ports.github, &*ports.git, root.to_str().unwrap()).as_deref(),
             Some("er-test-no-such-org-zz9/no-such-repo")
         );
     }

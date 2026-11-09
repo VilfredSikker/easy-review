@@ -3540,6 +3540,7 @@ fn build_snapshot_inner(
             Vec::new()
         } else {
             build_worktrees(
+                &*tab.ports.github,
                 &*tab.ports.git,
                 &tab.repo_root,
                 &tab.base_branch,
@@ -4033,12 +4034,13 @@ fn worktrees_list_and_key(
 /// identical subprocesses for one answer, on the snapshot path with the App lock
 /// held.
 fn compute_worktrees_meta(
+    github: &dyn er_engine::github::GitHub,
     git: &dyn er_engine::git::Git,
     wts: &[er_engine::git::Worktree],
     repo_root: &str,
     base_branch: &str,
 ) -> WorktreeMetaMap {
-    let repo_remote = crate::projects::resolve_repo_remote(git, repo_root);
+    let repo_remote = crate::projects::resolve_repo_remote(github, git, repo_root);
     let merges = pr_branch_merges(git, repo_root);
     let merged = merged_branches(git, repo_root, base_branch, wts.len());
     wts.iter()
@@ -4098,7 +4100,7 @@ pub fn kick_worktrees_warm(ports: er_engine::ports::Ports, repo_root: &str, base
     std::thread::spawn(move || {
         let (wts, key) = worktrees_list_and_key(&*ports.git, &pair.0, &pair.1);
         let _ = worktrees_meta_cached(key, || {
-            compute_worktrees_meta(&*ports.git, &wts, &pair.0, &pair.1)
+            compute_worktrees_meta(&*ports.github, &*ports.git, &wts, &pair.0, &pair.1)
         });
         if let Ok(mut g) = WORKTREES_WARM_IN_FLIGHT.lock() {
             if g.as_ref() == Some(&pair) {
@@ -4109,6 +4111,7 @@ pub fn kick_worktrees_warm(ports: er_engine::ports::Ports, repo_root: &str, base
 }
 
 fn build_worktrees(
+    github: &dyn er_engine::github::GitHub,
     git: &dyn er_engine::git::Git,
     repo_root: &str,
     base_branch: &str,
@@ -4117,7 +4120,7 @@ fn build_worktrees(
     let (wts, key) = worktrees_list_and_key(git, repo_root, base_branch);
 
     let meta = worktrees_meta_cached(key, || {
-        compute_worktrees_meta(git, &wts, repo_root, base_branch)
+        compute_worktrees_meta(github, git, &wts, repo_root, base_branch)
     });
 
     wts.into_iter()
