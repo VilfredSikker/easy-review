@@ -11781,26 +11781,15 @@ mod tests {
         assert!(ELABORATE_NOTE_AI_PROMPT.contains("Do not edit any file"));
     }
 
-    struct ReviewFlowTestDir(std::path::PathBuf);
+    struct ReviewFlowTestDir(tempfile::TempDir);
 
     impl ReviewFlowTestDir {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "er-desktop-review-flow-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
+            Self(tempfile::tempdir().expect("review flow test dir"))
         }
-    }
 
-    impl Drop for ReviewFlowTestDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+        fn path(&self) -> &std::path::Path {
+            self.0.path()
         }
     }
 
@@ -11819,7 +11808,7 @@ mod tests {
     }
 
     fn init_local_branch_fixture(dir: &ReviewFlowTestDir) -> std::path::PathBuf {
-        let repo = dir.0.join("branch-repo");
+        let repo = dir.path().join("branch-repo");
         std::fs::create_dir_all(&repo).unwrap();
         git_fixture_command(&repo, &["init", "-q"]);
         git_fixture_command(&repo, &["checkout", "-qb", "main"]);
@@ -11849,8 +11838,8 @@ mod tests {
         use er_engine::config::{AiHubConfig, AiModelConfig, AiProviderConfig};
         use std::sync::{Arc, Mutex};
 
-        let repo = dir.0.join("repo");
-        let bucket = dir.0.join("bucket");
+        let repo = dir.path().join("repo");
+        let bucket = dir.path().join("bucket");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::create_dir_all(&bucket).unwrap();
         let bucket_for_script = bucket.to_string_lossy();
@@ -12073,7 +12062,7 @@ mod tests {
     fn local_branch_tab_uses_linked_checkout_without_changing_repo_root() {
         let dir = ReviewFlowTestDir::new();
         let repo = init_local_branch_fixture(&dir);
-        let linked = dir.0.join("linked-checkout");
+        let linked = dir.path().join("linked-checkout");
         let linked_arg = linked.to_string_lossy().into_owned();
         git_fixture_command(
             &repo,
@@ -12158,19 +12147,8 @@ mod tests {
         }
     }
 
-    // Serialize env-var-touching tests to avoid races on parallel runners.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn with_fake_claude<R>(value: &str, f: impl FnOnce() -> R) -> R {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let prev = std::env::var("ER_FAKE_CLAUDE").ok();
-        std::env::set_var("ER_FAKE_CLAUDE", value);
-        let out = f();
-        match prev {
-            Some(v) => std::env::set_var("ER_FAKE_CLAUDE", v),
-            None => std::env::remove_var("ER_FAKE_CLAUDE"),
-        }
-        out
+        er_engine::test_support::with_var("ER_FAKE_CLAUDE", value, f)
     }
 
     #[test]
@@ -12978,54 +12956,55 @@ mod tests {
     fn remote_pr_tab_from_entry_builds_without_network() {
         use crate::remote_pr_open_cache::RemotePrOpenEntry;
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let pr_ref = er_engine::github::PrRef {
-            owner: "o".to_string(),
-            repo: "r".to_string(),
-            number: 9,
-        };
-        const DIFF: &str = "diff --git a/f.rs b/f.rs\nindex 0000000..1111111 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1,2 @@\n fn f() {}\n+fn f2() {}\n";
-        let mut tab = remote_pr_tab_from_entry(
-            &pr_ref,
-            RemotePrOpenEntry {
-                base_branch: "main".into(),
-                head_branch: "feature".into(),
-                raw_diff: DIFF.into(),
-                pr_data: None,
-                pr_commits: Vec::new(),
-                head_oid: Some("oid-1".into()),
-                last_touched: 0,
-            },
-            &er_engine::ports::Ports::for_test(),
-        )
-        .unwrap();
-        assert_eq!(tab.remote_repo.as_deref(), Some("o/r"));
-        assert_eq!(tab.pr_number, Some(9));
-        assert_eq!(tab.base_branch, "main");
-        assert_eq!(
-            tab.last_diff_head_oid.as_deref(),
-            Some("oid-1"),
-            "staleness baseline = the oid the cached diff was fetched at"
-        );
-        assert_eq!(tab.files.len(), 1);
-        assert_eq!(tab.preview_head_oid.as_deref(), Some("oid-1"));
-        assert_eq!(
-            tab.preloaded_branch_raw
-                .as_ref()
-                .unwrap()
-                .preview_head_oid
-                .as_deref(),
-            Some("oid-1")
-        );
-        let preview_context = tab.preview_context_key();
-        tab.last_diff_head_oid = Some("newer-freshness-baseline".into());
-        assert_eq!(tab.preview_context_key(), preview_context);
-        assert_eq!(tab.files[0].path, "f.rs");
-        assert!(!tab.needs_initial_refresh, "cache-opened tab is not a stub");
-        assert!(
-            tab.preloaded_branch_raw.is_some(),
-            "cache entry seeds the branch preload (branch scope == raw_diff for remote tabs)"
-        );
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let pr_ref = er_engine::github::PrRef {
+                owner: "o".to_string(),
+                repo: "r".to_string(),
+                number: 9,
+            };
+            const DIFF: &str = "diff --git a/f.rs b/f.rs\nindex 0000000..1111111 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1,2 @@\n fn f() {}\n+fn f2() {}\n";
+            let mut tab = remote_pr_tab_from_entry(
+                &pr_ref,
+                RemotePrOpenEntry {
+                    base_branch: "main".into(),
+                    head_branch: "feature".into(),
+                    raw_diff: DIFF.into(),
+                    pr_data: None,
+                    pr_commits: Vec::new(),
+                    head_oid: Some("oid-1".into()),
+                    last_touched: 0,
+                },
+                &er_engine::ports::Ports::for_test(),
+            )
+            .unwrap();
+            assert_eq!(tab.remote_repo.as_deref(), Some("o/r"));
+            assert_eq!(tab.pr_number, Some(9));
+            assert_eq!(tab.base_branch, "main");
+            assert_eq!(
+                tab.last_diff_head_oid.as_deref(),
+                Some("oid-1"),
+                "staleness baseline = the oid the cached diff was fetched at"
+            );
+            assert_eq!(tab.files.len(), 1);
+            assert_eq!(tab.preview_head_oid.as_deref(), Some("oid-1"));
+            assert_eq!(
+                tab.preloaded_branch_raw
+                    .as_ref()
+                    .unwrap()
+                    .preview_head_oid
+                    .as_deref(),
+                Some("oid-1")
+            );
+            let preview_context = tab.preview_context_key();
+            tab.last_diff_head_oid = Some("newer-freshness-baseline".into());
+            assert_eq!(tab.preview_context_key(), preview_context);
+            assert_eq!(tab.files[0].path, "f.rs");
+            assert!(!tab.needs_initial_refresh, "cache-opened tab is not a stub");
+            assert!(
+                tab.preloaded_branch_raw.is_some(),
+                "cache entry seeds the branch preload (branch scope == raw_diff for remote tabs)"
+            );
+        });
     }
 
     #[test]

@@ -14,6 +14,9 @@ default = ["ui", "watch", "highlight"]
 ui = ["dep:tui-textarea-2"]
 watch = ["dep:notify", "dep:notify-debouncer-mini"]
 highlight = ["dep:syntect", "dep:two-face"]
+# Lets a dependent's tests scope the storage root to one thread instead of
+# mutating the process environment while parallel tests read it.
+test-support = []
 
 [dependencies]
 er-git = { path = "../er-git" }
