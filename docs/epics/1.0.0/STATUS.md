@@ -47,7 +47,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P20 | [#391](https://github.com/VilfredSikker/easy-review/issues/391) Findings projection | E | sonnet | ⬜ | | after P18 |
 | P21 | [#392](https://github.com/VilfredSikker/easy-review/issues/392) Scoped re-review as its own artifact | E/F | opus | ⬜ | | after P20 |
 | P22 | [#393](https://github.com/VilfredSikker/easy-review/issues/393) App records through the store | F | opus | ⬜ | | after P13, P15 |
-| P23 | [#394](https://github.com/VilfredSikker/easy-review/issues/394) Cross-process locks, change notifications | C | opus | 🔵 | [#434](https://github.com/VilfredSikker/easy-review/pull/434) | D4; in review; ADR 0057 |
+| P23 | [#394](https://github.com/VilfredSikker/easy-review/issues/394) Cross-process locks, change notifications | C | opus | 🔧 | [#434](https://github.com/VilfredSikker/easy-review/pull/434) | D4; fix-then-merge (update_durable untested); ADR 0057 |
 | P24 | [#395](https://github.com/VilfredSikker/easy-review/issues/395) MCP uploads through the store | C | opus | ⬜ | | after P19, P23 |
 
 ## Designs
