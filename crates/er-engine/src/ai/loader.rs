@@ -135,6 +135,9 @@ fn section_hashes(raw_diff: &str, wanted: Option<&HashSet<String>>) -> HashMap<S
 }
 
 /// True when `stored` names the same branch as `expected` (exact or slug match).
+///
+/// The slug carries a hash of the raw name, so two branches that only slugify
+/// alike (`feat/x` and `feat-x`) are different folders and do not match.
 pub fn storage_branches_match(expected: &str, stored: &str) -> bool {
     if expected == stored {
         return true;
@@ -848,6 +851,11 @@ mod tests {
             "claude/dev-5067-remove-async-media-export",
             "dependabot/npm_and_yarn/foo",
         ));
+    }
+
+    #[test]
+    fn storage_branches_match_keeps_slug_collisions_apart() {
+        assert!(!storage_branches_match("feat/x", "feat-x"));
     }
 
     #[test]
