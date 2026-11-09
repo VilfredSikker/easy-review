@@ -46,4 +46,7 @@ pub mod uninstall;
 #[cfg(feature = "watch")]
 pub mod watch;
 
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 pub use paths::ErRoot;

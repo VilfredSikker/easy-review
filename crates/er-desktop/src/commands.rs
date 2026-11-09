@@ -12147,19 +12147,8 @@ mod tests {
         }
     }
 
-    // Serialize env-var-touching tests to avoid races on parallel runners.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn with_fake_claude<R>(value: &str, f: impl FnOnce() -> R) -> R {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let prev = std::env::var("ER_FAKE_CLAUDE").ok();
-        std::env::set_var("ER_FAKE_CLAUDE", value);
-        let out = f();
-        match prev {
-            Some(v) => std::env::set_var("ER_FAKE_CLAUDE", v),
-            None => std::env::remove_var("ER_FAKE_CLAUDE"),
-        }
-        out
+        er_engine::test_support::with_var("ER_FAKE_CLAUDE", value, f)
     }
 
     #[test]
