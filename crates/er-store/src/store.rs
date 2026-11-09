@@ -1,11 +1,13 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use crate::artifact::{Artifact, Mode};
 use crate::envelope::{self, Envelope, Loaded, Stored, Unreadable};
-use crate::error::StoreError;
+use crate::error::{StoreError, UpdateError};
 use crate::key::{ArtifactKey, RelPath, Scope, SlotName};
+use crate::lock::{ScopeGuard, DEFAULT_LOCK_TIMEOUT};
 use crate::time::format_rfc3339_utc;
 
 /// The largest artifact or text file a read accepts and a write produces.
@@ -21,7 +23,7 @@ fn temp_name(file_name: &str, pid: u32, sequence: u64) -> String {
     format!(".{file_name}.{pid}.{sequence}.tmp")
 }
 
-fn now_epoch_secs() -> u64 {
+pub(crate) fn now_epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
@@ -164,7 +166,27 @@ impl ArtifactStore {
     }
 
     pub fn write<T: Artifact>(&self, key: &ArtifactKey<T>, value: &T) -> Result<(), StoreError> {
-        self.write_impl(key, value, false)
+        self.write_with_timeout(key, value, DEFAULT_LOCK_TIMEOUT)
+    }
+
+    pub fn write_with_timeout<T: Artifact>(
+        &self,
+        key: &ArtifactKey<T>,
+        value: &T,
+        timeout: Duration,
+    ) -> Result<(), StoreError> {
+        let guard = self.lock_scope(key.scope(), timeout)?;
+        self.write_locked(&guard, key, value)
+    }
+
+    pub fn write_locked<T: Artifact>(
+        &self,
+        guard: &ScopeGuard,
+        key: &ArtifactKey<T>,
+        value: &T,
+    ) -> Result<(), StoreError> {
+        self.check_guard(guard, key.scope())?;
+        self.write_body(key, value, false)
     }
 
     pub fn write_durable<T: Artifact>(
@@ -172,10 +194,45 @@ impl ArtifactStore {
         key: &ArtifactKey<T>,
         value: &T,
     ) -> Result<(), StoreError> {
-        self.write_impl(key, value, true)
+        self.write_durable_with_timeout(key, value, DEFAULT_LOCK_TIMEOUT)
     }
 
-    fn write_impl<T: Artifact>(
+    pub fn write_durable_with_timeout<T: Artifact>(
+        &self,
+        key: &ArtifactKey<T>,
+        value: &T,
+        timeout: Duration,
+    ) -> Result<(), StoreError> {
+        let guard = self.lock_scope(key.scope(), timeout)?;
+        self.write_durable_locked(&guard, key, value)
+    }
+
+    pub fn write_durable_locked<T: Artifact>(
+        &self,
+        guard: &ScopeGuard,
+        key: &ArtifactKey<T>,
+        value: &T,
+    ) -> Result<(), StoreError> {
+        self.check_guard(guard, key.scope())?;
+        self.write_body(key, value, true)
+    }
+
+    fn check_guard(&self, guard: &ScopeGuard, scope: &Scope) -> Result<(), StoreError> {
+        let raw = self.scope_dir(scope);
+        let canonical = std::fs::canonicalize(&raw).map_err(|_| StoreError::WrongScope {
+            guard: guard.scope_dir().to_path_buf(),
+            key: raw.clone(),
+        })?;
+        if canonical != guard.scope_dir() {
+            return Err(StoreError::WrongScope {
+                guard: guard.scope_dir().to_path_buf(),
+                key: canonical,
+            });
+        }
+        Ok(())
+    }
+
+    fn write_body<T: Artifact>(
         &self,
         key: &ArtifactKey<T>,
         value: &T,
@@ -195,6 +252,68 @@ impl ArtifactStore {
             return Err(StoreError::TooLarge { bytes });
         }
         Self::write_bytes(&self.path(key), text.as_bytes(), durable)
+    }
+
+    /// Read, apply and write under one hold, so a second writer cannot lose
+    /// an update between the read and the write.
+    pub fn update<T, E, F>(
+        &self,
+        key: &ArtifactKey<T>,
+        timeout: Duration,
+        f: F,
+    ) -> Result<(T, Option<Unreadable>), UpdateError<E>>
+    where
+        T: Artifact,
+        F: FnOnce(Option<T>) -> Result<T, E>,
+    {
+        self.update_with(key, timeout, false, f)
+    }
+
+    /// [`Self::update`] with the durable write path.
+    pub fn update_durable<T, E, F>(
+        &self,
+        key: &ArtifactKey<T>,
+        timeout: Duration,
+        f: F,
+    ) -> Result<(T, Option<Unreadable>), UpdateError<E>>
+    where
+        T: Artifact,
+        F: FnOnce(Option<T>) -> Result<T, E>,
+    {
+        self.update_with(key, timeout, true, f)
+    }
+
+    fn update_with<T, E, F>(
+        &self,
+        key: &ArtifactKey<T>,
+        timeout: Duration,
+        durable: bool,
+        f: F,
+    ) -> Result<(T, Option<Unreadable>), UpdateError<E>>
+    where
+        T: Artifact,
+        F: FnOnce(Option<T>) -> Result<T, E>,
+    {
+        let guard = self.lock_scope(key.scope(), timeout)?;
+        let (current, unreadable) = match self.read(key)? {
+            Loaded::Found(stored) => (Some(stored.value), None),
+            Loaded::Absent => (None, None),
+            Loaded::Unreadable(Unreadable::NewerVersion { found }) => {
+                return Err(UpdateError::Store(StoreError::NewerVersion {
+                    path: self.path(key),
+                    found,
+                    expected: T::VERSION,
+                }));
+            }
+            Loaded::Unreadable(reason) => (None, Some(reason)),
+        };
+        let value = f(current).map_err(UpdateError::Apply)?;
+        if durable {
+            self.write_durable_locked(&guard, key, &value)?;
+        } else {
+            self.write_locked(&guard, key, &value)?;
+        }
+        Ok((value, unreadable))
     }
 
     fn write_bytes(path: &Path, bytes: &[u8], durable: bool) -> Result<(), StoreError> {
@@ -217,6 +336,16 @@ impl ArtifactStore {
     }
 
     pub fn delete<T: Artifact>(&self, key: &ArtifactKey<T>) -> Result<(), StoreError> {
+        let guard = self.lock_scope(key.scope(), DEFAULT_LOCK_TIMEOUT)?;
+        self.delete_locked(&guard, key)
+    }
+
+    pub fn delete_locked<T: Artifact>(
+        &self,
+        guard: &ScopeGuard,
+        key: &ArtifactKey<T>,
+    ) -> Result<(), StoreError> {
+        self.check_guard(guard, key.scope())?;
         remove_file(&self.path(key))
     }
 
@@ -297,16 +426,31 @@ impl ArtifactStore {
     }
 
     pub fn write_text(&self, scope: &Scope, file: &RelPath, text: &str) -> Result<(), StoreError> {
+        let guard = self.lock_scope(scope, DEFAULT_LOCK_TIMEOUT)?;
+        self.write_text_locked(&guard, file, text)
+    }
+
+    pub fn write_text_locked(
+        &self,
+        guard: &ScopeGuard,
+        file: &RelPath,
+        text: &str,
+    ) -> Result<(), StoreError> {
         let bytes = text.as_bytes();
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if length > MAX_ARTIFACT_BYTES {
             return Err(StoreError::TooLarge { bytes: length });
         }
-        Self::write_bytes(&self.text_path(scope, file), bytes, false)
+        Self::write_bytes(&guard.scope_dir().join(file.as_path()), bytes, false)
     }
 
     pub fn delete_text(&self, scope: &Scope, file: &RelPath) -> Result<(), StoreError> {
-        remove_file(&self.text_path(scope, file))
+        let guard = self.lock_scope(scope, DEFAULT_LOCK_TIMEOUT)?;
+        self.delete_text_locked(&guard, file)
+    }
+
+    pub fn delete_text_locked(&self, guard: &ScopeGuard, file: &RelPath) -> Result<(), StoreError> {
+        remove_file(&guard.scope_dir().join(file.as_path()))
     }
 
     pub fn text_path(&self, scope: &Scope, file: &RelPath) -> PathBuf {
@@ -610,11 +754,15 @@ mod tests {
         let key = key::<TestEnveloped>(&scope, ());
         store.write(&key, &TestEnveloped { value: 1 }).unwrap();
         let parent = store.path(&key).parent().unwrap().to_path_buf();
-        let names: Vec<String> = std::fs::read_dir(&parent)
+        let mut names: Vec<String> = std::fs::read_dir(&parent)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, vec!["test-enveloped.json".to_string()]);
+        names.sort();
+        assert_eq!(
+            names,
+            vec![".lock".to_string(), "test-enveloped.json".to_string()]
+        );
 
         std::fs::remove_file(store.path(&key)).unwrap();
         std::fs::create_dir_all(store.path(&key)).unwrap();

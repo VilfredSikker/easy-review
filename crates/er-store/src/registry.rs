@@ -167,6 +167,14 @@ impl Registry {
         Ok(out)
     }
 
+    /// The registered kind for a path relative to the scope directory.
+    pub fn kind_for(&self, relative: &Path) -> Option<&'static str> {
+        self.entries
+            .iter()
+            .find(|entry| entry.pattern.matches_rooted(relative))
+            .map(|entry| entry.kind)
+    }
+
     fn accounted(&self, relative: &Path, ignore: &[Pattern]) -> bool {
         self.entries
             .iter()
