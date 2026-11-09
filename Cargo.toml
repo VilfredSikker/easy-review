@@ -111,6 +111,22 @@ budgeted = [
 # groups that never use each other, each spanning min-group-lines or more.
 impl-cohesion = { max-groups = 1, min-group-lines = 40 }
 
+# Direct `std::fs` access in these files is an error: they read and write
+# through `er_store::ArtifactStore`. The list only grows as modules migrate.
+sidecar-fs-deny = [
+  "crates/er-engine/src/ai/annotation_store.rs",
+  "crates/er-engine/src/ai/promote.rs",
+]
+
+# A hand-built GitHub comment intent is an error outside these files; every
+# other module goes through `ai::promote`. The list is shrink-only: an entry
+# with no findings fails as stale.
+comment-boundary = { allow = [
+  "crates/er-engine/src/app/state/github_post.rs",
+  "crates/er-engine/src/github_post.rs",
+  "crates/er-desktop/src/github_comment_builders.rs",
+] }
+
 # `Command::new("git")` outside the crate that owns git: call the Git trait.
 # There is no allow-list; every spawn outside the home crate is an error.
 [workspace.metadata.lint-gate.spawn.git]

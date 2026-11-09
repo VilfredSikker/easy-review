@@ -18,7 +18,7 @@ use std::process::{Command, Stdio};
 use anyhow::{bail, Context};
 use er_lint_gate::diagnostics::Diagnostic;
 use er_lint_gate::ratchet::{Baseline, Entry};
-use er_lint_gate::{cohesion, diagnostics, evaluate, spawn};
+use er_lint_gate::{cohesion, comment_boundary, diagnostics, evaluate, sidecar_fs, spawn};
 
 const BUDGET_FILE: &str = "clippy-warning-budget.json";
 
@@ -70,6 +70,8 @@ struct GateConfig {
     impl_cohesion: cohesion::Options,
     spawn_git: SpawnConfig,
     spawn_gh: SpawnConfig,
+    sidecar_fs_deny: Vec<String>,
+    comment_boundary_allow: Vec<String>,
 }
 
 /// `[workspace.metadata.lint-gate]` in the root manifest.
@@ -104,7 +106,22 @@ fn gate_config(root: &Path) -> anyhow::Result<GateConfig> {
         },
         spawn_git: spawn_config(table, "git")?,
         spawn_gh: spawn_config(table, "gh")?,
+        sidecar_fs_deny: string_list(table.get("sidecar-fs-deny"), "sidecar-fs-deny")?,
+        comment_boundary_allow: string_list(
+            table.get("comment-boundary").and_then(|c| c.get("allow")),
+            "comment-boundary.allow",
+        )?,
     })
+}
+
+fn string_list(value: Option<&toml::Value>, key: &str) -> anyhow::Result<Vec<String>> {
+    Ok(value
+        .and_then(toml::Value::as_array)
+        .with_context(|| format!("[workspace.metadata.lint-gate] {key} must be a list"))?
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .map(str::to_string)
+        .collect())
 }
 
 fn spawn_config(table: &toml::Value, program: &str) -> anyhow::Result<SpawnConfig> {
@@ -205,6 +222,36 @@ fn spawn_diagnostics(
     ))
 }
 
+fn sidecar_fs_diagnostics(root: &Path, deny: &[String]) -> anyhow::Result<Vec<Diagnostic>> {
+    let mut by_file = BTreeMap::new();
+    for rel in crate_sources(root)? {
+        let source = std::fs::read_to_string(root.join(&rel))?;
+        let file = rel.to_string_lossy().replace('\\', "/");
+        let findings = sidecar_fs::findings(&source);
+        if !findings.is_empty() {
+            by_file.insert(file, findings);
+        }
+    }
+    Ok(sidecar_fs::evaluate(&by_file, deny, sidecar_fs::CODE))
+}
+
+fn comment_boundary_diagnostics(root: &Path, allow: &[String]) -> anyhow::Result<Vec<Diagnostic>> {
+    let mut by_file = BTreeMap::new();
+    for rel in crate_sources(root)? {
+        let source = std::fs::read_to_string(root.join(&rel))?;
+        let file = rel.to_string_lossy().replace('\\', "/");
+        let findings = comment_boundary::findings(&source);
+        if !findings.is_empty() {
+            by_file.insert(file, findings);
+        }
+    }
+    Ok(comment_boundary::evaluate(
+        &by_file,
+        allow,
+        comment_boundary::CODE,
+    ))
+}
+
 fn read_budget(path: &Path) -> anyhow::Result<Baseline> {
     if !path.exists() {
         return Ok(Baseline::new());
@@ -238,6 +285,8 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     let cohesion = cohesion_diagnostics(&root, config.impl_cohesion)?;
     let spawn = spawn_diagnostics(&root, &config.spawn_git, "git", "Git")?;
     let spawn_gh = spawn_diagnostics(&root, &config.spawn_gh, "gh", "GitHub")?;
+    let sidecar = sidecar_fs_diagnostics(&root, &config.sidecar_fs_deny)?;
+    let boundary = comment_boundary_diagnostics(&root, &config.comment_boundary_allow)?;
     if flags.cohesion_only {
         for d in &cohesion {
             print!("{}", d.rendered);
@@ -263,6 +312,8 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     diags.extend(cohesion);
     diags.extend(spawn);
     diags.extend(spawn_gh);
+    diags.extend(sidecar);
+    diags.extend(boundary);
     let e = evaluate(diags, &config.budgeted, &budget, output.status.success());
 
     let mut problems = Vec::new();
@@ -358,6 +409,8 @@ mod tests {
             r#"
 [workspace.metadata.lint-gate]
 budgeted = []
+sidecar-fs-deny = ["crates/er-engine/src/ai/annotation_store.rs"]
+comment-boundary = { allow = ["crates/er-engine/src/github_post.rs"] }
 
 [workspace.metadata.lint-gate.impl-cohesion]
 max-groups = 1
@@ -378,5 +431,13 @@ allow = ["crates/x/src/a.rs"]
 
         assert!(config.spawn_git.allow.is_empty());
         assert_eq!(config.spawn_gh.allow, ["crates/x/src/a.rs"]);
+        assert_eq!(
+            config.sidecar_fs_deny,
+            ["crates/er-engine/src/ai/annotation_store.rs"]
+        );
+        assert_eq!(
+            config.comment_boundary_allow,
+            ["crates/er-engine/src/github_post.rs"]
+        );
     }
 }

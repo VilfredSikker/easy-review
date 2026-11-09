@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
-use syn::{Attribute, Expr, ExprCall, ExprLit, Item, Lit, UseTree};
+use syn::{Expr, ExprCall, ExprLit, Item, Lit, UseTree};
 
-use crate::attrs::is_cfg_test;
+use crate::attrs::{is_cfg_test, item_attrs};
 use crate::diagnostics::Diagnostic;
 
 /// The code the gate reports these findings under.
@@ -169,27 +169,6 @@ fn is_command_new(func: &Expr, aliases: &BTreeSet<String>) -> bool {
     let owner = &segments[segments.len() - 2].ident;
     (owner == "Command" || aliases.contains(&owner.to_string()))
         && segments[segments.len() - 1].ident == "new"
-}
-
-fn item_attrs(item: &Item) -> Option<&[Attribute]> {
-    match item {
-        Item::Const(item) => Some(&item.attrs),
-        Item::Enum(item) => Some(&item.attrs),
-        Item::ExternCrate(item) => Some(&item.attrs),
-        Item::Fn(item) => Some(&item.attrs),
-        Item::ForeignMod(item) => Some(&item.attrs),
-        Item::Impl(item) => Some(&item.attrs),
-        Item::Macro(item) => Some(&item.attrs),
-        Item::Mod(item) => Some(&item.attrs),
-        Item::Static(item) => Some(&item.attrs),
-        Item::Struct(item) => Some(&item.attrs),
-        Item::Trait(item) => Some(&item.attrs),
-        Item::TraitAlias(item) => Some(&item.attrs),
-        Item::Type(item) => Some(&item.attrs),
-        Item::Union(item) => Some(&item.attrs),
-        Item::Use(item) => Some(&item.attrs),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
