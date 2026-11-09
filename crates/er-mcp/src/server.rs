@@ -714,7 +714,7 @@ impl ErMcp {
         }
     }
 
-    #[tool(description = "List Easy Review projects from ~/.config/er/projects.json.")]
+    #[tool(description = crate::projects::PROJECTS_LIST_DESCRIPTION)]
     async fn projects_list(&self) -> Result<CallToolResult, McpError> {
         let file = projects::load_projects();
         text_json(&json!({

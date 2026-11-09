@@ -1,82 +1,14 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ProjectsFile {
-    #[serde(default)]
-    pub projects: Vec<ProjectRecord>,
-    #[serde(default)]
-    pub active_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectRecord {
-    pub id: String,
-    pub name: String,
-    pub root_path: String,
-    #[serde(default)]
-    pub remote: Option<String>,
-    #[serde(default)]
-    pub dismissed_prs: Vec<u64>,
-    /// PR numbers the user has explicitly chosen to surface in the sidebar
-    /// even if they don't naturally pass the author/assignee/reviewer filter.
-    #[serde(default)]
-    pub tracked_prs: Vec<u64>,
-    /// Names of branches the user has chosen to surface in the sidebar.
-    /// Empty means "current only" — `snapshot::build_tracked_branches` always
-    /// also includes the currently-checked-out branch on top of this list.
-    #[serde(default)]
-    pub tracked_branches: Vec<String>,
-    /// Branches hidden from the sidebar via "Remove from view" (worktree-backed
-    /// branches stay dismissed until re-tracked or the user views that branch).
-    #[serde(default)]
-    pub dismissed_branches: Vec<String>,
-    /// PRs the user has opened for review, most recent first (max 50 persisted).
-    #[serde(default)]
-    pub recent_prs: Vec<RecentPrEntry>,
-    /// PRs the user has manually bookmarked (max 50 persisted).
-    #[serde(default)]
-    pub saved_prs: Vec<SavedPrEntry>,
-    /// When true, Desktop auto-runs triage on new/updated open PRs while the app is open.
-    #[serde(default)]
-    pub auto_triage: bool,
-    /// When true (and `auto_triage`), also triage open PRs you authored.
-    #[serde(default)]
-    pub auto_triage_own_prs: bool,
-    /// When to auto-triage: `new-and-push`, `new-only`, or `review-requested`.
-    #[serde(default = "default_auto_triage_when")]
-    pub auto_triage_when: String,
-    /// Skip auto-triage when filtered diff exceeds this size (KB). `0` = no limit.
-    #[serde(default)]
-    pub auto_triage_max_diff_kb: u32,
-    /// Glob patterns excluded from AI review diffs (triage + full review).
-    #[serde(default)]
-    pub review_ignore_globs: Vec<String>,
-}
+pub use er_engine::projects_pins::{ProjectRecord, ProjectsFile, RecentPrEntry, SavedPrEntry};
 
 fn default_auto_triage_when() -> String {
-    "new-and-push".to_string()
+    ProjectRecord::default().auto_triage_when
 }
 
 pub const AUTO_TRIAGE_WHEN_OPTIONS: &[&str] = &["new-and-push", "new-only", "review-requested"];
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecentPrEntry {
-    pub number: u64,
-    pub viewed_at_ms: u64,
-    #[serde(default)]
-    pub title: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SavedPrEntry {
-    pub number: u64,
-    pub saved_at_ms: u64,
-    #[serde(default)]
-    pub title: String,
-}
 
 const MAX_PR_HISTORY: usize = 50;
 
@@ -89,14 +21,15 @@ fn now_epoch_ms() -> u64 {
 }
 
 pub fn record_recent_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
-    let mut file = load();
-    let proj = file
-        .projects
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    record_recent_pr_on_project(proj, pr_number, title);
-    save(&file)
+    update_file(|file| {
+        let proj = file
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+        record_recent_pr_on_project(proj, pr_number, title);
+        Ok(true)
+    })
 }
 
 fn record_recent_pr_on_project(proj: &mut ProjectRecord, pr_number: u64, title: &str) {
@@ -175,6 +108,7 @@ fn ensure_remote_project_in_file(file: &mut ProjectsFile, remote: &str) -> anyho
         auto_triage_when: default_auto_triage_when(),
         auto_triage_max_diff_kb: 0,
         review_ignore_globs: Vec::new(),
+        extra: Default::default(),
     };
     file.projects.push(record);
     Ok(unique_id)
@@ -287,9 +221,9 @@ pub fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
     })
 }
 
-pub fn config_path() -> PathBuf {
-    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("er").join("projects.json")
+/// Where the projects record lives in the store, for mtime watchers.
+pub fn config_path() -> Option<PathBuf> {
+    er_engine::projects_pins::projects_artifact_path()
 }
 
 use std::sync::Mutex;
@@ -314,10 +248,12 @@ pub fn content_generation() -> u64 {
 }
 
 pub fn load() -> ProjectsFile {
-    let path = config_path();
-    // Skip JSON parse when mtime hasn't advanced since the last load. The file
-    // is hit on every snapshot build; with multiple polls per second under
-    // user input, parsing it repeatedly is wasted work.
+    // Skip the store read when mtime hasn't advanced since the last load. The
+    // record is hit on every snapshot build; with multiple polls per second
+    // under user input, re-reading it repeatedly is wasted work.
+    let Some(path) = config_path() else {
+        return ProjectsFile::default();
+    };
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     if let (Some(mtime), Ok(guard)) = (mtime, PROJECTS_LOAD_CACHE.lock()) {
         if let Some((cached_mtime, cached_file)) = guard.as_ref() {
@@ -326,16 +262,7 @@ pub fn load() -> ProjectsFile {
             }
         }
     }
-    let Ok(bytes) = std::fs::read(&path) else {
-        return ProjectsFile::default();
-    };
-    let parsed: ProjectsFile = match serde_json::from_slice(&bytes) {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!("projects.json parse failed ({}): {e}", path.display());
-            return ProjectsFile::default();
-        }
-    };
+    let parsed = er_engine::projects_pins::load();
     if let (Some(mtime), Ok(mut guard)) = (mtime, PROJECTS_LOAD_CACHE.lock()) {
         *guard = Some((mtime, parsed.clone()));
     }
@@ -347,22 +274,19 @@ pub fn save(file: &ProjectsFile) -> anyhow::Result<()> {
 }
 
 fn save_unlocked(file: &ProjectsFile) -> anyhow::Result<()> {
-    let path = config_path();
-    crate::persist::save_json_atomic(&path, file)?;
+    er_engine::projects_pins::save(file)?;
     invalidate_load_cache();
     PROJECTS_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
-/// Load-mutate-save under a process lock so this writer cannot interleave with
-/// another `update_file` call. Other `load`+`save` helpers still exist; new
-/// mutations should go through here.
+/// Load-mutate-save under the store's scope lock, so this writer cannot
+/// interleave with another one.
 fn update_file(op: impl FnOnce(&mut ProjectsFile) -> anyhow::Result<bool>) -> anyhow::Result<()> {
     let _guard = PROJECTS_IO.lock().unwrap_or_else(|e| e.into_inner());
-    let mut file = load();
-    if op(&mut file)? {
-        save_unlocked(&file)?;
-    }
+    er_engine::projects_pins::update(op)?;
+    invalidate_load_cache();
+    PROJECTS_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
@@ -539,6 +463,7 @@ fn register_local_root_in_file(file: &mut ProjectsFile, root_path: &str) -> bool
         auto_triage_when: default_auto_triage_when(),
         auto_triage_max_diff_kb: 0,
         review_ignore_globs: Vec::new(),
+        extra: Default::default(),
     });
     if file.active_id.is_none() {
         file.active_id = Some(unique_id);
@@ -692,6 +617,7 @@ pub fn auto_register(
         auto_triage_when: default_auto_triage_when(),
         auto_triage_max_diff_kb: 0,
         review_ignore_globs: Vec::new(),
+        extra: Default::default(),
     };
     file.projects.push(record.clone());
     if file.active_id.is_none() {
@@ -994,7 +920,37 @@ mod tests {
             auto_triage_when: default_auto_triage_when(),
             auto_triage_max_diff_kb: 0,
             review_ignore_globs: Vec::new(),
+            extra: Default::default(),
         }
+    }
+
+    #[test]
+    fn projects_written_by_mcp_pin_are_read_by_desktop_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let mut record = local_project("local", Some("owner/repo"));
+            record.tracked_prs = vec![99];
+            save(&ProjectsFile {
+                projects: vec![record],
+                active_id: Some("local".into()),
+            })
+            .unwrap();
+
+            // The engine function is what MCP's pin tool calls.
+            let pinned = er_engine::projects_pins::pin_pr("local", 5, "Pinned").unwrap();
+            assert_eq!(pinned.number, 5);
+
+            let file = load();
+            let project = file
+                .projects
+                .iter()
+                .find(|p| p.id == "local")
+                .expect("the project survives the pin");
+            assert_eq!(project.tracked_prs, vec![99]);
+            assert_eq!(project.saved_prs.len(), 1);
+            assert_eq!(project.saved_prs[0].number, 5);
+            assert_eq!(project.saved_prs[0].title, "Pinned");
+        });
     }
 
     #[test]

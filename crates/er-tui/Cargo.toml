@@ -32,5 +32,9 @@ anyhow.workspace = true
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 tempfile = "3"
 
+[dev-dependencies]
+# Thread-scoped ER_STORAGE_ROOT override for tests that seed the projects record.
+er-engine = { path = "../er-engine", features = ["test-support"] }
+
 [lints]
 workspace = true

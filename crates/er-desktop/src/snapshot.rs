@@ -4475,9 +4475,9 @@ fn build_projects_cache_key(
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let projects_mtime_ns = std::fs::metadata(projects::config_path())
-        .and_then(|m| m.modified())
-        .ok()
+    let projects_mtime_ns = projects::config_path()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos())
         .unwrap_or(0);
@@ -6775,6 +6775,7 @@ mod tests {
                 auto_triage_when: "new-and-push".to_string(),
                 auto_triage_max_diff_kb: 0,
                 review_ignore_globs: Vec::new(),
+                extra: Default::default(),
             }],
             active_id: None,
         };
@@ -6841,6 +6842,7 @@ mod tests {
             auto_triage_when: "new-and-push".to_string(),
             auto_triage_max_diff_kb: 0,
             review_ignore_globs: Vec::new(),
+            extra: Default::default(),
         };
         let file = projects::ProjectsFile {
             projects: vec![record("zeta"), record("alpha")],
@@ -6871,6 +6873,7 @@ mod tests {
                 auto_triage_when: "review-requested".to_string(),
                 auto_triage_max_diff_kb: 512,
                 review_ignore_globs: vec!["**/*.lock".to_string(), "dist/**".to_string()],
+                extra: Default::default(),
             }],
             active_id: None,
         };

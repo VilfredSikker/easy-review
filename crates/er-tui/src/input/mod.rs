@@ -1421,38 +1421,6 @@ pub fn build_agent_summary_prompt(app: &mut App) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
-
-    static REVIEW_IGNORE_ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct ProjectsPathGuard {
-        _lock: MutexGuard<'static, ()>,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl ProjectsPathGuard {
-        fn set(path: &std::path::Path) -> Self {
-            let lock = REVIEW_IGNORE_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let previous = std::env::var_os("ER_PROJECTS_JSON");
-            std::env::set_var("ER_PROJECTS_JSON", path);
-            Self {
-                _lock: lock,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for ProjectsPathGuard {
-        fn drop(&mut self) {
-            if let Some(previous) = self.previous.take() {
-                std::env::set_var("ER_PROJECTS_JSON", previous);
-            } else {
-                std::env::remove_var("ER_PROJECTS_JSON");
-            }
-        }
-    }
 
     fn app_with_managed_dir(output_dir: &str) -> App {
         let mut app = App::new_for_test(vec![]);
@@ -1482,15 +1450,20 @@ mod tests {
         "diff --git a/keep.rs b/keep.rs\n--- a/keep.rs\n+++ b/keep.rs\n@@ -0,0 +1 @@\n+keep\n\ndiff --git a/ignored.rs b/ignored.rs\n--- a/ignored.rs\n+++ b/ignored.rs\n@@ -0,0 +1 @@\n+ignore\n"
     }
 
-    fn install_review_ignore_store(path: &std::path::Path, globs: &[&str]) {
-        let store = serde_json::json!({
-            "projects": [{
-                "root_path": "/repo",
-                "remote": "acme/widgets",
-                "review_ignore_globs": globs,
-            }]
-        });
-        std::fs::write(path, serde_json::to_vec(&store).unwrap()).unwrap();
+    /// Write one project with these ignore globs through the projects record.
+    fn install_review_ignore_store(globs: &[&str]) {
+        er_engine::projects_pins::update(|file| {
+            file.projects.push(er_engine::projects_pins::ProjectRecord {
+                id: "local".into(),
+                name: "widgets".into(),
+                root_path: "/repo".into(),
+                remote: Some("acme/widgets".into()),
+                review_ignore_globs: globs.iter().map(|glob| glob.to_string()).collect(),
+                ..Default::default()
+            });
+            Ok(true)
+        })
+        .unwrap();
     }
 
     #[test]
@@ -1574,196 +1547,199 @@ mod tests {
     #[test]
     fn review_ignore_preparation_filters_before_hashing() {
         let tmp = tempfile::tempdir().unwrap();
-        let projects_path = tmp.path().join("projects.json");
-        let _projects_guard = ProjectsPathGuard::set(&projects_path);
-        install_review_ignore_store(&projects_path, &["ignored.rs"]);
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            install_review_ignore_store(&["ignored.rs"]);
 
-        let output_dir = tmp.path().join("bucket");
-        std::fs::create_dir_all(&output_dir).unwrap();
-        let mut app = app_with_managed_dir(output_dir.to_str().unwrap());
-        app.tab_mut().repo_root = "/repo".into();
-        app.tab_mut().remote_repo = Some("acme/widgets".into());
-        app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
+            let output_dir = tmp.path().join("bucket");
+            std::fs::create_dir_all(&output_dir).unwrap();
+            let mut app = app_with_managed_dir(output_dir.to_str().unwrap());
+            app.tab_mut().repo_root = "/repo".into();
+            app.tab_mut().remote_repo = Some("acme/widgets".into());
+            app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
 
-        let (er_dir, hash) = ensure_prepared_diff_for_action(&mut app).expect("prepared diff");
-        let prepared = std::fs::read_to_string(format!("{er_dir}/diff-tmp")).unwrap();
-        assert!(prepared.contains("keep.rs"));
-        assert!(!prepared.contains("ignored.rs"));
-        assert_eq!(
-            er_engine::ai::prepared_diff::diff_tmp_hash(&er_dir).as_deref(),
-            Some(hash.as_str())
-        );
+            let (er_dir, hash) = ensure_prepared_diff_for_action(&mut app).expect("prepared diff");
+            let prepared = std::fs::read_to_string(format!("{er_dir}/diff-tmp")).unwrap();
+            assert!(prepared.contains("keep.rs"));
+            assert!(!prepared.contains("ignored.rs"));
+            assert_eq!(
+                er_engine::ai::prepared_diff::diff_tmp_hash(&er_dir).as_deref(),
+                Some(hash.as_str())
+            );
+        });
     }
 
     #[test]
     fn review_ignore_all_files_returns_before_preparation_or_spawn() {
         let tmp = tempfile::tempdir().unwrap();
-        let projects_path = tmp.path().join("projects.json");
-        let _projects_guard = ProjectsPathGuard::set(&projects_path);
-        // The matcher supports filename extension globs, not a bare `**` glob.
-        install_review_ignore_store(&projects_path, &["*.rs"]);
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            // The matcher supports filename extension globs, not a bare `**` glob.
+            install_review_ignore_store(&["*.rs"]);
 
-        let output_dir = tmp.path().join("bucket");
-        std::fs::create_dir_all(&output_dir).unwrap();
-        let mut app = app_with_managed_dir(output_dir.to_str().unwrap());
-        app.tab_mut().repo_root = "/repo".into();
-        app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
+            let output_dir = tmp.path().join("bucket");
+            std::fs::create_dir_all(&output_dir).unwrap();
+            let mut app = app_with_managed_dir(output_dir.to_str().unwrap());
+            app.tab_mut().repo_root = "/repo".into();
+            app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
 
-        assert!(ensure_prepared_diff_for_action(&mut app).is_none());
-        assert!(!output_dir.join("diff-tmp").exists());
-        assert!(app.background_task_snapshots().is_empty());
-        assert!(app
-            .notification
-            .as_ref()
-            .is_some_and(|notification| notification.message.contains("Nothing to review")));
+            assert!(ensure_prepared_diff_for_action(&mut app).is_none());
+            assert!(!output_dir.join("diff-tmp").exists());
+            assert!(app.background_task_snapshots().is_empty());
+            assert!(app
+                .notification
+                .as_ref()
+                .is_some_and(|notification| notification.message.contains("Nothing to review")));
+        });
     }
 
     #[test]
     fn review_ignore_empty_globs_preserve_raw_bytes_and_lookup_root_remote_parity() {
         let tmp = tempfile::tempdir().unwrap();
-        let projects_path = tmp.path().join("projects.json");
-        let _projects_guard = ProjectsPathGuard::set(&projects_path);
-        install_review_ignore_store(&projects_path, &[]);
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            install_review_ignore_store(&[]);
 
-        let output_dir = tmp.path().join("bucket");
-        std::fs::create_dir_all(&output_dir).unwrap();
-        let mut app = app_with_managed_dir(output_dir.to_str().unwrap());
-        app.tab_mut().repo_root = "/repo".into();
-        app.tab_mut().remote_repo = Some("acme/widgets".into());
-        app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
+            let output_dir = tmp.path().join("bucket");
+            std::fs::create_dir_all(&output_dir).unwrap();
+            let mut app = app_with_managed_dir(output_dir.to_str().unwrap());
+            app.tab_mut().repo_root = "/repo".into();
+            app.tab_mut().remote_repo = Some("acme/widgets".into());
+            app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
 
-        let (er_dir, _) = ensure_prepared_diff_for_action(&mut app).expect("prepared diff");
-        assert_eq!(
-            std::fs::read(format!("{er_dir}/diff-tmp")).unwrap(),
-            review_ignore_diff().as_bytes()
-        );
-        assert_eq!(
-            er_engine::projects_pins::review_ignore_globs_for_repo("/repo", None),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            er_engine::projects_pins::review_ignore_globs_for_repo("/other", Some("acme/widgets")),
-            Vec::<String>::new()
-        );
+            let (er_dir, _) = ensure_prepared_diff_for_action(&mut app).expect("prepared diff");
+            assert_eq!(
+                std::fs::read(format!("{er_dir}/diff-tmp")).unwrap(),
+                review_ignore_diff().as_bytes()
+            );
+            assert_eq!(
+                er_engine::projects_pins::review_ignore_globs_for_repo("/repo", None),
+                Vec::<String>::new()
+            );
+            assert_eq!(
+                er_engine::projects_pins::review_ignore_globs_for_repo(
+                    "/other",
+                    Some("acme/widgets")
+                ),
+                Vec::<String>::new()
+            );
+        });
     }
 
     #[test]
     fn confirmed_general_review_preserves_bucket_while_review_flow_holds_lease() {
         let tmp = tempfile::tempdir().unwrap();
-        let projects_path = tmp.path().join("projects.json");
-        let _projects_guard = ProjectsPathGuard::set(&projects_path);
-        install_review_ignore_store(&projects_path, &[]);
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            install_review_ignore_store(&[]);
 
-        let repo = tmp.path().join("repo");
-        let bucket = tmp.path().join("bucket");
-        std::fs::create_dir_all(&repo).unwrap();
-        std::fs::create_dir_all(&bucket).unwrap();
-        let old_review = br#"{"version":1,"diff_hash":"previous-generation","files":{}}"#;
-        std::fs::write(bucket.join("review.json"), old_review).unwrap();
+            let repo = tmp.path().join("repo");
+            let bucket = tmp.path().join("bucket");
+            std::fs::create_dir_all(&repo).unwrap();
+            std::fs::create_dir_all(&bucket).unwrap();
+            let old_review = br#"{"version":1,"diff_hash":"previous-generation","files":{}}"#;
+            std::fs::write(bucket.join("review.json"), old_review).unwrap();
 
-        let mut app = app_with_managed_dir(bucket.to_str().unwrap());
-        app.tab_mut().repo_root = repo.to_string_lossy().into_owned();
-        app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
-        app.tab_mut().reload_ai_state();
-        assert!(app.tab().ai.review.is_some(), "fixture review must load");
-        app.config.ai_hub = er_engine::config::AiHubConfig {
-            default_provider: Some("fake".into()),
-            review_models: {
-                let models = vec![er_engine::config::ReviewModelRef {
-                    provider_id: "fake".into(),
-                    model_id: "fake-model".into(),
-                }];
-                er_engine::config::ReviewModelGroups {
-                    fast: models.clone(),
-                    standard: models.clone(),
-                    advanced: models,
-                }
-            },
-            providers: [(
-                "fake".into(),
-                er_engine::config::AiProviderConfig {
-                    command: "/bin/sh".into(),
-                    args: vec![
-                        "-c".into(),
-                        "exit 1".into(),
-                        "fake".into(),
-                        "{prompt}".into(),
-                    ],
-                    models: vec![er_engine::config::AiModelConfig {
-                        id: "fake-model".into(),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
+            let mut app = app_with_managed_dir(bucket.to_str().unwrap());
+            app.tab_mut().repo_root = repo.to_string_lossy().into_owned();
+            app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
+            app.tab_mut().reload_ai_state();
+            assert!(app.tab().ai.review.is_some(), "fixture review must load");
+            app.config.ai_hub = er_engine::config::AiHubConfig {
+                default_provider: Some("fake".into()),
+                review_models: {
+                    let models = vec![er_engine::config::ReviewModelRef {
+                        provider_id: "fake".into(),
+                        model_id: "fake-model".into(),
+                    }];
+                    er_engine::config::ReviewModelGroups {
+                        fast: models.clone(),
+                        standard: models.clone(),
+                        advanced: models,
+                    }
                 },
-            )]
-            .into(),
-            max_concurrent_reviews: 16,
-            max_concurrent_agents: 16,
-            ..Default::default()
-        };
+                providers: [(
+                    "fake".into(),
+                    er_engine::config::AiProviderConfig {
+                        command: "/bin/sh".into(),
+                        args: vec![
+                            "-c".into(),
+                            "exit 1".into(),
+                            "fake".into(),
+                            "{prompt}".into(),
+                        ],
+                        models: vec![er_engine::config::AiModelConfig {
+                            id: "fake-model".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+                max_concurrent_reviews: 16,
+                max_concurrent_agents: 16,
+                ..Default::default()
+            };
 
-        // This public entry point acquires the real bucket lease and starts
-        // the fake triage provider. The failed command remains registered
-        // until App drains its completion event.
-        app.start_review_flow("branch").unwrap();
-        let er_dir = app.tab().er_dir();
-        assert!(app.check_review_bucket_admission(&er_dir).is_err());
-        let files = [
-            "review.json",
-            "diff-tmp",
-            ".diff-tmp.sha256",
-            "diff-annotated",
-            ".diff-annotated.sha256",
-            "change-facts.md",
-        ];
-        let before: Vec<_> = files
-            .iter()
-            .map(|name| std::fs::read(bucket.join(name)).unwrap())
-            .collect();
-        let task_ids_before: std::collections::HashSet<_> = app
-            .background_task_snapshots()
-            .into_iter()
-            .map(|task| task.id)
-            .collect();
-        assert_eq!(task_ids_before.len(), 1, "only triage should be queued");
+            // This public entry point acquires the real bucket lease and starts
+            // the fake triage provider. The failed command remains registered
+            // until App drains its completion event.
+            app.start_review_flow("branch").unwrap();
+            let er_dir = app.tab().er_dir();
+            assert!(app.check_review_bucket_admission(&er_dir).is_err());
+            let files = [
+                "review.json",
+                "diff-tmp",
+                ".diff-tmp.sha256",
+                "diff-annotated",
+                ".diff-annotated.sha256",
+                "change-facts.md",
+            ];
+            let before: Vec<_> = files
+                .iter()
+                .map(|name| std::fs::read(bucket.join(name)).unwrap())
+                .collect();
+            let task_ids_before: std::collections::HashSet<_> = app
+                .background_task_snapshots()
+                .into_iter()
+                .map(|task| task.id)
+                .collect();
+            assert_eq!(task_ids_before.len(), 1, "only triage should be queued");
 
-        // A different in-memory diff makes any missed admission check rewrite
-        // the pinned artifacts before cleanup runs.
-        app.tab_mut()
-            .set_raw_diff_for_test(&review_ignore_diff().replace("keep", "changed"));
-        dispatch_hub_action(&mut app, HubAction::PromptReview).unwrap();
-        assert!(matches!(
-            app.input_mode,
-            InputMode::Confirm(ConfirmAction::RunAgentReview {
-                clear_previous: true
-            })
-        ));
-        handle_confirm_input(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
-        )
-        .unwrap();
+            // A different in-memory diff makes any missed admission check rewrite
+            // the pinned artifacts before cleanup runs.
+            app.tab_mut()
+                .set_raw_diff_for_test(&review_ignore_diff().replace("keep", "changed"));
+            dispatch_hub_action(&mut app, HubAction::PromptReview).unwrap();
+            assert!(matches!(
+                app.input_mode,
+                InputMode::Confirm(ConfirmAction::RunAgentReview {
+                    clear_previous: true
+                })
+            ));
+            handle_confirm_input(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            )
+            .unwrap();
 
-        for (name, bytes) in files.iter().zip(before) {
+            for (name, bytes) in files.iter().zip(before) {
+                assert_eq!(
+                    std::fs::read(bucket.join(name)).unwrap(),
+                    bytes,
+                    "confirmation must preserve {name} while the flow owns the bucket"
+                );
+            }
+            let task_ids_after: std::collections::HashSet<_> = app
+                .background_task_snapshots()
+                .into_iter()
+                .map(|task| task.id)
+                .collect();
             assert_eq!(
-                std::fs::read(bucket.join(name)).unwrap(),
-                bytes,
-                "confirmation must preserve {name} while the flow owns the bucket"
+                task_ids_after, task_ids_before,
+                "confirmation spawned a producer"
             );
-        }
-        let task_ids_after: std::collections::HashSet<_> = app
-            .background_task_snapshots()
-            .into_iter()
-            .map(|task| task.id)
-            .collect();
-        assert_eq!(
-            task_ids_after, task_ids_before,
-            "confirmation spawned a producer"
-        );
-        assert!(app.notification.as_ref().is_some_and(|notification| {
-            notification.message.contains("action skipped")
-                && notification.message.contains("review flow")
-        }));
+            assert!(app.notification.as_ref().is_some_and(|notification| {
+                notification.message.contains("action skipped")
+                    && notification.message.contains("review flow")
+            }));
+        });
     }
 
     #[test]

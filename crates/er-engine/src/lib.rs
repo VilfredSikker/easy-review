@@ -8,6 +8,7 @@ pub mod agent_timing;
 pub mod ai;
 #[cfg(feature = "ui")]
 pub mod app;
+pub mod app_store;
 #[cfg(feature = "ui")]
 pub mod arena;
 pub mod config;
