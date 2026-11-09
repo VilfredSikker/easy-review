@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-09 20:30 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-09 21:00 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -11,11 +11,11 @@
 | --- | --- | --- | --- |
 | T1 | T5 GitHub port | [#393](https://github.com/VilfredSikker/easy-review/issues/393) P22 | F |
 | T2 | T4 git port | idle; next #441 after P17 and P22 | – |
-| D4 | T6 store core | [#388](https://github.com/VilfredSikker/easy-review/issues/388) P17 | C, E |
+| D4 | T6 store core | [#389](https://github.com/VilfredSikker/easy-review/issues/389) P18 | E |
 | D1 | D6 | idle | – |
 | D2, D3, D5 | – | idle | – |
 
-**Phases 0 and 1 are complete; in phase 2, P14, P15, P16 and P23 are merged.** P17 (D4) and P22 (T1) run at the same time with #445 (T2); whichever merges second merges the release branch in. #441 is held until P17 and P22 merge, because it changes test sites across the engine. Next: P17 unblocks P18, which unblocks P19 and P20.
+**Phases 0 and 1 are complete; in phase 2, P14, P15, P16, P17 and P23 are merged.** P18 (D4) and P22 (T1) run at the same time. #441 is held until P18 and P22 merge, because it changes test sites across the engine. Next: P18 unblocks P19 and P20.
 
 ## Progress
 
@@ -31,7 +31,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P07b | [#437](https://github.com/VilfredSikker/easy-review/issues/437) Spawn-rule escapes (cfg(not(test)), renamed import) | C | sonnet | ✅ | [#439](https://github.com/VilfredSikker/easy-review/pull/439) | P07 review follow-up |
 | Flaky | [#438](https://github.com/VilfredSikker/easy-review/issues/438) Flaky dirty-diff desktop test | F | opus | ✅ | [#440](https://github.com/VilfredSikker/easy-review/pull/440) | cause: clock-named temp dirs; follow-up #441 |
 | P13b | [#445](https://github.com/VilfredSikker/easy-review/issues/445) Storage slug through the shared parser | E | sonnet | ✅ | [#448](https://github.com/VilfredSikker/easy-review/pull/448) | Windows drive paths no longer read as remotes |
-| Flaky-b | [#441](https://github.com/VilfredSikker/easy-review/issues/441) Env mutation and clock temp dirs in engine tests | E | sonnet | ⬜ | | held until P17, P22 |
+| Flaky-b | [#441](https://github.com/VilfredSikker/easy-review/issues/441) Env mutation and clock temp dirs in engine tests | E | sonnet | ⬜ | | held until P18, P22 |
 | P0-gate | [#422](https://github.com/VilfredSikker/easy-review/issues/422) ADR 0037 wording, comments-check plan-id pattern | – | sonnet | ✅ | [#423](https://github.com/VilfredSikker/easy-review/pull/423) | |
 | P05 | [#376](https://github.com/VilfredSikker/easy-review/issues/376) Post GitHub comments when created | E/F | opus | ✅ | [#416](https://github.com/VilfredSikker/easy-review/pull/416), [#417](https://github.com/VilfredSikker/easy-review/pull/417) | two stacked PRs |
 | P06 | [#377](https://github.com/VilfredSikker/easy-review/issues/377) Delete the local review draft | E/F | opus | ✅ | [#420](https://github.com/VilfredSikker/easy-review/pull/420), [#421](https://github.com/VilfredSikker/easy-review/pull/421) | release note: old batch-review comments may show twice |
@@ -45,8 +45,8 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P14 | [#385](https://github.com/VilfredSikker/easy-review/issues/385) Create er-store | C | opus | ✅ | [#429](https://github.com/VilfredSikker/easy-review/pull/429), [#430](https://github.com/VilfredSikker/easy-review/pull/430) | two parts; amendment C on #401 |
 | P15 | [#386](https://github.com/VilfredSikker/easy-review/issues/386) Move to the v1 root | C/E | sonnet | ✅ | [#435](https://github.com/VilfredSikker/easy-review/pull/435) | follow-up #436 merged |
 | P16 | [#387](https://github.com/VilfredSikker/easy-review/issues/387) Comments and notes through the store | C/E/F | opus | ✅ | [#443](https://github.com/VilfredSikker/easy-review/pull/443), [#444](https://github.com/VilfredSikker/easy-review/pull/444) | two parts; follow-ups #441, #445 |
-| P17 | [#388](https://github.com/VilfredSikker/easy-review/issues/388) Session state through the store | C/E | opus | 🔧 | [#450](https://github.com/VilfredSikker/easy-review/pull/450) | D4; fix-then-merge (checklist toggle, unmark) |
-| P18 | [#389](https://github.com/VilfredSikker/easy-review/issues/389) Review artifacts through the store | E | opus | ⬜ | | after P17 |
+| P17 | [#388](https://github.com/VilfredSikker/easy-review/issues/388) Session state through the store | C/E | opus | ✅ | [#450](https://github.com/VilfredSikker/easy-review/pull/450) | reviewed save 2.9x accepted (5 ms budget) |
+| P18 | [#389](https://github.com/VilfredSikker/easy-review/issues/389) Review artifacts through the store | E | opus | 🟡 | | D4 |
 | P19 | [#390](https://github.com/VilfredSikker/easy-review/issues/390) Remaining AI artifacts through the store | C/E | opus | ⬜ | | after P18 |
 | P20 | [#391](https://github.com/VilfredSikker/easy-review/issues/391) Findings projection | E | sonnet | ⬜ | | after P18 |
 | P21 | [#392](https://github.com/VilfredSikker/easy-review/issues/392) Scoped re-review as its own artifact | E/F | opus | ⬜ | | after P20 |
