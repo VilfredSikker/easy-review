@@ -33,6 +33,12 @@ impl Artifact for PersistedPrCacheFile {
     type Slot = ();
 }
 
+/// Register this record's kind beside the engine's kinds.
+#[cfg(test)]
+pub(crate) fn register(registry: &mut er_store::Registry) -> Result<(), er_store::StoreError> {
+    registry.register::<PersistedPrCacheFile>()
+}
+
 fn now_epoch_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()

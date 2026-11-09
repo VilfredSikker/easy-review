@@ -162,6 +162,12 @@ impl Artifact for InboxFile {
     type Slot = ();
 }
 
+/// Register this record's kind beside the engine's kinds.
+#[cfg(test)]
+pub(crate) fn register(registry: &mut er_store::Registry) -> Result<(), er_store::StoreError> {
+    registry.register::<InboxFile>()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct InboxState {
     pub items: Vec<InboxItem>,

@@ -36,6 +36,12 @@ impl Artifact for PersistedPrOpenFile {
     type Slot = ();
 }
 
+/// Register this record's kind beside the engine's kinds.
+#[cfg(test)]
+pub(crate) fn register(registry: &mut er_store::Registry) -> Result<(), er_store::StoreError> {
+    registry.register::<PersistedPrOpenFile>()
+}
+
 /// A HashMap with a struct key can't serialize to JSON (object keys must be
 /// strings), so each entry is persisted as a flat `{ key, entry }` record and
 /// the map is rebuilt on load.
@@ -193,7 +199,8 @@ mod tests {
     fn schema_mismatch_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(tmp.path(), || {
-            let path = er_engine::store_registry::app_path::<PersistedPrOpenFile>().expect("record path");
+            let path =
+                er_engine::store_registry::app_path::<PersistedPrOpenFile>().expect("record path");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(
                 path,

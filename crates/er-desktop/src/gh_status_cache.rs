@@ -59,6 +59,12 @@ impl Artifact for PersistedGhStatusFile {
     type Slot = ();
 }
 
+/// Register this record's kind beside the engine's kinds.
+#[cfg(test)]
+pub(crate) fn register(registry: &mut er_store::Registry) -> Result<(), er_store::StoreError> {
+    registry.register::<PersistedGhStatusFile>()
+}
+
 /// A `HashMap` with a tuple key can't serialize to a JSON object (keys must be
 /// strings), so each entry is persisted as a flat `{ key, entry }` record where
 /// `key` serializes as a JSON array. The map is rebuilt from these records on load.
@@ -310,7 +316,8 @@ mod tests {
     }
 
     fn write_raw_envelope(version: u32) {
-        let path = er_engine::store_registry::app_path::<PersistedGhStatusFile>().expect("record path");
+        let path =
+            er_engine::store_registry::app_path::<PersistedGhStatusFile>().expect("record path");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             path,

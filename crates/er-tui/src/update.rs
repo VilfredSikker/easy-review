@@ -2,6 +2,7 @@
 //! The decisions live in `er_engine::release_update`; this module only fetches.
 
 use anyhow::{anyhow, bail, Context, Result};
+use er_engine::release_install;
 use er_engine::release_update::{self, LatestRelease};
 use std::io::Read;
 use std::time::Duration;
@@ -110,7 +111,7 @@ pub fn run() -> Result<()> {
     if !status.success() {
         bail!("tar could not extract {asset}");
     }
-    release_update::replace_executable(&exe, &work.path().join("er"))?;
+    release_install::replace_executable(&exe, &work.path().join("er"))?;
     let _ = release_update::save_cached_release(&release);
 
     println!(

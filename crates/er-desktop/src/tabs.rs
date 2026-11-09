@@ -62,6 +62,12 @@ impl Artifact for TabsFile {
     type Slot = ();
 }
 
+/// Register this record's kind beside the engine's kinds.
+#[cfg(test)]
+pub(crate) fn register(registry: &mut er_store::Registry) -> Result<(), er_store::StoreError> {
+    registry.register::<TabsFile>()
+}
+
 /// Persist tab descriptors as the app's tabs record.
 pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
     let key = er_engine::store_registry::app_key::<TabsFile>()?;
