@@ -322,10 +322,22 @@ pub trait GitHub: Send + Sync {
     ) -> Result<Arc<PrCommentBundle>, GhError>;
     fn invalidate_comments(&self);
 
-    fn overview(&self, repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData>;
-    fn overview_no_checks(&self, repo_root: &str, pr_number: Option<u64>)
-        -> Option<PrOverviewData>;
-    fn overview_remote(&self, owner: &str, repo: &str, number: u64) -> Option<PrOverviewData>;
+    fn overview(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError>;
+    fn overview_no_checks(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError>;
+    fn overview_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Option<PrOverviewData>, GhError>;
 
     /// One bounded `gh api` read whose body is returned without headers.
     fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError>;
@@ -439,6 +451,12 @@ pub trait GitHub: Send + Sync {
         repo: &str,
         pr: u64,
     ) -> Result<ThreadAddressingSummary, GhError>;
+}
+
+/// The prefix the old free functions put in front of gh's reason, kept so
+/// callers that match the rendered text keep working.
+pub(crate) fn with_prefix(prefix: &str, error: GhError) -> anyhow::Error {
+    anyhow::anyhow!("{prefix}: {error}")
 }
 
 static DEFAULT_HANDLE: OnceLock<Arc<CliGitHub>> = OnceLock::new();

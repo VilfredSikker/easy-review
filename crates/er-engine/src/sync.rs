@@ -334,9 +334,13 @@ fn fetch_comment_sync_data_with(
             if ctx.is_remote {
                 ctx.github
                     .overview_remote(&ctx.owner, &ctx.repo_name, overview_pr)
+                    .ok()
+                    .flatten()
             } else {
                 ctx.github
                     .overview_no_checks(&ctx.repo_root, ctx.pr_number_for_overview)
+                    .ok()
+                    .flatten()
             }
         });
         let bundle = bundle_h.join().unwrap_or_else(|_| {
@@ -1064,7 +1068,7 @@ mod tests {
                         threads,
                     },
                 )))
-                .with_overview_remote(Some(crate::github::PrOverviewData {
+                .with_overview_remote(Ok(Some(crate::github::PrOverviewData {
                     number: 7,
                     title: "T".into(),
                     body: String::new(),
@@ -1075,23 +1079,27 @@ mod tests {
                     head_branch: "f".into(),
                     checks: Vec::new(),
                     reviewers: Vec::new(),
-                })),
+                }))),
         );
         let ctx = comment_sync_context(fake.clone());
         let result = fetch_comment_sync_data_cached(&ctx).expect("sync");
+        let stored = result
+            .gc
+            .comments
+            .iter()
+            .find(|comment| comment.github_id == Some(42))
+            .unwrap_or_else(|| panic!("gh-42 missing from {:?}", result.gc.comments));
         assert!(
-            result.gc.comments.iter().any(|c| c.github_id == Some(42)),
-            "{:?}",
-            result.gc.comments
+            stored.resolved,
+            "the scripted thread is resolved: {stored:?}"
         );
         assert_eq!(result.pr_data.as_ref().map(|p| p.title.as_str()), Some("T"));
-        assert!(
-            fake.calls()
-                .iter()
-                .any(|call| call.starts_with("pr_comment_bundle_cached")),
-            "{:?}",
-            fake.calls()
-        );
+        let bundle_calls = fake
+            .calls()
+            .iter()
+            .filter(|call| call.starts_with("pr_comment_bundle_cached"))
+            .count();
+        assert_eq!(bundle_calls, 1, "{:?}", fake.calls());
     }
 
     #[test]
@@ -1102,7 +1110,7 @@ mod tests {
                     reset_epoch_secs: Some(1),
                     message: String::new(),
                 }))
-                .with_overview_remote(None),
+                .with_overview_remote(Ok(None)),
         );
         let ctx = comment_sync_context(fake);
         let error = match fetch_comment_sync_data_cached(&ctx) {

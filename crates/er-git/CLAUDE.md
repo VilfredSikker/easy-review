@@ -18,7 +18,7 @@ a free function, so a test can answer with `FakeGit` and needs no repository.
 
 ## The handle
 
-The git handle travels as `er_engine::ports::Ports { pub git: Arc<dyn Git> }`,
-passed as the last constructor parameter, cloned into background inputs, and
-replaced with `Ports::for_test()` only by test constructors. There is no global,
-and no `Default` on that path.
+The git handle travels in `er_engine::ports::Ports { pub git: Arc<dyn Git>,
+pub github: Arc<dyn GitHub> }`, passed as the last constructor parameter,
+cloned into background inputs, and replaced with `Ports::for_test()` only by
+test constructors. There is no global, and no `Default` on that path.

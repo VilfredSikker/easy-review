@@ -23,12 +23,6 @@ and no global that tests reach. Production wrappers use `default_handle()`;
 tests build `CliGitHub` on a `ScriptedRunner`. The `github` field on
 `er_engine::ports::Ports` carries the handle.
 
-## Layout
-
-The moved `github.rs` bodies are grouped by concern: checkout, diff, commits,
-comments, overview, repo and lookup. Put a new function beside the one that
-calls it most; the tree is the inventory.
-
 ## Compatibility wrappers
 
 The front ends and the engine still call the old free-function names. Each is

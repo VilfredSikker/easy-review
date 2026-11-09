@@ -66,9 +66,9 @@ struct FakeState {
     approve: Option<Result<(), GhError>>,
     fetch_pr_comment_bundle: Option<Result<PrCommentBundle, GhError>>,
     pr_comment_bundle_cached: Option<Result<Arc<PrCommentBundle>, GhError>>,
-    overview: Option<Option<PrOverviewData>>,
-    overview_no_checks: Option<Option<PrOverviewData>>,
-    overview_remote: Option<Option<PrOverviewData>>,
+    overview: Option<Result<Option<PrOverviewData>, GhError>>,
+    overview_no_checks: Option<Result<Option<PrOverviewData>, GhError>>,
+    overview_remote: Option<Result<Option<PrOverviewData>, GhError>>,
     api_get_bounded: Option<Result<Vec<u8>, GhError>>,
     fetch_pr_base_ref: Option<Result<String, GhError>>,
     pr_head_branch_name: Option<Result<String, GhError>>,
@@ -378,19 +378,19 @@ impl FakeGitHub {
     }
 
     #[must_use]
-    pub fn with_overview(self, value: Option<PrOverviewData>) -> Self {
+    pub fn with_overview(self, value: Result<Option<PrOverviewData>, GhError>) -> Self {
         self.lock().overview = Some(value);
         self
     }
 
     #[must_use]
-    pub fn with_overview_no_checks(self, value: Option<PrOverviewData>) -> Self {
+    pub fn with_overview_no_checks(self, value: Result<Option<PrOverviewData>, GhError>) -> Self {
         self.lock().overview_no_checks = Some(value);
         self
     }
 
     #[must_use]
-    pub fn with_overview_remote(self, value: Option<PrOverviewData>) -> Self {
+    pub fn with_overview_remote(self, value: Result<Option<PrOverviewData>, GhError>) -> Self {
         self.lock().overview_remote = Some(value);
         self
     }
@@ -1129,35 +1129,44 @@ impl GitHub for FakeGitHub {
         drop(self.record("invalidate_comments()".to_string()));
     }
 
-    fn overview(&self, repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
+    fn overview(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError> {
         self.record(format!(
             "overview(repo_root={repo_root:?}, pr_number={pr_number:?})"
         ))
         .overview
         .clone()
-        .unwrap_or_else(|| panic!("FakeGitHub: unscripted overview"))
+        .unwrap_or_else(|| Err(unscripted("overview")))
     }
 
     fn overview_no_checks(
         &self,
         repo_root: &str,
         pr_number: Option<u64>,
-    ) -> Option<PrOverviewData> {
+    ) -> Result<Option<PrOverviewData>, GhError> {
         self.record(format!(
             "overview_no_checks(repo_root={repo_root:?}, pr_number={pr_number:?})"
         ))
         .overview_no_checks
         .clone()
-        .unwrap_or_else(|| panic!("FakeGitHub: unscripted overview_no_checks"))
+        .unwrap_or_else(|| Err(unscripted("overview_no_checks")))
     }
 
-    fn overview_remote(&self, owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
+    fn overview_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Option<PrOverviewData>, GhError> {
         self.record(format!(
             "overview_remote(owner={owner:?}, repo={repo:?}, number={number:?})"
         ))
         .overview_remote
         .clone()
-        .unwrap_or_else(|| panic!("FakeGitHub: unscripted overview_remote"))
+        .unwrap_or_else(|| Err(unscripted("overview_remote")))
     }
 
     fn api_get_bounded(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, GhError> {

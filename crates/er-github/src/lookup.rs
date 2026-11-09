@@ -1,6 +1,7 @@
 //! Lookups: PR URLs and refs, the checked-out branch's PR, notifications,
 //! the viewer, and the review-queue listing.
 
+use crate::with_prefix;
 use anyhow::{Context, Result};
 use er_git::Git;
 use serde::Deserialize;
@@ -524,10 +525,11 @@ pub fn get_pr_info(git: &dyn Git, repo_root: &str) -> Result<(String, String, u6
         .map_err(anyhow::Error::from)
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_viewer_login(repo_root: Option<&str>) -> Result<String> {
     default_handle()
         .viewer_login(repo_root)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to read the gh user", error))
 }
 
 pub fn gh_stack_view_json(repo_root: &str) -> Result<String> {

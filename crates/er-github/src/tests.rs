@@ -1508,3 +1508,101 @@ fn pr_lookup_absent_only_when_gh_says_no_pull_request() {
         PrLookup::Unknown(_)
     ));
 }
+
+fn prefixed(prefix: &str) -> String {
+    crate::with_prefix(
+        prefix,
+        GhError::Forbidden {
+            message: "Resource not accessible by integration".into(),
+        },
+    )
+    .to_string()
+}
+
+#[test]
+fn wrapper_prefix_fetch_pr_comments() {
+    assert_eq!(
+        prefixed("Failed to fetch PR comments"),
+        "Failed to fetch PR comments: Resource not accessible by integration"
+    );
+}
+
+#[test]
+fn wrapper_prefix_get_head_sha() {
+    assert_eq!(
+        prefixed("Failed to get HEAD SHA from gh pr view"),
+        "Failed to get HEAD SHA from gh pr view: Resource not accessible by integration"
+    );
+}
+
+#[test]
+fn wrapper_prefix_push_comment() {
+    assert_eq!(
+        prefixed("Failed to push comment"),
+        "Failed to push comment: Resource not accessible by integration"
+    );
+}
+
+#[test]
+fn wrapper_prefix_push_reply() {
+    assert_eq!(
+        prefixed("Failed to push reply"),
+        "Failed to push reply: Resource not accessible by integration"
+    );
+}
+
+#[test]
+fn wrapper_prefix_post_general_comment() {
+    assert_eq!(
+        prefixed("Failed to post general comment"),
+        "Failed to post general comment: Resource not accessible by integration"
+    );
+}
+
+#[test]
+fn wrapper_prefix_fetch_pr_issue_comments() {
+    assert_eq!(
+        prefixed("Failed to fetch PR issue comments"),
+        "Failed to fetch PR issue comments: Resource not accessible by integration"
+    );
+}
+
+#[test]
+fn wrapper_prefix_read_gh_user() {
+    assert_eq!(
+        prefixed("Failed to read the gh user"),
+        "Failed to read the gh user: Resource not accessible by integration"
+    );
+}
+
+#[test]
+fn wrapper_prefix_update_comment() {
+    assert_eq!(
+        prefixed("Failed to update comment"),
+        "Failed to update comment: Resource not accessible by integration"
+    );
+}
+
+#[test]
+fn wrapper_prefix_delete_comment() {
+    assert_eq!(
+        prefixed("Failed to delete comment"),
+        "Failed to delete comment: Resource not accessible by integration"
+    );
+}
+
+#[test]
+fn wrapper_prefix_update_pr_body() {
+    assert_eq!(
+        prefixed("Failed to update PR body"),
+        "Failed to update PR body: Resource not accessible by integration"
+    );
+}
+
+#[test]
+fn wrapper_prefix_approve() {
+    assert_eq!(
+        prefixed("gh pr approve failed"),
+        "gh pr approve failed: Resource not accessible by integration"
+    );
+}

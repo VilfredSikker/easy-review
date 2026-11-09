@@ -97,9 +97,8 @@ impl CliGitHub {
         let output = classify(self.runner.run(&call), include, paginated)?;
         if let Some(cap) = max_stdout {
             if output.body.len() > cap {
-                return Err(GhError::Tool {
-                    status: -1,
-                    stderr: "command output exceeds byte limit".into(),
+                return Err(GhError::TooLarge {
+                    message: "command output exceeds byte limit".into(),
                 });
             }
         }
@@ -485,7 +484,11 @@ impl GitHub for CliGitHub {
         CliGitHub::invalidate_comments(self);
     }
 
-    fn overview(&self, repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
+    fn overview(
+        &self,
+        repo_root: &str,
+        pr_number: Option<u64>,
+    ) -> Result<Option<PrOverviewData>, GhError> {
         CliGitHub::overview(self, repo_root, pr_number)
     }
 
@@ -493,11 +496,16 @@ impl GitHub for CliGitHub {
         &self,
         repo_root: &str,
         pr_number: Option<u64>,
-    ) -> Option<PrOverviewData> {
+    ) -> Result<Option<PrOverviewData>, GhError> {
         CliGitHub::overview_no_checks(self, repo_root, pr_number)
     }
 
-    fn overview_remote(&self, owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
+    fn overview_remote(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Option<PrOverviewData>, GhError> {
         CliGitHub::overview_remote(self, owner, repo, number)
     }
 

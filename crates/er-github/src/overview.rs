@@ -1,6 +1,7 @@
 //! PR overview and status: title, body, reviewers, CI checks, the combined
 //! status bundle, and the PR-wide writes that ride with it.
 
+use crate::with_prefix;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
@@ -96,19 +97,22 @@ impl CliGitHub {
         &self,
         repo_root: &str,
         pr_number: Option<u64>,
-    ) -> Option<PrOverviewData> {
-        self.overview_impl(repo_root, pr_number, true)
+    ) -> Result<Option<PrOverviewData>, GhError> {
+        Ok(self.overview_impl(repo_root, pr_number, true))
     }
 
     /// Like [`Self::overview`], but skips the separate `gh pr checks`
     /// subprocess (`checks` is always empty in the result). Use this when the
-    /// caller already has a fresher CI-checks source for the same PR.
+    /// caller already has a fresher CI-checks source for the same PR — e.g. the
+    /// desktop's 30s gh-status loop (`fetch_github_status` / `gh_status_cache`)
+    /// — and only needs title/state/author/branch/reviewer metadata, to avoid a
+    /// duplicate `gh pr checks` call on every tick.
     pub(crate) fn overview_no_checks(
         &self,
         repo_root: &str,
         pr_number: Option<u64>,
-    ) -> Option<PrOverviewData> {
-        self.overview_impl(repo_root, pr_number, false)
+    ) -> Result<Option<PrOverviewData>, GhError> {
+        Ok(self.overview_impl(repo_root, pr_number, false))
     }
 
     fn overview_impl(
@@ -231,25 +235,27 @@ impl CliGitHub {
         owner: &str,
         repo: &str,
         number: u64,
-    ) -> Option<PrOverviewData> {
+    ) -> Result<Option<PrOverviewData>, GhError> {
         let repo_slug = format!("{owner}/{repo}");
         let number_arg = number.to_string();
-        let view_output = self
-            .run_gh_args(
-                &[
-                    "pr",
-                    "view",
-                    &number_arg,
-                    "--repo",
-                    &repo_slug,
-                    "--json",
-                    "number,title,body,state,author,url,baseRefName,headRefName,reviews",
-                ],
-                None,
-            )
-            .ok()?;
+        let Ok(view_output) = self.run_gh_args(
+            &[
+                "pr",
+                "view",
+                &number_arg,
+                "--repo",
+                &repo_slug,
+                "--json",
+                "number,title,body,state,author,url,baseRefName,headRefName,reviews",
+            ],
+            None,
+        ) else {
+            return Ok(None);
+        };
         let json_str = String::from_utf8_lossy(&view_output.body);
-        let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json_str) else {
+            return Ok(None);
+        };
 
         let number = v["number"].as_u64().unwrap_or(0);
         let title = v["title"].as_str().unwrap_or("").to_string();
@@ -267,7 +273,7 @@ impl CliGitHub {
         };
 
         // Skip CI checks for remote (would need --repo flag on gh pr checks too)
-        Some(PrOverviewData {
+        Ok(Some(PrOverviewData {
             number,
             title,
             body,
@@ -278,7 +284,7 @@ impl CliGitHub {
             head_branch,
             checks: Vec::new(),
             reviewers,
-        })
+        }))
     }
 }
 
@@ -290,15 +296,24 @@ pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(St
 }
 
 pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
-    default_handle().overview(repo_root, pr_number)
+    default_handle()
+        .overview(repo_root, pr_number)
+        .ok()
+        .flatten()
 }
 
 pub fn gh_pr_overview_no_checks(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
-    default_handle().overview_no_checks(repo_root, pr_number)
+    default_handle()
+        .overview_no_checks(repo_root, pr_number)
+        .ok()
+        .flatten()
 }
 
 pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
-    default_handle().overview_remote(owner, repo, number)
+    default_handle()
+        .overview_remote(owner, repo, number)
+        .ok()
+        .flatten()
 }
 
 #[derive(Debug, Clone)]
@@ -679,12 +694,14 @@ pub fn gh_pr_checks_remote(owner: &str, repo: &str, number: u64) -> Result<Vec<C
         .map_err(anyhow::Error::from)
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_edit_body(repo_root: &str, body: &str) -> Result<()> {
     default_handle()
         .edit_body(repo_root, body)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("Failed to update PR body", error))
 }
 
+/// Compatibility wrapper for front ends; removed when they take the handle.
 pub fn gh_pr_approve(
     repo_root: &str,
     remote_repo: Option<&str>,
@@ -692,7 +709,7 @@ pub fn gh_pr_approve(
 ) -> Result<()> {
     default_handle()
         .approve(repo_root, remote_repo, pr_number)
-        .map_err(anyhow::Error::from)
+        .map_err(|error| with_prefix("gh pr approve failed", error))
 }
 
 /// Whether a CI check run counts as failing.

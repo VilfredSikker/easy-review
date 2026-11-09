@@ -472,11 +472,7 @@ fn bounded_read(reader: impl Read, limit: usize) -> Result<Vec<u8>> {
 
 fn gh_read_error(error: crate::github::GhError, limit: usize) -> anyhow::Error {
     match error {
-        crate::github::GhError::Tool { ref stderr, .. }
-            if stderr.contains("exceeds byte limit") =>
-        {
-            too_large(limit)
-        }
+        crate::github::GhError::TooLarge { .. } => too_large(limit),
         error => anyhow::anyhow!("Document source could not be read: {error}"),
     }
 }
