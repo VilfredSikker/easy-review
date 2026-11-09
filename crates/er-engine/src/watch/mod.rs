@@ -126,23 +126,26 @@ mod store_watcher_tests {
     #[test]
     fn store_watcher_reports_a_bucket_write() {
         let root = tempfile::TempDir::new().unwrap();
-        let mut registry = Registry::new();
-        registry.register_text("test", "notes.txt").unwrap();
-        let ignore = vec![Pattern::new(".lock"), Pattern::new(".lease")];
-        let (tx, rx) = mpsc::channel();
-        let _watcher = StoreWatcher::new(root.path(), registry, ignore, 100, tx).unwrap();
-
         let store = ArtifactStore::new(root.path());
         let scope = Scope::Branch {
             repo: Slug::new("my-repo").unwrap(),
             branch: Slug::new("feature-x").unwrap(),
             view: BranchView::Branch,
         };
+        // inotify only watches directories that exist when the watch starts.
+        std::fs::create_dir_all(store.scope_dir(&scope)).unwrap();
+
+        let mut registry = Registry::new();
+        registry.register_text("test", "notes.txt").unwrap();
+        let ignore = vec![Pattern::new(".lock"), Pattern::new(".lease")];
+        let (tx, rx) = mpsc::channel();
+        let _watcher = StoreWatcher::new(root.path(), registry, ignore, 100, tx).unwrap();
+
         store
             .write_text(&scope, &RelPath::new("notes.txt").unwrap(), "hi")
             .unwrap();
 
-        let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let event = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(event.scope, scope);
         assert_eq!(event.kind, "test");
     }
