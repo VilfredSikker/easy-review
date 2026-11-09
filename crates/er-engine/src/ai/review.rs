@@ -790,14 +790,14 @@ enum CommentSource {
 fn indexed_hunk_index(comment: &CommentRef<'_>) -> Option<usize> {
     match comment {
         CommentRef::Question(q) | CommentRef::Note(q) => q.hunk_index,
-        CommentRef::GitHubComment(c) => c.hunk_index,
+        CommentRef::GithubComment(c) => c.hunk_index,
     }
 }
 
 fn indexed_line_start(comment: &CommentRef<'_>) -> Option<usize> {
     match comment {
         CommentRef::Question(q) | CommentRef::Note(q) => q.line_start,
-        CommentRef::GitHubComment(c) => c.line_start,
+        CommentRef::GithubComment(c) => c.line_start,
     }
 }
 
@@ -920,7 +920,7 @@ impl AiState {
                 .as_ref()?
                 .comments
                 .get(idx)
-                .map(CommentRef::GitHubComment),
+                .map(CommentRef::GithubComment),
         }
     }
 
@@ -1288,9 +1288,9 @@ impl AiState {
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
                 if c.file == path && c.in_reply_to.is_none() {
-                    let cr = CommentRef::GitHubComment(c);
+                    let cr = CommentRef::GithubComment(c);
                     if comment_matches_hunk(&cr) && seen_ids.insert(c.id.clone()) {
-                        result.push(CommentRef::GitHubComment(c));
+                        result.push(CommentRef::GithubComment(c));
                     }
                 }
             }
@@ -1319,7 +1319,7 @@ impl AiState {
             for c in &gc.comments {
                 if let Some(ref parent) = c.in_reply_to {
                     if top_level_ids.contains(parent) && seen_ids.insert(c.id.clone()) {
-                        result.push(CommentRef::GitHubComment(c));
+                        result.push(CommentRef::GithubComment(c));
                     }
                 }
             }
@@ -1417,7 +1417,7 @@ impl AiState {
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
                 if c.file == path && c.hunk_index.is_none() && c.in_reply_to.is_none() {
-                    result.push(CommentRef::GitHubComment(c));
+                    result.push(CommentRef::GithubComment(c));
                 }
             }
         }
@@ -1447,7 +1447,7 @@ impl AiState {
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
                 if c.in_reply_to.as_deref() == Some(comment_id) {
-                    result.push(CommentRef::GitHubComment(c));
+                    result.push(CommentRef::GithubComment(c));
                 }
             }
         }
@@ -1674,7 +1674,7 @@ impl AiState {
         }
         if let Some(gc) = &self.github_comments {
             if let Some(c) = gc.comments.iter().find(|c| c.id == id) {
-                return Some(CommentRef::GitHubComment(c));
+                return Some(CommentRef::GithubComment(c));
             }
         }
         None
@@ -1686,7 +1686,7 @@ impl AiState {
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
                 if c.finding_ref.as_deref() == Some(finding_id) {
-                    result.push(CommentRef::GitHubComment(c));
+                    result.push(CommentRef::GithubComment(c));
                 }
             }
         }

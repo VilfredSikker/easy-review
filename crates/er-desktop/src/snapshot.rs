@@ -2178,12 +2178,12 @@ fn comment_ref_to_thread(
         er_engine::ai::CommentType::GitHubComment => "comment",
     };
     let source = match c {
-        CommentRef::GitHubComment(gc) => gc.source.clone(),
+        CommentRef::GithubComment(gc) => gc.source.clone(),
         _ => "local".to_string(),
     };
     let line = match c {
         CommentRef::Question(q) | CommentRef::Note(q) => q.line_start.unwrap_or(0),
-        CommentRef::GitHubComment(gc) => gc.line_start.unwrap_or(0),
+        CommentRef::GithubComment(gc) => gc.line_start.unwrap_or(0),
     };
     let line_end = c.line_end();
     let side = c
@@ -2192,7 +2192,7 @@ fn comment_ref_to_thread(
         .unwrap_or_else(default_thread_side);
     let author_kind = if c.author() == "You" { "you" } else { "human" };
     let github_id = match c {
-        CommentRef::GitHubComment(gc) => gc.github_id,
+        CommentRef::GithubComment(gc) => gc.github_id,
         _ => None,
     };
     ThreadSnapshot {
@@ -2205,7 +2205,7 @@ fn comment_ref_to_thread(
         source,
         stale: match c {
             CommentRef::Question(q) | CommentRef::Note(q) => q.stale,
-            CommentRef::GitHubComment(gc) => gc.stale || gc.outdated,
+            CommentRef::GithubComment(gc) => gc.stale || gc.outdated,
         },
         resolved: c.is_resolved(),
         root: ThreadMessage {
@@ -2223,7 +2223,7 @@ fn comment_ref_to_thread(
         replies: build_replies(c, tab, pending),
         promoted_to: match c {
             CommentRef::Question(q) | CommentRef::Note(q) => q.promoted_to.clone(),
-            CommentRef::GitHubComment(_) => None,
+            CommentRef::GithubComment(_) => None,
         },
         github_id,
     }
@@ -5031,7 +5031,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                     } else {
                         "human"
                     };
-                    let cref = CommentRef::GitHubComment(c);
+                    let cref = CommentRef::GithubComment(c);
                     result.push(ThreadSnapshot {
                         id: c.id.clone(),
                         kind: "comment".to_string(),
@@ -6143,7 +6143,7 @@ mod tests {
         let comment = github_comment(true, false);
 
         let thread = comment_ref_to_thread(
-            &CommentRef::GitHubComment(&comment),
+            &CommentRef::GithubComment(&comment),
             "src/foo.rs",
             0,
             &tab,

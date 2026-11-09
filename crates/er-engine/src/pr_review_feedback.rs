@@ -783,4 +783,33 @@ mod tests {
             assert_eq!(feedback.questions.len(), 2);
         });
     }
+
+    #[test]
+    fn an_mcp_reply_id_starts_with_its_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_string_lossy().to_string();
+        let qs = ErQuestions {
+            version: 1,
+            diff_hash: "hash".into(),
+            questions: vec![sample_question("q-root")],
+        };
+        write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+        let notes = ErNotes {
+            version: 1,
+            diff_hash: "hash".into(),
+            notes: vec![sample_question("n-root")],
+        };
+        write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
+
+        let question = reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
+        let note = reply_to_note_in_dir(&er_dir, "n-root", "Because.", None).unwrap();
+
+        assert!(question.id.starts_with("q-"), "{}", question.id);
+        assert!(note.id.starts_with("n-"), "{}", note.id);
+        assert!(
+            question.id.trim_start_matches("q-").contains('-'),
+            "q-<millis>-<seq>: {}",
+            question.id
+        );
+    }
 }
