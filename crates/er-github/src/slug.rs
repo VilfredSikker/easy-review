@@ -30,7 +30,7 @@ impl RepoSlug {
     }
 
     /// The remote forms only: a bare `owner/repo` has no host to return.
-    pub(crate) fn parse_remote(input: &str) -> Option<Self> {
+    pub fn parse_remote(input: &str) -> Option<Self> {
         let (host, slug) = Self::parse_with_host(input)?;
         host?;
         Some(slug)
