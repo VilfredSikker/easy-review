@@ -13760,9 +13760,10 @@ mod tests {
         use std::sync::Arc;
 
         let dir = ReviewFlowTestDir::new();
-        let storage = dir.path().join("storage");
-        std::fs::create_dir_all(&storage).unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", &storage);
+        // The fixture's inner type changed with the release branch; a separate
+        // temp dir keeps this test independent of it.
+        let storage = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
         let state = review_flow_test_state(&dir);
 
         let questions_path;
