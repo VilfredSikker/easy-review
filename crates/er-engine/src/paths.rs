@@ -1,8 +1,9 @@
 /// Selects where review-artifact files live for a given tab.
 ///
 /// Review files always live under managed storage
-/// (`<storage_root>/repos/<repo>/branches/<branch>/...`); nothing writes into
-/// the repository working tree.
+/// (`<base>/v1/repos/<repo_slug>/branches/<branch_slug>/...`, where both slugs
+/// end in a short hash); nothing writes into the repository working tree.
+/// `ER_STORAGE_ROOT`, when set, replaces the whole root and gets no `v1`.
 #[derive(Clone, Debug)]
 pub enum ErRoot {
     /// Shared managed storage (TUI + Desktop).
@@ -34,7 +35,7 @@ impl ErRoot {
             return Self::managed(dir.to_string_lossy().into_owned());
         }
         Self::managed(
-            dir.join(crate::storage::slug_repo(git, repo_root))
+            dir.join(crate::storage::repo_storage_slug_from_root(git, repo_root))
                 .to_string_lossy()
                 .into_owned(),
         )

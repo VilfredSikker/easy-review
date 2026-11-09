@@ -489,7 +489,11 @@ mod tests {
     #[test]
     fn upload_tour_validates_hash() {
         with_storage_root(|| {
-            let er_dir = resolve_managed_root_for_pr_bucket("acme-widgets", 7).er_dir();
+            let er_dir = resolve_managed_root_for_pr_bucket(
+                &crate::storage::repo_storage_slug("acme", "widgets"),
+                7,
+            )
+            .er_dir();
             let diff = "diff --git a/x b/x\n+hello\n";
             write_diff_tmp(&er_dir, diff);
             let hash = compute_diff_hash(diff);
@@ -530,7 +534,11 @@ mod tests {
     #[test]
     fn upload_rejects_stale_hash() {
         with_storage_root(|| {
-            let er_dir = resolve_managed_root_for_pr_bucket("acme-widgets", 8).er_dir();
+            let er_dir = resolve_managed_root_for_pr_bucket(
+                &crate::storage::repo_storage_slug("acme", "widgets"),
+                8,
+            )
+            .er_dir();
             write_diff_tmp(&er_dir, "diff --git a/x b/x\n+hello\n");
 
             let tour = ErTour {
@@ -562,7 +570,11 @@ mod tests {
     #[test]
     fn review_bundle_validates() {
         with_storage_root(|| {
-            let er_dir = resolve_managed_root_for_pr_bucket("acme-widgets", 9).er_dir();
+            let er_dir = resolve_managed_root_for_pr_bucket(
+                &crate::storage::repo_storage_slug("acme", "widgets"),
+                9,
+            )
+            .er_dir();
             let diff = "diff --git a/a.rs b/a.rs\n+1\n";
             write_diff_tmp(&er_dir, diff);
             let hash = compute_diff_hash(diff);
@@ -616,7 +628,11 @@ mod tests {
     #[test]
     fn triage_min_json_ok() {
         with_storage_root(|| {
-            let er_dir = resolve_managed_root_for_pr_bucket("acme-widgets", 10).er_dir();
+            let er_dir = resolve_managed_root_for_pr_bucket(
+                &crate::storage::repo_storage_slug("acme", "widgets"),
+                10,
+            )
+            .er_dir();
             let diff = "diff --git a/t b/t\n+t\n";
             write_diff_tmp(&er_dir, diff);
             let hash = compute_diff_hash(diff);
@@ -644,7 +660,11 @@ mod tests {
     #[test]
     fn upload_requires_diff_tmp() {
         with_storage_root(|| {
-            let er_dir = resolve_managed_root_for_pr_bucket("acme-widgets", 11).er_dir();
+            let er_dir = resolve_managed_root_for_pr_bucket(
+                &crate::storage::repo_storage_slug("acme", "widgets"),
+                11,
+            )
+            .er_dir();
             std::fs::create_dir_all(&er_dir).unwrap();
             let mut files = BTreeMap::new();
             files.insert(
