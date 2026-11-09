@@ -11,7 +11,7 @@ Every implementer and reviewer agent reads this first. Your GitHub issue is your
 - **Scope.** Do exactly your PR's scope from the plan. When you find something outside it, note it under "follow-ups" in your report instead of fixing it. If the plan is wrong about the code (a symbol moved, a caller exists that it says does not), stop and report with evidence and a recommendation.
 - **Lint gate.** It only tightens (ADR 0038). Never grow `clippy-warning-budget.json` or a UI lint baseline. Fix the violation, or scope an `#[expect(lint, reason = …)]` / `// eslint-disable-next-line rule -- why` to the one site. After fixing a baselined violation, run `just clippy-prune` or `just lint-ui-prune`. List every baseline, allow-list or `clippy.toml` change under **Call-outs**.
 - **Guardrails.** When your PR creates a crate or a port, it also adds the boundary rule the plan names for it. Do not leave it for later.
-- **Old data.** Version 1.0.0 carries no old data. A deletion needs no compatibility read path. Do not add migrations unless the plan says so.
+- **Old data.** Version 1.0.0 carries no old data, except the one-time project-list import (D15, #452). A deletion needs no compatibility read path. Do not add migrations unless the plan says so.
 - **Tracking.** Report progress, blockers and plan corrections as comments on your issue. Do not edit `docs/epics/1.0.0/STATUS.md` or `BUILD_LOG.md`.
 - **Model names.** Keep model names and agent ids out of code, comments, commits and PR text. Do not add attribution trailers to commits or PRs.
 - **Comments.** Code says what and how; a comment says why. Do not cite plan ids, review findings or tracker numbers in code comments (`just comments-check` rejects them).
