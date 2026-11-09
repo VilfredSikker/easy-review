@@ -7,16 +7,22 @@
 pub mod artifact;
 pub mod envelope;
 pub mod error;
+pub mod event;
 pub mod key;
+pub mod lock;
 pub mod registry;
 pub mod store;
 pub mod time;
 
 pub use artifact::{Artifact, Mode};
 pub use envelope::{EnvelopeMeta, Loaded, Stored, Unreadable};
-pub use error::StoreError;
+pub use error::{StoreError, UpdateError};
+pub use event::{event_for_path, StoreEvent};
 pub use key::{
     ArtifactKey, BranchView, BucketDir, DiagramId, ExpertId, RelPath, Scope, SlotName, Slug,
+};
+pub use lock::{
+    HolderInfo, LeaseGuard, LockKind, ScopeGuard, DEFAULT_LOCK_TIMEOUT, LOCK_POLL_INTERVAL,
 };
 pub use registry::{Pattern, Registry};
 pub use store::{ArtifactStore, MAX_ARTIFACT_BYTES};
@@ -71,6 +77,21 @@ pub(crate) mod test_support {
         const MODE: Mode = Mode::Bare;
         const FILE: &'static str = "experts/{slot}.json";
         type Slot = ExpertId;
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    pub struct TestCounter {
+        pub version: u32,
+        pub diff_hash: String,
+        pub value: u32,
+    }
+
+    impl Artifact for TestCounter {
+        const KIND: &'static str = "test-counter";
+        const VERSION: u32 = 1;
+        const MODE: Mode = Mode::Bare;
+        const FILE: &'static str = "counter.json";
+        type Slot = ();
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -280,5 +301,34 @@ pub(crate) mod test_support {
         const MODE: Mode = Mode::Bare;
         const FILE: &'static str = "bad-slot/{slot}.json";
         type Slot = BadSlot;
+    }
+
+    /// The ignore entries a store bucket carries; the tests use them to check filtering.
+    pub fn ignore_patterns() -> Vec<crate::registry::Pattern> {
+        [
+            "*.tmp",
+            "*.prev.json",
+            ".diff-tmp.sha256",
+            ".diff-annotated.sha256",
+            "diff-tmp",
+            "diff-annotated",
+            "change-facts.md",
+            "review-md.md",
+            "review-files.txt",
+            "debug-agent.log",
+            "snapshots/**",
+            "arena/**",
+            "tour-input/**",
+            "flow-backups/**",
+            "ui-annotations.json",
+            "finding-promotions.json",
+            "browser-annotations.json",
+            "browser-assets/**",
+            ".lock",
+            ".lease",
+        ]
+        .into_iter()
+        .map(crate::registry::Pattern::new)
+        .collect()
     }
 }
