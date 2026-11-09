@@ -85,8 +85,8 @@ fn build_persisted_entries(cache: &GithubStatusCache) -> Vec<PersistedGhStatusEn
 /// mismatch, or a corrupt record all yield `Ok(None)` so a bad record never
 /// crashes startup.
 pub fn load_persisted_gh_status_cache() -> Result<Option<GithubStatusCache>> {
-    let key = er_engine::app_store::key::<PersistedGhStatusFile>()?;
-    let parsed = match er_engine::app_store::store().read(&key)? {
+    let key = er_engine::store_registry::app_key::<PersistedGhStatusFile>()?;
+    let parsed = match er_engine::store_registry::store().read(&key)? {
         Loaded::Found(stored) => stored.value,
         Loaded::Absent | Loaded::Unreadable(_) => return Ok(None),
     };
@@ -101,14 +101,14 @@ pub fn load_persisted_gh_status_cache() -> Result<Option<GithubStatusCache>> {
 
 /// Persist the GitHub-status cache. Best-effort: failures are logged.
 pub fn save_persisted_gh_status_cache(cache: &Arc<Mutex<GithubStatusCache>>) {
-    let Ok(key) = er_engine::app_store::key::<PersistedGhStatusFile>() else {
+    let Ok(key) = er_engine::store_registry::app_key::<PersistedGhStatusFile>() else {
         return;
     };
     let cache_map = cache.lock().ok().map(|g| g.clone()).unwrap_or_default();
     let payload = PersistedGhStatusFile {
         entries: build_persisted_entries(&cache_map),
     };
-    if let Err(e) = er_engine::app_store::store().write(&key, &payload) {
+    if let Err(e) = er_engine::store_registry::store().write(&key, &payload) {
         log::error!("[gh-status-cache] failed to persist GitHub status cache: {e}");
     }
 }
@@ -310,7 +310,7 @@ mod tests {
     }
 
     fn write_raw_envelope(version: u32) {
-        let path = er_engine::app_store::path::<PersistedGhStatusFile>().expect("record path");
+        let path = er_engine::store_registry::app_path::<PersistedGhStatusFile>().expect("record path");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             path,

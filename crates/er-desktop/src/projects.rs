@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use er_engine::projects_pins::{ProjectRecord, ProjectsFile, RecentPrEntry, SavedPrEntry};
@@ -219,10 +218,6 @@ pub fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
 }
 
 /// Where the projects record lives in the store, for mtime watchers.
-pub fn config_path() -> Option<PathBuf> {
-    er_engine::projects_pins::projects_artifact_path()
-}
-
 use std::sync::Mutex;
 
 static PROJECTS_LOAD_CACHE: Mutex<Option<(std::time::SystemTime, ProjectsFile)>> = Mutex::new(None);
@@ -248,10 +243,7 @@ pub fn load() -> ProjectsFile {
     // Skip the store read when mtime hasn't advanced since the last load. The
     // record is hit on every snapshot build; with multiple polls per second
     // under user input, re-reading it repeatedly is wasted work.
-    let Some(path) = config_path() else {
-        return ProjectsFile::default();
-    };
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mtime = er_engine::projects_pins::modified();
     if let (Some(mtime), Ok(guard)) = (mtime, PROJECTS_LOAD_CACHE.lock()) {
         if let Some((cached_mtime, cached_file)) = guard.as_ref() {
             if *cached_mtime == mtime {
@@ -897,8 +889,8 @@ mod tests {
         er_engine::storage::with_test_storage_root(tmp.path(), || {
             let mut record = local_project("local", Some("owner/repo"));
             record.tracked_prs = vec![99];
-            let key = er_engine::app_store::key::<ProjectsFile>().unwrap();
-            er_engine::app_store::store()
+            let key = er_engine::store_registry::app_key::<ProjectsFile>().unwrap();
+            er_engine::store_registry::store()
                 .write_durable(
                     &key,
                     &ProjectsFile {

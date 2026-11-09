@@ -45,8 +45,8 @@ fn now_epoch_ms() -> u64 {
 pub type PersistedPrCache = (HashMap<String, Vec<PrInfo>>, HashMap<String, u64>);
 
 pub fn load_persisted_pr_cache() -> Result<Option<PersistedPrCache>> {
-    let key = er_engine::app_store::key::<PersistedPrCacheFile>()?;
-    let parsed = match er_engine::app_store::store().read(&key)? {
+    let key = er_engine::store_registry::app_key::<PersistedPrCacheFile>()?;
+    let parsed = match er_engine::store_registry::store().read(&key)? {
         Loaded::Found(stored) => stored.value,
         Loaded::Absent | Loaded::Unreadable(_) => return Ok(None),
     };
@@ -60,7 +60,7 @@ pub fn load_persisted_pr_cache() -> Result<Option<PersistedPrCache>> {
 }
 
 pub fn save_persisted_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtMap) {
-    let Ok(key) = er_engine::app_store::key::<PersistedPrCacheFile>() else {
+    let Ok(key) = er_engine::store_registry::app_key::<PersistedPrCacheFile>() else {
         return;
     };
     let cache_map = cache.lock().ok().map(|g| g.clone()).unwrap_or_default();
@@ -78,7 +78,7 @@ pub fn save_persisted_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAt
         })
         .collect();
     let payload = PersistedPrCacheFile { entries };
-    if let Err(e) = er_engine::app_store::store().write(&key, &payload) {
+    if let Err(e) = er_engine::store_registry::store().write(&key, &payload) {
         log::error!("[pr-cache] failed to persist PR cache: {e}");
     }
 }

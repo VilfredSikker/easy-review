@@ -64,12 +64,12 @@ impl Artifact for TabsFile {
 
 /// Persist tab descriptors as the app's tabs record.
 pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
-    let key = er_engine::app_store::key::<TabsFile>()?;
+    let key = er_engine::store_registry::app_key::<TabsFile>()?;
     let file = TabsFile {
         tabs: tabs.to_vec(),
         active_idx,
     };
-    er_engine::app_store::store().write(&key, &file)?;
+    er_engine::store_registry::store().write(&key, &file)?;
     Ok(())
 }
 
@@ -109,8 +109,8 @@ pub fn persist_app_tabs(app: &er_engine::app::App) {
 /// Load persisted tabs. Returns `None` if the record is missing or unreadable —
 /// callers fall back to the default single-tab launch.
 pub fn load_tabs() -> Option<TabsFile> {
-    let key = er_engine::app_store::key::<TabsFile>().ok()?;
-    match er_engine::app_store::store().read(&key).ok()? {
+    let key = er_engine::store_registry::app_key::<TabsFile>().ok()?;
+    match er_engine::store_registry::store().read(&key).ok()? {
         Loaded::Found(stored) => Some(stored.value),
         Loaded::Absent | Loaded::Unreadable(_) => None,
     }

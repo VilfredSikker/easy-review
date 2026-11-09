@@ -196,8 +196,8 @@ fn unix_now() -> u64 {
 
 /// The cached release, when one was checked within `ttl`.
 pub fn load_cached_release(ttl: Duration) -> Option<LatestRelease> {
-    let key = crate::app_store::key::<CheckCache>().ok()?;
-    let cache = match crate::app_store::store().read(&key).ok()? {
+    let key = crate::store_registry::app_key::<CheckCache>().ok()?;
+    let cache = match crate::store_registry::store().read(&key).ok()? {
         Loaded::Found(stored) => stored.value,
         Loaded::Absent | Loaded::Unreadable(_) => return None,
     };
@@ -207,12 +207,12 @@ pub fn load_cached_release(ttl: Duration) -> Option<LatestRelease> {
 /// Every worktree runs its own `er` and they can all save at once on launch;
 /// the store writes each save through a unique temp file.
 pub fn save_cached_release(release: &LatestRelease) -> Result<()> {
-    let key = crate::app_store::key::<CheckCache>()?;
+    let key = crate::store_registry::app_key::<CheckCache>()?;
     let cache = CheckCache {
         checked_at_unix: unix_now(),
         release: release.clone(),
     };
-    crate::app_store::store()
+    crate::store_registry::store()
         .write(&key, &cache)
         .map_err(|error| anyhow!("save update check: {error}"))
 }
@@ -397,7 +397,7 @@ mod tests {
             assert_eq!(load_cached_release(CHECK_TTL), Some(fresh));
 
             // Rewrite the stored check with an old timestamp: the TTL rejects it.
-            let path = crate::app_store::path::<CheckCache>().expect("record path");
+            let path = crate::store_registry::app_path::<CheckCache>().expect("record path");
             std::fs::write(
                 &path,
                 r#"{"kind":"update-check","version":1,"diff_hash":null,"producer":"host","written_at":"2026-01-01T00:00:00Z","payload":{"checked_at_unix":0,"release":{"tag":"v1","html_url":"https://x"}}}"#,

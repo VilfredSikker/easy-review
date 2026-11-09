@@ -10,7 +10,8 @@ pub enum ErRoot {
     Managed {
         /// Absolute path to the branch review directory (review.json, questions.json, …).
         agent_dir: String,
-        /// Same as `agent_dir` — `session.json` and `reviewed` live here.
+        /// Same as `agent_dir` — the session and reviewed artifacts are stored
+        /// under this directory through the artifact store.
         session_dir: String,
     },
 }
@@ -45,18 +46,6 @@ impl ErRoot {
     pub fn er_dir(&self) -> String {
         let Self::Managed { agent_dir, .. } = self;
         agent_dir.clone()
-    }
-
-    /// Absolute path to session.json.
-    pub fn session_path(&self) -> String {
-        let Self::Managed { session_dir, .. } = self;
-        format!("{session_dir}/session.json")
-    }
-
-    /// Absolute path to the `reviewed` marker file.
-    pub fn reviewed_path(&self) -> String {
-        let Self::Managed { session_dir, .. } = self;
-        format!("{session_dir}/reviewed")
     }
 
     /// Directory for file snapshots (watched-file baseline copies).

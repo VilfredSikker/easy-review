@@ -77,8 +77,8 @@ pub fn prune_pr_open_cache(
 /// Load the persisted open-diff cache. A missing record, a version mismatch, or
 /// a corrupt record all yield Ok(None) so a bad record never crashes startup.
 pub fn load_persisted_pr_open_cache() -> Result<Option<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>> {
-    let key = er_engine::app_store::key::<PersistedPrOpenFile>()?;
-    let parsed = match er_engine::app_store::store().read(&key)? {
+    let key = er_engine::store_registry::app_key::<PersistedPrOpenFile>()?;
+    let parsed = match er_engine::store_registry::store().read(&key)? {
         Loaded::Found(stored) => stored.value,
         Loaded::Absent | Loaded::Unreadable(_) => return Ok(None),
     };
@@ -94,14 +94,14 @@ pub fn load_persisted_pr_open_cache() -> Result<Option<HashMap<PrOpenCacheKey, P
 /// Persist the open-diff cache, skipping oversized entries (size guard).
 /// Best-effort: failures are logged.
 pub fn save_persisted_pr_open_cache(cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>) {
-    let Ok(key) = er_engine::app_store::key::<PersistedPrOpenFile>() else {
+    let Ok(key) = er_engine::store_registry::app_key::<PersistedPrOpenFile>() else {
         return;
     };
     let cache_map = cache.lock().ok().map(|g| g.clone()).unwrap_or_default();
     let payload = PersistedPrOpenFile {
         entries: build_persisted_entries(&cache_map),
     };
-    if let Err(e) = er_engine::app_store::store().write(&key, &payload) {
+    if let Err(e) = er_engine::store_registry::store().write(&key, &payload) {
         log::error!("[pr-open-cache] failed to persist open-diff cache: {e}");
     }
 }
@@ -193,7 +193,7 @@ mod tests {
     fn schema_mismatch_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(tmp.path(), || {
-            let path = er_engine::app_store::path::<PersistedPrOpenFile>().expect("record path");
+            let path = er_engine::store_registry::app_path::<PersistedPrOpenFile>().expect("record path");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(
                 path,

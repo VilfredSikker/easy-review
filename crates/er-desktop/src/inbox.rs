@@ -612,10 +612,10 @@ pub fn now_epoch_ms() -> u64 {
 }
 
 pub fn load_inbox_state() -> InboxState {
-    let Ok(key) = er_engine::app_store::key::<InboxFile>() else {
+    let Ok(key) = er_engine::store_registry::app_key::<InboxFile>() else {
         return InboxState::default();
     };
-    let Ok(Loaded::Found(stored)) = er_engine::app_store::store().read(&key) else {
+    let Ok(Loaded::Found(stored)) = er_engine::store_registry::store().read(&key) else {
         return InboxState::default();
     };
     let file = stored.value;
@@ -631,7 +631,7 @@ pub fn load_inbox_state() -> InboxState {
 }
 
 pub fn save_inbox_state(handle: &InboxHandle) {
-    let Ok(key) = er_engine::app_store::key::<InboxFile>() else {
+    let Ok(key) = er_engine::store_registry::app_key::<InboxFile>() else {
         return;
     };
     let snapshot = match handle.lock() {
@@ -650,7 +650,7 @@ pub fn save_inbox_state(handle: &InboxHandle) {
         last_refresh_ms: snapshot.last_refresh_ms,
         seen_notification_ids: snapshot.seen_notification_ids,
     };
-    if let Err(e) = er_engine::app_store::store().write(&key, &payload) {
+    if let Err(e) = er_engine::store_registry::store().write(&key, &payload) {
         log::error!("[inbox] failed to persist inbox state: {e}");
     }
 }

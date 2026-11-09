@@ -128,13 +128,19 @@ pub struct PinnedPr {
 }
 
 fn projects_key() -> Result<ArtifactKey<ProjectsFile>> {
-    crate::app_store::key::<ProjectsFile>()
+    crate::store_registry::app_key::<ProjectsFile>()
         .map_err(|error| anyhow::anyhow!("projects record key: {error}"))
 }
 
 /// Path of the projects record, for callers that watch its mtime.
 pub fn projects_artifact_path() -> Option<PathBuf> {
-    crate::app_store::path::<ProjectsFile>()
+    crate::store_registry::app_path::<ProjectsFile>()
+}
+
+/// Last-modified time of the projects record, for the desktop's parse cache.
+/// `None` when the record does not exist or its time cannot be read.
+pub fn modified() -> Option<SystemTime> {
+    crate::store_registry::app_modified::<ProjectsFile>()
 }
 
 fn now_epoch_ms() -> u64 {
@@ -150,7 +156,7 @@ pub fn load() -> ProjectsFile {
     let Ok(key) = projects_key() else {
         return ProjectsFile::default();
     };
-    match crate::app_store::store().read(&key) {
+    match crate::store_registry::store().read(&key) {
         Ok(Loaded::Found(stored)) => stored.value,
         Ok(Loaded::Absent | Loaded::Unreadable(_)) | Err(_) => ProjectsFile::default(),
     }
@@ -160,7 +166,7 @@ pub fn load() -> ProjectsFile {
 /// written either way so a read-modify-write stays a single locked step.
 pub fn update(op: impl FnOnce(&mut ProjectsFile) -> Result<bool>) -> Result<()> {
     let key = projects_key()?;
-    let store = crate::app_store::store();
+    let store = crate::store_registry::store();
     let result = store.update_durable(&key, er_store::DEFAULT_LOCK_TIMEOUT, |current| {
         // `update` cannot tell absent from unreadable, but the file can.
         if current.is_none() && store.exists(&key) {
@@ -426,7 +432,9 @@ mod tests {
 
     fn write_projects(file: &ProjectsFile) {
         let key = projects_key().unwrap();
-        crate::app_store::store().write_durable(&key, file).unwrap();
+        crate::store_registry::store()
+            .write_durable(&key, file)
+            .unwrap();
     }
 
     fn project(id: &str, root_path: &str, remote: Option<&str>, globs: &[&str]) -> ProjectRecord {
