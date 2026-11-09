@@ -33,6 +33,8 @@ by hand and do not write the file with `std::fs`. A host-only kind is
 - A newer file is not overwritten. `read` reports `NewerVersion`; `write`
   refuses it. Adding an optional payload field needs no version bump; bump
   only when an older binary cannot read the new payload, and add a `migrate`.
+- A new enum variant needs a version bump or an `#[serde(other)]` arm; without
+  one, an older binary reads the new file as a malformed payload.
 - `write` does not fsync. `write_durable` does, for the kinds whose loss
   matters.
 - `read` never compares `diff_hash`. Staleness is the caller's job; agent output
