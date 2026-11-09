@@ -2423,29 +2423,29 @@ impl App {
     /// would let the two disagree on disk.
     pub fn toggle_checklist_item_at(&mut self, index: usize) -> Result<Option<bool>> {
         let tab = self.tab_mut();
-        if tab
+        let Some(item) = tab
             .ai
             .checklist
             .as_ref()
-            .is_none_or(|c| c.items.get(index).is_none())
-        {
+            .and_then(|checklist| checklist.items.get(index))
+        else {
             return Ok(None);
-        }
-        tab.ai.toggle_checklist_item(index);
+        };
+        let item_id = item.id.clone();
+        let checked = !item.checked;
 
-        if let Some(checklist) = tab.ai.checklist.as_ref() {
-            let store = crate::store_registry::store();
-            let scope = er_store::Scope::dir(tab.er_dir())?;
-            let path = crate::ai::checklist_store::save_checklist(&store, &scope, checklist)?;
-            tab.mark_sidecar_written(&path.to_string_lossy());
-        }
-
-        Ok(tab
-            .ai
-            .checklist
-            .as_ref()
-            .and_then(|c| c.items.get(index))
-            .map(|i| i.checked))
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(tab.er_dir())?;
+        let (checklist, state) =
+            match crate::ai::checklist_store::set_checked(&store, &scope, &item_id, checked) {
+                Ok(result) => result,
+                Err(er_store::UpdateError::Store(error)) => return Err(error.into()),
+                Err(er_store::UpdateError::Apply(_)) => return Ok(None),
+            };
+        tab.ai.checklist = Some(checklist);
+        let path = crate::ai::checklist_store::path_of(&store, &scope)?;
+        tab.mark_sidecar_written(&path.to_string_lossy());
+        Ok(state)
     }
 
     // ── Clipboard ──

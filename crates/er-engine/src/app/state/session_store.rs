@@ -6,7 +6,10 @@
 
 use std::collections::HashMap;
 
-use er_store::{Artifact, ArtifactKey, ArtifactStore, Loaded, Mode, Registry, Scope, StoreError};
+use er_store::{
+    Artifact, ArtifactKey, ArtifactStore, Loaded, Mode, Registry, Scope, StoreError, Unreadable,
+    DEFAULT_LOCK_TIMEOUT,
+};
 use serde::{Deserialize, Serialize};
 
 /// Serializable session state for restoring review progress across restarts.
@@ -168,6 +171,9 @@ pub fn load_reviewed(
 }
 
 /// Save the reviewed marks; an empty map deletes the file.
+///
+/// Deleting takes the lock and runs the same newer-version check as a write,
+/// so an unmark cannot erase a file a newer build wrote.
 pub fn save_reviewed(
     store: &ArtifactStore,
     scope: &Scope,
@@ -175,15 +181,22 @@ pub fn save_reviewed(
 ) -> Result<(), StoreError> {
     let key = key::<ReviewedFiles>(scope)?;
     if files.is_empty() {
-        store.delete(&key)
-    } else {
-        store.write(
-            &key,
-            &ReviewedFiles {
-                files: files.clone(),
-            },
-        )
+        let guard = store.lock_scope(scope, DEFAULT_LOCK_TIMEOUT)?;
+        if let Loaded::Unreadable(Unreadable::NewerVersion { found }) = store.read(&key)? {
+            return Err(StoreError::NewerVersion {
+                path: store.path(&key),
+                found,
+                expected: ReviewedFiles::VERSION,
+            });
+        }
+        return store.delete_locked(&guard, &key);
     }
+    store.write(
+        &key,
+        &ReviewedFiles {
+            files: files.clone(),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -246,6 +259,51 @@ mod tests {
             load_reviewed(&store, &scope).unwrap(),
             HashMap::from([("a.rs".to_string(), String::new())])
         );
+    }
+
+    fn captured_session() -> SessionState {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.branch_diff_hash = "hash".to_string();
+        tab.capture_session()
+    }
+
+    #[test]
+    fn a_newer_session_is_not_overwritten() {
+        let tmp = TempDir::new().unwrap();
+        let (store, scope) = store_and_scope(&tmp);
+        let path = store.path(&key::<SessionState>(&scope).unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let newer = r#"{"kind":"session","version":99,"payload":{"diff_hash":"hash"}}"#;
+        std::fs::write(&path, newer).unwrap();
+
+        let error = save_session(&store, &scope, &captured_session()).unwrap_err();
+        assert!(matches!(error, StoreError::NewerVersion { found: 99, .. }));
+        assert!(load_session(&store, &scope).is_none());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), newer);
+    }
+
+    #[test]
+    fn saving_a_session_takes_the_scope_lock() {
+        let tmp = TempDir::new().unwrap();
+        let (store, scope) = store_and_scope(&tmp);
+        let guard = store.lock_scope(&scope, DEFAULT_LOCK_TIMEOUT).unwrap();
+        let error = save_session(&store, &scope, &captured_session()).unwrap_err();
+        assert!(matches!(error, StoreError::AlreadyLocked { .. }));
+        drop(guard);
+    }
+
+    #[test]
+    fn unmarking_refuses_a_newer_reviewed_file() {
+        let tmp = TempDir::new().unwrap();
+        let (store, scope) = store_and_scope(&tmp);
+        let path = reviewed_path(&store, &scope);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let newer = r#"{"kind":"reviewed","version":99,"payload":{"files":{"a.rs":"hash-a"}}}"#;
+        std::fs::write(&path, newer).unwrap();
+
+        let error = save_reviewed(&store, &scope, &HashMap::new()).unwrap_err();
+        assert!(matches!(error, StoreError::NewerVersion { found: 99, .. }));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), newer);
     }
 
     #[test]
