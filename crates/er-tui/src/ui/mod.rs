@@ -76,9 +76,12 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
     // Bottom status bar
     status_bar::render_bottom_bar(f, outer[2], app);
 
-    // Watch notification overlay
+    // Watch notification overlay. A config load failure keeps its own banner
+    // once the one-time notification has cleared.
     if let Some(ref notification) = app.notification {
         status_bar::render_watch_notification(f, f.area(), &notification.message);
+    } else if let Some(ref error) = app.config_load_error {
+        status_bar::render_config_error_banner(f, f.area(), error);
     }
 
     // Popup overlay (worktree picker, directory browser, config hub)
