@@ -626,28 +626,32 @@ mod tests {
 
     #[test]
     fn data_target_is_the_storage_base_so_old_and_v1_data_both_go() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        std::env::remove_var("ER_STORAGE_ROOT");
-        let base = crate::storage::storage_base();
-        let root = crate::storage::storage_root();
+        let tmp = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let base = crate::storage::storage_base();
 
-        let targets = plan(&UninstallOptions {
-            remove_config: false,
-            remove_data: true,
-            remove_cache: false,
-            remove_binaries: false,
-            remove_desktop_app: false,
+            let targets = plan(&UninstallOptions {
+                remove_config: false,
+                remove_data: true,
+                remove_cache: false,
+                remove_binaries: false,
+                remove_desktop_app: false,
+            });
+
+            assert!(
+                targets
+                    .iter()
+                    .any(|target| target.kind == UninstallKind::Data && target.path == base),
+                "{targets:?}"
+            );
         });
-
-        assert!(
-            targets
-                .iter()
-                .any(|target| target.kind == UninstallKind::Data && target.path == base),
-            "{targets:?}"
+        // Without an override the v1 root is the base's child, so one data
+        // target covers both generations of data.
+        let data_dir = PathBuf::from("/data");
+        assert_eq!(
+            crate::storage::storage_root_from(None, Some(data_dir.clone()), None),
+            crate::storage::storage_base_from(None, Some(data_dir), None).join("v1")
         );
-        assert_eq!(base.join("v1"), root);
     }
 
     #[test]

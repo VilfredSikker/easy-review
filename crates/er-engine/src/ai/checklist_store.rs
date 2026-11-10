@@ -157,57 +157,62 @@ mod tests {
     #[test]
     fn an_agent_rewritten_checklist_loads_and_a_toggle_keeps_its_items() {
         let tmp = TempDir::new().unwrap();
-        let (store, scope) = store_and_scope(&tmp);
-        let path = store.path(&key::<ErChecklist>(&scope).unwrap());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            r#"{"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"}]}"#,
-        )
-        .unwrap();
-        let mut app = crate::app::App::new_for_test(vec![]);
-        app.tab_mut().er_root = crate::paths::ErRoot::managed(tmp.path().to_string_lossy());
-        app.tab_mut().ai.checklist = Some(loaded(&store, &scope));
-        // The agent rewrites the checklist after the host loaded it.
-        std::fs::write(
-            &path,
-            r#"{"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"},{"id":"c2","text":"added by the agent"}]}"#,
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let (store, scope) = store_and_scope(&tmp);
+            let path = store.path(&key::<ErChecklist>(&scope).unwrap());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"}]}"#,
+            )
+            .unwrap();
+            let mut app = crate::app::App::new_for_test(vec![]);
+            app.tab_mut().er_root = crate::paths::ErRoot::managed(tmp.path().to_string_lossy());
+            app.tab_mut().ai.checklist = Some(loaded(&store, &scope));
+            // The agent rewrites the checklist after the host loaded it.
+            std::fs::write(
+                &path,
+                r#"{"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"},{"id":"c2","text":"added by the agent"}]}"#,
+            )
+            .unwrap();
 
-        app.toggle_checklist_item_at(0).unwrap();
+            app.toggle_checklist_item_at(0).unwrap();
 
-        let after = loaded(&store, &scope);
-        assert!(after.items[0].checked);
-        assert_eq!(
-            after.items.len(),
-            2,
-            "the agent's rewrite was lost: {after:?}"
-        );
-        assert_eq!(after.items[1].text, "added by the agent");
-        assert!(!after.items[1].checked);
+            let after = loaded(&store, &scope);
+            assert!(after.items[0].checked);
+            assert_eq!(
+                after.items.len(),
+                2,
+                "the agent's rewrite was lost: {after:?}"
+            );
+            assert_eq!(after.items[1].text, "added by the agent");
+            assert!(!after.items[1].checked);
+        });
     }
 
     #[test]
     fn toggling_an_item_the_agent_removed_returns_none_and_keeps_the_bytes() {
         let tmp = TempDir::new().unwrap();
-        let (store, scope) = store_and_scope(&tmp);
-        let path = store.path(&key::<ErChecklist>(&scope).unwrap());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            r#"{"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"},{"id":"c2","text":"second"}]}"#,
-        )
-        .unwrap();
-        let mut app = crate::app::App::new_for_test(vec![]);
-        app.tab_mut().er_root = crate::paths::ErRoot::managed(tmp.path().to_string_lossy());
-        app.tab_mut().ai.checklist = Some(loaded(&store, &scope));
-        // The agent rewrites the checklist without the item the host loaded.
-        let rewritten = r#"{"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"}]}"#;
-        std::fs::write(&path, rewritten).unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let (store, scope) = store_and_scope(&tmp);
+            let path = store.path(&key::<ErChecklist>(&scope).unwrap());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                r#"{"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"},{"id":"c2","text":"second"}]}"#,
+            )
+            .unwrap();
+            let mut app = crate::app::App::new_for_test(vec![]);
+            app.tab_mut().er_root = crate::paths::ErRoot::managed(tmp.path().to_string_lossy());
+            app.tab_mut().ai.checklist = Some(loaded(&store, &scope));
+            // The agent rewrites the checklist without the item the host loaded.
+            let rewritten =
+                r#"{"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"}]}"#;
+            std::fs::write(&path, rewritten).unwrap();
 
-        assert_eq!(app.toggle_checklist_item_at(1).unwrap(), None);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), rewritten);
+            assert_eq!(app.toggle_checklist_item_at(1).unwrap(), None);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), rewritten);
+        });
     }
 
     #[test]

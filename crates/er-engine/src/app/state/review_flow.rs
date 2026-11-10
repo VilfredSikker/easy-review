@@ -1274,25 +1274,16 @@ mod tests {
         AiHubConfig, AiModelConfig, AiProviderConfig, ReviewModelGroups, ReviewModelRef,
     };
     use crate::paths::ErRoot;
-    use std::path::PathBuf;
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant};
 
-    struct TestDir(PathBuf);
+    struct TestDir(tempfile::TempDir);
     impl TestDir {
-        fn new(label: &str) -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("er-flow-{label}-{}-{nonce}", std::process::id()));
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
+        fn new(_label: &str) -> Self {
+            Self(tempfile::tempdir().unwrap())
         }
-    }
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+
+        fn path(&self) -> &std::path::Path {
+            self.0.path()
         }
     }
 
@@ -1331,8 +1322,8 @@ mod tests {
         review_behavior: &str,
         triage_hash_expr: &str,
     ) -> App {
-        let repo = dir.0.join("repo");
-        let bucket = dir.0.join("bucket");
+        let repo = dir.path().join("repo");
+        let bucket = dir.path().join("bucket");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::create_dir_all(&bucket).unwrap();
         let expert_json = serde_json::to_string(experts).unwrap();
@@ -1393,54 +1384,60 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "the process-wide storage scope adds a level to the polling loop"
+    )]
     fn linked_checkout_review_flow_keeps_execution_separate_from_target_identity() {
         let _serial = crate::agent_slots::test_serial();
         for remote in [None, Some("example/linked-checkout")] {
             for deep in [false, true] {
                 let dir = TestDir::new("linked-checkout");
-                let mut app = fake_app(&dir, if deep { "arena" } else { "expert" }, &["security"]);
-                let repo = dir.0.join("repo");
-                let checkout = dir.0.join("feature");
-                let git = |root: &Path, args: &[&str]| {
-                    let output = std::process::Command::new("git")
-                        .args(args)
-                        .current_dir(root)
-                        .output()
-                        .unwrap();
-                    assert!(
-                        output.status.success(),
-                        "{}",
-                        String::from_utf8_lossy(&output.stderr)
+                crate::storage::with_process_test_storage_root(dir.path(), || {
+                    let mut app =
+                        fake_app(&dir, if deep { "arena" } else { "expert" }, &["security"]);
+                    let repo = dir.path().join("repo");
+                    let checkout = dir.path().join("feature");
+                    let git = |root: &Path, args: &[&str]| {
+                        let output = std::process::Command::new("git")
+                            .args(args)
+                            .current_dir(root)
+                            .output()
+                            .unwrap();
+                        assert!(
+                            output.status.success(),
+                            "{}",
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                    };
+                    git(&repo, &["init", "-b", "main"]);
+                    git(&repo, &["config", "user.name", "Test"]);
+                    git(&repo, &["config", "user.email", "test@example.invalid"]);
+                    std::fs::create_dir_all(repo.join("src")).unwrap();
+                    std::fs::write(repo.join("src/lib.rs"), "main checkout\n").unwrap();
+                    git(&repo, &["add", "."]);
+                    git(
+                        &repo,
+                        &["-c", "commit.gpgsign=false", "commit", "-qm", "seed"],
                     );
-                };
-                git(&repo, &["init", "-b", "main"]);
-                git(&repo, &["config", "user.name", "Test"]);
-                git(&repo, &["config", "user.email", "test@example.invalid"]);
-                std::fs::create_dir_all(repo.join("src")).unwrap();
-                std::fs::write(repo.join("src/lib.rs"), "main checkout\n").unwrap();
-                git(&repo, &["add", "."]);
-                git(
-                    &repo,
-                    &["-c", "commit.gpgsign=false", "commit", "-qm", "seed"],
-                );
-                git(
-                    &repo,
-                    &[
-                        "worktree",
-                        "add",
-                        "-b",
-                        "feature",
-                        checkout.to_str().unwrap(),
-                    ],
-                );
-                std::fs::write(checkout.join("src/lib.rs"), "feature checkout\n").unwrap();
-                let bucket = app.tab().er_dir();
-                let log = dir.0.join("execution.log");
-                let provider = app.config.ai_hub.providers.get_mut("fake").unwrap();
-                // Every actual subprocess records the source it can read. The
-                // arena response satisfies all three round schemas.
-                let script = format!(
-                    r#"
+                    git(
+                        &repo,
+                        &[
+                            "worktree",
+                            "add",
+                            "-b",
+                            "feature",
+                            checkout.to_str().unwrap(),
+                        ],
+                    );
+                    std::fs::write(checkout.join("src/lib.rs"), "feature checkout\n").unwrap();
+                    let bucket = app.tab().er_dir();
+                    let log = dir.path().join("execution.log");
+                    let provider = app.config.ai_hub.providers.get_mut("fake").unwrap();
+                    // Every actual subprocess records the source it can read. The
+                    // arena response satisfies all three round schemas.
+                    let script = format!(
+                        r#"
 record() {{ printf '%s|%s\n%s\n' "$1" "$(pwd -P)" "$(cat src/lib.rs)" >> '{log}'; }}
 case "$1" in
   *triage.json*) record triage; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","verdict":{{"primary":"{primary}","experts":["security"]}}}}' "$hash" > '{bucket}/triage.json' ;;
@@ -1449,9 +1446,143 @@ case "$1" in
   *) record arena; printf '{{"findings":[],"ballots":[],"verdicts":[]}}' ;;
 esac
 "#,
+                        log = log.display(),
+                        primary = if deep { "arena" } else { "expert" }
+                    );
+                    provider.args[1] = script;
+                    if deep {
+                        let second = provider.clone();
+                        app.config
+                            .ai_hub
+                            .providers
+                            .insert("fake-second".into(), second);
+                        app.config
+                            .ai_hub
+                            .review_models
+                            .advanced
+                            .push(ReviewModelRef {
+                                provider_id: "fake-second".into(),
+                                model_id: "fake-model".into(),
+                            });
+                    }
+                    app.config.ai_hub.max_concurrent_reviews = 1;
+                    let tab = app.tab_mut();
+                    tab.local_branch_view = Some("feature".into());
+                    tab.local_branch_checkout_root = Some(checkout.to_string_lossy().into_owned());
+                    tab.remote_repo = remote.map(str::to_owned);
+                    let target = BackgroundTaskTarget {
+                        repo_root: repo.to_string_lossy().into_owned(),
+                        er_dir: "blocker".into(),
+                        branch_label: "blocker".into(),
+                        base_branch: "main".into(),
+                        scope: "branch".into(),
+                        pr_number: None,
+                        remote_repo: None,
+                        managed_local: true,
+                    };
+                    let blocker = BackgroundTask::new("review".into(), target);
+                    let blocker_id = blocker.id.clone();
+                    let (_result_tx, result_rx) = std::sync::mpsc::channel();
+                    let (_log_tx, log_rx) = std::sync::mpsc::channel();
+                    app.background_tasks.insert(
+                        blocker_id.clone(),
+                        super::super::background::BackgroundTaskHandle {
+                            task: blocker,
+                            run: crate::agent_run::AgentRunHandle::new(),
+                            result_rx,
+                            log_rx,
+                            recent_log: Default::default(),
+                        },
+                    );
+                    app.start_review_flow("branch").unwrap();
+                    let context = &app.review_flow_contexts[&bucket];
+                    assert_eq!(context.target.repo_root, repo.to_string_lossy());
+                    assert_eq!(context.target.er_dir, bucket);
+                    assert_eq!(context.repo_root, checkout.to_string_lossy());
+                    assert_eq!(app.pending_background_tasks.len(), 1);
+                    assert_eq!(
+                        app.pending_background_tasks[0]
+                            .task
+                            .execution_root
+                            .as_deref(),
+                        checkout.to_str()
+                    );
+                    assert_eq!(
+                        app.pending_background_tasks[0].task.target.repo_root,
+                        repo.to_string_lossy()
+                    );
+                    app.tabs
+                        .push(crate::app::TabState::new_for_test(Vec::new()));
+                    app.active_tab = 1;
+                    app.background_tasks.remove(&blocker_id);
+                    if deep {
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        while app.review_flow_for(&bucket).unwrap().state
+                            != FlowState::AwaitingConfirmation
+                        {
+                            app.poll_background_tasks();
+                            assert!(Instant::now() < deadline, "Deep did not reach confirmation");
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        app.confirm_review_flow(&bucket).unwrap();
+                    }
+                    run_until_terminal(&mut app, &bucket);
+                    assert!(
+                        matches!(
+                            app.review_flow_for(&bucket).unwrap().state,
+                            FlowState::Done { .. }
+                        ),
+                        "{:?}",
+                        app.review_flow_for(&bucket).unwrap().state
+                    );
+                    let observed = std::fs::read_to_string(&log).unwrap();
+                    let execution = std::fs::canonicalize(&checkout).unwrap();
+                    for stage in if deep {
+                        vec!["triage", "arena"]
+                    } else {
+                        vec!["triage", "general", "expert", "arena"]
+                    } {
+                        assert!(
+                            observed.contains(&format!(
+                                "{stage}|{}\nfeature checkout\n",
+                                execution.display()
+                            )),
+                            "missing {stage} at feature checkout\n{observed}"
+                        );
+                    }
+                    assert!(!observed.contains("main checkout"), "{observed}");
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn pr_view_without_checkout_reviews_from_the_head_ref() {
+        let _serial = crate::agent_slots::test_serial();
+        for deep in [false, true] {
+            let dir = TestDir::new("pr-no-checkout");
+            crate::storage::with_process_test_storage_root(dir.path(), || {
+                let primary = if deep { "arena" } else { "expert" };
+                let mut app = fake_app(&dir, primary, &["security"]);
+                let repo = dir.path().join("repo");
+                let bucket = app.tab().er_dir();
+                let log = dir.path().join("execution.log");
+                // Each subprocess records where it ran and whether its prompt names
+                // the PR head ref and how to fetch it, since the working tree holds
+                // another branch. The general finding gives verification work.
+                let script = format!(
+                    r#"
+record() {{ case "$2" in *refs/er/pr/7/head*pull/7/head*|*pull/7/head*refs/er/pr/7/head*) r=ref ;; *) r=noref ;; esac; printf '%s|%s|%s\n' "$1" "$(pwd -P)" "$r" >> '{log}'; }}
+case "$1" in
+  *triage.json*) record triage "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","verdict":{{"primary":"{primary}","experts":["security"]}}}}' "$hash" > '{bucket}/triage.json' ;;
+  *experts/security.json*) record expert "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); mkdir -p '{bucket}/experts'; printf '{{"version":1,"expert_id":"security","diff_hash":"%s","files":{{}}}}' "$hash" > '{bucket}/experts/security.json' ;;
+  *review.json*) record general "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","files":{{"src/lib.rs":{{"risk":"high","findings":[{{"id":"general:1","severity":"high","title":"Check the PR source"}}]}}}}}}' "$hash" > '{bucket}/review.json' ;;
+  *) record arena "$1"; printf '{{"findings":[],"ballots":[],"verdicts":[]}}' ;;
+esac
+"#,
                     log = log.display(),
-                    primary = if deep { "arena" } else { "expert" }
                 );
+                let provider = app.config.ai_hub.providers.get_mut("fake").unwrap();
                 provider.args[1] = script;
                 if deep {
                     let second = provider.clone();
@@ -1468,56 +1599,19 @@ esac
                             model_id: "fake-model".into(),
                         });
                 }
-                app.config.ai_hub.max_concurrent_reviews = 1;
                 let tab = app.tab_mut();
-                tab.local_branch_view = Some("feature".into());
-                tab.local_branch_checkout_root = Some(checkout.to_string_lossy().into_owned());
-                tab.remote_repo = remote.map(str::to_owned);
-                let target = BackgroundTaskTarget {
-                    repo_root: repo.to_string_lossy().into_owned(),
-                    er_dir: "blocker".into(),
-                    branch_label: "blocker".into(),
-                    base_branch: "main".into(),
-                    scope: "branch".into(),
-                    pr_number: None,
-                    remote_repo: None,
-                    managed_local: true,
-                };
-                let blocker = BackgroundTask::new("review".into(), target);
-                let blocker_id = blocker.id.clone();
-                let (_result_tx, result_rx) = std::sync::mpsc::channel();
-                let (_log_tx, log_rx) = std::sync::mpsc::channel();
-                app.background_tasks.insert(
-                    blocker_id.clone(),
-                    super::super::background::BackgroundTaskHandle {
-                        task: blocker,
-                        run: crate::agent_run::AgentRunHandle::new(),
-                        result_rx,
-                        log_rx,
-                        recent_log: Default::default(),
-                    },
-                );
+                tab.remote_repo = Some("example/pr-no-checkout".into());
+                tab.pr_number = Some(7);
+                tab.local_branch_view = Some("feature/pr-head".into());
+                tab.current_branch = "feature/pr-head".into();
+                tab.pr_head_ref = Some("refs/er/pr/7/head".into());
+                assert!(tab.local_checkout_root().is_none());
+
                 app.start_review_flow("branch").unwrap();
-                let context = &app.review_flow_contexts[&bucket];
-                assert_eq!(context.target.repo_root, repo.to_string_lossy());
-                assert_eq!(context.target.er_dir, bucket);
-                assert_eq!(context.repo_root, checkout.to_string_lossy());
-                assert_eq!(app.pending_background_tasks.len(), 1);
                 assert_eq!(
-                    app.pending_background_tasks[0]
-                        .task
-                        .execution_root
-                        .as_deref(),
-                    checkout.to_str()
-                );
-                assert_eq!(
-                    app.pending_background_tasks[0].task.target.repo_root,
+                    app.review_flow_contexts[&bucket].repo_root,
                     repo.to_string_lossy()
                 );
-                app.tabs
-                    .push(crate::app::TabState::new_for_test(Vec::new()));
-                app.active_tab = 1;
-                app.background_tasks.remove(&blocker_id);
                 if deep {
                     let deadline = Instant::now() + Duration::from_secs(10);
                     while app.review_flow_for(&bucket).unwrap().state
@@ -1530,115 +1624,22 @@ esac
                     app.confirm_review_flow(&bucket).unwrap();
                 }
                 run_until_terminal(&mut app, &bucket);
-                assert!(
-                    matches!(
-                        app.review_flow_for(&bucket).unwrap().state,
-                        FlowState::Done { .. }
-                    ),
-                    "{:?}",
-                    app.review_flow_for(&bucket).unwrap().state
-                );
+
                 let observed = std::fs::read_to_string(&log).unwrap();
-                let execution = std::fs::canonicalize(&checkout).unwrap();
-                for stage in if deep {
+                let execution = std::fs::canonicalize(&repo).unwrap();
+                let stages = if deep {
                     vec!["triage", "arena"]
                 } else {
                     vec!["triage", "general", "expert", "arena"]
-                } {
+                };
+                for stage in stages {
                     assert!(
-                        observed.contains(&format!(
-                            "{stage}|{}\nfeature checkout\n",
-                            execution.display()
-                        )),
-                        "missing {stage} at feature checkout\n{observed}"
-                    );
-                }
-                assert!(!observed.contains("main checkout"), "{observed}");
-            }
-        }
-    }
-
-    #[test]
-    fn pr_view_without_checkout_reviews_from_the_head_ref() {
-        let _serial = crate::agent_slots::test_serial();
-        for deep in [false, true] {
-            let dir = TestDir::new("pr-no-checkout");
-            let primary = if deep { "arena" } else { "expert" };
-            let mut app = fake_app(&dir, primary, &["security"]);
-            let repo = dir.0.join("repo");
-            let bucket = app.tab().er_dir();
-            let log = dir.0.join("execution.log");
-            // Each subprocess records where it ran and whether its prompt names
-            // the PR head ref and how to fetch it, since the working tree holds
-            // another branch. The general finding gives verification work.
-            let script = format!(
-                r#"
-record() {{ case "$2" in *refs/er/pr/7/head*pull/7/head*|*pull/7/head*refs/er/pr/7/head*) r=ref ;; *) r=noref ;; esac; printf '%s|%s|%s\n' "$1" "$(pwd -P)" "$r" >> '{log}'; }}
-case "$1" in
-  *triage.json*) record triage "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","verdict":{{"primary":"{primary}","experts":["security"]}}}}' "$hash" > '{bucket}/triage.json' ;;
-  *experts/security.json*) record expert "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); mkdir -p '{bucket}/experts'; printf '{{"version":1,"expert_id":"security","diff_hash":"%s","files":{{}}}}' "$hash" > '{bucket}/experts/security.json' ;;
-  *review.json*) record general "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","files":{{"src/lib.rs":{{"risk":"high","findings":[{{"id":"general:1","severity":"high","title":"Check the PR source"}}]}}}}}}' "$hash" > '{bucket}/review.json' ;;
-  *) record arena "$1"; printf '{{"findings":[],"ballots":[],"verdicts":[]}}' ;;
-esac
-"#,
-                log = log.display(),
-            );
-            let provider = app.config.ai_hub.providers.get_mut("fake").unwrap();
-            provider.args[1] = script;
-            if deep {
-                let second = provider.clone();
-                app.config
-                    .ai_hub
-                    .providers
-                    .insert("fake-second".into(), second);
-                app.config
-                    .ai_hub
-                    .review_models
-                    .advanced
-                    .push(ReviewModelRef {
-                        provider_id: "fake-second".into(),
-                        model_id: "fake-model".into(),
-                    });
-            }
-            let tab = app.tab_mut();
-            tab.remote_repo = Some("example/pr-no-checkout".into());
-            tab.pr_number = Some(7);
-            tab.local_branch_view = Some("feature/pr-head".into());
-            tab.current_branch = "feature/pr-head".into();
-            tab.pr_head_ref = Some("refs/er/pr/7/head".into());
-            assert!(tab.local_checkout_root().is_none());
-
-            app.start_review_flow("branch").unwrap();
-            assert_eq!(
-                app.review_flow_contexts[&bucket].repo_root,
-                repo.to_string_lossy()
-            );
-            if deep {
-                let deadline = Instant::now() + Duration::from_secs(10);
-                while app.review_flow_for(&bucket).unwrap().state != FlowState::AwaitingConfirmation
-                {
-                    app.poll_background_tasks();
-                    assert!(Instant::now() < deadline, "Deep did not reach confirmation");
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                app.confirm_review_flow(&bucket).unwrap();
-            }
-            run_until_terminal(&mut app, &bucket);
-
-            let observed = std::fs::read_to_string(&log).unwrap();
-            let execution = std::fs::canonicalize(&repo).unwrap();
-            let stages = if deep {
-                vec!["triage", "arena"]
-            } else {
-                vec!["triage", "general", "expert", "arena"]
-            };
-            for stage in stages {
-                assert!(
                     observed.contains(&format!("{stage}|{}|ref\n", execution.display())),
                     "{stage} did not run in the repo with the head ref (deep: {deep})\n{observed}"
                 );
-            }
-            assert!(!observed.contains("|noref"), "deep: {deep}\n{observed}");
+                }
+                assert!(!observed.contains("|noref"), "deep: {deep}\n{observed}");
+            });
         }
     }
 
@@ -1657,99 +1658,101 @@ esac
     fn flow_depths_use_their_model_tiers_and_advanced_arbiter_pool() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("model-tiers");
-        let mut app = fake_app(&dir, "general", &[]);
-        let provider = app.config.ai_hub.providers["fake"].clone();
-        let providers = [
-            ("fast", "fast-model", 0.5),
-            ("standard", "standard-model", 1.0),
-            ("advanced-a", "advanced-a-model", 8.0),
-            ("advanced-b", "advanced-b-model", 3.0),
-        ];
-        app.config.ai_hub.providers = providers
-            .iter()
-            .map(|(provider_id, model_id, cost)| {
-                let mut provider = provider.clone();
-                provider.models[0].id = (*model_id).into();
-                provider.models[0].cost_per_1k_in = Some(*cost);
-                provider.models[0].cost_per_1k_out = Some(0.0);
-                ((*provider_id).into(), provider)
-            })
-            .collect();
-        let selection = |provider_id: &str, model_id: &str| ReviewModelRef {
-            provider_id: provider_id.into(),
-            model_id: model_id.into(),
-        };
-        app.config.ai_hub.default_provider = Some("fast".into());
-        app.config.ai_hub.flow_providers = providers
-            .iter()
-            .map(|(provider_id, _, _)| (*provider_id).into())
-            .collect();
-        app.config.ai_hub.review_models = ReviewModelGroups {
-            fast: vec![selection("fast", "fast-model")],
-            standard: vec![selection("standard", "standard-model")],
-            advanced: vec![
-                selection("advanced-a", "advanced-a-model"),
-                selection("advanced-b", "advanced-b-model"),
-            ],
-        };
-
-        app.start_review_flow("branch").unwrap();
-        let bucket = app.tab().er_dir();
-        let captured_task = app.review_flow_for(&bucket).unwrap().tasks[0].clone();
-        assert!(matches!(
-            captured_task.status,
-            FlowTaskStatus::Queued | FlowTaskStatus::Running
-        ));
-        assert_eq!(captured_task.provider_id, "fast");
-        assert_eq!(captured_task.model_id, "fast-model");
-        app.config.ai_hub.providers.get_mut("fast").unwrap().models[0].label =
-            Some("Edited Fast Label".into());
-        app.config.ai_hub.review_models.fast = vec![selection("standard", "standard-model")];
-        assert_eq!(
-            app.review_flow_for(&bucket).unwrap().tasks[0].model_label,
-            captured_task.model_label,
-            "task metadata remains tied to the captured model after settings change"
-        );
-        let context = app.review_flow_contexts.get_mut(&bucket).unwrap();
-        assert_eq!(context.model_pools.fast[0].model_id, "fast-model");
-        assert_eq!(
-            selection_for_provider(context, &context.model_pools.fast[0])
-                .model_id
-                .as_deref(),
-            Some("fast-model"),
-            "triage uses the first resolved Fast model"
-        );
-
-        let lenses = vec!["general".to_owned()];
-        App::plan_finders(context, FlowDepth::Quick, &lenses).unwrap();
-        assert_eq!(context.assignments[0].providers[0].model_id, "fast-model");
-        assert_eq!(context.arbiter.as_ref().unwrap().provider_id, "advanced-a");
-        assert_eq!(
-            context.arbiter.as_ref().unwrap().model_id,
-            "advanced-a-model"
-        );
-
-        App::plan_finders(context, FlowDepth::Standard, &lenses).unwrap();
-        assert_eq!(
-            context.assignments[0].providers[0].model_id,
-            "standard-model"
-        );
-        assert_eq!(context.arbiter.as_ref().unwrap().provider_id, "advanced-a");
-
-        App::plan_finders(context, FlowDepth::Deep, &lenses).unwrap();
-        assert_eq!(
-            context.assignments[0]
-                .providers
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir, "general", &[]);
+            let provider = app.config.ai_hub.providers["fake"].clone();
+            let providers = [
+                ("fast", "fast-model", 0.5),
+                ("standard", "standard-model", 1.0),
+                ("advanced-a", "advanced-a-model", 8.0),
+                ("advanced-b", "advanced-b-model", 3.0),
+            ];
+            app.config.ai_hub.providers = providers
                 .iter()
-                .map(|provider| provider.model_id.as_str())
-                .collect::<Vec<_>>(),
-            ["advanced-a-model", "advanced-b-model"]
-        );
-        assert_eq!(context.arbiter.as_ref().unwrap().provider_id, "advanced-b");
-        assert_eq!(
-            context.arbiter.as_ref().unwrap().model_id,
-            "advanced-b-model"
-        );
+                .map(|(provider_id, model_id, cost)| {
+                    let mut provider = provider.clone();
+                    provider.models[0].id = (*model_id).into();
+                    provider.models[0].cost_per_1k_in = Some(*cost);
+                    provider.models[0].cost_per_1k_out = Some(0.0);
+                    ((*provider_id).into(), provider)
+                })
+                .collect();
+            let selection = |provider_id: &str, model_id: &str| ReviewModelRef {
+                provider_id: provider_id.into(),
+                model_id: model_id.into(),
+            };
+            app.config.ai_hub.default_provider = Some("fast".into());
+            app.config.ai_hub.flow_providers = providers
+                .iter()
+                .map(|(provider_id, _, _)| (*provider_id).into())
+                .collect();
+            app.config.ai_hub.review_models = ReviewModelGroups {
+                fast: vec![selection("fast", "fast-model")],
+                standard: vec![selection("standard", "standard-model")],
+                advanced: vec![
+                    selection("advanced-a", "advanced-a-model"),
+                    selection("advanced-b", "advanced-b-model"),
+                ],
+            };
+
+            app.start_review_flow("branch").unwrap();
+            let bucket = app.tab().er_dir();
+            let captured_task = app.review_flow_for(&bucket).unwrap().tasks[0].clone();
+            assert!(matches!(
+                captured_task.status,
+                FlowTaskStatus::Queued | FlowTaskStatus::Running
+            ));
+            assert_eq!(captured_task.provider_id, "fast");
+            assert_eq!(captured_task.model_id, "fast-model");
+            app.config.ai_hub.providers.get_mut("fast").unwrap().models[0].label =
+                Some("Edited Fast Label".into());
+            app.config.ai_hub.review_models.fast = vec![selection("standard", "standard-model")];
+            assert_eq!(
+                app.review_flow_for(&bucket).unwrap().tasks[0].model_label,
+                captured_task.model_label,
+                "task metadata remains tied to the captured model after settings change"
+            );
+            let context = app.review_flow_contexts.get_mut(&bucket).unwrap();
+            assert_eq!(context.model_pools.fast[0].model_id, "fast-model");
+            assert_eq!(
+                selection_for_provider(context, &context.model_pools.fast[0])
+                    .model_id
+                    .as_deref(),
+                Some("fast-model"),
+                "triage uses the first resolved Fast model"
+            );
+
+            let lenses = vec!["general".to_owned()];
+            App::plan_finders(context, FlowDepth::Quick, &lenses).unwrap();
+            assert_eq!(context.assignments[0].providers[0].model_id, "fast-model");
+            assert_eq!(context.arbiter.as_ref().unwrap().provider_id, "advanced-a");
+            assert_eq!(
+                context.arbiter.as_ref().unwrap().model_id,
+                "advanced-a-model"
+            );
+
+            App::plan_finders(context, FlowDepth::Standard, &lenses).unwrap();
+            assert_eq!(
+                context.assignments[0].providers[0].model_id,
+                "standard-model"
+            );
+            assert_eq!(context.arbiter.as_ref().unwrap().provider_id, "advanced-a");
+
+            App::plan_finders(context, FlowDepth::Deep, &lenses).unwrap();
+            assert_eq!(
+                context.assignments[0]
+                    .providers
+                    .iter()
+                    .map(|provider| provider.model_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["advanced-a-model", "advanced-b-model"]
+            );
+            assert_eq!(context.arbiter.as_ref().unwrap().provider_id, "advanced-b");
+            assert_eq!(
+                context.arbiter.as_ref().unwrap().model_id,
+                "advanced-b-model"
+            );
+        });
     }
 
     fn run_until_terminal(app: &mut App, bucket: &str) {
@@ -1776,238 +1779,254 @@ esac
     fn fake_cli_runs_triage_and_quick_general_before_empty_seeded_completion() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("quick");
-        let mut app = fake_app(&dir, "general", &[]);
-        let bucket = app.tab().er_dir();
-        let before_config = app.config.clone();
-        app.start_review_flow("branch").unwrap();
-        assert_eq!(
-            app.config.ai_hub.default_effort,
-            before_config.ai_hub.default_effort
-        );
-        run_until_terminal(&mut app, &bucket);
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert!(
-            matches!(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir, "general", &[]);
+            let bucket = app.tab().er_dir();
+            let before_config = app.config.clone();
+            app.start_review_flow("branch").unwrap();
+            assert_eq!(
+                app.config.ai_hub.default_effort,
+                before_config.ai_hub.default_effort
+            );
+            run_until_terminal(&mut app, &bucket);
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert!(
+                matches!(
+                    flow.state,
+                    FlowState::Done {
+                        kept: 0,
+                        dropped: 0,
+                        awaiting_accept: 0
+                    }
+                ),
+                "state={:?}, failed_finders={:?}",
                 flow.state,
-                FlowState::Done {
-                    kept: 0,
-                    dropped: 0,
-                    awaiting_accept: 0
-                }
-            ),
-            "state={:?}, failed_finders={:?}",
-            flow.state,
-            flow.failed_finders
-        );
-        assert_eq!(flow.lenses, ["general"]);
-        assert_eq!(flow.successful_finder_providers, ["fake"]);
-        assert_eq!(flow.successful_arbiter_provider, None);
-        assert_eq!(flow.providers_used, ["fake"]);
-        assert_eq!(flow.tasks[0].id, "triage");
-        assert_eq!(flow.tasks[0].status, FlowTaskStatus::Done);
-        assert_eq!(flow.tasks[1].id, "finding:general");
-        assert_eq!(flow.tasks[1].status, FlowTaskStatus::Done);
-        assert_eq!(flow.tasks[2].id, "verifying:arbiter");
-        assert_eq!(flow.tasks[2].status, FlowTaskStatus::Skipped);
-        assert!(Path::new(&bucket).join("flow-backups").is_dir());
-        assert!(!app.review_flow_is_draining(&bucket));
-        assert!(app.review_flow_revision() > 1);
+                flow.failed_finders
+            );
+            assert_eq!(flow.lenses, ["general"]);
+            assert_eq!(flow.successful_finder_providers, ["fake"]);
+            assert_eq!(flow.successful_arbiter_provider, None);
+            assert_eq!(flow.providers_used, ["fake"]);
+            assert_eq!(flow.tasks[0].id, "triage");
+            assert_eq!(flow.tasks[0].status, FlowTaskStatus::Done);
+            assert_eq!(flow.tasks[1].id, "finding:general");
+            assert_eq!(flow.tasks[1].status, FlowTaskStatus::Done);
+            assert_eq!(flow.tasks[2].id, "verifying:arbiter");
+            assert_eq!(flow.tasks[2].status, FlowTaskStatus::Skipped);
+            assert!(Path::new(&bucket).join("flow-backups").is_dir());
+            assert!(!app.review_flow_is_draining(&bucket));
+            assert!(app.review_flow_revision() > 1);
+        });
     }
 
     #[test]
     fn professor_route_keeps_follow_up_suggestion_after_completion() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("professor");
-        let mut app = fake_app(&dir, "professor", &[]);
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        run_until_terminal(&mut app, &bucket);
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert!(flow.professor_follow_up_suggested);
-        assert_eq!(
-            flow.state,
-            FlowState::Done {
-                kept: 0,
-                dropped: 0,
-                awaiting_accept: 0,
-            },
-            "failed_finders={:?}",
-            flow.failed_finders
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir, "professor", &[]);
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            run_until_terminal(&mut app, &bucket);
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert!(flow.professor_follow_up_suggested);
+            assert_eq!(
+                flow.state,
+                FlowState::Done {
+                    kept: 0,
+                    dropped: 0,
+                    awaiting_accept: 0,
+                },
+                "failed_finders={:?}",
+                flow.failed_finders
+            );
+        });
     }
 
     #[test]
     fn successful_finder_output_replaces_same_hash_archived_output_only_after_validation() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("restore-old-output");
-        let no_review = "exit 0";
-        let mut app = fake_app_with_script(&dir, "general", &[], "{\"reasons\":[]}", no_review);
-        let bucket = app.tab().er_dir();
-        let raw_diff = app.tab().raw_diff_for_review("branch").unwrap();
-        let rules = app.tab().owned_repo_rules();
-        let hash = crate::ai::prepared_diff::ensure_review_inputs(
-            &bucket,
-            &raw_diff,
-            rules.as_rules(),
-            None,
-        )
-        .unwrap();
-        let old = format!(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let no_review = "exit 0";
+            let mut app = fake_app_with_script(&dir, "general", &[], "{\"reasons\":[]}", no_review);
+            let bucket = app.tab().er_dir();
+            let raw_diff = app.tab().raw_diff_for_review("branch").unwrap();
+            let rules = app.tab().owned_repo_rules();
+            let hash = crate::ai::prepared_diff::ensure_review_inputs(
+                &bucket,
+                &raw_diff,
+                rules.as_rules(),
+                None,
+            )
+            .unwrap();
+            let old = format!(
             "{{\"version\":1,\"diff_hash\":\"{hash}\",\"files\":{{\"old.rs\":{{\"risk\":\"low\"}}}}}}"
         );
-        std::fs::write(Path::new(&bucket).join("review.json"), &old).unwrap();
+            std::fs::write(Path::new(&bucket).join("review.json"), &old).unwrap();
 
-        app.start_review_flow("branch").unwrap();
-        run_until_terminal(&mut app, &bucket);
-        assert!(matches!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Failed { .. }
-        ));
-        assert_eq!(
-            std::fs::read_to_string(Path::new(&bucket).join("review.json")).unwrap(),
-            old
-        );
+            app.start_review_flow("branch").unwrap();
+            run_until_terminal(&mut app, &bucket);
+            assert!(matches!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Failed { .. }
+            ));
+            assert_eq!(
+                std::fs::read_to_string(Path::new(&bucket).join("review.json")).unwrap(),
+                old
+            );
+        });
     }
 
     #[test]
     fn stale_triage_hash_fails_closed() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("stale-triage");
-        let mut app = fake_app_with_triage_hash(
-            &dir,
-            "general",
-            &[],
-            "{\"reasons\":[]}",
-            "exit 0",
-            "stale-diff-hash",
-        );
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        run_until_terminal(&mut app, &bucket);
-        assert!(matches!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Failed { .. }
-        ));
-        assert_eq!(
-            app.review_flow_for(&bucket).unwrap().tasks[0].status,
-            FlowTaskStatus::Failed
-        );
-        assert!(!Path::new(&bucket).join("review.json").exists());
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app_with_triage_hash(
+                &dir,
+                "general",
+                &[],
+                "{\"reasons\":[]}",
+                "exit 0",
+                "stale-diff-hash",
+            );
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            run_until_terminal(&mut app, &bucket);
+            assert!(matches!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Failed { .. }
+            ));
+            assert_eq!(
+                app.review_flow_for(&bucket).unwrap().tasks[0].status,
+                FlowTaskStatus::Failed
+            );
+            assert!(!Path::new(&bucket).join("review.json").exists());
+        });
     }
 
     #[test]
     fn sensitive_skip_routes_to_security_only_quick_finder() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("security-only");
-        let mut app = fake_app_with_script(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app_with_script(
             &dir,
             "skip",
             &[],
             "{\"reasons\":[{\"kind\":\"secret\",\"evidence\":\"credential literal\"}]}",
             "hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{\"version\":1,\"diff_hash\":\"%s\",\"files\":{}}' \"$hash\" > '__BUCKET__/review.json'",
         );
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        run_until_terminal(&mut app, &bucket);
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert_eq!(flow.depth, Some(FlowDepth::Quick));
-        assert_eq!(flow.lenses, ["security"]);
-        assert_eq!(flow.successful_finder_providers, ["fake"]);
-        assert!(
-            matches!(flow.state, FlowState::Done { .. }),
-            "state={:?}, failed_finders={:?}",
-            flow.state,
-            flow.failed_finders
-        );
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            run_until_terminal(&mut app, &bucket);
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert_eq!(flow.depth, Some(FlowDepth::Quick));
+            assert_eq!(flow.lenses, ["security"]);
+            assert_eq!(flow.successful_finder_providers, ["fake"]);
+            assert!(
+                matches!(flow.state, FlowState::Done { .. }),
+                "state={:?}, failed_finders={:?}",
+                flow.state,
+                flow.failed_finders
+            );
+        });
     }
 
     #[test]
     fn quick_general_and_security_both_finish_before_verification() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("quick-security");
-        let mut app = fake_app_with_script(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app_with_script(
             &dir,
             "general",
             &[],
             "{\"reasons\":[{\"kind\":\"secret\",\"evidence\":\"credential literal\"}]}",
             "sleep 1; hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{\"version\":1,\"diff_hash\":\"%s\",\"files\":{}}' \"$hash\" > '__BUCKET__/review.json'",
         );
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        run_until_terminal(&mut app, &bucket);
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert_eq!(flow.lenses, ["general", "security"]);
-        assert!(flow.pending_finders.is_empty());
-        assert_eq!(flow.successful_finder_providers, ["fake"]);
-        assert!(
-            matches!(flow.state, FlowState::Done { .. }),
-            "state={:?}, failed_finders={:?}",
-            flow.state,
-            flow.failed_finders
-        );
-        assert!(Path::new(&bucket).join("review.json").exists());
-        assert!(Path::new(&bucket).join("experts/security.json").exists());
-        assert_eq!(flow.arena_run_id, None);
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            run_until_terminal(&mut app, &bucket);
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert_eq!(flow.lenses, ["general", "security"]);
+            assert!(flow.pending_finders.is_empty());
+            assert_eq!(flow.successful_finder_providers, ["fake"]);
+            assert!(
+                matches!(flow.state, FlowState::Done { .. }),
+                "state={:?}, failed_finders={:?}",
+                flow.state,
+                flow.failed_finders
+            );
+            assert!(Path::new(&bucket).join("review.json").exists());
+            assert!(Path::new(&bucket).join("experts/security.json").exists());
+            assert_eq!(flow.arena_run_id, None);
+        });
     }
 
     #[test]
     fn partial_finder_failure_ignores_unplanned_same_hash_expert_output() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("partial-finder");
-        let mut app =
-            fake_app_with_script(&dir, "expert", &["security"], "{\"reasons\":[]}", "exit 7");
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        let hash = app.review_flow_for(&bucket).unwrap().diff_hash.clone();
-        let experts_dir = Path::new(&bucket).join("experts");
-        std::fs::create_dir_all(&experts_dir).unwrap();
-        std::fs::write(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app =
+                fake_app_with_script(&dir, "expert", &["security"], "{\"reasons\":[]}", "exit 7");
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            let hash = app.review_flow_for(&bucket).unwrap().diff_hash.clone();
+            let experts_dir = Path::new(&bucket).join("experts");
+            std::fs::create_dir_all(&experts_dir).unwrap();
+            std::fs::write(
             experts_dir.join("architecture.json"),
             format!(
                 "{{\"version\":1,\"expert_id\":\"architecture\",\"diff_hash\":\"{hash}\",\"files\":{{}}}}"
             ),
         )
         .unwrap();
-        run_until_terminal(&mut app, &bucket);
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert!(flow
-            .failed_finders
-            .iter()
-            .any(|(lens, _)| lens == "general"));
-        assert_eq!(flow.successful_finder_providers, ["fake"]);
-        assert_eq!(flow.providers_used, ["fake"]);
-        assert!(flow.arena_run_id.is_none());
+            run_until_terminal(&mut app, &bucket);
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert!(flow
+                .failed_finders
+                .iter()
+                .any(|(lens, _)| lens == "general"));
+            assert_eq!(flow.successful_finder_providers, ["fake"]);
+            assert_eq!(flow.providers_used, ["fake"]);
+            assert!(flow.arena_run_id.is_none());
+        });
     }
 
     #[test]
     fn running_cancellation_keeps_lease_until_writer_drains() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("cancel-running");
-        let mut app = fake_app_with_script(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app_with_script(
             &dir,
             "general",
             &[],
             "{\"reasons\":[]}",
             "sleep 1; hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{\"version\":1,\"diff_hash\":\"%s\",\"files\":{}}' \"$hash\" > '__BUCKET__/review.json'",
         );
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while app.review_flow_for(&bucket).unwrap().state != FlowState::Finding {
-            app.poll_background_tasks();
-            assert!(Instant::now() < deadline, "finder did not start");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        app.cancel_review_flow(&bucket);
-        assert!(app.review_flow_is_draining(&bucket));
-        assert!(app.start_review_flow("branch").is_err());
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while app.review_flow_for(&bucket).unwrap().state != FlowState::Finding {
+                app.poll_background_tasks();
+                assert!(Instant::now() < deadline, "finder did not start");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            app.cancel_review_flow(&bucket);
+            assert!(app.review_flow_is_draining(&bucket));
+            assert!(app.start_review_flow("branch").is_err());
 
-        while app.review_flow_is_draining(&bucket) {
-            app.poll_background_tasks();
-            assert!(Instant::now() < deadline, "cancelled writer did not drain");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(app.check_review_bucket_admission(&bucket).is_ok());
+            while app.review_flow_is_draining(&bucket) {
+                app.poll_background_tasks();
+                assert!(Instant::now() < deadline, "cancelled writer did not drain");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(app.check_review_bucket_admission(&bucket).is_ok());
+        });
     }
 
     #[test]
@@ -2132,54 +2151,121 @@ esac
     fn fake_cli_runs_both_standard_producer_outputs_before_seeded_completion() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("standard");
-        let mut app = fake_app(&dir, "expert", &["security"]);
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        run_until_terminal(&mut app, &bucket);
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert!(
-            matches!(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir, "expert", &["security"]);
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            run_until_terminal(&mut app, &bucket);
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert!(
+                matches!(
+                    flow.state,
+                    FlowState::Done {
+                        kept: 0,
+                        dropped: 0,
+                        awaiting_accept: 0
+                    }
+                ),
+                "state={:?}, failed_finders={:?}",
                 flow.state,
-                FlowState::Done {
-                    kept: 0,
-                    dropped: 0,
-                    awaiting_accept: 0
-                }
-            ),
-            "state={:?}, failed_finders={:?}",
-            flow.state,
-            flow.failed_finders
-        );
-        assert_eq!(flow.depth, Some(FlowDepth::Standard));
-        assert!(Path::new(&bucket).join("review.json").is_file());
-        assert!(Path::new(&bucket).join("experts/security.json").is_file());
-        assert_eq!(flow.arena_run_id, None);
+                flow.failed_finders
+            );
+            assert_eq!(flow.depth, Some(FlowDepth::Standard));
+            assert!(Path::new(&bucket).join("review.json").is_file());
+            assert!(Path::new(&bucket).join("experts/security.json").is_file());
+            assert_eq!(flow.arena_run_id, None);
+        });
     }
 
     #[test]
     fn fake_cli_skip_does_not_launch_finder() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("skip");
-        let mut app = fake_app(&dir, "skip", &[]);
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        run_until_terminal(&mut app, &bucket);
-        assert_eq!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Skipped
-        );
-        assert!(!Path::new(&bucket).join("review.json").exists());
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir, "skip", &[]);
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            run_until_terminal(&mut app, &bucket);
+            assert_eq!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Skipped
+            );
+            assert!(!Path::new(&bucket).join("review.json").exists());
+        });
     }
 
     #[test]
     fn recovery_incomplete_historical_manifests_allow_public_review_start() {
         for malformed in [false, true] {
             let dir = TestDir::new("incomplete-history");
+            crate::storage::with_test_storage_root(dir.path(), || {
+                let mut app = fake_app(&dir, "general", &[]);
+                app.config.ai_hub.max_concurrent_reviews = 1;
+                let blocker_target = BackgroundTaskTarget {
+                    repo_root: app.tab().repo_root.clone(),
+                    er_dir: dir.path().join("blocker").to_string_lossy().into_owned(),
+                    branch_label: "blocker".into(),
+                    base_branch: "main".into(),
+                    scope: "branch".into(),
+                    pr_number: None,
+                    remote_repo: None,
+                    managed_local: true,
+                };
+                let blocker = BackgroundTask::new("review".into(), blocker_target);
+                let (_result_tx, result_rx) = std::sync::mpsc::channel();
+                let (_log_tx, log_rx) = std::sync::mpsc::channel();
+                app.background_tasks.insert(
+                    blocker.id.clone(),
+                    super::super::background::BackgroundTaskHandle {
+                        task: blocker,
+                        run: crate::agent_run::AgentRunHandle::new(),
+                        result_rx,
+                        log_rx,
+                        recent_log: Default::default(),
+                    },
+                );
+                let bucket = app.tab().er_dir();
+                let paths = crate::arena::ArenaPaths::for_run(Path::new(&bucket), "orphan");
+                paths.ensure_dirs().unwrap();
+                std::fs::write(paths.diff_patch(), "recoverable input").unwrap();
+                if malformed {
+                    std::fs::write(paths.run_json(), "{broken").unwrap();
+                }
+                app.start_review_flow("branch").unwrap();
+                assert_eq!(app.pending_background_tasks.len(), 1);
+                assert!(app.check_review_bucket_admission(&bucket).is_err());
+                assert_eq!(
+                    std::fs::read_to_string(paths.diff_patch()).unwrap(),
+                    "recoverable input"
+                );
+                assert!(app.cancel_review_flow(&bucket));
+            });
+        }
+    }
+
+    #[test]
+    fn provider_admission_fails_before_preparing_or_leasing_bucket() {
+        let dir = TestDir::new("no-provider");
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir, "general", &[]);
+            app.config.ai_hub.providers.clear();
+            let bucket = app.tab().er_dir();
+            assert!(app.start_review_flow("branch").is_err());
+            assert!(!Path::new(&bucket).join("diff-tmp").exists());
+            assert!(app.check_review_bucket_admission(&bucket).is_ok());
+        });
+    }
+
+    #[test]
+    fn queued_cancellation_delivers_exact_completion_and_releases_lease() {
+        let dir = TestDir::new("cancel-queued");
+        crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir, "general", &[]);
             app.config.ai_hub.max_concurrent_reviews = 1;
+            let blocker_er_dir = dir.path().join("blocker").to_string_lossy().into_owned();
             let blocker_target = BackgroundTaskTarget {
                 repo_root: app.tab().repo_root.clone(),
-                er_dir: dir.0.join("blocker").to_string_lossy().into_owned(),
+                er_dir: blocker_er_dir,
                 branch_label: "blocker".into(),
                 base_branch: "main".into(),
                 scope: "branch".into(),
@@ -2188,10 +2274,11 @@ esac
                 managed_local: true,
             };
             let blocker = BackgroundTask::new("review".into(), blocker_target);
+            let blocker_id = blocker.id.clone();
             let (_result_tx, result_rx) = std::sync::mpsc::channel();
             let (_log_tx, log_rx) = std::sync::mpsc::channel();
             app.background_tasks.insert(
-                blocker.id.clone(),
+                blocker_id.clone(),
                 super::super::background::BackgroundTaskHandle {
                     task: blocker,
                     run: crate::agent_run::AgentRunHandle::new(),
@@ -2201,183 +2288,130 @@ esac
                 },
             );
             let bucket = app.tab().er_dir();
-            let paths = crate::arena::ArenaPaths::for_run(Path::new(&bucket), "orphan");
-            paths.ensure_dirs().unwrap();
-            std::fs::write(paths.diff_patch(), "recoverable input").unwrap();
-            if malformed {
-                std::fs::write(paths.run_json(), "{broken").unwrap();
-            }
             app.start_review_flow("branch").unwrap();
-            assert_eq!(app.pending_background_tasks.len(), 1);
-            assert!(app.check_review_bucket_admission(&bucket).is_err());
-            assert_eq!(
-                std::fs::read_to_string(paths.diff_patch()).unwrap(),
-                "recoverable input"
-            );
+            let flow_task_id = app.review_flow_contexts[&bucket]
+                .owned_tasks
+                .keys()
+                .next()
+                .unwrap()
+                .clone();
+            assert!(app
+                .pending_background_tasks
+                .iter()
+                .any(|task| task.task.id == flow_task_id));
+
             assert!(app.cancel_review_flow(&bucket));
-        }
-    }
+            app.poll_background_tasks();
+            assert_eq!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Cancelled
+            );
+            assert_eq!(
+                app.review_flow_for(&bucket).unwrap().tasks[0].status,
+                FlowTaskStatus::Cancelled
+            );
+            assert!(app
+                .take_review_flow_task_completion(&flow_task_id)
+                .is_none());
+            assert!(!app.owned_flow_task_ids.contains(&flow_task_id));
+            assert!(app.check_review_bucket_admission(&bucket).is_ok());
 
-    #[test]
-    fn provider_admission_fails_before_preparing_or_leasing_bucket() {
-        let dir = TestDir::new("no-provider");
-        let mut app = fake_app(&dir, "general", &[]);
-        app.config.ai_hub.providers.clear();
-        let bucket = app.tab().er_dir();
-        assert!(app.start_review_flow("branch").is_err());
-        assert!(!Path::new(&bucket).join("diff-tmp").exists());
-        assert!(app.check_review_bucket_admission(&bucket).is_ok());
-    }
-
-    #[test]
-    fn queued_cancellation_delivers_exact_completion_and_releases_lease() {
-        let dir = TestDir::new("cancel-queued");
-        let mut app = fake_app(&dir, "general", &[]);
-        app.config.ai_hub.max_concurrent_reviews = 1;
-        let blocker_er_dir = dir.0.join("blocker").to_string_lossy().into_owned();
-        let blocker_target = BackgroundTaskTarget {
-            repo_root: app.tab().repo_root.clone(),
-            er_dir: blocker_er_dir,
-            branch_label: "blocker".into(),
-            base_branch: "main".into(),
-            scope: "branch".into(),
-            pr_number: None,
-            remote_repo: None,
-            managed_local: true,
-        };
-        let blocker = BackgroundTask::new("review".into(), blocker_target);
-        let blocker_id = blocker.id.clone();
-        let (_result_tx, result_rx) = std::sync::mpsc::channel();
-        let (_log_tx, log_rx) = std::sync::mpsc::channel();
-        app.background_tasks.insert(
-            blocker_id.clone(),
-            super::super::background::BackgroundTaskHandle {
-                task: blocker,
-                run: crate::agent_run::AgentRunHandle::new(),
-                result_rx,
-                log_rx,
-                recent_log: Default::default(),
-            },
-        );
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        let flow_task_id = app.review_flow_contexts[&bucket]
-            .owned_tasks
-            .keys()
-            .next()
-            .unwrap()
-            .clone();
-        assert!(app
-            .pending_background_tasks
-            .iter()
-            .any(|task| task.task.id == flow_task_id));
-
-        assert!(app.cancel_review_flow(&bucket));
-        app.poll_background_tasks();
-        assert_eq!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Cancelled
-        );
-        assert_eq!(
-            app.review_flow_for(&bucket).unwrap().tasks[0].status,
-            FlowTaskStatus::Cancelled
-        );
-        assert!(app
-            .take_review_flow_task_completion(&flow_task_id)
-            .is_none());
-        assert!(!app.owned_flow_task_ids.contains(&flow_task_id));
-        assert!(app.check_review_bucket_admission(&bucket).is_ok());
-
-        app.background_tasks.remove(&blocker_id);
+            app.background_tasks.remove(&blocker_id);
+        });
     }
 
     #[test]
     fn cancelled_queued_finder_stays_cancelled_after_completion_is_drained() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("cancel-queued-finder");
-        let mut app = fake_app(&dir, "general", &[]);
-        app.config.ai_hub.max_concurrent_reviews = 1;
-        app.config.ai_hub.providers.get_mut("fake").unwrap().args[1].insert_str(0, "sleep 0.3; ");
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir, "general", &[]);
+            app.config.ai_hub.max_concurrent_reviews = 1;
+            app.config.ai_hub.providers.get_mut("fake").unwrap().args[1]
+                .insert_str(0, "sleep 0.3; ");
 
-        let blocker_target = BackgroundTaskTarget {
-            repo_root: app.tab().repo_root.clone(),
-            er_dir: dir.0.join("blocker").to_string_lossy().into_owned(),
-            branch_label: "blocker".into(),
-            base_branch: "main".into(),
-            scope: "branch".into(),
-            pr_number: None,
-            remote_repo: None,
-            managed_local: true,
-        };
-        let blocker = BackgroundTask::new("review".into(), blocker_target);
-        let blocker_id = blocker.id.clone();
-        let blocker_handle = || {
-            let (result_tx, result_rx) = std::sync::mpsc::channel();
-            let (log_tx, log_rx) = std::sync::mpsc::channel();
-            (
-                super::super::background::BackgroundTaskHandle {
-                    task: blocker.clone(),
-                    run: crate::agent_run::AgentRunHandle::new(),
-                    result_rx,
-                    log_rx,
-                    recent_log: Default::default(),
-                },
-                result_tx,
-                log_tx,
-            )
-        };
-        let (handle, _initial_result_tx, _initial_log_tx) = blocker_handle();
-        app.background_tasks.insert(blocker_id.clone(), handle);
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        assert_eq!(
-            app.review_flow_for(&bucket).unwrap().tasks[0].status,
-            FlowTaskStatus::Queued
-        );
-
-        app.background_tasks.remove(&blocker_id);
-        app.poll_background_tasks();
-        let (handle, _blocker_result_tx, _blocker_log_tx) = blocker_handle();
-        app.background_tasks.insert(blocker_id.clone(), handle);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            app.poll_background_tasks();
-            if app
-                .review_flow_for(&bucket)
-                .unwrap()
-                .tasks
-                .iter()
-                .any(|task| task.id == "finding:general" && task.status == FlowTaskStatus::Queued)
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "finder did not queue behind blocker"
+            let blocker_target = BackgroundTaskTarget {
+                repo_root: app.tab().repo_root.clone(),
+                er_dir: dir.path().join("blocker").to_string_lossy().into_owned(),
+                branch_label: "blocker".into(),
+                base_branch: "main".into(),
+                scope: "branch".into(),
+                pr_number: None,
+                remote_repo: None,
+                managed_local: true,
+            };
+            let blocker = BackgroundTask::new("review".into(), blocker_target);
+            let blocker_id = blocker.id.clone();
+            let blocker_handle = || {
+                let (result_tx, result_rx) = std::sync::mpsc::channel();
+                let (log_tx, log_rx) = std::sync::mpsc::channel();
+                (
+                    super::super::background::BackgroundTaskHandle {
+                        task: blocker.clone(),
+                        run: crate::agent_run::AgentRunHandle::new(),
+                        result_rx,
+                        log_rx,
+                        recent_log: Default::default(),
+                    },
+                    result_tx,
+                    log_tx,
+                )
+            };
+            let (handle, _initial_result_tx, _initial_log_tx) = blocker_handle();
+            app.background_tasks.insert(blocker_id.clone(), handle);
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            assert_eq!(
+                app.review_flow_for(&bucket).unwrap().tasks[0].status,
+                FlowTaskStatus::Queued
             );
-            std::thread::sleep(Duration::from_millis(10));
-        }
 
-        let finder_id = app.review_flow_contexts[&bucket]
-            .owned_tasks
-            .iter()
-            .find_map(|(id, task)| (task.stage == Stage::Finder).then(|| id.clone()))
-            .unwrap();
-        assert!(app.cancel_review_flow(&bucket));
-        app.poll_background_tasks();
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert_eq!(flow.state, FlowState::Cancelled);
-        assert_eq!(flow.tasks[0].status, FlowTaskStatus::Done);
-        assert_eq!(
-            flow.tasks
+            app.background_tasks.remove(&blocker_id);
+            app.poll_background_tasks();
+            let (handle, _blocker_result_tx, _blocker_log_tx) = blocker_handle();
+            app.background_tasks.insert(blocker_id.clone(), handle);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                app.poll_background_tasks();
+                if app
+                    .review_flow_for(&bucket)
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .any(|task| {
+                        task.id == "finding:general" && task.status == FlowTaskStatus::Queued
+                    })
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "finder did not queue behind blocker"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            let finder_id = app.review_flow_contexts[&bucket]
+                .owned_tasks
                 .iter()
-                .find(|task| task.id == "finding:general")
-                .unwrap()
-                .status,
-            FlowTaskStatus::Cancelled
-        );
-        assert!(!app.owned_flow_task_ids.contains(&finder_id));
-        app.background_tasks.remove(&blocker_id);
+                .find_map(|(id, task)| (task.stage == Stage::Finder).then(|| id.clone()))
+                .unwrap();
+            assert!(app.cancel_review_flow(&bucket));
+            app.poll_background_tasks();
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert_eq!(flow.state, FlowState::Cancelled);
+            assert_eq!(flow.tasks[0].status, FlowTaskStatus::Done);
+            assert_eq!(
+                flow.tasks
+                    .iter()
+                    .find(|task| task.id == "finding:general")
+                    .unwrap()
+                    .status,
+                FlowTaskStatus::Cancelled
+            );
+            assert!(!app.owned_flow_task_ids.contains(&finder_id));
+            app.background_tasks.remove(&blocker_id);
+        });
     }
 
     #[test]

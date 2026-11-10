@@ -22,6 +22,7 @@ pub mod env_path;
 #[cfg(feature = "ui")]
 pub mod export;
 pub use er_github::actions as gh_pr_actions;
+mod env_var;
 pub mod gh_stack;
 pub mod git;
 pub mod github;

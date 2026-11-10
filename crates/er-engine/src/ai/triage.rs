@@ -405,27 +405,32 @@ mod tests {
     #[test]
     fn triage_file_written_by_an_agent_loads() {
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("triage.json"),
-            r#"{"version":1,"diff_hash":"hash","first_impression":"small change","verdict":{"primary":"general"}}"#,
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(
+                dir.path().join("triage.json"),
+                r#"{"version":1,"diff_hash":"hash","first_impression":"small change","verdict":{"primary":"general"}}"#,
+            )
+            .unwrap();
 
-        let triage = load_triage_review(dir.path().to_str().unwrap()).expect("the agent's triage");
+            let triage =
+                load_triage_review(dir.path().to_str().unwrap()).expect("the agent's triage");
 
-        assert_eq!(triage.first_impression, "small change");
-        assert_eq!(triage.verdict.primary, TriageVerdictPrimary::General);
+            assert_eq!(triage.first_impression, "small change");
+            assert_eq!(triage.verdict.primary, TriageVerdictPrimary::General);
+        });
     }
 
     #[test]
     fn a_triage_file_for_another_version_reads_as_absent() {
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("triage.json"),
-            r#"{"version":2,"diff_hash":"hash","verdict":{"primary":"general"}}"#,
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(
+                dir.path().join("triage.json"),
+                r#"{"version":2,"diff_hash":"hash","verdict":{"primary":"general"}}"#,
+            )
+            .unwrap();
 
-        assert!(load_triage_review(dir.path().to_str().unwrap()).is_none());
+            assert!(load_triage_review(dir.path().to_str().unwrap()).is_none());
+        });
     }
 }

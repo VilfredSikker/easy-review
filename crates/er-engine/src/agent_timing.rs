@@ -35,7 +35,7 @@ static ENV_READ: OnceLock<()> = OnceLock::new();
 /// first. Nothing a caller does can turn it back off.
 pub fn enabled() -> bool {
     ENV_READ.get_or_init(|| {
-        if std::env::var("ER_AGENT_TIMING").as_deref() == Ok("1") {
+        if crate::env_var::var("ER_AGENT_TIMING").as_deref() == Some("1") {
             ENABLED.store(true, Ordering::Relaxed);
         }
     });

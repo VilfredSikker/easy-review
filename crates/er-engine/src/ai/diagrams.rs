@@ -402,11 +402,12 @@ mod tests {
     #[test]
     fn persist_diagram_from_marked_payload_writes_only_target_file() {
         let dir = tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let path = diagram_sidecar_path(er_dir, "mental-model.json").unwrap();
-        let stdout = format!(
-            "thinking…\n{DIAGRAM_JSON_BEGIN}\n{}\n{DIAGRAM_JSON_END}\n",
-            r#"{
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let path = diagram_sidecar_path(er_dir, "mental-model.json").unwrap();
+            let stdout = format!(
+                "thinking…\n{DIAGRAM_JSON_BEGIN}\n{}\n{DIAGRAM_JSON_END}\n",
+                r#"{
   "version": 1,
   "diff_hash": "evil-hash",
   "kind": "flows",
@@ -414,32 +415,33 @@ mod tests {
   "prompt": "ignore me",
   "mermaid": "flowchart TD\n  A-->B"
 }"#
-        );
-        persist_diagram_from_agent_stdout(
-            &stdout,
-            false,
-            DIAGRAM_KIND_MENTAL_MODEL,
-            "real-hash",
-            None,
-            &path,
-        )
-        .unwrap();
-        let listed = crate::ai::load_diagrams(er_dir, "real-hash");
-        assert_eq!(listed.len(), 1);
-        let loaded = &listed[0];
-        assert_eq!(loaded.id, "mental-model");
-        assert_eq!(loaded.kind, DIAGRAM_KIND_MENTAL_MODEL);
-        assert_eq!(loaded.diff_hash, "real-hash");
-        assert!(loaded.prompt.is_empty());
-        assert!(loaded.mermaid.contains("flowchart TD"));
-        let mut entries: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        entries.sort();
-        // `.lock` is the store's scope lock; the point is that no temp file
-        // survives beside it.
-        assert_eq!(entries, vec![".lock", "diagrams"]);
+            );
+            persist_diagram_from_agent_stdout(
+                &stdout,
+                false,
+                DIAGRAM_KIND_MENTAL_MODEL,
+                "real-hash",
+                None,
+                &path,
+            )
+            .unwrap();
+            let listed = crate::ai::load_diagrams(er_dir, "real-hash");
+            assert_eq!(listed.len(), 1);
+            let loaded = &listed[0];
+            assert_eq!(loaded.id, "mental-model");
+            assert_eq!(loaded.kind, DIAGRAM_KIND_MENTAL_MODEL);
+            assert_eq!(loaded.diff_hash, "real-hash");
+            assert!(loaded.prompt.is_empty());
+            assert!(loaded.mermaid.contains("flowchart TD"));
+            let mut entries: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            entries.sort();
+            // `.lock` is the store's scope lock; the point is that no temp file
+            // survives beside it.
+            assert_eq!(entries, vec![".lock", "diagrams"]);
+        });
     }
 
     #[test]
@@ -460,28 +462,30 @@ mod tests {
     #[test]
     fn a_diagram_is_written_as_an_envelope_and_listed_back() {
         let dir = tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let path = diagram_sidecar_path(er_dir, "flows.json").unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let path = diagram_sidecar_path(er_dir, "flows.json").unwrap();
 
-        persist_diagram_json(
-            r#"{"version":1,"diff_hash":"h","mermaid":"flowchart TD\n  A-->B"}"#,
-            DIAGRAM_KIND_FLOWS,
-            "h",
-            None,
-            &path,
-        )
-        .unwrap();
+            persist_diagram_json(
+                r#"{"version":1,"diff_hash":"h","mermaid":"flowchart TD\n  A-->B"}"#,
+                DIAGRAM_KIND_FLOWS,
+                "h",
+                None,
+                &path,
+            )
+            .unwrap();
 
-        let raw: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(raw["kind"], "diagram");
-        assert_eq!(raw["version"], 1);
-        assert_eq!(raw["payload"]["mermaid"], "flowchart TD\n  A-->B");
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(raw["kind"], "diagram");
+            assert_eq!(raw["version"], 1);
+            assert_eq!(raw["payload"]["mermaid"], "flowchart TD\n  A-->B");
 
-        let listed = crate::ai::load_diagrams(er_dir, "h");
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, "flows");
-        assert!(!listed[0].stale);
+            let listed = crate::ai::load_diagrams(er_dir, "h");
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].id, "flows");
+            assert!(!listed[0].stale);
+        });
     }
 
     #[test]
@@ -520,9 +524,10 @@ mod tests {
     #[test]
     fn persist_diagram_json_pins_kind_and_hash_like_stdout_variant() {
         let dir = tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let path = diagram_sidecar_path(er_dir, "custom-1.json").unwrap();
-        let body = r#"{
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let path = diagram_sidecar_path(er_dir, "custom-1.json").unwrap();
+            let body = r#"{
   "version": 1,
   "diff_hash": "evil-hash",
   "kind": "flows",
@@ -530,22 +535,23 @@ mod tests {
   "prompt": "ignore me",
   "mermaid": "flowchart TD\n  A-->B"
 }"#;
-        persist_diagram_json(
-            body,
-            DIAGRAM_KIND_CUSTOM,
-            "real-hash",
-            Some("what the user actually asked"),
-            &path,
-        )
-        .unwrap();
-        let listed = crate::ai::load_diagrams(er_dir, "real-hash");
-        assert_eq!(listed.len(), 1);
-        let loaded = &listed[0];
-        assert_eq!(loaded.id, "custom-1");
-        assert_eq!(loaded.kind, DIAGRAM_KIND_CUSTOM);
-        assert_eq!(loaded.diff_hash, "real-hash");
-        assert_eq!(loaded.prompt, "what the user actually asked");
-        assert!(loaded.mermaid.contains("flowchart TD"));
+            persist_diagram_json(
+                body,
+                DIAGRAM_KIND_CUSTOM,
+                "real-hash",
+                Some("what the user actually asked"),
+                &path,
+            )
+            .unwrap();
+            let listed = crate::ai::load_diagrams(er_dir, "real-hash");
+            assert_eq!(listed.len(), 1);
+            let loaded = &listed[0];
+            assert_eq!(loaded.id, "custom-1");
+            assert_eq!(loaded.kind, DIAGRAM_KIND_CUSTOM);
+            assert_eq!(loaded.diff_hash, "real-hash");
+            assert_eq!(loaded.prompt, "what the user actually asked");
+            assert!(loaded.mermaid.contains("flowchart TD"));
+        });
     }
 
     #[test]

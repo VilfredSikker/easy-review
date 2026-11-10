@@ -973,113 +973,126 @@ mod tests {
     #[test]
     fn retried_create_after_a_timeout_posts_once() {
         let mut f = fixture();
-        let client = "c-retry-timeout";
-        f.poster
-            .record_unknown_as_listed
-            .store(true, Ordering::Relaxed);
-        f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
-            error: "timeout".to_string(),
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let client = "c-retry-timeout";
+            f.poster
+                .record_unknown_as_listed
+                .store(true, Ordering::Relaxed);
+            f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
+                error: "timeout".to_string(),
+            });
+
+            let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
+            assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
+            assert_eq!(f.poster.posts(), 1);
+            clear_retry_delay(&mut f.app, client);
+
+            let second = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client)
+                .expect("the retry adopts the first post");
+            assert_eq!(f.poster.posts(), 1, "a retry must not post a second copy");
+            let gc = store(&f.app);
+            assert_eq!(gc.comments.len(), 1);
+            assert_eq!(gc.comments[0].id, second.store_id.unwrap());
         });
-
-        let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
-        assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
-        assert_eq!(f.poster.posts(), 1);
-        clear_retry_delay(&mut f.app, client);
-
-        let second = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client)
-            .expect("the retry adopts the first post");
-        assert_eq!(f.poster.posts(), 1, "a retry must not post a second copy");
-        let gc = store(&f.app);
-        assert_eq!(gc.comments.len(), 1);
-        assert_eq!(gc.comments[0].id, second.store_id.unwrap());
     }
 
     #[test]
     fn a_definite_failure_leaves_no_record_and_allows_a_clean_retry() {
         let mut f = fixture();
-        let client = "c-definite";
-        f.poster.push_outcome(GitHubPostOutcome::NotPosted {
-            error: "refused".to_string(),
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let client = "c-definite";
+            f.poster.push_outcome(GitHubPostOutcome::NotPosted {
+                error: "refused".to_string(),
+            });
+
+            let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
+            assert!(matches!(first, Err(GitHubPostError::NotPosted(_))));
+            assert!(f.app.pending_github_posts.is_empty());
+            assert!(!std::path::Path::new(&f.app.tab().github_comments_path()).exists());
+
+            let second =
+                drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
+            assert_eq!(f.poster.posts(), 2);
+            assert_eq!(store(&f.app).comments.len(), 1);
+            assert_eq!(store(&f.app).comments[0].id, second.store_id.unwrap());
         });
-
-        let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
-        assert!(matches!(first, Err(GitHubPostError::NotPosted(_))));
-        assert!(f.app.pending_github_posts.is_empty());
-        assert!(!std::path::Path::new(&f.app.tab().github_comments_path()).exists());
-
-        let second = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
-        assert_eq!(f.poster.posts(), 2);
-        assert_eq!(store(&f.app).comments.len(), 1);
-        assert_eq!(store(&f.app).comments[0].id, second.store_id.unwrap());
     }
 
     #[test]
     fn a_second_submit_while_the_first_is_in_flight_posts_once() {
         let mut f = fixture();
-        let client = "c-in-flight";
-        let ctx = f.app.comment_post_context();
-        let ticket = f
-            .app
-            .begin_github_comment_post(line_intent("hello"), target(), ctx, Some(client.into()))
-            .unwrap();
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let client = "c-in-flight";
+            let ctx = f.app.comment_post_context();
+            let ticket = f
+                .app
+                .begin_github_comment_post(line_intent("hello"), target(), ctx, Some(client.into()))
+                .unwrap();
 
-        let ctx = f.app.comment_post_context();
-        let second = f.app.begin_github_comment_post(
-            line_intent("hello"),
-            target(),
-            ctx,
-            Some(client.into()),
-        );
-        assert_eq!(second.unwrap_err(), GitHubPostError::InFlight);
-        assert_eq!(f.poster.posts(), 0);
+            let ctx = f.app.comment_post_context();
+            let second = f.app.begin_github_comment_post(
+                line_intent("hello"),
+                target(),
+                ctx,
+                Some(client.into()),
+            );
+            assert_eq!(second.unwrap_err(), GitHubPostError::InFlight);
+            assert_eq!(f.poster.posts(), 0);
 
-        let execution =
-            execute_comment_post(f.poster.as_ref(), &ticket.request, ticket.pending.as_ref());
-        f.app.finish_github_comment_post(ticket, execution).unwrap();
-        assert_eq!(f.poster.posts(), 1);
+            let execution =
+                execute_comment_post(f.poster.as_ref(), &ticket.request, ticket.pending.as_ref());
+            f.app.finish_github_comment_post(ticket, execution).unwrap();
+            assert_eq!(f.poster.posts(), 1);
+        });
     }
 
     #[test]
     fn a_posted_comment_is_recorded_as_a_pull_would_record_it() {
         let mut f = fixture();
-        let posted = drive(
-            &mut f.app,
-            f.poster.as_ref(),
-            line_intent("hello"),
-            "c-record",
-        )
-        .unwrap();
-        let gc = store(&f.app);
-        assert_eq!(gc.comments.len(), 1);
-        let entry = &gc.comments[0];
-        assert_eq!(entry.id, format!("gh-{}", posted.github_id));
-        assert_eq!(entry.github_id, Some(posted.github_id));
-        assert_eq!(entry.source, "github");
-        assert_eq!(entry.line_start, Some(2));
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let posted = drive(
+                &mut f.app,
+                f.poster.as_ref(),
+                line_intent("hello"),
+                "c-record",
+            )
+            .unwrap();
+            let gc = store(&f.app);
+            assert_eq!(gc.comments.len(), 1);
+            let entry = &gc.comments[0];
+            assert_eq!(entry.id, format!("gh-{}", posted.github_id));
+            assert_eq!(entry.github_id, Some(posted.github_id));
+            assert_eq!(entry.source, "github");
+            assert_eq!(entry.line_start, Some(2));
 
-        let request = f.poster.posted.lock().unwrap()[0].clone();
-        let listed = github_comment_for(&request, posted.github_id, "hello", "viewer");
-        let ctx = crate::sync::CommentSyncContext {
-            owner: "owner".to_string(),
-            repo_name: "repo".to_string(),
-            pr_number: 7,
-            is_remote: true,
-            repo_root: String::new(),
-            comments_path: f.app.tab().github_comments_path(),
-            diff_hash: "branch-hash".to_string(),
-            anchor_hash: "diff-hash".to_string(),
-            files: Vec::new(),
-            pr_number_for_overview: Some(7),
-            github: f.app.tab().ports.github.clone(),
-        };
-        let threads: HashMap<u64, crate::github::ReviewThreadState> = HashMap::new();
-        let rebuilt = crate::sync::rebuild_comment_store(&ctx, gc, &[listed], &threads);
-        let matching: Vec<_> = rebuilt
-            .comments
-            .iter()
-            .filter(|c| c.github_id == Some(posted.github_id))
-            .collect();
-        assert_eq!(matching.len(), 1, "the pull must not duplicate the entry");
+            let request = f.poster.posted.lock().unwrap()[0].clone();
+            let listed = github_comment_for(&request, posted.github_id, "hello", "viewer");
+            let ctx = crate::sync::CommentSyncContext {
+                owner: "owner".to_string(),
+                repo_name: "repo".to_string(),
+                pr_number: 7,
+                is_remote: true,
+                repo_root: String::new(),
+                comments_path: f.app.tab().github_comments_path(),
+                diff_hash: "branch-hash".to_string(),
+                anchor_hash: "diff-hash".to_string(),
+                files: Vec::new(),
+                pr_number_for_overview: Some(7),
+                github: f.app.tab().ports.github.clone(),
+            };
+            let threads: HashMap<u64, crate::github::ReviewThreadState> = HashMap::new();
+            let rebuilt = crate::sync::rebuild_comment_store(&ctx, gc, &[listed], &threads);
+            let matching: Vec<_> = rebuilt
+                .comments
+                .iter()
+                .filter(|c| c.github_id == Some(posted.github_id))
+                .collect();
+            assert_eq!(matching.len(), 1, "the pull must not duplicate the entry");
+        });
     }
 
     #[test]
@@ -1118,288 +1131,312 @@ mod tests {
     #[test]
     fn a_finding_followup_thread_never_posts() {
         let mut f = fixture();
-        {
-            let tab = f.app.tab_mut();
-            tab.comment_type = CommentType::GitHubComment;
-            tab.comment_finding_ref = Some("f-1".to_string());
-            tab.comment_file = "src/a.rs".to_string();
-            tab.comment_textarea = TextArea::new(vec!["finding reply".to_string()]);
-        }
-        assert!(f.app.github_comment_intent().is_none());
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            {
+                let tab = f.app.tab_mut();
+                tab.comment_type = CommentType::GitHubComment;
+                tab.comment_finding_ref = Some("f-1".to_string());
+                tab.comment_file = "src/a.rs".to_string();
+                tab.comment_textarea = TextArea::new(vec!["finding reply".to_string()]);
+            }
+            assert!(f.app.github_comment_intent().is_none());
 
-        // The desktop finding-reply path still writes a local comment.
-        f.app
-            .submit_comment_text(
-                crate::app::CommentTarget {
-                    file: "src/a.rs".to_string(),
-                    hunk_idx: 0,
-                    line_num: Some(2),
-                    line_num_end: None,
-                },
-                "finding reply".to_string(),
-                CommentType::GitHubComment,
-                None,
-                Some("f-1".to_string()),
-            )
-            .unwrap();
-        assert_eq!(f.poster.posts(), 0);
-        let gc = store(&f.app);
-        assert_eq!(gc.comments.len(), 1);
-        assert!(gc.comments[0].github_id.is_none());
-        assert_eq!(gc.comments[0].source, "local");
+            // The desktop finding-reply path still writes a local comment.
+            f.app
+                .submit_comment_text(
+                    crate::app::CommentTarget {
+                        file: "src/a.rs".to_string(),
+                        hunk_idx: 0,
+                        line_num: Some(2),
+                        line_num_end: None,
+                    },
+                    "finding reply".to_string(),
+                    CommentType::GitHubComment,
+                    None,
+                    Some("f-1".to_string()),
+                )
+                .unwrap();
+            assert_eq!(f.poster.posts(), 0);
+            let gc = store(&f.app);
+            assert_eq!(gc.comments.len(), 1);
+            assert!(gc.comments[0].github_id.is_none());
+            assert_eq!(gc.comments[0].source, "local");
+        });
     }
 
     #[test]
     fn a_general_comment_is_posted_but_not_recorded() {
         let mut f = fixture();
-        let posted = drive(
-            &mut f.app,
-            f.poster.as_ref(),
-            NewGitHubComment::General {
-                body: "hello PR".to_string(),
-            },
-            "c-general",
-        )
-        .unwrap();
-        assert_eq!(posted.store_id, None);
-        assert_eq!(f.poster.posts(), 1);
-        assert!(!std::path::Path::new(&f.app.tab().github_comments_path()).exists());
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let posted = drive(
+                &mut f.app,
+                f.poster.as_ref(),
+                NewGitHubComment::General {
+                    body: "hello PR".to_string(),
+                },
+                "c-general",
+            )
+            .unwrap();
+            assert_eq!(posted.store_id, None);
+            assert_eq!(f.poster.posts(), 1);
+            assert!(!std::path::Path::new(&f.app.tab().github_comments_path()).exists());
+        });
     }
 
     #[test]
     fn a_pull_between_attempts_settles_the_retry_without_posting() {
         let mut f = fixture();
-        let client = "c-pull-between";
-        f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
-            error: "timeout".to_string(),
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let client = "c-pull-between";
+            f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
+                error: "timeout".to_string(),
+            });
+            let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
+            assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
+
+            // The pull lands the comment before the retry.
+            let mut gc = empty_store();
+            gc.comments.push(recorded_comment("gh-42", 42, "hello"));
+            write_store(&f.app, &gc);
+            let request = f.poster.posted.lock().unwrap()[0].clone();
+            f.poster.add_listed(listed_for(&request, 42, "viewer"));
+            clear_retry_delay(&mut f.app, client);
+
+            let second =
+                drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
+            assert_eq!(f.poster.posts(), 1, "the retry must not post again");
+            assert_eq!(second.github_id, 42);
+            assert_eq!(store(&f.app).comments.len(), 1);
         });
-        let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
-        assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
-
-        // The pull lands the comment before the retry.
-        let mut gc = empty_store();
-        gc.comments.push(recorded_comment("gh-42", 42, "hello"));
-        write_store(&f.app, &gc);
-        let request = f.poster.posted.lock().unwrap()[0].clone();
-        f.poster.add_listed(listed_for(&request, 42, "viewer"));
-        clear_retry_delay(&mut f.app, client);
-
-        let second = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
-        assert_eq!(f.poster.posts(), 1, "the retry must not post again");
-        assert_eq!(second.github_id, 42);
-        assert_eq!(store(&f.app).comments.len(), 1);
     }
 
     #[test]
     fn an_earlier_identical_comment_is_not_adopted() {
         let mut f = fixture();
-        let client = "c-known-id";
-        let mut gc = empty_store();
-        gc.comments.push(recorded_comment("gh-42", 42, "hello"));
-        write_store(&f.app, &gc);
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let client = "c-known-id";
+            let mut gc = empty_store();
+            gc.comments.push(recorded_comment("gh-42", 42, "hello"));
+            write_store(&f.app, &gc);
 
-        f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
-            error: "timeout".to_string(),
+            f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
+                error: "timeout".to_string(),
+            });
+            let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
+            assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
+
+            let request = f.poster.posted.lock().unwrap()[0].clone();
+            f.poster.add_listed(listed_for(&request, 42, "viewer"));
+            clear_retry_delay(&mut f.app, client);
+
+            let second =
+                drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
+            assert_eq!(
+                f.poster.posts(),
+                2,
+                "an id that predates the attempt must not be adopted"
+            );
+            assert_ne!(second.github_id, 42);
+            assert_eq!(store(&f.app).comments.len(), 2);
         });
-        let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
-        assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
-
-        let request = f.poster.posted.lock().unwrap()[0].clone();
-        f.poster.add_listed(listed_for(&request, 42, "viewer"));
-        clear_retry_delay(&mut f.app, client);
-
-        let second = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
-        assert_eq!(
-            f.poster.posts(),
-            2,
-            "an id that predates the attempt must not be adopted"
-        );
-        assert_ne!(second.github_id, 42);
-        assert_eq!(store(&f.app).comments.len(), 2);
     }
 
     #[test]
     fn a_restored_finding_reply_draft_does_not_post() {
         let dir = tempfile::tempdir().unwrap();
-        let mut app = App::new_for_test(vec![sample_file()]);
-        app.tab_mut().er_root =
-            crate::paths::ErRoot::managed(dir.path().to_string_lossy().into_owned());
-        app.tab_mut().branch_diff_hash = "branch-hash".to_string();
-        {
-            let tab = app.tab_mut();
-            tab.comment_textarea = TextArea::new(vec!["a finding reply".to_string()]);
-            tab.comment_file = "src/a.rs".to_string();
-            tab.comment_hunk = 0;
-            tab.comment_line_num = Some(2);
-            tab.comment_type = CommentType::GitHubComment;
-            tab.comment_finding_ref = Some("f-1".to_string());
-            tab.comment_client_id = Some("c-restored".to_string());
-        }
-        app.tab().save_session();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = App::new_for_test(vec![sample_file()]);
+            app.tab_mut().er_root =
+                crate::paths::ErRoot::managed(dir.path().to_string_lossy().into_owned());
+            app.tab_mut().branch_diff_hash = "branch-hash".to_string();
+            {
+                let tab = app.tab_mut();
+                tab.comment_textarea = TextArea::new(vec!["a finding reply".to_string()]);
+                tab.comment_file = "src/a.rs".to_string();
+                tab.comment_hunk = 0;
+                tab.comment_line_num = Some(2);
+                tab.comment_type = CommentType::GitHubComment;
+                tab.comment_finding_ref = Some("f-1".to_string());
+                tab.comment_client_id = Some("c-restored".to_string());
+            }
+            app.tab().save_session();
 
-        let mut restored = App::new_for_test(vec![sample_file()]);
-        restored.tab_mut().er_root =
-            crate::paths::ErRoot::managed(dir.path().to_string_lossy().into_owned());
-        restored.tab_mut().branch_diff_hash = "branch-hash".to_string();
-        assert!(restored.tab_mut().restore_session());
-        assert_eq!(restored.tab().comment_finding_ref.as_deref(), Some("f-1"));
-        assert_eq!(
-            restored.tab().comment_client_id.as_deref(),
-            Some("c-restored")
-        );
-        assert!(restored.github_comment_intent().is_none());
+            let mut restored = App::new_for_test(vec![sample_file()]);
+            restored.tab_mut().er_root =
+                crate::paths::ErRoot::managed(dir.path().to_string_lossy().into_owned());
+            restored.tab_mut().branch_diff_hash = "branch-hash".to_string();
+            assert!(restored.tab_mut().restore_session());
+            assert_eq!(restored.tab().comment_finding_ref.as_deref(), Some("f-1"));
+            assert_eq!(
+                restored.tab().comment_client_id.as_deref(),
+                Some("c-restored")
+            );
+            assert!(restored.github_comment_intent().is_none());
+        });
     }
 
     #[test]
     fn a_4xx_refusal_is_not_posted_and_does_not_need_reconcile() {
         let mut f = fixture();
-        let client = "c-refusal";
-        f.poster.push_outcome(GitHubPostOutcome::NotPosted {
-            error: "Unprocessable Entity (HTTP 422)".to_string(),
-        });
-        let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
-        assert!(matches!(first, Err(GitHubPostError::NotPosted(_))));
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let client = "c-refusal";
+            f.poster.push_outcome(GitHubPostOutcome::NotPosted {
+                error: "Unprocessable Entity (HTTP 422)".to_string(),
+            });
+            let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
+            assert!(matches!(first, Err(GitHubPostError::NotPosted(_))));
 
-        let second = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
-        assert!(second.github_id > 0);
-        assert_eq!(
-            f.poster.viewer_calls.load(Ordering::Relaxed),
-            0,
-            "a refusal is decisive; no reconcile"
-        );
-        assert_eq!(f.poster.list_calls.load(Ordering::Relaxed), 0);
-        assert_eq!(f.poster.posts(), 2);
+            let second =
+                drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
+            assert!(second.github_id > 0);
+            assert_eq!(
+                f.poster.viewer_calls.load(Ordering::Relaxed),
+                0,
+                "a refusal is decisive; no reconcile"
+            );
+            assert_eq!(f.poster.list_calls.load(Ordering::Relaxed), 0);
+            assert_eq!(f.poster.posts(), 2);
+        });
     }
 
     #[test]
     fn an_adopted_retry_records_the_posted_body_not_the_edit() {
         let mut f = fixture();
-        let client = "c-adopt-edited";
-        f.poster
-            .record_unknown_as_listed
-            .store(true, Ordering::Relaxed);
-        f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
-            error: "timeout".to_string(),
-        });
-        let first = drive(&mut f.app, f.poster.as_ref(), line_intent("first"), client);
-        assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
-        clear_retry_delay(&mut f.app, client);
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let client = "c-adopt-edited";
+            f.poster
+                .record_unknown_as_listed
+                .store(true, Ordering::Relaxed);
+            f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
+                error: "timeout".to_string(),
+            });
+            let first = drive(&mut f.app, f.poster.as_ref(), line_intent("first"), client);
+            assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
+            clear_retry_delay(&mut f.app, client);
 
-        let second = drive(&mut f.app, f.poster.as_ref(), line_intent("edited"), client).unwrap();
-        assert_eq!(f.poster.posts(), 1);
-        assert_eq!(second.github_id, 100);
-        let gc = store(&f.app);
-        assert_eq!(gc.comments.len(), 1);
-        assert_eq!(
-            gc.comments[0].comment, "first",
-            "the sidecar records what GitHub holds"
-        );
-        assert!(
-            second.kept_earlier_body,
-            "the caller keeps the edited text and says so"
-        );
+            let second =
+                drive(&mut f.app, f.poster.as_ref(), line_intent("edited"), client).unwrap();
+            assert_eq!(f.poster.posts(), 1);
+            assert_eq!(second.github_id, 100);
+            let gc = store(&f.app);
+            assert_eq!(gc.comments.len(), 1);
+            assert_eq!(
+                gc.comments[0].comment, "first",
+                "the sidecar records what GitHub holds"
+            );
+            assert!(
+                second.kept_earlier_body,
+                "the caller keeps the edited text and says so"
+            );
+        });
     }
 
     #[test]
     fn an_adopted_edit_keeps_the_composer_open() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let mut f = fixture();
-        std::env::set_var("ER_STORAGE_ROOT", f.dir.path());
-        {
-            let tab = f.app.tab_mut();
-            // A remote tab resolves its post target without a gh call.
-            tab.remote_repo = Some("owner/repo".to_string());
-            tab.pr_number = Some(7);
-            tab.comment_type = CommentType::GitHubComment;
-            tab.comment_file = "src/a.rs".to_string();
-            tab.comment_hunk = 0;
-            tab.comment_line_num = Some(2);
-            tab.comment_textarea = TextArea::new(vec!["first".to_string()]);
-        }
-        f.poster
-            .record_unknown_as_listed
-            .store(true, Ordering::Relaxed);
-        f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
-            error: "timeout".to_string(),
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            {
+                let tab = f.app.tab_mut();
+                // A remote tab resolves its post target without a gh call.
+                tab.remote_repo = Some("owner/repo".to_string());
+                tab.pr_number = Some(7);
+                tab.comment_type = CommentType::GitHubComment;
+                tab.comment_file = "src/a.rs".to_string();
+                tab.comment_hunk = 0;
+                tab.comment_line_num = Some(2);
+                tab.comment_textarea = TextArea::new(vec!["first".to_string()]);
+            }
+            f.poster
+                .record_unknown_as_listed
+                .store(true, Ordering::Relaxed);
+            f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
+                error: "timeout".to_string(),
+            });
+            assert!(f.app.post_github_comment_now().is_err());
+            assert_eq!(f.poster.posts(), 1);
+            let client = f
+                .app
+                .tab()
+                .comment_client_id
+                .clone()
+                .expect("the composer holds the client id");
+            clear_retry_delay(&mut f.app, &client);
+
+            f.app.tab_mut().comment_textarea = TextArea::new(vec!["edited".to_string()]);
+            f.app.input_mode = InputMode::Comment;
+            let posted = f.app.post_github_comment_now().unwrap();
+
+            assert!(posted.kept_earlier_body);
+            assert_eq!(f.app.input_mode, InputMode::Comment);
+            assert_eq!(f.app.tab().comment_textarea.lines().join("\n"), "edited");
+            assert!(
+                f.app.tab().comment_client_id.is_none(),
+                "a resend is a deliberate new comment"
+            );
+            assert!(f.app.notification.as_ref().is_some_and(|n| {
+                n.message == "Your earlier version was posted; this edit was not"
+            }));
         });
-        assert!(f.app.post_github_comment_now().is_err());
-        assert_eq!(f.poster.posts(), 1);
-        let client = f
-            .app
-            .tab()
-            .comment_client_id
-            .clone()
-            .expect("the composer holds the client id");
-        clear_retry_delay(&mut f.app, &client);
-
-        f.app.tab_mut().comment_textarea = TextArea::new(vec!["edited".to_string()]);
-        f.app.input_mode = InputMode::Comment;
-        let posted = f.app.post_github_comment_now().unwrap();
-
-        assert!(posted.kept_earlier_body);
-        assert_eq!(f.app.input_mode, InputMode::Comment);
-        assert_eq!(f.app.tab().comment_textarea.lines().join("\n"), "edited");
-        assert!(
-            f.app.tab().comment_client_id.is_none(),
-            "a resend is a deliberate new comment"
-        );
-        assert!(f.app.notification.as_ref().is_some_and(|n| {
-            n.message == "Your earlier version was posted; this edit was not"
-        }));
-        std::env::remove_var("ER_STORAGE_ROOT");
     }
 
     #[test]
     fn a_record_failure_keeps_an_existing_pending_record() {
         let dir = tempfile::tempdir().unwrap();
-        let mut app = App::new_for_test(vec![sample_file()]);
-        let blocked = dir.path().join("er");
-        std::fs::write(&blocked, b"not a directory").unwrap();
-        app.tab_mut().er_root =
-            crate::paths::ErRoot::managed(blocked.to_string_lossy().into_owned());
-        app.tab_mut().branch_diff_hash = "branch-hash".to_string();
-        app.tab_mut().diff_hash = "diff-hash".to_string();
-        let poster = FakeCommentPoster::new();
-        app.set_github_comment_poster(poster.clone());
-        poster
-            .record_unknown_as_listed
-            .store(true, Ordering::Relaxed);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = App::new_for_test(vec![sample_file()]);
+            let blocked = dir.path().join("er");
+            std::fs::write(&blocked, b"not a directory").unwrap();
+            app.tab_mut().er_root =
+                crate::paths::ErRoot::managed(blocked.to_string_lossy().into_owned());
+            app.tab_mut().branch_diff_hash = "branch-hash".to_string();
+            app.tab_mut().diff_hash = "diff-hash".to_string();
+            let poster = FakeCommentPoster::new();
+            app.set_github_comment_poster(poster.clone());
+            poster
+                .record_unknown_as_listed
+                .store(true, Ordering::Relaxed);
 
-        let client = "c-three-sends";
-        // Send 1: unknown, remembered with the first body and start time.
-        poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
-            error: "timeout".to_string(),
+            let client = "c-three-sends";
+            // Send 1: unknown, remembered with the first body and start time.
+            poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
+                error: "timeout".to_string(),
+            });
+            let first = drive(&mut app, poster.as_ref(), line_intent("first"), client);
+            assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
+            let started_at = app
+                .pending_github_posts
+                .get(client)
+                .unwrap()
+                .started_at
+                .clone();
+            clear_retry_delay(&mut app, client);
+
+            // Send 2: adopts the first comment, but the write fails.
+            let second = drive(&mut app, poster.as_ref(), line_intent("edited"), client);
+            assert!(matches!(second, Err(GitHubPostError::RecordFailed(_))));
+            let pending = app.pending_github_posts.get(client).cloned().unwrap();
+            assert_eq!(
+                pending.started_at, started_at,
+                "the first start time is kept"
+            );
+            assert_eq!(pending.bodies, vec!["first".to_string()]);
+            assert_eq!(pending.not_before_epoch, 0);
+
+            // Send 3: still adopts the earlier comment, so it must not post again.
+            std::fs::remove_file(&blocked).unwrap();
+            std::fs::create_dir_all(&blocked).unwrap();
+            let third = drive(&mut app, poster.as_ref(), line_intent("third"), client).unwrap();
+            assert_eq!(poster.posts(), 1);
+            assert_eq!(third.github_id, 100);
+            assert!(third.kept_earlier_body);
         });
-        let first = drive(&mut app, poster.as_ref(), line_intent("first"), client);
-        assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
-        let started_at = app
-            .pending_github_posts
-            .get(client)
-            .unwrap()
-            .started_at
-            .clone();
-        clear_retry_delay(&mut app, client);
-
-        // Send 2: adopts the first comment, but the write fails.
-        let second = drive(&mut app, poster.as_ref(), line_intent("edited"), client);
-        assert!(matches!(second, Err(GitHubPostError::RecordFailed(_))));
-        let pending = app.pending_github_posts.get(client).cloned().unwrap();
-        assert_eq!(
-            pending.started_at, started_at,
-            "the first start time is kept"
-        );
-        assert_eq!(pending.bodies, vec!["first".to_string()]);
-        assert_eq!(pending.not_before_epoch, 0);
-
-        // Send 3: still adopts the earlier comment, so it must not post again.
-        std::fs::remove_file(&blocked).unwrap();
-        std::fs::create_dir_all(&blocked).unwrap();
-        let third = drive(&mut app, poster.as_ref(), line_intent("third"), client).unwrap();
-        assert_eq!(poster.posts(), 1);
-        assert_eq!(third.github_id, 100);
-        assert!(third.kept_earlier_body);
     }
 
     #[test]
@@ -1420,81 +1457,90 @@ mod tests {
     #[test]
     fn a_record_failure_reconciles_on_retry() {
         let dir = tempfile::tempdir().unwrap();
-        let mut app = App::new_for_test(vec![sample_file()]);
-        // A regular file where the store dir must be makes the write fail.
-        let blocked = dir.path().join("er");
-        std::fs::write(&blocked, b"not a directory").unwrap();
-        app.tab_mut().er_root =
-            crate::paths::ErRoot::managed(blocked.to_string_lossy().into_owned());
-        app.tab_mut().branch_diff_hash = "branch-hash".to_string();
-        app.tab_mut().diff_hash = "diff-hash".to_string();
-        let poster = FakeCommentPoster::new();
-        app.set_github_comment_poster(poster.clone());
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = App::new_for_test(vec![sample_file()]);
+            // A regular file where the store dir must be makes the write fail.
+            let blocked = dir.path().join("er");
+            std::fs::write(&blocked, b"not a directory").unwrap();
+            app.tab_mut().er_root =
+                crate::paths::ErRoot::managed(blocked.to_string_lossy().into_owned());
+            app.tab_mut().branch_diff_hash = "branch-hash".to_string();
+            app.tab_mut().diff_hash = "diff-hash".to_string();
+            let poster = FakeCommentPoster::new();
+            app.set_github_comment_poster(poster.clone());
 
-        let client = "c-record-fail";
-        let first = drive(&mut app, poster.as_ref(), line_intent("hello"), client);
-        assert!(matches!(first, Err(GitHubPostError::RecordFailed(_))));
-        assert_eq!(poster.posts(), 1);
-        let pending = app
-            .pending_github_posts
-            .get(client)
-            .cloned()
-            .expect("a record failure keeps the pending post");
-        assert_eq!(pending.not_before_epoch, 0);
+            let client = "c-record-fail";
+            let first = drive(&mut app, poster.as_ref(), line_intent("hello"), client);
+            assert!(matches!(first, Err(GitHubPostError::RecordFailed(_))));
+            assert_eq!(poster.posts(), 1);
+            let pending = app
+                .pending_github_posts
+                .get(client)
+                .cloned()
+                .expect("a record failure keeps the pending post");
+            assert_eq!(pending.not_before_epoch, 0);
 
-        // Repair the path; the comment GitHub holds is the one to adopt.
-        std::fs::remove_file(&blocked).unwrap();
-        std::fs::create_dir_all(&blocked).unwrap();
-        let request = poster.posted.lock().unwrap()[0].clone();
-        let listed = listed_for(&request, 100, "viewer");
-        poster.add_listed(listed);
+            // Repair the path; the comment GitHub holds is the one to adopt.
+            std::fs::remove_file(&blocked).unwrap();
+            std::fs::create_dir_all(&blocked).unwrap();
+            let request = poster.posted.lock().unwrap()[0].clone();
+            let listed = listed_for(&request, 100, "viewer");
+            poster.add_listed(listed);
 
-        let second = drive(&mut app, poster.as_ref(), line_intent("hello"), client).unwrap();
-        assert_eq!(poster.posts(), 1, "the retry must adopt, not post again");
-        let gc = store(&app);
-        assert_eq!(gc.comments.len(), 1);
-        assert_eq!(gc.comments[0].id, second.store_id.unwrap());
+            let second = drive(&mut app, poster.as_ref(), line_intent("hello"), client).unwrap();
+            assert_eq!(poster.posts(), 1, "the retry must adopt, not post again");
+            let gc = store(&app);
+            assert_eq!(gc.comments.len(), 1);
+            assert_eq!(gc.comments[0].id, second.store_id.unwrap());
+        });
     }
 
     #[test]
     fn a_promote_delete_failure_reconciles_instead_of_reposting() {
         let mut f = fixture();
-        let client = "c-promote-retry";
-        let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
-        let request = f.poster.posted.lock().unwrap()[0].clone();
-        // What the promote commands do when deleting the source fails.
-        f.app.remember_posted_for_retry(request.clone());
-        f.poster
-            .add_listed(listed_for(&request, first.github_id, "viewer"));
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let client = "c-promote-retry";
+            let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
+            let request = f.poster.posted.lock().unwrap()[0].clone();
+            // What the promote commands do when deleting the source fails.
+            f.app.remember_posted_for_retry(request.clone());
+            f.poster
+                .add_listed(listed_for(&request, first.github_id, "viewer"));
 
-        let second = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
-        assert_eq!(f.poster.posts(), 1, "the retry must adopt, not post again");
-        assert_eq!(second.github_id, first.github_id);
-        assert_eq!(store(&f.app).comments.len(), 1);
+            let second =
+                drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client).unwrap();
+            assert_eq!(f.poster.posts(), 1, "the retry must adopt, not post again");
+            assert_eq!(second.github_id, first.github_id);
+            assert_eq!(store(&f.app).comments.len(), 1);
+        });
     }
 
     #[test]
     fn a_retry_before_the_not_before_time_does_not_post() {
         let mut f = fixture();
-        let client = "c-too-early";
-        f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
-            error: "timeout".to_string(),
-        });
-        let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
-        assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
-        let before = f.app.pending_github_posts.get(client).cloned().unwrap();
+        let storage = f.dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let client = "c-too-early";
+            f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
+                error: "timeout".to_string(),
+            });
+            let first = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
+            assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
+            let before = f.app.pending_github_posts.get(client).cloned().unwrap();
 
-        let second = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
-        assert!(matches!(
-            second,
-            Err(GitHubPostError::UnknownOutcome(ref error)) if error == RETRY_TOO_EARLY
-        ));
-        assert_eq!(f.poster.posts(), 1);
-        assert_eq!(f.poster.list_calls.load(Ordering::Relaxed), 0);
-        assert_eq!(f.poster.viewer_calls.load(Ordering::Relaxed), 0);
-        let after = f.app.pending_github_posts.get(client).cloned().unwrap();
-        assert_eq!(after.not_before_epoch, before.not_before_epoch);
-        assert_eq!(after.bodies, before.bodies);
+            let second = drive(&mut f.app, f.poster.as_ref(), line_intent("hello"), client);
+            assert!(matches!(
+                second,
+                Err(GitHubPostError::UnknownOutcome(ref error)) if error == RETRY_TOO_EARLY
+            ));
+            assert_eq!(f.poster.posts(), 1);
+            assert_eq!(f.poster.list_calls.load(Ordering::Relaxed), 0);
+            assert_eq!(f.poster.viewer_calls.load(Ordering::Relaxed), 0);
+            let after = f.app.pending_github_posts.get(client).cloned().unwrap();
+            assert_eq!(after.not_before_epoch, before.not_before_epoch);
+            assert_eq!(after.bodies, before.bodies);
+        });
     }
 
     #[test]

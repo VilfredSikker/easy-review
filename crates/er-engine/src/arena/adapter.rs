@@ -73,7 +73,7 @@ pub fn run_provider_json(
     cancel: &AtomicBool,
     children: &Arc<Mutex<Vec<Child>>>,
 ) -> Result<Value> {
-    if let Ok(dir) = std::env::var("ER_FAKE_ARENA_DIR") {
+    if let Some(dir) = crate::env_var::var("ER_FAKE_ARENA_DIR") {
         return fake_arena_json_from_dir(&dir);
     }
 
@@ -629,22 +629,22 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/fixtures/arena/fake"
         );
-        std::env::set_var("ER_FAKE_ARENA_DIR", dir);
-        let v1 = run_provider_json(
-            &ProviderCommand {
-                command: "true".into(),
-                args: vec![],
-                stream_json: false,
-                env: vec![],
-            },
-            "",
-            ".",
-            &AtomicBool::new(false),
-            &Arc::new(Mutex::new(Vec::new())),
-        )
-        .unwrap();
-        assert!(v1.get("findings").is_some());
-        std::env::remove_var("ER_FAKE_ARENA_DIR");
+        crate::test_support::with_var("ER_FAKE_ARENA_DIR", dir, || {
+            let v1 = run_provider_json(
+                &ProviderCommand {
+                    command: "true".into(),
+                    args: vec![],
+                    stream_json: false,
+                    env: vec![],
+                },
+                "",
+                ".",
+                &AtomicBool::new(false),
+                &Arc::new(Mutex::new(Vec::new())),
+            )
+            .unwrap();
+            assert!(v1.get("findings").is_some());
+        });
     }
 
     #[test]

@@ -321,179 +321,188 @@ mod tests {
     #[test]
     fn summarize_reads_triage_review_and_tour() {
         let dir = tempfile::tempdir().unwrap();
-        let bucket = dir.path();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let bucket = dir.path();
 
-        let triage = TriageReview {
-            version: 1,
-            diff_hash: "abc".into(),
-            diff_scope: "pr".into(),
-            created_at: "2026-01-01T00:00:00Z".into(),
-            first_impression: "Looks small".into(),
-            diff_stats: TriageDiffStats {
-                files_changed: 2,
-                approx_risk: RiskLevel::Low,
-                domains: vec!["ui".into()],
-            },
-            verdict: TriageVerdict {
-                primary: TriageVerdictPrimary::General,
-                experts: vec![],
-                rationale: "tiny".into(),
-                confidence: "high".into(),
-            },
-            priority_files: vec![TriagePriorityFile {
-                path: "src/a.rs".into(),
-                reason: "core".into(),
-                risk: RiskLevel::Low,
-            }],
-            reach: Default::default(),
-            sensitive: Default::default(),
-        };
-        std::fs::write(
-            bucket.join("triage.json"),
-            serde_json::to_string(&triage).unwrap(),
-        )
-        .unwrap();
-
-        let mut files = HashMap::new();
-        files.insert(
-            "src/a.rs".into(),
-            crate::ai::ErFileReview {
-                risk: RiskLevel::High,
-                risk_reason: "".into(),
-                summary: "".into(),
-                findings: vec![],
-            },
-        );
-        let review = ErReview {
-            version: 1,
-            diff_hash: "abc".into(),
-            created_at: "2026-01-01T00:00:00Z".into(),
-            base_branch: "main".into(),
-            head_branch: "feat".into(),
-            files,
-            file_hashes: HashMap::new(),
-        };
-        std::fs::write(
-            bucket.join("review.json"),
-            serde_json::to_string(&review).unwrap(),
-        )
-        .unwrap();
-
-        let tour = ErTour {
-            version: 1,
-            diff_hash: "abc".into(),
-            created_at: "2026-01-01T00:00:00Z".into(),
-            title: "Tour: widgets".into(),
-            overview: "Start with core".into(),
-            pillars: vec![crate::ai::TourPillar {
-                id: "p1".into(),
-                title: "Core".into(),
-                description: "main path".into(),
-                order: 0,
-                importance: 90,
-                summary: String::new(),
-                foundation: true,
-                files: vec![crate::ai::TourFile {
+            let triage = TriageReview {
+                version: 1,
+                diff_hash: "abc".into(),
+                diff_scope: "pr".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                first_impression: "Looks small".into(),
+                diff_stats: TriageDiffStats {
+                    files_changed: 2,
+                    approx_risk: RiskLevel::Low,
+                    domains: vec!["ui".into()],
+                },
+                verdict: TriageVerdict {
+                    primary: TriageVerdictPrimary::General,
+                    experts: vec![],
+                    rationale: "tiny".into(),
+                    confidence: "high".into(),
+                },
+                priority_files: vec![TriagePriorityFile {
                     path: "src/a.rs".into(),
-                    reason: "entry".into(),
-                    finding_ids: vec![],
-                    related: vec![],
+                    reason: "core".into(),
+                    risk: RiskLevel::Low,
                 }],
-            }],
-        };
-        std::fs::write(
-            bucket.join("tour.json"),
-            serde_json::to_string(&tour).unwrap(),
-        )
-        .unwrap();
+                reach: Default::default(),
+                sensitive: Default::default(),
+            };
+            std::fs::write(
+                bucket.join("triage.json"),
+                serde_json::to_string(&triage).unwrap(),
+            )
+            .unwrap();
 
-        let summary = summarize_pr_bucket("acme", "widgets", 3, bucket);
-        assert_eq!(
-            summary.triage.as_ref().unwrap().first_impression,
-            "Looks small"
-        );
-        assert_eq!(summary.review.as_ref().unwrap().files, 1);
-        assert_eq!(
-            summary.review.as_ref().unwrap().high_risk_files,
-            vec!["src/a.rs".to_string()]
-        );
-        let tour_sum = summary.tour.as_ref().unwrap();
-        assert_eq!(tour_sum.title, "Tour: widgets");
-        assert_eq!(tour_sum.pillars, 1);
-        assert_eq!(tour_sum.files, 1);
-        assert_eq!(tour_sum.pillar_titles, vec!["Core".to_string()]);
-        assert!(summary.missing.is_empty());
+            let mut files = HashMap::new();
+            files.insert(
+                "src/a.rs".into(),
+                crate::ai::ErFileReview {
+                    risk: RiskLevel::High,
+                    risk_reason: "".into(),
+                    summary: "".into(),
+                    findings: vec![],
+                },
+            );
+            let review = ErReview {
+                version: 1,
+                diff_hash: "abc".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                base_branch: "main".into(),
+                head_branch: "feat".into(),
+                files,
+                file_hashes: HashMap::new(),
+            };
+            std::fs::write(
+                bucket.join("review.json"),
+                serde_json::to_string(&review).unwrap(),
+            )
+            .unwrap();
+
+            let tour = ErTour {
+                version: 1,
+                diff_hash: "abc".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                title: "Tour: widgets".into(),
+                overview: "Start with core".into(),
+                pillars: vec![crate::ai::TourPillar {
+                    id: "p1".into(),
+                    title: "Core".into(),
+                    description: "main path".into(),
+                    order: 0,
+                    importance: 90,
+                    summary: String::new(),
+                    foundation: true,
+                    files: vec![crate::ai::TourFile {
+                        path: "src/a.rs".into(),
+                        reason: "entry".into(),
+                        finding_ids: vec![],
+                        related: vec![],
+                    }],
+                }],
+            };
+            std::fs::write(
+                bucket.join("tour.json"),
+                serde_json::to_string(&tour).unwrap(),
+            )
+            .unwrap();
+
+            let summary = summarize_pr_bucket("acme", "widgets", 3, bucket);
+            assert_eq!(
+                summary.triage.as_ref().unwrap().first_impression,
+                "Looks small"
+            );
+            assert_eq!(summary.review.as_ref().unwrap().files, 1);
+            assert_eq!(
+                summary.review.as_ref().unwrap().high_risk_files,
+                vec!["src/a.rs".to_string()]
+            );
+            let tour_sum = summary.tour.as_ref().unwrap();
+            assert_eq!(tour_sum.title, "Tour: widgets");
+            assert_eq!(tour_sum.pillars, 1);
+            assert_eq!(tour_sum.files, 1);
+            assert_eq!(tour_sum.pillar_titles, vec!["Core".to_string()]);
+            assert!(summary.missing.is_empty());
+        });
     }
 
     #[test]
     fn list_repo_pr_artifacts_finds_triage_and_tour_only() {
         let dir = tempfile::tempdir().unwrap();
-        let prs = dir.path();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let prs = dir.path();
 
-        let empty = prs.join("pr-1");
-        std::fs::create_dir_all(&empty).unwrap();
+            let empty = prs.join("pr-1");
+            std::fs::create_dir_all(&empty).unwrap();
 
-        let with_triage = prs.join("pr-10");
-        std::fs::create_dir_all(&with_triage).unwrap();
-        let triage = TriageReview {
-            version: 1,
-            diff_hash: "h1".into(),
-            diff_scope: "pr".into(),
-            created_at: "2026-01-01T00:00:00Z".into(),
-            first_impression: "ok".into(),
-            diff_stats: TriageDiffStats {
-                files_changed: 1,
-                approx_risk: RiskLevel::Low,
-                domains: vec![],
-            },
-            verdict: TriageVerdict {
-                primary: TriageVerdictPrimary::General,
-                experts: vec![],
-                rationale: "r".into(),
-                confidence: "high".into(),
-            },
-            priority_files: vec![],
-            reach: Default::default(),
-            sensitive: Default::default(),
-        };
-        std::fs::write(
-            with_triage.join("triage.json"),
-            serde_json::to_string(&triage).unwrap(),
-        )
-        .unwrap();
+            let with_triage = prs.join("pr-10");
+            std::fs::create_dir_all(&with_triage).unwrap();
+            let triage = TriageReview {
+                version: 1,
+                diff_hash: "h1".into(),
+                diff_scope: "pr".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                first_impression: "ok".into(),
+                diff_stats: TriageDiffStats {
+                    files_changed: 1,
+                    approx_risk: RiskLevel::Low,
+                    domains: vec![],
+                },
+                verdict: TriageVerdict {
+                    primary: TriageVerdictPrimary::General,
+                    experts: vec![],
+                    rationale: "r".into(),
+                    confidence: "high".into(),
+                },
+                priority_files: vec![],
+                reach: Default::default(),
+                sensitive: Default::default(),
+            };
+            std::fs::write(
+                with_triage.join("triage.json"),
+                serde_json::to_string(&triage).unwrap(),
+            )
+            .unwrap();
 
-        let with_tour = prs.join("pr-20");
-        std::fs::create_dir_all(&with_tour).unwrap();
-        let tour = ErTour {
-            version: 1,
-            diff_hash: "h2".into(),
-            created_at: "2026-01-02T00:00:00Z".into(),
-            title: "Tour only".into(),
-            overview: "o".into(),
-            pillars: vec![],
-        };
-        std::fs::write(
-            with_tour.join("tour.json"),
-            serde_json::to_string(&tour).unwrap(),
-        )
-        .unwrap();
+            let with_tour = prs.join("pr-20");
+            std::fs::create_dir_all(&with_tour).unwrap();
+            let tour = ErTour {
+                version: 1,
+                diff_hash: "h2".into(),
+                created_at: "2026-01-02T00:00:00Z".into(),
+                title: "Tour only".into(),
+                overview: "o".into(),
+                pillars: vec![],
+            };
+            std::fs::write(
+                with_tour.join("tour.json"),
+                serde_json::to_string(&tour).unwrap(),
+            )
+            .unwrap();
 
-        // Questions-only bucket should not appear.
-        let questions_only = prs.join("pr-30");
-        std::fs::create_dir_all(&questions_only).unwrap();
-        std::fs::write(questions_only.join("questions.json"), "[]").unwrap();
+            // Questions-only bucket should not appear.
+            let questions_only = prs.join("pr-30");
+            std::fs::create_dir_all(&questions_only).unwrap();
+            std::fs::write(questions_only.join("questions.json"), "[]").unwrap();
 
-        let all = list_repo_pr_artifacts_in_dir("acme", "widgets", prs, None, 50);
-        let numbers: Vec<u64> = all.iter().map(|e| e.summary.number).collect();
-        assert!(numbers.contains(&10));
-        assert!(numbers.contains(&20));
-        assert!(!numbers.contains(&1));
-        assert!(!numbers.contains(&30));
+            let all = list_repo_pr_artifacts_in_dir("acme", "widgets", prs, None, 50);
+            let numbers: Vec<u64> = all.iter().map(|e| e.summary.number).collect();
+            assert!(numbers.contains(&10));
+            assert!(numbers.contains(&20));
+            assert!(!numbers.contains(&1));
+            assert!(!numbers.contains(&30));
 
-        let tours_only =
-            list_repo_pr_artifacts_in_dir("acme", "widgets", prs, Some(&[SidecarKind::Tour]), 50);
-        assert_eq!(tours_only.len(), 1);
-        assert_eq!(tours_only[0].summary.number, 20);
-        assert_eq!(tours_only[0].kinds, vec!["tour".to_string()]);
+            let tours_only = list_repo_pr_artifacts_in_dir(
+                "acme",
+                "widgets",
+                prs,
+                Some(&[SidecarKind::Tour]),
+                50,
+            );
+            assert_eq!(tours_only.len(), 1);
+            assert_eq!(tours_only[0].summary.number, 20);
+            assert_eq!(tours_only[0].kinds, vec!["tour".to_string()]);
+        });
     }
 }

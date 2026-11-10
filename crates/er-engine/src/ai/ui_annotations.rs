@@ -120,24 +120,16 @@ mod tests {
 
     #[test]
     fn ui_annotation_file_load_missing_returns_empty() {
-        let tmp = std::env::temp_dir().join("er-ui-ann-test-missing");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let dir = tmp.to_string_lossy().to_string();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
         let v = load_ui_annotations(&dir);
         assert!(v.is_empty());
     }
 
     #[test]
     fn ui_annotation_save_then_load_roundtrip() {
-        let tmp = std::env::temp_dir().join(format!(
-            "er-ui-ann-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let dir = tmp.to_string_lossy().to_string();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
         let anns = vec![UiAnnotation {
             id: "a".into(),
             url: "/x".into(),
@@ -159,6 +151,5 @@ mod tests {
         save_ui_annotations(&dir, &anns).unwrap();
         let back = load_ui_annotations(&dir);
         assert_eq!(back, anns);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

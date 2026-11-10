@@ -340,49 +340,52 @@ mod tests {
 
     #[test]
     fn branch_ai_preload_adopted_only_on_bucket_and_hash_match() {
-        let mut tab = tab_with(|t| {
-            t.repo_root = "/home/user/my-project".to_string();
-            t.local_branch_view = Some("feature-x".to_string());
-            t.current_branch = "feature-x".to_string();
-            t.branch_diff_hash = "hash-1".to_string();
-        });
-        let bucket = tab.branch_bucket_er_dir().expect("bucket dir");
-        tab.preloaded_branch_ai = Some(BranchAiPreload {
-            bucket_dir: bucket.clone(),
-            diff_hash: "hash-1".to_string(),
-            arbiter_overlay: None,
-            ai: super::super::AiState::default(),
-        });
-        // Matching bucket + hash → adopted (slot consumed).
-        let adopted = tab
-            .take_preloaded_branch_ai(&bucket, "hash-1", None)
-            .expect("adopted");
-        assert!(adopted.questions.is_none(), "preload state returned as-is");
-        assert!(tab.preloaded_branch_ai.is_none(), "consumed on match");
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = tab_with(|t| {
+                t.repo_root = "/home/user/my-project".to_string();
+                t.local_branch_view = Some("feature-x".to_string());
+                t.current_branch = "feature-x".to_string();
+                t.branch_diff_hash = "hash-1".to_string();
+            });
+            let bucket = tab.branch_bucket_er_dir().expect("bucket dir");
+            tab.preloaded_branch_ai = Some(BranchAiPreload {
+                bucket_dir: bucket.clone(),
+                diff_hash: "hash-1".to_string(),
+                arbiter_overlay: None,
+                ai: super::super::AiState::default(),
+            });
+            // Matching bucket + hash → adopted (slot consumed).
+            let adopted = tab
+                .take_preloaded_branch_ai(&bucket, "hash-1", None)
+                .expect("adopted");
+            assert!(adopted.questions.is_none(), "preload state returned as-is");
+            assert!(tab.preloaded_branch_ai.is_none(), "consumed on match");
 
-        // Mismatched hash → None returned, slot KEPT (an unrelated view's
-        // reload — e.g. the PR bucket at open — must not destroy the branch
-        // preload before the first Branch click).
-        tab.preloaded_branch_ai = Some(BranchAiPreload {
-            bucket_dir: bucket.clone(),
-            diff_hash: "hash-1".to_string(),
-            arbiter_overlay: None,
-            ai: super::super::AiState::default(),
+            // Mismatched hash → None returned, slot KEPT (an unrelated view's
+            // reload — e.g. the PR bucket at open — must not destroy the branch
+            // preload before the first Branch click).
+            tab.preloaded_branch_ai = Some(BranchAiPreload {
+                bucket_dir: bucket.clone(),
+                diff_hash: "hash-1".to_string(),
+                arbiter_overlay: None,
+                ai: super::super::AiState::default(),
+            });
+            // A different bucket (the PR bucket at open) must not consume it.
+            assert!(
+                tab.take_preloaded_branch_ai("pr-bucket-dir", "hash-1", None)
+                    .is_none(),
+                "other-bucket reload leaves the slot alone"
+            );
+            assert!(tab.preloaded_branch_ai.is_some(), "cross-bucket keep");
+            // And a later matching consume still adopts it.
+            assert!(
+                tab.take_preloaded_branch_ai(&bucket, "hash-1", None)
+                    .is_some(),
+                "later matching consume adopts"
+            );
+            assert!(tab.preloaded_branch_ai.is_none(), "one-shot");
         });
-        // A different bucket (the PR bucket at open) must not consume it.
-        assert!(
-            tab.take_preloaded_branch_ai("pr-bucket-dir", "hash-1", None)
-                .is_none(),
-            "other-bucket reload leaves the slot alone"
-        );
-        assert!(tab.preloaded_branch_ai.is_some(), "cross-bucket keep");
-        // And a later matching consume still adopts it.
-        assert!(
-            tab.take_preloaded_branch_ai(&bucket, "hash-1", None)
-                .is_some(),
-            "later matching consume adopts"
-        );
-        assert!(tab.preloaded_branch_ai.is_none(), "one-shot");
     }
 
     #[test]
@@ -463,26 +466,29 @@ mod tests {
         // A local PR tab (mode=Branch, no checkout root). The branch-scope
         // fetch would be `gh pr diff` (network) — with the preload present it
         // must be skipped entirely and the files parsed from the preloaded raw.
-        let mut tab = TabState::new_for_test(crate::git::parse_diff(CONSTRUCTOR_DIFF));
-        tab.base_branch = "main".to_string();
-        tab.pr_number = Some(42);
-        tab.local_branch_view = Some("feature-x".to_string());
-        tab.pr_head_ref = Some("refs/er/pr/42/head".to_string());
-        tab.preloaded_branch_raw = Some(PreloadedBranchRaw {
-            raw: PRELOADED_DIFF.to_string(),
-            base_branch: "main".to_string(),
-            pr_number: Some(42),
-            local_branch_view: Some("feature-x".to_string()),
-            checkout_root: None,
-            remote_repo: None,
-            pr_head_ref: Some("refs/er/pr/42/head".to_string()),
-            preview_head_oid: None,
-            parity: true,
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(crate::git::parse_diff(CONSTRUCTOR_DIFF));
+            tab.base_branch = "main".to_string();
+            tab.pr_number = Some(42);
+            tab.local_branch_view = Some("feature-x".to_string());
+            tab.pr_head_ref = Some("refs/er/pr/42/head".to_string());
+            tab.preloaded_branch_raw = Some(PreloadedBranchRaw {
+                raw: PRELOADED_DIFF.to_string(),
+                base_branch: "main".to_string(),
+                pr_number: Some(42),
+                local_branch_view: Some("feature-x".to_string()),
+                checkout_root: None,
+                remote_repo: None,
+                pr_head_ref: Some("refs/er/pr/42/head".to_string()),
+                preview_head_oid: None,
+                parity: true,
+            });
+            tab.refresh_diff_mode_switch().unwrap();
+            assert!(tab.preloaded_branch_raw.is_none(), "preload consumed");
+            assert_eq!(tab.files.len(), 1);
+            assert_eq!(tab.files[0].path, "b.rs", "files parsed from preloaded raw");
         });
-        tab.refresh_diff_mode_switch().unwrap();
-        assert!(tab.preloaded_branch_raw.is_none(), "preload consumed");
-        assert_eq!(tab.files.len(), 1);
-        assert_eq!(tab.files[0].path, "b.rs", "files parsed from preloaded raw");
     }
 
     #[test]
@@ -549,36 +555,35 @@ mod tests {
 
     #[test]
     fn new_remote_with_data_builds_tab_without_network() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let pr_ref = crate::github::PrRef {
-            owner: "o".to_string(),
-            repo: "r".to_string(),
-            number: 7,
-        };
-        const DIFF: &str = "diff --git a/f.rs b/f.rs\nindex 0000000..1111111 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1,2 @@\n fn f() {}\n+fn f2() {}\n";
-        let tab = TabState::new_remote_with_data(
-            &pr_ref,
-            "main".to_string(),
-            "feature".to_string(),
-            DIFF.to_string(),
-            Vec::new(),
-            crate::ports::Ports::for_test(),
-        )
-        .unwrap();
-        assert_eq!(tab.remote_repo.as_deref(), Some("o/r"));
-        assert_eq!(tab.pr_number, Some(7));
-        assert_eq!(tab.base_branch, "main");
-        assert_eq!(tab.current_branch, "feature");
-        assert_eq!(tab.files.len(), 1);
-        assert_eq!(tab.files[0].path, "f.rs");
-        assert_eq!(
-            tab.raw_diff_for_review("branch").unwrap(),
-            DIFF,
-            "small remote diffs must keep raw_diff so review can prepare artifacts without gh"
-        );
-        assert!(!tab.needs_initial_refresh, "loaded tab is not a stub");
-        std::env::remove_var("ER_STORAGE_ROOT");
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let pr_ref = crate::github::PrRef {
+                owner: "o".to_string(),
+                repo: "r".to_string(),
+                number: 7,
+            };
+            const DIFF: &str = "diff --git a/f.rs b/f.rs\nindex 0000000..1111111 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1,2 @@\n fn f() {}\n+fn f2() {}\n";
+            let tab = TabState::new_remote_with_data(
+                &pr_ref,
+                "main".to_string(),
+                "feature".to_string(),
+                DIFF.to_string(),
+                Vec::new(),
+                crate::ports::Ports::for_test(),
+            )
+            .unwrap();
+            assert_eq!(tab.remote_repo.as_deref(), Some("o/r"));
+            assert_eq!(tab.pr_number, Some(7));
+            assert_eq!(tab.base_branch, "main");
+            assert_eq!(tab.current_branch, "feature");
+            assert_eq!(tab.files.len(), 1);
+            assert_eq!(tab.files[0].path, "f.rs");
+            assert_eq!(
+                tab.raw_diff_for_review("branch").unwrap(),
+                DIFF,
+                "small remote diffs must keep raw_diff so review can prepare artifacts without gh"
+            );
+            assert!(!tab.needs_initial_refresh, "loaded tab is not a stub");
+        });
     }
 }

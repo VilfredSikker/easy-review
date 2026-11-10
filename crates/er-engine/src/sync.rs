@@ -1093,7 +1093,11 @@ mod tests {
                 }))),
         );
         let ctx = comment_sync_context(fake.clone());
-        let result = fetch_comment_sync_data_cached(&ctx).expect("sync");
+        let tmp = tempfile::tempdir().unwrap();
+        let result = crate::storage::with_test_storage_root(tmp.path(), || {
+            fetch_comment_sync_data_cached(&ctx)
+        })
+        .expect("sync");
         let stored = result
             .gc
             .comments
@@ -1140,91 +1144,97 @@ mod tests {
     #[test]
     fn a_local_reply_written_between_the_fetch_and_the_write_survives_the_pull() {
         let dir = tempfile::tempdir().unwrap();
-        let comments_path = dir.path().join("github-comments.json");
-        let seeded = ai::ErGithubComments {
-            version: 1,
-            diff_hash: "hash".to_string(),
-            github: None,
-            comments: Vec::new(),
-        };
-        std::fs::write(
-            &comments_path,
-            serde_json::to_string_pretty(&seeded).unwrap(),
-        )
-        .unwrap();
-
-        let listed: crate::github::GitHubComment = serde_json::from_value(serde_json::json!({
-            "id": 42,
-            "body": "text",
-            "path": "src/a.rs",
-            "line": 2,
-            "user": { "login": "viewer" },
-            "created_at": "2026-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z",
-            "diff_hunk": null
-        }))
-        .unwrap();
-        let fake = std::sync::Arc::new(
-            crate::github::FakeGitHub::default()
-                .with_fetch_pr_comment_bundle(Ok(crate::github::PrCommentBundle {
-                    comments: vec![listed],
-                    threads: std::collections::HashMap::new(),
-                }))
-                .with_overview_remote(Ok(None)),
-        );
-        let mut ctx = comment_sync_context(fake.clone());
-        ctx.comments_path = comments_path.to_string_lossy().into_owned();
-
-        // Hold the bucket lock so the pull cannot read until the reply is
-        // written. A pull that reads before the fetch (or before the lock)
-        // reads the file without the reply and then overwrites it.
-        let store = er_store::ArtifactStore::new(crate::storage::storage_root());
-        let scope = er_store::Scope::dir(dir.path()).unwrap();
-        let guard = store
-            .lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
+        let storage_root = dir.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage_root, || {
+            let comments_path = dir.path().join("github-comments.json");
+            let seeded = ai::ErGithubComments {
+                version: 1,
+                diff_hash: "hash".to_string(),
+                github: None,
+                comments: Vec::new(),
+            };
+            std::fs::write(
+                &comments_path,
+                serde_json::to_string_pretty(&seeded).unwrap(),
+            )
             .unwrap();
-        let pull = std::thread::spawn(move || fetch_comment_sync_data(&ctx));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !fake
-            .calls()
-            .iter()
-            .any(|call| call.starts_with("fetch_pr_comment_bundle"))
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the pull never fetched"
+
+            let listed: crate::github::GitHubComment = serde_json::from_value(serde_json::json!({
+                "id": 42,
+                "body": "text",
+                "path": "src/a.rs",
+                "line": 2,
+                "user": { "login": "viewer" },
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "diff_hunk": null
+            }))
+            .unwrap();
+            let fake = std::sync::Arc::new(
+                crate::github::FakeGitHub::default()
+                    .with_fetch_pr_comment_bundle(Ok(crate::github::PrCommentBundle {
+                        comments: vec![listed],
+                        threads: std::collections::HashMap::new(),
+                    }))
+                    .with_overview_remote(Ok(None)),
             );
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        // Let the pull reach the lock, then write the reply in the window.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let with_reply = ai::ErGithubComments {
-            version: 1,
-            diff_hash: "hash".to_string(),
-            github: None,
-            comments: vec![stored_comment("c-local", "local", None)],
-        };
-        std::fs::write(
-            &comments_path,
-            serde_json::to_string_pretty(&with_reply).unwrap(),
-        )
-        .unwrap();
-        drop(guard);
+            let mut ctx = comment_sync_context(fake.clone());
+            ctx.comments_path = comments_path.to_string_lossy().into_owned();
 
-        let result = pull.join().expect("the pull thread").expect("sync");
+            // Hold the bucket lock so the pull cannot read until the reply is
+            // written. A pull that reads before the fetch (or before the lock)
+            // reads the file without the reply and then overwrites it.
+            let store = er_store::ArtifactStore::new(crate::storage::storage_root());
+            let scope = er_store::Scope::dir(dir.path()).unwrap();
+            let guard = store
+                .lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
+                .unwrap();
+            let pull_root = storage_root.clone();
+            let pull = std::thread::spawn(move || {
+                crate::storage::with_test_storage_root(&pull_root, || fetch_comment_sync_data(&ctx))
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !fake
+                .calls()
+                .iter()
+                .any(|call| call.starts_with("fetch_pr_comment_bundle"))
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the pull never fetched"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            // Let the pull reach the lock, then write the reply in the window.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let with_reply = ai::ErGithubComments {
+                version: 1,
+                diff_hash: "hash".to_string(),
+                github: None,
+                comments: vec![stored_comment("c-local", "local", None)],
+            };
+            std::fs::write(
+                &comments_path,
+                serde_json::to_string_pretty(&with_reply).unwrap(),
+            )
+            .unwrap();
+            drop(guard);
 
-        assert!(
-            result.gc.comments.iter().any(|c| c.id == "c-local"),
-            "the pull keeps the local reply: {:?}",
-            result.gc.comments
-        );
-        let on_disk: ai::ErGithubComments =
-            serde_json::from_str(&std::fs::read_to_string(&comments_path).unwrap()).unwrap();
-        assert!(
-            on_disk.comments.iter().any(|c| c.id == "c-local"),
-            "the written file keeps the local reply: {:?}",
-            on_disk.comments
-        );
-        assert!(on_disk.comments.iter().any(|c| c.github_id == Some(42)));
+            let result = pull.join().expect("the pull thread").expect("sync");
+
+            assert!(
+                result.gc.comments.iter().any(|c| c.id == "c-local"),
+                "the pull keeps the local reply: {:?}",
+                result.gc.comments
+            );
+            let on_disk: ai::ErGithubComments =
+                serde_json::from_str(&std::fs::read_to_string(&comments_path).unwrap()).unwrap();
+            assert!(
+                on_disk.comments.iter().any(|c| c.id == "c-local"),
+                "the written file keeps the local reply: {:?}",
+                on_disk.comments
+            );
+            assert!(on_disk.comments.iter().any(|c| c.github_id == Some(42)));
+        });
     }
 }

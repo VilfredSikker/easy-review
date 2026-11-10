@@ -348,36 +348,42 @@ mod tests {
 
     #[test]
     fn resolve_pr_url_via_ref() {
-        let input = ResolvePrRefInput {
-            ref_str: Some("https://github.com/acme/widgets/pull/42/files"),
-            pr_url: None,
-            repo: None,
-            project_id: None,
-            number: None,
-            projects: &empty_projects(),
-            active_project_id: None,
-        };
-        let pr = resolve_pr_ref(&crate::github::FakeGitHub::default(), &input).unwrap();
-        assert_eq!(pr.owner, "acme");
-        assert_eq!(pr.repo, "widgets");
-        assert_eq!(pr.number, 42);
-        assert_eq!(pr.resolved_via, "ref_pr_url");
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let input = ResolvePrRefInput {
+                ref_str: Some("https://github.com/acme/widgets/pull/42/files"),
+                pr_url: None,
+                repo: None,
+                project_id: None,
+                number: None,
+                projects: &empty_projects(),
+                active_project_id: None,
+            };
+            let pr = resolve_pr_ref(&crate::github::FakeGitHub::default(), &input).unwrap();
+            assert_eq!(pr.owner, "acme");
+            assert_eq!(pr.repo, "widgets");
+            assert_eq!(pr.number, 42);
+            assert_eq!(pr.resolved_via, "ref_pr_url");
+        });
     }
 
     #[test]
     fn resolve_repo_number_hash() {
-        let input = ResolvePrRefInput {
-            ref_str: Some("acme/widgets#7"),
-            pr_url: None,
-            repo: None,
-            project_id: None,
-            number: None,
-            projects: &empty_projects(),
-            active_project_id: None,
-        };
-        let pr = resolve_pr_ref(&crate::github::FakeGitHub::default(), &input).unwrap();
-        assert_eq!(pr.number, 7);
-        assert_eq!(pr.resolved_via, "ref_repo_number");
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let input = ResolvePrRefInput {
+                ref_str: Some("acme/widgets#7"),
+                pr_url: None,
+                repo: None,
+                project_id: None,
+                number: None,
+                projects: &empty_projects(),
+                active_project_id: None,
+            };
+            let pr = resolve_pr_ref(&crate::github::FakeGitHub::default(), &input).unwrap();
+            assert_eq!(pr.number, 7);
+            assert_eq!(pr.resolved_via, "ref_repo_number");
+        });
     }
 
     #[test]

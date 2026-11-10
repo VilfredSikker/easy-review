@@ -1378,6 +1378,7 @@ version = "0.6.5"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
+ "er-engine",
  "er-git",
  "er-github",
  "er-store",

@@ -273,33 +273,21 @@ mod tests {
     };
     use crate::paths::ErRoot;
     use std::path::Path;
-    use std::path::PathBuf;
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant};
 
     fn serial() -> crate::agent_slots::TestSerialGuard {
         crate::agent_slots::test_serial()
     }
 
-    struct TestDir(PathBuf);
+    struct TestDir(tempfile::TempDir);
 
     impl TestDir {
         fn new() -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "er-review-flow-deep-{}-{nonce}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
+            Self(tempfile::tempdir().unwrap())
         }
-    }
 
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+        fn path(&self) -> &Path {
+            self.0.path()
         }
     }
 
@@ -351,8 +339,8 @@ mod tests {
     }
 
     fn fake_app(dir: &TestDir) -> App {
-        let repo = dir.0.join("repo");
-        let bucket = dir.0.join("bucket");
+        let repo = dir.path().join("repo");
+        let bucket = dir.path().join("bucket");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::create_dir_all(&bucket).unwrap();
         let script = "case \"$1\" in\n\
@@ -438,200 +426,206 @@ mod tests {
     fn deep_waits_for_confirmation_and_decline_starts_no_arena() {
         let _serial = serial();
         let dir = TestDir::new();
-        let mut app = fake_app(&dir);
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        await_confirmation(&mut app, &bucket);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir);
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            await_confirmation(&mut app, &bucket);
 
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert_eq!(flow.depth, Some(FlowDepth::Deep));
-        assert!(flow.estimated_cost.is_some());
-        assert!(flow.estimated_latency_seconds.is_some());
-        assert!(flow
-            .tasks
-            .iter()
-            .filter(|task| task.round.is_some() || task.id == "verifying:arbiter")
-            .all(|task| task.status == crate::ai::review_flow::FlowTaskStatus::Waiting));
-        assert!(app.arena_registry.active_run_ids().is_empty());
-        assert!(!Path::new(&bucket).join("arena").exists());
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert_eq!(flow.depth, Some(FlowDepth::Deep));
+            assert!(flow.estimated_cost.is_some());
+            assert!(flow.estimated_latency_seconds.is_some());
+            assert!(flow
+                .tasks
+                .iter()
+                .filter(|task| task.round.is_some() || task.id == "verifying:arbiter")
+                .all(|task| task.status == crate::ai::review_flow::FlowTaskStatus::Waiting));
+            assert!(app.arena_registry.active_run_ids().is_empty());
+            assert!(!Path::new(&bucket).join("arena").exists());
 
-        app.decline_review_flow(&bucket).unwrap();
-        app.advance_review_flows();
-        assert_eq!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Cancelled
-        );
-        assert!(app
-            .review_flow_for(&bucket)
-            .unwrap()
-            .tasks
-            .iter()
-            .all(|task| {
-                task.status == crate::ai::review_flow::FlowTaskStatus::Done
-                    || task.status == crate::ai::review_flow::FlowTaskStatus::Cancelled
-            }));
-        assert!(app.confirm_review_flow(&bucket).is_err());
+            app.decline_review_flow(&bucket).unwrap();
+            app.advance_review_flows();
+            assert_eq!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Cancelled
+            );
+            assert!(app
+                .review_flow_for(&bucket)
+                .unwrap()
+                .tasks
+                .iter()
+                .all(|task| {
+                    task.status == crate::ai::review_flow::FlowTaskStatus::Done
+                        || task.status == crate::ai::review_flow::FlowTaskStatus::Cancelled
+                }));
+            assert!(app.confirm_review_flow(&bucket).is_err());
+        });
     }
 
     #[test]
     fn deep_preflight_rejects_changed_allowlist_or_model_groups_and_cancel_starts_no_arena() {
         let _serial = serial();
         let dir = TestDir::new();
-        let mut app = fake_app(&dir);
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        await_confirmation(&mut app, &bucket);
-        app.config.ai_hub.flow_providers = vec!["fake-a".into()];
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir);
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            await_confirmation(&mut app, &bucket);
+            app.config.ai_hub.flow_providers = vec!["fake-a".into()];
 
-        assert!(app.confirm_review_flow(&bucket).is_err());
-        assert!(matches!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Failed { .. }
-        ));
-        assert!(app.arena_registry.active_run_ids().is_empty());
-        app.advance_review_flows();
+            assert!(app.confirm_review_flow(&bucket).is_err());
+            assert!(matches!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Failed { .. }
+            ));
+            assert!(app.arena_registry.active_run_ids().is_empty());
+            app.advance_review_flows();
 
-        let dir = TestDir::new();
-        let mut app = fake_app(&dir);
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        await_confirmation(&mut app, &bucket);
-        app.config.ai_hub.review_models.advanced.pop();
-        assert!(app.confirm_review_flow(&bucket).is_err());
-        assert!(matches!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Failed { .. }
-        ));
-        assert!(app.arena_registry.active_run_ids().is_empty());
-        app.advance_review_flows();
+            let dir = TestDir::new();
+            let mut app = fake_app(&dir);
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            await_confirmation(&mut app, &bucket);
+            app.config.ai_hub.review_models.advanced.pop();
+            assert!(app.confirm_review_flow(&bucket).is_err());
+            assert!(matches!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Failed { .. }
+            ));
+            assert!(app.arena_registry.active_run_ids().is_empty());
+            app.advance_review_flows();
 
-        let dir = TestDir::new();
-        let mut app = fake_app(&dir);
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        await_confirmation(&mut app, &bucket);
-        assert!(app.cancel_review_flow(&bucket));
-        assert_eq!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Cancelled
-        );
-        assert!(app.arena_registry.active_run_ids().is_empty());
+            let dir = TestDir::new();
+            let mut app = fake_app(&dir);
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            await_confirmation(&mut app, &bucket);
+            assert!(app.cancel_review_flow(&bucket));
+            assert_eq!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Cancelled
+            );
+            assert!(app.arena_registry.active_run_ids().is_empty());
+        });
     }
 
     #[test]
     fn deep_confirm_starts_once_from_the_captured_bucket_and_hash() {
         let _serial = serial();
         let dir = TestDir::new();
-        let mut app = fake_app(&dir);
-        app.current_ai_effort = Some("high".into());
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        await_confirmation(&mut app, &bucket);
+        crate::storage::with_process_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir);
+            app.current_ai_effort = Some("high".into());
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            await_confirmation(&mut app, &bucket);
 
-        app.tabs
-            .push(crate::app::TabState::new_for_test(Vec::new()));
-        app.active_tab = 1;
+            app.tabs
+                .push(crate::app::TabState::new_for_test(Vec::new()));
+            app.active_tab = 1;
 
-        // Unknown prompts exit in the fake shell command, so loss of the
-        // arena hook cannot invoke an actual configured provider.
-        let fake_arena = FakeArenaEnv::install(&app);
-        app.confirm_review_flow(&bucket).unwrap();
+            // Unknown prompts exit in the fake shell command, so loss of the
+            // arena hook cannot invoke an actual configured provider.
+            let fake_arena = FakeArenaEnv::install(&app);
+            app.confirm_review_flow(&bucket).unwrap();
 
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert_eq!(flow.state, FlowState::Verifying);
-        let run_id = flow.arena_run_id.clone().unwrap();
-        let run = crate::arena::load_run(&crate::arena::ArenaPaths::for_run(
-            Path::new(&bucket),
-            &run_id,
-        ))
-        .unwrap();
-        assert_eq!(run.diff_hash, flow.diff_hash);
-        assert_eq!(run.config.run_kind, crate::arena::ArenaRunKind::ReviewFlow);
-        assert_eq!(
-            serde_json::to_value(&run).unwrap()["config"]["run_kind"],
-            "review_flow"
-        );
-        assert_eq!(run.config.reviewers.len(), 4);
-        assert_eq!(run.config.arbiter.provider_id, "fake-b");
-        assert_eq!(run.config.effort.as_deref(), Some("high"));
-        assert_eq!(
-            run.config
-                .reviewers
-                .iter()
-                .map(|reviewer| reviewer.provider_id.as_str())
-                .collect::<Vec<_>>(),
-            ["fake-a", "fake-b", "fake-b", "fake-a"]
-        );
-        assert_eq!(
-            run.config
-                .reviewers
-                .iter()
-                .map(|reviewer| reviewer.agent_kind.as_deref().unwrap_or_default())
-                .collect::<Vec<_>>(),
-            ["general", "general", "expert:security", "expert:security"]
-        );
-        assert_eq!(
-            flow.estimated_cost,
-            Some(f64::from(crate::arena::estimate_cost_usd(
-                std::fs::read(
-                    crate::arena::ArenaPaths::for_run(Path::new(&bucket), &run_id).diff_patch()
-                )
-                .unwrap()
-                .len(),
-                &run.config.reviewers,
-                Some(run.config.rounds),
-                Some(&run.config.arbiter),
-                &app.config.ai_hub,
-            )))
-        );
-        assert!(app.review_flow_run_target(&bucket, &run_id).is_some());
-        assert!(app.confirm_review_flow(&bucket).is_err());
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while app.arena_registry.is_active(&run_id) {
-            assert!(Instant::now() < deadline, "Deep arena did not finish");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        app.advance_review_flows();
-        let completed = crate::arena::load_run(&crate::arena::ArenaPaths::for_run(
-            Path::new(&bucket),
-            &run_id,
-        ))
-        .unwrap();
-        let awaiting_accept = completed
-            .findings
-            .iter()
-            .filter(|finding| {
-                matches!(
-                    finding.verdict,
-                    crate::arena::Verdict::Kept | crate::arena::Verdict::Escalated
-                )
-            })
-            .count();
-        assert_eq!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Done {
-                kept: 0,
-                dropped: 0,
-                awaiting_accept,
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert_eq!(flow.state, FlowState::Verifying);
+            let run_id = flow.arena_run_id.clone().unwrap();
+            let run = crate::arena::load_run(&crate::arena::ArenaPaths::for_run(
+                Path::new(&bucket),
+                &run_id,
+            ))
+            .unwrap();
+            assert_eq!(run.diff_hash, flow.diff_hash);
+            assert_eq!(run.config.run_kind, crate::arena::ArenaRunKind::ReviewFlow);
+            assert_eq!(
+                serde_json::to_value(&run).unwrap()["config"]["run_kind"],
+                "review_flow"
+            );
+            assert_eq!(run.config.reviewers.len(), 4);
+            assert_eq!(run.config.arbiter.provider_id, "fake-b");
+            assert_eq!(run.config.effort.as_deref(), Some("high"));
+            assert_eq!(
+                run.config
+                    .reviewers
+                    .iter()
+                    .map(|reviewer| reviewer.provider_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["fake-a", "fake-b", "fake-b", "fake-a"]
+            );
+            assert_eq!(
+                run.config
+                    .reviewers
+                    .iter()
+                    .map(|reviewer| reviewer.agent_kind.as_deref().unwrap_or_default())
+                    .collect::<Vec<_>>(),
+                ["general", "general", "expert:security", "expert:security"]
+            );
+            assert_eq!(
+                flow.estimated_cost,
+                Some(f64::from(crate::arena::estimate_cost_usd(
+                    std::fs::read(
+                        crate::arena::ArenaPaths::for_run(Path::new(&bucket), &run_id).diff_patch()
+                    )
+                    .unwrap()
+                    .len(),
+                    &run.config.reviewers,
+                    Some(run.config.rounds),
+                    Some(&run.config.arbiter),
+                    &app.config.ai_hub,
+                )))
+            );
+            assert!(app.review_flow_run_target(&bucket, &run_id).is_some());
+            assert!(app.confirm_review_flow(&bucket).is_err());
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while app.arena_registry.is_active(&run_id) {
+                assert!(Instant::now() < deadline, "Deep arena did not finish");
+                std::thread::sleep(Duration::from_millis(20));
             }
-        );
-        let tasks = &app.review_flow_for(&bucket).unwrap().tasks;
-        assert!(
-            tasks
+            app.advance_review_flows();
+            let completed = crate::arena::load_run(&crate::arena::ArenaPaths::for_run(
+                Path::new(&bucket),
+                &run_id,
+            ))
+            .unwrap();
+            let awaiting_accept = completed
+                .findings
                 .iter()
-                .filter(|task| task.round.is_some())
-                .all(|task| task.status == crate::ai::review_flow::FlowTaskStatus::Done),
-            "{tasks:#?}"
-        );
-        assert_eq!(
-            tasks
-                .iter()
-                .find(|task| task.id == "verifying:arbiter")
-                .unwrap()
-                .status,
-            crate::ai::review_flow::FlowTaskStatus::Done
-        );
-        assert!(!Path::new(&bucket).join("review.json").exists());
-        drop(fake_arena);
+                .filter(|finding| {
+                    matches!(
+                        finding.verdict,
+                        crate::arena::Verdict::Kept | crate::arena::Verdict::Escalated
+                    )
+                })
+                .count();
+            assert_eq!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Done {
+                    kept: 0,
+                    dropped: 0,
+                    awaiting_accept,
+                }
+            );
+            let tasks = &app.review_flow_for(&bucket).unwrap().tasks;
+            assert!(
+                tasks
+                    .iter()
+                    .filter(|task| task.round.is_some())
+                    .all(|task| task.status == crate::ai::review_flow::FlowTaskStatus::Done),
+                "{tasks:#?}"
+            );
+            assert_eq!(
+                tasks
+                    .iter()
+                    .find(|task| task.id == "verifying:arbiter")
+                    .unwrap()
+                    .status,
+                crate::ai::review_flow::FlowTaskStatus::Done
+            );
+            assert!(!Path::new(&bucket).join("review.json").exists());
+            drop(fake_arena);
+        });
     }
 }

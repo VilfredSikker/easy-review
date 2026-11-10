@@ -10,7 +10,15 @@ use std::path::{Path, PathBuf};
 /// Call once near process startup (before any `git` / `gh` subprocess).
 pub fn init_cli_path() {
     let current = std::env::var_os("PATH").unwrap_or_default();
-    let current = Path::new(&current);
+    if let Some(updated) = augmented_path(&current) {
+        std::env::set_var("PATH", updated);
+    }
+}
+
+/// `PATH` with the missing CLI install locations prepended, or `None` when it
+/// already names every one that exists.
+fn augmented_path(current: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
+    let current = Path::new(current);
     let mut prefix: Vec<PathBuf> = Vec::new();
 
     for dir in ["/opt/homebrew/bin", "/usr/local/bin"] {
@@ -30,10 +38,10 @@ pub fn init_cli_path() {
     }
 
     if prefix.is_empty() {
-        return;
+        return None;
     }
 
-    std::env::set_var("PATH", merge_paths(prefix, current));
+    Some(merge_paths(prefix, current))
 }
 
 /// Join `prefix` and the entries of `current` into one PATH value, keeping the
@@ -157,20 +165,17 @@ mod tests {
 
     #[test]
     fn prepends_missing_homebrew_paths() {
-        let original = std::env::var_os("PATH");
-        std::env::set_var("PATH", "/usr/bin:/bin");
-        init_cli_path();
-        let updated = std::env::var("PATH").unwrap();
+        let current = std::env::join_paths(["/usr/bin", "/bin"]).unwrap();
+        let updated = augmented_path(&current).unwrap_or(current.clone());
+        let entries: Vec<PathBuf> = std::env::split_paths(&updated).collect();
         if Path::new("/opt/homebrew/bin").is_dir() {
-            assert!(updated.contains("/opt/homebrew/bin"));
+            assert!(entries.contains(&PathBuf::from("/opt/homebrew/bin")));
         }
         if Path::new("/usr/local/bin").is_dir() {
-            assert!(updated.contains("/usr/local/bin"));
+            assert!(entries.contains(&PathBuf::from("/usr/local/bin")));
         }
-        match original {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
-        }
+        assert!(entries.contains(&PathBuf::from("/usr/bin")));
+        assert_eq!(entries.last(), Some(&PathBuf::from("/bin")));
     }
 
     #[cfg(unix)]

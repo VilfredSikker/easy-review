@@ -805,44 +805,46 @@ mod tests {
     /// generated table must replace one repo's rules and nothing else.
     #[test]
     fn merging_a_proposal_replaces_only_that_repos_table() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        std::env::set_var("ER_CONFIG_PATH", tmp.path().join("config.toml"));
+        let config_path = tmp.path().join("config.toml");
 
-        let mut config = ErConfig::default();
-        config.features.view_branch = false;
-        config
-            .risk
-            .items
-            .insert("another-repo".into(), table(&[("keep/**", "low")], None));
-        config.user_risk = table(&[("*.lock", "low")], None);
-        crate::config::save_config(&config).unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            crate::test_support::with_var(
+                "ER_CONFIG_PATH",
+                config_path.to_string_lossy().into_owned(),
+                || {
+                    let mut config = ErConfig::default();
+                    config.features.view_branch = false;
+                    config
+                        .risk
+                        .items
+                        .insert("another-repo".into(), table(&[("keep/**", "low")], None));
+                    config.user_risk = table(&[("*.lock", "low")], None);
+                    crate::config::save_config(&config).unwrap();
 
-        let proposal = RiskRuleProposal {
-            repo: "er".into(),
-            default: None,
-            rules: BTreeMap::from([("src/**".to_string(), RiskRule::from("high"))]),
-            report: "1 rule".into(),
-        };
-        let (kept, dropped) = RiskRuleProposal::merge_into_global_config("er", proposal).unwrap();
+                    let proposal = RiskRuleProposal {
+                        repo: "er".into(),
+                        default: None,
+                        rules: BTreeMap::from([("src/**".to_string(), RiskRule::from("high"))]),
+                        report: "1 rule".into(),
+                    };
+                    let (kept, dropped) =
+                        RiskRuleProposal::merge_into_global_config("er", proposal).unwrap();
 
-        let loaded = crate::config::load_global_config();
-        assert_eq!((kept, dropped), (1, 0));
-        assert!(!loaded.features.view_branch, "other sections survive");
-        assert!(loaded.risk.items.contains_key("another-repo"));
-        assert_eq!(
-            loaded.user_risk, config.user_risk,
-            "the user's rules are untouched"
-        );
-        let rules = loaded.risk_rules("er");
-        assert_eq!(rules.tier_of("src/lib.rs"), RiskTier::High);
-        assert_eq!(rules.tier_of("old/x.rs"), RiskTier::Ai);
-
-        std::env::remove_var("ER_STORAGE_ROOT");
-        std::env::remove_var("ER_CONFIG_PATH");
+                    let loaded = crate::config::load_global_config();
+                    assert_eq!((kept, dropped), (1, 0));
+                    assert!(!loaded.features.view_branch, "other sections survive");
+                    assert!(loaded.risk.items.contains_key("another-repo"));
+                    assert_eq!(
+                        loaded.user_risk, config.user_risk,
+                        "the user's rules are untouched"
+                    );
+                    let rules = loaded.risk_rules("er");
+                    assert_eq!(rules.tier_of("src/lib.rs"), RiskTier::High);
+                    assert_eq!(rules.tier_of("old/x.rs"), RiskTier::Ai);
+                },
+            );
+        });
     }
 
     // ── edits ──

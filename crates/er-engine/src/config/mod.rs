@@ -1632,12 +1632,12 @@ pub fn split_shell_args(s: &str) -> Vec<String> {
 /// Global config directory (`$XDG_CONFIG_HOME/er`, else `~/.config/er`, else
 /// the platform config dir). Used by uninstall.
 pub fn global_config_dir() -> Option<std::path::PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+    if let Some(xdg) = crate::env_var::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
             return Some(std::path::PathBuf::from(xdg).join("er"));
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
+    if let Some(home) = crate::env_var::var("HOME") {
         if !home.is_empty() {
             return Some(std::path::PathBuf::from(home).join(".config").join("er"));
         }
@@ -1650,7 +1650,7 @@ pub fn global_config_dir() -> Option<std::path::PathBuf> {
 /// Overridden by `ER_CONFIG_PATH` when set (full file path). Otherwise
 /// `<storage_root>/config.toml`.
 pub fn managed_config_path() -> std::path::PathBuf {
-    if let Ok(override_path) = std::env::var("ER_CONFIG_PATH") {
+    if let Some(override_path) = crate::env_var::var("ER_CONFIG_PATH") {
         if !override_path.is_empty() {
             return std::path::PathBuf::from(override_path);
         }
@@ -3887,9 +3887,6 @@ mod tests {
 
     #[test]
     fn a_legacy_config_is_neither_read_nor_copied() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let storage = tmp.path().join("storage");
         let xdg = tmp.path().join("xdg");
@@ -3898,90 +3895,90 @@ mod tests {
         let legacy = legacy_dir.join("config.toml");
         std::fs::write(&legacy, "[display]\ntheme = \"slate\"\n").unwrap();
 
-        std::env::set_var("ER_STORAGE_ROOT", &storage);
-        std::env::set_var("XDG_CONFIG_HOME", &xdg);
-        std::env::remove_var("ER_CONFIG_PATH");
-
-        let managed = managed_config_path();
-        let _ = std::fs::remove_file(&managed);
-        assert!(!managed.exists());
-        let cfg = load_global_config();
-        assert_eq!(cfg.display.theme, ErConfig::default().display.theme);
-        assert!(!managed.exists());
-        // The legacy file is not touched either.
-        assert_eq!(
-            std::fs::read_to_string(&legacy).unwrap(),
-            "[display]\ntheme = \"slate\"\n"
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
-        std::env::remove_var("XDG_CONFIG_HOME");
+        crate::storage::with_test_storage_root(&storage, || {
+            crate::test_support::with_var(
+                "XDG_CONFIG_HOME",
+                xdg.to_string_lossy().into_owned(),
+                || {
+                    let managed = managed_config_path();
+                    let _ = std::fs::remove_file(&managed);
+                    assert!(!managed.exists());
+                    let cfg = load_global_config();
+                    assert_eq!(cfg.display.theme, ErConfig::default().display.theme);
+                    assert!(!managed.exists());
+                    // The legacy file is not touched either.
+                    assert_eq!(
+                        std::fs::read_to_string(&legacy).unwrap(),
+                        "[display]\ntheme = \"slate\"\n"
+                    );
+                },
+            );
+        });
     }
 
     #[test]
     fn er_config_path_overrides_the_managed_path() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let storage = tmp.path().join("storage");
-
-        std::env::set_var("ER_STORAGE_ROOT", &storage);
         let override_path = tmp.path().join("override.toml");
         std::fs::write(&override_path, "[display]\ntheme = \"paper\"\n").unwrap();
-        std::env::set_var("ER_CONFIG_PATH", &override_path);
 
-        let cfg = load_global_config();
-        assert_eq!(cfg.display.theme, "paper");
-
-        std::env::remove_var("ER_STORAGE_ROOT");
-        std::env::remove_var("ER_CONFIG_PATH");
+        crate::storage::with_test_storage_root(&storage, || {
+            crate::test_support::with_var(
+                "ER_CONFIG_PATH",
+                override_path.to_string_lossy().into_owned(),
+                || {
+                    let cfg = load_global_config();
+                    assert_eq!(cfg.display.theme, "paper");
+                },
+            );
+        });
     }
 
     #[test]
     fn save_config_strips_discovered_models() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        std::env::set_var("ER_CONFIG_PATH", tmp.path().join("config.toml"));
 
-        let mut config = ErConfig::default();
-        config.ai_hub.providers.insert(
-            "cursor".into(),
-            AiProviderConfig {
-                command: "agent".into(),
-                models: vec![
-                    AiModelConfig {
-                        id: "preset".into(),
-                        discovered: false,
-                        ..Default::default()
-                    },
-                    AiModelConfig {
-                        id: "disc".into(),
-                        discovered: true,
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            },
-        );
-        save_config(&config).unwrap();
-        let loaded = load_global_config();
-        let models = &loaded.ai_hub.providers.get("cursor").unwrap().models;
-        assert!(models.iter().any(|m| m.id == "preset"));
-        assert!(!models.iter().any(|m| m.id == "disc" && !m.discovered));
-
-        std::env::remove_var("ER_STORAGE_ROOT");
-        std::env::remove_var("ER_CONFIG_PATH");
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            crate::test_support::with_var(
+                "ER_CONFIG_PATH",
+                tmp.path()
+                    .join("config.toml")
+                    .to_string_lossy()
+                    .into_owned(),
+                || {
+                    let mut config = ErConfig::default();
+                    config.ai_hub.providers.insert(
+                        "cursor".into(),
+                        AiProviderConfig {
+                            command: "agent".into(),
+                            models: vec![
+                                AiModelConfig {
+                                    id: "preset".into(),
+                                    discovered: false,
+                                    ..Default::default()
+                                },
+                                AiModelConfig {
+                                    id: "disc".into(),
+                                    discovered: true,
+                                    ..Default::default()
+                                },
+                            ],
+                            ..Default::default()
+                        },
+                    );
+                    save_config(&config).unwrap();
+                    let loaded = load_global_config();
+                    let models = &loaded.ai_hub.providers.get("cursor").unwrap().models;
+                    assert!(models.iter().any(|m| m.id == "preset"));
+                    assert!(!models.iter().any(|m| m.id == "disc" && !m.discovered));
+                },
+            );
+        });
     }
 
     #[test]
     fn managed_config_wins_when_both_exist_legacy_untouched() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let storage = tmp.path().join("storage");
         let xdg = tmp.path().join("xdg");
@@ -3994,23 +3991,24 @@ mod tests {
         let managed = storage.join("config.toml");
         std::fs::write(&managed, "[display]\ntheme = \"ember\"\n").unwrap();
 
-        std::env::set_var("ER_STORAGE_ROOT", &storage);
-        std::env::set_var("XDG_CONFIG_HOME", &xdg);
-        std::env::remove_var("ER_CONFIG_PATH");
-
-        let cfg = load_global_config();
-        assert_eq!(cfg.display.theme, "ember");
-        assert_eq!(
-            std::fs::read_to_string(&legacy).unwrap(),
-            "[display]\ntheme = \"slate\"\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&managed).unwrap(),
-            "[display]\ntheme = \"ember\"\n"
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
-        std::env::remove_var("XDG_CONFIG_HOME");
+        crate::storage::with_test_storage_root(&storage, || {
+            crate::test_support::with_var(
+                "XDG_CONFIG_HOME",
+                xdg.to_string_lossy().into_owned(),
+                || {
+                    let cfg = load_global_config();
+                    assert_eq!(cfg.display.theme, "ember");
+                    assert_eq!(
+                        std::fs::read_to_string(&legacy).unwrap(),
+                        "[display]\ntheme = \"slate\"\n"
+                    );
+                    assert_eq!(
+                        std::fs::read_to_string(&managed).unwrap(),
+                        "[display]\ntheme = \"ember\"\n"
+                    );
+                },
+            );
+        });
     }
 
     #[test]

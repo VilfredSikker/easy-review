@@ -368,31 +368,37 @@ mod tests {
     #[test]
     fn write_arbiter_review_writes_the_same_bytes_as_before() {
         let dir = tempfile::TempDir::new().unwrap();
-        let review = arbiter(HASH, vec![verdict(ArbiterRuling::Kept, None)]);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let review = arbiter(HASH, vec![verdict(ArbiterRuling::Kept, None)]);
 
-        write_arbiter_review(dir.path().to_str().unwrap(), &review).unwrap();
+            write_arbiter_review(dir.path().to_str().unwrap(), &review).unwrap();
 
-        let raw = std::fs::read_to_string(dir.path().join("arbiter.json")).unwrap();
-        assert_eq!(raw, serde_json::to_string_pretty(&review).unwrap());
-        let loaded = load_arbiter_review(dir.path().to_str().unwrap()).expect("the written file");
-        assert_eq!(loaded.diff_hash, HASH);
-        assert_eq!(loaded.verdicts.len(), 1);
+            let raw = std::fs::read_to_string(dir.path().join("arbiter.json")).unwrap();
+            assert_eq!(raw, serde_json::to_string_pretty(&review).unwrap());
+            let loaded =
+                load_arbiter_review(dir.path().to_str().unwrap()).expect("the written file");
+            assert_eq!(loaded.diff_hash, HASH);
+            assert_eq!(loaded.verdicts.len(), 1);
+        });
     }
 
     #[test]
     fn arbiter_file_written_by_an_agent_loads() {
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("arbiter.json"),
-            r#"{"version":1,"diff_hash":"hash","verdicts":[{"id":"v1","verdict":"kept","rationale":"checked"}]}"#,
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(
+                dir.path().join("arbiter.json"),
+                r#"{"version":1,"diff_hash":"hash","verdicts":[{"id":"v1","verdict":"kept","rationale":"checked"}]}"#,
+            )
+            .unwrap();
 
-        let loaded = load_arbiter_review(dir.path().to_str().unwrap()).expect("the agent's file");
+            let loaded =
+                load_arbiter_review(dir.path().to_str().unwrap()).expect("the agent's file");
 
-        assert_eq!(loaded.diff_hash, "hash");
-        assert_eq!(loaded.verdicts.len(), 1);
-        assert_eq!(loaded.verdicts[0].verdict, ArbiterRuling::Kept);
+            assert_eq!(loaded.diff_hash, "hash");
+            assert_eq!(loaded.verdicts.len(), 1);
+            assert_eq!(loaded.verdicts[0].verdict, ArbiterRuling::Kept);
+        });
     }
 
     #[test]

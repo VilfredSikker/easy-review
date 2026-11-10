@@ -292,14 +292,8 @@ mod tests {
     }
 
     fn with_store<F: FnOnce(&std::path::Path) -> R, R>(f: F) -> R {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", dir.path());
-        let result = f(dir.path());
-        std::env::remove_var("ER_STORAGE_ROOT");
-        result
+        crate::storage::with_test_storage_root(dir.path(), || f(dir.path()))
     }
 
     #[test]
@@ -337,6 +331,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "each writer thread scopes its own storage root"
+    )]
     fn concurrent_cache_saves_never_leave_a_torn_file() {
         with_store(|root| {
             // A long tag makes each write big enough for a plain overwrite to be
@@ -347,13 +345,18 @@ mod tests {
             };
             save_cached_release(&rel).unwrap();
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let root = root.to_path_buf();
             let writers: Vec<_> = (0..4)
                 .map(|_| {
-                    let (rel, stop) = (rel.clone(), stop.clone());
+                    let (rel, stop, root) = (rel.clone(), stop.clone(), root.clone());
+                    // Thread-local overrides do not cross a spawn, so each
+                    // writer scopes the storage root itself.
                     std::thread::spawn(move || {
-                        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                            save_cached_release(&rel).unwrap();
-                        }
+                        crate::storage::with_test_storage_root(&root, || {
+                            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                                save_cached_release(&rel).unwrap();
+                            }
+                        });
                     })
                 })
                 .collect();
