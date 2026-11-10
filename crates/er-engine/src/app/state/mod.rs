@@ -5922,7 +5922,7 @@ impl App {
         };
 
         // Config is global-only; every tab shares the same settings.
-        let er_config = config::load_global_config();
+        let (er_config, config_load_error) = config::load_global_config_checked();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         let arena_registry = Self::init_arena_registry(Arc::new(|| {}));
@@ -5969,6 +5969,9 @@ impl App {
         app.drain_storage_notices();
         app.overlay_cached_discovered_models();
         app.reconcile_arena_runs();
+        if let Some(error) = config_load_error {
+            app.notify_long(&error.to_string());
+        }
         Ok(app)
     }
 
@@ -5981,7 +5984,7 @@ impl App {
     pub fn new_unloaded(repo_root: String) -> Result<Self> {
         let base = git::detect_base_branch_in(&repo_root)?;
         let tab = TabState::new_with_base_unloaded(repo_root, base)?;
-        let er_config = crate::config::load_global_config();
+        let (er_config, config_load_error) = crate::config::load_global_config_checked();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         let mut app = Self {
@@ -6022,6 +6025,9 @@ impl App {
         };
         app.sync_repo_rules_to_tabs();
         app.overlay_cached_discovered_models();
+        if let Some(error) = config_load_error {
+            app.notify_long(&error.to_string());
+        }
         Ok(app)
     }
 
@@ -6030,7 +6036,7 @@ impl App {
         if let Some(data) = pr_data {
             tab.pr_data = Some(data);
         }
-        let er_config = crate::config::load_global_config();
+        let (er_config, config_load_error) = crate::config::load_global_config_checked();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         let mut app = Self {
@@ -6071,6 +6077,9 @@ impl App {
         };
         app.sync_repo_rules_to_tabs();
         app.overlay_cached_discovered_models();
+        if let Some(error) = config_load_error {
+            app.notify_long(&error.to_string());
+        }
         app
     }
 
