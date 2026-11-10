@@ -29,9 +29,9 @@
     try {
       const content = await invoke<string>("read_review_json", { revisionId: selectedRevisionId || null });
       await copyToClipboard(content);
-      app.showToast("success", `Copied review.json (${content.length} bytes)`);
+      app.showToast("success", `Copied findings JSON (${content.length} bytes)`);
     } catch {
-      app.showToast("error", "No review.json found for selected revision");
+      app.showToast("error", "No review found for the selected revision");
     }
   }
 
@@ -54,7 +54,7 @@
       </select>
     {/if}
     <button type="button" class="ml-auto px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={copyReviewJson}>
-      Copy review.json
+      Copy findings JSON
     </button>
     <button type="button" class="px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={() => app.setMainView("diff")}>
       Back to diff

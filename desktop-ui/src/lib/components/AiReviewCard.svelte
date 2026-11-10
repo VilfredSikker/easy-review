@@ -249,7 +249,7 @@
       app.showToast("success", `Copied ${findingCount} findings as JSON`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      app.showToast("error", msg.includes("review.json") ? "No review.json found" : msg);
+      app.showToast("error", msg.includes("No review") ? "No review found" : msg);
     }
   }
 
@@ -611,7 +611,7 @@
       onclick={copyFindingsJson}
       disabled={isEmpty}
       class="w-full flex items-center justify-center gap-2 text-[11px] mono text-fg-3 hover:text-fg py-1.5 rounded hover:bg-bg border border-transparent hover:border-border disabled:opacity-40 disabled:pointer-events-none"
-      title="Copy findings from review.json for pasting into an agent prompt"
+      title="Copy the projected findings (scoped overlays and validation applied) for pasting into an agent prompt"
     >
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0" aria-hidden="true">
         <rect x="9" y="9" width="13" height="13" rx="2"/>
