@@ -160,6 +160,13 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
             }
         };
 
+        // Surface a supervisor panic on this thread. Without this, a worker that
+        // hits the storage guard leaves the run Running and the poll below
+        // fails 30 s later without the guard's message.
+        if let Err(payload) = registry.join_supervisor(&run_id) {
+            std::panic::resume_unwind(payload);
+        }
+
         let paths = ArenaPaths::for_run(&er_dir, &run_id);
 
         // Wait for the worker rather than racing it. The handle's join is internal,
