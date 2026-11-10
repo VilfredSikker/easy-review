@@ -41,9 +41,9 @@ fn scripts_written_by_the_helper_run_while_another_thread_forks() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// The failure mode itself: any open writer blocks the exec. The helper's
-/// script runs until this test opens its own writer, and runs again once the
-/// writer is dropped.
+/// The failure mode itself: any open writer blocks the exec. The writer lives
+/// in a child process, not this one: an in-process writer would be inherited by
+/// a concurrent test's fork, which is the race the helper prevents.
 #[test]
 fn an_open_writer_makes_exec_fail_with_etxtbsy() {
     const ETXTBSY: i32 = 26;
@@ -52,12 +52,31 @@ fn an_open_writer_makes_exec_fail_with_etxtbsy() {
     er_engine::test_support::write_executable_script(&path, "#!/bin/sh\nexit 0\n").unwrap();
     assert!(Command::new(&path).status().unwrap().success());
 
-    let writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-    let err = Command::new(&path)
-        .status()
-        .expect_err("an open writer blocks exec");
-    assert_eq!(err.raw_os_error(), Some(ETXTBSY), "{err}");
-    drop(writer);
+    // `exec` makes the shell become the sleeping holder, so killing it closes
+    // the descriptor in every process that held it.
+    let mut holder = Command::new("sh")
+        .arg("-c")
+        .arg("exec 3>>\"$1\"; exec sleep 30")
+        .arg("sh")
+        .arg(&path)
+        .spawn()
+        .expect("start the writing holder");
 
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match Command::new(&path).status() {
+            Err(err) if err.raw_os_error() == Some(ETXTBSY) => break,
+            other => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the holder never opened the script for writing: {other:?}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
+    holder.kill().expect("kill the writer");
+    holder.wait().expect("reap the writer");
     assert!(Command::new(&path).status().unwrap().success());
 }
