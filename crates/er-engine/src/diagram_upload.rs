@@ -60,8 +60,8 @@ pub fn prepare_diagram_kit(
     }
 
     let (er_dir, diff_tmp_path) = prepare_pr_diff_tmp(owner, repo, pr, ignore_globs, None)?;
-    let diff = std::fs::read_to_string(&diff_tmp_path)
-        .with_context(|| format!("read prepared diff {diff_tmp_path}"))?;
+    let diff = crate::ai::prepared_diff::read_diff_tmp(&er_dir)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     let diff_hash = compute_diff_hash(&diff);
     let output_file = diagram_output_file(kind);
 
@@ -160,9 +160,8 @@ pub fn upload_diagram(
             er_dir
         }
     };
-    let diff_path = Path::new(&er_dir).join("diff-tmp");
-    let diff = std::fs::read_to_string(&diff_path)
-        .with_context(|| format!("read {}", diff_path.display()))?;
+    let diff = crate::ai::prepared_diff::read_diff_tmp(&er_dir)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     let expected_hash = compute_diff_hash(&diff);
 
     let output_path = diagram_sidecar_path(&er_dir, file_name)
@@ -332,6 +331,40 @@ mod tests {
         with_storage_root(|| {
             let (_, diagrams) = list_diagrams("acme", "widgets", 99);
             assert!(diagrams.is_empty());
+        });
+    }
+
+    #[test]
+    fn diagram_upload_is_stored_enveloped() {
+        with_storage_root(|| {
+            let er_dir = resolve_er_dir("acme", "widgets", 8);
+            let hash = write_diff_tmp(&er_dir, "diff --git a/x b/x\n+hi\n");
+            let body = format!(
+                r#"{{"version":1,"diff_hash":"{hash}","kind":"flows","title":"T","prompt":"","mermaid":"flowchart TD\n  A-->B"}}"#
+            );
+            upload_diagram(
+                "acme",
+                "widgets",
+                8,
+                DiagramUpload {
+                    kind: "flows",
+                    file_name: "flows.json",
+                    content: &body,
+                    custom_prompt: None,
+                    refresh_diff: false,
+                },
+            )
+            .unwrap();
+
+            let raw: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(format!("{er_dir}/diagrams/flows.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(raw["kind"], "diagram");
+            assert!(raw["payload"].is_object(), "{raw}");
+            let (_, diagrams) = list_diagrams("acme", "widgets", 8);
+            assert_eq!(diagrams.len(), 1);
+            assert_eq!(diagrams[0].id, "flows");
         });
     }
 }

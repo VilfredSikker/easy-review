@@ -5,12 +5,20 @@
 //! No agent CLI spawn — avoids competing for [`crate::agent_slots`].
 
 use crate::ai::compute_diff_hash;
+use crate::ai::prompts::{
+    build_review_prompt_prepared_diff, build_tour_prompt_prepared_diff,
+    build_triage_review_prompt_prepared_diff,
+};
 use crate::github::{gh_pr_diff_remote, gh_pr_metadata_remote, owner_repo_storage_slug};
 use crate::storage::resolve_managed_root_for_pr_bucket;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
+
+/// Placeholder substituted for the managed PR bucket in standalone specs.
+pub const OUTPUT_DIR_PLACEHOLDER: &str = "<OUTPUT_DIR>";
 
 /// Which Easy Review sidecar set to prepare or upload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,32 +134,21 @@ fn build_prompt(kind: SidecarKind, er_dir: &str, base: &str, head: &str) -> Stri
     }
 }
 
-fn write_atomic(path: &Path, content: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
-    }
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("artifact");
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp_name = format!(".{name}.{}.{nanos}.tmp", std::process::id());
-    let tmp_path = path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(tmp_name);
-    std::fs::write(&tmp_path, content).with_context(|| format!("write {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, path)
-        .with_context(|| format!("rename {} → {}", tmp_path.display(), path.display()))?;
-    Ok(())
-}
-
+/// Compare an upload's recorded hash with the prepared diff.
+///
+/// The ingest gate lives here, not in the store: the store deliberately loads a
+/// stale artifact so callers can mark it (`is_stale`, `expert_hash_accepted`).
+/// Only the point where agent output enters the bucket refuses it.
 fn check_diff_hash(label: &str, actual: &str, expected: &str) -> Result<()> {
     if actual != expected {
         bail!("stale {label} (expected diff_hash {expected}, got {actual})");
+    }
+    Ok(())
+}
+
+fn check_version(label: &str, found: u32, expected: u32) -> Result<()> {
+    if found != expected {
+        bail!("{label} has version {found}; this build accepts {expected}");
     }
     Ok(())
 }
@@ -163,43 +160,129 @@ fn required_file<'a>(files: &'a BTreeMap<String, String>, name: &str) -> Result<
         .with_context(|| format!("missing required file '{name}'"))
 }
 
-/// Parse + hash-check in memory so failed uploads never touch the destination files.
+/// The parsed payloads of one upload, validated but not yet written.
+enum UploadBundle {
+    Triage(crate::ai::TriageReview),
+    Tour(crate::ai::ErTour),
+    Review(ReviewBundle),
+}
+
+struct ReviewBundle {
+    review: crate::ai::ErReview,
+    order: crate::ai::ErOrder,
+    checklist: crate::ai::ErChecklist,
+    summary: String,
+}
+
+/// Parse, version-check and hash-check in memory so failed uploads never touch
+/// the destination files.
 fn validate_contents_before_write(
     kind: SidecarKind,
     files: &BTreeMap<String, String>,
     expected_hash: &str,
-) -> Result<()> {
+) -> Result<UploadBundle> {
     use crate::ai::{ErChecklist, ErOrder, ErReview, ErTour, TriageReview};
+    use er_store::Artifact as _;
 
     match kind {
         SidecarKind::Triage => {
             let raw = required_file(files, "triage.json")?;
             let parsed: TriageReview = serde_json::from_str(raw).context("invalid triage.json")?;
+            check_version("triage.json", parsed.version, TriageReview::VERSION)?;
             check_diff_hash("triage.json", &parsed.diff_hash, expected_hash)?;
+            Ok(UploadBundle::Triage(parsed))
         }
         SidecarKind::Tour => {
             let raw = required_file(files, "tour.json")?;
             let parsed: ErTour = serde_json::from_str(raw).context("invalid tour.json")?;
+            check_version("tour.json", parsed.version, ErTour::VERSION)?;
             check_diff_hash("tour.json", &parsed.diff_hash, expected_hash)?;
+            Ok(UploadBundle::Tour(parsed))
         }
         SidecarKind::Review => {
             let review: ErReview = serde_json::from_str(required_file(files, "review.json")?)
                 .context("invalid review.json")?;
             check_diff_hash("review.json", &review.diff_hash, expected_hash)?;
+            check_version("review.json", review.version, ErReview::VERSION)?;
             let order: ErOrder = serde_json::from_str(required_file(files, "order.json")?)
                 .context("invalid order.json")?;
             check_diff_hash("order.json", &order.diff_hash, expected_hash)?;
+            check_version("order.json", order.version, ErOrder::VERSION)?;
             let checklist: ErChecklist =
                 serde_json::from_str(required_file(files, "checklist.json")?)
                     .context("invalid checklist.json")?;
+            check_version("checklist.json", checklist.version, ErChecklist::VERSION)?;
             check_diff_hash("checklist.json", &checklist.diff_hash, expected_hash)?;
-            let summary = required_file(files, "summary.md")?;
+            let summary = required_file(files, "summary.md")?.clone();
             if summary.trim().is_empty() {
                 bail!("summary.md must be non-empty markdown");
             }
+            Ok(UploadBundle::Review(ReviewBundle {
+                review,
+                order,
+                checklist,
+                summary,
+            }))
         }
     }
-    Ok(())
+}
+
+/// Write the validated bundle under the caller's scope guard.
+///
+/// A review bundle is committed under one hold, so a reader never sees a new
+/// `review.json` beside an old `order.json`.
+fn commit_bundle(
+    guard: &er_store::ScopeGuard,
+    kind: SidecarKind,
+    bundle: UploadBundle,
+) -> Result<Vec<String>> {
+    use crate::ai::{ErChecklist, ErOrder, ErReview, ErTour, TriageReview};
+
+    let store = crate::store_registry::store();
+    let scope = guard.scope();
+    let mut written = Vec::new();
+    match (kind, bundle) {
+        (SidecarKind::Triage, UploadBundle::Triage(triage)) => {
+            let key = er_store::ArtifactKey::<TriageReview>::new(scope.clone(), ())
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            store.write_locked(guard, &key, &triage)?;
+            written.push(store.path(&key).to_string_lossy().into_owned());
+        }
+        (SidecarKind::Tour, UploadBundle::Tour(tour)) => {
+            let key = er_store::ArtifactKey::<ErTour>::new(scope.clone(), ())
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            store.write_locked(guard, &key, &tour)?;
+            written.push(store.path(&key).to_string_lossy().into_owned());
+        }
+        (SidecarKind::Review, UploadBundle::Review(bundle)) => {
+            let review_key = er_store::ArtifactKey::<ErReview>::new(scope.clone(), ())
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            store.write_locked(guard, &review_key, &bundle.review)?;
+            written.push(store.path(&review_key).to_string_lossy().into_owned());
+            let order_key = er_store::ArtifactKey::<ErOrder>::new(scope.clone(), ())
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            store.write_locked(guard, &order_key, &bundle.order)?;
+            written.push(store.path(&order_key).to_string_lossy().into_owned());
+            let checklist_key = er_store::ArtifactKey::<ErChecklist>::new(scope.clone(), ())
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            store.write_locked(guard, &checklist_key, &bundle.checklist)?;
+            written.push(store.path(&checklist_key).to_string_lossy().into_owned());
+            let summary_file =
+                er_store::RelPath::new("summary.md").map_err(|error| anyhow::anyhow!("{error}"))?;
+            store.write_text_locked(guard, &summary_file, &bundle.summary)?;
+            written.push(
+                store
+                    .text_path(scope, &summary_file)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        _ => bail!(
+            "internal error: upload bundle does not match {}",
+            kind.as_str()
+        ),
+    }
+    Ok(written)
 }
 
 fn resolve_er_dir(owner: &str, repo: &str, pr: u64) -> String {
@@ -228,7 +311,6 @@ pub fn prepare_pr_diff_tmp(
     if er_dir.is_empty() {
         bail!("failed to resolve managed PR storage for {owner}/{repo}#{pr}");
     }
-    std::fs::create_dir_all(&er_dir).with_context(|| format!("mkdir {er_dir}"))?;
     // Rule tables are keyed the way `storage::slug_repo` names a clone of this
     // repo (the origin URL's basename), not by the owner/repo storage slug.
     let key = crate::storage::rules_key(
@@ -266,11 +348,9 @@ pub fn prepare_review_kit(
     );
     let (er_dir, diff_tmp_path) =
         prepare_pr_diff_tmp(owner, repo, pr, ignore_globs, review_md.as_deref())?;
-    let diff_bytes = std::fs::metadata(&diff_tmp_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
-    let diff = std::fs::read_to_string(&diff_tmp_path)
-        .with_context(|| format!("read prepared diff {diff_tmp_path}"))?;
+    let diff = crate::ai::prepared_diff::read_diff_tmp(&er_dir)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let diff_bytes = crate::ai::prepared_diff::diff_tmp_len(&er_dir);
     let diff_hash = compute_diff_hash(&diff);
 
     let mut artifacts = Vec::with_capacity(kinds.len());
@@ -359,25 +439,23 @@ pub fn upload_artifacts_to_dir(
             "missing {er_dir}/diff-tmp — call prepare_review first so diff_hash can be validated"
         );
     }
-    let diff = std::fs::read_to_string(&diff_path)
-        .with_context(|| format!("read {}", diff_path.display()))?;
+    let diff = crate::ai::prepared_diff::read_diff_tmp(er_dir)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     let expected_hash = compute_diff_hash(&diff);
 
     // Fail closed before mutating managed storage.
-    validate_contents_before_write(kind, files, &expected_hash).with_context(|| {
-        format!(
-            "{} upload rejected (expected diff_hash={expected_hash})",
-            kind.as_str()
-        )
-    })?;
+    let bundle =
+        validate_contents_before_write(kind, files, &expected_hash).with_context(|| {
+            format!(
+                "{} upload rejected (expected diff_hash={expected_hash})",
+                kind.as_str()
+            )
+        })?;
 
-    let mut written = Vec::new();
-    for name in &required {
-        let content = required_file(files, name)?;
-        let path = Path::new(er_dir).join(name);
-        write_atomic(&path, content)?;
-        written.push(path.to_string_lossy().into_owned());
-    }
+    let scope = er_store::Scope::dir(er_dir).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let guard =
+        crate::store_registry::store().lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)?;
+    let written = commit_bundle(&guard, kind, bundle)?;
 
     Ok(UploadArtifactsResult {
         er_dir: er_dir.to_string(),
@@ -401,6 +479,294 @@ pub fn upload_pr_artifacts(req: UploadArtifactsRequest) -> Result<UploadArtifact
         }
     };
     upload_artifacts_to_dir(&er_dir, req.kind, &req.files)
+}
+
+/// One sidecar kind's prompt, required files, JSON Schema, and examples.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtifactSpec {
+    pub kind: SidecarKind,
+    /// Relative filenames that `upload_artifacts` requires for this kind.
+    pub required_files: Vec<&'static str>,
+    /// JSON Schema (draft-07 style) keyed by relative filename.
+    /// `summary.md` is plain markdown — schema is a short description object.
+    pub schemas: Value,
+    /// Minimal valid examples keyed by relative filename.
+    pub examples: Value,
+    /// Same prepared-diff prompt Desktop uses (`diff-tmp` already written).
+    pub prompt: String,
+    pub notes: Vec<&'static str>,
+}
+
+/// Bundle returned to MCP clients.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtifactSpecsResponse {
+    /// Embed this exact SHA-256 hex of `diff-tmp` as every JSON `diff_hash`.
+    pub diff_hash_rule: &'static str,
+    pub output_dir_placeholder: &'static str,
+    pub specs: Vec<ArtifactSpec>,
+}
+
+/// A draft-07 schema generated from the payload type the store validates.
+fn titled_schema<T: schemars::JsonSchema>(title: &str) -> Value {
+    let mut schema = schemars::generate::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<T>()
+        .as_value()
+        .clone();
+    if let Value::Object(map) = &mut schema {
+        map.insert("title".into(), Value::String(title.into()));
+    }
+    permissive_objects(schema)
+}
+
+/// The hand-written schemas agents used accepted unknown keys, and serde
+/// ignores them; keep that shape now the schema comes from the derive.
+fn permissive_objects(mut value: Value) -> Value {
+    fn walk(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                if map.get("type").and_then(Value::as_str) == Some("object") {
+                    // Keep a map's `additionalProperties` value: it carries the
+                    // `$ref` that describes the entry type (review files, order
+                    // groups, …). Only add permissiveness where the schema did
+                    // not already say what the values are.
+                    map.entry("additionalProperties")
+                        .or_insert(Value::Bool(true));
+                }
+                for child in map.values_mut() {
+                    walk(child);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(&mut value);
+    value
+}
+
+fn summary_md_schema() -> Value {
+    json!({
+        "title": "summary.md",
+        "type": "string",
+        "description": "Non-empty markdown (3–5 paragraphs) summarizing the overall changes. Not JSON."
+    })
+}
+
+fn triage_example() -> Value {
+    json!({
+        "version": 1,
+        "diff_hash": "<DIFF_HASH>",
+        "diff_scope": "pr",
+        "created_at": "2026-01-01T00:00:00Z",
+        "first_impression": "Small focused change.",
+        "diff_stats": {
+            "files_changed": 2,
+            "approx_risk": "low",
+            "domains": ["ui"]
+        },
+        "verdict": {
+            "primary": "general",
+            "experts": [],
+            "rationale": "Straightforward UI tweak",
+            "confidence": "high"
+        },
+        "priority_files": [
+            { "path": "src/app.rs", "reason": "Main change", "risk": "low" }
+        ],
+        "sensitive": { "reasons": [] }
+    })
+}
+
+fn review_examples() -> Value {
+    json!({
+        "review.json": {
+            "version": 1,
+            "diff_hash": "<DIFF_HASH>",
+            "created_at": "2026-01-01T00:00:00Z",
+            "base_branch": "main",
+            "head_branch": "feat/example",
+            "file_hashes": {},
+            "files": {
+                "src/app.rs": {
+                    "risk": "medium",
+                    "risk_reason": "Touches error handling",
+                    "summary": "Adds retry for network calls",
+                    "findings": [
+                        {
+                            "id": "f-1",
+                            "severity": "medium",
+                            "category": "correctness",
+                            "title": "Retry may hide auth failures",
+                            "description": "…",
+                            "hunk_index": 0,
+                            "line_start": 42,
+                            "suggestion": "Fail fast on 401",
+                            "confidence": "confirmed",
+                            "outside_diff": false,
+                            "related_files": [],
+                            "evidence": [],
+                            "resolved": false
+                        }
+                    ]
+                }
+            }
+        },
+        "order.json": {
+            "version": 1,
+            "diff_hash": "<DIFF_HASH>",
+            "order": [
+                { "path": "src/app.rs", "reason": "Core change", "group": "main" }
+            ],
+            "groups": {
+                "main": { "label": "Main Changes", "color": "red" }
+            }
+        },
+        "checklist.json": {
+            "version": 1,
+            "diff_hash": "<DIFF_HASH>",
+            "items": [
+                {
+                    "id": "c-1",
+                    "text": "Verify retry behavior on 401",
+                    "category": "correctness",
+                    "checked": false,
+                    "related_findings": ["f-1"],
+                    "related_files": ["src/app.rs"]
+                }
+            ]
+        },
+        "summary.md": "# Summary\n\nOverall description of the change…\n"
+    })
+}
+
+fn tour_example() -> Value {
+    json!({
+        "version": 1,
+        "diff_hash": "<DIFF_HASH>",
+        "created_at": "2026-01-01T00:00:00Z",
+        "title": "Tour: Example change",
+        "overview": "Start with the foundation types, then the UI.",
+        "pillars": [
+            {
+                "id": "p-1",
+                "title": "Foundation",
+                "summary": "Core types other files depend on",
+                "description": "Core types other files depend on.",
+                "order": 0,
+                "importance": 90,
+                "foundation": true,
+                "files": [
+                    {
+                        "path": "src/types.rs",
+                        "reason": "Shared model",
+                        "finding_ids": [],
+                        "related": [
+                            {
+                                "path": "src/types.test.rs",
+                                "kind": "test",
+                                "reason": "Unit tests"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    })
+}
+
+fn spec_for(kind: SidecarKind, output_dir: &str, base: &str, head: &str) -> ArtifactSpec {
+    match kind {
+        SidecarKind::Triage => ArtifactSpec {
+            kind,
+            required_files: vec!["triage.json"],
+            schemas: json!({
+                "triage.json": titled_schema::<crate::ai::TriageReview>("triage.json"),
+            }),
+            examples: json!({ "triage.json": triage_example() }),
+            prompt: build_triage_review_prompt_prepared_diff("branch", output_dir, "<DIFF_HASH>"),
+            notes: vec![
+                "Write only triage.json — no review/order/checklist/summary.",
+                "Replace <DIFF_HASH> with the prepare_review diff_hash.",
+            ],
+        },
+        SidecarKind::Review => ArtifactSpec {
+            kind,
+            required_files: vec!["review.json", "order.json", "checklist.json", "summary.md"],
+            schemas: json!({
+                "review.json": titled_schema::<crate::ai::ErReview>("review.json"),
+                "order.json": titled_schema::<crate::ai::ErOrder>("order.json"),
+                "checklist.json": titled_schema::<crate::ai::ErChecklist>("checklist.json"),
+                "summary.md": summary_md_schema(),
+            }),
+            examples: review_examples(),
+            prompt: build_review_prompt_prepared_diff(
+                "branch",
+                output_dir,
+                base,
+                head,
+                "<DIFF_HASH>",
+            ),
+            notes: vec![
+                "All four files are required for upload_artifacts kind=review.",
+                "Every JSON file must share the same diff_hash.",
+                "head_branch must match the PR head or Desktop may discard the review.",
+                "Leave finding resolved/resolved_note/resolved_at empty/false.",
+            ],
+        },
+        SidecarKind::Tour => ArtifactSpec {
+            kind,
+            required_files: vec!["tour.json"],
+            schemas: json!({
+                "tour.json": titled_schema::<crate::ai::ErTour>("tour.json"),
+            }),
+            examples: json!({ "tour.json": tour_example() }),
+            prompt: build_tour_prompt_prepared_diff(
+                "PR diff",
+                output_dir,
+                "tour.json",
+                "<DIFF_HASH>",
+            ),
+            notes: vec![
+                "Write only tour.json.",
+                "Every changed file appears once — as a pillar files[] entry or nested related[].",
+                "3–7 pillars is ideal; foundation pillars first.",
+            ],
+        },
+    }
+}
+
+/// Specs for the given kinds (templates use [`OUTPUT_DIR_PLACEHOLDER`]).
+pub fn artifact_specs(kinds: &[SidecarKind]) -> ArtifactSpecsResponse {
+    artifact_specs_for_dir(
+        kinds,
+        OUTPUT_DIR_PLACEHOLDER,
+        "<base_branch>",
+        "<head_branch>",
+    )
+}
+
+/// Specs with prompts pointing at a real managed bucket (for `prepare_review`).
+pub fn artifact_specs_for_dir(
+    kinds: &[SidecarKind],
+    output_dir: &str,
+    base_branch: &str,
+    head_branch: &str,
+) -> ArtifactSpecsResponse {
+    let specs = kinds
+        .iter()
+        .copied()
+        .map(|k| spec_for(k, output_dir, base_branch, head_branch))
+        .collect();
+    ArtifactSpecsResponse {
+        diff_hash_rule: "Every JSON sidecar must set diff_hash to the SHA-256 hex of the prepared diff-tmp file (prepare_review returns this as kit.diff_hash).",
+        output_dir_placeholder: OUTPUT_DIR_PLACEHOLDER,
+        specs,
+    }
 }
 
 #[cfg(test)]
@@ -675,6 +1041,696 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("diff-tmp"), "{err}");
+        });
+    }
+
+    // ── Specs from the derived schemas ──
+
+    #[test]
+    fn all_kinds_have_schemas_and_prompts() {
+        let resp = artifact_specs(&[SidecarKind::Triage, SidecarKind::Review, SidecarKind::Tour]);
+        assert_eq!(resp.specs.len(), 3);
+        for spec in &resp.specs {
+            assert!(!spec.required_files.is_empty());
+            assert!(spec.schemas.is_object());
+            assert!(
+                spec.prompt.contains("diff-tmp") || spec.prompt.contains("diff_hash"),
+                "{}",
+                spec.prompt
+            );
+            for file in &spec.required_files {
+                assert!(
+                    spec.schemas.get(file).is_some(),
+                    "missing schema for {file}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn triage_kit_exposes_sensitive_prompt_schema_and_example() {
+        let response = artifact_specs(&[SidecarKind::Triage]);
+        let spec = &response.specs[0];
+        assert!(spec.schemas["triage.json"]["properties"]["sensitive"].is_object());
+        assert!(spec.examples["triage.json"]["sensitive"]["reasons"].is_array());
+        assert!(spec.prompt.contains("sensitive"));
+    }
+
+    #[test]
+    fn review_requires_four_files() {
+        let resp = artifact_specs(&[SidecarKind::Review]);
+        assert_eq!(resp.specs[0].required_files.len(), 4);
+    }
+
+    #[test]
+    fn derived_schema_lists_every_field_of_the_example() {
+        let resp = artifact_specs(&[SidecarKind::Triage, SidecarKind::Review, SidecarKind::Tour]);
+        for spec in &resp.specs {
+            for file in &spec.required_files {
+                if !file.ends_with(".json") {
+                    continue;
+                }
+                let properties = spec.schemas[*file]["properties"]
+                    .as_object()
+                    .unwrap_or_else(|| panic!("{file}: schema has no properties"));
+                for key in spec.examples[*file]
+                    .as_object()
+                    .unwrap_or_else(|| panic!("{file}: example is not an object"))
+                    .keys()
+                {
+                    assert!(
+                        properties.contains_key(key),
+                        "{file}: schema lacks example field {key}"
+                    );
+                }
+                assert!(properties.contains_key("version"), "{file}: version");
+                assert!(properties.contains_key("diff_hash"), "{file}: diff_hash");
+            }
+        }
+    }
+
+    /// Every dotted path the hand-written release schemas described, relative
+    /// to each file's schema. The generated schemas must still carry all of
+    /// them; this is the release snapshot the derive is checked against.
+    const RELEASE_SCHEMA_PATHS: &[(&str, &[&str])] = &[
+        (
+            "triage.json",
+            &[
+                "version",
+                "diff_hash",
+                "diff_scope",
+                "created_at",
+                "first_impression",
+                "diff_stats",
+                "diff_stats.files_changed",
+                "diff_stats.approx_risk",
+                "diff_stats.domains",
+                "verdict",
+                "verdict.primary",
+                "verdict.experts",
+                "verdict.rationale",
+                "verdict.confidence",
+                "priority_files",
+                "priority_files.path",
+                "priority_files.reason",
+                "priority_files.risk",
+                "reach",
+                "reach.level",
+                "reach.reason",
+                "reach.touch_points",
+                "reach.guard",
+                "reach.guard.kind",
+                "reach.guard.name",
+                "reach.guard.evidence",
+                "sensitive",
+                "sensitive.reasons",
+                "sensitive.reasons.kind",
+                "sensitive.reasons.evidence",
+                "sensitive.reasons.note",
+            ],
+        ),
+        (
+            "review.json",
+            &[
+                "version",
+                "diff_hash",
+                "created_at",
+                "base_branch",
+                "head_branch",
+                "file_hashes",
+                "files",
+                "files.risk",
+                "files.risk_reason",
+                "files.summary",
+                "files.findings",
+                "files.findings.id",
+                "files.findings.severity",
+                "files.findings.category",
+                "files.findings.title",
+                "files.findings.description",
+                "files.findings.hunk_index",
+                "files.findings.line_start",
+                "files.findings.line_end",
+                "files.findings.line_content",
+                "files.findings.suggestion",
+                "files.findings.related_files",
+                "files.findings.outside_diff",
+                "files.findings.confidence",
+                "files.findings.verification_plan",
+                "files.findings.evidence",
+                "files.findings.evidence.file",
+                "files.findings.evidence.line_start",
+                "files.findings.evidence.line_end",
+                "files.findings.evidence.note",
+                "files.findings.resolved",
+                "files.findings.resolved_note",
+                "files.findings.resolved_at",
+            ],
+        ),
+        (
+            "order.json",
+            &[
+                "version",
+                "diff_hash",
+                "order",
+                "order.path",
+                "order.reason",
+                "order.group",
+                "groups",
+                "groups.label",
+                "groups.color",
+            ],
+        ),
+        (
+            "checklist.json",
+            &[
+                "version",
+                "diff_hash",
+                "items",
+                "items.id",
+                "items.text",
+                "items.category",
+                "items.checked",
+                "items.related_findings",
+                "items.related_files",
+            ],
+        ),
+        (
+            "tour.json",
+            &[
+                "version",
+                "diff_hash",
+                "created_at",
+                "title",
+                "overview",
+                "pillars",
+                "pillars.id",
+                "pillars.title",
+                "pillars.description",
+                "pillars.summary",
+                "pillars.order",
+                "pillars.importance",
+                "pillars.foundation",
+                "pillars.files",
+                "pillars.files.path",
+                "pillars.files.reason",
+                "pillars.files.finding_ids",
+                "pillars.files.related",
+                "pillars.files.related.path",
+                "pillars.files.related.kind",
+                "pillars.files.related.reason",
+            ],
+        ),
+    ];
+
+    /// Flatten a schema into dotted property paths, following `$ref`s and the
+    /// collection shapes schemars emits (items, additionalProperties, anyOf).
+    fn schema_paths(schema: &Value) -> std::collections::BTreeSet<String> {
+        fn resolve<'a>(root: &'a Value, node: &'a Value) -> &'a Value {
+            if let Some(reference) = node.get("$ref").and_then(Value::as_str) {
+                let name = reference
+                    .strip_prefix("#/$defs/")
+                    .or_else(|| reference.strip_prefix("#/definitions/"));
+                if let Some(name) = name {
+                    if let Some(target) = root
+                        .get("$defs")
+                        .or_else(|| root.get("definitions"))
+                        .and_then(|defs| defs.get(name))
+                    {
+                        return target;
+                    }
+                }
+            }
+            node
+        }
+        fn walk(
+            root: &Value,
+            node: &Value,
+            prefix: &str,
+            out: &mut std::collections::BTreeSet<String>,
+        ) {
+            let node = resolve(root, node);
+            if let Some(properties) = node.get("properties").and_then(Value::as_object) {
+                for (name, child) in properties {
+                    let path = if prefix.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{prefix}.{name}")
+                    };
+                    out.insert(path.clone());
+                    walk(root, child, &path, out);
+                }
+            }
+            if let Some(items) = node.get("items") {
+                walk(root, items, prefix, out);
+            }
+            if let Some(values) = node.get("additionalProperties") {
+                if values.is_object() {
+                    walk(root, values, prefix, out);
+                }
+            }
+            for key in ["anyOf", "oneOf", "allOf"] {
+                if let Some(items) = node.get(key).and_then(Value::as_array) {
+                    for item in items {
+                        walk(root, item, prefix, out);
+                    }
+                }
+            }
+        }
+        let mut out = std::collections::BTreeSet::new();
+        walk(schema, schema, "", &mut out);
+        out
+    }
+
+    #[test]
+    fn derived_schema_keeps_every_release_path() {
+        let response =
+            artifact_specs(&[SidecarKind::Triage, SidecarKind::Review, SidecarKind::Tour]);
+        for (file, expected) in RELEASE_SCHEMA_PATHS {
+            let schema = response
+                .specs
+                .iter()
+                .find_map(|spec| spec.schemas.get(*file))
+                .unwrap_or_else(|| panic!("no schema for {file}"));
+            let paths = schema_paths(schema);
+            for path in *expected {
+                assert!(paths.contains(*path), "{file}: schema lost {path}");
+            }
+        }
+    }
+
+    #[test]
+    fn spec_examples_deserialize_into_their_types() {
+        let hash = "abc123";
+        let resp = artifact_specs(&[SidecarKind::Triage, SidecarKind::Review, SidecarKind::Tour]);
+        for spec in &resp.specs {
+            match spec.kind {
+                SidecarKind::Triage => {
+                    let raw = spec.examples["triage.json"]
+                        .to_string()
+                        .replace("<DIFF_HASH>", hash);
+                    let parsed: TriageReview = serde_json::from_str(&raw).unwrap();
+                    assert_eq!(parsed.version, 1);
+                }
+                SidecarKind::Tour => {
+                    let raw = spec.examples["tour.json"]
+                        .to_string()
+                        .replace("<DIFF_HASH>", hash);
+                    let parsed: ErTour = serde_json::from_str(&raw).unwrap();
+                    assert_eq!(parsed.pillars.len(), 1);
+                }
+                SidecarKind::Review => {
+                    let review_raw = spec.examples["review.json"]
+                        .to_string()
+                        .replace("<DIFF_HASH>", hash);
+                    let review: ErReview = serde_json::from_str(&review_raw).unwrap();
+                    assert_eq!(review.files.len(), 1);
+                    let order_raw = spec.examples["order.json"]
+                        .to_string()
+                        .replace("<DIFF_HASH>", hash);
+                    let order: ErOrder = serde_json::from_str(&order_raw).unwrap();
+                    assert_eq!(order.order.len(), 1);
+                    let checklist_raw = spec.examples["checklist.json"]
+                        .to_string()
+                        .replace("<DIFF_HASH>", hash);
+                    let checklist: ErChecklist = serde_json::from_str(&checklist_raw).unwrap();
+                    assert_eq!(checklist.items.len(), 1);
+                    assert!(spec.examples["summary.md"]
+                        .as_str()
+                        .is_some_and(|summary| !summary.trim().is_empty()));
+                }
+            }
+        }
+    }
+
+    // ── Store commits ──
+
+    fn bucket(number: u64) -> String {
+        resolve_managed_root_for_pr_bucket(
+            &crate::storage::repo_storage_slug("acme", "widgets"),
+            number,
+        )
+        .er_dir()
+    }
+
+    fn review_bundle(hash: &str) -> BTreeMap<String, String> {
+        let mut review_files = HashMap::new();
+        review_files.insert(
+            "a.rs".to_string(),
+            crate::ai::ErFileReview {
+                risk: RiskLevel::Low,
+                risk_reason: String::new(),
+                summary: "ok".to_string(),
+                findings: vec![],
+            },
+        );
+        let review = ErReview {
+            version: 1,
+            diff_hash: hash.to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            base_branch: "main".to_string(),
+            head_branch: "feat".to_string(),
+            files: review_files,
+            file_hashes: HashMap::new(),
+        };
+        let order = ErOrder {
+            version: 1,
+            diff_hash: hash.to_string(),
+            order: vec![],
+            groups: HashMap::new(),
+        };
+        let checklist = ErChecklist {
+            version: 1,
+            diff_hash: hash.to_string(),
+            items: vec![],
+        };
+        let mut files = BTreeMap::new();
+        files.insert(
+            "review.json".to_string(),
+            serde_json::to_string_pretty(&review).unwrap(),
+        );
+        files.insert(
+            "order.json".to_string(),
+            serde_json::to_string_pretty(&order).unwrap(),
+        );
+        files.insert(
+            "checklist.json".to_string(),
+            serde_json::to_string_pretty(&checklist).unwrap(),
+        );
+        files.insert("summary.md".to_string(), "# Summary\n".to_string());
+        files
+    }
+
+    fn triage_files(hash: &str) -> BTreeMap<String, String> {
+        let triage = TriageReview {
+            version: 1,
+            diff_hash: hash.to_string(),
+            diff_scope: "pr".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            first_impression: "small".to_string(),
+            diff_stats: Default::default(),
+            verdict: Default::default(),
+            priority_files: vec![],
+            reach: Default::default(),
+            sensitive: Default::default(),
+        };
+        BTreeMap::from([(
+            "triage.json".to_string(),
+            serde_json::to_string(&triage).unwrap(),
+        )])
+    }
+
+    fn tour_files(hash: &str) -> BTreeMap<String, String> {
+        let tour = ErTour {
+            version: 1,
+            diff_hash: hash.to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            title: "Tour".to_string(),
+            overview: String::new(),
+            pillars: vec![],
+        };
+        BTreeMap::from([(
+            "tour.json".to_string(),
+            serde_json::to_string(&tour).unwrap(),
+        )])
+    }
+
+    fn found<T: er_store::Artifact<Slot = ()>>(er_dir: &str) -> T {
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(er_dir).unwrap();
+        let key = er_store::ArtifactKey::<T>::new(scope, ()).unwrap();
+        match store.read(&key).unwrap() {
+            er_store::Loaded::Found(stored) => stored.value,
+            _ => panic!("expected Found"),
+        }
+    }
+
+    fn summary_text(er_dir: &str) -> Option<String> {
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(er_dir).unwrap();
+        let file = er_store::RelPath::new("summary.md").unwrap();
+        match store.read_text(&scope, &file).unwrap() {
+            er_store::Loaded::Found(stored) => Some(stored.value),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn upload_review_reads_back_through_the_store() {
+        with_storage_root(|| {
+            let er_dir = bucket(20);
+            let diff = "diff --git a/a.rs b/a.rs\n+1\n";
+            write_diff_tmp(&er_dir, diff);
+            let hash = compute_diff_hash(diff);
+
+            upload_artifacts_to_dir(&er_dir, SidecarKind::Review, &review_bundle(&hash)).unwrap();
+
+            let review: ErReview = found(&er_dir);
+            assert_eq!(review.diff_hash, hash);
+            let _: ErOrder = found(&er_dir);
+            let _: ErChecklist = found(&er_dir);
+            assert_eq!(summary_text(&er_dir).as_deref(), Some("# Summary\n"));
+            let state = crate::ai::load_ai_state(&er_dir, &hash, None);
+            assert_eq!(state.review.expect("review").files.len(), 1);
+        });
+    }
+
+    #[test]
+    fn failed_upload_leaves_existing_artifacts_untouched() {
+        with_storage_root(|| {
+            let er_dir = bucket(21);
+            let diff = "diff --git a/a.rs b/a.rs\n+1\n";
+            write_diff_tmp(&er_dir, diff);
+            let hash = compute_diff_hash(diff);
+            upload_artifacts_to_dir(&er_dir, SidecarKind::Review, &review_bundle(&hash)).unwrap();
+            let before = std::fs::read_to_string(format!("{er_dir}/review.json")).unwrap();
+
+            let mut files = review_bundle(&hash);
+            let mut checklist: ErChecklist =
+                serde_json::from_str(&files["checklist.json"]).unwrap();
+            checklist.diff_hash = "deadbeef".to_string();
+            files.insert(
+                "checklist.json".to_string(),
+                serde_json::to_string(&checklist).unwrap(),
+            );
+
+            assert!(upload_artifacts_to_dir(&er_dir, SidecarKind::Review, &files).is_err());
+            assert_eq!(
+                std::fs::read_to_string(format!("{er_dir}/review.json")).unwrap(),
+                before
+            );
+            let review: ErReview = found(&er_dir);
+            assert_eq!(review.diff_hash, hash);
+        });
+    }
+
+    #[test]
+    fn stale_upload_is_rejected_at_ingest_with_a_reason() {
+        with_storage_root(|| {
+            let er_dir = bucket(22);
+            let diff = "diff --git a/a.rs b/a.rs\n+1\n";
+            write_diff_tmp(&er_dir, diff);
+            let hash = compute_diff_hash(diff);
+
+            let cases: [(SidecarKind, &str, BTreeMap<String, String>); 3] = [
+                (SidecarKind::Triage, "triage.json", triage_files("deadbeef")),
+                (SidecarKind::Tour, "tour.json", tour_files("deadbeef")),
+                (SidecarKind::Review, "review.json", {
+                    let mut files = review_bundle(&hash);
+                    let mut review: ErReview = serde_json::from_str(&files["review.json"]).unwrap();
+                    review.diff_hash = "deadbeef".to_string();
+                    files.insert(
+                        "review.json".to_string(),
+                        serde_json::to_string(&review).unwrap(),
+                    );
+                    files
+                }),
+            ];
+            for (kind, file, files) in cases {
+                let error = upload_artifacts_to_dir(&er_dir, kind, &files).unwrap_err();
+                let text = format!("{error:#}");
+                assert!(text.contains(&format!("stale {file}")), "{file}: {text}");
+                assert!(text.contains(&hash), "{file}: {text}");
+                assert!(text.contains("deadbeef"), "{file}: {text}");
+            }
+            assert!(summary_text(&er_dir).is_none());
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(&er_dir).unwrap();
+            let review = er_store::ArtifactKey::<ErReview>::new(scope.clone(), ()).unwrap();
+            let order = er_store::ArtifactKey::<ErOrder>::new(scope.clone(), ()).unwrap();
+            let checklist = er_store::ArtifactKey::<ErChecklist>::new(scope, ()).unwrap();
+            assert!(
+                !store.path(&review).is_file(),
+                "{}",
+                store.path(&review).display()
+            );
+            assert!(
+                !store.path(&order).is_file(),
+                "{}",
+                store.path(&order).display()
+            );
+            assert!(
+                !store.path(&checklist).is_file(),
+                "{}",
+                store.path(&checklist).display()
+            );
+        });
+    }
+
+    #[test]
+    fn fresh_upload_is_committed_at_ingest() {
+        with_storage_root(|| {
+            let er_dir = bucket(23);
+            let diff = "diff --git a/a.rs b/a.rs\n+1\n";
+            write_diff_tmp(&er_dir, diff);
+            let hash = compute_diff_hash(diff);
+
+            let result =
+                upload_artifacts_to_dir(&er_dir, SidecarKind::Review, &review_bundle(&hash))
+                    .unwrap();
+
+            assert_eq!(result.diff_hash, hash);
+            let review: ErReview = found(&er_dir);
+            let order: ErOrder = found(&er_dir);
+            let checklist: ErChecklist = found(&er_dir);
+            assert_eq!(review.diff_hash, hash);
+            assert_eq!(order.diff_hash, hash);
+            assert_eq!(checklist.diff_hash, hash);
+        });
+    }
+
+    #[test]
+    fn upload_rejects_a_non_one_version() {
+        with_storage_root(|| {
+            let er_dir = bucket(24);
+            let diff = "diff --git a/t b/t\n+t\n";
+            write_diff_tmp(&er_dir, diff);
+            let hash = compute_diff_hash(diff);
+
+            let bump = |files: &mut BTreeMap<String, String>, name: &str| {
+                let mut value: Value = serde_json::from_str(&files[name]).unwrap();
+                value["version"] = json!(2);
+                files.insert(name.to_string(), value.to_string());
+            };
+
+            let mut triage = triage_files(&hash);
+            bump(&mut triage, "triage.json");
+            let mut tour = tour_files(&hash);
+            bump(&mut tour, "tour.json");
+            let mut cases: Vec<(SidecarKind, &str, BTreeMap<String, String>)> = vec![
+                (SidecarKind::Triage, "triage.json", triage),
+                (SidecarKind::Tour, "tour.json", tour),
+            ];
+            for name in ["review.json", "order.json", "checklist.json"] {
+                let mut files = review_bundle(&hash);
+                bump(&mut files, name);
+                cases.push((SidecarKind::Review, name, files));
+            }
+
+            for (kind, name, files) in cases {
+                let error = upload_artifacts_to_dir(&er_dir, kind, &files).unwrap_err();
+                let text = format!("{error:#}");
+                assert!(text.contains(name), "{name}: {text}");
+                assert!(text.contains("version 2"), "{name}: {text}");
+            }
+            for name in [
+                "triage.json",
+                "tour.json",
+                "review.json",
+                "order.json",
+                "checklist.json",
+            ] {
+                assert!(
+                    !Path::new(&er_dir).join(name).exists(),
+                    "{name} was written"
+                );
+            }
+            assert!(summary_text(&er_dir).is_none());
+        });
+    }
+
+    #[test]
+    fn stale_stored_review_still_reads_as_found() {
+        with_storage_root(|| {
+            let er_dir = bucket(25);
+            let stale = ErReview {
+                version: 1,
+                diff_hash: "old".to_string(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files: HashMap::new(),
+                file_hashes: HashMap::new(),
+            };
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(&er_dir).unwrap();
+            let key = er_store::ArtifactKey::<ErReview>::new(scope, ()).unwrap();
+            store.write(&key, &stale).unwrap();
+
+            match store.read(&key).unwrap() {
+                er_store::Loaded::Found(stored) => assert_eq!(stored.value.diff_hash, "old"),
+                other => panic!("expected Found, got {other:?}"),
+            }
+            assert!(crate::ai::load_ai_state(&er_dir, "new", None).is_stale);
+        });
+    }
+
+    #[test]
+    fn upload_blocks_on_a_held_scope_lock() {
+        with_storage_root(|| {
+            let er_dir = bucket(26);
+            let diff = "diff --git a/a.rs b/a.rs\n+1\n";
+            write_diff_tmp(&er_dir, diff);
+            let hash = compute_diff_hash(diff);
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(&er_dir).unwrap();
+            let guard = store
+                .lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
+                .unwrap();
+
+            let error =
+                upload_artifacts_to_dir(&er_dir, SidecarKind::Review, &review_bundle(&hash))
+                    .unwrap_err();
+            drop(guard);
+
+            let text = format!("{error:#}").to_lowercase();
+            assert!(text.contains("already holds"), "{text}");
+            assert!(!Path::new(&er_dir).join("review.json").exists());
+        });
+    }
+
+    #[test]
+    fn review_bundle_commit_uses_one_guard() {
+        with_storage_root(|| {
+            let er_dir = bucket(27);
+            let diff = "diff --git a/a.rs b/a.rs\n+1\n";
+            write_diff_tmp(&er_dir, diff);
+            let hash = compute_diff_hash(diff);
+            let files = review_bundle(&hash);
+            let bundle =
+                validate_contents_before_write(SidecarKind::Review, &files, &hash).unwrap();
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(&er_dir).unwrap();
+            let guard = store
+                .lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
+                .unwrap();
+
+            let written = commit_bundle(&guard, SidecarKind::Review, bundle).unwrap();
+            assert_eq!(written.len(), 4);
+            let error = store
+                .lock_scope(&scope, std::time::Duration::from_millis(1))
+                .err()
+                .expect("the second lock must fail while the guard is held");
+            assert!(
+                matches!(error, er_store::StoreError::AlreadyLocked { .. }),
+                "{error:?}"
+            );
+            drop(guard);
+
+            let _: ErReview = found(&er_dir);
+            let _: ErOrder = found(&er_dir);
+            let _: ErChecklist = found(&er_dir);
+            assert!(summary_text(&er_dir).is_some());
         });
     }
 }

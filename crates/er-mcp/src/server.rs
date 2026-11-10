@@ -21,8 +21,8 @@ use er_engine::review_queue::{
     filter_blocked, filter_by_status, filter_failing_ci, filter_review_debt, filter_stale,
     rank_low_hanging, rank_priority, score_pr, QueuePr, RankedPr, ReviewStatus,
 };
-use er_engine::sidecar_specs::artifact_specs_for_dir;
 use er_engine::sidecar_summary::{list_repo_pr_artifacts, present_kinds, summarize_pr_sidecars};
+use er_engine::sidecar_upload::artifact_specs_for_dir;
 use er_engine::sidecar_upload::{
     prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
 };
