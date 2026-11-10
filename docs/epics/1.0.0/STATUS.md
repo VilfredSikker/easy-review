@@ -12,7 +12,7 @@
 | T1 | T5 GitHub port | [#391](https://github.com/VilfredSikker/easy-review/issues/391) P20 | E |
 | T2 | T4 git port | preparing #441 (starts after P20) | – |
 | D4 | T6 store core | [#395](https://github.com/VilfredSikker/easy-review/issues/395) P24, PR #458 in review | C |
-| D1 | D6 | [#396](https://github.com/VilfredSikker/easy-review/issues/396) drafting the phase-3 plan | – |
+| D1 | D6 | idle (phase-3 plan final) | – |
 | D2, D3, D5 | – | idle | – |
 
 **Phases 0 and 1 are complete; in phase 2, P14–P19, P22 and P23 are merged.** P20 (#457, T1) is in review and P24 (#395, D4) has started. When both merge: P21 (after P20), then #441, then the #396 phase-3 gate.
@@ -74,7 +74,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 
 | Gate | Issue | Status |
 | --- | --- | --- |
-| Phase 3: jobs and workflows | [#396](https://github.com/VilfredSikker/easy-review/issues/396) | 🟡 D1 drafting the plan; finalized when phase 2 is merged |
+| Phase 3: jobs and workflows | [#396](https://github.com/VilfredSikker/easy-review/issues/396) | 🔵 plan final (P26a–P37); addendum and issues at the gate |
 | Phase 4: core and service | [#397](https://github.com/VilfredSikker/easy-review/issues/397) | ⬜ |
 | Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | ⬜ |
 | Phase 5b: TUI | [#399](https://github.com/VilfredSikker/easy-review/issues/399) | ⬜ |
