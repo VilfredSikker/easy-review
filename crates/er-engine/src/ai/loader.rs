@@ -13,24 +13,6 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-const MAX_SIDECAR_BYTES: u64 = 10_000_000;
-
-/// Read a sidecar file with a size limit to prevent memory spikes from large/adversarial files.
-pub(crate) fn read_sidecar(path: &Path) -> std::io::Result<String> {
-    let metadata = std::fs::metadata(path)?;
-    if metadata.len() > MAX_SIDECAR_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "Sidecar file too large: {} bytes (limit {})",
-                metadata.len(),
-                MAX_SIDECAR_BYTES
-            ),
-        ));
-    }
-    std::fs::read_to_string(path)
-}
-
 /// Compute SHA-256 hash of raw diff output (for staleness detection).
 /// Used for .er-review.json compatibility where the hash is persisted.
 pub fn compute_diff_hash(raw_diff: &str) -> String {
@@ -175,6 +157,23 @@ fn branch_declaration_is_real(branch: &str) -> bool {
         && !crate::storage::is_pr_placeholder_branch(branch)
 }
 
+/// Read `summary.md` through the store's plain-text path.
+///
+/// The kind carries no envelope: the store adds the path, the size guard and
+/// the atomic write, and the bytes stay what the agent wrote.
+fn load_summary(er_dir: &str) -> Option<String> {
+    if er_dir.is_empty() {
+        return None;
+    }
+    let store = crate::store_registry::store();
+    let scope = er_store::Scope::dir(er_dir).ok()?;
+    let file = er_store::RelPath::new("summary.md").ok()?;
+    match store.read_text(&scope, &file).ok()? {
+        er_store::Loaded::Found(stored) => Some(stored.value),
+        _ => None,
+    }
+}
+
 /// True when sidecars in `er_dir` clearly belong to another branch than `scope`.
 pub fn artifacts_branch_mismatch(er_dir: &Path, scope: &str) -> bool {
     if !branch_declaration_is_real(scope) {
@@ -190,8 +189,7 @@ pub fn artifacts_branch_mismatch(er_dir: &Path, scope: &str) -> bool {
             return true;
         }
     }
-    let summary_path = er_dir.join("summary.md");
-    if let Ok(content) = read_sidecar(&summary_path) {
+    if let Some(content) = er_dir.to_str().and_then(load_summary) {
         if let Some(declared) = summary_declares_branch(&content) {
             if branch_declaration_is_real(&declared) && !storage_branches_match(scope, &declared) {
                 return true;
@@ -259,9 +257,8 @@ pub fn load_ai_state_with_arbiter(
     // vs PR) and is loaded by `TabState::reload_ai_state` → `resolve_view_tour`,
     // which knows the active view's bucket. It is intentionally not loaded here.
 
-    // Load .er/summary.md
-    let summary_path = Path::new(er_dir).join("summary.md");
-    if let Ok(content) = read_sidecar(&summary_path) {
+    // Load .er/summary.md through the store's plain-text path.
+    if let Some(content) = load_summary(er_dir) {
         if !content.trim().is_empty() {
             state.summary = Some(content);
         }
@@ -367,13 +364,16 @@ pub fn load_ai_state_with_arbiter(
     }
 
     // Overlay arbiter verdicts last, so they grade every finding the merges
-    // above put into the review rather than only the review's own. The store
-    // decides whether an overlay is usable at all, so a newer-version file is
-    // ignored here too; the captured bytes are the generation the caller
-    // stamped, so the loaded value stays tied to its stamp.
+    // above put into the review rather than only the review's own. The
+    // captured bytes are the generation the caller stamped, and the store's
+    // parser decides whether they are usable, so a stamp taken from a newer
+    // version is not applied even if the file changes under it.
     let arbiter = overlay.and_then(|bytes| {
-        crate::store_registry::read_found::<super::arbiter::ArbiterReview>(er_dir, ())?;
-        serde_json::from_slice::<super::arbiter::ArbiterReview>(bytes).ok()
+        let value = serde_json::from_slice(bytes).ok()?;
+        match er_store::envelope::parse::<super::arbiter::ArbiterReview>(value) {
+            er_store::Loaded::Found(stored) => Some(stored.value),
+            _ => None,
+        }
     });
     if let Some(arbiter) = arbiter {
         if let Some(review) = state.review.as_mut() {
@@ -458,47 +458,50 @@ fn restore_accepted_provenance(review: &mut ErReview, er_dir: &str) {
     }
 }
 
-/// Read and parse a guided-tour sidecar (`tour.json` / `tour.pr.json`) from a
-/// directory, honoring the shared sidecar size guard. Returns `None` if absent
-/// or malformed.
+/// Read and parse the guided-tour sidecar from a directory.
+///
+/// The store owns `tour.json`; any other name reads as absent. The name
+/// argument stays until its callers in the desktop and sidecar summaries are
+/// ready to drop it.
 pub fn load_tour_sidecar(dir: &str, name: &str) -> Option<ErTour> {
-    let path = Path::new(dir).join(name);
-    let content = read_sidecar(&path).ok()?;
-    serde_json::from_str::<ErTour>(&content).ok()
+    if name != "tour.json" {
+        return None;
+    }
+    crate::store_registry::read_found::<ErTour>(dir, ())
 }
 
-/// Load all mermaid diagrams from `{er_dir}/diagrams/*.json`. Each diagram is a
+/// Load all mermaid diagrams from `{er_dir}/diagrams/*.json`.
 ///
-/// standalone file (written one-per-run by the diagram agent), so unreadable or
-/// malformed files are skipped rather than failing the whole set. The `id` is
-/// the file stem and `stale` is computed against the current diff hash.
-/// Ordering: presets in their fixed display order, then customs newest-first.
+/// Each diagram is a standalone file (written one-per-run by the host), so
+/// unreadable or malformed files are skipped rather than failing the whole
+/// set. The `id` is the store slot and `stale` is computed against the current
+/// diff hash. A file whose stem is not a valid diagram id is not a diagram and
+/// never loads. Ordering: presets in their fixed display order, then customs
+/// newest-first.
 pub fn load_diagrams(er_dir: &str, current_diff_hash: &str) -> Vec<ErDiagram> {
-    let dir = Path::new(er_dir).join("diagrams");
+    if er_dir.is_empty() {
+        return Vec::new();
+    }
+    let store = crate::store_registry::store();
+    let Ok(scope) = er_store::Scope::dir(er_dir) else {
+        return Vec::new();
+    };
+    let Ok(slots) = store.list::<ErDiagram>(&scope) else {
+        return Vec::new();
+    };
     let mut out: Vec<ErDiagram> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(content) = read_sidecar(&path) else {
-                continue;
-            };
-            let Ok(mut diagram) = serde_json::from_str::<ErDiagram>(&content) else {
-                continue;
-            };
-            if diagram.mermaid.trim().is_empty() {
-                continue;
-            }
-            diagram.id = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_string();
-            diagram.stale = diagram.diff_hash != current_diff_hash;
-            out.push(diagram);
+    for slot in slots {
+        let Some(mut diagram) =
+            crate::store_registry::read_found::<ErDiagram>(er_dir, slot.clone())
+        else {
+            continue;
+        };
+        if diagram.mermaid.trim().is_empty() {
+            continue;
         }
+        diagram.id = slot.as_str().to_string();
+        diagram.stale = diagram.diff_hash != current_diff_hash;
+        out.push(diagram);
     }
     out.sort_by(|a, b| {
         let rank = |d: &ErDiagram| match d.kind.as_str() {
@@ -515,101 +518,10 @@ pub fn load_diagrams(er_dir: &str, current_diff_hash: &str) -> Vec<ErDiagram> {
     out
 }
 
-/// Get the mtime of the most recently modified .er-* file
-pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
-    latest_er_mtime_skipping(er_dir, None)
-}
-
-pub fn latest_er_mtime_skipping(
-    er_dir: &str,
-    skip: Option<&Path>,
-) -> Option<std::time::SystemTime> {
-    let er_dir = Path::new(er_dir);
-    let files = [
-        "review.json",
-        "order.json",
-        "tour.json",
-        "summary.md",
-        "checklist.json",
-        "questions.json",
-        "notes.json",
-        "github-comments.json",
-        "triage.json",
-        "professor.json",
-    ];
-
-    let skip_eq = |path: &Path| skip.is_some_and(|s| s == path);
-
-    let mut latest = files
-        .iter()
-        .filter_map(|name| {
-            let path = er_dir.join(name);
-            if skip_eq(&path) {
-                return None;
-            }
-            std::fs::metadata(&path).ok()?.modified().ok()
-        })
-        .max();
-
-    let experts_dir = er_dir.join("experts");
-    if let Ok(entries) = std::fs::read_dir(&experts_dir) {
-        for entry in entries.flatten() {
-            if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
-                latest = Some(match latest {
-                    Some(prev) => prev.max(m),
-                    None => m,
-                });
-            }
-        }
-    }
-
-    let diagrams_dir = er_dir.join("diagrams");
-    if let Ok(entries) = std::fs::read_dir(&diagrams_dir) {
-        for entry in entries.flatten() {
-            if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
-                latest = Some(match latest {
-                    Some(prev) => prev.max(m),
-                    None => m,
-                });
-            }
-        }
-    }
-
-    #[cfg(feature = "ui")]
-    if let Some(arena_mtime) = crate::arena::latest_arena_mtime(er_dir) {
-        latest = Some(match latest {
-            Some(prev) => prev.max(arena_mtime),
-            None => arena_mtime,
-        });
-    }
-
-    latest
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn latest_er_mtime_sees_notes_json() {
-        // An agent that edits notes.json outside er (resolving a note it acted
-        // on) must trigger the reload poll, or the desktop keeps showing it.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("notes.json"), r#"{"version":1,"notes":[]}"#).unwrap();
-        assert!(latest_er_mtime(dir.path().to_str().unwrap()).is_some());
-    }
-
-    #[test]
-    fn latest_er_mtime_ignores_feedback_json() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("feedback.json"),
-            r#"{"version":1,"diff_hash":"h","comments":[]}"#,
-        )
-        .unwrap();
-        assert!(latest_er_mtime(dir.path().to_str().unwrap()).is_none());
-    }
 
     #[test]
     fn load_ai_state_ignores_feedback_json() {
@@ -764,6 +676,35 @@ mod tests {
                 .findings
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn captured_newer_bytes_are_not_overlaid_after_a_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
+        let key = super::super::identity::finding_key("a.rs", None, "claim");
+        let arbiter = |version: u32, rationale: &str| {
+            serde_json::json!({"version":version,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"dropped","rationale":rationale}]}).to_string()
+        };
+        std::fs::write(path.join("arbiter.json"), arbiter(2, "from-v2")).unwrap();
+        let captured =
+            super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
+        // The file on disk becomes a valid version 1 before the load runs.
+        std::fs::write(path.join("arbiter.json"), arbiter(1, "from-v1")).unwrap();
+
+        let state =
+            load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
+
+        let applied: Vec<&str> = state
+            .arbiter_verdicts
+            .values()
+            .map(|(_, rationale)| rationale.as_str())
+            .collect();
+        assert!(
+            !applied.contains(&"from-v2"),
+            "the captured version-2 bytes were overlaid: {applied:?}"
         );
     }
 
@@ -1203,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_review_still_loads_and_is_marked_stale() {
+    fn a_review_json_with_another_diff_hash_loads_as_stale() {
         let dir = tempfile::tempdir().unwrap();
         let review = serde_json::json!({
             "version": 1,
@@ -1235,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn a_review_from_a_newer_version_is_ignored() {
+    fn a_review_json_with_an_unknown_version_is_ignored() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("review.json"),
@@ -1446,13 +1387,137 @@ mod tests {
         assert_eq!(loaded.file_pillar("src/a.rs").unwrap().id, "p-1");
         assert_eq!(loaded.diff_hash, "abc");
 
-        assert!(load_tour_sidecar(er_dir, "tour.pr.json").is_none());
-
         // load_ai_state does not load the tour and leaves staleness defaulted.
         let state = load_ai_state(er_dir, "abc", None);
         assert!(!state.has_tour());
         assert!(!state.is_stale);
         assert!(!state.tour_stale);
+    }
+
+    fn write_diagram_envelope(dir: &Path, name: &str, hash: &str) {
+        let payload = serde_json::json!({
+            "version": 1,
+            "diff_hash": hash,
+            "kind": "flows",
+            "title": "title",
+            "mermaid": "flowchart TD\nA-->B",
+        });
+        let envelope = serde_json::json!({
+            "kind": "diagram",
+            "version": 1,
+            "diff_hash": hash,
+            "producer": "host",
+            "written_at": "2026-11-10T00:00:00Z",
+            "payload": payload,
+        });
+        let diagrams = dir.join("diagrams");
+        std::fs::create_dir_all(&diagrams).unwrap();
+        std::fs::write(
+            diagrams.join(name),
+            serde_json::to_string(&envelope).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_tour(dir: &Path, name: &str, value: serde_json::Value) {
+        std::fs::write(dir.join(name), serde_json::to_string(&value).unwrap()).unwrap();
+    }
+
+    fn a_tour() -> serde_json::Value {
+        serde_json::json!({
+            "version": 1,
+            "diff_hash": "abc",
+            "title": "Tour: foo",
+            "pillars": [{"id": "p-1", "title": "Foundation", "files": []}]
+        })
+    }
+
+    #[test]
+    fn load_tour_sidecar_ignores_any_name_but_tour_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        write_tour(dir.path(), "tour.json", a_tour());
+        write_tour(dir.path(), "tour.pr.json", a_tour());
+
+        assert!(load_tour_sidecar(er_dir, "tour.json").is_some());
+        assert!(load_tour_sidecar(er_dir, "tour.pr.json").is_none());
+    }
+
+    #[test]
+    fn a_malformed_tour_json_loads_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tour.json"), "{ not valid json").unwrap();
+
+        assert!(load_tour_sidecar(dir.path().to_str().unwrap(), "tour.json").is_none());
+    }
+
+    #[test]
+    fn a_tour_json_with_an_unknown_version_loads_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tour = a_tour();
+        tour["version"] = serde_json::json!(2);
+        write_tour(dir.path(), "tour.json", tour);
+
+        assert!(load_tour_sidecar(dir.path().to_str().unwrap(), "tour.json").is_none());
+    }
+
+    #[test]
+    fn an_empty_or_whitespace_summary_is_no_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        for body in ["", "   \n\t\n"] {
+            std::fs::write(dir.path().join("summary.md"), body).unwrap();
+            assert!(
+                load_ai_state(er_dir, "abc", None).summary.is_none(),
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_summary_over_the_size_limit_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join("summary.md")).unwrap();
+        file.set_len(er_store::MAX_ARTIFACT_BYTES + 1).unwrap();
+
+        assert!(load_ai_state(dir.path().to_str().unwrap(), "abc", None)
+            .summary
+            .is_none());
+    }
+
+    #[test]
+    fn a_malformed_tour_does_not_hide_the_review_or_the_diagrams() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("tour.json"), "{ not valid json").unwrap();
+        std::fs::write(
+            dir.path().join("review.json"),
+            r#"{"version":1,"diff_hash":"abc","files":{"a.rs":{"risk":"medium","findings":[{"id":"1","title":"claim","severity":"medium","hunk_index":0}]}}}"#,
+        )
+        .unwrap();
+        write_diagram_envelope(dir.path(), "flows.json", "abc");
+
+        let state = load_ai_state(er_dir, "abc", None);
+
+        assert_eq!(
+            state.review.expect("the review").files["a.rs"]
+                .findings
+                .len(),
+            1
+        );
+        assert_eq!(load_diagrams(er_dir, "abc").len(), 1);
+    }
+
+    #[test]
+    fn diagram_files_with_an_unsafe_name_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        write_diagram_envelope(dir.path(), "flows.json", "abc");
+        write_diagram_envelope(dir.path(), "my diagram.json", "abc");
+
+        let diagrams = load_diagrams(dir.path().to_str().unwrap(), "abc");
+
+        let ids: Vec<&str> = diagrams.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, vec!["flows"]);
     }
 
     #[test]
@@ -1484,7 +1549,7 @@ mod tests {
         std::fs::create_dir_all(&diagrams_dir).unwrap();
 
         let write = |name: &str, kind: &str, hash: &str, created: &str, mermaid: &str| {
-            let d = serde_json::json!({
+            let payload = serde_json::json!({
                 "version": 1,
                 "diff_hash": hash,
                 "created_at": created,
@@ -1493,7 +1558,19 @@ mod tests {
                 "prompt": "",
                 "mermaid": mermaid,
             });
-            std::fs::write(diagrams_dir.join(name), serde_json::to_string(&d).unwrap()).unwrap();
+            let envelope = serde_json::json!({
+                "kind": "diagram",
+                "version": 1,
+                "diff_hash": hash,
+                "producer": "host",
+                "written_at": created,
+                "payload": payload,
+            });
+            std::fs::write(
+                diagrams_dir.join(name),
+                serde_json::to_string(&envelope).unwrap(),
+            )
+            .unwrap();
         };
 
         write(

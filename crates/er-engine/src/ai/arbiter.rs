@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn writing_the_arbiter_file_keeps_the_bare_bytes() {
+    fn write_arbiter_review_writes_the_same_bytes_as_before() {
         let dir = tempfile::TempDir::new().unwrap();
         let review = arbiter(HASH, vec![verdict(ArbiterRuling::Kept, None)]);
 

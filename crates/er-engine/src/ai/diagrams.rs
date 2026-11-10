@@ -27,7 +27,7 @@ pub const DIAGRAM_JSON_BEGIN: &str = "---DIAGRAM_JSON---";
 pub const DIAGRAM_JSON_END: &str = "---END_DIAGRAM_JSON---";
 
 /// One AI-generated mermaid diagram of a diff.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ErDiagram {
     pub version: u32,
     pub diff_hash: String,
@@ -52,6 +52,18 @@ pub struct ErDiagram {
     /// `diff_hash` no longer matches the current diff.
     #[serde(skip)]
     pub stale: bool,
+}
+
+impl er_store::Artifact for ErDiagram {
+    const KIND: &'static str = "diagram";
+    const VERSION: u32 = 1;
+    const MODE: er_store::Mode = er_store::Mode::Enveloped;
+    const FILE: &'static str = "diagrams/{slot}.json";
+    type Slot = er_store::DiagramId;
+
+    fn diff_hash(&self) -> Option<&str> {
+        Some(&self.diff_hash)
+    }
 }
 
 /// A selectable diagram preset in the UI.
@@ -248,19 +260,33 @@ fn validate_and_normalize_diagram(
 }
 
 fn write_diagram_atomic(path: &Path, diagram: &ErDiagram) -> Result<()> {
-    let parent = path
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("diagram path has no file name"))?;
+    let id = file_name
+        .strip_suffix(".json")
+        .ok_or_else(|| anyhow::anyhow!("diagram path must end in .json: {file_name}"))?;
+    if !is_safe_diagram_id(id) {
+        bail!("diagram id is not safe: {id}");
+    }
+    let diagrams_dir = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("diagram path has no parent"))?;
-    std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
-    let body = serde_json::to_string_pretty(diagram).context("serialize diagram")?;
-    let tmp = parent.join(format!(
-        ".{}.tmp",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("diagram.json")
-    ));
-    std::fs::write(&tmp, body).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("rename onto {}", path.display()))?;
+    if diagrams_dir.file_name().and_then(|s| s.to_str()) != Some("diagrams") {
+        bail!("diagram path must be inside a diagrams directory");
+    }
+    let bucket = diagrams_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("diagram directory has no parent"))?;
+    let scope =
+        er_store::Scope::dir(bucket).with_context(|| format!("bucket for {}", path.display()))?;
+    let slot = er_store::DiagramId::new(id).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let key = er_store::ArtifactKey::<ErDiagram>::new(scope, slot)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    crate::store_registry::store()
+        .write(&key, diagram)
+        .with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
@@ -398,17 +424,22 @@ mod tests {
             &path,
         )
         .unwrap();
-        let loaded: ErDiagram =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let listed = crate::ai::load_diagrams(er_dir, "real-hash");
+        assert_eq!(listed.len(), 1);
+        let loaded = &listed[0];
+        assert_eq!(loaded.id, "mental-model");
         assert_eq!(loaded.kind, DIAGRAM_KIND_MENTAL_MODEL);
         assert_eq!(loaded.diff_hash, "real-hash");
         assert!(loaded.prompt.is_empty());
         assert!(loaded.mermaid.contains("flowchart TD"));
-        let entries: Vec<_> = std::fs::read_dir(dir.path())
+        let mut entries: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(entries, vec!["diagrams"]);
+        entries.sort();
+        // `.lock` is the store's scope lock; the point is that no temp file
+        // survives beside it.
+        assert_eq!(entries, vec![".lock", "diagrams"]);
     }
 
     #[test]
@@ -424,6 +455,48 @@ mod tests {
                 .unwrap_err();
         assert!(err.to_string().contains("empty"));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_diagram_is_written_as_an_envelope_and_listed_back() {
+        let dir = tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let path = diagram_sidecar_path(er_dir, "flows.json").unwrap();
+
+        persist_diagram_json(
+            r#"{"version":1,"diff_hash":"h","mermaid":"flowchart TD\n  A-->B"}"#,
+            DIAGRAM_KIND_FLOWS,
+            "h",
+            None,
+            &path,
+        )
+        .unwrap();
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["kind"], "diagram");
+        assert_eq!(raw["version"], 1);
+        assert_eq!(raw["payload"]["mermaid"], "flowchart TD\n  A-->B");
+
+        let listed = crate::ai::load_diagrams(er_dir, "h");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "flows");
+        assert!(!listed[0].stale);
+    }
+
+    #[test]
+    fn persisting_to_a_path_outside_a_diagrams_directory_is_an_error() {
+        let dir = tempdir().unwrap();
+        let body = r#"{"version":1,"diff_hash":"h","mermaid":"flowchart TD\n  A-->B"}"#;
+        for path in [
+            dir.path().join("x/flows.json"),
+            dir.path().join("diagrams/../flows.json"),
+        ] {
+            let error =
+                persist_diagram_json(body, DIAGRAM_KIND_FLOWS, "h", None, &path).unwrap_err();
+            assert!(error.to_string().contains("diagrams"), "{path:?}: {error}");
+            assert!(!path.exists());
+        }
     }
 
     #[test]
@@ -465,8 +538,10 @@ mod tests {
             &path,
         )
         .unwrap();
-        let loaded: ErDiagram =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let listed = crate::ai::load_diagrams(er_dir, "real-hash");
+        assert_eq!(listed.len(), 1);
+        let loaded = &listed[0];
+        assert_eq!(loaded.id, "custom-1");
         assert_eq!(loaded.kind, DIAGRAM_KIND_CUSTOM);
         assert_eq!(loaded.diff_hash, "real-hash");
         assert_eq!(loaded.prompt, "what the user actually asked");

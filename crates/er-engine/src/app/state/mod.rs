@@ -9768,7 +9768,9 @@ fn cleanup_sidecars(er_dir: &str, artifacts: bool) -> Result<(), er_store::Store
     if artifacts {
         delete_review_artifacts(&scope, &guard);
     }
-    let _ = std::fs::remove_file(std::path::Path::new(er_dir).join("summary.md"));
+    if let Ok(file) = er_store::RelPath::new("summary.md") {
+        let _ = crate::store_registry::store().delete_text_locked(&guard, &file);
+    }
     Ok(())
 }
 
@@ -16985,7 +16987,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_review_artifacts_removes_the_prev_snapshots() {
+    fn cleanup_review_artifacts_also_removes_expert_prev_snapshots() {
         let dir = tempfile::tempdir().unwrap();
         let er = dir.path();
         let experts = er.join("experts");
