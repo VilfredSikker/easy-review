@@ -555,7 +555,7 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("arbiter.sh");
-        std::fs::write(
+        crate::test_support::write_executable_script(
             &script,
             "#!/bin/sh\n\
              # Chatty preamble on stderr, a fenced JSON block on stdout: what a\n\
@@ -566,11 +566,6 @@ mod tests {
                '```'\n",
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
 
         let v = run_provider_json(
             &ProviderCommand {
