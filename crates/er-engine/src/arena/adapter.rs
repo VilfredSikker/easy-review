@@ -226,41 +226,12 @@ fn read_lines<R: Read>(pipe: R) -> String {
         .join("\n")
 }
 
-/// Pull the model's final text from Claude/Cursor `stream-json` NDJSON logs.
-fn extract_agent_stdout_text(stdout: &str) -> String {
-    let mut last_result: Option<String> = None;
-    let mut assistant_text: Vec<String> = Vec::new();
-
-    for line in stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if v.get("type").and_then(|t| t.as_str()) == Some("result") {
-            if let Some(r) = v.get("result").and_then(|r| r.as_str()) {
-                last_result = Some(r.to_string());
-            }
-        }
-        if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-            assistant_text.extend(crate::agent_runtime::assistant_text_blocks(&v));
-        }
-    }
-
-    if let Some(r) = last_result.filter(|s| !s.trim().is_empty()) {
-        return r;
-    }
-    if !assistant_text.is_empty() {
-        return assistant_text.join("\n\n");
-    }
-    stdout.to_string()
-}
-
 fn extract_json_from_stdout(stdout: &str, stream_json: bool) -> Result<Value> {
     let text = if stream_json {
-        extract_agent_stdout_text(stdout)
+        er_agent::decode::decode_final_text(
+            stdout,
+            er_agent::decode::OutputProtocol::ClaudeStreamJson,
+        )
     } else {
         stdout.to_string()
     };
@@ -689,5 +660,19 @@ mod tests {
         assert_eq!(truncate("aéé", 2), "a…");
         assert_eq!(truncate("aéé", 3), "aé…");
         assert_eq!(truncate("aéé", 5), "aéé");
+    }
+
+    #[test]
+    fn the_arena_decodes_through_the_shared_decoder() {
+        let stdout = r#"{"type":"result","result":"{\"findings\":[{\"title\":\"x\"}]}"}"#;
+        let decoded = er_agent::decode::decode_final_text(
+            stdout,
+            er_agent::decode::OutputProtocol::ClaudeStreamJson,
+        );
+        assert_eq!(decoded, r#"{"findings":[{"title":"x"}]}"#);
+        assert_eq!(
+            extract_json_from_stdout(stdout, true).unwrap(),
+            serde_json::json!({"findings": [{"title": "x"}]})
+        );
     }
 }

@@ -726,6 +726,7 @@ mod tests {
         handle.register(child);
 
         let grandchild = wait_for_pid_file(&pid_file).expect("grandchild pid written");
+        let mut guard = GrandchildGuard(Some(grandchild));
 
         let child = handle.take_child(leader).expect("registered");
         handle.kill();
@@ -743,6 +744,7 @@ mod tests {
             !status.success(),
             "leader exited cleanly instead of being killed"
         );
+        guard.disarm();
     }
 
     /// Stops a recorded grandchild when dropped, so a failed assertion leaves no
@@ -807,11 +809,11 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        guard.disarm();
         assert!(
             wait_until_gone(grandchild),
             "cleanup did not stop the grandchild"
         );
+        guard.disarm();
     }
 
     #[cfg(unix)]

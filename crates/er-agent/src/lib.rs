@@ -9,3 +9,6 @@
 pub mod agent_run;
 pub mod agent_slots;
 pub mod agent_timing;
+pub mod decode;
+pub mod job;
+pub mod provider;

@@ -208,7 +208,10 @@ pub fn persist_diagram_json(
 
 fn parse_diagram_from_agent_stdout(stdout: &str, stream_json: bool) -> Result<ErDiagram> {
     let text = if stream_json {
-        extract_agent_stdout_text(stdout)
+        er_agent::decode::decode_final_text(
+            stdout,
+            er_agent::decode::OutputProtocol::ClaudeStreamJson,
+        )
     } else {
         stdout.to_string()
     };
@@ -334,39 +337,6 @@ fn extract_fenced_json(s: &str) -> Option<String> {
     let (_, rest) = s.split_once("```json")?;
     let (body, _) = rest.split_once("```")?;
     Some(body.trim().to_string())
-}
-
-/// Pull the model's final text from Claude/Cursor `stream-json` NDJSON logs
-/// (same shape as arena / card-AI extractors).
-fn extract_agent_stdout_text(stdout: &str) -> String {
-    let mut last_result: Option<String> = None;
-    let mut assistant_text: Vec<String> = Vec::new();
-
-    for line in stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if v.get("type").and_then(|t| t.as_str()) == Some("result") {
-            if let Some(r) = v.get("result").and_then(|r| r.as_str()) {
-                last_result = Some(r.to_string());
-            }
-        }
-        if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-            assistant_text.extend(crate::agent_runtime::assistant_text_blocks(&v));
-        }
-    }
-
-    if let Some(r) = last_result.filter(|s| !s.trim().is_empty()) {
-        return r;
-    }
-    if !assistant_text.is_empty() {
-        return assistant_text.join("\n\n");
-    }
-    stdout.to_string()
 }
 
 fn unix_now_secs_string() -> String {
@@ -574,5 +544,22 @@ mod tests {
         );
         let d = parse_diagram_from_agent_stdout(stdout, true).unwrap();
         assert!(d.mermaid.contains("flowchart LR"));
+    }
+
+    #[test]
+    fn the_sentinel_and_payload_pass_through_the_shared_decoder() {
+        let payload = r#"{"version":1,"diff_hash":"h","kind":"subsystems","title":"S","prompt":"","mermaid":"flowchart LR\n  A-->B"}"#;
+        let expected = format!("{DIAGRAM_JSON_BEGIN}\n{payload}\n{DIAGRAM_JSON_END}");
+        let stdout = serde_json::json!({"type": "result", "result": &expected}).to_string();
+        let decoded = er_agent::decode::decode_final_text(
+            &stdout,
+            er_agent::decode::OutputProtocol::ClaudeStreamJson,
+        );
+        assert_eq!(
+            decoded, expected,
+            "the sentinel and payload must pass through byte-for-byte"
+        );
+        let diagram = parse_diagram_from_agent_stdout(&stdout, true).unwrap();
+        assert_eq!(diagram.mermaid, "flowchart LR\n  A-->B");
     }
 }
