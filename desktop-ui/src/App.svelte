@@ -24,6 +24,7 @@
   import ViewBar from "$lib/components/shell/ViewBar.svelte";
   import StaleBanner from "$lib/components/shell/StaleBanner.svelte";
   import LocalBranchBanner from "$lib/components/shell/LocalBranchBanner.svelte";
+  import ConfigLoadBanner from "$lib/components/shell/ConfigLoadBanner.svelte";
   import TabPlaceholder from "$lib/components/TabPlaceholder.svelte";
   import TourEmptyState from "$lib/components/TourEmptyState.svelte";
   import { tabPlaceholderTarget } from "$lib/tabPlaceholder";
@@ -373,6 +374,7 @@
     <div class="flex-1 flex flex-col min-w-0 min-h-0">
       <TopBar />
       <ViewBar />
+      <ConfigLoadBanner />
       {#if isReviewView}
         <StaleBanner />
         <LocalBranchBanner />
