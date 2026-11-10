@@ -31,7 +31,7 @@ false confidence.
 
 Arbiter verdicts are written to their own `arbiter.json` sidecar in the active view
 bucket, and merged into the review at **load** time — the same overlay pattern
-`merge_experts_into_review` (`ai/experts.rs`) already uses for expert sidecars.
+`build_findings_projection` (`ai/projection.rs`) applies to expert sidecars.
 Nothing but the arbiter writes that file, and the arbiter writes nothing else.
 
 Findings are content-addressed for the purpose of matching. `arena/identity.rs`

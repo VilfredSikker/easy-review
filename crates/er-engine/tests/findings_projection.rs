@@ -1,16 +1,22 @@
-//! Golden pins for the findings projection (P20).
+//! Golden pins for the findings projection.
 //!
 //! Cases 1–6 drive `load_ai_state` over a temp bucket. They pin what the front
 //! ends show today, so they must pass before and after the projection replaces
 //! the in-place merges, with no golden file changed between the two commits.
 //! Cases 7–8 call `build_findings_projection` directly; they land with the
 //! projection because the function does not exist before it.
+#![expect(
+    clippy::expect_used,
+    reason = "the whole file is test code; clippy exempts #[test] fns but not their helpers"
+)]
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use er_engine::ai::accepted_provenance::{AcceptedProvenance, ProvenanceRead};
 use er_engine::ai::{
-    finding_key, load_ai_state, AiState, ArbiterEffect, ArbiterRuling, ErReview,
+    build_findings_projection, finding_key, load_ai_state, AiState, ArbiterEffect, ArbiterReview,
+    ArbiterRuling, ErReview, ExpertReview, ProjectionInputs,
 };
 use serde_json::{json, Value};
 
@@ -496,5 +502,136 @@ fn projection_arbiter_overlay() {
         "projection_arbiter_overlay",
         case_06_arbiter_overlay(),
         include_str!("golden/findings_projection/case_06_arbiter_overlay.json"),
+    );
+}
+
+fn case_07_expert_order() -> Value {
+    let review: ErReview = serde_json::from_value(json!({
+        "version": 1,
+        "diff_hash": "H",
+        "files": {},
+        "file_hashes": {}
+    }))
+    .expect("an empty general review");
+    let experts: Vec<ExpertReview> = vec![
+        serde_json::from_value(json!({
+            "version": 1,
+            "expert_id": "security",
+            "diff_hash": "H",
+            "files": {"x.rs": {"findings": [
+                {"id": "1", "title": "security claim", "severity": "medium", "hunk_index": 0, "line_start": 1}
+            ]}}
+        }))
+        .expect("a security expert"),
+        serde_json::from_value(json!({
+            "version": 1,
+            "expert_id": "api",
+            "diff_hash": "H",
+            "files": {"x.rs": {"findings": [
+                {"id": "1", "title": "api claim", "severity": "medium", "hunk_index": 0, "line_start": 2}
+            ]}}
+        }))
+        .expect("an api expert"),
+    ];
+
+    let projection = build_findings_projection(ProjectionInputs {
+        general: Some(review),
+        experts: &experts,
+        professor: None,
+        arbiter: None,
+        current_diff_hash: "H",
+        accepted_provenance: &|_, _| ProvenanceRead::default(),
+    });
+    let review = projection.review.as_ref().expect("a projected review");
+    let ids: Vec<&str> = review.files["x.rs"]
+        .findings
+        .iter()
+        .map(|finding| finding.id.as_str())
+        .collect();
+    assert_eq!(ids, ["api-1", "sec-1"]);
+    canonical(
+        projection.review.as_ref(),
+        &projection.arbiter_effect,
+        &projection.arbiter_graded_keys,
+        &projection.arbiter_verdicts,
+    )
+}
+
+#[test]
+fn projection_orders_experts_by_id_not_by_directory_order() {
+    assert_golden(
+        "projection_orders_experts_by_id_not_by_directory_order",
+        case_07_expert_order(),
+        include_str!("golden/findings_projection/case_07_expert_order.json"),
+    );
+}
+
+fn case_08_provenance_before_the_arbiter() -> Value {
+    let review: ErReview = serde_json::from_value(json!({
+        "version": 1,
+        "diff_hash": "H",
+        "files": {
+            "a.rs": {"risk": "low", "findings": [
+                {"id": "arena-run-1-a", "title": "A", "severity": "low", "hunk_index": 0, "line_start": 1}
+            ]},
+            "b.rs": {"risk": "low", "findings": [
+                {"id": "arena-run-1-b", "title": "B", "severity": "low", "hunk_index": 0, "line_start": 2}
+            ]}
+        }
+    }))
+    .expect("a general review with two rows");
+    let arbiter: ArbiterReview = serde_json::from_value(json!({
+        "version": 1,
+        "diff_hash": "H",
+        "verdicts": [{
+            "id": finding_key("b.rs", Some(2), "B"),
+            "file": "b.rs",
+            "verdict": "kept",
+            "rationale": "kept",
+            "providers": ["arbiter-b"]
+        }]
+    }))
+    .expect("an arbiter overlay");
+
+    let projection = build_findings_projection(ProjectionInputs {
+        general: Some(review),
+        experts: &[],
+        professor: None,
+        arbiter: Some(&arbiter),
+        current_diff_hash: "H",
+        accepted_provenance: &|_, rows| {
+            let mut read = ProvenanceRead::default();
+            if rows.iter().any(|row| row.id == "arena-run-1-a") {
+                read.rows.insert(
+                    "arena-run-1-a".to_string(),
+                    AcceptedProvenance {
+                        providers: vec!["host-a".to_string()],
+                        raisers: vec!["security".to_string()],
+                    },
+                );
+            }
+            read
+        },
+    });
+    let review = projection.review.as_ref().expect("a projected review");
+    let a = &review.files["a.rs"].findings[0];
+    assert_eq!(a.providers, ["host-a"]);
+    assert_eq!(a.lens, "security");
+    let b = &review.files["b.rs"].findings[0];
+    assert_eq!(b.providers, ["arbiter-b"]);
+    canonical(
+        projection.review.as_ref(),
+        &projection.arbiter_effect,
+        &projection.arbiter_graded_keys,
+        &projection.arbiter_verdicts,
+    )
+}
+
+#[test]
+fn projection_provenance_runs_before_the_arbiter() {
+    assert_golden(
+        "projection_provenance_runs_before_the_arbiter",
+        case_08_provenance_before_the_arbiter(),
+        include_str!("golden/findings_projection/case_08_provenance_before_arbiter.json"),
     );
 }

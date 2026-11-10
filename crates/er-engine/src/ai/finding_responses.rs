@@ -136,10 +136,10 @@ where
     }
 
     // Each expert merges findings with its own id prefix (`sec-`, `api-`, …).
-    // Skip unknown experts: the loader (`merge_experts_into_review`) never merges
-    // their findings into the in-memory review, so they can't be a validation
-    // target — and matching with a `None` prefix would collapse to bare-id
-    // equality and risk writing to the wrong sidecar.
+    // Skip unknown experts: the projection (`build_findings_projection`) never
+    // appends their findings to the in-memory review, so they can't be a
+    // validation target — and matching with a `None` prefix would collapse to
+    // bare-id equality and risk writing to the wrong sidecar.
     if let Ok(slots) = store.list::<ExpertReview>(&scope) {
         for slot in slots {
             let Some(def) = expert_by_id(slot.as_str()) else {

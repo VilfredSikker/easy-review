@@ -1,7 +1,7 @@
-//! Specialized expert reviewers — registry, sidecar types, merge into general review.
+//! Specialized expert reviewers — registry and sidecar types.
 
 use super::professor::{PROFESSOR_ID, PROFESSOR_ID_PREFIX};
-use super::review::{ErFileReview, ErReview, Finding, RiskLevel, GENERAL_LENS};
+use super::review::{ErReview, Finding, GENERAL_LENS};
 use er_store::ExpertId;
 use std::collections::HashMap;
 
@@ -311,14 +311,6 @@ pub fn load_expert_reviews(er_dir: &str) -> Vec<ExpertReview> {
         .collect()
 }
 
-fn prefix_finding_id(prefix: &str, id: &str) -> String {
-    if id.starts_with(&format!("{prefix}-")) {
-        id.to_string()
-    } else {
-        format!("{prefix}-{id}")
-    }
-}
-
 /// Expert id owning a finding-id prefix (`sec` → `security`).
 pub fn expert_id_for_id_prefix(prefix: &str) -> Option<&'static str> {
     EXPERTS.iter().find(|e| e.id_prefix == prefix).map(|e| e.id)
@@ -365,72 +357,6 @@ pub fn expert_hash_accepted(
         || (!review_hash.is_empty() && expert.diff_hash == review_hash)
 }
 
-/// Merge expert findings into `review` at load time (skip stale expert files).
-pub fn merge_experts_into_review(
-    review: &mut ErReview,
-    experts: &[ExpertReview],
-    current_diff_hash: &str,
-) {
-    for expert in experts {
-        if !expert_hash_accepted(expert, &review.diff_hash, current_diff_hash) {
-            continue;
-        }
-        let Some(def) = expert_by_id(&expert.expert_id) else {
-            continue;
-        };
-        for (path, efr) in &expert.files {
-            let entry = review
-                .files
-                .entry(path.clone())
-                .or_insert_with(|| ErFileReview {
-                    risk: RiskLevel::Info,
-                    risk_reason: String::new(),
-                    summary: String::new(),
-                    findings: Vec::new(),
-                });
-            for mut finding in efr.findings.clone() {
-                finding.id = prefix_finding_id(def.id_prefix, &finding.id);
-                finding.lens = def.id.to_string();
-                // A sidecar's own findings come from this one expert, so it is
-                // the whole raiser set until something merges several.
-                if finding.raised_by.is_empty() {
-                    finding.raised_by = vec![def.id.to_string()];
-                }
-                entry.findings.push(finding);
-            }
-        }
-    }
-}
-
-/// Build a minimal `ErReview` shell when only expert sidecars exist.
-pub fn synthesize_review_from_experts(
-    experts: &[ExpertReview],
-    current_diff_hash: &str,
-) -> Option<ErReview> {
-    let fresh: Vec<&ExpertReview> = experts
-        .iter()
-        .filter(|e| e.diff_hash == current_diff_hash)
-        .collect();
-    if fresh.is_empty() {
-        return None;
-    }
-    let first = fresh[0];
-    let mut review = ErReview {
-        version: 1,
-        diff_hash: current_diff_hash.to_string(),
-        created_at: first.created_at.clone(),
-        base_branch: String::new(),
-        head_branch: String::new(),
-        files: HashMap::new(),
-        file_hashes: HashMap::new(),
-    };
-    merge_experts_into_review(&mut review, experts, current_diff_hash);
-    if review.files.is_empty() {
-        return None;
-    }
-    Some(review)
-}
-
 /// Background task kind label, e.g. `expert:security`.
 pub fn expert_task_kind(expert_id: &str) -> String {
     format!("expert:{expert_id}")
@@ -439,7 +365,7 @@ pub fn expert_task_kind(expert_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::review::{Confidence, RiskLevel};
+    use crate::ai::review::{Confidence, ErFileReview, RiskLevel};
 
     /// A finding as an expert sidecar writes it: a defect kind, no lens (the
     /// merge assigns that), no line text.
@@ -519,93 +445,6 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].expert_id, "security");
         assert_eq!(loaded[0].files["a.rs"].findings.len(), 1);
-    }
-
-    #[test]
-    fn merge_prefixes_ids_and_skips_stale() {
-        let hash = "abc123";
-        let mut review = ErReview {
-            version: 1,
-            diff_hash: hash.to_string(),
-            created_at: String::new(),
-            base_branch: String::new(),
-            head_branch: String::new(),
-            files: HashMap::new(),
-            file_hashes: HashMap::new(),
-        };
-        let experts = vec![
-            ExpertReview {
-                version: 1,
-                expert_id: "security".to_string(),
-                diff_hash: hash.to_string(),
-                diff_scope: "branch".to_string(),
-                created_at: String::new(),
-                summary: String::new(),
-                files: HashMap::from([(
-                    "src/a.rs".to_string(),
-                    ExpertFileReview {
-                        findings: vec![sample_finding("1")],
-                    },
-                )]),
-            },
-            ExpertReview {
-                version: 1,
-                expert_id: "patterns".to_string(),
-                diff_hash: "stale".to_string(),
-                diff_scope: String::new(),
-                created_at: String::new(),
-                summary: String::new(),
-                files: HashMap::from([(
-                    "src/b.rs".to_string(),
-                    ExpertFileReview {
-                        findings: vec![sample_finding("9")],
-                    },
-                )]),
-            },
-        ];
-        merge_experts_into_review(&mut review, &experts, hash);
-        assert_eq!(review.files.len(), 1);
-        let f = &review.files["src/a.rs"];
-        assert_eq!(f.findings.len(), 1);
-        assert_eq!(f.findings[0].id, "sec-1");
-        assert_eq!(f.findings[0].lens, "security");
-    }
-
-    /// The merge must not overwrite an expert's own `category`: an expert that
-    /// classifies its finding as a correctness issue keeps that classification,
-    /// and the producer name goes to `lens` instead.
-    #[test]
-    fn merge_keeps_the_experts_defect_category() {
-        let hash = "abc123";
-        let mut review = ErReview {
-            version: 1,
-            diff_hash: hash.to_string(),
-            created_at: String::new(),
-            base_branch: String::new(),
-            head_branch: String::new(),
-            files: HashMap::new(),
-            file_hashes: HashMap::new(),
-        };
-        let experts = vec![ExpertReview {
-            version: 1,
-            expert_id: "security".to_string(),
-            diff_hash: hash.to_string(),
-            diff_scope: "branch".to_string(),
-            created_at: String::new(),
-            summary: String::new(),
-            files: HashMap::from([(
-                "src/a.rs".to_string(),
-                ExpertFileReview {
-                    findings: vec![sample_finding("1")],
-                },
-            )]),
-        }];
-
-        merge_experts_into_review(&mut review, &experts, hash);
-
-        let f = &review.files["src/a.rs"].findings[0];
-        assert_eq!(f.category, "correctness", "defect kind was overwritten");
-        assert_eq!(f.lens, "security");
     }
 
     #[test]
@@ -697,90 +536,5 @@ mod tests {
         assert!(list.iter().any(|r| r.kind == "professor"));
         assert!(list.first().is_some_and(|r| r.kind == "triage"));
         assert_eq!(list.len(), EXPERTS.len() + 3);
-    }
-
-    #[test]
-    fn merge_adds_to_existing_file_entry() {
-        let hash = "h";
-        let mut review = ErReview {
-            version: 1,
-            diff_hash: hash.to_string(),
-            created_at: String::new(),
-            base_branch: String::new(),
-            head_branch: String::new(),
-            files: HashMap::from([(
-                "x.rs".to_string(),
-                ErFileReview {
-                    risk: RiskLevel::Low,
-                    risk_reason: String::new(),
-                    summary: "s".to_string(),
-                    findings: vec![sample_finding("f-1")],
-                },
-            )]),
-            file_hashes: HashMap::new(),
-        };
-        let experts = vec![ExpertReview {
-            version: 1,
-            expert_id: "api".to_string(),
-            diff_hash: hash.to_string(),
-            diff_scope: String::new(),
-            created_at: String::new(),
-            summary: String::new(),
-            files: HashMap::from([(
-                "x.rs".to_string(),
-                ExpertFileReview {
-                    findings: vec![sample_finding("2")],
-                },
-            )]),
-        }];
-        merge_experts_into_review(&mut review, &experts, hash);
-        assert_eq!(review.files["x.rs"].findings.len(), 2);
-        assert!(review.files["x.rs"]
-            .findings
-            .iter()
-            .any(|f| f.id == "api-2"));
-    }
-
-    #[test]
-    fn merge_keeps_experts_sharing_the_review_hash_after_tab_diff_moved_on() {
-        // Selected-files run: general + expert sidecars hash the filtered diff
-        // ("scoped") while the tab hashes the full diff ("full"). The review
-        // loads as stale; its experts must ride along instead of vanishing.
-        // An expert from an older generation still stays out.
-        let mut review = ErReview {
-            version: 1,
-            diff_hash: "scoped".to_string(),
-            created_at: String::new(),
-            base_branch: String::new(),
-            head_branch: String::new(),
-            files: HashMap::new(),
-            file_hashes: HashMap::new(),
-        };
-        let expert = |id: &str, hash: &str| ExpertReview {
-            version: 1,
-            expert_id: id.to_string(),
-            diff_hash: hash.to_string(),
-            diff_scope: String::new(),
-            created_at: String::new(),
-            summary: String::new(),
-            files: HashMap::from([(
-                "m.sql".to_string(),
-                ExpertFileReview {
-                    findings: vec![sample_finding("1")],
-                },
-            )]),
-        };
-        let experts = vec![expert("reliability", "scoped"), expert("security", "older")];
-        merge_experts_into_review(&mut review, &experts, "full");
-        let lenses: Vec<&str> = review.files["m.sql"]
-            .findings
-            .iter()
-            .map(|f| f.lens.as_str())
-            .collect();
-        assert_eq!(lenses, vec!["reliability"]);
-        assert!(
-            !expert_hash_accepted(&experts[0], "", "full"),
-            "without a review hash only the tab's own hash is accepted"
-        );
     }
 }

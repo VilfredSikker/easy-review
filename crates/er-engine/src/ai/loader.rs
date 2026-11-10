@@ -1,11 +1,8 @@
 use super::diagrams::{
     ErDiagram, DIAGRAM_KIND_FLOWS, DIAGRAM_KIND_MENTAL_MODEL, DIAGRAM_KIND_SUBSYSTEMS,
 };
-use super::experts::{
-    backfill_finding_lenses, expert_by_id, load_expert_reviews, merge_experts_into_review,
-    synthesize_review_from_experts,
-};
-use super::professor::{load_professor_review, merge_professor_into_review};
+use super::experts::{expert_by_id, load_expert_reviews};
+use super::professor::load_professor_review;
 use super::review::*;
 use super::triage::load_triage_review;
 use sha2::{Digest, Sha256};
@@ -229,12 +226,12 @@ pub fn load_ai_state_with_arbiter(
     }
 
     // Load .er/review.json. A sidecar that cannot be used reads as absent.
-    if let Some(mut review) = crate::store_registry::read_found::<ErReview>(er_dir, ()) {
-        // Attribute findings from sidecars written before `Finding.lens`,
-        // before the expert/professor merges below add their own.
-        backfill_finding_lenses(&mut review);
+    // The projection below owns the lens backfill and the expert/professor
+    // merges; `is_stale` still comes from the file's own hash.
+    let mut general: Option<ErReview> = None;
+    if let Some(review) = crate::store_registry::read_found::<ErReview>(er_dir, ()) {
         state.is_stale = review.diff_hash != current_diff_hash;
-        state.review = Some(review);
+        general = Some(review);
     }
 
     // The store-backed sidecars share one scope; an invalid directory skips them.
@@ -299,14 +296,13 @@ pub fn load_ai_state_with_arbiter(
         }
     }
 
-    // Merge specialized expert sidecars into review (load-time only). Experts
-    // from the same generation as a (possibly stale) general review ride along
-    // with it — see `expert_hash_accepted`.
+    // Expert sidecars from the same generation as a (possibly stale) general
+    // review ride along with it — see `expert_hash_accepted`. Their findings
+    // are appended by the projection, not here.
     let experts = load_expert_reviews(er_dir);
-    let review_hash = state
-        .review
+    let review_hash = general
         .as_ref()
-        .map(|r| r.diff_hash.as_str())
+        .map(|review| review.diff_hash.as_str())
         .unwrap_or("");
     for expert in &experts {
         if !super::experts::expert_hash_accepted(expert, review_hash, current_diff_hash) {
@@ -322,11 +318,6 @@ pub fn load_ai_state_with_arbiter(
                 .insert(def.label.to_string(), summary.to_string());
         }
     }
-    if let Some(review) = state.review.as_mut() {
-        merge_experts_into_review(review, &experts, current_diff_hash);
-    } else if let Some(synthetic) = synthesize_review_from_experts(&experts, current_diff_hash) {
-        state.review = Some(synthetic);
-    }
 
     if let Some(triage) = load_triage_review(er_dir) {
         if triage.diff_hash != current_diff_hash {
@@ -335,7 +326,8 @@ pub fn load_ai_state_with_arbiter(
         state.triage = Some(triage);
     }
 
-    if let Some(prof) = load_professor_review(er_dir) {
+    let professor = load_professor_review(er_dir);
+    if let Some(prof) = professor.as_ref() {
         let summary = prof.summary.trim();
         if prof.diff_hash == current_diff_hash && !summary.is_empty() {
             state.agent_summaries.insert(
@@ -343,119 +335,44 @@ pub fn load_ai_state_with_arbiter(
                 summary.to_string(),
             );
         }
-        if let Some(review) = state.review.as_mut() {
-            merge_professor_into_review(review, &prof, current_diff_hash);
-        } else {
-            let mut review = ErReview {
-                version: 1,
-                diff_hash: current_diff_hash.to_string(),
-                created_at: prof.created_at.clone(),
-                base_branch: String::new(),
-                head_branch: String::new(),
-                files: HashMap::new(),
-                file_hashes: HashMap::new(),
-            };
-            merge_professor_into_review(&mut review, &prof, current_diff_hash);
-            if !review.files.is_empty() {
-                state.review = Some(review);
-            }
-        }
     }
 
-    if let Some(review) = state.review.as_mut() {
-        restore_accepted_provenance(review, er_dir);
-    }
-
-    // Overlay arbiter verdicts last, so they grade every finding the merges
-    // above put into the review rather than only the review's own. The store
-    // decides whether an overlay is usable at all, so a newer-version file is
-    // ignored here too; the captured bytes are the generation the caller
-    // stamped, so the loaded value stays tied to its stamp.
+    // The arbiter overlay is the captured generation the caller stamped. The
+    // store still decides whether the file is usable at all, so a
+    // newer-version file is ignored here too; the parsed value then goes into
+    // the projection, which applies it last.
     let arbiter = overlay.and_then(|bytes| {
         crate::store_registry::read_found::<super::arbiter::ArbiterReview>(er_dir, ())?;
         serde_json::from_slice::<super::arbiter::ArbiterReview>(bytes).ok()
     });
-    if let Some(arbiter) = arbiter {
-        if let Some(review) = state.review.as_mut() {
-            if arbiter.diff_hash == review.diff_hash {
-                let verdicts: HashMap<&str, (super::arbiter::ArbiterRuling, &str)> = arbiter
-                    .verdicts
-                    .iter()
-                    .map(|verdict| {
-                        (
-                            verdict.id.as_str(),
-                            (verdict.verdict, verdict.rationale.as_str()),
-                        )
-                    })
-                    .collect();
-                state.arbiter_verdicts = review
-                    .files
-                    .iter()
-                    .flat_map(|(path, file_review)| {
-                        file_review.findings.iter().filter_map(|finding| {
-                            let key = super::identity::finding_key(
-                                path,
-                                finding.line_start,
-                                &finding.title,
-                            );
-                            let (ruling, rationale) = verdicts.get(key.as_str())?;
-                            Some((key, (*ruling, (*rationale).to_owned())))
-                        })
-                    })
-                    .collect();
-                state.arbiter_graded_keys = state.arbiter_verdicts.keys().cloned().collect();
-            }
-            state.arbiter_effect = super::arbiter::merge_arbiter_into_review(review, &arbiter);
-        }
+
+    let projection =
+        super::projection::build_findings_projection(super::projection::ProjectionInputs {
+            general,
+            experts: &experts,
+            professor: professor.as_ref(),
+            arbiter: arbiter.as_ref(),
+            current_diff_hash,
+            accepted_provenance: &|review_hash, rows| {
+                super::accepted_provenance::accepted_provenance_for_rows(
+                    Path::new(er_dir),
+                    review_hash,
+                    rows,
+                )
+            },
+        });
+    for diagnostic in projection.provenance_diagnostics {
+        crate::dev_log::arena_line(diagnostic);
     }
+    state.review = projection.review;
+    state.arbiter_effect = projection.arbiter_effect;
+    state.arbiter_graded_keys = projection.arbiter_graded_keys;
+    state.arbiter_verdicts = projection.arbiter_verdicts;
 
     // Load .er/diagrams/*.json (mermaid diagrams — one file per generated diagram)
     state.diagrams = load_diagrams(er_dir, current_diff_hash);
 
     state
-}
-
-fn restore_accepted_provenance(review: &mut ErReview, er_dir: &str) {
-    let rows: Vec<_> = review
-        .files
-        .iter()
-        .flat_map(|(file, file_review)| {
-            file_review.findings.iter().map(move |finding| {
-                super::accepted_provenance::ReviewRowIdentity {
-                    id: finding.id.clone(),
-                    file: file.clone(),
-                    line: finding.line_start,
-                }
-            })
-        })
-        .collect();
-    for file_review in review.files.values_mut() {
-        for finding in &mut file_review.findings {
-            // Provider attribution from review/expert producer JSON is never
-            // authoritative. Only accepted host runs or the arbiter restore it.
-            finding.providers.clear();
-        }
-    }
-    let restored = super::accepted_provenance::accepted_provenance_for_rows(
-        Path::new(er_dir),
-        &review.diff_hash,
-        &rows,
-    );
-    for diagnostic in restored.diagnostics {
-        crate::dev_log::arena_line(diagnostic);
-    }
-    for file_review in review.files.values_mut() {
-        for finding in &mut file_review.findings {
-            let Some(provenance) = restored.rows.get(&finding.id) else {
-                continue;
-            };
-            finding.providers = provenance.providers.clone();
-            if !provenance.raisers.is_empty() {
-                finding.raised_by = provenance.raisers.clone();
-                finding.lens = provenance.raisers[0].clone();
-            }
-        }
-    }
 }
 
 /// Read and parse a guided-tour sidecar (`tour.json` / `tour.pr.json`) from a
@@ -629,7 +546,26 @@ mod tests {
     fn producer_provider_metadata_is_cleared_and_accepted_run_restores_it() {
         let dir = tempfile::tempdir().unwrap();
         let er_dir = dir.path().to_str().unwrap();
-        let mut review: ErReview = serde_json::from_value(json!({
+        fn project(review: ErReview, er_dir: &str) -> ErReview {
+            let mut projection = crate::ai::projection::build_findings_projection(
+                crate::ai::projection::ProjectionInputs {
+                    general: Some(review),
+                    experts: &[],
+                    professor: None,
+                    arbiter: None,
+                    current_diff_hash: "hash",
+                    accepted_provenance: &|review_hash, rows| {
+                        crate::ai::accepted_provenance::accepted_provenance_for_rows(
+                            std::path::Path::new(er_dir),
+                            review_hash,
+                            rows,
+                        )
+                    },
+                },
+            );
+            projection.review.take().expect("a projected review")
+        }
+        let review: ErReview = serde_json::from_value(json!({
             "version": 1,
             "diff_hash": "hash",
             "files": { "src/a.rs": { "risk": "high", "findings": [{
@@ -653,21 +589,21 @@ mod tests {
         )
         .unwrap();
 
-        restore_accepted_provenance(&mut review, er_dir);
+        let review = project(review, er_dir);
         let finding = &review.files["src/a.rs"].findings[0];
         assert_eq!(finding.providers, ["provider-a"]);
         assert_eq!(finding.raised_by, ["security"]);
         assert_eq!(finding.lens, "security");
 
         std::fs::remove_dir_all(&run_dir).unwrap();
-        let mut producer_only: ErReview = serde_json::from_value(json!({
+        let producer_only: ErReview = serde_json::from_value(json!({
             "version": 1, "diff_hash": "hash",
             "files": { "src/a.rs": { "risk": "high", "findings": [{
                 "id": "plain", "severity": "high", "title": "claim", "providers": ["forged"]
             }] } }
         }))
         .unwrap();
-        restore_accepted_provenance(&mut producer_only, er_dir);
+        let producer_only = project(producer_only, er_dir);
         assert!(producer_only.files["src/a.rs"].findings[0]
             .providers
             .is_empty());
