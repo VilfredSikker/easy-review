@@ -1,5 +1,5 @@
 pub mod card_ai_context;
-pub mod card_ai_spawn;
+pub mod card_job;
 pub mod filter;
 mod state;
 pub use state::preview::{
@@ -8,7 +8,9 @@ pub use state::preview::{
 pub use state::session_store;
 
 pub use card_ai_context::{build_card_ai_system_context, CardAiContextParams};
-pub use card_ai_spawn::{plan_card_ai_invocation, run_card_ai_subprocess, CardAiInvocation};
+pub use card_job::{
+    plan_card_ai_invocation, run_card_ai_subprocess, CardAiInvocation, CardReply, ProgressSink,
+};
 
 pub use crate::git::Worktree;
 pub use state::background::{
