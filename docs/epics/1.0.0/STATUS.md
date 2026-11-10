@@ -9,7 +9,7 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| T1 | T5 GitHub port | auto_triage remote parse (#445 follow-up) | F |
+| T1 | T5 GitHub port | idle | – |
 | T2 | T4 git port | [#452](https://github.com/VilfredSikker/easy-review/issues/452) import the project list once (D15) | E |
 | D4 | T6 store core | [#389](https://github.com/VilfredSikker/easy-review/issues/389) P18, PR #454 in review | E |
 | D1 | D6 | idle | – |
