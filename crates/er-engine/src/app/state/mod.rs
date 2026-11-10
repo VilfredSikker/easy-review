@@ -8481,7 +8481,9 @@ impl App {
     /// adopted and clears the save refusal; a file that still fails keeps the
     /// banner and the defaults.
     pub fn reload_config_if_failed(&mut self) {
-        if self.config_load_error.is_none() {
+        // The banner is set at startup, but a file that breaks mid-session is
+        // recorded by the config module without raising one. Reload for either.
+        if self.config_load_error.is_none() && !config::managed_config_load_failed() {
             return;
         }
         let (config, error) = config::load_global_config_checked();
@@ -12802,6 +12804,41 @@ mod tests {
                 "a successful reload clears the banner"
             );
             assert_eq!(app.config.display.theme, "paper");
+        });
+    }
+
+    #[test]
+    fn settings_reloads_a_config_that_broke_mid_session() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[agent]\nmodel = \"keepme\"\n").unwrap();
+
+        crate::config::with_managed_config_path(&path, || {
+            let tab = make_test_tab(vec![]);
+            let mut app = make_test_app(tab);
+            let (config, error) = crate::config::adopt_config_from(&path);
+            assert!(error.is_none(), "{error:?}");
+            app.config = config;
+            assert_eq!(app.config.agent.model, "keepme");
+
+            // The file breaks after startup. The desktop save path records the
+            // failure without raising the App banner.
+            std::fs::write(&path, "{").unwrap();
+            assert!(crate::config::save_config(&app.config).is_err());
+            assert!(app.config_load_error.is_none());
+            assert!(crate::config::managed_config_load_failed());
+
+            // The user repairs it and reopens Settings.
+            std::fs::write(&path, "[agent]\nmodel = \"keepme\"\n").unwrap();
+            app.open_config_hub();
+            assert!(app.config_load_error.is_none());
+            assert_eq!(app.config.agent.model, "keepme");
+
+            // Saving now succeeds and keeps the user's value.
+            crate::config::save_config(&app.config).unwrap();
+            let (reloaded, error) = crate::config::load_config_from(&path);
+            assert!(error.is_none(), "{error:?}");
+            assert_eq!(reloaded.agent.model, "keepme");
         });
     }
 
