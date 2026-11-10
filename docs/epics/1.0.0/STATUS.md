@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
-> Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 13:05 UTC.
+> Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 15:18 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,13 +9,13 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| T1 | T5 GitHub port | idle | – |
-| T2 | T4 git port | [#441](https://github.com/VilfredSikker/easy-review/issues/441) test hygiene and storage guard | E |
-| D4 | T6 store core | [#392](https://github.com/VilfredSikker/easy-review/issues/392) P21 | E, F |
-| D1 | D6 | idle (phase-3 plan final) | – |
-| D2, D3, D5 | – | idle | – |
+| D3 | – | [#471](https://github.com/VilfredSikker/easy-review/issues/471) P35, step plan | E |
+| D1 | D6 | [#472](https://github.com/VilfredSikker/easy-review/issues/472) P26a, reading in; starts after #469 | – |
+| D4 | T6 store core | [#464](https://github.com/VilfredSikker/easy-review/issues/464) store-lock fix | E, W |
+| T2 | T4 git port | [#469](https://github.com/VilfredSikker/easy-review/pull/469) ETXTBSY helper, CI fix | E |
+| T1, D2, D5 | – | idle | – |
 
-**Phases 0 and 1 are complete; phase 2 has P14–P20 and P22–P24 merged.** Left: P21 (#392, D4) and #441 (T2), running at the same time. Then the phase-3 gate: main merged in, the claims re-check, ADDENDUM-04 and the P26a–P37 issues.
+**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35 runs first; P26a starts once #468's fix (#469) merges; P30a waits for #464.
 
 ## Progress
 
@@ -54,6 +54,27 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P22 | [#393](https://github.com/VilfredSikker/easy-review/issues/393) App records through the store | F | opus | ✅ | [#449](https://github.com/VilfredSikker/easy-review/pull/449), [#451](https://github.com/VilfredSikker/easy-review/pull/451) | two PRs; the import is #452 |
 | P23 | [#394](https://github.com/VilfredSikker/easy-review/issues/394) Cross-process locks, change notifications | C | opus | ✅ | [#434](https://github.com/VilfredSikker/easy-review/pull/434) | ADR 0057; Linux watcher fix proven on CI |
 | P24 | [#395](https://github.com/VilfredSikker/easy-review/issues/395) MCP uploads through the store | C | opus | ✅ | [#458](https://github.com/VilfredSikker/easy-review/pull/458) | schemas derived; every release path pinned |
+| Lock | [#464](https://github.com/VilfredSikker/easy-review/issues/464) Sidecar writers outside the store lock | E/W | opus | 🟡 | | D4; lands before P30a |
+| Flaky-c | [#468](https://github.com/VilfredSikker/easy-review/issues/468) ETXTBSY when tests write and run a script | E | sonnet | 🔧 | [#469](https://github.com/VilfredSikker/easy-review/pull/469) | T2; Linux plant proven; own test races, fixing; lands before P26a |
+| P35 | [#471](https://github.com/VilfredSikker/easy-review/issues/471) D1: delete the browser annotation modules | E | sonnet | 🟡 | | no blockers; D3 |
+| P26a | [#472](https://github.com/VilfredSikker/easy-review/issues/472) Create er-agent (runtime and the guardrail) | C/E/F | opus | ⬜ | | after #468 (PR #469); D1 |
+| P26b | [#473](https://github.com/VilfredSikker/easy-review/issues/473) ProviderSpec, one decoder, JobSpec/JobRunner | C/E | opus | ⬜ | | after #472 |
+| P27 | [#474](https://github.com/VilfredSikker/easy-review/issues/474) Card AI and model discovery onto the Provider | E/F | opus | ⬜ | | after #473 |
+| P28a | [#475](https://github.com/VilfredSikker/easy-review/issues/475) Background queue onto the JobRunner | E/W | opus | ⬜ | | after #474 |
+| P28b | [#476](https://github.com/VilfredSikker/easy-review/issues/476) Review-flow launch and the Deep-run cancel/orphan test | W | opus | ⬜ | | after #475 |
+| P29 | [#477](https://github.com/VilfredSikker/easy-review/issues/477) Tab-local prompts, the shell path and the summary job (D18) | E | opus | ⬜ | | after #476 |
+| P30a | [#478](https://github.com/VilfredSikker/easy-review/issues/478) Host commits job outputs | E/C | opus | ⬜ | | after #475, #477, #464 |
+| P32a | [#479](https://github.com/VilfredSikker/easy-review/issues/479) Workflow record and crash resume | W | opus | ⬜ | | after #476 |
+| P32b | [#480](https://github.com/VilfredSikker/easy-review/issues/480) Panel stage and the free round measurement (D17) | W | opus | ⬜ | | after #479 |
+| P33a | [#481](https://github.com/VilfredSikker/easy-review/issues/481) Arena reviewers and arbiter onto the JobRunner | W | opus | ⬜ | | after #480 |
+| P33b | [#482](https://github.com/VilfredSikker/easy-review/issues/482) Delete the arena registry, pid kill, `progress.jsonl` and glue | W | opus | ⬜ | | after #477, #481 |
+| P30b.1 | [#483](https://github.com/VilfredSikker/easy-review/issues/483) Port the remaining raw readers/writers onto the store | E/W/C | opus | ⬜ | | after #478, #482 |
+| P30b.2 | [#484](https://github.com/VilfredSikker/easy-review/issues/484) Envelope every agent kind; delete `Mode::Bare` | E/C | opus | ⬜ | | after #483 |
+| P31 | [#485](https://github.com/VilfredSikker/easy-review/issues/485) Importance as a RiskRules artifact | C/E | opus | ⬜ | | after #484 |
+| P37 | [#486](https://github.com/VilfredSikker/easy-review/issues/486) Split the agent config into `agents.toml` (D16, A7) | C/E/F | opus | ⬜ | | after #485 |
+| P34a | [#487](https://github.com/VilfredSikker/easy-review/issues/487) Accepted findings and the projection | W/E | opus | ⬜ | | after #482, #486 |
+| P34b | [#488](https://github.com/VilfredSikker/easy-review/issues/488) Delete the arena import, the rollback and the provenance run read | W/E | opus | ⬜ | | after #487 |
+| P36 | [#489](https://github.com/VilfredSikker/easy-review/issues/489) Registry gate | E/C/F | opus | ⬜ | | after #486 |
 
 ## Designs
 
@@ -74,7 +95,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 
 | Gate | Issue | Status |
 | --- | --- | --- |
-| Phase 3: jobs and workflows | [#396](https://github.com/VilfredSikker/easy-review/issues/396) | 🔵 plan final (P26a–P37); addendum and issues at the gate |
+| Phase 3: jobs and workflows | [#396](https://github.com/VilfredSikker/easy-review/issues/396) | ✅ passed 2026-11-10; [ADDENDUM-04](./ADDENDUM-04-phase-3.md), issues #471–#489 |
 | Phase 4: core and service | [#397](https://github.com/VilfredSikker/easy-review/issues/397) | ⬜ |
 | Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | ⬜ |
 | Phase 5b: TUI | [#399](https://github.com/VilfredSikker/easy-review/issues/399) | ⬜ |
@@ -82,7 +103,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 
 ## Waiting on the owner
 
-**Decisions.** D1–D10 are settled in [ADDENDUM-01](./ADDENDUM-01-decisions.md) and D11–D14 in [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md). Routine merges and design approvals are delegated to the coordinator (BUILD_LOG, 2026-11-06). None is open.
+**Decisions.** D1–D10 are settled in [ADDENDUM-01](./ADDENDUM-01-decisions.md) and D11–D18 in [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md). Routine merges and design approvals are delegated to the coordinator (BUILD_LOG, 2026-11-06). None is open.
 
 **Actions.**
 

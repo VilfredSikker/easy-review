@@ -145,7 +145,7 @@ Split from P30b at the gate (coordinator): joining the deny list is file-granula
 
 ### P31 Importance as a RiskRules artifact
 
-- Branch: `epic/p31-importance-artifact`. Lanes: C, E. Model: `opus`. Depends on: P30b.
+- Branch: `epic/p31-importance-artifact`. Lanes: C, E. Model: `opus`. Depends on: P30b.2.
 - **Goal:** importance output is a store artifact with a repo scope.
 - **Done when:** `er-store` gains `Scope::Repo` (`key.rs:125`), reviewed as a key-layout API change; the job commits a `RiskRules` artifact under the repo scope; filters and Settings read it merged with `config.toml [risk]`; `RiskRuleProposal::merge_into_global_config` is gone.
 - **Planted breaks:** a proposal for another repo is refused; a job that writes the config file fails; a filter still reading the old table finds nothing.
