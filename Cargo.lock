@@ -1331,6 +1331,7 @@ name = "er-agent"
 version = "0.6.5"
 dependencies = [
  "anyhow",
+ "serde_json",
  "tempfile",
 ]
 

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub use crate::config::CliFamily;
+pub use er_agent::decode::OutputProtocol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentTaskKind {
@@ -61,6 +62,27 @@ impl AgentTaskKind {
             Self::ValidateReview => ArtifactContract::ValidateReview,
             Self::ValidateComments => ArtifactContract::ValidateComments,
             Self::CardReply | Self::ArenaRound | Self::Other(_) => ArtifactContract::None,
+        }
+    }
+
+    /// The runtime's view of this task. The two enums carry the same variants,
+    /// so a ported call site cannot silently change its kind.
+    pub fn job_kind(&self) -> er_agent::job::JobKind {
+        match self {
+            Self::Review => er_agent::job::JobKind::Review,
+            Self::Expert(id) => er_agent::job::JobKind::Expert(id.clone()),
+            Self::Professor => er_agent::job::JobKind::Professor,
+            Self::Triage => er_agent::job::JobKind::Triage,
+            Self::Tour { filename } => er_agent::job::JobKind::Tour {
+                filename: filename.clone(),
+            },
+            Self::Questions => er_agent::job::JobKind::Questions,
+            Self::Summary => er_agent::job::JobKind::Summary,
+            Self::ValidateReview => er_agent::job::JobKind::ValidateReview,
+            Self::ValidateComments => er_agent::job::JobKind::ValidateComments,
+            Self::CardReply => er_agent::job::JobKind::CardReply,
+            Self::ArenaRound => er_agent::job::JobKind::ArenaRound,
+            Self::Other(name) => er_agent::job::JobKind::Other(name.clone()),
         }
     }
 }
@@ -142,12 +164,6 @@ impl AgentAccessProfile {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputProtocol {
-    Plain,
-    ClaudeStreamJson,
-}
-
 #[derive(Debug, Clone)]
 pub struct AgentInvocation {
     pub command: String,
@@ -157,6 +173,20 @@ pub struct AgentInvocation {
     pub output_protocol: OutputProtocol,
     /// Extra process environment (e.g. OpenCode managed-storage permissions).
     pub env: Vec<(String, String)>,
+}
+
+impl AgentInvocation {
+    /// The runtime's view of this invocation. The engine resolves the program,
+    /// args, env and output protocol; the timeout comes from config.
+    pub fn provider_spec(&self, timeout: std::time::Duration) -> er_agent::provider::ProviderSpec {
+        er_agent::provider::ProviderSpec {
+            program: self.command.clone(),
+            args: self.args.clone(),
+            env: self.env.clone(),
+            protocol: self.output_protocol,
+            timeout,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -399,56 +429,6 @@ pub fn build_argv(invocation: &AgentInvocation, prompt: AgentPrompt<'_>) -> Vec<
         args.push(combined);
     }
     args
-}
-
-/// The trimmed, non-empty text blocks of one `stream-json` assistant event, in order.
-pub(crate) fn assistant_text_blocks(
-    event: &serde_json::Value,
-) -> impl Iterator<Item = String> + '_ {
-    event
-        .get("message")
-        .and_then(|message| message.get("content"))
-        .and_then(|content| content.as_array())
-        .into_iter()
-        .flatten()
-        .filter(|item| item.get("type").and_then(|kind| kind.as_str()) == Some("text"))
-        .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_string)
-}
-
-pub fn decode_final_text(stdout: &str, protocol: OutputProtocol) -> String {
-    if protocol == OutputProtocol::Plain {
-        return stdout.to_string();
-    }
-
-    let mut last_result = None;
-    let mut assistant_text = Vec::new();
-    for line in stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        match value.get("type").and_then(|kind| kind.as_str()) {
-            Some("result") => {
-                if let Some(result) = value.get("result").and_then(|result| result.as_str()) {
-                    last_result = Some(result.to_string());
-                }
-            }
-            Some("assistant") => {
-                assistant_text.extend(assistant_text_blocks(&value));
-            }
-            _ => {}
-        }
-    }
-    last_result
-        .filter(|text| !text.trim().is_empty())
-        .or_else(|| (!assistant_text.is_empty()).then(|| assistant_text.join("\n\n")))
-        .unwrap_or_else(|| stdout.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1348,16 +1328,73 @@ mod tests {
     }
 
     #[test]
-    fn decode_stream_json_prefers_result() {
-        let stdout = concat!(
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}"#,
-            "\n",
-            r#"{"type":"result","result":"done"}"#,
+    fn provider_spec_carries_program_args_env_protocol_and_timeout() {
+        let config = opencode_config();
+        let task = AgentTaskKind::Review;
+        let invocation = resolve_invocation(
+            &config,
+            AgentInvocationRequest {
+                selection: AgentSelection::Exact {
+                    provider_id: "opencode",
+                    model_id: "claude-sonnet-4-5",
+                },
+                task: &task,
+                effort: None,
+                effort_override: None,
+                work_dir: "/repo".into(),
+                access: AgentAccessProfile::LocalArtifacts {
+                    output_dir: "/managed/review".into(),
+                },
+                live_logs: false,
+            },
+        )
+        .unwrap();
+        let timeout = std::time::Duration::from_secs(42);
+        let spec = invocation.provider_spec(timeout);
+        assert_eq!(spec.program, invocation.command);
+        assert_eq!(spec.args, invocation.args);
+        assert_eq!(spec.env, invocation.env);
+        assert_eq!(spec.protocol, invocation.output_protocol);
+        assert_eq!(spec.timeout, timeout);
+        assert!(
+            !spec.env.is_empty(),
+            "the OpenCode permission env must be carried"
         );
-        assert_eq!(
-            decode_final_text(stdout, OutputProtocol::ClaudeStreamJson),
-            "done"
-        );
+    }
+
+    #[test]
+    fn every_task_kind_maps_to_a_job_kind() {
+        use er_agent::job::JobKind;
+        let cases = [
+            (AgentTaskKind::Review, JobKind::Review),
+            (
+                AgentTaskKind::Expert("security".into()),
+                JobKind::Expert("security".into()),
+            ),
+            (AgentTaskKind::Professor, JobKind::Professor),
+            (AgentTaskKind::Triage, JobKind::Triage),
+            (
+                AgentTaskKind::Tour {
+                    filename: "tour.json".into(),
+                },
+                JobKind::Tour {
+                    filename: "tour.json".into(),
+                },
+            ),
+            (AgentTaskKind::Questions, JobKind::Questions),
+            (AgentTaskKind::Summary, JobKind::Summary),
+            (AgentTaskKind::ValidateReview, JobKind::ValidateReview),
+            (AgentTaskKind::ValidateComments, JobKind::ValidateComments),
+            (AgentTaskKind::CardReply, JobKind::CardReply),
+            (AgentTaskKind::ArenaRound, JobKind::ArenaRound),
+            (
+                AgentTaskKind::Other("custom".into()),
+                JobKind::Other("custom".into()),
+            ),
+        ];
+        for (task, expected) in cases {
+            assert_eq!(task.job_kind(), expected, "{task:?}");
+        }
     }
 
     #[test]

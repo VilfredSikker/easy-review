@@ -419,38 +419,12 @@ fn read_until_result(
 }
 
 fn extract_reply_from_stdout(stdout: &str, uses_stream_json: bool) -> String {
-    if !uses_stream_json {
-        return stdout.to_string();
-    }
-
-    let mut last_result: Option<String> = None;
-    let mut assistant_text: Vec<String> = Vec::new();
-
-    for line in stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if v.get("type").and_then(|t| t.as_str()) == Some("result") {
-            if let Some(r) = v.get("result").and_then(|r| r.as_str()) {
-                last_result = Some(r.to_string());
-            }
-        }
-        if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-            assistant_text.extend(crate::agent_runtime::assistant_text_blocks(&v));
-        }
-    }
-
-    if let Some(r) = last_result.filter(|s| !s.trim().is_empty()) {
-        return r;
-    }
-    if !assistant_text.is_empty() {
-        return assistant_text.join("\n\n");
-    }
-    stdout.to_string()
+    let protocol = if uses_stream_json {
+        er_agent::decode::OutputProtocol::ClaudeStreamJson
+    } else {
+        er_agent::decode::OutputProtocol::Plain
+    };
+    er_agent::decode::decode_final_text(stdout, protocol)
 }
 
 #[cfg(test)]
@@ -802,5 +776,25 @@ mod tests {
             .args
             .windows(2)
             .any(|pair| pair[0] == "--model" && pair[1] == "gpt-5.3-codex-spark"));
+    }
+
+    #[test]
+    fn card_reply_extraction_delegates_to_the_shared_decoder() {
+        let stdout = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}"#,
+            "\n",
+            r#"{"type":"result","result":"done"}"#,
+        );
+        assert_eq!(
+            extract_reply_from_stdout(stdout, true),
+            er_agent::decode::decode_final_text(
+                stdout,
+                er_agent::decode::OutputProtocol::ClaudeStreamJson
+            )
+        );
+        assert_eq!(
+            extract_reply_from_stdout("plain\n", false),
+            er_agent::decode::decode_final_text("plain\n", er_agent::decode::OutputProtocol::Plain)
+        );
     }
 }
