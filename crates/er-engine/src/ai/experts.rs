@@ -2,8 +2,8 @@
 
 use super::professor::{PROFESSOR_ID, PROFESSOR_ID_PREFIX};
 use super::review::{ErFileReview, ErReview, Finding, RiskLevel, GENERAL_LENS};
+use er_store::ExpertId;
 use std::collections::HashMap;
-use std::path::Path;
 
 /// Caps for findings in prompts (general vs expert).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,7 +256,7 @@ pub fn list_expert_info() -> Vec<ExpertInfo> {
 }
 
 /// `.er/experts/{id}.json` — findings + lens-specific summary (no order/checklist/summary.md).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ExpertReview {
     pub version: u32,
     pub expert_id: String,
@@ -272,40 +272,43 @@ pub struct ExpertReview {
     pub files: HashMap<String, ExpertFileReview>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ExpertFileReview {
     #[serde(default, deserialize_with = "super::review::lenient_findings")]
     pub findings: Vec<Finding>,
 }
 
-const MAX_SIDECAR_BYTES: u64 = 10_000_000;
+impl er_store::Artifact for ExpertReview {
+    const KIND: &'static str = "expert";
+    const VERSION: u32 = 1;
+    const MODE: er_store::Mode = er_store::Mode::Bare;
+    const FILE: &'static str = "experts/{slot}.json";
+    type Slot = ExpertId;
 
-fn read_expert_sidecar(path: &Path) -> Option<ExpertReview> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.len() > MAX_SIDECAR_BYTES {
-        return None;
+    fn diff_hash(&self) -> Option<&str> {
+        Some(&self.diff_hash)
     }
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
 }
 
-/// Load all `.er/experts/*.json` sidecars.
+/// Load all `.er/experts/*.json` sidecars, sorted by expert id.
+///
+/// Slots the store rejects — hidden files and `experts/<id>.prev.json`
+/// snapshots — are not expert files and never load.
 pub fn load_expert_reviews(er_dir: &str) -> Vec<ExpertReview> {
-    let experts_dir = Path::new(er_dir).join("experts");
-    let Ok(entries) = std::fs::read_dir(&experts_dir) else {
+    if er_dir.is_empty() {
+        return Vec::new();
+    }
+    let store = crate::store_registry::store();
+    let Ok(scope) = er_store::Scope::dir(er_dir) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        if let Some(review) = read_expert_sidecar(&path) {
-            out.push(review);
-        }
-    }
-    out
+    let Ok(slots) = store.list::<ExpertReview>(&scope) else {
+        return Vec::new();
+    };
+    slots
+        .into_iter()
+        .filter_map(|slot| crate::store_registry::read_found::<ExpertReview>(er_dir, slot))
+        .collect()
 }
 
 fn prefix_finding_id(prefix: &str, id: &str) -> String {
@@ -467,6 +470,55 @@ mod tests {
             resolved_at: String::new(),
             promoted_to: None,
         }
+    }
+
+    #[test]
+    fn loading_experts_sorts_slots_and_skips_names_that_are_not_ids() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let experts = dir.path().join("experts");
+        std::fs::create_dir_all(&experts).unwrap();
+        for (name, hash) in [
+            ("security.json", "hash-security"),
+            ("api.json", "hash-api"),
+            (".hidden.json", "hash-hidden"),
+            ("security.prev.json", "hash-prev"),
+        ] {
+            std::fs::write(
+                experts.join(name),
+                format!(r#"{{"version":1,"expert_id":"x","diff_hash":"{hash}","files":{{}}}}"#),
+            )
+            .unwrap();
+        }
+
+        let loaded = load_expert_reviews(dir.path().to_str().unwrap());
+
+        let hashes: Vec<&str> = loaded
+            .iter()
+            .map(|expert| expert.diff_hash.as_str())
+            .collect();
+        assert_eq!(
+            hashes,
+            ["hash-api", "hash-security"],
+            "only expert ids load, sorted by slot"
+        );
+    }
+
+    #[test]
+    fn expert_file_written_by_an_agent_loads() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let experts = dir.path().join("experts");
+        std::fs::create_dir_all(&experts).unwrap();
+        std::fs::write(
+            experts.join("security.json"),
+            r#"{"version":1,"expert_id":"security","diff_hash":"hash","summary":"lens view","files":{"a.rs":{"findings":[{"id":"1","title":"t","severity":"medium","hunk_index":0}]}}}"#,
+        )
+        .unwrap();
+
+        let loaded = load_expert_reviews(dir.path().to_str().unwrap());
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].expert_id, "security");
+        assert_eq!(loaded[0].files["a.rs"].findings.len(), 1);
     }
 
     #[test]

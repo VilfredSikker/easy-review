@@ -8615,7 +8615,7 @@ fn inbox_open_target_in(
     let proj = file.projects.iter().find(|p| p.id == project_id)?;
     if proj.root_path.is_empty() {
         let remote = proj.remote.as_deref().or(target.remote.as_deref())?;
-        let (owner, repo) = remote_owner_repo(remote)?;
+        let (owner, repo) = crate::projects::remote_owner_repo(remote)?;
         return Some(InboxOpenTarget::RemotePr {
             owner,
             repo,
@@ -8632,12 +8632,6 @@ fn inbox_open_target_in(
         pr_number,
         hint,
     })
-}
-
-/// Split a project remote into `(owner, repo)` keeping its spelling, which is
-/// what the sidebar passes and so what the remote open cache is keyed by.
-fn remote_owner_repo(remote: &str) -> Option<(String, String)> {
-    er_engine::github::RepoSlug::parse(remote).map(|slug| (slug.owner, slug.repo))
 }
 
 fn inbox_item_target(id: &str, state: &AppState) -> Option<InboxTarget> {
@@ -9295,8 +9289,8 @@ fn delete_review_artifact_from_app(app: &mut App, kind: &str) -> Result<(), Stri
         .map_err(|e| e.to_string())?;
 
     match kind {
-        "triage" => er_engine::app::cleanup_triage(&er_dir),
-        "review" => er_engine::app::cleanup_review_artifacts(&er_dir),
+        "triage" => er_engine::app::cleanup_triage(&er_dir).map_err(|e| e.to_string())?,
+        "review" => er_engine::app::cleanup_review_artifacts(&er_dir).map_err(|e| e.to_string())?,
         other => return Err(format!("Unknown review artifact kind: {other}")),
     }
 
@@ -11859,48 +11853,53 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let dir = ReviewFlowTestDir::new();
-        let state = review_flow_test_state(&dir);
-        let bucket = state.app.lock().unwrap().tab().er_dir();
+        // The poll path folds completed AI tasks into the inbox, which
+        // persists through the app store.
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            let bucket = state.app.lock().unwrap().tab().er_dir();
 
-        let initial = poll_impl(&state).unwrap();
-        let initial_snapshot = initial.snapshot.unwrap();
-        assert_eq!(initial_snapshot.review_bucket_er_dir, bucket);
-        assert!(initial_snapshot.review_flow.is_none());
-        let started = {
-            let mut app = state.app.lock().unwrap();
-            app.start_review_flow("branch").unwrap();
-            state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-            snap_from_command(&app, &state)
-        };
-        assert!(started.review_flow.is_some());
-        assert_eq!(started.review_flow.unwrap().state, "triaging");
-        let starting_revision = state.desktop_revision.load(Ordering::Relaxed);
+            let initial = poll_impl(&state).unwrap();
+            let initial_snapshot = initial.snapshot.unwrap();
+            assert_eq!(initial_snapshot.review_bucket_er_dir, bucket);
+            assert!(initial_snapshot.review_flow.is_none());
+            let started = {
+                let mut app = state.app.lock().unwrap();
+                app.start_review_flow("branch").unwrap();
+                state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+                snap_from_command(&app, &state)
+            };
+            assert!(started.review_flow.is_some());
+            assert_eq!(started.review_flow.unwrap().state, "triaging");
+            let starting_revision = state.desktop_revision.load(Ordering::Relaxed);
 
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut observed_terminal = false;
-        while Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-            let response = poll_impl(&state).unwrap();
-            if let Some(snapshot) = response.snapshot {
-                if snapshot
-                    .review_flow
-                    .as_ref()
-                    .is_some_and(|flow| flow.state == "done")
-                {
-                    assert_eq!(snapshot.review_bucket_er_dir, bucket);
-                    observed_terminal = true;
-                    break;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut observed_terminal = false;
+            while Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+                let response = poll_impl(&state).unwrap();
+                if let Some(snapshot) = response.snapshot {
+                    if snapshot
+                        .review_flow
+                        .as_ref()
+                        .is_some_and(|flow| flow.state == "done")
+                    {
+                        assert_eq!(snapshot.review_bucket_er_dir, bucket);
+                        observed_terminal = true;
+                        break;
+                    }
                 }
             }
-        }
-        assert!(
-            observed_terminal,
-            "poll did not deliver terminal flow state"
-        );
-        assert!(
-            state.desktop_revision.load(Ordering::Relaxed) > starting_revision,
-            "background completion did not wake the desktop revision watcher"
-        );
+            assert!(
+                observed_terminal,
+                "poll did not deliver terminal flow state"
+            );
+            assert!(
+                state.desktop_revision.load(Ordering::Relaxed) > starting_revision,
+                "background completion did not wake the desktop revision watcher"
+            );
+        });
     }
 
     #[test]
@@ -12885,17 +12884,20 @@ mod tests {
     fn open_local_branch_replace_swaps_active_slot() {
         use er_engine::app::TabState;
 
-        let mut app = make_app_with_n_tabs(2);
-        app.active_tab = 1;
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = make_app_with_n_tabs(2);
+            app.active_tab = 1;
 
-        let mut incoming = TabState::new_for_test(vec![]);
-        incoming.repo_root = "new".into();
-        place_tab(&mut app, incoming, true, false);
+            let mut incoming = TabState::new_for_test(vec![]);
+            incoming.repo_root = "new".into();
+            place_tab(&mut app, incoming, true, false);
 
-        assert_eq!(app.tabs.len(), 2, "replace must not grow tabs");
-        assert_eq!(app.active_tab, 1, "active stays on the replaced slot");
-        assert_eq!(app.tabs[1].repo_root, "new", "active slot got new tab");
-        assert_eq!(app.tabs[0].repo_root, "tab0", "other tab is untouched");
+            assert_eq!(app.tabs.len(), 2, "replace must not grow tabs");
+            assert_eq!(app.active_tab, 1, "active stays on the replaced slot");
+            assert_eq!(app.tabs[1].repo_root, "new", "active slot got new tab");
+            assert_eq!(app.tabs[0].repo_root, "tab0", "other tab is untouched");
+        });
     }
 
     /// Replacing a slot skips `push_tab`; the incoming tab must still get its
@@ -12932,16 +12934,19 @@ mod tests {
     fn place_tab_append_pushes_and_focuses() {
         use er_engine::app::TabState;
 
-        let mut app = make_app_with_n_tabs(1);
-        app.active_tab = 0;
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            app.active_tab = 0;
 
-        let mut incoming = TabState::new_for_test(vec![]);
-        incoming.repo_root = "new".into();
-        place_tab(&mut app, incoming, false, false);
+            let mut incoming = TabState::new_for_test(vec![]);
+            incoming.repo_root = "new".into();
+            place_tab(&mut app, incoming, false, false);
 
-        assert_eq!(app.tabs.len(), 2, "append grows tabs by one");
-        assert_eq!(app.active_tab, 1, "new tab is focused");
-        assert_eq!(app.tabs[1].repo_root, "new");
+            assert_eq!(app.tabs.len(), 2, "append grows tabs by one");
+            assert_eq!(app.active_tab, 1, "new tab is focused");
+            assert_eq!(app.tabs[1].repo_root, "new");
+        });
     }
 
     #[test]
@@ -12951,16 +12956,19 @@ mod tests {
         // The PR-open hot path skips the storage sync:
         // `enter_pr_diff_*` performs the authoritative reload right
         // after, so placement must still work and focus the tab.
-        let mut app = make_app_with_n_tabs(1);
-        app.active_tab = 0;
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            app.active_tab = 0;
 
-        let mut incoming = TabState::new_for_test(vec![]);
-        incoming.repo_root = "new".into();
-        place_tab(&mut app, incoming, true, true);
+            let mut incoming = TabState::new_for_test(vec![]);
+            incoming.repo_root = "new".into();
+            place_tab(&mut app, incoming, true, true);
 
-        assert_eq!(app.tabs.len(), 1, "replace must not grow tabs");
-        assert_eq!(app.active_tab, 0, "active stays on the replaced slot");
-        assert_eq!(app.tabs[0].repo_root, "new", "slot got the new tab");
+            assert_eq!(app.tabs.len(), 1, "replace must not grow tabs");
+            assert_eq!(app.active_tab, 0, "active stays on the replaced slot");
+            assert_eq!(app.tabs[0].repo_root, "new", "slot got the new tab");
+        });
     }
 
     #[test]
@@ -13756,18 +13764,6 @@ mod tests {
             Some(InboxOpenTarget::LocalPr { ref project_id, pr_number: 7, hint: Some(_) })
                 if project_id == "tp"
         ));
-    }
-
-    /// Keeps the project's spelling: the remote open cache is keyed by what the
-    /// sidebar passes, so a lowercased owner would miss its prefetch.
-    #[test]
-    fn remote_owner_repo_keeps_spelling_and_strips_url() {
-        assert_eq!(
-            remote_owner_repo("https://github.com/ReshapeBiotech/ai-models.git"),
-            Some(("ReshapeBiotech".to_string(), "ai-models".to_string()))
-        );
-        assert_eq!(remote_owner_repo("owner"), None);
-        assert_eq!(remote_owner_repo("a/b/c"), None);
     }
 
     struct RefusingCommentPoster;

@@ -84,12 +84,9 @@ fn pr_diff_hash(er_dir: &str) -> String {
             return compute_diff_hash(&content);
         }
     }
-    let review_path = Path::new(er_dir).join("review.json");
-    if let Ok(content) = std::fs::read_to_string(&review_path) {
-        if let Ok(review) = serde_json::from_str::<crate::ai::ErReview>(&content) {
-            if !review.diff_hash.is_empty() {
-                return review.diff_hash;
-            }
+    if let Some(review) = crate::store_registry::read_found::<crate::ai::ErReview>(er_dir, ()) {
+        if !review.diff_hash.is_empty() {
+            return review.diff_hash;
         }
     }
     let Ok((store, scope)) = store_for(er_dir) else {

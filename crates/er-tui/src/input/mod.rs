@@ -987,14 +987,20 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.notify(&format!("Review clear skipped: {error}"));
                     return Ok(());
                 }
-                cleanup_reviews(&er_dir);
+                if let Err(error) = cleanup_reviews(&er_dir) {
+                    app.notify(&format!("Review clear failed: {error}"));
+                    return Ok(());
+                }
                 app.tab_mut().reload_ai_state();
                 app.notify("Review cleared");
             } else if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = action {
                 // Prepare before clearing so an ignored-only diff leaves the old review intact.
                 app.input_mode = InputMode::Normal;
                 if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
-                    cleanup_reviews(&er_dir);
+                    if let Err(error) = cleanup_reviews(&er_dir) {
+                        app.notify(&format!("Review not started: {error}"));
+                        return Ok(());
+                    }
                     app.tab_mut().reload_ai_state();
                     start_agent_review_with_prepared_diff(app, &er_dir, &diff_hash)?;
                 }

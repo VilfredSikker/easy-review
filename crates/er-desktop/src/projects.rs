@@ -61,6 +61,12 @@ pub fn remote_slug_as_written(remote: &str) -> String {
         .unwrap_or_else(|| remote.trim().to_string())
 }
 
+/// Split a project remote into `(owner, repo)` keeping its spelling, which is
+/// what the sidebar passes and so what the remote open cache is keyed by.
+pub(crate) fn remote_owner_repo(remote: &str) -> Option<(String, String)> {
+    er_engine::github::RepoSlug::parse(remote).map(|slug| (slug.owner, slug.repo))
+}
+
 /// Like [`normalize_remote_slug`], but returns `None` unless the result is a
 /// well-formed `owner/repo` slug.
 fn valid_remote_slug(remote: &str) -> Option<String> {
@@ -966,6 +972,18 @@ mod tests {
         assert_eq!(file.projects[0].name, "owner/repo");
     }
 
+    /// Keeps the project's spelling: the remote open cache is keyed by what the
+    /// sidebar passes, so a lowercased owner would miss its prefetch.
+    #[test]
+    fn remote_owner_repo_keeps_spelling_and_strips_url() {
+        assert_eq!(
+            remote_owner_repo("https://github.com/ReshapeBiotech/ai-models.git"),
+            Some(("ReshapeBiotech".to_string(), "ai-models".to_string()))
+        );
+        assert_eq!(remote_owner_repo("owner"), None);
+        assert_eq!(remote_owner_repo("a/b/c"), None);
+    }
+
     #[test]
     fn ensure_remote_project_reuses_existing_local_project() {
         let mut file = ProjectsFile {
@@ -1341,5 +1359,80 @@ mod tests {
             resolve_repo_remote(&*ports.github, &*ports.git, root.to_str().unwrap()).as_deref(),
             Some("er-test-no-such-org-zz9/no-such-repo")
         );
+    }
+
+    /// Every desktop app record has its own kind and file: a duplicate would
+    /// make two records overwrite each other, and the registry rejects both a
+    /// repeated kind and a repeated path.
+    #[test]
+    fn every_desktop_app_record_registers_beside_the_engine_kinds() {
+        let mut registry = er_engine::store_registry::registry();
+        crate::inbox::register(&mut registry).expect("inbox registers");
+        crate::pr_cache::register(&mut registry).expect("pr-cache registers");
+        crate::pr_open_cache::register(&mut registry).expect("pr-open-cache registers");
+        crate::gh_status_cache::register(&mut registry).expect("gh-status-cache registers");
+        crate::tabs::register(&mut registry).expect("tabs registers");
+    }
+
+    /// A pin that lands while a desktop writer is running must survive the
+    /// write. The writer rebuilds from the stored record inside the store lock;
+    /// a writer that saved a snapshot loaded earlier would overwrite the pin.
+    #[test]
+    fn a_pin_landing_during_a_desktop_update_survives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        er_engine::storage::with_test_storage_root(root.as_path(), || {
+            let mut file = ProjectsFile::default();
+            file.projects
+                .push(local_project("target", Some("owner/repo")));
+            // Filler rows widen the desktop read-modify-write window enough for
+            // the concurrent pin to land inside it.
+            for i in 0..300 {
+                let mut filler = local_project(&format!("filler-{i}"), None);
+                filler.name = "x".repeat(120);
+                file.projects.push(filler);
+            }
+            let key = er_engine::store_registry::app_key::<ProjectsFile>().unwrap();
+            er_engine::store_registry::store()
+                .write_durable(&key, &file)
+                .unwrap();
+        });
+
+        for round in 0..50u64 {
+            let track_root = root.clone();
+            let track = std::thread::spawn(move || {
+                er_engine::storage::with_test_storage_root(track_root.as_path(), || {
+                    track_pr("target", round).unwrap();
+                });
+            });
+            let pin_root = root.clone();
+            let pin = std::thread::spawn(move || {
+                er_engine::storage::with_test_storage_root(pin_root.as_path(), || {
+                    er_engine::projects_pins::pin_pr("target", 10_000 + round, "Pinned").unwrap();
+                });
+            });
+            track.join().unwrap();
+            pin.join().unwrap();
+
+            er_engine::storage::with_test_storage_root(root.as_path(), || {
+                let file = load();
+                let project = file
+                    .projects
+                    .iter()
+                    .find(|p| p.id == "target")
+                    .expect("the target project survives");
+                assert!(
+                    project.tracked_prs.contains(&round),
+                    "round {round}: the tracked PR was lost"
+                );
+                assert!(
+                    project
+                        .saved_prs
+                        .iter()
+                        .any(|entry| entry.number == 10_000 + round),
+                    "round {round}: the MCP pin was overwritten"
+                );
+            });
+        }
     }
 }

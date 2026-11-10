@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use er_store::{Artifact, ArtifactKey, ArtifactStore, Registry, Scope, StoreError};
+use er_store::{Artifact, ArtifactKey, ArtifactStore, Loaded, Registry, Scope, StoreError};
 
 /// The engine's registered artifact kinds.
 ///
@@ -23,14 +23,42 @@ pub fn registry() -> Registry {
             .expect("the annotation kinds register once");
         crate::ai::checklist_store::register(&mut registry)
             .expect("the checklist kinds register once");
+        register_review_kinds(&mut registry).expect("the review kinds register once");
         #[cfg(feature = "ui")]
         crate::app::session_store::register(&mut registry)
             .expect("the session kinds register once");
         registry
             .register::<crate::projects_pins::ProjectsFile>()
             .expect("the projects kind registers once");
+        crate::release_update::register(&mut registry)
+            .expect("the update-check kind registers once");
     }
     registry
+}
+
+fn register_review_kinds(registry: &mut Registry) -> Result<(), er_store::StoreError> {
+    registry.register::<crate::ai::ErReview>()?;
+    registry.register::<crate::ai::ExpertReview>()?;
+    registry.register::<crate::ai::ProfessorReview>()?;
+    registry.register::<crate::ai::TriageReview>()?;
+    registry.register::<crate::ai::ArbiterReview>()?;
+    Ok(())
+}
+
+/// Read one artifact from a bucket directory by slot.
+///
+/// Absent and unreadable both read as `None`: a sidecar an agent wrote badly is
+/// skipped, never a load failure.
+pub(crate) fn read_found<T: Artifact>(er_dir: &str, slot: T::Slot) -> Option<T> {
+    if er_dir.is_empty() {
+        return None;
+    }
+    let scope = Scope::dir(er_dir).ok()?;
+    let key = ArtifactKey::<T>::new(scope, slot).ok()?;
+    match store().read(&key).ok()? {
+        Loaded::Found(stored) => Some(stored.value),
+        _ => None,
+    }
 }
 
 /// The artifact store rooted at managed storage.
@@ -72,7 +100,13 @@ mod tests {
             ("reviewed.json", "reviewed"),
             ("order.json", "order"),
             ("checklist.json", "checklist"),
+            ("review.json", "review"),
+            ("experts/security.json", "expert"),
+            ("professor.json", "professor"),
+            ("triage.json", "triage"),
+            ("arbiter.json", "arbiter"),
             ("projects.json", "projects"),
+            ("update-check.json", "update-check"),
         ] {
             assert_eq!(
                 registry.kind_for(std::path::Path::new(file)),
@@ -87,6 +121,7 @@ mod tests {
         let mut registry = registry();
         assert!(crate::ai::annotation_store::register(&mut registry).is_err());
         assert!(crate::ai::checklist_store::register(&mut registry).is_err());
+        assert!(register_review_kinds(&mut registry).is_err());
         assert!(crate::app::session_store::register(&mut registry).is_err());
     }
 }
