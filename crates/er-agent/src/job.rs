@@ -2,10 +2,10 @@
 //! contract.
 //!
 //! The engine builds a [`JobSpec`]; the runner owns the process, the slot and
-//! the final-text decode. Two run modes exist: a blocking run that waits for
-//! exit, and a run that returns as soon as a `stream-json` result arrives (the
-//! card reply). The queue and a cancel handle arrive with the background worker
-//! port.
+//! the final-text decode. Three run modes exist: a plain blocking run; a
+//! controlled run that streams both pipes and stops through the host's handle;
+//! and a run that returns as soon as a `stream-json` result arrives (the card
+//! reply).
 
 use std::fmt;
 use std::io::{BufRead, BufReader, Read};
