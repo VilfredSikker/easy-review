@@ -6,9 +6,10 @@ exist: `agent_runtime` is wired up rather than deleted. Deferred with their
 reasons: Phase 1's redraw gate, and Phase 3's incremental `baseGeometry` patch,
 which does not hold up.
 
-Phase 0 instrumentation has landed (`er-engine/src/agent_timing.rs`, plus call
-sites in `agent_slots.rs`, `app/state/comments.rs`, `arena/adapter.rs`,
-`arena/orchestrator.rs`) with two headless harnesses. Every claim below was
+Phase 0 instrumentation has landed (`crates/er-agent/src/agent_timing.rs`, plus
+call sites in `crates/er-agent/src/agent_slots.rs`,
+`er-engine/src/app/state/comments.rs`, `er-engine/src/arena/adapter.rs`,
+`er-engine/src/arena/orchestrator.rs`) with two headless harnesses. Every claim below was
 adversarially re-verified by a second pass that was told to refute it; where the
 first pass was wrong the corrected statement is marked **[corrected]** and the
 original is shown so the error stays visible.
@@ -117,7 +118,7 @@ spawn provider processes without bound. Only A and D respect
 
 ### The concurrency cap
 
-`er-engine/src/agent_slots.rs` is a process-wide counting semaphore
+`crates/er-agent/src/agent_slots.rs` is a process-wide counting semaphore
 (`Mutex<usize>` + `Condvar`, 200 ms `wait_timeout` for cancellation).
 `DEFAULT_MAX_CONCURRENT_REVIEWS = 3` (`config/mod.rs:182`). The guard is RAII, so
 the mutex is never held across a spawn or a wait.
@@ -280,7 +281,7 @@ hardcoded list of 50 command names plus 3 wrappers rather than coverage of all
 
 ## Phase 0 results (measured)
 
-Instruments: `er-engine/src/agent_timing.rs`, off unless `ER_AGENT_TIMING=1`.
+Instruments: `crates/er-agent/src/agent_timing.rs`, off unless `ER_AGENT_TIMING=1`.
 Slot waits are recorded inside `SlotPool::acquire` so every spawn path is covered
 without touching each one; per-run phase splits come from the spawn sites; rounds
 are timed in `run_supervisor`. Harnesses:
