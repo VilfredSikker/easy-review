@@ -49,17 +49,18 @@ pub fn with_test_storage_root<R>(root: impl Into<PathBuf>, f: impl FnOnce() -> R
 #[cfg(any(test, feature = "test-support"))]
 static PROCESS_STORAGE_ROOT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Serializes process-wide test roots, and lets the guard test prove no root
-/// is installed while it runs.
+/// Serializes process-wide test roots so two holders never overlap.
 #[cfg(any(test, feature = "test-support"))]
 static PROCESS_STORAGE_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Run `f` with the storage root overridden for every thread in the process.
+/// Run `f` with the storage root overridden for the calling thread and for the
+/// process's unnamed threads.
 ///
 /// For tests whose storage access happens on a spawned thread (the arena
-/// supervisor), where [`with_test_storage_root`] cannot reach. Tests using
-/// this run one at a time: the lock is held for the whole body, so two roots
-/// never overlap.
+/// supervisor), where [`with_test_storage_root`] cannot reach. Production
+/// spawns unnamed threads; libtest names its test threads, so this root never
+/// disarms the guard for another test. Tests using this run one at a time: the
+/// lock is held for the whole body, so two roots never overlap.
 #[cfg(any(test, feature = "test-support"))]
 pub fn with_process_test_storage_root<R>(root: impl Into<PathBuf>, f: impl FnOnce() -> R) -> R {
     struct Restore {
@@ -74,15 +75,16 @@ pub fn with_process_test_storage_root<R>(root: impl Into<PathBuf>, f: impl FnOnc
         }
     }
 
+    let root = root.into();
     let _serial = PROCESS_STORAGE_ROOT_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let previous = PROCESS_STORAGE_ROOT
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .replace(root.into().to_string_lossy().into_owned());
+        .replace(root.to_string_lossy().into_owned());
     let _restore = Restore { previous };
-    f()
+    with_test_storage_root(root.as_path(), f)
 }
 
 fn storage_root_override() -> Option<String> {
@@ -91,12 +93,16 @@ fn storage_root_override() -> Option<String> {
         if let Some(value) = crate::test_support::explicit_var("ER_STORAGE_ROOT") {
             return value;
         }
-        if let Some(root) = PROCESS_STORAGE_ROOT
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-        {
-            return Some(root);
+        // Only the unnamed workers production code spawns may borrow a
+        // process root; a named libtest thread must hit the guard.
+        if std::thread::current().name().is_none() {
+            if let Some(root) = PROCESS_STORAGE_ROOT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+            {
+                return Some(root);
+            }
         }
         std::env::var("ER_STORAGE_ROOT").ok()
     }
@@ -862,19 +868,41 @@ mod tests {
     #[test]
     #[should_panic(expected = "test resolved the real storage root")]
     fn resolving_the_real_root_in_a_test_is_a_panic() {
-        // Wait out any process-wide root first: it would make the guard stand
-        // down for a legitimate reason, and this test is about the default.
-        let _serial = PROCESS_STORAGE_ROOT_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        assert!(
-            PROCESS_STORAGE_ROOT
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_none(),
-            "a process-wide test root leaked"
-        );
         crate::test_support::with_var_unset("ER_STORAGE_ROOT", storage_root);
+    }
+
+    /// The process root must not disarm the guard on a named libtest thread,
+    /// even while another test holds it.
+    #[test]
+    fn a_named_thread_ignores_the_process_root() {
+        let tmp = TempDir::new().unwrap();
+        with_process_test_storage_root(tmp.path(), || {
+            let err = std::thread::Builder::new()
+                .name("named-worker".into())
+                .spawn(storage_root)
+                .unwrap()
+                .join()
+                .expect_err("a named thread must not borrow the process root");
+            let message = err
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| err.downcast_ref::<&str>().map(|text| text.to_string()))
+                .unwrap_or_default();
+            assert!(
+                message.contains("test resolved the real storage root"),
+                "{message}"
+            );
+        });
+    }
+
+    /// The unnamed workers production code spawns do see the process root.
+    #[test]
+    fn an_unnamed_thread_uses_the_process_root() {
+        let tmp = TempDir::new().unwrap();
+        with_process_test_storage_root(tmp.path(), || {
+            let root = std::thread::spawn(storage_root).join().unwrap();
+            assert_eq!(root, tmp.path());
+        });
     }
 }
 
