@@ -206,8 +206,8 @@ fn validate_contents_before_write(
             check_version("review.json", review.version, ErReview::VERSION)?;
             let order: ErOrder = serde_json::from_str(required_file(files, "order.json")?)
                 .context("invalid order.json")?;
-            check_version("order.json", order.version, ErOrder::VERSION)?;
             check_diff_hash("order.json", &order.diff_hash, expected_hash)?;
+            check_version("order.json", order.version, ErOrder::VERSION)?;
             let checklist: ErChecklist =
                 serde_json::from_str(required_file(files, "checklist.json")?)
                     .context("invalid checklist.json")?;
@@ -526,7 +526,12 @@ fn permissive_objects(mut value: Value) -> Value {
         match value {
             Value::Object(map) => {
                 if map.get("type").and_then(Value::as_str) == Some("object") {
-                    map.insert("additionalProperties".into(), Value::Bool(true));
+                    // Keep a map's `additionalProperties` value: it carries the
+                    // `$ref` that describes the entry type (review files, order
+                    // groups, …). Only add permissiveness where the schema did
+                    // not already say what the values are.
+                    map.entry("additionalProperties")
+                        .or_insert(Value::Bool(true));
                 }
                 for child in map.values_mut() {
                     walk(child);
@@ -1104,6 +1109,216 @@ mod tests {
         }
     }
 
+    /// Every dotted path the hand-written release schemas described, relative
+    /// to each file's schema. The generated schemas must still carry all of
+    /// them; this is the release snapshot the derive is checked against.
+    const RELEASE_SCHEMA_PATHS: &[(&str, &[&str])] = &[
+        (
+            "triage.json",
+            &[
+                "version",
+                "diff_hash",
+                "diff_scope",
+                "created_at",
+                "first_impression",
+                "diff_stats",
+                "diff_stats.files_changed",
+                "diff_stats.approx_risk",
+                "diff_stats.domains",
+                "verdict",
+                "verdict.primary",
+                "verdict.experts",
+                "verdict.rationale",
+                "verdict.confidence",
+                "priority_files",
+                "priority_files.path",
+                "priority_files.reason",
+                "priority_files.risk",
+                "reach",
+                "reach.level",
+                "reach.reason",
+                "reach.touch_points",
+                "reach.guard",
+                "reach.guard.kind",
+                "reach.guard.name",
+                "reach.guard.evidence",
+                "sensitive",
+                "sensitive.reasons",
+                "sensitive.reasons.kind",
+                "sensitive.reasons.evidence",
+                "sensitive.reasons.note",
+            ],
+        ),
+        (
+            "review.json",
+            &[
+                "version",
+                "diff_hash",
+                "created_at",
+                "base_branch",
+                "head_branch",
+                "file_hashes",
+                "files",
+                "files.risk",
+                "files.risk_reason",
+                "files.summary",
+                "files.findings",
+                "files.findings.id",
+                "files.findings.severity",
+                "files.findings.category",
+                "files.findings.title",
+                "files.findings.description",
+                "files.findings.hunk_index",
+                "files.findings.line_start",
+                "files.findings.line_end",
+                "files.findings.line_content",
+                "files.findings.suggestion",
+                "files.findings.related_files",
+                "files.findings.outside_diff",
+                "files.findings.confidence",
+                "files.findings.verification_plan",
+                "files.findings.evidence",
+                "files.findings.evidence.file",
+                "files.findings.evidence.line_start",
+                "files.findings.evidence.line_end",
+                "files.findings.evidence.note",
+                "files.findings.resolved",
+                "files.findings.resolved_note",
+                "files.findings.resolved_at",
+            ],
+        ),
+        (
+            "order.json",
+            &[
+                "version",
+                "diff_hash",
+                "order",
+                "order.path",
+                "order.reason",
+                "order.group",
+                "groups",
+                "groups.label",
+                "groups.color",
+            ],
+        ),
+        (
+            "checklist.json",
+            &[
+                "version",
+                "diff_hash",
+                "items",
+                "items.id",
+                "items.text",
+                "items.category",
+                "items.checked",
+                "items.related_findings",
+                "items.related_files",
+            ],
+        ),
+        (
+            "tour.json",
+            &[
+                "version",
+                "diff_hash",
+                "created_at",
+                "title",
+                "overview",
+                "pillars",
+                "pillars.id",
+                "pillars.title",
+                "pillars.description",
+                "pillars.summary",
+                "pillars.order",
+                "pillars.importance",
+                "pillars.foundation",
+                "pillars.files",
+                "pillars.files.path",
+                "pillars.files.reason",
+                "pillars.files.finding_ids",
+                "pillars.files.related",
+                "pillars.files.related.path",
+                "pillars.files.related.kind",
+                "pillars.files.related.reason",
+            ],
+        ),
+    ];
+
+    /// Flatten a schema into dotted property paths, following `$ref`s and the
+    /// collection shapes schemars emits (items, additionalProperties, anyOf).
+    fn schema_paths(schema: &Value) -> std::collections::BTreeSet<String> {
+        fn resolve<'a>(root: &'a Value, node: &'a Value) -> &'a Value {
+            if let Some(reference) = node.get("$ref").and_then(Value::as_str) {
+                let name = reference
+                    .strip_prefix("#/$defs/")
+                    .or_else(|| reference.strip_prefix("#/definitions/"));
+                if let Some(name) = name {
+                    if let Some(target) = root
+                        .get("$defs")
+                        .or_else(|| root.get("definitions"))
+                        .and_then(|defs| defs.get(name))
+                    {
+                        return target;
+                    }
+                }
+            }
+            node
+        }
+        fn walk(
+            root: &Value,
+            node: &Value,
+            prefix: &str,
+            out: &mut std::collections::BTreeSet<String>,
+        ) {
+            let node = resolve(root, node);
+            if let Some(properties) = node.get("properties").and_then(Value::as_object) {
+                for (name, child) in properties {
+                    let path = if prefix.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{prefix}.{name}")
+                    };
+                    out.insert(path.clone());
+                    walk(root, child, &path, out);
+                }
+            }
+            if let Some(items) = node.get("items") {
+                walk(root, items, prefix, out);
+            }
+            if let Some(values) = node.get("additionalProperties") {
+                if values.is_object() {
+                    walk(root, values, prefix, out);
+                }
+            }
+            for key in ["anyOf", "oneOf", "allOf"] {
+                if let Some(items) = node.get(key).and_then(Value::as_array) {
+                    for item in items {
+                        walk(root, item, prefix, out);
+                    }
+                }
+            }
+        }
+        let mut out = std::collections::BTreeSet::new();
+        walk(schema, schema, "", &mut out);
+        out
+    }
+
+    #[test]
+    fn derived_schema_keeps_every_release_path() {
+        let response =
+            artifact_specs(&[SidecarKind::Triage, SidecarKind::Review, SidecarKind::Tour]);
+        for (file, expected) in RELEASE_SCHEMA_PATHS {
+            let schema = response
+                .specs
+                .iter()
+                .find_map(|spec| spec.schemas.get(*file))
+                .unwrap_or_else(|| panic!("no schema for {file}"));
+            let paths = schema_paths(schema);
+            for path in *expected {
+                assert!(paths.contains(*path), "{file}: schema lost {path}");
+            }
+        }
+    }
+
     #[test]
     fn spec_examples_deserialize_into_their_types() {
         let hash = "abc123";
@@ -1391,19 +1606,46 @@ mod tests {
             let diff = "diff --git a/t b/t\n+t\n";
             write_diff_tmp(&er_dir, diff);
             let hash = compute_diff_hash(diff);
-            let mut files = triage_files(&hash);
-            let mut triage: TriageReview = serde_json::from_str(&files["triage.json"]).unwrap();
-            triage.version = 2;
-            files.insert(
-                "triage.json".to_string(),
-                serde_json::to_string(&triage).unwrap(),
-            );
 
-            let error = upload_artifacts_to_dir(&er_dir, SidecarKind::Triage, &files).unwrap_err();
-            let text = format!("{error:#}");
-            assert!(text.contains("triage.json"), "{text}");
-            assert!(text.contains("version 2"), "{text}");
-            assert!(!Path::new(&er_dir).join("triage.json").exists());
+            let bump = |files: &mut BTreeMap<String, String>, name: &str| {
+                let mut value: Value = serde_json::from_str(&files[name]).unwrap();
+                value["version"] = json!(2);
+                files.insert(name.to_string(), value.to_string());
+            };
+
+            let mut triage = triage_files(&hash);
+            bump(&mut triage, "triage.json");
+            let mut tour = tour_files(&hash);
+            bump(&mut tour, "tour.json");
+            let mut cases: Vec<(SidecarKind, &str, BTreeMap<String, String>)> = vec![
+                (SidecarKind::Triage, "triage.json", triage),
+                (SidecarKind::Tour, "tour.json", tour),
+            ];
+            for name in ["review.json", "order.json", "checklist.json"] {
+                let mut files = review_bundle(&hash);
+                bump(&mut files, name);
+                cases.push((SidecarKind::Review, name, files));
+            }
+
+            for (kind, name, files) in cases {
+                let error = upload_artifacts_to_dir(&er_dir, kind, &files).unwrap_err();
+                let text = format!("{error:#}");
+                assert!(text.contains(name), "{name}: {text}");
+                assert!(text.contains("version 2"), "{name}: {text}");
+            }
+            for name in [
+                "triage.json",
+                "tour.json",
+                "review.json",
+                "order.json",
+                "checklist.json",
+            ] {
+                assert!(
+                    !Path::new(&er_dir).join(name).exists(),
+                    "{name} was written"
+                );
+            }
+            assert!(summary_text(&er_dir).is_none());
         });
     }
 
