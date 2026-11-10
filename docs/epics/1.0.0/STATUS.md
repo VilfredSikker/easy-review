@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 19:29 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 20:12 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -10,12 +10,12 @@
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
 | D3 | – | idle | – |
-| D1 | D6 | [#475](https://github.com/VilfredSikker/easy-review/issues/475) P28a, step plan | E, W |
+| D1 | D6 | [#476](https://github.com/VilfredSikker/easy-review/issues/476) P28b, step plan | W |
 | D4 | T6 store core | idle (first for P32a) | – |
 | T2 | T4 git port | idle | – |
 | T1, D2, D5 | – | idle | – |
 
-**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35, P26a, P26b and P27 are merged; P28a is next; 
+**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35 and P26a–P28a are merged; P28b is next, then P29 and P32a in parallel; 
 
 ## Progress
 
@@ -61,8 +61,8 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | Spawn-gaps | [#493](https://github.com/VilfredSikker/easy-review/issues/493) agent_spawn matcher gaps from the P26a review | C/F | sonnet | ✅ | [#495](https://github.com/VilfredSikker/easy-review/pull/495) | T2 |
 | P26b | [#473](https://github.com/VilfredSikker/easy-review/issues/473) ProviderSpec, one decoder, JobSpec/JobRunner | C/E | opus | ✅ | [#494](https://github.com/VilfredSikker/easy-review/pull/494) | D1 |
 | P27 | [#474](https://github.com/VilfredSikker/easy-review/issues/474) Card AI and model discovery onto the Provider | E/F | opus | ✅ | [#496](https://github.com/VilfredSikker/easy-review/pull/496) | D1 |
-| P28a | [#475](https://github.com/VilfredSikker/easy-review/issues/475) Background queue onto the JobRunner | E/W | opus | 🟡 | | D1; step plan |
-| P28b | [#476](https://github.com/VilfredSikker/easy-review/issues/476) Review-flow launch and the Deep-run cancel/orphan test | W | opus | ⬜ | | after #475 |
+| P28a | [#475](https://github.com/VilfredSikker/easy-review/issues/475) Background queue onto the JobRunner | E/W | opus | ✅ | [#497](https://github.com/VilfredSikker/easy-review/pull/497) | D1 |
+| P28b | [#476](https://github.com/VilfredSikker/easy-review/issues/476) Review-flow launch and the Deep-run cancel/orphan test | W | opus | 🟡 | | D1; step plan |
 | P29 | [#477](https://github.com/VilfredSikker/easy-review/issues/477) Tab-local prompts, the shell path and the summary job (D18) | E | opus | ⬜ | | after #476 |
 | P30a | [#478](https://github.com/VilfredSikker/easy-review/issues/478) Host commits job outputs | E/C | opus | ⬜ | | after #475, #477 |
 | P32a | [#479](https://github.com/VilfredSikker/easy-review/issues/479) Workflow record and crash resume | W | opus | ⬜ | | after #476 |
