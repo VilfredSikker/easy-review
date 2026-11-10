@@ -219,20 +219,37 @@ pub fn load() -> ProjectsFile {
 pub fn update(op: impl FnOnce(&mut ProjectsFile) -> Result<bool>) -> Result<()> {
     let key = projects_key()?;
     let store = crate::store_registry::store();
+    let mut imported = false;
     let result = store.update_durable(&key, er_store::DEFAULT_LOCK_TIMEOUT, |current| {
         // `update` cannot tell absent from unreadable, but the file can.
         if current.is_none() && store.exists(&key) {
             return Err(anyhow::anyhow!("the projects record is unreadable"));
         }
-        let mut file = current.unwrap_or_default();
+        let mut file = match current {
+            Some(file) => file,
+            // First write on a fresh install: seed from the old project list
+            // before the caller's edit, so a pin arriving before any load does
+            // not skip the one-time import.
+            None => match crate::legacy_projects::read_legacy_projects() {
+                Some(legacy) => {
+                    imported = true;
+                    legacy
+                }
+                None => ProjectsFile::default(),
+            },
+        };
         op(&mut file)?;
         Ok(file)
     });
-    match result {
+    let outcome = match result {
         Ok(_) => Ok(()),
         Err(UpdateError::Apply(error)) => Err(error),
         Err(UpdateError::Store(error)) => Err(error.into()),
+    };
+    if outcome.is_ok() && imported {
+        crate::legacy_projects::mark_imported();
     }
+    outcome
 }
 
 /// Normalize a GitHub remote reference to a lowercase `owner/repo` slug.
@@ -473,16 +490,8 @@ mod tests {
     use serde_json::json;
 
     fn with_temp_store<F: FnOnce()>(f: F) {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", dir.path());
-        // Keep the pre-1.0 import away from the developer's real project list.
-        std::env::set_var("ER_LEGACY_CONFIG_DIR", dir.path().join("legacy-config"));
-        f();
-        std::env::remove_var("ER_LEGACY_CONFIG_DIR");
-        std::env::remove_var("ER_STORAGE_ROOT");
+        crate::storage::with_test_storage_root(dir.path(), f);
     }
 
     fn write_projects(file: &ProjectsFile) {
@@ -717,7 +726,6 @@ mod tests {
 
     // ── the one-time pre-1.0 import (D15) ──
 
-    #[cfg(feature = "test-support")]
     fn with_legacy_env<F: FnOnce(&std::path::Path, &std::path::Path)>(f: F) {
         let store = tempfile::tempdir().unwrap();
         let config = tempfile::tempdir().unwrap();
@@ -732,7 +740,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "test-support")]
     fn write_legacy(config: &std::path::Path, text: &str) -> std::path::PathBuf {
         let dir = config.join("er");
         std::fs::create_dir_all(&dir).unwrap();
@@ -741,7 +748,6 @@ mod tests {
         path
     }
 
-    #[cfg(feature = "test-support")]
     fn legacy_json() -> String {
         serde_json::json!({
             "active_id": "p1",
@@ -761,7 +767,6 @@ mod tests {
         .to_string()
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn an_absent_record_imports_the_old_project_list() {
         with_legacy_env(|_store, config| {
@@ -783,7 +788,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn an_existing_record_never_reads_the_old_file() {
         with_legacy_env(|_store, config| {
@@ -804,7 +808,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn deleting_every_project_does_not_reimport() {
         with_legacy_env(|_store, config| {
@@ -822,7 +825,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn an_unparseable_old_file_imports_nothing_and_keeps_the_old_bytes() {
         with_legacy_env(|_store, config| {
@@ -835,7 +837,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn an_unreadable_record_does_not_import() {
         with_legacy_env(|_store, config| {
@@ -853,7 +854,6 @@ mod tests {
         });
     }
 
-    #[cfg(feature = "test-support")]
     #[test]
     fn the_old_file_is_never_modified() {
         with_legacy_env(|_store, config| {
@@ -868,6 +868,23 @@ mod tests {
                 std::fs::metadata(&path).unwrap().modified().unwrap(),
                 before_mtime
             );
+        });
+    }
+
+    #[test]
+    fn a_pin_before_load_still_imports_the_old_list() {
+        with_legacy_env(|_store, config| {
+            write_legacy(config, &legacy_json());
+
+            // The MCP pin path reaches `update` before anything calls `load`.
+            let (id, _) = ensure_project_for_remote("Acme", "New").unwrap();
+
+            let file = load();
+            let ids: Vec<&str> = file.projects.iter().map(|p| p.id.as_str()).collect();
+            assert_eq!(id, "remote-acme-new");
+            assert!(ids.contains(&"remote-acme-new"), "{ids:?}");
+            assert!(ids.contains(&"p1"), "legacy projects lost: {ids:?}");
+            assert!(ids.contains(&"p2"), "legacy projects lost: {ids:?}");
         });
     }
 }

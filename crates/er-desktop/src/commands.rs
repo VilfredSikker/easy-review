@@ -12905,22 +12905,27 @@ mod tests {
         use er_engine::app::TabState;
         use er_engine::config::FileKindRepoConfig;
 
-        let mut app = make_app_with_n_tabs(1);
-        let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
-            "e2e/**".to_string(),
-            "test".to_string(),
-        )]));
-        app.config
-            .file_kinds
-            .items
-            .insert("my-service".to_string(), table.clone());
+        // `place_tab` registers the tab's remote as a project, which writes to
+        // the store: keep that out of the real data directory.
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+                "e2e/**".to_string(),
+                "test".to_string(),
+            )]));
+            app.config
+                .file_kinds
+                .items
+                .insert("my-service".to_string(), table.clone());
 
-        let mut incoming = TabState::new_for_test(vec![]);
-        incoming.repo_root = "/".into();
-        incoming.remote_repo = Some("acme/my-service".into());
-        place_tab(&mut app, incoming, true, true);
+            let mut incoming = TabState::new_for_test(vec![]);
+            incoming.repo_root = "/".into();
+            incoming.remote_repo = Some("acme/my-service".into());
+            place_tab(&mut app, incoming, true, true);
 
-        assert_eq!(app.tabs[0].file_kinds, table);
+            assert_eq!(app.tabs[0].file_kinds, table);
+        });
     }
 
     #[test]

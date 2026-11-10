@@ -22,7 +22,7 @@ const READABLE_MAX_BYTES: usize = 80;
 /// Tests that need an isolated root use this instead of setting
 /// `ER_STORAGE_ROOT`: `set_var` rewrites the process environment while
 /// parallel tests read it, which is a data race.
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub fn with_test_storage_root<R>(root: impl Into<PathBuf>, f: impl FnOnce() -> R) -> R {
     let root = root.into();
     crate::test_support::with_var(
@@ -41,11 +41,11 @@ pub fn with_test_storage_root<R>(root: impl Into<PathBuf>, f: impl FnOnce() -> R
 }
 
 fn storage_root_override() -> Option<String> {
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     {
         crate::test_support::var("ER_STORAGE_ROOT")
     }
-    #[cfg(not(feature = "test-support"))]
+    #[cfg(not(any(test, feature = "test-support")))]
     {
         std::env::var("ER_STORAGE_ROOT").ok()
     }
