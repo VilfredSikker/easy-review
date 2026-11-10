@@ -161,6 +161,7 @@ agent-spawn-os-launch = [
 agent-spawn-allow = [
   "crates/er-engine/src/app/card_ai_spawn.rs",
   "crates/er-engine/src/model_discovery.rs",
+  "crates/er-engine/src/app/state/comments.rs",
   "crates/er-engine/src/arena/adapter.rs",
 ]
 

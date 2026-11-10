@@ -68,8 +68,14 @@ impl<'ast> Visit<'ast> for SpawnFinder<'_> {
                 message: message_for(call.args.first()),
             });
         }
-        // The func is inspected above; visiting it here would report the same
-        // call a second time as a value path.
+        // A matching path callee was just reported; walking it again would
+        // report the same call twice. Every other callee still gets visited,
+        // because an immediately invoked closure keeps its body there.
+        let func: &Expr = &call.func;
+        match func {
+            Expr::Path(path) if is_command_new_path(&path.path, self.aliases) => {}
+            func => self.visit_expr(func),
+        }
         for arg in &call.args {
             self.visit_expr(arg);
         }
@@ -449,6 +455,24 @@ mod tests {
         ] {
             assert!(findings(source).is_empty(), "{source}");
         }
+    }
+
+    #[test]
+    fn a_spawn_inside_an_immediately_invoked_closure_is_flagged() {
+        // The closure is the callee of an IIFE, not an argument: the finder
+        // must still walk it.
+        let source = r#"
+            struct App;
+            impl App {
+                pub fn spawn(&self) {
+                    let _ = (|| -> Result<(), ()> {
+                        std::process::Command::new("sh");
+                        Ok(())
+                    })();
+                }
+            }
+        "#;
+        assert_eq!(findings(source).len(), 1);
     }
 
     #[test]
