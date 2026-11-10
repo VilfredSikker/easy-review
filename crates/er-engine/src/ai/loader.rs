@@ -1948,6 +1948,39 @@ mod tests {
         });
     }
 
+    /// A file a newer build wrote carries semantics this build cannot know; the
+    /// store refuses it, and the loader must not apply it.
+    #[test]
+    fn a_newer_version_validation_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            write_review(path, "hash", "t0");
+            let key = crate::ai::identity::finding_key("src/a.rs", Some(1), "Old A");
+            std::fs::write(
+                path.join("validation.json"),
+                serde_json::to_vec(&json!({
+                    "version": 99, "diff_hash": "hash", "review_created_at": "t0",
+                    "created_at": "t1",
+                    "outcomes": [{ "key": key, "file": "src/a.rs", "result": "resolved" }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let state = load_ai_state(path.to_str().unwrap(), "hash", None);
+
+            let review = state.review.expect("a projected review");
+            assert!(
+                review.files["src/a.rs"].findings[0].is_active(),
+                "a newer validation must not resolve the row"
+            );
+            assert_eq!(state.validation_effect.applied, 0);
+            assert_eq!(state.validation_effect.unmatched, 0);
+            assert!(!state.validation_effect.ignored);
+        });
+    }
+
     /// The scoped general rerun keeps the base's identity, so a validation that
     /// matched the base still applies after the rerun.
     #[test]

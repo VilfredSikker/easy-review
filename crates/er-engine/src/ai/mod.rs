@@ -11,6 +11,7 @@ pub mod finding_responses;
 pub mod flow_providers;
 mod loader;
 pub mod mtime;
+mod overlay_files;
 pub mod prepared_diff;
 pub mod professor;
 pub mod projection;

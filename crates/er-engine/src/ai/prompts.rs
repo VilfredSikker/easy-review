@@ -2419,26 +2419,32 @@ mod tests {
 
     #[test]
     fn prepared_validate_prompt_no_git_or_gh() {
-        let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
-        assert!(prompt.contains("validation.json"));
-        assert!(prompt.contains("`'/tmp/out'/diff-annotated`"));
-        assert!(prompt.contains("do **not** run `sha256sum`"));
-        assert!(!prompt.contains("git diff"));
-        assert!(!prompt.contains("gh pr"));
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
+            assert!(prompt.contains("validation.json"));
+            assert!(prompt.contains("`'/tmp/out'/diff-annotated`"));
+            assert!(prompt.contains("do **not** run `sha256sum`"));
+            assert!(!prompt.contains("git diff"));
+            assert!(!prompt.contains("gh pr"));
+        });
     }
 
     #[test]
     fn prepared_validate_prompt_writes_validation_json_not_review_json() {
-        let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
-        assert!(prompt.contains("`'/tmp/out'/validation.json`"));
-        assert!(prompt.contains("do **not** write `review.json`"));
-        assert!(prompt.contains("\"key\":\"<from the table>\""));
-        assert!(prompt.contains("\"file\":\"<from the table>\""));
-        assert!(
-            prompt.contains("write the union"),
-            "a second pass accumulates"
-        );
-        assert!(prompt.contains("Carry forward every outcome whose key is still in the review"));
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
+            assert!(prompt.contains("`'/tmp/out'/validation.json`"));
+            assert!(prompt.contains("do **not** write `review.json`"));
+            assert!(prompt.contains("\"key\":\"<from the table>\""));
+            assert!(prompt.contains("\"file\":\"<from the table>\""));
+            assert!(
+                prompt.contains("write the union"),
+                "a second pass accumulates"
+            );
+            assert!(prompt.contains("Carry forward every outcome whose key is still in the review"));
+        });
     }
 
     /// The table is computed from review.json plus a fresh scoped overlay, so
@@ -2566,20 +2572,26 @@ mod tests {
 
     #[test]
     fn prepared_validate_prompt_carries_existing_outcomes() {
-        let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
-        assert!(prompt.contains("Read the existing `'/tmp/out'/validation.json` first"));
-        assert!(prompt.contains("Carry forward every outcome whose key is still in the review"));
-        assert!(prompt.contains("write the union"));
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
+            assert!(prompt.contains("Read the existing `'/tmp/out'/validation.json` first"));
+            assert!(prompt.contains("Carry forward every outcome whose key is still in the review"));
+            assert!(prompt.contains("write the union"));
+        });
     }
 
     #[test]
     fn validation_accumulates_previous_outcomes() {
-        let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
-        assert!(
-            prompt.contains("This makes a second validate accumulate"),
-            "the agent is told the second pass keeps the first pass's outcomes"
-        );
-        assert!(prompt.contains("keep the patch fields an earlier pass set"));
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
+            assert!(
+                prompt.contains("This makes a second validate accumulate"),
+                "the agent is told the second pass keeps the first pass's outcomes"
+            );
+            assert!(prompt.contains("keep the patch fields an earlier pass set"));
+        });
     }
 
     #[test]
@@ -2989,19 +3001,24 @@ mod tests {
 
     #[test]
     fn review_prompts_point_at_base_branch_review_md() {
-        let prompts = [
-            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH, None),
-            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH, None),
-            build_triage_review_prompt_prepared_diff("branch", "/tmp/out", HASH),
-            build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH),
-        ];
-        for p in &prompts {
-            assert!(p.contains("review-md.md"), "{p}");
-            assert!(
-                p.contains("Ignore any `REVIEW.md` in the working tree"),
-                "{p}"
-            );
-        }
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let prompts = [
+                build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH, None),
+                build_expert_review_prompt_prepared_diff(
+                    "branch", "/tmp/out", "security", HASH, None,
+                ),
+                build_triage_review_prompt_prepared_diff("branch", "/tmp/out", HASH),
+                build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH),
+            ];
+            for p in &prompts {
+                assert!(p.contains("review-md.md"), "{p}");
+                assert!(
+                    p.contains("Ignore any `REVIEW.md` in the working tree"),
+                    "{p}"
+                );
+            }
+        });
     }
 
     #[test]

@@ -605,7 +605,7 @@ pub fn stamp_scoped_overlay(
 }
 
 fn unchanged_since_spawn(path: &std::path::Path, stamp: &ScopedRunStamp) -> bool {
-    let current = std::fs::read(path).unwrap_or_default();
+    let current = super::overlay_files::read_bytes(path);
     stamp
         .previous_overlay
         .as_deref()
@@ -892,14 +892,14 @@ fn remove_prev_file(store: &ArtifactStore, scope: &Scope, command_name: &str) {
     let bucket = store.scope_dir(scope);
     match command_name {
         "review" => {
-            let _ = std::fs::remove_file(bucket.join("review.prev.json"));
+            super::overlay_files::remove(&bucket.join("review.prev.json"));
         }
         "professor" => {
-            let _ = std::fs::remove_file(bucket.join("professor.prev.json"));
+            super::overlay_files::remove(&bucket.join("professor.prev.json"));
         }
         _ => {
             if let Some(id) = command_name.strip_prefix("expert-") {
-                let _ = std::fs::remove_file(bucket.join(format!("experts/{id}.prev.json")));
+                super::overlay_files::remove(&bucket.join(format!("experts/{id}.prev.json")));
             }
         }
     }
@@ -917,14 +917,14 @@ pub fn clear_full_run_artifacts(
         "review" => {
             store.delete(&ArtifactKey::<ScopedReview>::new(scope.clone(), ())?)?;
             store.delete(&ArtifactKey::<ValidationReview>::new(scope.clone(), ())?)?;
-            let _ = std::fs::remove_file(bucket.join("review.prev.json"));
+            super::overlay_files::remove(&bucket.join("review.prev.json"));
         }
         "professor" => {
             store.delete(&ArtifactKey::<ScopedProfessorReview>::new(
                 scope.clone(),
                 (),
             )?)?;
-            let _ = std::fs::remove_file(bucket.join("professor.prev.json"));
+            super::overlay_files::remove(&bucket.join("professor.prev.json"));
         }
         _ => {
             if let Some(id) = command_name.strip_prefix("expert-") {
@@ -934,11 +934,11 @@ pub fn clear_full_run_artifacts(
                         slot,
                     )?)?;
                 }
-                let _ = std::fs::remove_file(bucket.join(format!("experts/{id}.prev.json")));
+                super::overlay_files::remove(&bucket.join(format!("experts/{id}.prev.json")));
             }
         }
     }
-    let _ = std::fs::remove_file(bucket.join("review-files.txt"));
+    super::overlay_files::remove(&bucket.join("review-files.txt"));
     Ok(())
 }
 
@@ -1666,6 +1666,121 @@ mod tests {
                 .map(|outcome| outcome.file.as_str())
                 .collect();
             assert_eq!(files, ["src/b.rs"], "only re-reviewed paths drop out");
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stamp_leaves_review_json_byte_identical() {
+        let dir = temp_dir("stamp-review-bytes");
+        with_test_storage_root(&dir, || {
+            let store = crate::store_registry::store();
+            let scope = Scope::dir(dir.to_str().unwrap()).unwrap();
+            std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
+            let review_bytes: &[u8] =
+                br#"{"version":1,"diff_hash":"hash","created_at":"t0","files":{}}"#;
+            std::fs::write(dir.join("review.json"), review_bytes).unwrap();
+            let agent = scoped(vec![("src/a.rs", vec![finding("", "A", 1)])], &["src/a.rs"]);
+            std::fs::write(
+                dir.join("scoped/general.json"),
+                serde_json::to_vec(&agent).unwrap(),
+            )
+            .unwrap();
+            let stamp = ScopedRunStamp {
+                scope_paths: vec!["src/a.rs".to_string()],
+                base_diff_hash: "hash".to_string(),
+                base_created_at: "t0".to_string(),
+                previous_overlay: None,
+            };
+            assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
+            assert_eq!(
+                std::fs::read(dir.join("review.json")).unwrap(),
+                review_bytes,
+                "a scoped stamp writes only its overlay"
+            );
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stamp_refuses_a_newer_version_overlay() {
+        let dir = temp_dir("newer-overlay");
+        with_test_storage_root(&dir, || {
+            let store = crate::store_registry::store();
+            let scope = Scope::dir(dir.to_str().unwrap()).unwrap();
+            std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
+            let newer: &[u8] = br#"{"version":99,"files":{}}"#;
+            std::fs::write(dir.join("scoped/general.json"), newer).unwrap();
+            let stamp = ScopedRunStamp {
+                scope_paths: vec!["src/a.rs".to_string()],
+                base_diff_hash: String::new(),
+                base_created_at: String::new(),
+                previous_overlay: None,
+            };
+            let error = stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap_err();
+            assert!(error.to_string().contains("unreadable"), "{error}");
+            assert_eq!(
+                std::fs::read(dir.join("scoped/general.json")).unwrap(),
+                newer,
+                "an overlay a newer build owns is not rewritten"
+            );
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reply_does_not_rewrite_an_unreadable_overlay() {
+        let dir = temp_dir("broken-overlay");
+        with_test_storage_root(&dir, || {
+            let broken: &[u8] = b"not json";
+            std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
+            std::fs::write(dir.join("scoped/general.json"), broken).unwrap();
+            let mut edit = Some(|_: &mut Finding| -> anyhow::Result<()> { Ok(()) });
+            assert!(
+                !with_finding_in_overlay(dir.to_str().unwrap(), "scoped-k", &mut edit).unwrap()
+            );
+            assert_eq!(
+                std::fs::read(dir.join("scoped/general.json")).unwrap(),
+                broken,
+                "a broken overlay is left for the next run to replace"
+            );
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stamp_does_not_rewrite_a_newer_or_unreadable_validation() {
+        let dir = temp_dir("newer-validation");
+        with_test_storage_root(&dir, || {
+            let store = crate::store_registry::store();
+            let scope = Scope::dir(dir.to_str().unwrap()).unwrap();
+            std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
+            std::fs::write(
+                dir.join("review.json"),
+                br#"{"version":1,"diff_hash":"hash","created_at":"t0","files":{}}"#,
+            )
+            .unwrap();
+            let agent = scoped(vec![("src/a.rs", vec![finding("", "A", 1)])], &["src/a.rs"]);
+            std::fs::write(
+                dir.join("scoped/general.json"),
+                serde_json::to_vec(&agent).unwrap(),
+            )
+            .unwrap();
+            let stamp = ScopedRunStamp {
+                scope_paths: vec!["src/a.rs".to_string()],
+                base_diff_hash: "hash".to_string(),
+                base_created_at: "t0".to_string(),
+                previous_overlay: None,
+            };
+            for bytes in [&br#"{"version":99,"outcomes":[]}"#[..], b"not json"] {
+                std::fs::write(dir.join("validation.json"), bytes).unwrap();
+                assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
+                assert_eq!(
+                    std::fs::read(dir.join("validation.json")).unwrap(),
+                    bytes,
+                    "a validation a newer build owns, or one that cannot be read, is left alone"
+                );
+            }
         });
         let _ = std::fs::remove_dir_all(dir);
     }
