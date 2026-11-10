@@ -5702,6 +5702,11 @@ pub struct App {
     /// via [`App::clear_notification`] when its own timer expires.
     pub notification: Option<Notification>,
 
+    /// Set while the managed config failed to load. It keeps a persistent
+    /// banner on screen after the one-time notification clears, and only a
+    /// successful reload clears it.
+    pub config_load_error: Option<String>,
+
     /// Loop-iteration counter the TUI uses to throttle periodic work.
     ///
     /// The engine only holds it. The TUI increments it once per iteration and
@@ -5935,6 +5940,7 @@ impl App {
             overlay: None,
             watching: false,
             notification: None,
+            config_load_error: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
@@ -5971,6 +5977,7 @@ impl App {
         app.reconcile_arena_runs();
         if let Some(error) = config_load_error {
             app.notify_long(&error.to_string());
+            app.config_load_error = Some(crate::config::CONFIG_LOAD_BANNER.to_string());
         }
         Ok(app)
     }
@@ -5995,6 +6002,7 @@ impl App {
             overlay: None,
             watching: false,
             notification: None,
+            config_load_error: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
@@ -6027,6 +6035,7 @@ impl App {
         app.overlay_cached_discovered_models();
         if let Some(error) = config_load_error {
             app.notify_long(&error.to_string());
+            app.config_load_error = Some(crate::config::CONFIG_LOAD_BANNER.to_string());
         }
         Ok(app)
     }
@@ -6047,6 +6056,7 @@ impl App {
             overlay: None,
             watching: false,
             notification: None,
+            config_load_error: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
@@ -6079,6 +6089,7 @@ impl App {
         app.overlay_cached_discovered_models();
         if let Some(error) = config_load_error {
             app.notify_long(&error.to_string());
+            app.config_load_error = Some(crate::config::CONFIG_LOAD_BANNER.to_string());
         }
         app
     }
@@ -6100,6 +6111,7 @@ impl App {
             overlay: None,
             watching: false,
             notification: None,
+            config_load_error: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: ErConfig::default(),
@@ -8466,6 +8478,19 @@ impl App {
     }
 
     pub fn open_config_hub(&mut self) {
+        // A failed load left `self.config` at the defaults. Re-read the file on
+        // open: a repaired file is adopted and clears the save refusal; a file
+        // that still fails keeps the banner and the defaults.
+        if self.config_load_error.is_some() {
+            let (config, error) = config::load_global_config_checked();
+            self.config = config;
+            self.config_load_error = error
+                .as_ref()
+                .map(|_| config::CONFIG_LOAD_BANNER.to_string());
+            if let Some(error) = error {
+                self.notify_long(&error.to_string());
+            }
+        }
         let tab = config::SettingsScope::General;
         let items = config::config_hub_items_for_scope(&self.config, tab);
         let selected = Self::config_hub_first_selectable(&items);
@@ -8510,6 +8535,9 @@ impl App {
     fn config_hub_persist_live(&mut self) {
         if let Err(e) = config::save_config(&self.config) {
             self.notify(&format!("Failed to save: {}", e));
+            if config::managed_config_load_failed() {
+                self.config_load_error = Some(config::CONFIG_LOAD_BANNER.to_string());
+            }
             let revert = match &self.overlay {
                 Some(OverlayData::ConfigHub { saved_config, .. }) => {
                     Some(saved_config.as_ref().clone())
@@ -12391,6 +12419,7 @@ mod tests {
             overlay: None,
             watching: false,
             notification: None,
+            config_load_error: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: ErConfig::default(),
@@ -12742,6 +12771,30 @@ mod tests {
 
         std::env::remove_var("ER_CONFIG_PATH");
         std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn opening_settings_reloads_a_repaired_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "{").unwrap();
+
+        crate::config::with_managed_config_path(&path, || {
+            let tab = make_test_tab(vec![]);
+            let mut app = make_test_app(tab);
+            let (_config, error) = crate::config::load_global_config_checked();
+            assert!(error.is_some());
+            app.config_load_error = Some(crate::config::CONFIG_LOAD_BANNER.to_string());
+
+            std::fs::write(&path, "[display]\ntheme = \"paper\"\n").unwrap();
+            app.open_config_hub();
+
+            assert!(
+                app.config_load_error.is_none(),
+                "a successful reload clears the banner"
+            );
+            assert_eq!(app.config.display.theme, "paper");
+        });
     }
 
     // ── split_diff_active ──

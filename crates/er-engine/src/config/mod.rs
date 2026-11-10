@@ -1716,11 +1716,39 @@ pub fn global_config_dir() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|d| d.join("er"))
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_CONFIG_PATH: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Point [`managed_config_path`] at `path` for the duration of `f`, on this
+/// thread only. Tests use a temp dir without `set_var`, which would race with
+/// parallel tests reading the environment.
+#[cfg(test)]
+pub(crate) fn with_managed_config_path<R>(path: &std::path::Path, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<std::path::PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_CONFIG_PATH.with(|slot| {
+                *slot.borrow_mut() = self.0.take();
+            });
+        }
+    }
+    let previous = TEST_CONFIG_PATH.with(|slot| slot.replace(Some(path.to_path_buf())));
+    let _restore = Restore(previous);
+    f()
+}
+
 /// Path to the managed `config.toml`.
 ///
 /// Overridden by `ER_CONFIG_PATH` when set (full file path). Otherwise
 /// `<storage_root>/config.toml`.
 pub fn managed_config_path() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEST_CONFIG_PATH.with(|slot| slot.borrow().clone()) {
+        return path;
+    }
     if let Ok(override_path) = std::env::var("ER_CONFIG_PATH") {
         if !override_path.is_empty() {
             return std::path::PathBuf::from(override_path);
@@ -1769,6 +1797,50 @@ fn migrate_legacy_config() {
     }
 }
 
+/// Shown persistently while a failed config load disables saving. The full
+/// parse error goes to the notification and the config file's backup.
+pub const CONFIG_LOAD_BANNER: &str =
+    "config.toml failed to load; saving is disabled until it is reloaded";
+
+/// Paths whose last load failed. A save refuses while its path is here, even
+/// after the user repairs the file: the in-memory config is still the default,
+/// so writing it would replace the repaired values. Only a successful
+/// [`load_config_from`] of that path clears the entry.
+static FAILED_CONFIG_LOADS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
+> = std::sync::OnceLock::new();
+
+fn failed_config_loads() -> &'static std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>
+{
+    FAILED_CONFIG_LOADS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn record_config_load_failure(path: &std::path::Path) {
+    if let Ok(mut failed) = failed_config_loads().lock() {
+        failed.insert(path.to_path_buf());
+    }
+}
+
+fn clear_config_load_failure(path: &std::path::Path) {
+    if let Ok(mut failed) = failed_config_loads().lock() {
+        failed.remove(path);
+    }
+}
+
+fn config_load_failed(path: &std::path::Path) -> bool {
+    failed_config_loads()
+        .lock()
+        .map(|failed| failed.contains(path))
+        .unwrap_or(false)
+}
+
+/// Whether the managed config has a recorded failed load. The config hub reads
+/// this after a refused save, so the persistent banner also appears when the
+/// file went bad after startup.
+pub(crate) fn managed_config_load_failed() -> bool {
+    config_load_failed(&managed_config_path())
+}
+
 /// Why a config file could not be loaded.
 ///
 /// The file is left untouched. [`save_config_to`] refuses to overwrite it
@@ -1785,7 +1857,7 @@ impl std::fmt::Display for ConfigLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} could not be loaded: {}. Saving is disabled until the file is fixed or removed.",
+            "{} could not be loaded: {}. Saving is disabled until the file is fixed or removed and the config is reloaded (reopen Settings or restart).",
             self.path.display(),
             self.message
         )?;
@@ -1825,6 +1897,34 @@ fn parse_config_from_path(path: &std::path::Path) -> Result<ErConfig, ConfigRead
         .map_err(ConfigReadError::Parse)
 }
 
+/// The newest existing backup with the same bytes, if one exists. A repeated
+/// failed load of unchanged bytes must not add another copy.
+fn newest_identical_backup(path: &std::path::Path, bytes: &[u8]) -> Option<std::path::PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    let prefix = format!("{name}.invalid-");
+    let mut newest: Option<(String, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(path.parent()?).ok()? {
+        let entry = entry.ok()?;
+        let file_name = entry.file_name();
+        let Some(suffix) = file_name
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+        else {
+            continue;
+        };
+        if std::fs::read(entry.path()).ok().as_deref() != Some(bytes) {
+            continue;
+        }
+        if newest
+            .as_ref()
+            .is_none_or(|(best, _)| suffix > best.as_str())
+        {
+            newest = Some((suffix.to_string(), entry.path()));
+        }
+    }
+    newest.map(|(_, path)| path)
+}
+
 /// Copy an unreadable config beside itself, with a name no earlier backup
 /// holds. `create_new` reserves the name, so two failures in the same
 /// nanosecond still leave two files. The copy's failure is returned, never
@@ -1833,6 +1933,11 @@ fn backup_invalid_config(path: &std::path::Path) -> (Option<std::path::PathBuf>,
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return (None, Some("the config path has no file name".to_string()));
     };
+    if let Ok(bytes) = std::fs::read(path) {
+        if let Some(existing) = newest_identical_backup(path, &bytes) {
+            return (Some(existing), None);
+        }
+    }
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
@@ -1870,11 +1975,16 @@ fn backup_invalid_config(path: &std::path::Path) -> (Option<std::path::PathBuf>,
 /// exists but cannot be read or parsed. A missing file is not an error.
 pub fn load_config_from(path: &std::path::Path) -> (ErConfig, Option<ConfigLoadError>) {
     match parse_config_from_path(path) {
-        Ok(config) => (config, None),
+        Ok(config) => {
+            clear_config_load_failure(path);
+            (config, None)
+        }
         Err(ConfigReadError::Read(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            clear_config_load_failure(path);
             (ErConfig::default(), None)
         }
         Err(error) => {
+            record_config_load_failure(path);
             let (backup, backup_error) = backup_invalid_config(path);
             (
                 ErConfig::default(),
@@ -1945,12 +2055,19 @@ pub fn save_config(config: &ErConfig) -> Result<()> {
 /// not load. The bytes the user must fix stay exactly as they were until the
 /// file parses again; a missing file is simply written.
 pub fn save_config_to(path: &std::path::Path, config: &ErConfig) -> Result<()> {
+    if config_load_failed(path) {
+        anyhow::bail!(
+            "Refusing to save: {} failed to load earlier in this session. Fix or remove the file, then reopen Settings or restart to reload it.",
+            path.display()
+        );
+    }
     match parse_config_from_path(path) {
         Ok(_) => {}
         Err(ConfigReadError::Read(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
+            record_config_load_failure(path);
             anyhow::bail!(
-                "Refusing to save: {} could not be loaded: {error}. Fix or remove the file, or reset the config first.",
+                "Refusing to save: {} could not be loaded: {error}. Fix or remove the file, then reopen Settings or restart to reload it.",
                 path.display()
             );
         }
@@ -4479,6 +4596,76 @@ mod tests {
         let (reloaded, error) = load_config_from(&path);
         assert!(error.is_none(), "{error:?}");
         assert_eq!(reloaded.display.theme, "ember");
+    }
+
+    #[test]
+    fn a_repaired_config_is_not_overwritten_until_it_reloads() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "{").unwrap();
+        let (config, error) = load_config_from(&path);
+        assert!(error.is_some());
+        assert_eq!(config.display.theme, ErConfig::default().display.theme);
+
+        // The user repairs the file while the app still holds the defaults.
+        std::fs::write(&path, "[display]\ntheme = \"paper\"\n").unwrap();
+        let error = save_config_to(&path, &ErConfig::default()).unwrap_err();
+        assert!(
+            error.to_string().contains("failed to load earlier"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[display]\ntheme = \"paper\"\n"
+        );
+
+        // A successful reload adopts the repaired values and lifts the refusal.
+        let (reloaded, error) = load_config_from(&path);
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(reloaded.display.theme, "paper");
+        save_config_to(&path, &reloaded).unwrap();
+        let (saved, error) = load_config_from(&path);
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(saved.display.theme, "paper");
+    }
+
+    #[test]
+    fn repeated_identical_failures_keep_one_backup() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "{").unwrap();
+        assert!(load_config_from(&path).1.is_some());
+        assert!(load_config_from(&path).1.is_some());
+
+        let backups = || -> Vec<String> {
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("config.toml.invalid-"))
+                .collect()
+        };
+        assert_eq!(backups().len(), 1, "{:?}", backups());
+
+        // Different bytes still get their own backup.
+        std::fs::write(&path, "not = [valid").unwrap();
+        assert!(load_config_from(&path).1.is_some());
+        assert_eq!(backups().len(), 2, "{:?}", backups());
+    }
+
+    #[test]
+    fn the_public_save_refuses_an_unparseable_managed_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "{").unwrap();
+
+        with_managed_config_path(&path, || {
+            let (_config, error) = load_global_config_checked();
+            assert!(error.is_some());
+            let error = save_config(&ErConfig::default()).unwrap_err();
+            assert!(error.to_string().contains("Refusing to save"), "{error}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "{");
+        });
     }
 
     #[test]

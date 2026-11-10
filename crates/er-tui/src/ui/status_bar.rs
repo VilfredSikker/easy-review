@@ -1135,6 +1135,32 @@ pub fn render_watch_notification(f: &mut Frame, area: Rect, message: &str) {
     f.render_widget(notif, notif_area);
 }
 
+/// Persistent banner for a config file that failed to load. Unlike the watch
+/// toast, it stays on screen until a reload clears the error.
+pub fn render_config_error_banner(f: &mut Frame, area: Rect, message: &str) {
+    let char_count = message.chars().count().min(u16::MAX as usize - 4);
+    let width = (char_count as u16 + 4).min(area.width);
+    let x = area.x + area.width.saturating_sub(width + 2);
+    let banner_area = Rect {
+        x,
+        y: area.y + 2,
+        width,
+        height: 1,
+    };
+    let banner = Paragraph::new(Line::from(vec![
+        Span::styled(" ! ", ratatui::style::Style::default().fg(styles::RED())),
+        Span::styled(message, ratatui::style::Style::default().fg(styles::TEXT())),
+        Span::raw(" "),
+    ]))
+    .style(
+        ratatui::style::Style::default()
+            .bg(styles::PANEL())
+            .fg(styles::TEXT()),
+    );
+
+    f.render_widget(banner, banner_area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
