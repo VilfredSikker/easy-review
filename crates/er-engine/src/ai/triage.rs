@@ -401,4 +401,31 @@ mod tests {
         let evidenced: TriageSensitive = serde_json::from_str(r#"{"reasons":[{"kind":"auth","evidence":"src/auth.rs:42","note":"checks permissions"}]}"#).unwrap();
         assert!(evidenced.is_flagged());
     }
+
+    #[test]
+    fn triage_file_written_by_an_agent_loads() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("triage.json"),
+            r#"{"version":1,"diff_hash":"hash","first_impression":"small change","verdict":{"primary":"general"}}"#,
+        )
+        .unwrap();
+
+        let triage = load_triage_review(dir.path().to_str().unwrap()).expect("the agent's triage");
+
+        assert_eq!(triage.first_impression, "small change");
+        assert_eq!(triage.verdict.primary, TriageVerdictPrimary::General);
+    }
+
+    #[test]
+    fn a_triage_file_from_another_version_reads_as_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("triage.json"),
+            r#"{"version":2,"diff_hash":"hash","verdict":{"primary":"general"}}"#,
+        )
+        .unwrap();
+
+        assert!(load_triage_review(dir.path().to_str().unwrap()).is_none());
+    }
 }

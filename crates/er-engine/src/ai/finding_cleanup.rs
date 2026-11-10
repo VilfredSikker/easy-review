@@ -528,6 +528,50 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_finding_leaves_a_malformed_professor_file_untouched() {
+        let dir = tempdir().unwrap();
+        let er = dir.path().to_str().unwrap();
+        std::fs::write(format!("{er}/professor.json"), "{ not valid json").unwrap();
+        let before = std::fs::read_to_string(format!("{er}/professor.json")).unwrap();
+        write_expert_with(er, sample_finding("f-1"));
+
+        assert!(remove_finding_from_sidecars(er, "sec-f-1").unwrap());
+
+        assert_eq!(
+            std::fs::read_to_string(format!("{er}/professor.json")).unwrap(),
+            before,
+            "a malformed sidecar is skipped, never rewritten"
+        );
+        let expert: ExpertReview = serde_json::from_str(
+            &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(expert.files["a.rs"].findings.is_empty());
+    }
+
+    #[test]
+    fn removing_a_finding_leaves_a_newer_review_file_untouched() {
+        let dir = tempdir().unwrap();
+        let er = dir.path().to_str().unwrap();
+        let newer = r#"{"version":2,"diff_hash":"h","files":{}}"#;
+        std::fs::write(format!("{er}/review.json"), newer).unwrap();
+        write_expert_with(er, sample_finding("f-1"));
+
+        assert!(remove_finding_from_sidecars(er, "sec-f-1").unwrap());
+
+        assert_eq!(
+            std::fs::read_to_string(format!("{er}/review.json")).unwrap(),
+            newer,
+            "a newer file is left alone"
+        );
+        let expert: ExpertReview = serde_json::from_str(
+            &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(expert.files["a.rs"].findings.is_empty());
+    }
+
+    #[test]
     fn a_held_bucket_lock_keeps_the_finding_file_unchanged() {
         let dir = tempdir().unwrap();
         let er = dir.path().to_str().unwrap();

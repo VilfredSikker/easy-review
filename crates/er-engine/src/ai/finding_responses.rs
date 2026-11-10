@@ -482,6 +482,51 @@ mod tests {
         );
     }
 
+    // A corrupt review.json must not be rewritten as an empty review when the
+    // reply belongs to an expert sidecar.
+    #[test]
+    fn replying_to_a_finding_leaves_a_malformed_review_json_untouched() {
+        use crate::ai::experts::{ExpertFileReview, ExpertReview};
+
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::create_dir_all(er.join("experts")).unwrap();
+        let corrupt = "{ not valid json";
+        std::fs::write(er.join("review.json"), corrupt).unwrap();
+
+        let expert = ExpertReview {
+            version: 1,
+            expert_id: "api".to_string(),
+            diff_hash: "h".to_string(),
+            diff_scope: String::new(),
+            created_at: String::new(),
+            summary: String::new(),
+            files: std::iter::once((
+                "a.rs".to_string(),
+                ExpertFileReview {
+                    findings: vec![bare_finding("1")],
+                },
+            ))
+            .collect::<HashMap<_, _>>(),
+        };
+        write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
+
+        append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(er.join("review.json")).unwrap(),
+            corrupt,
+            "a malformed sidecar is skipped, never rewritten"
+        );
+        let loaded: ExpertReview =
+            serde_json::from_str(&std::fs::read_to_string(er.join("experts/api.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            loaded.files["a.rs"].findings[0].responses[0].text,
+            "validated"
+        );
+    }
+
     // With both sidecars present, a general finding still lands in review.json
     // and an expert finding still lands in the expert sidecar.
     #[test]

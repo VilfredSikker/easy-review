@@ -504,6 +504,24 @@ mod tests {
     }
 
     #[test]
+    fn expert_file_written_by_an_agent_loads() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let experts = dir.path().join("experts");
+        std::fs::create_dir_all(&experts).unwrap();
+        std::fs::write(
+            experts.join("security.json"),
+            r#"{"version":1,"expert_id":"security","diff_hash":"hash","summary":"lens view","files":{"a.rs":{"findings":[{"id":"1","title":"t","severity":"medium","hunk_index":0}]}}}"#,
+        )
+        .unwrap();
+
+        let loaded = load_expert_reviews(dir.path().to_str().unwrap());
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].expert_id, "security");
+        assert_eq!(loaded[0].files["a.rs"].findings.len(), 1);
+    }
+
+    #[test]
     fn merge_prefixes_ids_and_skips_stale() {
         let hash = "abc123";
         let mut review = ErReview {

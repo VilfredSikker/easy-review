@@ -187,4 +187,32 @@ mod tests {
         merge_professor_into_review(&mut review, &stale, hash);
         assert!(review.files.is_empty());
     }
+
+    #[test]
+    fn professor_file_written_by_an_agent_loads() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("professor.json"),
+            r#"{"version":1,"diff_hash":"hash","summary":"what the diff implements","files":{"a.rs":{"findings":[]}}}"#,
+        )
+        .unwrap();
+
+        let professor =
+            load_professor_review(dir.path().to_str().unwrap()).expect("the agent's professor");
+
+        assert_eq!(professor.summary, "what the diff implements");
+        assert!(professor.files.contains_key("a.rs"));
+    }
+
+    #[test]
+    fn a_professor_file_from_another_version_reads_as_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("professor.json"),
+            r#"{"version":2,"diff_hash":"hash","summary":"from the future"}"#,
+        )
+        .unwrap();
+
+        assert!(load_professor_review(dir.path().to_str().unwrap()).is_none());
+    }
 }
