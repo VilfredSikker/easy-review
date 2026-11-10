@@ -3,10 +3,11 @@
 //! Always-on module: std + serde + storage only — no ui/watch/highlight deps.
 
 use anyhow::{bail, Context, Result};
+use er_agent::decode::OutputProtocol;
+use er_agent::provider::{self, ProviderError, ProviderSpec};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long a model-cache entry stays "fresh" before background refresh.
@@ -123,26 +124,46 @@ pub fn parse_models_output(stdout: &str) -> Vec<DiscoveredModel> {
     out
 }
 
-/// Run `cmd` (first element = program) with a 10s kill timeout. Returns stdout.
+/// Run `cmd` (first element = program) through the runtime with a 10s timeout.
+///
+/// No slot: model discovery is not an agent review and must not consume the
+/// process-wide cap (ADR 0021). The prompt guards are kept from the old
+/// bounded-command helper.
 pub fn run_models_command(cmd: &[String]) -> Result<String> {
     if cmd.is_empty() || cmd[0].trim().is_empty() {
         bail!("models_command is empty");
     }
-    let program = &cmd[0];
-    let args = &cmd[1..];
-    let output = er_git::proc::run_with_timeout(Command::new(program).args(args), COMMAND_TIMEOUT)
-        .with_context(|| format!("failed to run models_command: {program}"))?;
+    let spec = ProviderSpec {
+        program: cmd[0].clone(),
+        args: cmd[1..].to_vec(),
+        env: vec![
+            ("GH_PROMPT_DISABLED".into(), "1".into()),
+            ("GH_NO_UPDATE_NOTIFIER".into(), "1".into()),
+            ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+        ],
+        protocol: OutputProtocol::Plain,
+        timeout: COMMAND_TIMEOUT,
+    };
+    let work_dir = std::env::current_dir().context("resolve the working directory")?;
+    let output =
+        provider::run(&spec, &work_dir.to_string_lossy()).map_err(|error| match error {
+            ProviderError::TimedOut(limit) => {
+                anyhow::anyhow!("models_command timed out after {limit:?}")
+            }
+            ProviderError::Spawn(error) => {
+                anyhow::anyhow!("failed to run models_command {}: {error}", spec.program)
+            }
+        })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let snippet: String = stderr.chars().take(200).collect();
+        let snippet: String = output.stderr.chars().take(200).collect();
         bail!(
             "models_command exited with {}: {}",
             output.status,
             snippet.trim()
         );
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(output.stdout)
 }
 
 fn cache_dir() -> PathBuf {
@@ -332,6 +353,29 @@ mod tests {
             let other = vec!["agent".into(), "--other".into()];
             assert!(load_valid_cache("cursor", &other).is_none());
         });
+    }
+
+    /// Model discovery is not an agent review: a held agent pool must not park
+    /// it. The hold goes through another `agent_slots` call site.
+    #[test]
+    fn discovery_takes_no_slot() {
+        let _serial = er_agent::agent_slots::test_serial();
+        let held = er_agent::agent_slots::acquire_blocking(
+            er_agent::agent_slots::Workload::Background,
+            1,
+            1,
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = run_models_command(&["sh".into(), "-c".into(), "printf model-1".into()]);
+            let _ = tx.send(result);
+        });
+
+        let result = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("discovery must not wait on the agent slot");
+        assert_eq!(result.unwrap(), "model-1");
+        drop(held);
     }
 
     #[test]

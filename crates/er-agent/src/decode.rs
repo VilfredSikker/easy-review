@@ -54,6 +54,20 @@ pub fn decode_final_text(stdout: &str, protocol: OutputProtocol) -> String {
         .unwrap_or_else(|| stdout.to_string())
 }
 
+/// Whether `line` is a `stream-json` result event that carries a usable
+/// answer. An error result is not a reply: that run settles on its exit.
+pub fn is_final_result_line(line: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+        return false;
+    };
+    value.get("type").and_then(|kind| kind.as_str()) == Some("result")
+        && value.get("is_error").and_then(|error| error.as_bool()) != Some(true)
+        && value
+            .get("result")
+            .and_then(|result| result.as_str())
+            .is_some_and(|result| !result.trim().is_empty())
+}
+
 /// The trimmed, non-empty text blocks of one `stream-json` assistant event, in
 /// order.
 fn assistant_text_blocks(event: &Value) -> impl Iterator<Item = String> + '_ {
@@ -149,5 +163,33 @@ mod tests {
             decode_final_text(stdout, OutputProtocol::ClaudeStreamJson),
             stdout
         );
+    }
+
+    #[test]
+    fn a_result_line_with_text_is_final() {
+        assert!(is_final_result_line(
+            r#"{"type":"result","subtype":"success","result":"done"}"#
+        ));
+    }
+
+    #[test]
+    fn an_error_result_is_not_final() {
+        assert!(!is_final_result_line(
+            r#"{"type":"result","is_error":true,"result":"boom"}"#
+        ));
+    }
+
+    #[test]
+    fn an_empty_or_missing_result_is_not_final() {
+        assert!(!is_final_result_line(r#"{"type":"result","result":""}"#));
+        assert!(!is_final_result_line(r#"{"type":"result"}"#));
+    }
+
+    #[test]
+    fn assistant_and_non_json_lines_are_not_final() {
+        assert!(!is_final_result_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}"#
+        ));
+        assert!(!is_final_result_line("not json"));
     }
 }

@@ -1,9 +1,34 @@
-//! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
+//! Invocation planning and the job call for desktop card-level AI (Ask AI /
+//! Validate with AI).
 
 use crate::config::{agent_command_uses_stream_json, ErConfig};
-use std::io::{BufRead, BufReader, Read};
-use std::process::{Child, Command};
+use er_agent::agent_slots::Workload;
+use er_agent::decode::OutputProtocol;
+use er_agent::job::{JobError, JobKind, JobProgress, JobReply, JobRunner, JobSpec, OutputContract};
+use er_agent::provider::ProviderSpec;
 use std::sync::Arc;
+
+/// A card AI reply: the text the user sees in the thread, or the "Pending"
+/// message that explains why there is none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardReply(String);
+
+impl CardReply {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+/// Receives one progress line at a time, on the drain thread.
+pub type ProgressSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Lines buffered ahead of the drain. A stalled sink fills this and then trips
+/// the provider timeout rather than blocking the job forever.
+const PROGRESS_CAPACITY: usize = 32;
 
 /// Resolved agent command + args for a card AI subprocess.
 pub struct CardAiInvocation {
@@ -157,20 +182,25 @@ fn fake_claude() -> Option<String> {
     }
 }
 
-/// Run card AI subprocess; honors `ER_FAKE_CLAUDE` for tests.
+/// Run card AI as a job; honors `ER_FAKE_CLAUDE` for tests.
+///
+/// The reply returns on the `result` line while the CLI may still be running.
+/// Progress is drained on its own thread, so a slow UI sink cannot stop the
+/// job: a full buffer trips the provider timeout instead.
 pub fn run_card_ai_subprocess(
     inv: &CardAiInvocation,
     system: &str,
     user: &str,
     model_override: Option<&str>,
-) -> String {
+    progress: Option<ProgressSink>,
+) -> CardReply {
     if let Some(fake) = fake_claude() {
-        return match fake.as_str() {
+        return CardReply(match fake.as_str() {
             "fail" => "Pending — invoke via CLI (error: ER_FAKE_CLAUDE=fail)".to_string(),
             "ok" => "mocked ok".to_string(),
             other if !other.is_empty() => other.to_string(),
             _ => "mocked ok".to_string(),
-        };
+        });
     }
 
     let mut args = build_card_ai_argv(inv, system, user);
@@ -180,108 +210,69 @@ pub fn run_card_ai_subprocess(
             args.push(model.to_string());
         }
     }
-
-    // Spawned through the run handle rather than `cmd.output()`, so card AI
-    // gets the same deadline as the other spawn paths. It was the one path
-    // that never created a child at all, which is why it could not be stopped
-    // and could not time out.
-    let run = crate::agent_run::AgentRunHandle::new();
-
-    // Waits for a slot, like every other spawn path. This is the path a user
-    // waits on directly, so it is the one where queueing is felt -- but a cap
-    // that exempts the interactive path is not a cap, and the caller runs
-    // under `run_blocking` so the UI stays responsive while it waits.
-    let Some(slot) = crate::agent_slots::acquire(
-        crate::agent_slots::Workload::Background,
-        inv.slot_cap,
-        inv.slot_ceiling,
-        run.cancel_flag(),
-    ) else {
-        return "Pending — invoke via CLI (stopped while waiting for a slot)".to_string();
-    };
-
-    spawn_and_settle(inv, args, &run, slot)
-}
-
-/// Spawn the agent holding `slot`, and turn what it produced into the reply.
-///
-/// Split from [`run_card_ai_subprocess`] so a test can hand in a slot from its
-/// own pool: the process-wide one is shared with every other test running.
-fn spawn_and_settle(
-    inv: &CardAiInvocation,
-    mut args: Vec<String>,
-    run: &Arc<crate::agent_run::AgentRunHandle>,
-    slot: crate::agent_slots::AgentSlotGuard<'static>,
-) -> String {
     let stream_json = if inv.is_claude_compatible {
         ensure_claude_stream_json(&mut args)
     } else {
         inv.uses_stream_json
     };
-
-    let result = {
-        let mut cmd = Command::new(&inv.command);
-        cmd.args(&args)
-            .current_dir(&inv.work_dir)
-            // `cmd.output()` set these itself; spawning by hand means asking.
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        for (key, value) in &inv.env {
-            cmd.env(key, value);
-        }
-        match run.spawn(&mut cmd) {
-            // The Claude CLI goes on running for seconds after it prints its
-            // answer, and the user is waiting on this one.
-            Ok(child) if inv.is_claude_compatible && stream_json => {
-                match read_until_result(run, child, inv.timeout, slot) {
-                    StreamOutcome::Reply(reply) => return finish_reply(reply),
-                    StreamOutcome::Exited(out) => out.map_err(anyhow::Error::from),
-                }
-            }
-            Ok(child) => {
-                let id = child.id();
-                run.register(child);
-                run.arm_timeout(inv.timeout);
-                match run.take_child(id) {
-                    Some(child) => run.wait_for_output(child).map_err(anyhow::Error::from),
-                    // Unreachable: `register` just put it there under this id.
-                    // Reported as a spawn failure rather than panicking, since
-                    // this path's contract is to hand back a string.
-                    None => Err(anyhow::anyhow!("card AI: lost its own child")),
-                }
-            }
-            Err(e) => Err(e),
-        }
+    let protocol = if stream_json {
+        OutputProtocol::ClaudeStreamJson
+    } else {
+        OutputProtocol::Plain
     };
 
+    let spec = JobSpec {
+        kind: JobKind::CardReply,
+        provider: ProviderSpec {
+            program: inv.command.clone(),
+            args,
+            env: inv.env.clone(),
+            protocol,
+            timeout: inv.timeout,
+        },
+        // `build_card_ai_argv` already carries the system/user prompt.
+        prompt: String::new(),
+        work_dir: inv.work_dir.clone(),
+        // The card path has always drawn from the background workload.
+        workload: Workload::Background,
+        output: OutputContract::Stdout,
+    };
+    let runner = JobRunner::new(inv.slot_cap, inv.slot_ceiling);
+    let (tx, drain) = match progress {
+        Some(sink) => {
+            let (tx, rx) = std::sync::mpsc::sync_channel(PROGRESS_CAPACITY);
+            let drain = std::thread::spawn(move || {
+                while let Ok(JobProgress::StdoutLine(line)) = rx.recv() {
+                    sink(&line);
+                }
+            });
+            (Some(tx), Some(drain))
+        }
+        None => (None, None),
+    };
+
+    let result = runner.run_until_result(&spec, tx);
+    if let Some(drain) = drain {
+        let _ = drain.join();
+    }
+
     match result {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            finish_reply(extract_reply_from_stdout(&stdout, stream_json))
-        }
-        Ok(out) => {
-            // Reported through this path's usual string rather than the engine
-            // error types: card AI hands back display text, and a caller that
-            // has to tell a timeout from a crash here would need the signature
-            // changed for it.
-            if run.is_timed_out() {
-                return format!(
-                    "Pending — invoke via CLI ({})",
-                    crate::agent_run::timed_out(inv.timeout)
-                );
-            }
-            let err = String::from_utf8_lossy(&out.stderr);
-            format!(
-                "Pending — invoke via CLI ({} exited {}: {})",
-                inv.command,
-                out.status.code().unwrap_or(-1),
-                err.trim()
-            )
-        }
-        Err(e) => format!(
-            "Pending — invoke via CLI (failed to spawn {}: {e})",
+        Ok(JobReply::Reply(text)) => CardReply(finish_reply(text)),
+        Ok(JobReply::Exited(out)) if out.status.success() => CardReply(finish_reply(out.text)),
+        Ok(JobReply::Exited(out)) => CardReply(format!(
+            "Pending — invoke via CLI ({} exited {}: {})",
+            inv.command,
+            out.status.code().unwrap_or(-1),
+            out.stderr.trim()
+        )),
+        Err(JobError::TimedOut(limit)) => CardReply(format!(
+            "Pending — invoke via CLI ({})",
+            crate::agent_run::timed_out(limit)
+        )),
+        Err(JobError::Spawn(error)) => CardReply(format!(
+            "Pending — invoke via CLI (failed to spawn {}: {error})",
             inv.command
-        ),
+        )),
     }
 }
 
@@ -323,108 +314,6 @@ fn ensure_claude_stream_json(args: &mut Vec<String>) -> bool {
         args.push("--verbose".to_string());
     }
     true
-}
-
-/// What reading a stream-json child up to its `result` event came to.
-enum StreamOutcome {
-    /// The reply, handed back while the child may still be shutting down.
-    Reply(String),
-    /// The child closed stdout without a usable `result` and has been reaped,
-    /// so the run settles on its exit status exactly as the wait path does.
-    Exited(std::io::Result<std::process::Output>),
-}
-
-/// An error result is not an answer: that run settles on its exit status, so
-/// the user sees the same message the wait path would give.
-fn is_final_result(line: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-        return false;
-    };
-    v.get("type").and_then(|t| t.as_str()) == Some("result")
-        && v.get("is_error").and_then(|e| e.as_bool()) != Some(true)
-        && v.get("result")
-            .and_then(|r| r.as_str())
-            .is_some_and(|r| !r.trim().is_empty())
-}
-
-/// Read stdout until the `result` event and hand the reply back then, leaving
-/// the child to be reaped on a thread of its own.
-fn read_until_result(
-    run: &Arc<crate::agent_run::AgentRunHandle>,
-    mut child: Child,
-    timeout: std::time::Duration,
-    slot: crate::agent_slots::AgentSlotGuard<'static>,
-) -> StreamOutcome {
-    let id = child.id();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    run.register(child);
-    run.arm_timeout(timeout);
-
-    let Some(stdout) = stdout else {
-        // Unreachable: the command was built with a piped stdout.
-        return StreamOutcome::Exited(match run.take_child(id) {
-            Some(child) => run.wait_for_output(child),
-            None => Err(std::io::Error::other("card AI: lost its own child")),
-        });
-    };
-    // Drained alongside stdout: a child blocked on a full stderr pipe never
-    // gets as far as its `result` line.
-    let stderr_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut stderr) = stderr {
-            let _ = stderr.read_to_end(&mut buf);
-        }
-        buf
-    });
-
-    let mut reader = BufReader::new(stdout);
-    let mut seen = String::new();
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        let text = String::from_utf8_lossy(&line);
-        seen.push_str(&text);
-        if is_final_result(&text) {
-            let reply = extract_reply_from_stdout(&seen, true);
-            let run = Arc::clone(run);
-            std::thread::spawn(move || {
-                // The slot goes with the reap, so the ADR 0021 cap still
-                // counts a CLI that has answered but not yet exited.
-                let _slot = slot;
-                // Dropping the pipe instead would kill the CLI on its next write.
-                let _ = std::io::copy(&mut reader, &mut std::io::sink());
-                let _ = stderr_reader.join();
-                if let Some(child) = run.take_child(id) {
-                    let _ = run.wait_for(child);
-                }
-            });
-            return StreamOutcome::Reply(reply);
-        }
-    }
-
-    let stderr = stderr_reader.join().unwrap_or_default();
-    StreamOutcome::Exited(match run.take_child(id) {
-        Some(child) => run.wait_for(child).map(|status| std::process::Output {
-            status,
-            stdout: seen.into_bytes(),
-            stderr,
-        }),
-        None => Err(std::io::Error::other("card AI: lost its own child")),
-    })
-}
-
-fn extract_reply_from_stdout(stdout: &str, uses_stream_json: bool) -> String {
-    let protocol = if uses_stream_json {
-        er_agent::decode::OutputProtocol::ClaudeStreamJson
-    } else {
-        er_agent::decode::OutputProtocol::Plain
-    };
-    er_agent::decode::decode_final_text(stdout, protocol)
 }
 
 #[cfg(test)]
@@ -472,29 +361,6 @@ mod tests {
             .any(|pair| { pair[0] == "--append-system-prompt" && pair[1] == "system context" }));
         assert!(args.iter().any(|a| a == "how does this work?"));
         assert!(!args.iter().any(|a| a.contains("User request:")));
-    }
-
-    #[test]
-    fn extract_stream_json_result_field() {
-        let stdout = concat!(
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}"#,
-            "\n",
-            r#"{"type":"result","subtype":"success","result":"**Verdict**: Confirmed"}"#,
-        );
-        let inv = CardAiInvocation {
-            command: "claude".into(),
-            args: vec![],
-            work_dir: "/tmp".into(),
-            is_claude_compatible: true,
-            uses_stream_json: true,
-            env: vec![],
-            // Irrelevant to argv construction; these tests never spawn.
-            timeout: std::time::Duration::from_mins(15),
-            slot_cap: 3,
-            slot_ceiling: 6,
-        };
-        let reply = extract_reply_from_stdout(stdout, inv.uses_stream_json);
-        assert_eq!(reply, "**Verdict**: Confirmed");
     }
 
     fn args(list: &[&str]) -> Vec<String> {
@@ -547,96 +413,52 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
-            // Long enough never to fire here; short enough that a regression
-            // fails the suite instead of hanging it.
-            timeout: std::time::Duration::from_secs(30),
+            // Short enough that the drain test's planted run times out
+            // quickly; the green run finishes well inside it.
+            timeout: std::time::Duration::from_secs(2),
             slot_cap: 1,
             slot_ceiling: 1,
         }
     }
 
-    #[cfg(unix)]
-    fn pid_alive(pid: &str) -> bool {
-        Command::new("/bin/kill")
-            .args(["-0", pid])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    }
-
-    /// The point of the change: the reply comes back on the `result` line,
-    /// while the CLI is still running, and the slot stays held until the
-    /// child is reaped.
-    ///
-    /// The child also writes more stderr than a pipe buffers before its
-    /// answer, so it only reaches the `result` line if stderr is drained.
+    /// A stalled sink must not stall the job: the bounded channel fills and the
+    /// provider timeout ends the run. The green path drains 200 lines and
+    /// returns on the result line, well inside the 2s deadline.
     #[cfg(unix)]
     #[test]
-    fn the_reply_returns_on_the_result_line_and_the_slot_waits_for_exit() {
-        static POOL: crate::agent_slots::SlotPool = crate::agent_slots::SlotPool::new();
-        let dir = tempfile::tempdir().unwrap();
-        let pid_file = dir.path().join("pid");
-
-        let script = format!(
-            "echo $$ > {pid}; \
-             head -c 131072 /dev/zero >&2; \
-             echo '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"working\"}}]}}}}'; \
-             echo '{{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"fast reply\"}}'; \
-             sleep 3",
-            pid = pid_file.display()
-        );
-        let inv = fake_claude(&script);
-        let run = crate::agent_run::AgentRunHandle::new();
-        let slot = POOL.acquire_blocking(crate::agent_slots::Workload::Background, 1, 1);
+    fn the_card_reply_drains_progress_while_the_child_runs() {
+        let _serial = er_agent::agent_slots::test_serial();
+        let script = r#"i=0; while [ $i -lt 200 ]; do echo '{"type":"assistant","message":{"content":[{"type":"text","text":"tick"}}]}}'; i=$((i+1)); done; echo '{"type":"result","result":"fast reply"}'"#;
+        let inv = fake_claude(script);
+        let lines = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink_lines = Arc::clone(&lines);
+        let sink: ProgressSink = Arc::new(move |_line| {
+            sink_lines.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
 
         let started = std::time::Instant::now();
-        let reply = spawn_and_settle(&inv, inv.args.clone(), &run, slot);
+        let reply = run_card_ai_subprocess(&inv, "", "", None, Some(sink));
         let elapsed = started.elapsed();
 
-        assert_eq!(reply, "fast reply");
+        assert_eq!(reply.as_str(), "fast reply");
+        let seen = lines.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(seen > 100, "the sink saw {seen} lines");
         assert!(
             elapsed < std::time::Duration::from_secs(2),
-            "the reply waited for the child to exit: {elapsed:?}"
+            "the drain stalled: {elapsed:?}"
         );
-        let pid = std::fs::read_to_string(&pid_file).expect("child wrote its pid");
-        let pid = pid.trim();
-        assert!(pid_alive(pid), "the child should still be sleeping");
-        assert_eq!(
-            POOL.active_count(),
-            1,
-            "the slot was released while the child was still running"
-        );
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while POOL.active_count() > 0 && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        assert_eq!(POOL.active_count(), 0, "the slot was never released");
-        assert!(
-            !pid_alive(pid),
-            "the slot was released before the child was reaped"
-        );
-        assert!(run.is_finished(), "the reaper must mark the run finished");
     }
 
-    /// A child that never prints a `result` line settles on its exit status,
-    /// with the same message the wait-for-exit path gives.
     #[cfg(unix)]
     #[test]
-    fn a_child_exiting_without_a_result_line_reports_its_exit() {
-        static POOL: crate::agent_slots::SlotPool = crate::agent_slots::SlotPool::new();
-        let inv = fake_claude(
-            "echo '{\"type\":\"assistant\",\"message\":{\"content\":[]}}'; echo boom >&2; exit 3",
+    fn a_nonzero_exit_keeps_the_pending_message() {
+        let _serial = er_agent::agent_slots::test_serial();
+        let inv = fake_claude("echo boom >&2; exit 3");
+        let reply = run_card_ai_subprocess(&inv, "", "", None, None);
+        assert_eq!(
+            reply.as_str(),
+            "Pending — invoke via CLI (sh exited 3: boom)"
         );
-        let run = crate::agent_run::AgentRunHandle::new();
-        let slot = POOL.acquire_blocking(crate::agent_slots::Workload::Background, 1, 1);
-
-        let reply = spawn_and_settle(&inv, inv.args.clone(), &run, slot);
-
-        assert_eq!(reply, "Pending — invoke via CLI (sh exited 3: boom)");
-        assert_eq!(POOL.active_count(), 0);
-        assert!(run.is_finished());
     }
 
     #[test]
@@ -776,25 +598,5 @@ mod tests {
             .args
             .windows(2)
             .any(|pair| pair[0] == "--model" && pair[1] == "gpt-5.3-codex-spark"));
-    }
-
-    #[test]
-    fn card_reply_extraction_delegates_to_the_shared_decoder() {
-        let stdout = concat!(
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}"#,
-            "\n",
-            r#"{"type":"result","result":"done"}"#,
-        );
-        assert_eq!(
-            extract_reply_from_stdout(stdout, true),
-            er_agent::decode::decode_final_text(
-                stdout,
-                er_agent::decode::OutputProtocol::ClaudeStreamJson
-            )
-        );
-        assert_eq!(
-            extract_reply_from_stdout("plain\n", false),
-            er_agent::decode::decode_final_text("plain\n", er_agent::decode::OutputProtocol::Plain)
-        );
     }
 }

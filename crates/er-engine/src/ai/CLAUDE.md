@@ -1,10 +1,10 @@
 # ai/ — review sidecars
 
 Data model, loader, and persistence for the review sidecars. This module reads
-what an agent produced; it does not spawn one. Spawns live in
-`app/card_ai_spawn.rs` and `app/state/comments.rs`, and the prompt text they pass
-is compiled into `ai/prompts.rs` — nothing reads a prompt or skill file at
-runtime. `docs/adr/0023-self-contained-agent-prompts.md`.
+what an agent produced; it does not spawn one. Spawning lives in `er-agent`;
+`app/card_job.rs` and `app/state/comments.rs` build the prompts and specs they
+pass, and the prompt text is compiled into `ai/prompts.rs` — nothing reads a
+prompt or skill file at runtime. `docs/adr/0023-self-contained-agent-prompts.md`.
 
 Sidecars live in the tab's per-view bucket (`TabState::er_dir()`): the branch
 bucket or `prs/pr-<N>/`. `docs/adr/0004-per-view-artifact-scoping.md`.

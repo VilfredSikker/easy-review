@@ -5686,12 +5686,19 @@ fn ask_ai_impl(
     drop(app);
 
     std::thread::spawn(move || {
+        // Drained on its own thread while the job blocks; the card UI has no
+        // log panel, so the lines go to the debug log.
+        let progress: Option<er_engine::app::ProgressSink> = Some(Arc::new(|line: &str| {
+            log::debug!("card ai: {line}");
+        }));
         let body = run_card_ai_subprocess(
             &inv_for_thread,
             &system_context,
             &user_prompt,
             model_for_thread.as_deref(),
-        );
+            progress,
+        )
+        .into_inner();
         // Take App lock to submit the reply.
         if let Ok(mut app) = app_arc.lock() {
             let ai_action = match comment_type {
@@ -5919,12 +5926,17 @@ fn ask_ai_for_finding(
     drop(app);
 
     std::thread::spawn(move || {
+        let progress: Option<er_engine::app::ProgressSink> = Some(Arc::new(|line: &str| {
+            log::debug!("card ai: {line}");
+        }));
         let body = run_card_ai_subprocess(
             &inv_for_thread,
             &system_context,
             &user_prompt,
             model_for_thread.as_deref(),
-        );
+            progress,
+        )
+        .into_inner();
         if let Ok(mut app) = app_arc.lock() {
             if let Err(e) = er_engine::ai::append_finding_response(
                 &er_dir_for_thread,
@@ -12480,9 +12492,9 @@ mod tests {
             slot_ceiling: 6,
         };
         let body = with_fake_claude("ok", || {
-            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
+            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"), None)
         });
-        assert_eq!(body, "mocked ok");
+        assert_eq!(body.as_str(), "mocked ok");
     }
 
     #[test]
@@ -12500,11 +12512,12 @@ mod tests {
             slot_ceiling: 6,
         };
         let body = with_fake_claude("fail", || {
-            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
+            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"), None)
         });
         assert!(
-            body.starts_with("Pending — invoke via CLI"),
-            "expected fallback message, got: {body}"
+            body.as_str().starts_with("Pending — invoke via CLI"),
+            "expected fallback message, got: {}",
+            body.as_str()
         );
     }
 
@@ -12523,9 +12536,9 @@ mod tests {
             slot_ceiling: 6,
         };
         let body = with_fake_claude("custom-response-text", || {
-            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
+            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"), None)
         });
-        assert_eq!(body, "custom-response-text");
+        assert_eq!(body.as_str(), "custom-response-text");
     }
 
     #[test]
