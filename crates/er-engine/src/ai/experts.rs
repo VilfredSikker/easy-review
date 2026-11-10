@@ -399,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn loading_experts_sorts_slots_and_skips_names_that_are_not_ids() {
+    fn expert_files_are_listed_sorted_and_hidden_or_foreign_files_are_skipped() {
         let dir = tempfile::TempDir::new().unwrap();
         let experts = dir.path().join("experts");
         std::fs::create_dir_all(&experts).unwrap();
@@ -408,6 +408,8 @@ mod tests {
             ("api.json", "hash-api"),
             (".hidden.json", "hash-hidden"),
             ("security.prev.json", "hash-prev"),
+            ("notes.txt", "hash-text"),
+            (".security.json.tmp", "hash-temp"),
         ] {
             std::fs::write(
                 experts.join(name),

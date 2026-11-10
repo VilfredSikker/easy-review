@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn a_triage_file_from_another_version_reads_as_absent() {
+    fn a_triage_file_for_another_version_reads_as_absent() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("triage.json"),

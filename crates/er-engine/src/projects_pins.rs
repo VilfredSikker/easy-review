@@ -150,9 +150,61 @@ fn now_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Why the import stopped without writing; both abort silently.
+#[derive(Debug)]
+enum LegacyImportAborted {
+    AlreadyPresent,
+    UnreadableRecord,
+}
+
+/// Import the pre-1.0 project list exactly once (owner decision D15).
+///
+/// Runs only when the record is absent, and checks again inside the scope lock,
+/// so two processes starting together import at most once. An unparseable or
+/// unreadable old file logs one warning and imports nothing. Returns whether a
+/// record was written; the marker file it leaves is for the first-launch
+/// notice only — the record's existence is what makes "once" hold.
+pub(crate) fn import_legacy_projects_once() -> bool {
+    let Ok(key) = projects_key() else {
+        return false;
+    };
+    let store = crate::store_registry::store();
+    // Once the record exists, the old file is never read again: deleting every
+    // project writes an empty record, so nothing comes back.
+    if store.exists(&key) {
+        return false;
+    }
+    let Some(legacy) = crate::legacy_projects::read_legacy_projects() else {
+        return false;
+    };
+    let result = store.update_durable(&key, er_store::DEFAULT_LOCK_TIMEOUT, |current| {
+        if current.is_some() {
+            return Err(LegacyImportAborted::AlreadyPresent);
+        }
+        // An unreadable record also reads as `None`; its file exists, so it is
+        // not absent and keeps the refusal `update` gives it.
+        if store.exists(&key) {
+            return Err(LegacyImportAborted::UnreadableRecord);
+        }
+        Ok(legacy.clone())
+    });
+    match result {
+        Ok(_) => {
+            crate::legacy_projects::mark_imported();
+            true
+        }
+        Err(UpdateError::Apply(_)) => false,
+        Err(UpdateError::Store(error)) => {
+            log::warn!("cannot import the old project list into the store: {error}");
+            false
+        }
+    }
+}
+
 /// Everything in the projects record, or an empty one when it is absent or
 /// unreadable — the same answer a fresh install gets.
 pub fn load() -> ProjectsFile {
+    import_legacy_projects_once();
     let Ok(key) = projects_key() else {
         return ProjectsFile::default();
     };
@@ -167,20 +219,37 @@ pub fn load() -> ProjectsFile {
 pub fn update(op: impl FnOnce(&mut ProjectsFile) -> Result<bool>) -> Result<()> {
     let key = projects_key()?;
     let store = crate::store_registry::store();
+    let mut imported = false;
     let result = store.update_durable(&key, er_store::DEFAULT_LOCK_TIMEOUT, |current| {
         // `update` cannot tell absent from unreadable, but the file can.
         if current.is_none() && store.exists(&key) {
             return Err(anyhow::anyhow!("the projects record is unreadable"));
         }
-        let mut file = current.unwrap_or_default();
+        let mut file = match current {
+            Some(file) => file,
+            // First write on a fresh install: seed from the old project list
+            // before the caller's edit, so a pin arriving before any load does
+            // not skip the one-time import.
+            None => match crate::legacy_projects::read_legacy_projects() {
+                Some(legacy) => {
+                    imported = true;
+                    legacy
+                }
+                None => ProjectsFile::default(),
+            },
+        };
         op(&mut file)?;
         Ok(file)
     });
-    match result {
+    let outcome = match result {
         Ok(_) => Ok(()),
         Err(UpdateError::Apply(error)) => Err(error),
         Err(UpdateError::Store(error)) => Err(error.into()),
+    };
+    if outcome.is_ok() && imported {
+        crate::legacy_projects::mark_imported();
     }
+    outcome
 }
 
 /// Normalize a GitHub remote reference to a lowercase `owner/repo` slug.
@@ -421,13 +490,8 @@ mod tests {
     use serde_json::json;
 
     fn with_temp_store<F: FnOnce()>(f: F) {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", dir.path());
-        f();
-        std::env::remove_var("ER_STORAGE_ROOT");
+        crate::storage::with_test_storage_root(dir.path(), f);
     }
 
     fn write_projects(file: &ProjectsFile) {
@@ -657,6 +721,170 @@ mod tests {
             });
 
             assert!(review_ignore_globs_for_repo("", None).is_empty());
+        });
+    }
+
+    // ── the one-time pre-1.0 import (D15) ──
+
+    fn with_legacy_env<F: FnOnce(&std::path::Path, &std::path::Path)>(f: F) {
+        let store = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let store_path = store.path().to_path_buf();
+        let config_path = config.path().to_path_buf();
+        crate::storage::with_test_storage_root(&store_path, || {
+            crate::test_support::with_var(
+                "ER_LEGACY_CONFIG_DIR",
+                config_path.to_string_lossy().into_owned(),
+                || f(&store_path, &config_path),
+            );
+        });
+    }
+
+    fn write_legacy(config: &std::path::Path, text: &str) -> std::path::PathBuf {
+        let dir = config.join("er");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("projects.json");
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn legacy_json() -> String {
+        serde_json::json!({
+            "active_id": "p1",
+            "projects": [
+                {
+                    "id": "p1",
+                    "name": "One",
+                    "root_path": "/repos/one",
+                    "remote": "acme/one",
+                    "tracked_branches": ["main"],
+                    "tracked_prs": [7],
+                    "saved_prs": [{"number": 42, "saved_at_ms": 111, "title": "Fix"}]
+                },
+                {"id": "p2", "name": "Two", "root_path": "/repos/two"}
+            ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn an_absent_record_imports_the_old_project_list() {
+        with_legacy_env(|_store, config| {
+            write_legacy(config, &legacy_json());
+
+            let file = load();
+
+            assert_eq!(file.active_id.as_deref(), Some("p1"));
+            assert_eq!(file.projects.len(), 2);
+            let one = &file.projects[0];
+            assert_eq!(one.id, "p1");
+            assert_eq!(one.remote.as_deref(), Some("acme/one"));
+            assert_eq!(one.tracked_branches, ["main"]);
+            assert_eq!(one.tracked_prs, [7]);
+            assert_eq!(one.saved_prs[0].number, 42);
+            assert_eq!(one.saved_prs[0].saved_at_ms, 111);
+            assert_eq!(one.saved_prs[0].title, "Fix");
+            assert!(projects_artifact_path().unwrap().exists());
+        });
+    }
+
+    #[test]
+    fn an_existing_record_never_reads_the_old_file() {
+        with_legacy_env(|_store, config| {
+            write_projects(&ProjectsFile {
+                active_id: Some("keep".into()),
+                projects: vec![project("keep", "/repos/keep", None, &[])],
+            });
+            // A valid old list with different projects: importing it would
+            // replace the record, so the store showing "keep" proves it was
+            // not read.
+            write_legacy(config, &legacy_json());
+
+            let file = load();
+
+            assert_eq!(file.active_id.as_deref(), Some("keep"));
+            assert_eq!(file.projects.len(), 1);
+            assert_eq!(file.projects[0].id, "keep");
+        });
+    }
+
+    #[test]
+    fn deleting_every_project_does_not_reimport() {
+        with_legacy_env(|_store, config| {
+            write_legacy(config, &legacy_json());
+            assert_eq!(load().projects.len(), 2);
+
+            update(|file| {
+                file.projects.clear();
+                file.active_id = None;
+                Ok(true)
+            })
+            .unwrap();
+
+            assert!(load().projects.is_empty());
+        });
+    }
+
+    #[test]
+    fn an_unparseable_old_file_imports_nothing_and_keeps_the_old_bytes() {
+        with_legacy_env(|_store, config| {
+            let path = write_legacy(config, "{ not json");
+            let before = std::fs::read(&path).unwrap();
+
+            assert!(load().projects.is_empty());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert!(!projects_artifact_path().unwrap().exists());
+        });
+    }
+
+    #[test]
+    fn an_unreadable_record_does_not_import() {
+        with_legacy_env(|_store, config| {
+            let record = projects_artifact_path().unwrap();
+            std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+            std::fs::write(&record, b"not a projects envelope").unwrap();
+            write_legacy(config, &legacy_json());
+
+            assert!(load().projects.is_empty());
+            assert_eq!(
+                std::fs::read(&record).unwrap(),
+                b"not a projects envelope",
+                "the unreadable record must keep its bytes"
+            );
+        });
+    }
+
+    #[test]
+    fn the_old_file_is_never_modified() {
+        with_legacy_env(|_store, config| {
+            let path = write_legacy(config, &legacy_json());
+            let before = std::fs::read(&path).unwrap();
+            let before_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+            assert_eq!(load().projects.len(), 2);
+
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().modified().unwrap(),
+                before_mtime
+            );
+        });
+    }
+
+    #[test]
+    fn a_pin_before_load_still_imports_the_old_list() {
+        with_legacy_env(|_store, config| {
+            write_legacy(config, &legacy_json());
+
+            // The MCP pin path reaches `update` before anything calls `load`.
+            let (id, _) = ensure_project_for_remote("Acme", "New").unwrap();
+
+            let file = load();
+            let ids: Vec<&str> = file.projects.iter().map(|p| p.id.as_str()).collect();
+            assert_eq!(id, "remote-acme-new");
+            assert!(ids.contains(&"remote-acme-new"), "{ids:?}");
+            assert!(ids.contains(&"p1"), "legacy projects lost: {ids:?}");
+            assert!(ids.contains(&"p2"), "legacy projects lost: {ids:?}");
         });
     }
 }

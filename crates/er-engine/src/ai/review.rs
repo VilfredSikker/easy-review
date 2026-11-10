@@ -575,7 +575,7 @@ pub struct OrderGroup {
 // keeps its own ordering and grouping and never overwrites `order.json` or
 // `review.json` (it may reference review findings by id).
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ErTour {
     pub version: u32,
     pub diff_hash: String,
@@ -591,7 +591,19 @@ pub struct ErTour {
     pub pillars: Vec<TourPillar>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl er_store::Artifact for ErTour {
+    const KIND: &'static str = "tour";
+    const VERSION: u32 = 1;
+    const MODE: er_store::Mode = er_store::Mode::Bare;
+    const FILE: &'static str = "tour.json";
+    type Slot = ();
+
+    fn diff_hash(&self) -> Option<&str> {
+        Some(&self.diff_hash)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TourPillar {
     pub id: String,
     pub title: String,
@@ -616,7 +628,7 @@ pub struct TourPillar {
     pub files: Vec<TourFile>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TourFile {
     /// New-side path; matches `DiffFile.path`.
     pub path: String,
@@ -634,7 +646,7 @@ pub struct TourFile {
 
 /// A file co-located with a `TourFile` (a test, style, story, or snapshot for
 /// it). Rendered as an indented child row under its parent in the guide.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TourRelatedFile {
     /// New-side path; matches `DiffFile.path`. Only rendered when present in the
     /// current diff.

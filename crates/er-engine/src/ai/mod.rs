@@ -10,11 +10,13 @@ pub mod finding_cleanup;
 pub mod finding_responses;
 pub mod flow_providers;
 mod loader;
+pub mod mtime;
 pub mod prepared_diff;
 pub mod professor;
 pub mod projection;
 pub mod promote;
 pub mod prompts;
+pub mod raw_sidecar;
 mod relocate;
 mod review;
 pub mod review_flow;
@@ -34,11 +36,12 @@ pub use experts::*;
 pub use finding_cleanup::*;
 pub use finding_responses::*;
 pub use identity::*;
-#[cfg(feature = "ui")]
-pub(crate) use loader::read_sidecar;
 pub use loader::*;
+pub use mtime::{latest_er_mtime, latest_er_mtime_skipping};
 pub use professor::*;
 pub use projection::*;
+#[cfg(feature = "ui")]
+pub(crate) use raw_sidecar::read_sidecar;
 pub use relocate::*;
 pub use review::*;
 pub use scoped_merge::*;

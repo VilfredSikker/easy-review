@@ -1383,6 +1383,7 @@ dependencies = [
  "er-store",
  "glob",
  "libc",
+ "log",
  "notify",
  "notify-debouncer-mini",
  "png",
