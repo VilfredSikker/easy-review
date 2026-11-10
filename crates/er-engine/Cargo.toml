@@ -19,6 +19,7 @@ highlight = ["dep:syntect", "dep:two-face"]
 test-support = []
 
 [dependencies]
+er-agent = { path = "../er-agent" }
 er-git = { path = "../er-git" }
 er-github = { path = "../er-github" }
 er-store = { path = "../er-store" }
@@ -46,6 +47,10 @@ two-face = { version = "0.5.1", optional = true }
 # test build must carry the feature even when another crate is not also under
 # test (`cargo test -p er-engine`).
 er-engine = { path = ".", features = ["test-support"] }
+# The moved runtime's test-only hooks (the serial guard, the timing switch and
+# the annotation counters) are compiled only under this feature when er-agent
+# is built as a dependency.
+er-agent = { path = "../er-agent", features = ["test-support"] }
 tempfile = "3"
 two-face = "0.5.1"
 

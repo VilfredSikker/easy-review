@@ -1,4 +1,5 @@
 mod input;
+mod os_launch;
 mod ui;
 mod update;
 

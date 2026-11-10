@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/er-engine", "crates/er-tui", "crates/er-desktop", "crates/er-mcp", "crates/er-crap", "crates/er-lint-gate", "crates/er-git", "crates/er-github", "crates/er-store"]
+members = ["crates/er-agent", "crates/er-engine", "crates/er-tui", "crates/er-desktop", "crates/er-mcp", "crates/er-crap", "crates/er-lint-gate", "crates/er-git", "crates/er-github", "crates/er-store"]
 
 [workspace.package]
 version = "0.6.5"
@@ -147,6 +147,23 @@ comment-boundary = { allow = [
   "crates/er-engine/src/github_post.rs",
   "crates/er-desktop/src/github_comment_builders.rs",
 ] }
+
+# A program spawn outside the agent runtime: every `Command::new` in a crate's
+# `src/` is an error unless its file is on one of these lists. OS handoffs are
+# whole files, one per crate, at exactly crates/<crate>/src/os_launch.rs; the
+# list is permanent and is not shrink-checked. The agent call sites are
+# shrink-only: an entry with no findings fails as stale.
+agent-spawn-os-launch = [
+  "crates/er-engine/src/os_launch.rs",
+  "crates/er-desktop/src/os_launch.rs",
+  "crates/er-tui/src/os_launch.rs",
+]
+agent-spawn-allow = [
+  "crates/er-engine/src/app/card_ai_spawn.rs",
+  "crates/er-engine/src/model_discovery.rs",
+  "crates/er-engine/src/app/state/comments.rs",
+  "crates/er-engine/src/arena/adapter.rs",
+]
 
 # `Command::new("git")` outside the crate that owns git: call the Git trait.
 # There is no allow-list; every spawn outside the home crate is an error.

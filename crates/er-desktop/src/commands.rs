@@ -1581,7 +1581,8 @@ pub fn open_in_vscode(state: State<AppState>) -> Result<OpenSourceResult, String
     if let Some(local_root) = local_source_root(tab) {
         let file_path = Path::new(local_root).join(&file.path);
         if file_path.exists() {
-            open_vscode_at(local_root, &file_path, line_num).map_err(|e| e.to_string())?;
+            crate::os_launch::open_vscode_at(local_root, &file_path, line_num)
+                .map_err(|e| e.to_string())?;
             return Ok(OpenSourceResult {
                 kind: "opened_local".to_string(),
                 target: file_path.to_string_lossy().into_owned(),
@@ -1620,7 +1621,8 @@ pub fn open_source(state: State<AppState>) -> Result<OpenSourceResult, String> {
     if let Some(local_root) = local_source_root(tab) {
         let file_path = Path::new(local_root).join(&file.path);
         if file_path.exists() {
-            open_editor_at(local_root, &file_path, line_num).map_err(|e| e.to_string())?;
+            crate::os_launch::open_editor_at(local_root, &file_path, line_num)
+                .map_err(|e| e.to_string())?;
             return Ok(OpenSourceResult {
                 kind: "opened_local".to_string(),
                 target: file_path.to_string_lossy().into_owned(),
@@ -1649,47 +1651,9 @@ fn local_source_root(tab: &er_engine::app::TabState) -> Option<&str> {
     tab.local_checkout_root()
 }
 
-fn open_editor_at(repo_root: &str, file_path: &Path, line_num: usize) -> anyhow::Result<()> {
-    use anyhow::Context;
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "code".to_string());
-    let mut cmd = std::process::Command::new(&editor);
-    if editor.contains("code") || editor.contains("cursor") {
-        cmd.arg(repo_root)
-            .arg("-g")
-            .arg(format!("{}:{}", file_path.display(), line_num));
-    } else if editor.contains("zed") {
-        cmd.arg(repo_root)
-            .arg(format!("{}:{}", file_path.display(), line_num));
-    } else {
-        cmd.arg(format!("+{}", line_num)).arg(file_path);
-    }
-    cmd.spawn().context("Failed to open editor")?;
-    Ok(())
-}
-
-fn open_vscode_at(repo_root: &str, file_path: &Path, line_num: usize) -> anyhow::Result<()> {
-    use anyhow::Context;
-    std::process::Command::new("code")
-        .arg(repo_root)
-        .arg("-g")
-        .arg(format!("{}:{}", file_path.display(), line_num))
-        .spawn()
-        .context("Failed to open VS Code (is `code` on PATH?)")?;
-    Ok(())
-}
-
 /// Open an http(s) URL in the system default browser (shared by Tauri command + nav policy).
 pub fn open_external_url(url: &str) -> Result<(), String> {
-    let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).spawn()
-    } else if cfg!(target_os = "linux") {
-        std::process::Command::new("xdg-open").arg(url).spawn()
-    } else {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", url])
-            .spawn()
-    };
-    result.map(|_| ()).map_err(|e| e.to_string())
+    crate::os_launch::open_external_url(url)
 }
 
 #[tauri::command]
@@ -2449,32 +2413,13 @@ pub fn reveal_er_folder(state: State<AppState>) -> Result<(), String> {
     let target = std::path::Path::new(&er_dir);
     // Ensure the directory exists so reveal never fails on a fresh or empty revision.
     let _ = std::fs::create_dir_all(target);
-    let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(target).spawn()
-    } else if cfg!(target_os = "linux") {
-        std::process::Command::new("xdg-open").arg(target).spawn()
-    } else {
-        std::process::Command::new("explorer").arg(target).spawn()
-    };
-    result.map(|_| ()).map_err(|e| e.to_string())
+    crate::os_launch::reveal_folder(target)
 }
 
 #[tauri::command]
 pub fn reveal_path(path: String) -> Result<(), String> {
     let target = std::path::Path::new(&path);
-    let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open")
-            .arg("-R")
-            .arg(target)
-            .spawn()
-    } else if cfg!(target_os = "linux") {
-        let parent = target.parent().unwrap_or(target);
-        std::process::Command::new("xdg-open").arg(parent).spawn()
-    } else {
-        let arg = format!("/select,{}", target.display());
-        std::process::Command::new("explorer").arg(arg).spawn()
-    };
-    result.map(|_| ()).map_err(|e| e.to_string())
+    crate::os_launch::reveal_path(target)
 }
 
 #[tauri::command]

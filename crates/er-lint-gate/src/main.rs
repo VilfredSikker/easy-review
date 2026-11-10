@@ -18,7 +18,9 @@ use std::process::{Command, Stdio};
 use anyhow::{bail, Context};
 use er_lint_gate::diagnostics::Diagnostic;
 use er_lint_gate::ratchet::{Baseline, Entry};
-use er_lint_gate::{cohesion, comment_boundary, diagnostics, evaluate, sidecar_fs, spawn};
+use er_lint_gate::{
+    agent_spawn, cohesion, comment_boundary, diagnostics, evaluate, sidecar_fs, spawn,
+};
 
 const BUDGET_FILE: &str = "clippy-warning-budget.json";
 
@@ -72,6 +74,8 @@ struct GateConfig {
     spawn_gh: SpawnConfig,
     sidecar_fs_deny: Vec<String>,
     comment_boundary_allow: Vec<String>,
+    agent_spawn_os_launch: Vec<String>,
+    agent_spawn_allow: Vec<String>,
 }
 
 /// `[workspace.metadata.lint-gate]` in the root manifest.
@@ -111,6 +115,11 @@ fn gate_config(root: &Path) -> anyhow::Result<GateConfig> {
             table.get("comment-boundary").and_then(|c| c.get("allow")),
             "comment-boundary.allow",
         )?,
+        agent_spawn_os_launch: string_list(
+            table.get("agent-spawn-os-launch"),
+            "agent-spawn-os-launch",
+        )?,
+        agent_spawn_allow: string_list(table.get("agent-spawn-allow"), "agent-spawn-allow")?,
     })
 }
 
@@ -235,6 +244,28 @@ fn sidecar_fs_diagnostics(root: &Path, deny: &[String]) -> anyhow::Result<Vec<Di
     Ok(sidecar_fs::evaluate(&by_file, deny, sidecar_fs::CODE))
 }
 
+fn agent_spawn_diagnostics(
+    root: &Path,
+    os_launch: &[String],
+    allow: &[String],
+) -> anyhow::Result<Vec<Diagnostic>> {
+    let mut by_file = BTreeMap::new();
+    for rel in crate_sources(root)? {
+        let source = std::fs::read_to_string(root.join(&rel))?;
+        let file = rel.to_string_lossy().replace('\\', "/");
+        let findings = agent_spawn::findings(&source);
+        if !findings.is_empty() {
+            by_file.insert(file, findings);
+        }
+    }
+    let mut out = agent_spawn::evaluate(&by_file, os_launch, allow, agent_spawn::CODE);
+    out.extend(agent_spawn::validate_os_launch(
+        os_launch,
+        agent_spawn::CODE,
+    ));
+    Ok(out)
+}
+
 fn comment_boundary_diagnostics(root: &Path, allow: &[String]) -> anyhow::Result<Vec<Diagnostic>> {
     let mut by_file = BTreeMap::new();
     for rel in crate_sources(root)? {
@@ -287,6 +318,11 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     let spawn_gh = spawn_diagnostics(&root, &config.spawn_gh, "gh", "GitHub")?;
     let sidecar = sidecar_fs_diagnostics(&root, &config.sidecar_fs_deny)?;
     let boundary = comment_boundary_diagnostics(&root, &config.comment_boundary_allow)?;
+    let agent = agent_spawn_diagnostics(
+        &root,
+        &config.agent_spawn_os_launch,
+        &config.agent_spawn_allow,
+    )?;
     if flags.cohesion_only {
         for d in &cohesion {
             print!("{}", d.rendered);
@@ -314,6 +350,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     diags.extend(spawn_gh);
     diags.extend(sidecar);
     diags.extend(boundary);
+    diags.extend(agent);
     let e = evaluate(diags, &config.budgeted, &budget, output.status.success());
 
     let mut problems = Vec::new();
@@ -404,6 +441,8 @@ mod tests {
 budgeted = []
 sidecar-fs-deny = ["crates/er-engine/src/ai/annotation_store.rs"]
 comment-boundary = { allow = ["crates/er-engine/src/github_post.rs"] }
+agent-spawn-os-launch = ["crates/er-engine/src/os_launch.rs"]
+agent-spawn-allow = ["crates/x/src/agent.rs"]
 
 [workspace.metadata.lint-gate.impl-cohesion]
 max-groups = 1
@@ -431,5 +470,10 @@ allow = ["crates/x/src/a.rs"]
             config.comment_boundary_allow,
             ["crates/er-engine/src/github_post.rs"]
         );
+        assert_eq!(
+            config.agent_spawn_os_launch,
+            ["crates/er-engine/src/os_launch.rs"]
+        );
+        assert_eq!(config.agent_spawn_allow, ["crates/x/src/agent.rs"]);
     }
 }

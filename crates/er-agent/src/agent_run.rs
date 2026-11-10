@@ -34,9 +34,9 @@
 //! forgotten alongside the wait: skipping it leaves `kill` free to signal a
 //! pid the OS may since have recycled.
 //!
-//! Not to be confused with [`crate::agent_runtime`], the sibling module that
-//! resolves which provider, model and argv an agent runs with. This module
-//! never decides *what* to run — it owns the process once something else has.
+//! Not to be confused with the engine's `agent_runtime` module, which resolves
+//! which provider, model and argv an agent runs with. This module never
+//! decides *what* to run — it owns the process once something else has.
 //!
 //! ## The single-writer rule
 //!
@@ -742,6 +742,75 @@ mod tests {
         assert!(
             !status.success(),
             "leader exited cleanly instead of being killed"
+        );
+    }
+
+    /// Stops a recorded grandchild when dropped, so a failed assertion leaves no
+    /// stray process behind.
+    #[cfg(unix)]
+    struct GrandchildGuard(Option<i32>);
+
+    #[cfg(unix)]
+    impl GrandchildGuard {
+        fn disarm(&mut self) {
+            self.0 = None;
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for GrandchildGuard {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                let _ = Command::new("/bin/kill")
+                    .args(["-KILL", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+    }
+
+    /// The counterfactual: a pid-only kill leaves the grandchild running. The
+    /// group signal is the only mechanism that reaches it.
+    #[cfg(unix)]
+    #[test]
+    fn a_pid_only_kill_leaves_the_grandchild() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+
+        let handle = AgentRunHandle::new();
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("sleep 30 & echo $! > {}; wait", pid_file.display()))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let child = handle.spawn(&mut cmd).expect("spawn");
+        let leader = child.id();
+        handle.register(child);
+
+        let grandchild = wait_for_pid_file(&pid_file).expect("grandchild pid written");
+        let mut guard = GrandchildGuard(Some(grandchild));
+
+        let mut child = handle.take_child(leader).expect("registered");
+        // Kill only the leader, as a pid-only path would.
+        child.kill().expect("kill leader");
+        let _ = child.wait();
+
+        assert!(
+            proc_alive(grandchild),
+            "the pid-only kill should have left the grandchild running"
+        );
+
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", &grandchild.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        guard.disarm();
+        assert!(
+            wait_until_gone(grandchild),
+            "cleanup did not stop the grandchild"
         );
     }
 

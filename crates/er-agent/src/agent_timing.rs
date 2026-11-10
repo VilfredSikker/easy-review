@@ -35,7 +35,11 @@ static ENV_READ: OnceLock<()> = OnceLock::new();
 /// first. Nothing a caller does can turn it back off.
 pub fn enabled() -> bool {
     ENV_READ.get_or_init(|| {
-        if crate::env_var::var("ER_AGENT_TIMING").as_deref() == Some("1") {
+        // Read the process environment directly: er-agent has no thread-scoped
+        // override. The only test that sets this variable is the single-test
+        // `arena_timing` binary; a new test must call `set_enabled`, never
+        // `set_var`, because other tests share this process.
+        if std::env::var("ER_AGENT_TIMING").ok().as_deref() == Some("1") {
             ENABLED.store(true, Ordering::Relaxed);
         }
     });
@@ -43,7 +47,7 @@ pub fn enabled() -> bool {
 }
 
 /// Turn reporting on or off, ignoring the env var. Tests only.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn set_enabled(on: bool) {
     let _ = ENV_READ.set(());
     ENABLED.store(on, Ordering::Relaxed);
@@ -97,7 +101,7 @@ pub fn slot_wait_stats() -> SlotWaitStats {
 // Annotation passes performed on this thread. Test-only, and thread-local so a
 // test can assert its own delta while other tests in the binary run
 // concurrently against their own counters.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static ANNOTATE_PASSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -107,13 +111,13 @@ thread_local! {
 /// Exists so a test can prove the pass was *skipped*. Counting writes cannot
 /// show that: the write was already conditional before the skip was added, so
 /// a write-counting test would pass against the unoptimised code too.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn record_annotate_pass() {
     ANNOTATE_PASSES.with(|c| c.set(c.get() + 1));
 }
 
 /// Annotation passes performed on this thread. Tests only.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn annotate_passes() -> u64 {
     ANNOTATE_PASSES.with(|c| c.get())
 }

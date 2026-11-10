@@ -838,7 +838,6 @@ impl TabState {
             None => return Ok(()),
         };
 
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "code".to_string());
         let file_path = std::path::Path::new(&self.repo_root).join(&file.path);
         let line_num = file
             .hunks
@@ -846,20 +845,7 @@ impl TabState {
             .map(|h| h.new_start)
             .unwrap_or(1);
 
-        let mut cmd = std::process::Command::new(&editor);
-        if editor.contains("code") || editor.contains("cursor") {
-            cmd.arg(&self.repo_root)
-                .arg("-g")
-                .arg(format!("{}:{}", file_path.display(), line_num));
-        } else if editor.contains("zed") {
-            cmd.arg(&self.repo_root)
-                .arg(format!("{}:{}", file_path.display(), line_num));
-        } else {
-            cmd.arg(format!("+{}", line_num)).arg(&file_path);
-        }
-
-        cmd.spawn().context("Failed to open editor")?;
-        Ok(())
+        crate::os_launch::open_editor(&self.repo_root, &file_path, line_num)
     }
 
     // ── History Mode Navigation ──
