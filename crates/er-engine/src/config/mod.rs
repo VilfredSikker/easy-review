@@ -4236,6 +4236,22 @@ mod tests {
     }
 
     #[test]
+    fn a_config_that_breaks_after_a_successful_load_is_not_overwritten() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[display]\ntheme = \"paper\"\n").unwrap();
+        let (config, error) = adopt_config_from(&path);
+        assert!(error.is_none(), "{error:?}");
+
+        // The file breaks after the app adopted it; no failed load is recorded,
+        // so the save's read-back check is the guard that must hold.
+        std::fs::write(&path, "{").unwrap();
+        let error = save_config_to(&path, &config).unwrap_err();
+        assert!(error.to_string().contains("could not be loaded"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{");
+    }
+
+    #[test]
     fn each_parse_failure_keeps_its_own_backup() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
