@@ -187,8 +187,7 @@ mod tests {
             .tempdir_in(".")
             .unwrap();
         let executable = dir.path().join("runner");
-        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_executable_script(&executable, "#!/bin/sh\n").unwrap();
         let plain = dir.path().join("plain");
         std::fs::write(&plain, "text").unwrap();
         std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();

@@ -22,7 +22,6 @@
 )]
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -61,9 +60,9 @@ fn write_fake_provider(dir: &Path) -> PathBuf {
         .canonicalize()
         .expect("arena fixtures are present");
     let script = dir.join("fake-provider.sh");
-    fs::write(
+    er_engine::test_support::write_executable_script(
         &script,
-        format!(
+        &format!(
             r#"#!/bin/sh
 # Phase 0 fake provider: sleep, then echo the fixture for this round.
 case "$*" in
@@ -78,11 +77,6 @@ esac
         ),
     )
     .expect("write fake provider");
-    let mut perms = fs::metadata(&script)
-        .expect("stat fake provider")
-        .permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&script, perms).expect("chmod fake provider");
     script
 }
 
