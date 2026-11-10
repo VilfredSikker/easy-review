@@ -53,6 +53,7 @@ pub fn ensure_diff_artifacts(er_dir: &str, raw: &str) -> Result<String, String> 
 /// The body of [`ensure_diff_artifacts`]; the caller holds `ARTIFACT_LOCK`.
 fn ensure_diff_artifacts_locked(er_dir: &str, raw: &str) -> Result<String, String> {
     let dir = Path::new(er_dir);
+    std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create {}: {e}", dir.display()))?;
     let hash = crate::ai::compute_diff_hash(raw);
 
     if artifacts_current(dir, &hash) {
@@ -143,6 +144,22 @@ pub fn diff_tmp_hash(er_dir: &str) -> Option<String> {
     std::fs::read_to_string(Path::new(er_dir).join(".diff-tmp.sha256"))
         .ok()
         .map(|s| s.trim().to_string())
+}
+
+/// Read the prepared diff from a bucket.
+///
+/// `diff-tmp` is an agent input, not a store kind; this keeps its one reader
+/// here so the upload modules hold no direct filesystem call.
+pub fn read_diff_tmp(er_dir: &str) -> Result<String, String> {
+    let path = Path::new(er_dir).join("diff-tmp");
+    std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))
+}
+
+/// Byte length of the prepared diff, or 0 when it is absent.
+pub fn diff_tmp_len(er_dir: &str) -> u64 {
+    std::fs::metadata(Path::new(er_dir).join("diff-tmp"))
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
 }
 
 fn content_changed(dir: &Path, marker: &str, hash: &str, content_file: &str) -> bool {
