@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 10:35 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 09:45 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -12,7 +12,7 @@
 | T1 | T5 GitHub port | [#391](https://github.com/VilfredSikker/easy-review/issues/391) P20 | E |
 | T2 | T4 git port | preparing #441 (starts after P20) | – |
 | D4 | T6 store core | [#395](https://github.com/VilfredSikker/easy-review/issues/395) P24 | C |
-| D1 | D6 | idle | – |
+| D1 | D6 | [#396](https://github.com/VilfredSikker/easy-review/issues/396) drafting the phase-3 plan | – |
 | D2, D3, D5 | – | idle | – |
 
 **Phases 0 and 1 are complete; in phase 2, P14–P19, P22 and P23 are merged.** P20 (#457, T1) is in review and P24 (#395, D4) has started. When both merge: P21 (after P20), then #441, then the #396 phase-3 gate.
@@ -74,7 +74,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 
 | Gate | Issue | Status |
 | --- | --- | --- |
-| Phase 3: jobs and workflows | [#396](https://github.com/VilfredSikker/easy-review/issues/396) | ⬜ planned when phase 2 is merged |
+| Phase 3: jobs and workflows | [#396](https://github.com/VilfredSikker/easy-review/issues/396) | 🟡 D1 drafting the plan; finalized when phase 2 is merged |
 | Phase 4: core and service | [#397](https://github.com/VilfredSikker/easy-review/issues/397) | ⬜ |
 | Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | ⬜ |
 | Phase 5b: TUI | [#399](https://github.com/VilfredSikker/easy-review/issues/399) | ⬜ |

@@ -174,3 +174,4 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - P19 (#456, D4) and P20 (#457, T1, ADR 0058) are up and in review. P20's 2,370 lines are accepted, since 1,085 of them are the mandated pin commit.
 - Owner approved: the test-polluted `v1/` (about 1,180 test folders plus fixture app records) was moved to the Trash. The 0.6 data, `config.toml` and the old `projects.json` are untouched.
 - Merged PR #456 (P19) as bf227cf03, with no must-fix; D4 re-signed the commits with the owner's go, and the tree stayed identical. **P19 is complete**, including P18's follow-ups. P20 (#457) needs a semantic merge: keep P19's validated arbiter bytes. P24 (#395) goes to D4. T2 prepares #441, which starts after P20.
+- Phase-3 gate prep started early: D1 drafts the plan on #396 (claims re-check, the D1 browser-annotation decision, open questions, P26+ entries). The coordinator finalizes the addendum once P20, P21, P24 and #441 merge.
