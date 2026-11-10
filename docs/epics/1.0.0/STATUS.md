@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 11:35 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 11:00 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,13 +9,13 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| T1 | T5 GitHub port | [#391](https://github.com/VilfredSikker/easy-review/issues/391) P20 | E |
-| T2 | T4 git port | preparing #441 (starts after P20) | – |
-| D4 | T6 store core | next P21 (#392) after P20 | – |
+| T1 | T5 GitHub port | idle | – |
+| T2 | T4 git port | [#441](https://github.com/VilfredSikker/easy-review/issues/441) test hygiene and storage guard | E |
+| D4 | T6 store core | [#392](https://github.com/VilfredSikker/easy-review/issues/392) P21 | E, F |
 | D1 | D6 | idle (phase-3 plan final) | – |
 | D2, D3, D5 | – | idle | – |
 
-**Phases 0 and 1 are complete; in phase 2, P14–P19 and P22–P24 are merged.** Left: P20 (#457, final merge check), then P21 (#392, D4) and #441 (T2). The phase-3 plan is final; ADDENDUM-04 and the issues follow at the gate.
+**Phases 0 and 1 are complete; phase 2 has P14–P20 and P22–P24 merged.** Left: P21 (#392, D4) and #441 (T2), running at the same time. Then the phase-3 gate: main merged in, the claims re-check, ADDENDUM-04 and the P26a–P37 issues.
 
 ## Progress
 
@@ -31,7 +31,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P07b | [#437](https://github.com/VilfredSikker/easy-review/issues/437) Spawn-rule escapes (cfg(not(test)), renamed import) | C | sonnet | ✅ | [#439](https://github.com/VilfredSikker/easy-review/pull/439) | P07 review follow-up |
 | Flaky | [#438](https://github.com/VilfredSikker/easy-review/issues/438) Flaky dirty-diff desktop test | F | opus | ✅ | [#440](https://github.com/VilfredSikker/easy-review/pull/440) | cause: clock-named temp dirs; follow-up #441 |
 | P13b | [#445](https://github.com/VilfredSikker/easy-review/issues/445) Storage slug through the shared parser | E | sonnet | ✅ | [#448](https://github.com/VilfredSikker/easy-review/pull/448) | Windows drive paths no longer read as remotes |
-| Flaky-b | [#441](https://github.com/VilfredSikker/easy-review/issues/441) Env mutation and clock temp dirs in engine tests | E | sonnet | ⬜ | | held until P19, P20; scope adds the storage-root guard |
+| Flaky-b | [#441](https://github.com/VilfredSikker/easy-review/issues/441) Env mutation and clock temp dirs in engine tests | E | sonnet | 🟡 | | T2; adds the storage-root guard |
 | P22b | [#452](https://github.com/VilfredSikker/easy-review/issues/452) Import the old project list once (D15) | E | sonnet | ✅ | [#453](https://github.com/VilfredSikker/easy-review/pull/453) | owner's 11 projects import in a copy |
 | P0-gate | [#422](https://github.com/VilfredSikker/easy-review/issues/422) ADR 0037 wording, comments-check plan-id pattern | – | sonnet | ✅ | [#423](https://github.com/VilfredSikker/easy-review/pull/423) | |
 | P05 | [#376](https://github.com/VilfredSikker/easy-review/issues/376) Post GitHub comments when created | E/F | opus | ✅ | [#416](https://github.com/VilfredSikker/easy-review/pull/416), [#417](https://github.com/VilfredSikker/easy-review/pull/417) | two stacked PRs |
@@ -49,8 +49,8 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P17 | [#388](https://github.com/VilfredSikker/easy-review/issues/388) Session state through the store | C/E | opus | ✅ | [#450](https://github.com/VilfredSikker/easy-review/pull/450) | reviewed save 2.9x accepted (5 ms budget) |
 | P18 | [#389](https://github.com/VilfredSikker/easy-review/issues/389) Review artifacts through the store | E | opus | ✅ | [#454](https://github.com/VilfredSikker/easy-review/pull/454) | follow-ups carried into P19 |
 | P19 | [#390](https://github.com/VilfredSikker/easy-review/issues/390) Remaining AI artifacts through the store | C/E | opus | ✅ | [#456](https://github.com/VilfredSikker/easy-review/pull/456) | closes the P18 follow-ups |
-| P20 | [#391](https://github.com/VilfredSikker/easy-review/issues/391) Findings projection | E | sonnet | 🔵 | [#457](https://github.com/VilfredSikker/easy-review/pull/457) | T1; in review; ADR 0058 |
-| P21 | [#392](https://github.com/VilfredSikker/easy-review/issues/392) Scoped re-review as its own artifact | E/F | opus | ⬜ | | after P20 |
+| P20 | [#391](https://github.com/VilfredSikker/easy-review/issues/391) Findings projection | E | sonnet | ✅ | [#457](https://github.com/VilfredSikker/easy-review/pull/457) | ADR 0058 |
+| P21 | [#392](https://github.com/VilfredSikker/easy-review/issues/392) Scoped re-review as its own artifact | E/F | opus | 🟡 | | D4 |
 | P22 | [#393](https://github.com/VilfredSikker/easy-review/issues/393) App records through the store | F | opus | ✅ | [#449](https://github.com/VilfredSikker/easy-review/pull/449), [#451](https://github.com/VilfredSikker/easy-review/pull/451) | two PRs; the import is #452 |
 | P23 | [#394](https://github.com/VilfredSikker/easy-review/issues/394) Cross-process locks, change notifications | C | opus | ✅ | [#434](https://github.com/VilfredSikker/easy-review/pull/434) | ADR 0057; Linux watcher fix proven on CI |
 | P24 | [#395](https://github.com/VilfredSikker/easy-review/issues/395) MCP uploads through the store | C | opus | ✅ | [#458](https://github.com/VilfredSikker/easy-review/pull/458) | schemas derived; every release path pinned |
