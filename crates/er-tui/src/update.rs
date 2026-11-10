@@ -101,13 +101,7 @@ pub fn run() -> Result<()> {
     let work = tempfile::tempdir()?;
     let archive_path = work.path().join(&asset);
     std::fs::write(&archive_path, &archive)?;
-    let status = std::process::Command::new("tar")
-        .arg("-xzf")
-        .arg(&archive_path)
-        .arg("-C")
-        .arg(work.path())
-        .status()
-        .context("run tar")?;
+    let status = crate::os_launch::extract_tar_gz(&archive_path, work.path()).context("run tar")?;
     if !status.success() {
         bail!("tar could not extract {asset}");
     }

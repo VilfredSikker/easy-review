@@ -2694,36 +2694,7 @@ impl App {
     }
 
     pub(super) fn copy_to_clipboard(text: &str) -> Result<()> {
-        let (cmd, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
-            ("pbcopy", vec![])
-        } else if cfg!(target_os = "windows") {
-            ("clip", vec![])
-        } else {
-            // Linux — try xclip, fall back to xsel
-            if std::process::Command::new("which")
-                .arg("xclip")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-            {
-                ("xclip", vec!["-selection", "clipboard"])
-            } else {
-                ("xsel", vec!["--clipboard", "--input"])
-            }
-        };
-
-        let mut child = std::process::Command::new(cmd)
-            .args(&args)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .context("Failed to open clipboard command")?;
-
-        if let Some(ref mut stdin) = child.stdin {
-            stdin.write_all(text.as_bytes())?;
-        }
-
-        child.wait().context("Clipboard command failed")?;
-        Ok(())
+        crate::os_launch::copy_to_clipboard(text)
     }
 
     // ── Notifications ──

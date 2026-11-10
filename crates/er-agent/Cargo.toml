@@ -1,0 +1,22 @@
+[package]
+name = "er-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Agent process runtime and slot pool for easy-review"
+
+[features]
+# Compiles the test-only hooks that the engine's tests use across the crate
+# boundary. Production builds leave them out; the engine enables it from its
+# dev-dependencies.
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -4,7 +4,6 @@
 //! managed review storage, caches, and discovered binaries / app bundles.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::storage;
 
@@ -437,7 +436,7 @@ pub fn schedule_deferred_removal(paths: &[PathBuf]) -> std::io::Result<()> {
 
     #[cfg(unix)]
     {
-        let start = process_start_token_unix(pid).unwrap_or_default();
+        let start = crate::os_launch::process_start_token(pid).unwrap_or_default();
         let start_q = shell_single_quote(&start);
         let quoted: Vec<String> = paths
             .iter()
@@ -458,10 +457,7 @@ pub fn schedule_deferred_removal(paths: &[PathBuf]) -> std::io::Result<()> {
                rm -rf {joined}; \
              fi"
         );
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!("( {script} ) >/dev/null 2>&1 &"))
-            .spawn()?;
+        crate::os_launch::spawn_deferred_removal_sh(&script)?;
         Ok(())
     }
 
@@ -487,27 +483,8 @@ pub fn schedule_deferred_removal(paths: &[PathBuf]) -> std::io::Result<()> {
                @({joined}) | ForEach-Object {{ if (Test-Path $_) {{ Remove-Item -LiteralPath $_ -Recurse -Force }} }} \
              }}"
         );
-        Command::new("powershell")
-            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
-            .spawn()?;
+        crate::os_launch::spawn_deferred_removal_powershell(&script)?;
         Ok(())
-    }
-}
-
-#[cfg(unix)]
-fn process_start_token_unix(pid: u32) -> Option<String> {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "lstart="])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
     }
 }
 

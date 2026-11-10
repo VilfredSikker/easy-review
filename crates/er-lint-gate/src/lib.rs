@@ -9,6 +9,7 @@
 //! baseline: it lands at zero, and a real problem with many existing sites is
 //! budgeted here instead.
 
+pub mod agent_spawn;
 mod attrs;
 pub mod cohesion;
 pub mod comment_boundary;

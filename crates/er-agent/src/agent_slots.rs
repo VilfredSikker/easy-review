@@ -65,8 +65,8 @@ static GLOBAL: SlotPool = SlotPool::new();
 
 /// Serialize tests that observe the process-wide slot pool and drain any
 /// subprocess slots before allowing the next pool-sensitive test to start.
-#[cfg(test)]
-pub(crate) struct TestSerialGuard(
+#[cfg(any(test, feature = "test-support"))]
+pub struct TestSerialGuard(
     #[expect(
         dead_code,
         reason = "held for its Drop, which releases the shared test lock"
@@ -74,15 +74,15 @@ pub(crate) struct TestSerialGuard(
     std::sync::MutexGuard<'static, ()>,
 );
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static TEST_SERIAL: Mutex<()> = Mutex::new(());
 
-#[cfg(test)]
-pub(crate) fn test_serial() -> TestSerialGuard {
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_serial() -> TestSerialGuard {
     TestSerialGuard(TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for TestSerialGuard {
     fn drop(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(15);
