@@ -704,10 +704,10 @@ where
     }
 }
 
-/// Union of the previous overlay's paths, the file's current paths (a write
-/// that landed between spawn and stamp) and this run's manifest.
-fn merge_all_scope_paths(previous: &[String], current: &[String], new: &[String]) -> Vec<String> {
-    sorted_unique(previous.iter().chain(current).chain(new).cloned().collect())
+/// Union of the previous overlay's paths and this run's manifest. Both are
+/// host-owned, so the union cannot widen from what the agent wrote.
+fn merge_scope_paths(previous: &[String], new: &[String]) -> Vec<String> {
+    sorted_unique(previous.iter().chain(new).cloned().collect())
 }
 
 fn merge_review(
@@ -715,13 +715,24 @@ fn merge_review(
     previous: Option<&ScopedReview>,
     stamp: &ScopedRunStamp,
 ) -> ScopedReview {
+    let previous_scope = previous
+        .map(|p| scope_set(&p.scope_paths))
+        .unwrap_or_default();
     let mut files = previous.map(|p| p.files.clone()).unwrap_or_default();
     let mut file_hashes = previous.map(|p| p.file_hashes.clone()).unwrap_or_default();
+    // The agent rewrites the whole file, so its rows for paths the previous
+    // overlay never claimed are ignored. A path already in the previous scope
+    // keeps its current row, which carries a reply or lifecycle write that
+    // landed between the agent's write and this stamp.
     for (path, file) in &agent.files {
-        files.insert(path.clone(), file.clone());
+        if previous_scope.contains(path.as_str()) {
+            files.insert(path.clone(), file.clone());
+        }
     }
     for (path, hash) in &agent.file_hashes {
-        file_hashes.insert(path.clone(), hash.clone());
+        if previous_scope.contains(path.as_str()) {
+            file_hashes.insert(path.clone(), hash.clone());
+        }
     }
     let mut merged = ScopedReview {
         version: agent.version,
@@ -741,11 +752,10 @@ fn merge_review(
         },
         files,
         file_hashes,
-        scope_paths: merge_all_scope_paths(
+        scope_paths: merge_scope_paths(
             previous
                 .map(|p| p.scope_paths.as_slice())
                 .unwrap_or_default(),
-            &agent.scope_paths,
             &stamp.scope_paths,
         ),
         base_diff_hash: stamp.base_diff_hash.clone(),
@@ -833,9 +843,16 @@ fn merge_professor(
     previous: Option<&ScopedProfessorReview>,
     stamp: &ScopedRunStamp,
 ) -> ScopedProfessorReview {
+    let previous_scope = previous
+        .map(|p| scope_set(&p.scope_paths))
+        .unwrap_or_default();
     let mut files = previous.map(|p| p.files.clone()).unwrap_or_default();
+    // Current rows count only for paths the previous overlay already claimed;
+    // the agent cannot add a path to the host-owned scope.
     for (path, file) in &agent.files {
-        files.insert(path.clone(), file.clone());
+        if previous_scope.contains(path.as_str()) {
+            files.insert(path.clone(), file.clone());
+        }
     }
     let mut merged = ScopedProfessorReview {
         version: agent.version,
@@ -859,11 +876,10 @@ fn merge_professor(
             agent.summary.clone()
         },
         files,
-        scope_paths: merge_all_scope_paths(
+        scope_paths: merge_scope_paths(
             previous
                 .map(|p| p.scope_paths.as_slice())
                 .unwrap_or_default(),
-            &agent.scope_paths,
             &stamp.scope_paths,
         ),
         base_diff_hash: stamp.base_diff_hash.clone(),
@@ -909,9 +925,16 @@ fn merge_expert(
     previous: Option<&ScopedExpertReview>,
     stamp: &ScopedRunStamp,
 ) -> ScopedExpertReview {
+    let previous_scope = previous
+        .map(|p| scope_set(&p.scope_paths))
+        .unwrap_or_default();
     let mut files = previous.map(|p| p.files.clone()).unwrap_or_default();
+    // Current rows count only for paths the previous overlay already claimed;
+    // the agent cannot add a path to the host-owned scope.
     for (path, file) in &agent.files {
-        files.insert(path.clone(), file.clone());
+        if previous_scope.contains(path.as_str()) {
+            files.insert(path.clone(), file.clone());
+        }
     }
     let mut merged = ScopedExpertReview {
         version: agent.version,
@@ -931,11 +954,10 @@ fn merge_expert(
             agent.summary.clone()
         },
         files,
-        scope_paths: merge_all_scope_paths(
+        scope_paths: merge_scope_paths(
             previous
                 .map(|p| p.scope_paths.as_slice())
                 .unwrap_or_default(),
-            &agent.scope_paths,
             &stamp.scope_paths,
         ),
         base_diff_hash: stamp.base_diff_hash.clone(),
@@ -1580,6 +1602,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    // The manifest is host-owned. A row the agent writes for a path outside it
+    // must not reach the overlay, even when the agent lists that path in its
+    // own scope_paths.
+    #[test]
+    fn stamp_does_not_trust_the_agents_scope_paths() {
+        let dir = temp_dir("agent-scope");
+        with_test_storage_root(&dir, || {
+            let store = crate::store_registry::store();
+            let scope = Scope::dir(dir.to_str().unwrap()).unwrap();
+            std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
+            let agent = scoped(
+                vec![
+                    ("src/a.rs", vec![finding("", "Agent A", 1)]),
+                    ("src/b.rs", vec![finding("", "Agent B", 2)]),
+                ],
+                &["src/b.rs"],
+            );
+            std::fs::write(
+                dir.join("scoped/general.json"),
+                serde_json::to_vec(&agent).unwrap(),
+            )
+            .unwrap();
+            let stamp = ScopedRunStamp {
+                scope_paths: vec!["src/a.rs".to_string()],
+                base_diff_hash: "hash".to_string(),
+                base_created_at: "t0".to_string(),
+                previous_overlay: None,
+            };
+            assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
+
+            let stored: ScopedReview =
+                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                stored.scope_paths,
+                vec!["src/a.rs"],
+                "the manifest, not the agent, sets the scope"
+            );
+            assert!(stored.files.contains_key("src/a.rs"));
+            assert!(
+                !stored.files.contains_key("src/b.rs"),
+                "a row outside the manifest is not merged"
+            );
+
+            let mut review = Some(base_review(vec![
+                ("src/a.rs", vec![finding("base-a", "Base A", 1)]),
+                ("src/b.rs", vec![finding("base-b", "Base B", 2)]),
+            ]));
+            assert!(apply_scoped_review(&mut review, &stored));
+            let review = review.unwrap();
+            assert!(
+                review.files["src/b.rs"]
+                    .findings
+                    .iter()
+                    .any(|f| f.title == "Base B"),
+                "the base row on the agent-claimed path survives"
+            );
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn full_run_of_a_lens_drops_its_scoped_overlay() {
         let dir = temp_dir("full-run");
@@ -2148,76 +2231,109 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // Each stamp re-produces `src/a.rs` and restores one earlier path from the
-    // overlay it captured at spawn. Each must start from the file's current
-    // content, or the second stamp drops the path the first one restored.
+    // A reply on a previous-scope path races the stamp that re-produces
+    // `src/a.rs` and restores `src/c.rs`, which the agent dropped. The stamp
+    // must start from the file's current content, or it loses the reply.
     #[test]
-    fn concurrent_stamps_keep_both_previous_paths() {
+    fn concurrent_reply_and_stamp_keep_both_changes() {
         let dir = temp_dir("race-stamp");
         crate::storage::with_process_test_storage_root(&dir, || {
             std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
-            let agent = scoped(vec![("src/a.rs", vec![finding("", "A", 1)])], &["src/a.rs"]);
+            let agent = scoped(
+                vec![
+                    ("src/a.rs", vec![finding("scoped-a", "A", 1)]),
+                    ("src/b.rs", vec![finding("scoped-b", "B", 2)]),
+                ],
+                &["src/a.rs", "src/b.rs"],
+            );
             std::fs::write(
                 dir.join("scoped/general.json"),
                 serde_json::to_vec(&agent).unwrap(),
             )
             .unwrap();
+            let previous = serde_json::to_vec(&scoped(
+                vec![
+                    ("src/a.rs", vec![finding("scoped-a", "A old", 1)]),
+                    ("src/b.rs", vec![finding("scoped-b", "B old", 2)]),
+                    ("src/c.rs", vec![finding("scoped-c", "C", 3)]),
+                ],
+                &["src/a.rs", "src/b.rs", "src/c.rs"],
+            ))
+            .unwrap();
             let er_dir = dir.to_string_lossy().into_owned();
-            let previous_for = |path: &str, title: &str| {
-                serde_json::to_vec(&scoped(vec![(path, vec![finding("", title, 2)])], &[path]))
-                    .unwrap()
-            };
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
-            let spawn = |path: &'static str, title: &'static str| {
-                let er_dir = er_dir.clone();
-                let barrier = std::sync::Arc::clone(&barrier);
-                let previous = previous_for(path, title);
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    let store = crate::store_registry::store();
-                    let scope = Scope::dir(&er_dir).unwrap();
-                    let stamp = ScopedRunStamp {
-                        scope_paths: vec!["src/a.rs".to_string()],
-                        base_diff_hash: "hash".to_string(),
-                        base_created_at: "t0".to_string(),
-                        previous_overlay: Some(previous),
-                    };
-                    assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
-                })
-            };
-            let first = spawn("src/b.rs", "B");
-            let second = spawn("src/c.rs", "C");
+
+            let reply_dir = er_dir.clone();
+            let reply_barrier = std::sync::Arc::clone(&barrier);
+            let reply = std::thread::spawn(move || {
+                reply_barrier.wait();
+                let mut edit = Some(|f: &mut Finding| -> anyhow::Result<()> {
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    f.responses.push(crate::ai::review::AiResponse {
+                        id: "r1".to_string(),
+                        in_reply_to: String::new(),
+                        timestamp: "t1".to_string(),
+                        text: "answered".to_string(),
+                        new_findings: Vec::new(),
+                    });
+                    Ok(())
+                });
+                assert!(with_finding_in_overlay(&reply_dir, "scoped-b", &mut edit).unwrap());
+            });
+
+            let stamp_dir = er_dir.clone();
+            let stamp_barrier = std::sync::Arc::clone(&barrier);
+            let stamp = std::thread::spawn(move || {
+                stamp_barrier.wait();
+                // Let the reply take the lock first; the stamp's read then
+                // still lands before the reply's write.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let store = crate::store_registry::store();
+                let scope = Scope::dir(&stamp_dir).unwrap();
+                let stamp = ScopedRunStamp {
+                    scope_paths: vec!["src/a.rs".to_string()],
+                    base_diff_hash: "hash".to_string(),
+                    base_created_at: "t0".to_string(),
+                    previous_overlay: Some(previous),
+                };
+                assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
+            });
+
             barrier.wait();
-            first.join().unwrap();
-            second.join().unwrap();
+            reply.join().unwrap();
+            stamp.join().unwrap();
 
             let stored: ScopedReview =
                 serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
                     .unwrap();
-            for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
-                assert!(
-                    stored.files.contains_key(path),
-                    "{path} survived the concurrent stamps"
-                );
-            }
+            assert!(
+                stored.files.contains_key("src/c.rs"),
+                "the stamp restored the path the agent dropped"
+            );
+            assert!(
+                stored.files["src/b.rs"]
+                    .findings
+                    .iter()
+                    .any(|f| f.responses.iter().any(|r| r.text == "answered")),
+                "the reply on the previous-scope path survived the stamp"
+            );
+            assert!(stored.files.contains_key("src/a.rs"));
         });
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    // Two drops on one validation.json must both land. The scope lock is held
+    // while both threads start, so a read-then-write drop reads the same
+    // outcomes before either write and loses one every run.
     #[test]
     fn concurrent_validation_drops_keep_both_paths() {
+        use crate::ai::validation::{ValidationOutcome, ValidationResult};
         let dir = temp_dir("race-drop");
         crate::storage::with_process_test_storage_root(&dir, || {
             std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
-            let agent = scoped(vec![("src/a.rs", vec![finding("", "A", 1)])], &["src/a.rs"]);
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&agent).unwrap(),
-            )
-            .unwrap();
-            let outcome = |key: &str, file: &str| crate::ai::validation::ValidationOutcome {
+            let outcome = |key: &str, file: &str| ValidationOutcome {
                 key: key.to_string(),
-                result: crate::ai::validation::ValidationResult::Persists,
+                result: ValidationResult::Persists,
                 file: file.to_string(),
                 patch: Default::default(),
             };
@@ -2234,26 +2350,30 @@ mod tests {
             )
             .unwrap();
             let er_dir = dir.to_string_lossy().into_owned();
+            let guard = crate::store_registry::store()
+                .lock_scope(
+                    &Scope::dir(&er_dir).unwrap(),
+                    er_store::DEFAULT_LOCK_TIMEOUT,
+                )
+                .unwrap();
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
-            let spawn = |manifest: &'static str| {
+            let spawn = |path: &'static str| {
                 let er_dir = er_dir.clone();
                 let barrier = std::sync::Arc::clone(&barrier);
                 std::thread::spawn(move || {
-                    barrier.wait();
                     let store = crate::store_registry::store();
                     let scope = Scope::dir(&er_dir).unwrap();
-                    let stamp = ScopedRunStamp {
-                        scope_paths: vec![manifest.to_string()],
-                        base_diff_hash: "hash".to_string(),
-                        base_created_at: "t0".to_string(),
-                        previous_overlay: None,
-                    };
-                    assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
+                    barrier.wait();
+                    drop_validation_outcomes_for_paths(&store, &scope, &[path.to_string()])
+                        .unwrap();
                 })
             };
             let first = spawn("src/a.rs");
             let second = spawn("src/b.rs");
             barrier.wait();
+            // Long enough for both drops to read and wait on the lock.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(guard);
             first.join().unwrap();
             second.join().unwrap();
 
