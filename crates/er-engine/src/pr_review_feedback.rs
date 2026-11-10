@@ -591,13 +591,8 @@ mod tests {
     }
 
     fn with_storage_root<F: FnOnce()>(f: F) {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", dir.path());
-        f();
-        std::env::remove_var("ER_STORAGE_ROOT");
+        crate::storage::with_test_storage_root(dir.path(), f);
     }
 
     fn sample_question(id: &str) -> PrivateAnnotation {
@@ -714,77 +709,84 @@ mod tests {
 
     #[test]
     fn resolve_note_hides_its_thread_from_default_feedback_and_keeps_replies() {
-        let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_string_lossy().to_string();
-        let mut reply = sample_question("n-reply");
-        reply.in_reply_to = Some("n-root".into());
-        let notes = ErNotes {
-            version: 1,
-            diff_hash: "hash".into(),
-            notes: vec![sample_question("n-root"), reply, sample_question("n-other")],
-        };
-        write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
+        with_storage_root(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let er_dir = dir.path().to_string_lossy().to_string();
+            let mut reply = sample_question("n-reply");
+            reply.in_reply_to = Some("n-root".into());
+            let notes = ErNotes {
+                version: 1,
+                diff_hash: "hash".into(),
+                notes: vec![sample_question("n-root"), reply, sample_question("n-other")],
+            };
+            write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
 
-        let resolved = resolve_note_in_dir(&er_dir, "n-root").unwrap();
-        assert!(!resolved.already_resolved);
-        assert!(
-            resolve_note_in_dir(&er_dir, "n-root")
-                .unwrap()
-                .already_resolved
-        );
+            let resolved = resolve_note_in_dir(&er_dir, "n-root").unwrap();
+            assert!(!resolved.already_resolved);
+            assert!(
+                resolve_note_in_dir(&er_dir, "n-root")
+                    .unwrap()
+                    .already_resolved
+            );
 
-        let open = get_review_feedback_in_dir("acme", "widgets", 9, &er_dir, None, false).unwrap();
-        let open_ids: Vec<_> = open.notes.iter().map(|n| n.id.as_str()).collect();
-        assert!(!open_ids.contains(&"n-root"));
-        assert!(
-            !open_ids.contains(&"n-reply"),
-            "a resolved thread's replies must not show as open"
-        );
-        assert!(open_ids.contains(&"n-other"));
+            let open =
+                get_review_feedback_in_dir("acme", "widgets", 9, &er_dir, None, false).unwrap();
+            let open_ids: Vec<_> = open.notes.iter().map(|n| n.id.as_str()).collect();
+            assert!(!open_ids.contains(&"n-root"));
+            assert!(
+                !open_ids.contains(&"n-reply"),
+                "a resolved thread's replies must not show as open"
+            );
+            assert!(open_ids.contains(&"n-other"));
 
-        let with_resolved =
-            get_review_feedback_in_dir("acme", "widgets", 9, &er_dir, None, true).unwrap();
-        assert_eq!(with_resolved.notes.len(), 3);
+            let with_resolved =
+                get_review_feedback_in_dir("acme", "widgets", 9, &er_dir, None, true).unwrap();
+            assert_eq!(with_resolved.notes.len(), 3);
 
-        let all = load_notes(&er_dir).unwrap();
-        assert_eq!(all.notes.len(), 3, "resolve must not delete anything");
+            let all = load_notes(&er_dir).unwrap();
+            assert_eq!(all.notes.len(), 3, "resolve must not delete anything");
+        });
     }
 
     #[test]
     fn resolve_question_marks_the_root_resolved() {
-        let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_string_lossy().to_string();
-        let qs = ErQuestions {
-            version: 1,
-            diff_hash: "hash".into(),
-            questions: vec![sample_question("q-root")],
-        };
-        write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+        with_storage_root(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let er_dir = dir.path().to_string_lossy().to_string();
+            let qs = ErQuestions {
+                version: 1,
+                diff_hash: "hash".into(),
+                questions: vec![sample_question("q-root")],
+            };
+            write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
 
-        resolve_question_in_dir(&er_dir, "q-root").unwrap();
-        assert!(load_questions(&er_dir).unwrap().questions[0].resolved);
+            resolve_question_in_dir(&er_dir, "q-root").unwrap();
+            assert!(load_questions(&er_dir).unwrap().questions[0].resolved);
+        });
     }
 
     #[test]
     fn resolve_refuses_a_reply_id_and_an_unknown_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_string_lossy().to_string();
-        let mut reply = sample_question("n-reply");
-        reply.in_reply_to = Some("n-root".into());
-        let notes = ErNotes {
-            version: 1,
-            diff_hash: "hash".into(),
-            notes: vec![sample_question("n-root"), reply],
-        };
-        write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
+        with_storage_root(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let er_dir = dir.path().to_string_lossy().to_string();
+            let mut reply = sample_question("n-reply");
+            reply.in_reply_to = Some("n-root".into());
+            let notes = ErNotes {
+                version: 1,
+                diff_hash: "hash".into(),
+                notes: vec![sample_question("n-root"), reply],
+            };
+            write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
 
-        assert!(resolve_note_in_dir(&er_dir, "n-reply").is_err());
-        assert!(resolve_note_in_dir(&er_dir, "n-missing").is_err());
-        assert!(load_notes(&er_dir)
-            .unwrap()
-            .notes
-            .iter()
-            .all(|n| !n.resolved));
+            assert!(resolve_note_in_dir(&er_dir, "n-reply").is_err());
+            assert!(resolve_note_in_dir(&er_dir, "n-missing").is_err());
+            assert!(load_notes(&er_dir)
+                .unwrap()
+                .notes
+                .iter()
+                .all(|n| !n.resolved));
+        });
     }
 
     #[test]
@@ -827,69 +829,75 @@ mod tests {
 
     #[test]
     fn an_mcp_reply_to_a_question_writes_todays_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_string_lossy().to_string();
-        let qs = ErQuestions {
-            version: 1,
-            diff_hash: "hash".into(),
-            questions: vec![sample_question("q-root")],
-        };
-        write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+        with_storage_root(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let er_dir = dir.path().to_string_lossy().to_string();
+            let qs = ErQuestions {
+                version: 1,
+                diff_hash: "hash".into(),
+                questions: vec![sample_question("q-root")],
+            };
+            write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
 
-        reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
+            reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
 
-        let raw = std::fs::read_to_string(Path::new(&er_dir).join("questions.json")).unwrap();
-        let stored: ErQuestions = serde_json::from_str(&raw).unwrap();
-        assert_eq!(raw, serde_json::to_string_pretty(&stored).unwrap());
-        assert_eq!(stored.questions.len(), 2);
-        assert_eq!(stored.questions[1].in_reply_to.as_deref(), Some("q-root"));
+            let raw = std::fs::read_to_string(Path::new(&er_dir).join("questions.json")).unwrap();
+            let stored: ErQuestions = serde_json::from_str(&raw).unwrap();
+            assert_eq!(raw, serde_json::to_string_pretty(&stored).unwrap());
+            assert_eq!(stored.questions.len(), 2);
+            assert_eq!(stored.questions[1].in_reply_to.as_deref(), Some("q-root"));
+        });
     }
 
     #[test]
     fn an_mcp_reply_id_starts_with_its_prefix() {
-        let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_string_lossy().to_string();
-        let qs = ErQuestions {
-            version: 1,
-            diff_hash: "hash".into(),
-            questions: vec![sample_question("q-root")],
-        };
-        write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
-        let notes = ErNotes {
-            version: 1,
-            diff_hash: "hash".into(),
-            notes: vec![sample_question("n-root")],
-        };
-        write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
+        with_storage_root(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let er_dir = dir.path().to_string_lossy().to_string();
+            let qs = ErQuestions {
+                version: 1,
+                diff_hash: "hash".into(),
+                questions: vec![sample_question("q-root")],
+            };
+            write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+            let notes = ErNotes {
+                version: 1,
+                diff_hash: "hash".into(),
+                notes: vec![sample_question("n-root")],
+            };
+            write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
 
-        let question = reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
-        let note = reply_to_note_in_dir(&er_dir, "n-root", "Because.", None).unwrap();
+            let question = reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
+            let note = reply_to_note_in_dir(&er_dir, "n-root", "Because.", None).unwrap();
 
-        assert!(question.id.starts_with("q-"), "{}", question.id);
-        assert!(note.id.starts_with("n-"), "{}", note.id);
-        assert!(
-            question.id.trim_start_matches("q-").contains('-'),
-            "q-<millis>-<seq>: {}",
-            question.id
-        );
+            assert!(question.id.starts_with("q-"), "{}", question.id);
+            assert!(note.id.starts_with("n-"), "{}", note.id);
+            assert!(
+                question.id.trim_start_matches("q-").contains('-'),
+                "q-<millis>-<seq>: {}",
+                question.id
+            );
+        });
     }
 
     #[test]
     fn an_mcp_reply_to_a_corrupt_file_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_string_lossy().to_string();
-        let path = Path::new(&er_dir).join("questions.json");
-        std::fs::write(&path, "{ not json").unwrap();
+        with_storage_root(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let er_dir = dir.path().to_string_lossy().to_string();
+            let path = Path::new(&er_dir).join("questions.json");
+            std::fs::write(&path, "{ not json").unwrap();
 
-        let error = reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap_err();
-        assert!(
-            error.to_string().contains("parse corrupt"),
-            "a corrupt file must be reported as corrupt, not as a missing parent: {error}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "{ not json",
-            "a corrupt file is left alone"
-        );
+            let error = reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap_err();
+            assert!(
+                error.to_string().contains("parse corrupt"),
+                "a corrupt file must be reported as corrupt, not as a missing parent: {error}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "{ not json",
+                "a corrupt file is left alone"
+            );
+        });
     }
 }

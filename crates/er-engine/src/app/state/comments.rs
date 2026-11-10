@@ -4866,11 +4866,8 @@ mod background_queue_tests {
         crate::agent_slots::test_serial()
     }
 
-    fn test_app(cap: usize) -> Option<(App, std::path::PathBuf)> {
-        let tmp =
-            std::env::temp_dir().join(format!("er-bg-queue-test-{}-{}", std::process::id(), cap));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).ok()?;
+    fn test_app(root: &std::path::Path, cap: usize) -> Option<App> {
+        std::fs::create_dir_all(root).ok()?;
         // `git init` alone leaves HEAD unborn, so `rev-parse --abbrev-ref HEAD`
         // yields nothing and `App::new_with_args` fails with "Failed to
         // determine current branch". That made this helper return None for
@@ -4884,82 +4881,84 @@ mod background_queue_tests {
         ] {
             std::process::Command::new("git")
                 .args(&args)
-                .current_dir(&tmp)
+                .current_dir(root)
                 .output()
                 .ok()?;
         }
-        std::fs::write(tmp.join("seed.txt"), "seed\n").ok()?;
+        std::fs::write(root.join("seed.txt"), "seed\n").ok()?;
         for args in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
             std::process::Command::new("git")
                 .args(&args)
-                .current_dir(&tmp)
+                .current_dir(root)
                 .output()
                 .ok()?;
         }
         let mut app = App::new_with_args(
-            &[tmp.to_string_lossy().to_string()],
+            &[root.to_string_lossy().to_string()],
             crate::ports::Ports::cli(),
         )
         .ok()?;
         app.config.ai_hub.max_concurrent_reviews = cap;
         app.config.agent.command = "sleep".to_string();
         app.config.agent.args = vec!["5".to_string()];
-        Some((app, tmp))
+        Some(app)
     }
 
     #[test]
     fn excess_reviews_queue_and_dedup() {
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(1) else {
-            return;
-        };
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 1) else {
+                return;
+            };
 
-        app.spawn_background_triage_review(target(&tmp, "feat-a"), "p".into(), true)
-            .unwrap();
-        app.set_ai_selection_override(AiSelection {
-            provider_id: Some("codex".into()),
-            model_id: Some("gpt-5.3-codex-spark".into()),
-            effort: None,
+            app.spawn_background_triage_review(target(tmp, "feat-a"), "p".into(), true)
+                .unwrap();
+            app.set_ai_selection_override(AiSelection {
+                provider_id: Some("codex".into()),
+                model_id: Some("gpt-5.3-codex-spark".into()),
+                effort: None,
+            });
+            app.spawn_background_triage_review(target(tmp, "feat-b"), "p".into(), true)
+                .unwrap();
+            app.clear_ai_selection_override();
+
+            assert_eq!(app.running_background_task_count(), 1, "cap of 1 enforced");
+            assert_eq!(app.pending_background_tasks.len(), 1, "second task queued");
+            assert!(app.pending_background_tasks[0].launch_config.is_none());
+            assert_eq!(
+                app.pending_background_tasks[0]
+                    .ai_selection
+                    .as_ref()
+                    .and_then(|selection| selection.model_id.as_deref()),
+                Some("gpt-5.3-codex-spark")
+            );
+
+            // Same kind+target as the queued task is rejected as a duplicate.
+            let dup = app.spawn_background_triage_review(target(tmp, "feat-b"), "p".into(), true);
+            assert!(dup.is_err(), "duplicate of queued task rejected");
+
+            // Queued task is visible in snapshots as "queued".
+            let snaps = app.background_task_snapshots();
+            assert!(
+                snaps.iter().any(|s| s.status == "queued"),
+                "queued status surfaced: {:?}",
+                snaps.iter().map(|s| s.status.clone()).collect::<Vec<_>>()
+            );
+
+            // Polling while the first task still runs must not launch the queued one.
+            app.poll_background_tasks();
+            assert_eq!(app.running_background_task_count(), 1);
+            assert_eq!(app.pending_background_tasks.len(), 1);
+
+            // Queued tasks can be cancelled by id.
+            let queued_id = app.pending_background_tasks[0].task.id.clone();
+            assert!(app.cancel_queued_background_task(&queued_id));
+            assert!(app.pending_background_tasks.is_empty());
+            assert!(!app.cancel_queued_background_task(&queued_id));
         });
-        app.spawn_background_triage_review(target(&tmp, "feat-b"), "p".into(), true)
-            .unwrap();
-        app.clear_ai_selection_override();
-
-        assert_eq!(app.running_background_task_count(), 1, "cap of 1 enforced");
-        assert_eq!(app.pending_background_tasks.len(), 1, "second task queued");
-        assert!(app.pending_background_tasks[0].launch_config.is_none());
-        assert_eq!(
-            app.pending_background_tasks[0]
-                .ai_selection
-                .as_ref()
-                .and_then(|selection| selection.model_id.as_deref()),
-            Some("gpt-5.3-codex-spark")
-        );
-
-        // Same kind+target as the queued task is rejected as a duplicate.
-        let dup = app.spawn_background_triage_review(target(&tmp, "feat-b"), "p".into(), true);
-        assert!(dup.is_err(), "duplicate of queued task rejected");
-
-        // Queued task is visible in snapshots as "queued".
-        let snaps = app.background_task_snapshots();
-        assert!(
-            snaps.iter().any(|s| s.status == "queued"),
-            "queued status surfaced: {:?}",
-            snaps.iter().map(|s| s.status.clone()).collect::<Vec<_>>()
-        );
-
-        // Polling while the first task still runs must not launch the queued one.
-        app.poll_background_tasks();
-        assert_eq!(app.running_background_task_count(), 1);
-        assert_eq!(app.pending_background_tasks.len(), 1);
-
-        // Queued tasks can be cancelled by id.
-        let queued_id = app.pending_background_tasks[0].task.id.clone();
-        assert!(app.cancel_queued_background_task(&queued_id));
-        assert!(app.pending_background_tasks.is_empty());
-        assert!(!app.cancel_queued_background_task(&queued_id));
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -4972,146 +4971,153 @@ mod background_queue_tests {
         // pool is process-wide, so this must take all `cap` rather than assume
         // it starts empty: once held, nobody else can be in it.
         let _serial = serial();
-        let Some((app, tmp)) = test_app(1) else {
-            return;
-        };
-        let cap = app.config.ai_hub.effective_max_concurrent_reviews();
-        let ceiling = app.config.ai_hub.effective_max_concurrent_agents();
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(app) = test_app(tmp, 1) else {
+                return;
+            };
+            let cap = app.config.ai_hub.effective_max_concurrent_reviews();
+            let ceiling = app.config.ai_hub.effective_max_concurrent_agents();
 
-        assert_eq!(app.running_background_task_count(), 0, "nothing dispatched");
-        let held: Vec<_> = (0..cap)
-            .map(|_| {
-                crate::agent_slots::acquire_blocking(
-                    crate::agent_slots::Workload::Background,
-                    cap,
-                    ceiling,
-                )
-            })
-            .collect();
-        assert!(
-            !app.can_dispatch_task(cap),
-            "a full pool must stop dispatch even with nothing running here"
-        );
+            assert_eq!(app.running_background_task_count(), 0, "nothing dispatched");
+            let held: Vec<_> = (0..cap)
+                .map(|_| {
+                    crate::agent_slots::acquire_blocking(
+                        crate::agent_slots::Workload::Background,
+                        cap,
+                        ceiling,
+                    )
+                })
+                .collect();
+            assert!(
+                !app.can_dispatch_task(cap),
+                "a full pool must stop dispatch even with nothing running here"
+            );
 
-        drop(held);
-        let _ = std::fs::remove_dir_all(&tmp);
+            drop(held);
+        });
     }
 
     #[test]
     fn queued_task_snapshots_current_selection_without_override() {
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(1) else {
-            return;
-        };
-        app.config.ai_hub.providers.insert(
-            "codex".into(),
-            AiProviderConfig {
-                models: vec![AiModelConfig {
-                    id: "gpt-5.6-luna".into(),
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 1) else {
+                return;
+            };
+            app.config.ai_hub.providers.insert(
+                "codex".into(),
+                AiProviderConfig {
+                    models: vec![AiModelConfig {
+                        id: "gpt-5.6-luna".into(),
+                        ..Default::default()
+                    }],
                     ..Default::default()
-                }],
-                ..Default::default()
-            },
-        );
-        app.current_ai_provider = Some("codex".into());
-        app.current_ai_model = Some("gpt-5.6-luna".into());
-        app.current_ai_effort = Some("high".into());
+                },
+            );
+            app.current_ai_provider = Some("codex".into());
+            app.current_ai_model = Some("gpt-5.6-luna".into());
+            app.current_ai_effort = Some("high".into());
 
-        app.spawn_background_triage_review(target(&tmp, "feat-a"), "p".into(), true)
-            .unwrap();
-        app.current_ai_model = Some("other".into());
-        app.spawn_background_triage_review(target(&tmp, "feat-b"), "p".into(), true)
-            .unwrap();
+            app.spawn_background_triage_review(target(tmp, "feat-a"), "p".into(), true)
+                .unwrap();
+            app.current_ai_model = Some("other".into());
+            app.spawn_background_triage_review(target(tmp, "feat-b"), "p".into(), true)
+                .unwrap();
 
-        let queued = &app.pending_background_tasks[0];
-        assert_eq!(
-            queued
-                .ai_selection
-                .as_ref()
-                .and_then(|s| s.model_id.as_deref()),
-            Some("gpt-5.6-luna"),
-            "queued task keeps the selection from enqueue time"
-        );
-        // Effort is normalised against the model when the selection syncs, so
-        // a literal here would be asserting that normalisation rather than
-        // what this test is about. The claim is that the queued task holds
-        // what was resolved at enqueue, not what the palette says later.
-        let enqueued_effort = queued.ai_selection.as_ref().and_then(|s| s.effort.clone());
-        app.current_ai_effort = Some("low".into());
-        assert_eq!(
-            app.pending_background_tasks[0]
-                .ai_selection
-                .as_ref()
-                .and_then(|s| s.effort.clone()),
-            enqueued_effort,
-            "a later effort change must not retarget a queued task"
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
+            let queued = &app.pending_background_tasks[0];
+            assert_eq!(
+                queued
+                    .ai_selection
+                    .as_ref()
+                    .and_then(|s| s.model_id.as_deref()),
+                Some("gpt-5.6-luna"),
+                "queued task keeps the selection from enqueue time"
+            );
+            // Effort is normalised against the model when the selection syncs, so
+            // a literal here would be asserting that normalisation rather than
+            // what this test is about. The claim is that the queued task holds
+            // what was resolved at enqueue, not what the palette says later.
+            let enqueued_effort = queued.ai_selection.as_ref().and_then(|s| s.effort.clone());
+            app.current_ai_effort = Some("low".into());
+            assert_eq!(
+                app.pending_background_tasks[0]
+                    .ai_selection
+                    .as_ref()
+                    .and_then(|s| s.effort.clone()),
+                enqueued_effort,
+                "a later effort change must not retarget a queued task"
+            );
+        });
     }
 
     #[test]
     fn dispatch_launches_queued_when_slot_frees() {
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(2) else {
-            return;
-        };
-        // A fast-exiting agent, installed in the hub rather than via
-        // `config.agent`: the background path resolves its command from the
-        // hub providers, and `App::new_with_args` loads the *user's* global
-        // config, so leaving this to `config.agent` ran a real provider and
-        // took 24 s. Completion frees a slot on the next poll.
-        let fake = tmp.join("fake-agent");
-        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&fake).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&fake, perms).unwrap();
-        }
-        app.config.ai_hub.providers.clear();
-        app.config.ai_hub.default_provider = Some("fake".to_string());
-        app.config.ai_hub.providers.insert(
-            "fake".to_string(),
-            AiProviderConfig {
-                command: fake.to_string_lossy().to_string(),
-                args: vec!["{prompt}".to_string()],
-                models: vec![AiModelConfig {
-                    id: "m".to_string(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-        );
-        app.config.ai_hub.default_model = Some("m".to_string());
-        app.current_ai_provider = Some("fake".to_string());
-        app.current_ai_model = Some("m".to_string());
-
-        for branch in ["a", "b", "c"] {
-            app.spawn_background_triage_review(target(&tmp, branch), "p".into(), true)
-                .unwrap();
-        }
-        assert_eq!(app.running_background_task_count(), 2);
-        assert_eq!(app.pending_background_tasks.len(), 1);
-
-        // Wait for the fast agents to exit, then poll: completions are
-        // detected and the queued task is dispatched.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            app.poll_background_tasks();
-            if app.pending_background_tasks.is_empty() {
-                break;
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 2) else {
+                return;
+            };
+            // A fast-exiting agent, installed in the hub rather than via
+            // `config.agent`: the background path resolves its command from the
+            // hub providers, and `App::new_with_args` loads the *user's* global
+            // config, so leaving this to `config.agent` ran a real provider and
+            // took 24 s. Completion frees a slot on the next poll.
+            let fake = tmp.join("fake-agent");
+            std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&fake, perms).unwrap();
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "queued task was never dispatched: running={} slots_in_use={}",
-                app.running_background_task_count(),
-                crate::agent_slots::active_count()
+            app.config.ai_hub.providers.clear();
+            app.config.ai_hub.default_provider = Some("fake".to_string());
+            app.config.ai_hub.providers.insert(
+                "fake".to_string(),
+                AiProviderConfig {
+                    command: fake.to_string_lossy().to_string(),
+                    args: vec!["{prompt}".to_string()],
+                    models: vec![AiModelConfig {
+                        id: "m".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
             );
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
+            app.config.ai_hub.default_model = Some("m".to_string());
+            app.current_ai_provider = Some("fake".to_string());
+            app.current_ai_model = Some("m".to_string());
 
-        let _ = std::fs::remove_dir_all(&tmp);
+            for branch in ["a", "b", "c"] {
+                app.spawn_background_triage_review(target(tmp, branch), "p".into(), true)
+                    .unwrap();
+            }
+            assert_eq!(app.running_background_task_count(), 2);
+            assert_eq!(app.pending_background_tasks.len(), 1);
+
+            // Wait for the fast agents to exit, then poll: completions are
+            // detected and the queued task is dispatched.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                app.poll_background_tasks();
+                if app.pending_background_tasks.is_empty() {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "queued task was never dispatched: running={} slots_in_use={}",
+                    app.running_background_task_count(),
+                    crate::agent_slots::active_count()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
     }
 
     #[test]
@@ -5124,68 +5130,70 @@ mod background_queue_tests {
         std::env::set_var("ER_DEBUG", "1");
 
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(1) else {
-            return;
-        };
-        let fake_bin = tmp.join("codex");
-        std::fs::write(&fake_bin, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut permissions = std::fs::metadata(&fake_bin).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&fake_bin, permissions).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 1) else {
+                return;
+            };
+            let fake_bin = tmp.join("codex");
+            std::fs::write(&fake_bin, "#!/bin/sh\nexit 0\n").unwrap();
+            let mut permissions = std::fs::metadata(&fake_bin).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&fake_bin, permissions).unwrap();
 
-        app.config.ai_hub.providers.clear();
-        app.config.ai_hub.default_provider = Some("codex".to_string());
-        app.config.ai_hub.default_model = Some("gpt-5.5".to_string());
-        app.config.ai_hub.providers.insert(
-            "codex".to_string(),
-            AiProviderConfig {
-                command: fake_bin.to_string_lossy().to_string(),
-                args: vec!["exec".to_string(), "{prompt}".to_string()],
-                models: vec![AiModelConfig {
-                    id: "gpt-5.5".to_string(),
-                    args: vec!["--model".to_string(), "gpt-5.5".to_string()],
+            app.config.ai_hub.providers.clear();
+            app.config.ai_hub.default_provider = Some("codex".to_string());
+            app.config.ai_hub.default_model = Some("gpt-5.5".to_string());
+            app.config.ai_hub.providers.insert(
+                "codex".to_string(),
+                AiProviderConfig {
+                    command: fake_bin.to_string_lossy().to_string(),
+                    args: vec!["exec".to_string(), "{prompt}".to_string()],
+                    models: vec![AiModelConfig {
+                        id: "gpt-5.5".to_string(),
+                        args: vec!["--model".to_string(), "gpt-5.5".to_string()],
+                        ..Default::default()
+                    }],
                     ..Default::default()
-                }],
-                ..Default::default()
-            },
-        );
-        app.current_ai_provider = Some("codex".to_string());
-        app.current_ai_model = Some("gpt-5.5".to_string());
-
-        app.spawn_background_triage_review(target(&tmp, "feat-codex"), "p".into(), true)
-            .unwrap();
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            app.poll_background_tasks();
-            let done = app
-                .background_tasks
-                .values()
-                .any(|handle| matches!(handle.task.status, crate::app::CommandStatus::Done));
-            if done {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "fake Codex task did not finish"
+                },
             );
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
+            app.current_ai_provider = Some("codex".to_string());
+            app.current_ai_model = Some("gpt-5.5".to_string());
 
-        let debug_log = std::fs::read_to_string(tmp.join(".er/debug-agent.log")).unwrap();
-        // Assert the flag rather than its position: other flags (e.g. `--add-dir`)
-        // may be injected ahead of it, and the claim -- Codex is told not to
-        // read the user's config -- holds regardless of order.
-        let command_line = debug_log
-            .lines()
-            .find(|l| l.starts_with("command: "))
-            .unwrap_or("");
-        assert!(
-            command_line.contains("exec") && command_line.contains("--ignore-user-config"),
-            "debug log should show an isolated Codex invocation:\n{debug_log}"
-        );
+            app.spawn_background_triage_review(target(tmp, "feat-codex"), "p".into(), true)
+                .unwrap();
 
-        let _ = std::fs::remove_dir_all(&tmp);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                app.poll_background_tasks();
+                let done = app
+                    .background_tasks
+                    .values()
+                    .any(|handle| matches!(handle.task.status, crate::app::CommandStatus::Done));
+                if done {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "fake Codex task did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+
+            let debug_log = std::fs::read_to_string(tmp.join(".er/debug-agent.log")).unwrap();
+            // Assert the flag rather than its position: other flags (e.g. `--add-dir`)
+            // may be injected ahead of it, and the claim -- Codex is told not to
+            // read the user's config -- holds regardless of order.
+            let command_line = debug_log
+                .lines()
+                .find(|l| l.starts_with("command: "))
+                .unwrap_or("");
+            assert!(
+                command_line.contains("exec") && command_line.contains("--ignore-user-config"),
+                "debug log should show an isolated Codex invocation:\n{debug_log}"
+            );
+        });
     }
 
     #[test]
@@ -5200,116 +5208,122 @@ mod background_queue_tests {
     #[test]
     fn registered_completion_is_exact_one_shot_and_survives_history_retirement() {
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(2) else {
-            return;
-        };
-        app.config.ai_hub = Default::default();
-        app.config.agent.command = "sh".into();
-        app.config.agent.args = vec!["-c".into(), "sleep 0.05".into()];
-        let owned_target = target(&tmp, "owned");
-        let unowned_target = target(&tmp, "unowned");
-        let owned_id = app
-            .enqueue_background_agent_task(
-                "triage".into(),
-                "triage",
-                owned_target.clone(),
-                "p".into(),
-                true,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-        app.register_review_flow_task(owned_id.clone());
-        let unowned_id = app
-            .enqueue_background_agent_task(
-                "triage".into(),
-                "triage",
-                unowned_target,
-                "p".into(),
-                true,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 2) else {
+                return;
+            };
+            app.config.ai_hub = Default::default();
+            app.config.agent.command = "sh".into();
+            app.config.agent.args = vec!["-c".into(), "sleep 0.05".into()];
+            let owned_target = target(tmp, "owned");
+            let unowned_target = target(tmp, "unowned");
+            let owned_id = app
+                .enqueue_background_agent_task(
+                    "triage".into(),
+                    "triage",
+                    owned_target.clone(),
+                    "p".into(),
+                    true,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            app.register_review_flow_task(owned_id.clone());
+            let unowned_id = app
+                .enqueue_background_agent_task(
+                    "triage".into(),
+                    "triage",
+                    unowned_target,
+                    "p".into(),
+                    true,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !app.flow_task_completions.contains_key(&owned_id) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !app.flow_task_completions.contains_key(&owned_id) {
+                app.poll_background_tasks();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "owned task did not complete"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert!(!app.flow_task_completions.contains_key(&unowned_id));
+            let handle = app.background_tasks.get_mut(&owned_id).unwrap();
+            handle.task.finished_at_ms =
+                Some(super::super::background::unix_now_ms().saturating_sub(9_000));
             app.poll_background_tasks();
             assert!(
-                std::time::Instant::now() < deadline,
-                "owned task did not complete"
+                !app.background_tasks.contains_key(&owned_id),
+                "UI task history retired"
             );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert!(!app.flow_task_completions.contains_key(&unowned_id));
-        let handle = app.background_tasks.get_mut(&owned_id).unwrap();
-        handle.task.finished_at_ms =
-            Some(super::super::background::unix_now_ms().saturating_sub(9_000));
-        app.poll_background_tasks();
-        assert!(
-            !app.background_tasks.contains_key(&owned_id),
-            "UI task history retired"
-        );
-        assert!(
-            app.flow_task_completions.contains_key(&owned_id),
-            "flow completion is independent of UI history"
-        );
+            assert!(
+                app.flow_task_completions.contains_key(&owned_id),
+                "flow completion is independent of UI history"
+            );
 
-        let completion = app.take_review_flow_task_completion(&owned_id).unwrap();
-        assert_eq!(completion.id, owned_id);
-        assert_eq!(completion.target, owned_target);
-        assert!(matches!(completion.status, crate::app::CommandStatus::Done));
-        assert!(app
-            .take_review_flow_task_completion(&completion.id)
-            .is_none());
-        assert!(!app.owned_flow_task_ids.contains(&completion.id));
-        let _ = std::fs::remove_dir_all(&tmp);
+            let completion = app.take_review_flow_task_completion(&owned_id).unwrap();
+            assert_eq!(completion.id, owned_id);
+            assert_eq!(completion.target, owned_target);
+            assert!(matches!(completion.status, crate::app::CommandStatus::Done));
+            assert!(app
+                .take_review_flow_task_completion(&completion.id)
+                .is_none());
+            assert!(!app.owned_flow_task_ids.contains(&completion.id));
+        });
     }
 
     #[test]
     fn background_progress_callback_wakes_after_success_and_failure_results() {
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(2) else {
-            return;
-        };
-        app.config.ai_hub = Default::default();
-        app.config.ai_hub.max_concurrent_reviews = 2;
-        app.config.agent.command = "sh".into();
-        let wake_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let callback_count = std::sync::Arc::clone(&wake_count);
-        app.set_background_progress_notify(Some(std::sync::Arc::new(move || {
-            callback_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        })));
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 2) else {
+                return;
+            };
+            app.config.ai_hub = Default::default();
+            app.config.ai_hub.max_concurrent_reviews = 2;
+            app.config.agent.command = "sh".into();
+            let wake_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let callback_count = std::sync::Arc::clone(&wake_count);
+            app.set_background_progress_notify(Some(std::sync::Arc::new(move || {
+                callback_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })));
 
-        app.config.agent.args = vec!["-c".into(), "exit 0".into()];
-        app.spawn_background_review(target(&tmp, "callback-success"), "p".into(), false, None)
-            .unwrap();
-        app.config.agent.args = vec!["-c".into(), "exit 1".into()];
-        app.spawn_background_review(target(&tmp, "callback-failure"), "p".into(), false, None)
-            .unwrap();
+            app.config.agent.args = vec!["-c".into(), "exit 0".into()];
+            app.spawn_background_review(target(tmp, "callback-success"), "p".into(), false, None)
+                .unwrap();
+            app.config.agent.args = vec!["-c".into(), "exit 1".into()];
+            app.spawn_background_review(target(tmp, "callback-failure"), "p".into(), false, None)
+                .unwrap();
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while wake_count.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while wake_count.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                app.poll_background_tasks();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker did not wake the host"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
             app.poll_background_tasks();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "worker did not wake the host"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        app.poll_background_tasks();
-        assert_eq!(wake_count.load(std::sync::atomic::Ordering::SeqCst), 2);
-        assert!(app
-            .background_tasks
-            .values()
-            .any(|task| matches!(task.task.status, crate::app::CommandStatus::Done)));
-        assert!(app
-            .background_tasks
-            .values()
-            .any(|task| matches!(task.task.status, crate::app::CommandStatus::Failed(_))));
-        let _ = std::fs::remove_dir_all(&tmp);
+            assert_eq!(wake_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+            assert!(app
+                .background_tasks
+                .values()
+                .any(|task| matches!(task.task.status, crate::app::CommandStatus::Done)));
+            assert!(app
+                .background_tasks
+                .values()
+                .any(|task| matches!(task.task.status, crate::app::CommandStatus::Failed(_))));
+        });
     }
 
     /// A scoped run's overlay and validation survive a failed full run; a
@@ -5552,153 +5566,164 @@ mod background_queue_tests {
     #[test]
     fn queued_launch_failure_is_delivered_for_registered_id() {
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(1) else {
-            return;
-        };
-        app.config.ai_hub = Default::default();
-        app.config.ai_hub.max_concurrent_reviews = 1;
-        let blocker_target = target(&tmp, "blocker");
-        let mut blocker_task =
-            super::super::background::BackgroundTask::new("review".into(), blocker_target);
-        blocker_task.status = crate::app::CommandStatus::Running;
-        let blocker_id = blocker_task.id.clone();
-        let (_result_tx, result_rx) = std::sync::mpsc::channel();
-        let (_log_tx, log_rx) = std::sync::mpsc::channel();
-        app.background_tasks.insert(
-            blocker_id.clone(),
-            super::super::background::BackgroundTaskHandle {
-                task: blocker_task,
-                run: crate::agent_run::AgentRunHandle::new(),
-                result_rx,
-                log_rx,
-                recent_log: Default::default(),
-            },
-        );
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 1) else {
+                return;
+            };
+            app.config.ai_hub = Default::default();
+            app.config.ai_hub.max_concurrent_reviews = 1;
+            let blocker_target = target(tmp, "blocker");
+            let mut blocker_task =
+                super::super::background::BackgroundTask::new("review".into(), blocker_target);
+            blocker_task.status = crate::app::CommandStatus::Running;
+            let blocker_id = blocker_task.id.clone();
+            let (_result_tx, result_rx) = std::sync::mpsc::channel();
+            let (_log_tx, log_rx) = std::sync::mpsc::channel();
+            app.background_tasks.insert(
+                blocker_id.clone(),
+                super::super::background::BackgroundTaskHandle {
+                    task: blocker_task,
+                    run: crate::agent_run::AgentRunHandle::new(),
+                    result_rx,
+                    log_rx,
+                    recent_log: Default::default(),
+                },
+            );
 
-        let obstructed_path = tmp.join("not-a-directory");
-        std::fs::write(&obstructed_path, "file").unwrap();
-        let mut failed_target = target(&tmp, "queued-failure");
-        failed_target.er_dir = obstructed_path
-            .join("bucket")
-            .to_string_lossy()
-            .into_owned();
-        let id = app
-            .enqueue_background_agent_task(
-                "triage".into(),
-                "triage",
-                failed_target,
-                "p".into(),
-                true,
-                None,
-                Some(ErConfig::default()),
-                None,
-            )
-            .unwrap();
-        app.register_review_flow_task(id.clone());
-        // A different live cap can release queued work; captured launch
-        // configuration must not freeze this resource policy.
-        app.config.ai_hub.max_concurrent_reviews = 16;
-        app.background_tasks
-            .get_mut(&blocker_id)
-            .unwrap()
-            .task
-            .status = crate::app::CommandStatus::Done;
-        app.dispatch_pending_background_tasks();
-        assert!(app.flow_task_completions.contains_key(&id));
-        let completion = app.take_review_flow_task_completion(&id).unwrap();
-        assert_eq!(completion.id, id);
-        assert!(matches!(
-            completion.status,
-            crate::app::CommandStatus::Failed(_)
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
+            let obstructed_path = tmp.join("not-a-directory");
+            std::fs::write(&obstructed_path, "file").unwrap();
+            let mut failed_target = target(tmp, "queued-failure");
+            failed_target.er_dir = obstructed_path
+                .join("bucket")
+                .to_string_lossy()
+                .into_owned();
+            let id = app
+                .enqueue_background_agent_task(
+                    "triage".into(),
+                    "triage",
+                    failed_target,
+                    "p".into(),
+                    true,
+                    None,
+                    Some(ErConfig::default()),
+                    None,
+                )
+                .unwrap();
+            app.register_review_flow_task(id.clone());
+            // A different live cap can release queued work; captured launch
+            // configuration must not freeze this resource policy.
+            app.config.ai_hub.max_concurrent_reviews = 16;
+            app.background_tasks
+                .get_mut(&blocker_id)
+                .unwrap()
+                .task
+                .status = crate::app::CommandStatus::Done;
+            app.dispatch_pending_background_tasks();
+            assert!(app.flow_task_completions.contains_key(&id));
+            let completion = app.take_review_flow_task_completion(&id).unwrap();
+            assert_eq!(completion.id, id);
+            assert!(matches!(
+                completion.status,
+                crate::app::CommandStatus::Failed(_)
+            ));
+        });
     }
 
     #[test]
     fn public_spawn_wrapper_refuses_a_leased_review_bucket() {
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(1) else {
-            return;
-        };
-        let target = target(&tmp, "leased");
-        let lease = app.acquire_review_flow_lease(&target.er_dir).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 1) else {
+                return;
+            };
+            let target = target(tmp, "leased");
+            let lease = app.acquire_review_flow_lease(&target.er_dir).unwrap();
 
-        let error = app
-            .spawn_background_review(target.clone(), "p".into(), true, None)
-            .unwrap_err();
-        assert!(error.to_string().contains("review flow is already using"));
-        assert!(app.pending_background_tasks.is_empty());
-        assert!(app.background_tasks.is_empty());
+            let error = app
+                .spawn_background_review(target.clone(), "p".into(), true, None)
+                .unwrap_err();
+            assert!(error.to_string().contains("review flow is already using"));
+            assert!(app.pending_background_tasks.is_empty());
+            assert!(app.background_tasks.is_empty());
 
-        app.release_review_flow_lease(&lease).unwrap();
-        let _ = std::fs::remove_dir_all(&tmp);
+            app.release_review_flow_lease(&lease).unwrap();
+        });
     }
 
     #[test]
     fn cancelling_queued_flow_task_delivers_failure_and_cleans_ownership() {
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(1) else {
-            return;
-        };
-        app.config.ai_hub.max_concurrent_reviews = 1;
-        let blocker_task =
-            super::super::background::BackgroundTask::new("review".into(), target(&tmp, "blocker"));
-        let blocker_id = blocker_task.id.clone();
-        let (_result_tx, result_rx) = std::sync::mpsc::channel();
-        let (_log_tx, log_rx) = std::sync::mpsc::channel();
-        app.background_tasks.insert(
-            blocker_id,
-            super::super::background::BackgroundTaskHandle {
-                task: blocker_task,
-                run: crate::agent_run::AgentRunHandle::new(),
-                result_rx,
-                log_rx,
-                recent_log: Default::default(),
-            },
-        );
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 1) else {
+                return;
+            };
+            app.config.ai_hub.max_concurrent_reviews = 1;
+            let blocker_task = super::super::background::BackgroundTask::new(
+                "review".into(),
+                target(tmp, "blocker"),
+            );
+            let blocker_id = blocker_task.id.clone();
+            let (_result_tx, result_rx) = std::sync::mpsc::channel();
+            let (_log_tx, log_rx) = std::sync::mpsc::channel();
+            app.background_tasks.insert(
+                blocker_id,
+                super::super::background::BackgroundTaskHandle {
+                    task: blocker_task,
+                    run: crate::agent_run::AgentRunHandle::new(),
+                    result_rx,
+                    log_rx,
+                    recent_log: Default::default(),
+                },
+            );
 
-        let flow_id = app
-            .enqueue_background_agent_task(
-                "triage".into(),
-                "triage",
-                target(&tmp, "flow-queued"),
-                "p".into(),
-                true,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-        app.register_review_flow_task(flow_id.clone());
-        let legacy_id = app
-            .enqueue_background_agent_task(
-                "triage".into(),
-                "triage",
-                target(&tmp, "legacy-queued"),
-                "p".into(),
-                true,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+            let flow_id = app
+                .enqueue_background_agent_task(
+                    "triage".into(),
+                    "triage",
+                    target(tmp, "flow-queued"),
+                    "p".into(),
+                    true,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            app.register_review_flow_task(flow_id.clone());
+            let legacy_id = app
+                .enqueue_background_agent_task(
+                    "triage".into(),
+                    "triage",
+                    target(tmp, "legacy-queued"),
+                    "p".into(),
+                    true,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
 
-        assert!(app.cancel_queued_background_task(&legacy_id));
-        assert!(!app.flow_task_completions.contains_key(&legacy_id));
-        assert!(app.cancel_queued_background_task(&flow_id));
-        let completion = app.take_review_flow_task_completion(&flow_id).unwrap();
-        assert_eq!(completion.id, flow_id);
-        assert_eq!(completion.error.as_deref(), Some("cancelled before launch"));
-        assert!(matches!(
-            completion.status,
-            crate::app::CommandStatus::Failed(ref reason) if reason == "cancelled before launch"
-        ));
-        assert!(!app.owned_flow_task_ids.contains(&completion.id));
-        assert!(app
-            .take_review_flow_task_completion(&completion.id)
-            .is_none());
-        assert!(app.pending_background_tasks.is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
+            assert!(app.cancel_queued_background_task(&legacy_id));
+            assert!(!app.flow_task_completions.contains_key(&legacy_id));
+            assert!(app.cancel_queued_background_task(&flow_id));
+            let completion = app.take_review_flow_task_completion(&flow_id).unwrap();
+            assert_eq!(completion.id, flow_id);
+            assert_eq!(completion.error.as_deref(), Some("cancelled before launch"));
+            assert!(matches!(
+                completion.status,
+                crate::app::CommandStatus::Failed(ref reason) if reason == "cancelled before launch"
+            ));
+            assert!(!app.owned_flow_task_ids.contains(&completion.id));
+            assert!(app
+                .take_review_flow_task_completion(&completion.id)
+                .is_none());
+            assert!(app.pending_background_tasks.is_empty());
+        });
     }
 
     #[test]
@@ -5707,120 +5732,123 @@ mod background_queue_tests {
         use std::os::unix::fs::PermissionsExt;
 
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(1) else {
-            return;
-        };
-        app.config.ai_hub = Default::default();
-        app.config.ai_hub.max_concurrent_reviews = 1;
-        app.config.agent.command = "sleep".into();
-        app.config.agent.args = vec!["30".into()];
-        app.spawn_background_triage_review(target(&tmp, "blocker"), "p".into(), true)
-            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 1) else {
+                return;
+            };
+            app.config.ai_hub = Default::default();
+            app.config.ai_hub.max_concurrent_reviews = 1;
+            app.config.agent.command = "sleep".into();
+            app.config.agent.args = vec!["30".into()];
+            app.spawn_background_triage_review(target(tmp, "blocker"), "p".into(), true)
+                .unwrap();
 
-        let argv_path = tmp.join("frozen-argv.txt");
-        let frozen_command = tmp.join("frozen-agent");
-        std::fs::write(
-            &frozen_command,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > '{}'\nexit 0\n",
-                argv_path.display()
-            ),
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&frozen_command).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&frozen_command, permissions).unwrap();
-
-        let mut frozen = ErConfig::default();
-        frozen.ai_hub.default_provider = Some("frozen".into());
-        frozen.ai_hub.default_model = Some("frozen-model".into());
-        frozen.ai_hub.default_effort = Some("high".into());
-        frozen.ai_hub.agent_timeout_secs = 3;
-        frozen.ai_hub.providers.insert(
-            "frozen".into(),
-            AiProviderConfig {
-                command: frozen_command.to_string_lossy().into_owned(),
-                family: Some("claude".into()),
-                args: vec!["{prompt}".into()],
-                models: vec![AiModelConfig {
-                    id: "frozen-model".into(),
-                    args: vec!["--model".into(), "frozen-model".into()],
-                    effort_levels: vec!["low".into(), "high".into()],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-        );
-        let id = app
-            .enqueue_background_agent_task(
-                "general".into(),
-                "review",
-                target(&tmp, "frozen-flow"),
-                "prompt".into(),
-                true,
-                None,
-                Some(frozen.clone()),
-                None,
+            let argv_path = tmp.join("frozen-argv.txt");
+            let frozen_command = tmp.join("frozen-agent");
+            std::fs::write(
+                &frozen_command,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > '{}'\nexit 0\n",
+                    argv_path.display()
+                ),
             )
             .unwrap();
-        app.register_review_flow_task(id.clone());
-        assert_eq!(
-            app.pending_background_tasks[0]
-                .launch_config
-                .as_ref()
-                .unwrap()
-                .ai_hub
-                .agent_timeout_secs,
-            3
-        );
+            let mut permissions = std::fs::metadata(&frozen_command).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&frozen_command, permissions).unwrap();
 
-        app.config.agent.command = tmp
-            .join("live-config-must-not-run")
-            .to_string_lossy()
-            .into_owned();
-        app.config.ai_hub = Default::default();
-        app.config.ai_hub.default_provider = Some("live".into());
-        app.config.ai_hub.providers.insert(
-            "live".into(),
-            AiProviderConfig {
-                command: tmp
-                    .join("live-config-must-not-run")
-                    .to_string_lossy()
-                    .into_owned(),
-                ..Default::default()
-            },
-        );
-        app.background_tasks
-            .values()
-            .find(|h| h.task.target.branch_label == "blocker")
-            .unwrap()
-            .run
-            .kill();
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !app.flow_task_completions.contains_key(&id) {
-            app.poll_background_tasks();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "frozen provider did not complete"
+            let mut frozen = ErConfig::default();
+            frozen.ai_hub.default_provider = Some("frozen".into());
+            frozen.ai_hub.default_model = Some("frozen-model".into());
+            frozen.ai_hub.default_effort = Some("high".into());
+            frozen.ai_hub.agent_timeout_secs = 3;
+            frozen.ai_hub.providers.insert(
+                "frozen".into(),
+                AiProviderConfig {
+                    command: frozen_command.to_string_lossy().into_owned(),
+                    family: Some("claude".into()),
+                    args: vec!["{prompt}".into()],
+                    models: vec![AiModelConfig {
+                        id: "frozen-model".into(),
+                        args: vec!["--model".into(), "frozen-model".into()],
+                        effort_levels: vec!["low".into(), "high".into()],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
             );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let argv = std::fs::read_to_string(&argv_path).unwrap();
-        assert!(
-            argv.contains("frozen-model"),
-            "model args must come from captured config: {argv}"
-        );
-        assert!(
-            argv.contains("--effort\nhigh"),
-            "effort must come from captured config: {argv}"
-        );
-        assert!(!argv.contains("live-config-must-not-run"));
-        assert!(matches!(
-            app.take_review_flow_task_completion(&id).unwrap().status,
-            crate::app::CommandStatus::Done
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
+            let id = app
+                .enqueue_background_agent_task(
+                    "general".into(),
+                    "review",
+                    target(tmp, "frozen-flow"),
+                    "prompt".into(),
+                    true,
+                    None,
+                    Some(frozen.clone()),
+                    None,
+                )
+                .unwrap();
+            app.register_review_flow_task(id.clone());
+            assert_eq!(
+                app.pending_background_tasks[0]
+                    .launch_config
+                    .as_ref()
+                    .unwrap()
+                    .ai_hub
+                    .agent_timeout_secs,
+                3
+            );
+
+            app.config.agent.command = tmp
+                .join("live-config-must-not-run")
+                .to_string_lossy()
+                .into_owned();
+            app.config.ai_hub = Default::default();
+            app.config.ai_hub.default_provider = Some("live".into());
+            app.config.ai_hub.providers.insert(
+                "live".into(),
+                AiProviderConfig {
+                    command: tmp
+                        .join("live-config-must-not-run")
+                        .to_string_lossy()
+                        .into_owned(),
+                    ..Default::default()
+                },
+            );
+            app.background_tasks
+                .values()
+                .find(|h| h.task.target.branch_label == "blocker")
+                .unwrap()
+                .run
+                .kill();
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !app.flow_task_completions.contains_key(&id) {
+                app.poll_background_tasks();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "frozen provider did not complete"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let argv = std::fs::read_to_string(&argv_path).unwrap();
+            assert!(
+                argv.contains("frozen-model"),
+                "model args must come from captured config: {argv}"
+            );
+            assert!(
+                argv.contains("--effort\nhigh"),
+                "effort must come from captured config: {argv}"
+            );
+            assert!(!argv.contains("live-config-must-not-run"));
+            assert!(matches!(
+                app.take_review_flow_task_completion(&id).unwrap().status,
+                crate::app::CommandStatus::Done
+            ));
+        });
     }
 
     /// One spawn case for the startup-trim tests: a fake CLI whose basename
@@ -5936,59 +5964,62 @@ mod background_queue_tests {
     #[cfg(unix)]
     fn foreground_agent_prompt_trims_claude_startup_only() {
         let _serial = serial();
+        let root = tempfile::tempdir().unwrap();
         // `spawn_agent_prompt` writes into the tab's managed bucket, so keep
         // that bucket out of the user's real storage.
-        let _storage = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let storage = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", storage.path());
-        let Some((mut app, tmp)) = test_app(3) else {
-            return;
-        };
-        let cases = startup_trim_cases(&mut app, &tmp);
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 3) else {
+                return;
+            };
+            let cases = startup_trim_cases(&mut app, tmp);
 
-        for case in &cases {
-            select(&mut app, case);
-            app.spawn_agent_prompt(&format!("trim-{}", case.provider_id), "p")
-                .unwrap();
-        }
-        app.clear_ai_selection_override();
+            for case in &cases {
+                select(&mut app, case);
+                app.spawn_agent_prompt(&format!("trim-{}", case.provider_id), "p")
+                    .unwrap();
+            }
+            app.clear_ai_selection_override();
 
-        assert_eq!(
-            startup_flag_counts(&cases, || {}),
-            vec![(1, 1), (1, 1), (0, 0)],
-            "per case (claude, claude with the flag preset, codex): \
+            assert_eq!(
+                startup_flag_counts(&cases, || {}),
+                vec![(1, 1), (1, 1), (0, 0)],
+                "per case (claude, claude with the flag preset, codex): \
              (--strict-mcp-config, --disable-slash-commands) counts"
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
+            );
+        });
     }
 
     #[test]
     #[cfg(unix)]
     fn background_agent_task_trims_claude_startup_only() {
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(3) else {
-            return;
-        };
-        let cases = startup_trim_cases(&mut app, &tmp);
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 3) else {
+                return;
+            };
+            let cases = startup_trim_cases(&mut app, tmp);
 
-        for case in &cases {
-            select(&mut app, case);
-            app.spawn_background_triage_review(target(&tmp, &case.provider_id), "p".into(), true)
+            for case in &cases {
+                select(&mut app, case);
+                app.spawn_background_triage_review(
+                    target(tmp, &case.provider_id),
+                    "p".into(),
+                    true,
+                )
                 .unwrap();
-        }
-        app.clear_ai_selection_override();
+            }
+            app.clear_ai_selection_override();
 
-        assert_eq!(
-            startup_flag_counts(&cases, || app.poll_background_tasks()),
-            vec![(1, 1), (1, 1), (0, 0)],
-            "per case (claude, claude with the flag preset, codex): \
+            assert_eq!(
+                startup_flag_counts(&cases, || app.poll_background_tasks()),
+                vec![(1, 1), (1, 1), (0, 0)],
+                "per case (claude, claude with the flag preset, codex): \
              (--strict-mcp-config, --disable-slash-commands) counts"
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
+            );
+        });
     }
 
     #[test]
@@ -5997,123 +6028,126 @@ mod background_queue_tests {
         use std::os::unix::fs::PermissionsExt;
 
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(1) else {
-            return;
-        };
-        app.config.ai_hub.providers.clear();
-        let args_path = tmp.join("importance-argv");
-        let env_path = tmp.join("importance-env");
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 1) else {
+                return;
+            };
+            app.config.ai_hub.providers.clear();
+            let args_path = tmp.join("importance-argv");
+            let env_path = tmp.join("importance-env");
 
-        for (family, base_args) in [
-            ("claude", vec!["--print", "{prompt}"]),
-            ("codex", vec!["exec", "{prompt}"]),
-            ("cursor", vec!["{prompt}"]),
-            ("opencode", vec!["run", "{prompt}"]),
-        ] {
-            let command = tmp.join(family);
-            let script = format!(
+            for (family, base_args) in [
+                ("claude", vec!["--print", "{prompt}"]),
+                ("codex", vec!["exec", "{prompt}"]),
+                ("cursor", vec!["{prompt}"]),
+                ("opencode", vec!["run", "{prompt}"]),
+            ] {
+                let command = tmp.join(family);
+                let script = format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"${{OPENCODE_PERMISSION-}}\" > '{}'\nexit 23\n",
                 args_path.display(),
                 env_path.display()
             );
-            std::fs::write(&command, script).unwrap();
-            let mut permissions = std::fs::metadata(&command).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&command, permissions).unwrap();
+                std::fs::write(&command, script).unwrap();
+                let mut permissions = std::fs::metadata(&command).unwrap().permissions();
+                permissions.set_mode(0o755);
+                std::fs::set_permissions(&command, permissions).unwrap();
 
-            let model = AiModelConfig {
-                id: "test-model".into(),
-                effort_levels: if family == "codex" {
-                    vec!["high".into()]
-                } else {
-                    vec![]
-                },
-                ..Default::default()
-            };
-            app.config.ai_hub.providers.insert(
-                family.into(),
-                AiProviderConfig {
-                    command: command.to_string_lossy().into_owned(),
-                    family: Some(family.into()),
-                    args: base_args.iter().map(|arg| (*arg).to_string()).collect(),
-                    models: vec![model],
+                let model = AiModelConfig {
+                    id: "test-model".into(),
+                    effort_levels: if family == "codex" {
+                        vec!["high".into()]
+                    } else {
+                        vec![]
+                    },
                     ..Default::default()
-                },
-            );
-            app.current_ai_provider = Some(family.into());
-            app.current_ai_model = Some("test-model".into());
-            app.current_ai_effort = (family == "codex").then(|| "high".into());
-
-            let old_ids: std::collections::HashSet<_> =
-                app.background_tasks.keys().cloned().collect();
-            app.spawn_background_agent_task(
-                crate::ai::prompts::IMPORTANCE_TASK_KIND.to_string(),
-                "importance",
-                target(&tmp, "importance-test"),
-                "fake importance prompt".into(),
-                false,
-                None,
-                None,
-            )
-            .unwrap();
-            let new_id = app
-                .background_tasks
-                .keys()
-                .find(|id| !old_ids.contains(*id))
-                .cloned()
-                .expect("importance task was launched");
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            loop {
-                app.poll_background_tasks();
-                if app.background_tasks.get(&new_id).is_some_and(|handle| {
-                    matches!(handle.task.status, crate::app::CommandStatus::Failed(_))
-                }) {
-                    break;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "fake {family} did not finish"
+                };
+                app.config.ai_hub.providers.insert(
+                    family.into(),
+                    AiProviderConfig {
+                        command: command.to_string_lossy().into_owned(),
+                        family: Some(family.into()),
+                        args: base_args.iter().map(|arg| (*arg).to_string()).collect(),
+                        models: vec![model],
+                        ..Default::default()
+                    },
                 );
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
+                app.current_ai_provider = Some(family.into());
+                app.current_ai_model = Some("test-model".into());
+                app.current_ai_effort = (family == "codex").then(|| "high".into());
 
-            let argv = std::fs::read_to_string(&args_path).unwrap();
-            match family {
-                "claude" => {
-                    // Inherited allow rules for Write/Edit/Bash cannot restore tools
-                    // removed from the actual tool set by --tools.
-                    assert!(argv.contains("--tools\nRead,Glob,Grep\n"), "{argv}");
-                    assert_eq!(argv.lines().filter(|arg| *arg == "--tools").count(), 1);
-                    assert!(argv.contains("--disallowedTools\nmcp__*\n"), "{argv}");
-                    assert!(argv.contains("--allowedTools\nRead\n"), "{argv}");
-                    assert!(!argv.contains("--allowedTools\nWrite\n"), "{argv}");
+                let old_ids: std::collections::HashSet<_> =
+                    app.background_tasks.keys().cloned().collect();
+                app.spawn_background_agent_task(
+                    crate::ai::prompts::IMPORTANCE_TASK_KIND.to_string(),
+                    "importance",
+                    target(tmp, "importance-test"),
+                    "fake importance prompt".into(),
+                    false,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let new_id = app
+                    .background_tasks
+                    .keys()
+                    .find(|id| !old_ids.contains(*id))
+                    .cloned()
+                    .expect("importance task was launched");
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    app.poll_background_tasks();
+                    if app.background_tasks.get(&new_id).is_some_and(|handle| {
+                        matches!(handle.task.status, crate::app::CommandStatus::Failed(_))
+                    }) {
+                        break;
+                    }
                     assert!(
-                        argv.contains("--disallowedTools\nBash(git clone*)"),
-                        "{argv}"
+                        std::time::Instant::now() < deadline,
+                        "fake {family} did not finish"
                     );
+                    std::thread::sleep(std::time::Duration::from_millis(25));
                 }
-                "codex" => {
-                    assert!(argv.contains("--sandbox\nread-only"), "{argv}");
-                    assert!(argv.contains("-c\nmodel_reasoning_effort=high"), "{argv}");
-                    assert!(!argv.contains("--add-dir"), "{argv}");
-                }
-                "cursor" => {
-                    assert!(argv.contains("--mode\nplan"), "{argv}");
-                    assert!(!argv.contains("--add-dir"), "{argv}");
-                }
-                "opencode" => {
-                    assert!(argv.contains("--auto"), "{argv}");
-                    assert!(!std::fs::read_to_string(&env_path).unwrap().is_empty());
-                    let env: serde_json::Value =
-                        serde_json::from_str(&std::fs::read_to_string(&env_path).unwrap()).unwrap();
-                    assert_eq!(env["edit"], "deny");
-                    assert_eq!(env["bash"]["*"], "deny");
-                }
-                _ => unreachable!(),
-            }
-        }
 
-        let _ = std::fs::remove_dir_all(&tmp);
+                let argv = std::fs::read_to_string(&args_path).unwrap();
+                match family {
+                    "claude" => {
+                        // Inherited allow rules for Write/Edit/Bash cannot restore tools
+                        // removed from the actual tool set by --tools.
+                        assert!(argv.contains("--tools\nRead,Glob,Grep\n"), "{argv}");
+                        assert_eq!(argv.lines().filter(|arg| *arg == "--tools").count(), 1);
+                        assert!(argv.contains("--disallowedTools\nmcp__*\n"), "{argv}");
+                        assert!(argv.contains("--allowedTools\nRead\n"), "{argv}");
+                        assert!(!argv.contains("--allowedTools\nWrite\n"), "{argv}");
+                        assert!(
+                            argv.contains("--disallowedTools\nBash(git clone*)"),
+                            "{argv}"
+                        );
+                    }
+                    "codex" => {
+                        assert!(argv.contains("--sandbox\nread-only"), "{argv}");
+                        assert!(argv.contains("-c\nmodel_reasoning_effort=high"), "{argv}");
+                        assert!(!argv.contains("--add-dir"), "{argv}");
+                    }
+                    "cursor" => {
+                        assert!(argv.contains("--mode\nplan"), "{argv}");
+                        assert!(!argv.contains("--add-dir"), "{argv}");
+                    }
+                    "opencode" => {
+                        assert!(argv.contains("--auto"), "{argv}");
+                        assert!(!std::fs::read_to_string(&env_path).unwrap().is_empty());
+                        let env: serde_json::Value =
+                            serde_json::from_str(&std::fs::read_to_string(&env_path).unwrap())
+                                .unwrap();
+                        assert_eq!(env["edit"], "deny");
+                        assert_eq!(env["bash"]["*"], "deny");
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        });
     }
 
     #[test]
@@ -6122,69 +6156,72 @@ mod background_queue_tests {
         use std::os::unix::fs::PermissionsExt;
 
         let _serial = serial();
-        let Some((mut app, tmp)) = test_app(1) else {
-            return;
-        };
-        app.config.ai_hub.providers.clear();
-        for (family, bad_args) in [
-            (
-                "codex",
-                vec!["exec", "-csandbox_mode=workspace-write", "{prompt}"],
-            ),
-            ("codex", vec!["exec", "-sunsafe", "{prompt}"]),
-            (
-                "codex",
-                vec!["exec", "--sandbox=workspace-write", "{prompt}"],
-            ),
-            (
-                "claude",
-                vec!["--permission-mode", "bypassPermissions", "{prompt}"],
-            ),
-            ("claude", vec!["--tools", "default", "{prompt}"]),
-            ("claude", vec!["--tools=Write,Bash", "{prompt}"]),
-            ("cursor", vec!["--mode=ask", "{prompt}"]),
-            ("opencode", vec!["run", "--permission", "allow", "{prompt}"]),
-        ] {
-            let command = tmp.join(family);
-            std::fs::write(&command, "#!/bin/sh\nexit 23\n").unwrap();
-            let mut permissions = std::fs::metadata(&command).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&command, permissions).unwrap();
-            app.config.ai_hub.providers.insert(
-                family.into(),
-                AiProviderConfig {
-                    command: command.to_string_lossy().into_owned(),
-                    family: Some(family.into()),
-                    args: bad_args.iter().map(|arg| (*arg).to_string()).collect(),
-                    models: vec![AiModelConfig {
-                        id: "test-model".into(),
-                        effort_levels: if family == "codex" {
-                            vec!["high".into()]
-                        } else {
-                            vec![]
-                        },
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 1) else {
+                return;
+            };
+            app.config.ai_hub.providers.clear();
+            for (family, bad_args) in [
+                (
+                    "codex",
+                    vec!["exec", "-csandbox_mode=workspace-write", "{prompt}"],
+                ),
+                ("codex", vec!["exec", "-sunsafe", "{prompt}"]),
+                (
+                    "codex",
+                    vec!["exec", "--sandbox=workspace-write", "{prompt}"],
+                ),
+                (
+                    "claude",
+                    vec!["--permission-mode", "bypassPermissions", "{prompt}"],
+                ),
+                ("claude", vec!["--tools", "default", "{prompt}"]),
+                ("claude", vec!["--tools=Write,Bash", "{prompt}"]),
+                ("cursor", vec!["--mode=ask", "{prompt}"]),
+                ("opencode", vec!["run", "--permission", "allow", "{prompt}"]),
+            ] {
+                let command = tmp.join(family);
+                std::fs::write(&command, "#!/bin/sh\nexit 23\n").unwrap();
+                let mut permissions = std::fs::metadata(&command).unwrap().permissions();
+                permissions.set_mode(0o755);
+                std::fs::set_permissions(&command, permissions).unwrap();
+                app.config.ai_hub.providers.insert(
+                    family.into(),
+                    AiProviderConfig {
+                        command: command.to_string_lossy().into_owned(),
+                        family: Some(family.into()),
+                        args: bad_args.iter().map(|arg| (*arg).to_string()).collect(),
+                        models: vec![AiModelConfig {
+                            id: "test-model".into(),
+                            effort_levels: if family == "codex" {
+                                vec!["high".into()]
+                            } else {
+                                vec![]
+                            },
+                            ..Default::default()
+                        }],
                         ..Default::default()
-                    }],
-                    ..Default::default()
-                },
-            );
-            app.current_ai_provider = Some(family.into());
-            app.current_ai_model = Some("test-model".into());
-            app.current_ai_effort = Some("high".into());
-            assert!(app
-                .spawn_background_agent_task(
-                    crate::ai::prompts::IMPORTANCE_TASK_KIND.to_string(),
-                    "importance",
-                    target(&tmp, family),
-                    "fake importance prompt".into(),
-                    false,
-                    None,
-                    None,
-                )
-                .is_err());
-        }
-        assert!(!tmp.join(".er/debug-agent.log").exists());
-        let _ = std::fs::remove_dir_all(&tmp);
+                    },
+                );
+                app.current_ai_provider = Some(family.into());
+                app.current_ai_model = Some("test-model".into());
+                app.current_ai_effort = Some("high".into());
+                assert!(app
+                    .spawn_background_agent_task(
+                        crate::ai::prompts::IMPORTANCE_TASK_KIND.to_string(),
+                        "importance",
+                        target(tmp, family),
+                        "fake importance prompt".into(),
+                        false,
+                        None,
+                        None,
+                    )
+                    .is_err());
+            }
+            assert!(!tmp.join(".er/debug-agent.log").exists());
+        });
     }
 
     #[test]
@@ -6221,23 +6258,19 @@ mod background_queue_tests {
     /// would pick it up.
     #[test]
     fn thread_edit_and_delete_update_memory_without_reloading_every_sidecar() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-
-        let mut app = App::new_for_test(vec![]);
-        {
-            let tab = app.tab_mut();
-            tab.repo_root = "/home/user/my-project".to_string();
-            tab.current_branch = "main".to_string();
-            tab.apply_managed_root();
-        }
-        let er_dir = app.tab().er_dir();
-        std::fs::create_dir_all(&er_dir).unwrap();
-        let q_path = format!("{er_dir}/questions.json");
-        std::fs::write(
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            {
+                let tab = app.tab_mut();
+                tab.repo_root = "/home/user/my-project".to_string();
+                tab.current_branch = "main".to_string();
+                tab.apply_managed_root();
+            }
+            let er_dir = app.tab().er_dir();
+            std::fs::create_dir_all(&er_dir).unwrap();
+            let q_path = format!("{er_dir}/questions.json");
+            std::fs::write(
             &q_path,
             r#"{"version":1,"diff_hash":"h","questions":[
                 {"id":"q-1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false},
@@ -6245,46 +6278,45 @@ mod background_queue_tests {
             ]}"#,
         )
         .unwrap();
-        app.tab_mut().reload_ai_state();
-        assert_eq!(
-            app.tab().ai.questions.as_ref().map(|q| q.questions.len()),
-            Some(2)
-        );
+            app.tab_mut().reload_ai_state();
+            assert_eq!(
+                app.tab().ai.questions.as_ref().map(|q| q.questions.len()),
+                Some(2)
+            );
 
-        // Written after the reload: visible only to a full `reload_ai_state()`.
-        std::fs::write(format!("{er_dir}/summary.md"), "# summary").unwrap();
+            // Written after the reload: visible only to a full `reload_ai_state()`.
+            std::fs::write(format!("{er_dir}/summary.md"), "# summary").unwrap();
 
-        app.update_comment_text("q-1", "edited").unwrap();
-        let edited = app
-            .tab()
-            .ai
-            .questions
-            .as_ref()
-            .and_then(|qs| qs.questions.iter().find(|q| q.id == "q-1"))
-            .map(|q| q.text.clone());
-        assert_eq!(edited.as_deref(), Some("edited"), "edit visible in memory");
-        assert!(
-            app.tab().ai.summary.is_none(),
-            "edit must not re-read unrelated sidecars"
-        );
+            app.update_comment_text("q-1", "edited").unwrap();
+            let edited = app
+                .tab()
+                .ai
+                .questions
+                .as_ref()
+                .and_then(|qs| qs.questions.iter().find(|q| q.id == "q-1"))
+                .map(|q| q.text.clone());
+            assert_eq!(edited.as_deref(), Some("edited"), "edit visible in memory");
+            assert!(
+                app.tab().ai.summary.is_none(),
+                "edit must not re-read unrelated sidecars"
+            );
 
-        app.confirm_delete_comment("q-1").unwrap();
-        let ids: Vec<String> = app
-            .tab()
-            .ai
-            .questions
-            .as_ref()
-            .map(|qs| qs.questions.iter().map(|q| q.id.clone()).collect())
-            .unwrap_or_default();
-        assert_eq!(ids, vec!["q-2".to_string()], "delete visible in memory");
-        assert!(
-            app.tab().ai.summary.is_none(),
-            "delete must not re-read unrelated sidecars"
-        );
-        let on_disk = std::fs::read_to_string(&q_path).unwrap();
-        assert!(!on_disk.contains("\"q-1\"") && on_disk.contains("\"q-2\""));
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            app.confirm_delete_comment("q-1").unwrap();
+            let ids: Vec<String> = app
+                .tab()
+                .ai
+                .questions
+                .as_ref()
+                .map(|qs| qs.questions.iter().map(|q| q.id.clone()).collect())
+                .unwrap_or_default();
+            assert_eq!(ids, vec!["q-2".to_string()], "delete visible in memory");
+            assert!(
+                app.tab().ai.summary.is_none(),
+                "delete must not re-read unrelated sidecars"
+            );
+            let on_disk = std::fs::read_to_string(&q_path).unwrap();
+            assert!(!on_disk.contains("\"q-1\"") && on_disk.contains("\"q-2\""));
+        });
     }
 
     fn sidecar_app(_tmp: &tempfile::TempDir) -> App {
@@ -6317,149 +6349,149 @@ mod background_queue_tests {
 
     #[test]
     fn a_malformed_questions_file_warns_and_starts_fresh_like_before() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let mut app = sidecar_app(&tmp);
-        let er_dir = app.tab().er_dir();
-        let path = format!("{er_dir}/questions.json");
-        std::fs::write(&path, "{ not json").unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = sidecar_app(&tmp);
+            let er_dir = app.tab().er_dir();
+            let path = format!("{er_dir}/questions.json");
+            std::fs::write(&path, "{ not json").unwrap();
 
-        submit(&mut app, "Why?", crate::ai::CommentType::Question);
+            submit(&mut app, "Why?", crate::ai::CommentType::Question);
 
-        let message = app
-            .notification
-            .as_ref()
-            .expect("a notification")
-            .message
-            .clone();
-        assert!(
-            message.contains("invalid JSON — starting fresh"),
-            "{message}"
-        );
-        let stored: crate::ai::ErQuestions =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(stored.questions.len(), 1, "the corrupt file is replaced");
-        assert_eq!(stored.questions[0].text, "Why?");
-        std::env::remove_var("ER_STORAGE_ROOT");
+            let message = app
+                .notification
+                .as_ref()
+                .expect("a notification")
+                .message
+                .clone();
+            assert!(
+                message.contains("invalid JSON — starting fresh"),
+                "{message}"
+            );
+            let stored: crate::ai::ErQuestions =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(stored.questions.len(), 1, "the corrupt file is replaced");
+            assert_eq!(stored.questions[0].text, "Why?");
+        });
     }
 
     #[test]
     fn a_malformed_notes_file_warns_and_starts_fresh_like_before() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let mut app = sidecar_app(&tmp);
-        let er_dir = app.tab().er_dir();
-        let path = format!("{er_dir}/notes.json");
-        std::fs::write(&path, "{ not json").unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = sidecar_app(&tmp);
+            let er_dir = app.tab().er_dir();
+            let path = format!("{er_dir}/notes.json");
+            std::fs::write(&path, "{ not json").unwrap();
 
-        submit(&mut app, "Do this", crate::ai::CommentType::Note);
+            submit(&mut app, "Do this", crate::ai::CommentType::Note);
 
-        let message = app
-            .notification
-            .as_ref()
-            .expect("a notification")
-            .message
-            .clone();
-        assert!(
-            message.contains("invalid JSON — starting fresh"),
-            "{message}"
-        );
-        let stored: crate::ai::ErNotes =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(stored.notes.len(), 1, "the corrupt file is replaced");
-        assert_eq!(stored.notes[0].text, "Do this");
-        std::env::remove_var("ER_STORAGE_ROOT");
+            let message = app
+                .notification
+                .as_ref()
+                .expect("a notification")
+                .message
+                .clone();
+            assert!(
+                message.contains("invalid JSON — starting fresh"),
+                "{message}"
+            );
+            let stored: crate::ai::ErNotes =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(stored.notes.len(), 1, "the corrupt file is replaced");
+            assert_eq!(stored.notes[0].text, "Do this");
+        });
     }
 
     #[test]
     fn a_malformed_github_comments_file_warns_and_starts_fresh_like_before() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let mut app = sidecar_app(&tmp);
-        let er_dir = app.tab().github_comments_dir();
-        let path = format!("{er_dir}/github-comments.json");
-        std::fs::create_dir_all(&er_dir).unwrap();
-        std::fs::write(&path, "{ not json").unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = sidecar_app(&tmp);
+            let er_dir = app.tab().github_comments_dir();
+            let path = format!("{er_dir}/github-comments.json");
+            std::fs::create_dir_all(&er_dir).unwrap();
+            std::fs::write(&path, "{ not json").unwrap();
 
-        submit(&mut app, "Comment", crate::ai::CommentType::GitHubComment);
+            submit(&mut app, "Comment", crate::ai::CommentType::GitHubComment);
 
-        let message = app
-            .notification
-            .as_ref()
-            .expect("a notification")
-            .message
-            .clone();
-        assert!(
-            message.contains("invalid JSON — starting fresh"),
-            "{message}"
-        );
-        let stored: crate::ai::ErGithubComments =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(stored.comments.len(), 1, "the corrupt file is replaced");
-        assert_eq!(stored.comments[0].comment, "Comment");
-        std::env::remove_var("ER_STORAGE_ROOT");
+            let message = app
+                .notification
+                .as_ref()
+                .expect("a notification")
+                .message
+                .clone();
+            assert!(
+                message.contains("invalid JSON — starting fresh"),
+                "{message}"
+            );
+            let stored: crate::ai::ErGithubComments =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(stored.comments.len(), 1, "the corrupt file is replaced");
+            assert_eq!(stored.comments[0].comment, "Comment");
+        });
     }
 
     #[test]
     fn an_edit_of_a_missing_file_writes_nothing() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = App::new_for_test(vec![]);
-        app.tab_mut().er_root =
-            crate::paths::ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
-        let er_dir = app.tab().er_dir();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            app.tab_mut().er_root = crate::paths::ErRoot::managed(
+                tmp.path().join(".er").to_string_lossy().into_owned(),
+            );
+            let er_dir = app.tab().er_dir();
 
-        assert!(app.update_comment_text("q-1", "edited").is_err());
-        assert!(
-            !std::path::Path::new(&er_dir)
-                .join("questions.json")
-                .exists(),
-            "a missing file must not be created"
-        );
+            assert!(app.update_comment_text("q-1", "edited").is_err());
+            assert!(
+                !std::path::Path::new(&er_dir)
+                    .join("questions.json")
+                    .exists(),
+                "a missing file must not be created"
+            );
+        });
     }
 
     #[test]
     fn a_delete_of_a_corrupt_notes_file_writes_nothing() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = App::new_for_test(vec![]);
-        app.tab_mut().er_root =
-            crate::paths::ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
-        let er_dir = app.tab().er_dir();
-        std::fs::create_dir_all(&er_dir).unwrap();
-        let path = std::path::Path::new(&er_dir).join("notes.json");
-        std::fs::write(&path, "{ not json").unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            app.tab_mut().er_root = crate::paths::ErRoot::managed(
+                tmp.path().join(".er").to_string_lossy().into_owned(),
+            );
+            let er_dir = app.tab().er_dir();
+            std::fs::create_dir_all(&er_dir).unwrap();
+            let path = std::path::Path::new(&er_dir).join("notes.json");
+            std::fs::write(&path, "{ not json").unwrap();
 
-        assert!(app.confirm_delete_comment("n-1").is_err());
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "{ not json",
-            "the corrupt file is not overwritten with a fresh payload"
-        );
+            assert!(app.confirm_delete_comment("n-1").is_err());
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "{ not json",
+                "the corrupt file is not overwritten with a fresh payload"
+            );
+        });
     }
 
     #[test]
     fn a_delete_of_a_missing_file_writes_nothing() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = App::new_for_test(vec![]);
-        app.tab_mut().er_root =
-            crate::paths::ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
-        let er_dir = app.tab().er_dir();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            app.tab_mut().er_root = crate::paths::ErRoot::managed(
+                tmp.path().join(".er").to_string_lossy().into_owned(),
+            );
+            let er_dir = app.tab().er_dir();
 
-        assert!(app.confirm_delete_comment("q-1").is_err());
-        assert!(
-            !std::path::Path::new(&er_dir)
-                .join("questions.json")
-                .exists(),
-            "a missing file must not be created"
-        );
+            assert!(app.confirm_delete_comment("q-1").is_err());
+            assert!(
+                !std::path::Path::new(&er_dir)
+                    .join("questions.json")
+                    .exists(),
+                "a missing file must not be created"
+            );
+        });
     }
 }
 
@@ -6505,38 +6537,42 @@ mod checklist_toggle_tests {
     #[test]
     fn toggling_by_index_persists_and_round_trips() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut app = app_with_checklist(&tmp);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = app_with_checklist(&tmp);
 
-        assert_eq!(app.toggle_checklist_item_at(0).unwrap(), Some(true));
-        assert!(item(&app, 0).checked, "in-memory state follows the toggle");
-        assert!(
-            item(&app, 1).checked,
-            "the neighbouring item keeps the state the fixture gave it"
-        );
-        assert!(
-            on_disk(&tmp).items[0].checked,
-            "the toggle was persisted, so the other front end reads it on its next poll"
-        );
+            assert_eq!(app.toggle_checklist_item_at(0).unwrap(), Some(true));
+            assert!(item(&app, 0).checked, "in-memory state follows the toggle");
+            assert!(
+                item(&app, 1).checked,
+                "the neighbouring item keeps the state the fixture gave it"
+            );
+            assert!(
+                on_disk(&tmp).items[0].checked,
+                "the toggle was persisted, so the other front end reads it on its next poll"
+            );
 
-        // Toggling the same index back must land on false on both sides — the
-        // state the desktop reads in its next snapshot comes from this file.
-        assert_eq!(app.toggle_checklist_item_at(0).unwrap(), Some(false));
-        assert!(!on_disk(&tmp).items[0].checked);
-        assert!(!item(&app, 0).checked);
+            // Toggling the same index back must land on false on both sides — the
+            // state the desktop reads in its next snapshot comes from this file.
+            assert_eq!(app.toggle_checklist_item_at(0).unwrap(), Some(false));
+            assert!(!on_disk(&tmp).items[0].checked);
+            assert!(!item(&app, 0).checked);
+        });
     }
 
     #[test]
     fn an_index_past_the_end_toggles_nothing_and_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut app = app_with_checklist(&tmp);
-        let before = std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = app_with_checklist(&tmp);
+            let before = std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap();
 
-        assert_eq!(app.toggle_checklist_item_at(9).unwrap(), None);
-        assert!(!item(&app, 0).checked && item(&app, 1).checked);
-        assert_eq!(
-            std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap(),
-            before
-        );
+            assert_eq!(app.toggle_checklist_item_at(9).unwrap(), None);
+            assert!(!item(&app, 0).checked && item(&app, 1).checked);
+            assert_eq!(
+                std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap(),
+                before
+            );
+        });
     }
 
     #[test]
@@ -6555,21 +6591,23 @@ mod checklist_toggle_tests {
     #[test]
     fn the_tui_wrapper_still_requires_checklist_focus() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut app = app_with_checklist(&tmp);
-        app.tab_mut().review_cursor = 0;
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = app_with_checklist(&tmp);
+            app.tab_mut().review_cursor = 0;
 
-        app.tab_mut().review_focus = ReviewFocus::Files;
-        app.review_toggle_checklist().unwrap();
-        assert!(
-            !item(&app, 0).checked,
-            "a toggle while the file column has focus must not reach the checklist"
-        );
-        assert!(!on_disk(&tmp).items[0].checked);
+            app.tab_mut().review_focus = ReviewFocus::Files;
+            app.review_toggle_checklist().unwrap();
+            assert!(
+                !item(&app, 0).checked,
+                "a toggle while the file column has focus must not reach the checklist"
+            );
+            assert!(!on_disk(&tmp).items[0].checked);
 
-        app.tab_mut().review_focus = ReviewFocus::Checklist;
-        app.review_toggle_checklist().unwrap();
-        assert!(item(&app, 0).checked, "focused, it toggles the cursor item");
-        assert!(on_disk(&tmp).items[0].checked);
+            app.tab_mut().review_focus = ReviewFocus::Checklist;
+            app.review_toggle_checklist().unwrap();
+            assert!(item(&app, 0).checked, "focused, it toggles the cursor item");
+            assert!(on_disk(&tmp).items[0].checked);
+        });
     }
 }
 
@@ -6703,23 +6741,25 @@ mod github_handle_tests {
     #[test]
     fn a_failed_comment_edit_reaches_the_caller() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mut app, repo_root) = app_with_github_comments(&tmp);
-        let github = Arc::new(FakeGitHub::default().with_update_review_comment(Err(
-            GhError::Forbidden {
-                message: "nope".into(),
-            },
-        )));
-        app.ports.github = github.clone();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let (mut app, repo_root) = app_with_github_comments(&tmp);
+            let github = Arc::new(FakeGitHub::default().with_update_review_comment(Err(
+                GhError::Forbidden {
+                    message: "nope".into(),
+                },
+            )));
+            app.ports.github = github.clone();
 
-        let error = app.update_comment_text("c-1", "new").unwrap_err();
-        assert_eq!(error.to_string(), "Failed to update comment: nope");
-        assert_eq!(
-            github.calls(),
-            vec![format!(
-                "update_review_comment(owner=\"acme\", repo=\"widgets\", comment_id=42, \
-                 body=\"new\", repo_root={repo_root:?})"
-            )]
-        );
+            let error = app.update_comment_text("c-1", "new").unwrap_err();
+            assert_eq!(error.to_string(), "Failed to update comment: nope");
+            assert_eq!(
+                github.calls(),
+                vec![format!(
+                    "update_review_comment(owner=\"acme\", repo=\"widgets\", comment_id=42, \
+                     body=\"new\", repo_root={repo_root:?})"
+                )]
+            );
+        });
     }
 
     #[test]

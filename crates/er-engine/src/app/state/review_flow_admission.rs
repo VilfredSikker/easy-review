@@ -171,13 +171,6 @@ mod tests {
         std::fs::write(run_dir.join("run.json"), serde_json::to_vec(&run).unwrap()).unwrap();
     }
 
-    fn temp_bucket(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "er-review-flow-admission-{label}-{}",
-            std::process::id()
-        ))
-    }
-
     #[test]
     fn review_flow_admission_same_bucket_tabs_share_lease() {
         let mut app = app();
@@ -240,26 +233,24 @@ mod tests {
 
     #[test]
     fn review_flow_admission_persisted_running_arena_blocks_acquire() {
-        let bucket = temp_bucket("persisted-running");
-        let _ = std::fs::remove_dir_all(&bucket);
-        persist_arena_status(&bucket, "running", "running");
+        let tmp = tempfile::tempdir().unwrap();
+        let bucket = tmp.path();
+        persist_arena_status(bucket, "running", "running");
         let mut app = app();
         assert!(app
             .acquire_review_flow_lease(bucket.to_str().unwrap())
             .is_err());
-        std::fs::remove_dir_all(bucket).unwrap();
     }
 
     #[test]
     fn review_flow_admission_persisted_completed_arena_allows_acquire() {
-        let bucket = temp_bucket("persisted-complete");
-        let _ = std::fs::remove_dir_all(&bucket);
-        persist_arena_status(&bucket, "complete", "complete");
+        let tmp = tempfile::tempdir().unwrap();
+        let bucket = tmp.path();
+        persist_arena_status(bucket, "complete", "complete");
         let mut app = app();
         assert!(app
             .acquire_review_flow_lease(bucket.to_str().unwrap())
             .is_ok());
-        std::fs::remove_dir_all(bucket).unwrap();
     }
 
     #[test]

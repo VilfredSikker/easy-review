@@ -239,7 +239,6 @@ pub fn load_valid_cache(provider_id: &str, command: &[String]) -> Option<ModelCa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::STORAGE_TEST_ENV_LOCK;
     use tempfile::TempDir;
 
     #[test]
@@ -311,33 +310,28 @@ mod tests {
 
     #[test]
     fn cache_roundtrip_and_command_mismatch() {
-        let _guard = STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let cmd = vec!["agent".into(), "--list-models".into()];
+            let cache = ModelCache {
+                version: 1,
+                command: cmd.clone(),
+                fetched_at: crate::sync::chrono_now(),
+                fetched_at_unix: unix_now(),
+                models: vec![DiscoveredModel {
+                    id: "m1".into(),
+                    label: "M1".into(),
+                    ..Default::default()
+                }],
+            };
+            save_cache("cursor", &cache).unwrap();
+            let loaded = load_valid_cache("cursor", &cmd).unwrap();
+            assert!(cache_is_fresh(&loaded));
+            assert_eq!(loaded.models.len(), 1);
 
-        let cmd = vec!["agent".into(), "--list-models".into()];
-        let cache = ModelCache {
-            version: 1,
-            command: cmd.clone(),
-            fetched_at: crate::sync::chrono_now(),
-            fetched_at_unix: unix_now(),
-            models: vec![DiscoveredModel {
-                id: "m1".into(),
-                label: "M1".into(),
-                ..Default::default()
-            }],
-        };
-        save_cache("cursor", &cache).unwrap();
-        let loaded = load_valid_cache("cursor", &cmd).unwrap();
-        assert!(cache_is_fresh(&loaded));
-        assert_eq!(loaded.models.len(), 1);
-
-        let other = vec!["agent".into(), "--other".into()];
-        assert!(load_valid_cache("cursor", &other).is_none());
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            let other = vec!["agent".into(), "--other".into()];
+            assert!(load_valid_cache("cursor", &other).is_none());
+        });
     }
 
     #[test]
@@ -357,39 +351,34 @@ mod tests {
 
     #[test]
     fn ttl_expired_cache_still_served_but_not_fresh() {
-        let _guard = STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let cmd = vec!["agent".into(), "--list-models".into()];
+            let expired = unix_now().saturating_sub(MODEL_CACHE_TTL.as_secs() + 60);
+            let cache = ModelCache {
+                version: 1,
+                command: cmd.clone(),
+                fetched_at: "2020-01-01T00:00:00Z".into(),
+                fetched_at_unix: expired,
+                models: vec![DiscoveredModel {
+                    id: "stale-m".into(),
+                    label: "Stale".into(),
+                    ..Default::default()
+                }],
+            };
+            save_cache("cursor", &cache).unwrap();
 
-        let cmd = vec!["agent".into(), "--list-models".into()];
-        let expired = unix_now().saturating_sub(MODEL_CACHE_TTL.as_secs() + 60);
-        let cache = ModelCache {
-            version: 1,
-            command: cmd.clone(),
-            fetched_at: "2020-01-01T00:00:00Z".into(),
-            fetched_at_unix: expired,
-            models: vec![DiscoveredModel {
-                id: "stale-m".into(),
-                label: "Stale".into(),
-                ..Default::default()
-            }],
-        };
-        save_cache("cursor", &cache).unwrap();
+            // Command still matches → stale-while-revalidate serves the entry.
+            let loaded = load_valid_cache("cursor", &cmd).expect("stale cache still loadable");
+            assert!(!cache_is_fresh(&loaded));
+            assert_eq!(loaded.models[0].id, "stale-m");
 
-        // Command still matches → stale-while-revalidate serves the entry.
-        let loaded = load_valid_cache("cursor", &cmd).expect("stale cache still loadable");
-        assert!(!cache_is_fresh(&loaded));
-        assert_eq!(loaded.models[0].id, "stale-m");
-
-        // Zero unix timestamp is never fresh.
-        let no_unix = ModelCache {
-            fetched_at_unix: 0,
-            ..cache
-        };
-        assert!(!cache_is_fresh(&no_unix));
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            // Zero unix timestamp is never fresh.
+            let no_unix = ModelCache {
+                fetched_at_unix: 0,
+                ..cache
+            };
+            assert!(!cache_is_fresh(&no_unix));
+        });
     }
 }

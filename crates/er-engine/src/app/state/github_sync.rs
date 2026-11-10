@@ -250,49 +250,51 @@ mod tests {
     #[test]
     fn the_tui_sync_keeps_the_checks_refresh() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut app = App::new_for_test(vec![]);
-        {
-            let tab = app.tab_mut();
-            tab.repo_root = tmp.path().to_string_lossy().into_owned();
-            tab.er_root = crate::paths::ErRoot::managed(
-                tmp.path().join(".er").to_string_lossy().into_owned(),
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            {
+                let tab = app.tab_mut();
+                tab.repo_root = tmp.path().to_string_lossy().into_owned();
+                tab.er_root = crate::paths::ErRoot::managed(
+                    tmp.path().join(".er").to_string_lossy().into_owned(),
+                );
+                tab.pr_number = Some(7);
+            }
+            let github = Arc::new(
+                FakeGitHub::default()
+                    .with_get_repo_info(Ok(("acme".into(), "widgets".into())))
+                    .with_fetch_pr_comment_bundle(Ok(er_github::PrCommentBundle {
+                        comments: Vec::new(),
+                        threads: std::collections::HashMap::new(),
+                    }))
+                    .with_overview(Ok(Some(er_github::PrOverviewData {
+                        number: 7,
+                        title: "T".into(),
+                        body: String::new(),
+                        state: "OPEN".into(),
+                        author: "a".into(),
+                        url: "u".into(),
+                        base_branch: "main".into(),
+                        head_branch: "f".into(),
+                        checks: Vec::new(),
+                        reviewers: Vec::new(),
+                    }))),
             );
-            tab.pr_number = Some(7);
-        }
-        let github = Arc::new(
-            FakeGitHub::default()
-                .with_get_repo_info(Ok(("acme".into(), "widgets".into())))
-                .with_fetch_pr_comment_bundle(Ok(er_github::PrCommentBundle {
-                    comments: Vec::new(),
-                    threads: std::collections::HashMap::new(),
-                }))
-                .with_overview(Ok(Some(er_github::PrOverviewData {
-                    number: 7,
-                    title: "T".into(),
-                    body: String::new(),
-                    state: "OPEN".into(),
-                    author: "a".into(),
-                    url: "u".into(),
-                    base_branch: "main".into(),
-                    head_branch: "f".into(),
-                    checks: Vec::new(),
-                    reviewers: Vec::new(),
-                }))),
-        );
-        app.ports.github = github.clone();
+            app.ports.github = github.clone();
 
-        app.sync_github_comments().unwrap();
+            app.sync_github_comments().unwrap();
 
-        let calls = github.calls();
-        assert!(
-            calls.iter().any(|call| call.starts_with("overview(")),
-            "the manual TUI sync refreshes CI checks: {calls:?}"
-        );
-        assert!(
-            !calls
-                .iter()
-                .any(|call| call.starts_with("overview_no_checks")),
-            "the manual TUI sync must not use the checks-free variant: {calls:?}"
-        );
+            let calls = github.calls();
+            assert!(
+                calls.iter().any(|call| call.starts_with("overview(")),
+                "the manual TUI sync refreshes CI checks: {calls:?}"
+            );
+            assert!(
+                !calls
+                    .iter()
+                    .any(|call| call.starts_with("overview_no_checks")),
+                "the manual TUI sync must not use the checks-free variant: {calls:?}"
+            );
+        });
     }
 }

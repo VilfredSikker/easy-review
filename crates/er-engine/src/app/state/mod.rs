@@ -9860,35 +9860,28 @@ mod tests {
 
     #[test]
     fn placeholder_tab_stores_under_the_storage_root_not_the_filesystem_root() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let storage = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", storage.path());
-        let er_dir = TabState::new_placeholder(Ports::for_test()).er_dir();
-        std::env::remove_var("ER_STORAGE_ROOT");
-
-        assert_eq!(er_dir, storage.path().join("unresolved").to_string_lossy());
+        crate::storage::with_test_storage_root(storage.path(), || {
+            let er_dir = TabState::new_placeholder(Ports::for_test()).er_dir();
+            assert_eq!(er_dir, storage.path().join("unresolved").to_string_lossy());
+        });
     }
 
     #[test]
     fn unresolved_tabs_do_not_share_a_directory() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let storage = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", storage.path());
-        let a = ErRoot::unresolved("/repo/a", &*crate::ports::Ports::for_test().git).er_dir();
-        let b = ErRoot::unresolved("/repo/b", &*crate::ports::Ports::for_test().git).er_dir();
-        std::env::remove_var("ER_STORAGE_ROOT");
+        crate::storage::with_test_storage_root(storage.path(), || {
+            let a = ErRoot::unresolved("/repo/a", &*crate::ports::Ports::for_test().git).er_dir();
+            let b = ErRoot::unresolved("/repo/b", &*crate::ports::Ports::for_test().git).er_dir();
 
-        assert_ne!(a, b);
-        let prefix = storage.path().join("unresolved");
-        let prefix = prefix.to_string_lossy();
-        assert!(a.starts_with(&*prefix), "not under unresolved: {a}");
-        assert!(b.starts_with(&*prefix), "not under unresolved: {b}");
-        assert!(!a.starts_with("/repo"), "writes inside a repo: {a}");
-        assert!(!b.starts_with("/repo"), "writes inside a repo: {b}");
+            assert_ne!(a, b);
+            let prefix = storage.path().join("unresolved");
+            let prefix = prefix.to_string_lossy();
+            assert!(a.starts_with(&*prefix), "not under unresolved: {a}");
+            assert!(b.starts_with(&*prefix), "not under unresolved: {b}");
+            assert!(!a.starts_with("/repo"), "writes inside a repo: {a}");
+            assert!(!b.starts_with("/repo"), "writes inside a repo: {b}");
+        });
     }
 
     #[test]
@@ -10296,28 +10289,30 @@ mod tests {
         // diffs over 200 KB go lazy.
         let dir = init_repo_with_unstaged_change();
         let root = dir.path().to_string_lossy().to_string();
-        let mut tab = TabState::new(root, Ports::cli()).expect("tab for the temp repo");
-        tab.mode = DiffMode::Unstaged;
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut tab = TabState::new(root, Ports::cli()).expect("tab for the temp repo");
+            tab.mode = DiffMode::Unstaged;
 
-        tab.refresh_diff().expect("refresh runs");
+            tab.refresh_diff().expect("refresh runs");
 
-        assert!(
-            !tab.lazy_mode,
-            "a one-line diff must take the eager branch this test is about"
-        );
-        let raw = tab
-            .raw_diff
-            .clone()
-            .expect("eager refresh must retain the raw diff");
-        let hash = tab.per_file_hash("a.txt");
-        assert!(
-            !hash.is_empty(),
-            "an eager refresh must let a later mark resolve a real hash"
-        );
-        assert_eq!(
-            hash,
-            crate::ai::compute_per_file_hash(&raw, "a.txt").unwrap()
-        );
+            assert!(
+                !tab.lazy_mode,
+                "a one-line diff must take the eager branch this test is about"
+            );
+            let raw = tab
+                .raw_diff
+                .clone()
+                .expect("eager refresh must retain the raw diff");
+            let hash = tab.per_file_hash("a.txt");
+            assert!(
+                !hash.is_empty(),
+                "an eager refresh must let a later mark resolve a real hash"
+            );
+            assert_eq!(
+                hash,
+                crate::ai::compute_per_file_hash(&raw, "a.txt").unwrap()
+            );
+        });
     }
 
     /// A repo with `main` and a `feature` branch one commit ahead.
@@ -10354,45 +10349,47 @@ mod tests {
         // findings rendering as current against a diff they no longer match.
         let dir = init_repo_with_a_feature_branch();
         let root = dir.path().to_string_lossy().to_string();
-        let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
-        tab.local_branch_view = Some("feature".to_string());
-        tab.local_branch_checkout_root = None;
-        tab.base_branch = "main".to_string();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
+            tab.local_branch_view = Some("feature".to_string());
+            tab.local_branch_checkout_root = None;
+            tab.base_branch = "main".to_string();
 
-        tab.refresh_diff().expect("full refresh");
-        let before = tab.branch_diff_hash.clone();
-        assert!(!before.is_empty(), "a full refresh sets a real hash");
+            tab.refresh_diff().expect("full refresh");
+            let before = tab.branch_diff_hash.clone();
+            assert!(!before.is_empty(), "a full refresh sets a real hash");
 
-        // A commit the app knows nothing about: nothing calls refresh_diff.
-        // It has to change the *diff*, so an empty commit will not do -- the
-        // branch diff would be identical and the hash rightly unchanged.
-        std::fs::write(dir.path().join("b.txt"), "new work\n").unwrap();
-        for args in [
-            vec!["checkout", "-q", "feature"],
-            vec!["add", "b.txt"],
-            vec!["commit", "-qm", "from a terminal"],
-        ] {
-            std::process::Command::new("git")
-                .args(&args)
-                .current_dir(&root)
-                .output()
-                .unwrap();
-        }
+            // A commit the app knows nothing about: nothing calls refresh_diff.
+            // It has to change the *diff*, so an empty commit will not do -- the
+            // branch diff would be identical and the hash rightly unchanged.
+            std::fs::write(dir.path().join("b.txt"), "new work\n").unwrap();
+            for args in [
+                vec!["checkout", "-q", "feature"],
+                vec!["add", "b.txt"],
+                vec!["commit", "-qm", "from a terminal"],
+            ] {
+                std::process::Command::new("git")
+                    .args(&args)
+                    .current_dir(&root)
+                    .output()
+                    .unwrap();
+            }
 
-        tab.refresh_diff_quick_with_unmark().expect("quick refresh");
-        let after = tab.branch_diff_hash.clone();
-        assert_ne!(
-            before, after,
-            "the quick refresh must re-derive the branch hash the diff moved"
-        );
+            tab.refresh_diff_quick_with_unmark().expect("quick refresh");
+            let after = tab.branch_diff_hash.clone();
+            assert_ne!(
+                before, after,
+                "the quick refresh must re-derive the branch hash the diff moved"
+            );
 
-        // And a second quick refresh with nothing moved leaves it alone, so
-        // the fast-hash guard does not churn the value it was meant to hold.
-        tab.refresh_diff_quick_with_unmark().expect("quick refresh");
-        assert_eq!(
-            after, tab.branch_diff_hash,
-            "an unchanged branch must not re-derive a different hash"
-        );
+            // And a second quick refresh with nothing moved leaves it alone, so
+            // the fast-hash guard does not churn the value it was meant to hold.
+            tab.refresh_diff_quick_with_unmark().expect("quick refresh");
+            assert_eq!(
+                after, tab.branch_diff_hash,
+                "an unchanged branch must not re-derive a different hash"
+            );
+        });
     }
 
     /// Commit `name` to `feature` the way a terminal would: nothing in the app
@@ -10430,47 +10427,43 @@ mod tests {
 
     #[test]
     fn a_tour_round_trip_reuses_the_loaded_diff() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let storage = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", storage.path());
-        let dir = init_repo_with_a_feature_branch();
-        let root = dir.path().to_string_lossy().to_string();
-        let mut tab = loaded_feature_view(&root);
-        assert_eq!(file_paths(&tab), vec!["a.txt"]);
+        crate::storage::with_test_storage_root(storage.path(), || {
+            let dir = init_repo_with_a_feature_branch();
+            let root = dir.path().to_string_lossy().to_string();
+            let mut tab = loaded_feature_view(&root);
+            assert_eq!(file_paths(&tab), vec!["a.txt"]);
 
-        // A commit only a re-diff could see: if either switch below ran
-        // `git diff`, b.txt would appear.
-        commit_to_feature_behind_the_apps_back(&root, "b.txt");
+            // A commit only a re-diff could see: if either switch below ran
+            // `git diff`, b.txt would appear.
+            commit_to_feature_behind_the_apps_back(&root, "b.txt");
 
-        tab.set_mode(DiffMode::Tour);
-        assert_eq!(tab.mode, DiffMode::Tour);
-        assert_eq!(
-            file_paths(&tab),
-            vec!["a.txt"],
-            "entering the Tour re-ran the diff"
-        );
+            tab.set_mode(DiffMode::Tour);
+            assert_eq!(tab.mode, DiffMode::Tour);
+            assert_eq!(
+                file_paths(&tab),
+                vec!["a.txt"],
+                "entering the Tour re-ran the diff"
+            );
 
-        tab.set_mode(DiffMode::Branch);
-        assert_eq!(tab.mode, DiffMode::Branch);
-        assert_eq!(
-            file_paths(&tab),
-            vec!["a.txt"],
-            "leaving the Tour re-ran the diff"
-        );
+            tab.set_mode(DiffMode::Branch);
+            assert_eq!(tab.mode, DiffMode::Branch);
+            assert_eq!(
+                file_paths(&tab),
+                vec!["a.txt"],
+                "leaving the Tour re-ran the diff"
+            );
 
-        // The watcher's refresh is what brings the commit in, in either view,
-        // and the round trip after it reuses the refreshed diff.
-        tab.set_mode(DiffMode::Tour);
-        tab.refresh_diff_quick_with_unmark()
-            .expect("watcher refresh");
-        assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt"]);
-        commit_to_feature_behind_the_apps_back(&root, "c.txt");
-        tab.set_mode(DiffMode::Branch);
-        assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt"]);
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            // The watcher's refresh is what brings the commit in, in either view,
+            // and the round trip after it reuses the refreshed diff.
+            tab.set_mode(DiffMode::Tour);
+            tab.refresh_diff_quick_with_unmark()
+                .expect("watcher refresh");
+            assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt"]);
+            commit_to_feature_behind_the_apps_back(&root, "c.txt");
+            tab.set_mode(DiffMode::Branch);
+            assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt"]);
+        });
     }
 
     #[test]
@@ -10480,86 +10473,78 @@ mod tests {
         // back to Branch reuses it, so the hash AI staleness compares against
         // must already describe that diff -- or findings render as current
         // against a diff they no longer match.
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let storage = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", storage.path());
-        let dir = init_repo_with_a_feature_branch();
-        let root = dir.path().to_string_lossy().to_string();
-        std::process::Command::new("git")
-            .args(["checkout", "-q", "feature"])
-            .current_dir(&root)
-            .output()
-            .unwrap();
-        let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
-        tab.base_branch = "main".to_string();
-        tab.mode = DiffMode::Branch;
-        tab.refresh_diff().expect("full refresh");
-        tab.set_mode(DiffMode::Tour);
-
-        std::fs::write(dir.path().join("b.txt"), "new work\n").unwrap();
-        for args in [
-            vec!["add", "b.txt"],
-            vec!["commit", "-qm", "from a terminal"],
-        ] {
+        crate::storage::with_test_storage_root(storage.path(), || {
+            let dir = init_repo_with_a_feature_branch();
+            let root = dir.path().to_string_lossy().to_string();
             std::process::Command::new("git")
-                .args(&args)
+                .args(["checkout", "-q", "feature"])
                 .current_dir(&root)
                 .output()
                 .unwrap();
-        }
-        tab.refresh_diff_quick_with_unmark()
-            .expect("watcher refresh");
-        assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt"]);
+            let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
+            tab.base_branch = "main".to_string();
+            tab.mode = DiffMode::Branch;
+            tab.refresh_diff().expect("full refresh");
+            tab.set_mode(DiffMode::Tour);
 
-        tab.set_mode(DiffMode::Branch);
-        let raw = tab.raw_diff.clone().expect("the reused diff");
-        assert_eq!(
-            tab.branch_diff_hash,
-            ai::compute_diff_hash(&raw),
-            "the branch hash must describe the diff the Branch view reuses"
-        );
+            std::fs::write(dir.path().join("b.txt"), "new work\n").unwrap();
+            for args in [
+                vec!["add", "b.txt"],
+                vec!["commit", "-qm", "from a terminal"],
+            ] {
+                std::process::Command::new("git")
+                    .args(&args)
+                    .current_dir(&root)
+                    .output()
+                    .unwrap();
+            }
+            tab.refresh_diff_quick_with_unmark()
+                .expect("watcher refresh");
+            assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt"]);
 
-        std::env::remove_var("ER_STORAGE_ROOT");
+            tab.set_mode(DiffMode::Branch);
+            let raw = tab.raw_diff.clone().expect("the reused diff");
+            assert_eq!(
+                tab.branch_diff_hash,
+                ai::compute_diff_hash(&raw),
+                "the branch hash must describe the diff the Branch view reuses"
+            );
+        });
     }
 
     #[test]
     fn a_tour_round_trip_refreshes_when_the_source_moved() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let storage = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", storage.path());
-        let dir = init_repo_with_a_feature_branch();
-        let root = dir.path().to_string_lossy().to_string();
-        let mut tab = loaded_feature_view(&root);
-        tab.set_mode(DiffMode::Tour);
+        crate::storage::with_test_storage_root(storage.path(), || {
+            let dir = init_repo_with_a_feature_branch();
+            let root = dir.path().to_string_lossy().to_string();
+            let mut tab = loaded_feature_view(&root);
+            tab.set_mode(DiffMode::Tour);
 
-        commit_to_feature_behind_the_apps_back(&root, "b.txt");
-        // A base change that skipped its own refresh: the loaded diff no
-        // longer answers for the refs the next refresh would read.
-        std::process::Command::new("git")
-            .args(["branch", "main2", "main"])
-            .current_dir(&root)
-            .output()
-            .unwrap();
-        tab.base_branch = "main2".to_string();
+            commit_to_feature_behind_the_apps_back(&root, "b.txt");
+            // A base change that skipped its own refresh: the loaded diff no
+            // longer answers for the refs the next refresh would read.
+            std::process::Command::new("git")
+                .args(["branch", "main2", "main"])
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            tab.base_branch = "main2".to_string();
 
-        tab.set_mode(DiffMode::Branch);
-        assert_eq!(
-            file_paths(&tab),
-            vec!["a.txt", "b.txt"],
-            "a moved diff source must be re-fetched on the switch"
-        );
+            tab.set_mode(DiffMode::Branch);
+            assert_eq!(
+                file_paths(&tab),
+                vec!["a.txt", "b.txt"],
+                "a moved diff source must be re-fetched on the switch"
+            );
 
-        // A refresh that failed halfway vouches for nothing either.
-        commit_to_feature_behind_the_apps_back(&root, "c.txt");
-        tab.loaded_diff_source = None;
-        tab.set_mode(DiffMode::Tour);
-        assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt", "c.txt"]);
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            // A refresh that failed halfway vouches for nothing either.
+            commit_to_feature_behind_the_apps_back(&root, "c.txt");
+            tab.loaded_diff_source = None;
+            tab.set_mode(DiffMode::Tour);
+            assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt", "c.txt"]);
+        });
     }
 
     fn loaded_test_tab(mode: DiffMode, tour_is_pr: bool) -> TabState {
@@ -10625,17 +10610,20 @@ mod tests {
     /// re-fetch refs or the diff when the tour already holds it.
     #[test]
     fn enter_pr_diff_from_a_pr_tour_keeps_the_loaded_diff() {
-        let mut tab = loaded_test_tab(DiffMode::PrDiff, true);
-        tab.pr_number = Some(7);
-        tab.pr_refs_fetched = true;
-        tab.record_loaded_diff_source();
-        tab.mode = DiffMode::Tour;
-        let files_before = file_paths(&tab);
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = loaded_test_tab(DiffMode::PrDiff, true);
+            tab.pr_number = Some(7);
+            tab.pr_refs_fetched = true;
+            tab.record_loaded_diff_source();
+            tab.mode = DiffMode::Tour;
+            let files_before = file_paths(&tab);
 
-        // Any fetch would fail against the nonexistent repo and surface here.
-        tab.enter_pr_diff().expect("no fetch on a reused switch");
-        assert_eq!(tab.mode, DiffMode::PrDiff);
-        assert_eq!(file_paths(&tab), files_before);
+            // Any fetch would fail against the nonexistent repo and surface here.
+            tab.enter_pr_diff().expect("no fetch on a reused switch");
+            assert_eq!(tab.mode, DiffMode::PrDiff);
+            assert_eq!(file_paths(&tab), files_before);
+        });
     }
 
     /// Point `refs/er/pr/<n>/head` at `feature`'s tip, the way a PR head
@@ -10652,143 +10640,141 @@ mod tests {
 
     #[test]
     fn history_from_the_pr_diff_lists_the_pr_heads_commits() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let storage = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        crate::storage::with_test_storage_root(storage.path(), || {
+            let dir = init_repo_with_a_feature_branch();
+            let root = dir.path().to_string_lossy().to_string();
+            let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
+            tab.base_branch = "main".to_string();
+            tab.pr_number = Some(7);
+            tab.pr_head_ref = Some(add_pr_head_ref(&root, 7));
+            tab.pr_refs_fetched = true;
+            tab.mode = DiffMode::PrDiff;
 
-        let dir = init_repo_with_a_feature_branch();
-        let root = dir.path().to_string_lossy().to_string();
-        let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
-        tab.base_branch = "main".to_string();
-        tab.pr_number = Some(7);
-        tab.pr_head_ref = Some(add_pr_head_ref(&root, 7));
-        tab.pr_refs_fetched = true;
-        tab.mode = DiffMode::PrDiff;
+            tab.set_mode(DiffMode::History);
+            let history = tab.history.as_ref().expect("history loaded");
+            let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
+            let files: Vec<&str> = history
+                .commit_files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect();
+            assert_eq!(subjects, ["feature work"], "main..main would list nothing");
+            assert_eq!(files, ["a.txt"]);
+            assert_eq!(tab.history_return_mode, DiffMode::PrDiff);
 
-        tab.set_mode(DiffMode::History);
-        let history = tab.history.as_ref().expect("history loaded");
-        let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
-        let files: Vec<&str> = history
-            .commit_files
-            .iter()
-            .map(|f| f.path.as_str())
-            .collect();
-        assert_eq!(subjects, ["feature work"], "main..main would list nothing");
-        assert_eq!(files, ["a.txt"]);
-        assert_eq!(tab.history_return_mode, DiffMode::PrDiff);
+            let head = std::process::Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&head.stdout).trim(),
+                "main",
+                "History must not check out the PR head"
+            );
 
-        let head = std::process::Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(&root)
-            .output()
-            .unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&head.stdout).trim(),
-            "main",
-            "History must not check out the PR head"
-        );
-
-        tab.exit_history();
-        std::env::remove_var("ER_STORAGE_ROOT");
-        assert_eq!(
-            tab.mode,
-            DiffMode::PrDiff,
-            "All changes returns to the PR diff"
-        );
+            tab.exit_history();
+            assert_eq!(
+                tab.mode,
+                DiffMode::PrDiff,
+                "All changes returns to the PR diff"
+            );
+        });
     }
 
     #[test]
     fn history_from_the_pr_diff_pages_the_pr_head_not_the_checkout() {
         use std::process::Command;
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let storage = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        crate::storage::with_test_storage_root(storage.path(), || {
+            let dir = init_repo_with_a_feature_branch();
+            let root = dir.path().to_string_lossy().to_string();
+            let git = |args: &[&str]| {
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&root)
+                    .output()
+                    .unwrap()
+            };
+            // Base sits at the fork point and the checked-out `main` moves past it,
+            // so `fork..main` lists commits that are not in the PR.
+            git(&["tag", "fork", "main"]);
+            for n in 1..=2 {
+                std::fs::write(dir.path().join("m.txt"), format!("{n}\n")).unwrap();
+                git(&["add", "m.txt"]);
+                git(&["commit", "-qm", &format!("main work {n}")]);
+            }
 
-        let dir = init_repo_with_a_feature_branch();
-        let root = dir.path().to_string_lossy().to_string();
-        let git = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(&root)
-                .output()
-                .unwrap()
-        };
-        // Base sits at the fork point and the checked-out `main` moves past it,
-        // so `fork..main` lists commits that are not in the PR.
-        git(&["tag", "fork", "main"]);
-        for n in 1..=2 {
-            std::fs::write(dir.path().join("m.txt"), format!("{n}\n")).unwrap();
-            git(&["add", "m.txt"]);
-            git(&["commit", "-qm", &format!("main work {n}")]);
-        }
+            let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
+            tab.base_branch = "fork".to_string();
+            tab.pr_number = Some(7);
+            tab.pr_head_ref = Some(add_pr_head_ref(&root, 7));
+            tab.pr_refs_fetched = true;
+            tab.mode = DiffMode::PrDiff;
 
-        let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
-        tab.base_branch = "fork".to_string();
-        tab.pr_number = Some(7);
-        tab.pr_head_ref = Some(add_pr_head_ref(&root, 7));
-        tab.pr_refs_fetched = true;
-        tab.mode = DiffMode::PrDiff;
+            tab.set_mode(DiffMode::History);
+            tab.history_load_more();
 
-        tab.set_mode(DiffMode::History);
-        tab.history_load_more();
-        std::env::remove_var("ER_STORAGE_ROOT");
-
-        let history = tab.history.as_ref().expect("history loaded");
-        let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
-        assert_eq!(
-            subjects,
-            ["feature work"],
-            "no checked-out commits appended"
-        );
-        assert!(history.all_loaded, "the PR head has no more commits");
+            let history = tab.history.as_ref().expect("history loaded");
+            let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
+            assert_eq!(
+                subjects,
+                ["feature work"],
+                "no checked-out commits appended"
+            );
+            assert!(history.all_loaded, "the PR head has no more commits");
+        });
     }
 
     #[test]
     fn history_rebuilds_its_commits_when_entered_from_the_other_view() {
-        let mut tab = make_test_tab(vec![]);
-        tab.pr_number = Some(7);
-        tab.pr_commits = vec![CommitInfo {
-            hash: "abc".to_string(),
-            short_hash: "abc".to_string(),
-            subject: "pr commit".to_string(),
-            author: "a".to_string(),
-            date: String::new(),
-            relative_date: String::new(),
-            file_count: 0,
-            adds: 0,
-            dels: 0,
-            is_merge: false,
-            diffstat_known: false,
-        }];
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = make_test_tab(vec![]);
+            tab.pr_number = Some(7);
+            tab.pr_commits = vec![CommitInfo {
+                hash: "abc".to_string(),
+                short_hash: "abc".to_string(),
+                subject: "pr commit".to_string(),
+                author: "a".to_string(),
+                date: String::new(),
+                relative_date: String::new(),
+                file_count: 0,
+                adds: 0,
+                dels: 0,
+                is_merge: false,
+                diffstat_known: false,
+            }];
 
-        tab.mode = DiffMode::PrDiff;
-        tab.set_mode(DiffMode::History);
-        assert_eq!(tab.history_return_mode, DiffMode::PrDiff);
-        assert_eq!(tab.history.as_ref().unwrap().commits.len(), 1);
+            tab.mode = DiffMode::PrDiff;
+            tab.set_mode(DiffMode::History);
+            assert_eq!(tab.history_return_mode, DiffMode::PrDiff);
+            assert_eq!(tab.history.as_ref().unwrap().commits.len(), 1);
 
-        // From the branch view the PR's list is the wrong source: it must be
-        // rebuilt from the branch log (empty in this repo-less tab).
-        tab.mode = DiffMode::Branch;
-        tab.set_mode(DiffMode::History);
-        assert_eq!(tab.history_return_mode, DiffMode::Branch);
-        assert!(tab.history.as_ref().unwrap().commits.is_empty());
+            // From the branch view the PR's list is the wrong source: it must be
+            // rebuilt from the branch log (empty in this repo-less tab).
+            tab.mode = DiffMode::Branch;
+            tab.set_mode(DiffMode::History);
+            assert_eq!(tab.history_return_mode, DiffMode::Branch);
+            assert!(tab.history.as_ref().unwrap().commits.is_empty());
 
-        tab.exit_history();
-        assert_eq!(tab.mode, DiffMode::Branch);
+            tab.exit_history();
+            assert_eq!(tab.mode, DiffMode::Branch);
+        });
     }
 
     #[test]
     fn history_from_a_pr_scoped_tour_returns_to_the_pr_diff() {
-        let mut tab = make_test_tab(vec![]);
-        tab.pr_number = Some(7);
-        tab.mode = DiffMode::Tour;
-        tab.tour_is_pr = true;
-        tab.set_mode(DiffMode::History);
-        assert_eq!(tab.history_return_mode, DiffMode::PrDiff);
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = make_test_tab(vec![]);
+            tab.pr_number = Some(7);
+            tab.mode = DiffMode::Tour;
+            tab.tour_is_pr = true;
+            tab.set_mode(DiffMode::History);
+            assert_eq!(tab.history_return_mode, DiffMode::PrDiff);
+        });
     }
 
     #[test]
@@ -10802,49 +10788,45 @@ mod tests {
 
     #[test]
     fn sync_counts_only_the_reviewed_marks_it_cleared() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let storage = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        crate::storage::with_test_storage_root(storage.path(), || {
+            let dir = init_repo_with_a_feature_branch();
+            let root = dir.path().to_string_lossy().to_string();
+            let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
+            tab.local_branch_view = Some("feature".to_string());
+            tab.local_branch_checkout_root = None;
+            tab.base_branch = "main".to_string();
+            tab.refresh_diff().expect("full refresh");
 
-        let dir = init_repo_with_a_feature_branch();
-        let root = dir.path().to_string_lossy().to_string();
-        let mut tab = TabState::new(root.clone(), Ports::cli()).expect("tab for the temp repo");
-        tab.local_branch_view = Some("feature".to_string());
-        tab.local_branch_checkout_root = None;
-        tab.base_branch = "main".to_string();
-        tab.refresh_diff().expect("full refresh");
+            let hash = tab.per_file_hash("a.txt");
+            assert!(!hash.is_empty());
+            tab.reviewed.insert("a.txt".to_string(), hash);
 
-        let hash = tab.per_file_hash("a.txt");
-        assert!(!hash.is_empty());
-        tab.reviewed.insert("a.txt".to_string(), hash);
+            // A count an earlier refresh left undrained is not this Sync's.
+            tab.pending_unmark_count = 9;
+            assert_eq!(tab.refetch_and_refresh_diff_counting_cleared().unwrap(), 0);
+            assert!(tab.reviewed.contains_key("a.txt"));
 
-        // A count an earlier refresh left undrained is not this Sync's.
-        tab.pending_unmark_count = 9;
-        assert_eq!(tab.refetch_and_refresh_diff_counting_cleared().unwrap(), 0);
-        assert!(tab.reviewed.contains_key("a.txt"));
-
-        for args in [
-            vec!["checkout", "-q", "feature"],
-            vec!["commit", "-qam", "more"],
-            vec!["checkout", "-q", "main"],
-        ] {
-            if args[1] == "-qam" {
-                std::fs::write(dir.path().join("a.txt"), "base\nfeature\nmore\n").unwrap();
+            for args in [
+                vec!["checkout", "-q", "feature"],
+                vec!["commit", "-qam", "more"],
+                vec!["checkout", "-q", "main"],
+            ] {
+                if args[1] == "-qam" {
+                    std::fs::write(dir.path().join("a.txt"), "base\nfeature\nmore\n").unwrap();
+                }
+                std::process::Command::new("git")
+                    .args(&args)
+                    .current_dir(&root)
+                    .output()
+                    .unwrap();
             }
-            std::process::Command::new("git")
-                .args(&args)
-                .current_dir(&root)
-                .output()
-                .unwrap();
-        }
 
-        let cleared = tab.refetch_and_refresh_diff_counting_cleared();
-        std::env::remove_var("ER_STORAGE_ROOT");
-        assert_eq!(cleared.unwrap(), 1);
-        assert!(tab.reviewed.is_empty());
-        assert_eq!(tab.pending_unmark_count, 0, "the count is drained");
+            let cleared = tab.refetch_and_refresh_diff_counting_cleared();
+            assert_eq!(cleared.unwrap(), 1);
+            assert!(tab.reviewed.is_empty());
+            assert_eq!(tab.pending_unmark_count, 0, "the count is drained");
+        });
     }
 
     fn make_hunk(lines: Vec<DiffLine>) -> DiffHunk {
@@ -10930,87 +10912,92 @@ mod tests {
 
     #[test]
     fn relocate_marks_comment_lost_when_file_is_absent_from_diff() {
-        let mut tab = make_test_tab(vec![make_file("other.rs", vec![], 1, 1)]);
-        tab.diff_hash = "current-hash".to_string();
-        tab.ai.github_comments = Some(ai::ErGithubComments {
-            version: 1,
-            diff_hash: "old-hash".to_string(),
-            github: None,
-            comments: vec![make_gh_comment("missing.rs", 10)],
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = make_test_tab(vec![make_file("other.rs", vec![], 1, 1)]);
+            tab.diff_hash = "current-hash".to_string();
+            tab.ai.github_comments = Some(ai::ErGithubComments {
+                version: 1,
+                diff_hash: "old-hash".to_string(),
+                github: None,
+                comments: vec![make_gh_comment("missing.rs", 10)],
+            });
+
+            tab.relocate_all_comments();
+
+            let c = &tab.ai.github_comments.as_ref().unwrap().comments[0];
+            assert!(c.stale);
+            assert_eq!(c.anchor_status, "lost");
+            assert_eq!(c.relocated_at_hash, "current-hash");
         });
-
-        tab.relocate_all_comments();
-
-        let c = &tab.ai.github_comments.as_ref().unwrap().comments[0];
-        assert!(c.stale);
-        assert_eq!(c.anchor_status, "lost");
-        assert_eq!(c.relocated_at_hash, "current-hash");
     }
 
     #[test]
     fn the_relocation_reapplies_by_id_and_keeps_a_concurrent_reply() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut tab = make_test_tab(vec![make_file("other.rs", vec![], 1, 1)]);
-        tab.er_root = ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
-        tab.repo_root = tmp.path().to_string_lossy().into_owned();
-        tab.diff_hash = "current-hash".to_string();
-        let er_dir = tab.er_dir();
-        std::fs::create_dir_all(&er_dir).unwrap();
-        let path = std::path::Path::new(&er_dir).join("questions.json");
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = make_test_tab(vec![make_file("other.rs", vec![], 1, 1)]);
+            tab.er_root = ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
+            tab.repo_root = tmp.path().to_string_lossy().into_owned();
+            tab.diff_hash = "current-hash".to_string();
+            let er_dir = tab.er_dir();
+            std::fs::create_dir_all(&er_dir).unwrap();
+            let path = std::path::Path::new(&er_dir).join("questions.json");
 
-        let root = ai::PrivateAnnotation {
-            id: "q-root".into(),
-            timestamp: String::new(),
-            file: "missing.rs".into(),
-            hunk_index: Some(0),
-            line_start: Some(10),
-            line_end: None,
-            line_content: String::new(),
-            text: "why".into(),
-            resolved: false,
-            stale: false,
-            context_before: Vec::new(),
-            context_after: Vec::new(),
-            old_line_start: None,
-            side: "RIGHT".into(),
-            hunk_header: String::new(),
-            anchor_status: "original".into(),
-            relocated_at_hash: "old-hash".into(),
-            in_reply_to: None,
-            author: "You".into(),
-            promoted_to: None,
-            finding_ref: None,
-            ai_action: None,
-        };
-        let mut reply = root.clone();
-        reply.id = "q-reply".into();
-        reply.in_reply_to = Some("q-root".into());
-        let loaded = ai::ErQuestions {
-            version: 1,
-            diff_hash: "old-hash".into(),
-            questions: vec![root.clone()],
-        };
-        std::fs::write(&path, serde_json::to_string_pretty(&loaded).unwrap()).unwrap();
-        tab.ai.questions = Some(loaded);
+            let root = ai::PrivateAnnotation {
+                id: "q-root".into(),
+                timestamp: String::new(),
+                file: "missing.rs".into(),
+                hunk_index: Some(0),
+                line_start: Some(10),
+                line_end: None,
+                line_content: String::new(),
+                text: "why".into(),
+                resolved: false,
+                stale: false,
+                context_before: Vec::new(),
+                context_after: Vec::new(),
+                old_line_start: None,
+                side: "RIGHT".into(),
+                hunk_header: String::new(),
+                anchor_status: "original".into(),
+                relocated_at_hash: "old-hash".into(),
+                in_reply_to: None,
+                author: "You".into(),
+                promoted_to: None,
+                finding_ref: None,
+                ai_action: None,
+            };
+            let mut reply = root.clone();
+            reply.id = "q-reply".into();
+            reply.in_reply_to = Some("q-root".into());
+            let loaded = ai::ErQuestions {
+                version: 1,
+                diff_hash: "old-hash".into(),
+                questions: vec![root.clone()],
+            };
+            std::fs::write(&path, serde_json::to_string_pretty(&loaded).unwrap()).unwrap();
+            tab.ai.questions = Some(loaded);
 
-        // Written after the in-memory pass, so a wholesale write would lose it.
-        let with_reply = ai::ErQuestions {
-            version: 1,
-            diff_hash: "old-hash".into(),
-            questions: vec![root, reply],
-        };
-        std::fs::write(&path, serde_json::to_string_pretty(&with_reply).unwrap()).unwrap();
+            // Written after the in-memory pass, so a wholesale write would lose it.
+            let with_reply = ai::ErQuestions {
+                version: 1,
+                diff_hash: "old-hash".into(),
+                questions: vec![root, reply],
+            };
+            std::fs::write(&path, serde_json::to_string_pretty(&with_reply).unwrap()).unwrap();
 
-        tab.relocate_all_comments();
+            tab.relocate_all_comments();
 
-        let after: ai::ErQuestions =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(
-            after.questions.iter().any(|q| q.id == "q-reply"),
-            "the concurrent reply survives"
-        );
-        let root = after.questions.iter().find(|q| q.id == "q-root").unwrap();
-        assert_eq!(root.anchor_status, "lost");
+            let after: ai::ErQuestions =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert!(
+                after.questions.iter().any(|q| q.id == "q-reply"),
+                "the concurrent reply survives"
+            );
+            let root = after.questions.iter().find(|q| q.id == "q-root").unwrap();
+            assert_eq!(root.anchor_status, "lost");
+        });
     }
 
     fn make_local_comment(id: &str) -> ai::GithubComment {
@@ -11043,78 +11030,77 @@ mod tests {
 
     #[test]
     fn the_orphan_migration_merges_into_current() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        for args in [
-            vec!["init", "-b", "main"],
-            vec!["remote", "add", "origin", "git@github.com:acme/widgets.git"],
-        ] {
-            std::process::Command::new("git")
-                .args(&args)
-                .current_dir(tmp.path())
-                .output()
-                .unwrap();
-        }
-        let mut app = App::new_for_test_with_ports(vec![], crate::ports::Ports::cli());
-        {
-            let tab = app.tab_mut();
-            tab.repo_root = tmp.path().to_string_lossy().into_owned();
-            tab.current_branch = "main".to_string();
-            tab.pr_number = Some(7);
-            tab.apply_managed_root();
-        }
-        let er_dir = app.tab().er_dir();
-        let gh_dir = app.tab().github_comments_dir();
-        assert_ne!(er_dir, gh_dir, "a PR tab writes comments in the PR bucket");
-        std::fs::create_dir_all(&er_dir).unwrap();
-        std::fs::create_dir_all(&gh_dir).unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            for args in [
+                vec!["init", "-b", "main"],
+                vec!["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+            ] {
+                std::process::Command::new("git")
+                    .args(&args)
+                    .current_dir(tmp.path())
+                    .output()
+                    .unwrap();
+            }
+            let mut app = App::new_for_test_with_ports(vec![], crate::ports::Ports::cli());
+            {
+                let tab = app.tab_mut();
+                tab.repo_root = tmp.path().to_string_lossy().into_owned();
+                tab.current_branch = "main".to_string();
+                tab.pr_number = Some(7);
+                tab.apply_managed_root();
+            }
+            let er_dir = app.tab().er_dir();
+            let gh_dir = app.tab().github_comments_dir();
+            assert_ne!(er_dir, gh_dir, "a PR tab writes comments in the PR bucket");
+            std::fs::create_dir_all(&er_dir).unwrap();
+            std::fs::create_dir_all(&gh_dir).unwrap();
 
-        let orphan = ai::ErGithubComments {
-            version: 1,
-            diff_hash: "h".into(),
-            github: None,
-            comments: vec![make_local_comment("c-orphan")],
-        };
-        std::fs::write(
-            std::path::Path::new(&er_dir).join("github-comments.json"),
-            serde_json::to_string_pretty(&orphan).unwrap(),
-        )
-        .unwrap();
-        let existing = ai::ErGithubComments {
-            version: 1,
-            diff_hash: "h".into(),
-            github: None,
-            comments: vec![make_local_comment("c-existing")],
-        };
-        std::fs::write(
-            std::path::Path::new(&gh_dir).join("github-comments.json"),
-            serde_json::to_string_pretty(&existing).unwrap(),
-        )
-        .unwrap();
+            let orphan = ai::ErGithubComments {
+                version: 1,
+                diff_hash: "h".into(),
+                github: None,
+                comments: vec![make_local_comment("c-orphan")],
+            };
+            std::fs::write(
+                std::path::Path::new(&er_dir).join("github-comments.json"),
+                serde_json::to_string_pretty(&orphan).unwrap(),
+            )
+            .unwrap();
+            let existing = ai::ErGithubComments {
+                version: 1,
+                diff_hash: "h".into(),
+                github: None,
+                comments: vec![make_local_comment("c-existing")],
+            };
+            std::fs::write(
+                std::path::Path::new(&gh_dir).join("github-comments.json"),
+                serde_json::to_string_pretty(&existing).unwrap(),
+            )
+            .unwrap();
 
-        app.tab_mut().reload_ai_state();
+            app.tab_mut().reload_ai_state();
 
-        let merged: ai::ErGithubComments = serde_json::from_str(
-            &std::fs::read_to_string(std::path::Path::new(&gh_dir).join("github-comments.json"))
+            let merged: ai::ErGithubComments = serde_json::from_str(
+                &std::fs::read_to_string(
+                    std::path::Path::new(&gh_dir).join("github-comments.json"),
+                )
                 .unwrap(),
-        )
-        .unwrap();
-        let ids: Vec<&str> = merged.comments.iter().map(|c| c.id.as_str()).collect();
-        assert!(ids.contains(&"c-orphan"), "orphan migrated: {ids:?}");
-        assert!(
-            ids.contains(&"c-existing"),
-            "a comment already in the PR bucket is kept: {ids:?}"
-        );
-        assert!(
-            !std::path::Path::new(&er_dir)
-                .join("github-comments.json")
-                .exists(),
-            "the orphan file is removed"
-        );
-        std::env::remove_var("ER_STORAGE_ROOT");
+            )
+            .unwrap();
+            let ids: Vec<&str> = merged.comments.iter().map(|c| c.id.as_str()).collect();
+            assert!(ids.contains(&"c-orphan"), "orphan migrated: {ids:?}");
+            assert!(
+                ids.contains(&"c-existing"),
+                "a comment already in the PR bucket is kept: {ids:?}"
+            );
+            assert!(
+                !std::path::Path::new(&er_dir)
+                    .join("github-comments.json")
+                    .exists(),
+                "the orphan file is removed"
+            );
+        });
     }
 
     #[cfg(unix)]
@@ -11123,39 +11109,41 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
-        let er_dir = tmp.path().join("branch");
-        let gh_dir = tmp.path().join("pr");
-        std::fs::create_dir_all(&er_dir).unwrap();
-        std::fs::create_dir_all(&gh_dir).unwrap();
-        let orphan_path = er_dir.join("github-comments.json");
-        let orphan = ai::ErGithubComments {
-            version: 1,
-            diff_hash: "h".into(),
-            github: None,
-            comments: vec![make_local_comment("c-orphan")],
-        };
-        std::fs::write(&orphan_path, serde_json::to_string_pretty(&orphan).unwrap()).unwrap();
-        // The lock can be opened; the temp write cannot be created.
-        std::fs::write(gh_dir.join(".lock"), "").unwrap();
-        let mut perms = std::fs::metadata(&gh_dir).unwrap().permissions();
-        perms.set_mode(0o555);
-        std::fs::set_permissions(&gh_dir, perms).unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let er_dir = tmp.path().join("branch");
+            let gh_dir = tmp.path().join("pr");
+            std::fs::create_dir_all(&er_dir).unwrap();
+            std::fs::create_dir_all(&gh_dir).unwrap();
+            let orphan_path = er_dir.join("github-comments.json");
+            let orphan = ai::ErGithubComments {
+                version: 1,
+                diff_hash: "h".into(),
+                github: None,
+                comments: vec![make_local_comment("c-orphan")],
+            };
+            std::fs::write(&orphan_path, serde_json::to_string_pretty(&orphan).unwrap()).unwrap();
+            // The lock can be opened; the temp write cannot be created.
+            std::fs::write(gh_dir.join(".lock"), "").unwrap();
+            let mut perms = std::fs::metadata(&gh_dir).unwrap().permissions();
+            perms.set_mode(0o555);
+            std::fs::set_permissions(&gh_dir, perms).unwrap();
 
-        let adopted = TabState::adopt_pr_bucket_comments(
-            Some(orphan),
-            gh_dir.to_str().unwrap(),
-            er_dir.to_str().unwrap(),
-        );
+            let adopted = TabState::adopt_pr_bucket_comments(
+                Some(orphan),
+                gh_dir.to_str().unwrap(),
+                er_dir.to_str().unwrap(),
+            );
 
-        let mut restore = std::fs::metadata(&gh_dir).unwrap().permissions();
-        restore.set_mode(0o755);
-        std::fs::set_permissions(&gh_dir, restore).unwrap();
+            let mut restore = std::fs::metadata(&gh_dir).unwrap().permissions();
+            restore.set_mode(0o755);
+            std::fs::set_permissions(&gh_dir, restore).unwrap();
 
-        assert!(adopted.is_none(), "the failed write adopts nothing");
-        assert!(
-            orphan_path.exists(),
-            "the orphan file is kept when the merge write fails"
-        );
+            assert!(adopted.is_none(), "the failed write adopts nothing");
+            assert!(
+                orphan_path.exists(),
+                "the orphan file is kept when the merge write fails"
+            );
+        });
     }
 
     // ── refresh_finding_staleness ──
@@ -11508,9 +11496,6 @@ mod tests {
     /// The header count and `kind:` filter must still see the repo's overrides.
     #[test]
     fn new_remote_hands_its_tab_the_repos_file_kinds() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
@@ -11518,18 +11503,20 @@ mod tests {
             "[file_kinds.my-service]\n\"e2e/**\" = \"test\"\n",
         )
         .unwrap();
-        std::env::set_var("ER_CONFIG_PATH", &config_path);
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-
-        let mut tab = make_test_tab(vec![make_file("e2e/login.ts", vec![], 4, 0)]);
-        tab.repo_root = "/".to_string();
-        tab.remote_repo = Some("acme/my-service".to_string());
-        let app = App::new_remote(tab, None, Ports::for_test());
-
-        std::env::remove_var("ER_CONFIG_PATH");
-        std::env::remove_var("ER_STORAGE_ROOT");
-        assert_eq!(app.tab().diff_line_stats().test.additions, 4);
-        assert_eq!(app.tab().diff_line_stats().production.additions, 0);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            crate::test_support::with_var(
+                "ER_CONFIG_PATH",
+                config_path.to_string_lossy().into_owned(),
+                || {
+                    let mut tab = make_test_tab(vec![make_file("e2e/login.ts", vec![], 4, 0)]);
+                    tab.repo_root = "/".to_string();
+                    tab.remote_repo = Some("acme/my-service".to_string());
+                    let app = App::new_remote(tab, None, Ports::for_test());
+                    assert_eq!(app.tab().diff_line_stats().test.additions, 4);
+                    assert_eq!(app.tab().diff_line_stats().production.additions, 0);
+                },
+            );
+        });
     }
 
     /// A remote-only tab's `repo_root` is the process's working directory, so
@@ -11697,16 +11684,19 @@ mod tests {
 
     #[test]
     fn prune_reviewed_not_in_diff_drops_orphans_and_keeps_active() {
-        let files = vec![
-            make_file("a.json", vec![], 1, 0),
-            make_file("b.json", vec![], 1, 0),
-        ];
-        let mut tab = make_test_tab(files);
-        tab.reviewed.insert("a.json".to_string(), String::new());
-        tab.reviewed.insert("gone.rs".to_string(), String::new());
-        assert_eq!(tab.prune_reviewed_not_in_diff(), 1);
-        assert_eq!(tab.reviewed.len(), 1);
-        assert!(tab.reviewed.contains_key("a.json"));
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let files = vec![
+                make_file("a.json", vec![], 1, 0),
+                make_file("b.json", vec![], 1, 0),
+            ];
+            let mut tab = make_test_tab(files);
+            tab.reviewed.insert("a.json".to_string(), String::new());
+            tab.reviewed.insert("gone.rs".to_string(), String::new());
+            assert_eq!(tab.prune_reviewed_not_in_diff(), 1);
+            assert_eq!(tab.reviewed.len(), 1);
+            assert!(tab.reviewed.contains_key("a.json"));
+        });
     }
 
     // ── auto-unmark reviewed files whose diff changed ──
@@ -11746,29 +11736,36 @@ mod tests {
 
     #[test]
     fn auto_unmark_drops_reviewed_file_whose_diff_changed() {
-        let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
-        let original = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
-        let stored = original["a.json"].clone();
-        tab.reviewed.insert("a.json".to_string(), stored.clone());
-        let revision_before = tab.reviewed_revision;
-        tab.reviewed_file_hashes = crate::ai::compute_per_file_hashes(&changed_reviewed_diff_raw());
-        assert_eq!(tab.auto_unmark_changed_reviewed(), 1);
-        assert!(tab.reviewed.is_empty());
-        assert_eq!(tab.reviewed_revision, revision_before + 1);
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
+            let original = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
+            let stored = original["a.json"].clone();
+            tab.reviewed.insert("a.json".to_string(), stored.clone());
+            let revision_before = tab.reviewed_revision;
+            tab.reviewed_file_hashes =
+                crate::ai::compute_per_file_hashes(&changed_reviewed_diff_raw());
+            assert_eq!(tab.auto_unmark_changed_reviewed(), 1);
+            assert!(tab.reviewed.is_empty());
+            assert_eq!(tab.reviewed_revision, revision_before + 1);
+        });
     }
 
     #[test]
     fn auto_unmark_drops_reviewed_file_absent_from_current_diff() {
-        let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
-        tab.reviewed
-            .insert("gone.rs".to_string(), "stored-hash".to_string());
-        tab.reviewed.insert("a.json".to_string(), String::new());
-        let revision_before = tab.reviewed_revision;
-        assert_eq!(tab.auto_unmark_changed_reviewed(), 1);
-        // gone.rs is pruned; a.json is a legacy empty-hash entry that is kept.
-        assert_eq!(tab.reviewed.len(), 1);
-        assert!(tab.reviewed.contains_key("a.json"));
-        assert_eq!(tab.reviewed_revision, revision_before + 1);
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
+            tab.reviewed
+                .insert("gone.rs".to_string(), "stored-hash".to_string());
+            tab.reviewed.insert("a.json".to_string(), String::new());
+            let revision_before = tab.reviewed_revision;
+            assert_eq!(tab.auto_unmark_changed_reviewed(), 1);
+            // gone.rs is pruned; a.json is a legacy empty-hash entry that is kept.
+            assert_eq!(tab.reviewed.len(), 1);
+            assert!(tab.reviewed.contains_key("a.json"));
+            assert_eq!(tab.reviewed_revision, revision_before + 1);
+        });
     }
 
     #[test]
@@ -11786,30 +11783,33 @@ mod tests {
 
     #[test]
     fn quick_unmark_refresh_unmarks_changed_reviewed_file() {
-        let mut tab = make_test_tab(vec![
-            make_file("a.json", vec![], 1, 0),
-            make_file("b.json", vec![], 1, 0),
-        ]);
-        let original = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
-        let stored = original["a.json"].clone();
-        tab.reviewed.insert("a.json".to_string(), stored.clone());
-        tab.pending_unmark_count = 0;
-        // The raw changed, so the marked file's section hash differs and it
-        // auto-unmarks.
-        let raw = changed_reviewed_diff_raw();
-        // A refresh always retains the raw diff; `per_file_hash` falls back to it.
-        tab.raw_diff = Some(raw.clone());
-        tab.refresh_per_file_hashes_and_unmark(&raw, true);
-        assert!(tab.reviewed.is_empty());
-        assert_eq!(tab.pending_unmark_count, 1);
-        // The map now caches only reviewed files, so this guarantee is stated
-        // through the accessor every mark path uses: a newly-marked file must
-        // still resolve a real hash.
-        assert_eq!(
-            tab.per_file_hash("a.json"),
-            crate::ai::compute_per_file_hash(&raw, "a.json").unwrap(),
-            "a newly-marked file must store a real hash"
-        );
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = make_test_tab(vec![
+                make_file("a.json", vec![], 1, 0),
+                make_file("b.json", vec![], 1, 0),
+            ]);
+            let original = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
+            let stored = original["a.json"].clone();
+            tab.reviewed.insert("a.json".to_string(), stored.clone());
+            tab.pending_unmark_count = 0;
+            // The raw changed, so the marked file's section hash differs and it
+            // auto-unmarks.
+            let raw = changed_reviewed_diff_raw();
+            // A refresh always retains the raw diff; `per_file_hash` falls back to it.
+            tab.raw_diff = Some(raw.clone());
+            tab.refresh_per_file_hashes_and_unmark(&raw, true);
+            assert!(tab.reviewed.is_empty());
+            assert_eq!(tab.pending_unmark_count, 1);
+            // The map now caches only reviewed files, so this guarantee is stated
+            // through the accessor every mark path uses: a newly-marked file must
+            // still resolve a real hash.
+            assert_eq!(
+                tab.per_file_hash("a.json"),
+                crate::ai::compute_per_file_hash(&raw, "a.json").unwrap(),
+                "a newly-marked file must store a real hash"
+            );
+        });
     }
 
     #[test]
@@ -13219,9 +13219,6 @@ mod tests {
         // Display toggles must auto-persist (like theme). Esc/close must not
         // silently revert split_diff — that made the setting look dead after the
         // managed-config move (users toggle [x], then Esc, and nothing sticks).
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
         std::fs::write(
@@ -13229,54 +13226,56 @@ mod tests {
             "[display]\nsplit_diff = false\ntheme = \"graphite\"\n",
         )
         .unwrap();
-        std::env::set_var("ER_CONFIG_PATH", &config_path);
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            crate::test_support::with_var(
+                "ER_CONFIG_PATH",
+                config_path.to_string_lossy().into_owned(),
+                || {
+                    let tab = make_test_tab(vec![]);
+                    let mut app = make_test_app(tab);
+                    app.config = crate::config::load_global_config();
+                    assert!(!app.config.display.split_diff);
 
-        let tab = make_test_tab(vec![]);
-        let mut app = make_test_app(tab);
-        app.config = crate::config::load_global_config();
-        assert!(!app.config.display.split_diff);
+                    app.open_config_hub();
+                    app.config_hub_switch_tab(crate::config::SettingsScope::Terminal);
 
-        app.open_config_hub();
-        app.config_hub_switch_tab(crate::config::SettingsScope::Terminal);
+                    let split_idx = match &app.overlay {
+                        Some(OverlayData::ConfigHub { items, .. }) => items
+                            .iter()
+                            .position(|item| {
+                                matches!(
+                                    item,
+                                    crate::config::ConfigItem::BoolToggle { label, .. } if label == "Split diff"
+                                )
+                            })
+                            .expect("Split diff toggle in Terminal hub"),
+                        _ => panic!("expected ConfigHub overlay"),
+                    };
+                    if let Some(OverlayData::ConfigHub { selected, .. }) = &mut app.overlay {
+                        *selected = split_idx;
+                    }
 
-        let split_idx = match &app.overlay {
-            Some(OverlayData::ConfigHub { items, .. }) => items
-                .iter()
-                .position(|item| {
-                    matches!(
-                        item,
-                        crate::config::ConfigItem::BoolToggle { label, .. } if label == "Split diff"
-                    )
-                })
-                .expect("Split diff toggle in Terminal hub"),
-            _ => panic!("expected ConfigHub overlay"),
-        };
-        if let Some(OverlayData::ConfigHub { selected, .. }) = &mut app.overlay {
-            *selected = split_idx;
-        }
+                    app.config_hub_activate();
+                    assert!(
+                        app.config.display.split_diff,
+                        "Enter on Split diff should flip the live flag"
+                    );
+                    assert!(
+                        app.split_diff_active(&app.config),
+                        "split rendering should activate immediately after toggle"
+                    );
 
-        app.config_hub_activate();
-        assert!(
-            app.config.display.split_diff,
-            "Enter on Split diff should flip the live flag"
-        );
-        assert!(
-            app.split_diff_active(&app.config),
-            "split rendering should activate immediately after toggle"
-        );
-
-        // Esc / close must keep the change (auto-persisted), not revert it.
-        app.config_hub_close();
-        assert!(
-            app.config.display.split_diff,
-            "close must not wipe an auto-persisted split_diff toggle"
-        );
-        assert!(app.overlay.is_none());
-        assert!(crate::config::load_global_config().display.split_diff);
-
-        std::env::remove_var("ER_CONFIG_PATH");
-        std::env::remove_var("ER_STORAGE_ROOT");
+                    // Esc / close must keep the change (auto-persisted), not revert it.
+                    app.config_hub_close();
+                    assert!(
+                        app.config.display.split_diff,
+                        "close must not wipe an auto-persisted split_diff toggle"
+                    );
+                    assert!(app.overlay.is_none());
+                    assert!(crate::config::load_global_config().display.split_diff);
+                },
+            );
+        });
     }
 
     // ── split_diff_active ──
@@ -13585,34 +13584,36 @@ mod tests {
     fn submit_comment_from_delete_line_persists_left_side() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path().to_string_lossy().into_owned();
-        let files = vec![make_file(
-            "src/main.rs",
-            vec![make_hunk(vec![DiffLine {
-                line_type: LineType::Delete,
-                content: "gone".to_string(),
-                old_num: Some(12),
-                new_num: None,
-            }])],
-            0,
-            1,
-        )];
-        let mut tab = make_test_tab(files);
-        tab.er_root = ErRoot::managed(format!("{root}/.er"));
-        tab.repo_root = root;
-        tab.current_line = Some(0);
-        let mut app = make_test_app(tab);
-        app.start_comment(CommentType::GitHubComment);
-        app.tab_mut().comment_textarea = TextArea::new(vec!["why delete this".to_string()]);
-        app.submit_comment().unwrap();
-        let comments = app
-            .tab()
-            .ai
-            .github_comments
-            .as_ref()
-            .expect("github comments sidecar");
-        assert_eq!(comments.comments.len(), 1);
-        assert_eq!(comments.comments[0].side, "LEFT");
-        assert_eq!(comments.comments[0].line_start, Some(12));
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let files = vec![make_file(
+                "src/main.rs",
+                vec![make_hunk(vec![DiffLine {
+                    line_type: LineType::Delete,
+                    content: "gone".to_string(),
+                    old_num: Some(12),
+                    new_num: None,
+                }])],
+                0,
+                1,
+            )];
+            let mut tab = make_test_tab(files);
+            tab.er_root = ErRoot::managed(format!("{root}/.er"));
+            tab.repo_root = root;
+            tab.current_line = Some(0);
+            let mut app = make_test_app(tab);
+            app.start_comment(CommentType::GitHubComment);
+            app.tab_mut().comment_textarea = TextArea::new(vec!["why delete this".to_string()]);
+            app.submit_comment().unwrap();
+            let comments = app
+                .tab()
+                .ai
+                .github_comments
+                .as_ref()
+                .expect("github comments sidecar");
+            assert_eq!(comments.comments.len(), 1);
+            assert_eq!(comments.comments[0].side, "LEFT");
+            assert_eq!(comments.comments[0].line_start, Some(12));
+        });
     }
 
     #[test]
@@ -13693,42 +13694,45 @@ mod tests {
     fn submit_note_persists_to_notes_json_with_n_prefix() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path().to_string_lossy().into_owned();
-        let files = vec![make_file(
-            "src/main.rs",
-            vec![make_hunk(vec![make_line(
-                LineType::Add,
-                "let x = 1;",
-                Some(1),
-            )])],
-            1,
-            0,
-        )];
-        let mut tab = make_test_tab(files);
-        // Route the note sidecar into the TempDir's .er/ dir.
-        tab.er_root = ErRoot::managed(format!("{root}/.er"));
-        tab.repo_root = root.clone();
-        let mut app = make_test_app(tab);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let files = vec![make_file(
+                "src/main.rs",
+                vec![make_hunk(vec![make_line(
+                    LineType::Add,
+                    "let x = 1;",
+                    Some(1),
+                )])],
+                1,
+                0,
+            )];
+            let mut tab = make_test_tab(files);
+            // Route the note sidecar into the TempDir's .er/ dir.
+            tab.er_root = ErRoot::managed(format!("{root}/.er"));
+            tab.repo_root = root.clone();
+            let mut app = make_test_app(tab);
 
-        // Author a note via the composer (the TUI reaches Note through Ctrl+t).
-        app.start_comment(CommentType::Note);
-        app.tab_mut().comment_textarea = TextArea::new(vec!["Refactor this helper".to_string()]);
-        app.submit_comment().unwrap();
+            // Author a note via the composer (the TUI reaches Note through Ctrl+t).
+            app.start_comment(CommentType::Note);
+            app.tab_mut().comment_textarea =
+                TextArea::new(vec!["Refactor this helper".to_string()]);
+            app.submit_comment().unwrap();
 
-        // notes.json holds the new note with an n- prefixed id.
-        let content = std::fs::read_to_string(format!("{root}/.er/notes.json"))
-            .expect("notes.json should be written");
-        let notes: crate::ai::ErNotes = serde_json::from_str(&content).unwrap();
-        assert_eq!(notes.notes.len(), 1);
-        assert!(
-            notes.notes[0].id.starts_with("n-"),
-            "note id must use n- prefix"
-        );
-        assert_eq!(notes.notes[0].text, "Refactor this helper");
-        assert_eq!(notes.notes[0].file, "src/main.rs");
+            // notes.json holds the new note with an n- prefixed id.
+            let content = std::fs::read_to_string(format!("{root}/.er/notes.json"))
+                .expect("notes.json should be written");
+            let notes: crate::ai::ErNotes = serde_json::from_str(&content).unwrap();
+            assert_eq!(notes.notes.len(), 1);
+            assert!(
+                notes.notes[0].id.starts_with("n-"),
+                "note id must use n- prefix"
+            );
+            assert_eq!(notes.notes[0].text, "Refactor this helper");
+            assert_eq!(notes.notes[0].file, "src/main.rs");
 
-        // The reloaded state reflects the note in the per-file count (counts.2).
-        assert_eq!(app.tab().ai.file_note_count("src/main.rs"), 1);
-        assert!(app.tab().ai.has_notes());
+            // The reloaded state reflects the note in the per-file count (counts.2).
+            assert_eq!(app.tab().ai.file_note_count("src/main.rs"), 1);
+            assert!(app.tab().ai.has_notes());
+        });
     }
 
     /// An app writing sidecars into `tmp`, reviewing a markdown file whose
@@ -13765,51 +13769,55 @@ mod tests {
     #[test]
     fn document_question_off_the_diff_keeps_its_line_and_context() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = document_app(&tmp);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = document_app(&tmp);
 
-        app.submit_document_comment(
-            document_target(6),
-            "Why delta?".to_string(),
-            CommentType::Question,
-            DOCUMENT,
-        )
-        .unwrap();
+            app.submit_document_comment(
+                document_target(6),
+                "Why delta?".to_string(),
+                CommentType::Question,
+                DOCUMENT,
+            )
+            .unwrap();
 
-        let q = &app.tab().ai.questions.as_ref().unwrap().questions[0];
-        assert_eq!(q.hunk_index, None, "no hunk holds line 6");
-        assert_eq!(q.line_start, Some(6));
-        assert_eq!(q.line_content, "delta");
-        assert_eq!(q.context_before, vec!["alpha", "beta", "gamma"]);
-        assert_eq!(q.context_after, vec!["epsilon", "zeta"]);
-        assert!(q.is_document_anchor());
-        assert!(
-            app.tab().comment_document_anchor.is_none(),
-            "the anchor is consumed by the submit"
-        );
+            let q = &app.tab().ai.questions.as_ref().unwrap().questions[0];
+            assert_eq!(q.hunk_index, None, "no hunk holds line 6");
+            assert_eq!(q.line_start, Some(6));
+            assert_eq!(q.line_content, "delta");
+            assert_eq!(q.context_before, vec!["alpha", "beta", "gamma"]);
+            assert_eq!(q.context_after, vec!["epsilon", "zeta"]);
+            assert!(q.is_document_anchor());
+            assert!(
+                app.tab().comment_document_anchor.is_none(),
+                "the anchor is consumed by the submit"
+            );
+        });
     }
 
     #[test]
     fn document_note_survives_relocation() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = document_app(&tmp);
-        app.submit_document_comment(
-            document_target(3),
-            "Rename alpha".to_string(),
-            CommentType::Note,
-            DOCUMENT,
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = document_app(&tmp);
+            app.submit_document_comment(
+                document_target(3),
+                "Rename alpha".to_string(),
+                CommentType::Note,
+                DOCUMENT,
+            )
+            .unwrap();
 
-        app.tab_mut().diff_hash = "a-later-diff".to_string();
-        app.tab_mut().relocate_all_comments();
+            app.tab_mut().diff_hash = "a-later-diff".to_string();
+            app.tab_mut().relocate_all_comments();
 
-        let n = &app.tab().ai.notes.as_ref().unwrap().notes[0];
-        assert!(
-            !n.stale,
-            "line 3 is off the diff, which is where it was put"
-        );
-        assert_eq!(n.anchor_status, "original");
-        assert_eq!(n.line_start, Some(3));
+            let n = &app.tab().ai.notes.as_ref().unwrap().notes[0];
+            assert!(
+                !n.stale,
+                "line 3 is off the diff, which is where it was put"
+            );
+            assert_eq!(n.anchor_status, "original");
+            assert_eq!(n.line_start, Some(3));
+        });
     }
 
     #[test]
@@ -13838,199 +13846,211 @@ mod tests {
     #[test]
     fn empty_document_comment_does_not_leak_its_anchor_into_the_next_submit() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = document_app(&tmp);
-        app.submit_document_comment(
-            document_target(6),
-            String::new(),
-            CommentType::Question,
-            DOCUMENT,
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = document_app(&tmp);
+            app.submit_document_comment(
+                document_target(6),
+                String::new(),
+                CommentType::Question,
+                DOCUMENT,
+            )
+            .unwrap();
 
-        app.submit_comment_text(
-            document_target(1),
-            "On the title".to_string(),
-            CommentType::Question,
-            None,
-            None,
-        )
-        .unwrap();
+            app.submit_comment_text(
+                document_target(1),
+                "On the title".to_string(),
+                CommentType::Question,
+                None,
+                None,
+            )
+            .unwrap();
 
-        let q = &app.tab().ai.questions.as_ref().unwrap().questions[0];
-        assert_eq!(q.hunk_index, Some(0), "a diff-line question keeps its hunk");
-        assert_eq!(q.line_content, "# Title");
+            let q = &app.tab().ai.questions.as_ref().unwrap().questions[0];
+            assert_eq!(q.hunk_index, Some(0), "a diff-line question keeps its hunk");
+            assert_eq!(q.line_content, "# Title");
+        });
     }
 
     #[test]
     fn reply_to_document_question_stays_on_its_line() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = document_app(&tmp);
-        app.submit_document_comment(
-            document_target(6),
-            "Why delta?".to_string(),
-            CommentType::Question,
-            DOCUMENT,
-        )
-        .unwrap();
-        let parent = app.tab().ai.questions.as_ref().unwrap().questions[0]
-            .id
-            .clone();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = document_app(&tmp);
+            app.submit_document_comment(
+                document_target(6),
+                "Why delta?".to_string(),
+                CommentType::Question,
+                DOCUMENT,
+            )
+            .unwrap();
+            let parent = app.tab().ai.questions.as_ref().unwrap().questions[0]
+                .id
+                .clone();
 
-        // The desktop reply path: the parent's hunk, or 0 when it has none.
-        app.submit_comment_text(
-            document_target(6),
-            "Because.".to_string(),
-            CommentType::Question,
-            Some(parent),
-            None,
-        )
-        .unwrap();
+            // The desktop reply path: the parent's hunk, or 0 when it has none.
+            app.submit_comment_text(
+                document_target(6),
+                "Because.".to_string(),
+                CommentType::Question,
+                Some(parent),
+                None,
+            )
+            .unwrap();
 
-        let reply = &app.tab().ai.questions.as_ref().unwrap().questions[1];
-        assert_eq!(reply.hunk_index, None, "hunk 0 does not hold line 6");
-        assert_eq!(reply.line_content, "delta");
-        assert!(reply.is_document_anchor());
+            let reply = &app.tab().ai.questions.as_ref().unwrap().questions[1];
+            assert_eq!(reply.hunk_index, None, "hunk 0 does not hold line 6");
+            assert_eq!(reply.line_content, "delta");
+            assert!(reply.is_document_anchor());
 
-        app.tab_mut().diff_hash = "a-later-diff".to_string();
-        app.tab_mut().relocate_all_comments();
-        let reply = &app.tab().ai.questions.as_ref().unwrap().questions[1];
-        assert!(!reply.stale, "relocation leaves the reply on its line");
+            app.tab_mut().diff_hash = "a-later-diff".to_string();
+            app.tab_mut().relocate_all_comments();
+            let reply = &app.tab().ai.questions.as_ref().unwrap().questions[1];
+            assert!(!reply.stale, "relocation leaves the reply on its line");
+        });
     }
 
     #[test]
     fn ai_reply_records_its_action_and_the_next_reply_does_not() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = document_app(&tmp);
-        app.submit_comment_text(
-            document_target(1),
-            "Why?".to_string(),
-            CommentType::Note,
-            None,
-            None,
-        )
-        .unwrap();
-        let parent = app.tab().ai.notes.as_ref().unwrap().notes[0].id.clone();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = document_app(&tmp);
+            app.submit_comment_text(
+                document_target(1),
+                "Why?".to_string(),
+                CommentType::Note,
+                None,
+                None,
+            )
+            .unwrap();
+            let parent = app.tab().ai.notes.as_ref().unwrap().notes[0].id.clone();
 
-        app.submit_ai_reply(
-            document_target(1),
-            "Rewritten.".to_string(),
-            CommentType::Note,
-            Some(parent.clone()),
-            Some(crate::ai::AI_ACTION_ELABORATE),
-        )
-        .unwrap();
-        app.submit_comment_text(
-            document_target(1),
-            "Thanks.".to_string(),
-            CommentType::Note,
-            Some(parent),
-            None,
-        )
-        .unwrap();
+            app.submit_ai_reply(
+                document_target(1),
+                "Rewritten.".to_string(),
+                CommentType::Note,
+                Some(parent.clone()),
+                Some(crate::ai::AI_ACTION_ELABORATE),
+            )
+            .unwrap();
+            app.submit_comment_text(
+                document_target(1),
+                "Thanks.".to_string(),
+                CommentType::Note,
+                Some(parent),
+                None,
+            )
+            .unwrap();
 
-        let notes = &app.tab().ai.notes.as_ref().unwrap().notes;
-        assert_eq!(notes[1].author, "ai");
-        assert_eq!(notes[1].ai_action.as_deref(), Some("elaborate"));
-        assert_eq!(notes[2].author, "You");
-        assert_eq!(notes[2].ai_action, None);
+            let notes = &app.tab().ai.notes.as_ref().unwrap().notes;
+            assert_eq!(notes[1].author, "ai");
+            assert_eq!(notes[1].ai_action.as_deref(), Some("elaborate"));
+            assert_eq!(notes[2].author, "You");
+            assert_eq!(notes[2].ai_action, None);
+        });
     }
 
     #[test]
     fn document_anchor_of_names_only_document_anchored_threads() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = document_app(&tmp);
-        app.submit_document_comment(
-            document_target(3),
-            "Off the diff".to_string(),
-            CommentType::Question,
-            DOCUMENT,
-        )
-        .unwrap();
-        app.submit_comment_text(
-            document_target(1),
-            "On the diff".to_string(),
-            CommentType::Question,
-            None,
-            None,
-        )
-        .unwrap();
-        let qs = &app.tab().ai.questions.as_ref().unwrap().questions;
-        let (off, on) = (qs[0].id.clone(), qs[1].id.clone());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = document_app(&tmp);
+            app.submit_document_comment(
+                document_target(3),
+                "Off the diff".to_string(),
+                CommentType::Question,
+                DOCUMENT,
+            )
+            .unwrap();
+            app.submit_comment_text(
+                document_target(1),
+                "On the diff".to_string(),
+                CommentType::Question,
+                None,
+                None,
+            )
+            .unwrap();
+            let qs = &app.tab().ai.questions.as_ref().unwrap().questions;
+            let (off, on) = (qs[0].id.clone(), qs[1].id.clone());
 
-        assert!(app.document_anchor_of(&off).is_some());
-        assert!(app.document_anchor_of(&on).is_none());
-        assert!(app.document_anchor_of("q-missing").is_none());
+            assert!(app.document_anchor_of(&off).is_some());
+            assert!(app.document_anchor_of(&on).is_none());
+            assert!(app.document_anchor_of("q-missing").is_none());
+        });
     }
 
     #[test]
     fn document_question_promoted_to_note_keeps_its_line() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = document_app(&tmp);
-        app.submit_document_comment(
-            document_target(6),
-            "Why delta?".to_string(),
-            CommentType::Question,
-            DOCUMENT,
-        )
-        .unwrap();
-        let id = app.tab().ai.questions.as_ref().unwrap().questions[0]
-            .id
-            .clone();
-
-        // The promote path builds the note from the current diff and deletes
-        // the source question.
-        app.promote_question_to_note(&id, Some("Rename delta".to_string()))
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = document_app(&tmp);
+            app.submit_document_comment(
+                document_target(6),
+                "Why delta?".to_string(),
+                CommentType::Question,
+                DOCUMENT,
+            )
             .unwrap();
+            let id = app.tab().ai.questions.as_ref().unwrap().questions[0]
+                .id
+                .clone();
 
-        let n = &app.tab().ai.notes.as_ref().unwrap().notes[0];
-        assert_eq!(n.hunk_index, None);
-        assert_eq!(n.line_start, Some(6));
-        assert_eq!(n.line_content, "delta");
-        assert_eq!(n.context_before, vec!["alpha", "beta", "gamma"]);
-        assert!(
-            app.tab()
-                .ai
-                .questions
-                .as_ref()
-                .is_none_or(|qs| qs.questions.iter().all(|q| q.id != id)),
-            "the source question is gone from memory"
-        );
-        let path = std::path::Path::new(&app.tab().er_dir()).join("questions.json");
-        let stored: crate::ai::ErQuestions =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(
-            stored.questions.iter().all(|q| q.id != id),
-            "the source question is gone from the file"
-        );
+            // The promote path builds the note from the current diff and deletes
+            // the source question.
+            app.promote_question_to_note(&id, Some("Rename delta".to_string()))
+                .unwrap();
+
+            let n = &app.tab().ai.notes.as_ref().unwrap().notes[0];
+            assert_eq!(n.hunk_index, None);
+            assert_eq!(n.line_start, Some(6));
+            assert_eq!(n.line_content, "delta");
+            assert_eq!(n.context_before, vec!["alpha", "beta", "gamma"]);
+            assert!(
+                app.tab()
+                    .ai
+                    .questions
+                    .as_ref()
+                    .is_none_or(|qs| qs.questions.iter().all(|q| q.id != id)),
+                "the source question is gone from memory"
+            );
+            let path = std::path::Path::new(&app.tab().er_dir()).join("questions.json");
+            let stored: crate::ai::ErQuestions =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert!(
+                stored.questions.iter().all(|q| q.id != id),
+                "the source question is gone from the file"
+            );
+        });
     }
 
     #[test]
     fn promote_to_note_leaves_a_corrupt_questions_file_alone() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut app = document_app(&tmp);
-        app.submit_document_comment(
-            document_target(6),
-            "Why delta?".to_string(),
-            CommentType::Question,
-            DOCUMENT,
-        )
-        .unwrap();
-        let id = app.tab().ai.questions.as_ref().unwrap().questions[0]
-            .id
-            .clone();
-        let path = std::path::Path::new(&app.tab().er_dir()).join("questions.json");
-        std::fs::write(&path, "{ not json").unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = document_app(&tmp);
+            app.submit_document_comment(
+                document_target(6),
+                "Why delta?".to_string(),
+                CommentType::Question,
+                DOCUMENT,
+            )
+            .unwrap();
+            let id = app.tab().ai.questions.as_ref().unwrap().questions[0]
+                .id
+                .clone();
+            let path = std::path::Path::new(&app.tab().er_dir()).join("questions.json");
+            std::fs::write(&path, "{ not json").unwrap();
 
-        assert!(
-            app.promote_question_to_note(&id, Some("Rename delta".to_string()))
-                .is_err(),
-            "a corrupt source file refuses the source delete"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "{ not json",
-            "the corrupt file is not overwritten with a fresh payload"
-        );
+            assert!(
+                app.promote_question_to_note(&id, Some("Rename delta".to_string()))
+                    .is_err(),
+                "a corrupt source file refuses the source delete"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "{ not json",
+                "the corrupt file is not overwritten with a fresh payload"
+            );
+        });
     }
 
     #[test]
@@ -14139,34 +14159,37 @@ mod tests {
 
     #[test]
     fn enter_pr_diff_preloaded_trusts_cached_diff_without_refetch() {
-        // A tab whose diff is already loaded from the desktop open-diff cache:
-        // files + raw_diff + diff_hash populated, mode still Branch (as
-        // `new_local_pr_from_github_diff` leaves it), no head oid yet. The body
-        // of `enter_pr_diff_preloaded` issues no gh/git calls, so this passing
-        // outside a git repo is itself proof that no fetch/refresh ran.
-        let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
-        let mut tab = TabState::new_for_test(vec![make_file(
-            "x",
-            vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
-            1,
-            1,
-        )]);
-        tab.pr_number = Some(42);
-        tab.raw_diff = Some(raw.to_string());
-        let cached_hash = crate::ai::compute_diff_hash(raw);
-        tab.diff_hash = cached_hash.clone();
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            // A tab whose diff is already loaded from the desktop open-diff cache:
+            // files + raw_diff + diff_hash populated, mode still Branch (as
+            // `new_local_pr_from_github_diff` leaves it), no head oid yet. The body
+            // of `enter_pr_diff_preloaded` issues no gh/git calls, so this passing
+            // outside a git repo is itself proof that no fetch/refresh ran.
+            let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+            let mut tab = TabState::new_for_test(vec![make_file(
+                "x",
+                vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
+                1,
+                1,
+            )]);
+            tab.pr_number = Some(42);
+            tab.raw_diff = Some(raw.to_string());
+            let cached_hash = crate::ai::compute_diff_hash(raw);
+            tab.diff_hash = cached_hash.clone();
 
-        tab.enter_pr_diff_preloaded("head-oid-abc".to_string(), false)
-            .expect("preloaded entry succeeds when a PR number is set");
+            tab.enter_pr_diff_preloaded("head-oid-abc".to_string(), false)
+                .expect("preloaded entry succeeds when a PR number is set");
 
-        // Seeds the freshness baseline and marks refs as fetched — no round-trip.
-        assert_eq!(tab.last_diff_head_oid.as_deref(), Some("head-oid-abc"));
-        assert!(tab.pr_refs_fetched);
-        assert_eq!(tab.mode, DiffMode::PrDiff);
-        // The cached diff is trusted as-is: diff_hash is neither recomputed nor
-        // cleared, so AI artifacts keyed to this hash stay fresh on a cache hit.
-        assert_eq!(tab.diff_hash, cached_hash);
-        assert_eq!(tab.files.len(), 1, "cached files are left intact");
+            // Seeds the freshness baseline and marks refs as fetched — no round-trip.
+            assert_eq!(tab.last_diff_head_oid.as_deref(), Some("head-oid-abc"));
+            assert!(tab.pr_refs_fetched);
+            assert_eq!(tab.mode, DiffMode::PrDiff);
+            // The cached diff is trusted as-is: diff_hash is neither recomputed nor
+            // cleared, so AI artifacts keyed to this hash stay fresh on a cache hit.
+            assert_eq!(tab.diff_hash, cached_hash);
+            assert_eq!(tab.files.len(), 1, "cached files are left intact");
+        });
     }
 
     #[test]
@@ -14185,209 +14208,202 @@ mod tests {
         // bucket's AI sidecars at open; the first Branch click's
         // `reload_ai_state` must adopt them (no disk reads) when bucket +
         // diff hash match, and fall back to reading the sidecars otherwise.
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "main".to_string();
-        tab.apply_managed_root();
-        let er_dir = tab.er_dir();
-        std::fs::create_dir_all(&er_dir).unwrap();
-        std::fs::write(
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "main".to_string();
+            tab.apply_managed_root();
+            let er_dir = tab.er_dir();
+            std::fs::create_dir_all(&er_dir).unwrap();
+            std::fs::write(
             std::path::Path::new(&er_dir).join("questions.json"),
             r#"{"version":1,"diff_hash":"hash-abc","questions":[{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}]}"#,
         )
         .unwrap();
 
-        // A matching preload (empty state) is adopted without reading disk.
-        tab.branch_diff_hash = "hash-abc".to_string();
-        tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
-            bucket_dir: er_dir.clone(),
-            diff_hash: "hash-abc".to_string(),
-            arbiter_overlay: None,
-            ai: crate::ai::AiState::default(),
-        });
-        tab.reload_ai_state();
-        assert!(
-            tab.ai.questions.is_none(),
-            "matching preload adopted — sidecar not re-read"
-        );
+            // A matching preload (empty state) is adopted without reading disk.
+            tab.branch_diff_hash = "hash-abc".to_string();
+            tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
+                bucket_dir: er_dir.clone(),
+                diff_hash: "hash-abc".to_string(),
+                arbiter_overlay: None,
+                ai: crate::ai::AiState::default(),
+            });
+            tab.reload_ai_state();
+            assert!(
+                tab.ai.questions.is_none(),
+                "matching preload adopted — sidecar not re-read"
+            );
 
-        // An overlay written after the preload invalidates it even when the
-        // bucket and diff are unchanged.
-        tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
-            bucket_dir: er_dir.clone(),
-            diff_hash: "hash-abc".to_string(),
-            arbiter_overlay: None,
-            ai: crate::ai::AiState::default(),
-        });
-        std::fs::write(std::path::Path::new(&er_dir).join("arbiter.json"), "{}").unwrap();
-        tab.reload_ai_state();
-        assert_eq!(tab.ai.questions.as_ref().unwrap().questions.len(), 1);
+            // An overlay written after the preload invalidates it even when the
+            // bucket and diff are unchanged.
+            tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
+                bucket_dir: er_dir.clone(),
+                diff_hash: "hash-abc".to_string(),
+                arbiter_overlay: None,
+                ai: crate::ai::AiState::default(),
+            });
+            std::fs::write(std::path::Path::new(&er_dir).join("arbiter.json"), "{}").unwrap();
+            tab.reload_ai_state();
+            assert_eq!(tab.ai.questions.as_ref().unwrap().questions.len(), 1);
 
-        // A stale preload (hash mismatch) is not served; the disk is read.
-        // The slot itself survives (see the preload.rs keep-on-mismatch test).
-        tab.branch_diff_hash = "hash-abc".to_string();
-        tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
-            bucket_dir: er_dir,
-            diff_hash: "hash-other".to_string(),
-            arbiter_overlay: None,
-            ai: crate::ai::AiState::default(),
+            // A stale preload (hash mismatch) is not served; the disk is read.
+            // The slot itself survives (see the preload.rs keep-on-mismatch test).
+            tab.branch_diff_hash = "hash-abc".to_string();
+            tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
+                bucket_dir: er_dir,
+                diff_hash: "hash-other".to_string(),
+                arbiter_overlay: None,
+                ai: crate::ai::AiState::default(),
+            });
+            tab.reload_ai_state();
+            assert_eq!(
+                tab.ai
+                    .questions
+                    .as_ref()
+                    .map(|q| q.questions.len())
+                    .unwrap_or(0),
+                1,
+                "stale preload not served — sidecar read from disk"
+            );
         });
-        tab.reload_ai_state();
-        assert_eq!(
-            tab.ai
-                .questions
-                .as_ref()
-                .map(|q| q.questions.len())
-                .unwrap_or(0),
-            1,
-            "stale preload not served — sidecar read from disk"
-        );
-        std::env::remove_var("ER_STORAGE_ROOT");
     }
 
     #[test]
     fn new_stub_pr_tab_places_prdiff_stub() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let repo_root = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo_root).unwrap();
-        let root = repo_root.as_path();
-        run_git_for_history_test(root, &["init", "-b", "main"]);
-        run_git_for_history_test(root, &["config", "user.email", "test@example.com"]);
-        run_git_for_history_test(root, &["config", "user.name", "Test User"]);
-        run_git_for_history_test(root, &["config", "commit.gpgsign", "false"]);
-        run_git_for_history_test(
-            root,
-            &[
-                "remote",
-                "add",
-                "origin",
-                "https://github.com/owner/repo.git",
-            ],
-        );
-        std::fs::write(root.join("file.txt"), "base\n").unwrap();
-        run_git_for_history_test(root, &["add", "file.txt"]);
-        run_git_for_history_test(root, &["commit", "-m", "base"]);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let repo_root = tmp.path().join("repo");
+            std::fs::create_dir_all(&repo_root).unwrap();
+            let root = repo_root.as_path();
+            run_git_for_history_test(root, &["init", "-b", "main"]);
+            run_git_for_history_test(root, &["config", "user.email", "test@example.com"]);
+            run_git_for_history_test(root, &["config", "user.name", "Test User"]);
+            run_git_for_history_test(root, &["config", "commit.gpgsign", "false"]);
+            run_git_for_history_test(
+                root,
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.com/owner/repo.git",
+                ],
+            );
+            std::fs::write(root.join("file.txt"), "base\n").unwrap();
+            run_git_for_history_test(root, &["add", "file.txt"]);
+            run_git_for_history_test(root, &["commit", "-m", "base"]);
 
-        let tab = TabState::new_stub_pr_tab(
-            repo_root.to_string_lossy().into_owned(),
-            42,
-            "main".to_string(),
-            Some("feature-x".to_string()),
-            None,
-            Some("oid-1".to_string()),
-            Ports::cli(),
-        )
-        .expect("stub builds");
-        assert_eq!(tab.pr_number, Some(42));
-        assert_eq!(tab.mode, DiffMode::PrDiff);
-        assert_eq!(tab.local_branch_view.as_deref(), Some("feature-x"));
-        assert!(tab.needs_initial_refresh, "stub flagged for async populate");
-        assert_eq!(tab.last_diff_head_oid.as_deref(), Some("oid-1"));
-        assert_eq!(tab.pr_head_ref.as_deref(), Some("refs/er/pr/42/head"));
-        // The stub routes to the PR bucket (review_bucket() == Pr in PrDiff).
-        assert!(
-            tab.er_dir().contains("prs/pr-42"),
-            "stub er_dir routes to the PR bucket: {}",
-            tab.er_dir()
-        );
-        std::env::remove_var("ER_STORAGE_ROOT");
+            let tab = TabState::new_stub_pr_tab(
+                repo_root.to_string_lossy().into_owned(),
+                42,
+                "main".to_string(),
+                Some("feature-x".to_string()),
+                None,
+                Some("oid-1".to_string()),
+                Ports::cli(),
+            )
+            .expect("stub builds");
+            assert_eq!(tab.pr_number, Some(42));
+            assert_eq!(tab.mode, DiffMode::PrDiff);
+            assert_eq!(tab.local_branch_view.as_deref(), Some("feature-x"));
+            assert!(tab.needs_initial_refresh, "stub flagged for async populate");
+            assert_eq!(tab.last_diff_head_oid.as_deref(), Some("oid-1"));
+            assert_eq!(tab.pr_head_ref.as_deref(), Some("refs/er/pr/42/head"));
+            // The stub routes to the PR bucket (review_bucket() == Pr in PrDiff).
+            assert!(
+                tab.er_dir().contains("prs/pr-42"),
+                "stub er_dir routes to the PR bucket: {}",
+                tab.er_dir()
+            );
+        });
     }
 
     #[test]
     fn populate_pr_tab_parses_diff_and_loads_ai() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let repo_root = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo_root).unwrap();
-        let root = repo_root.as_path();
-        run_git_for_history_test(root, &["init", "-b", "main"]);
-        run_git_for_history_test(root, &["config", "user.email", "test@example.com"]);
-        run_git_for_history_test(root, &["config", "user.name", "Test User"]);
-        run_git_for_history_test(root, &["config", "commit.gpgsign", "false"]);
-        run_git_for_history_test(
-            root,
-            &[
-                "remote",
-                "add",
-                "origin",
-                "https://github.com/owner/repo.git",
-            ],
-        );
-        std::fs::write(root.join("file.txt"), "base\n").unwrap();
-        run_git_for_history_test(root, &["add", "file.txt"]);
-        run_git_for_history_test(root, &["commit", "-m", "base"]);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let repo_root = tmp.path().join("repo");
+            std::fs::create_dir_all(&repo_root).unwrap();
+            let root = repo_root.as_path();
+            run_git_for_history_test(root, &["init", "-b", "main"]);
+            run_git_for_history_test(root, &["config", "user.email", "test@example.com"]);
+            run_git_for_history_test(root, &["config", "user.name", "Test User"]);
+            run_git_for_history_test(root, &["config", "commit.gpgsign", "false"]);
+            run_git_for_history_test(
+                root,
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.com/owner/repo.git",
+                ],
+            );
+            std::fs::write(root.join("file.txt"), "base\n").unwrap();
+            run_git_for_history_test(root, &["add", "file.txt"]);
+            run_git_for_history_test(root, &["commit", "-m", "base"]);
 
-        let mut tab = TabState::new_stub_pr_tab(
-            repo_root.to_string_lossy().into_owned(),
-            42,
-            "main".to_string(),
-            Some("feature-x".to_string()),
-            None,
-            None,
-            Ports::cli(),
-        )
-        .expect("stub builds");
-        let er_dir = tab.er_dir();
-        std::fs::create_dir_all(&er_dir).unwrap();
-        std::fs::write(
+            let mut tab = TabState::new_stub_pr_tab(
+                repo_root.to_string_lossy().into_owned(),
+                42,
+                "main".to_string(),
+                Some("feature-x".to_string()),
+                None,
+                None,
+                Ports::cli(),
+            )
+            .expect("stub builds");
+            let er_dir = tab.er_dir();
+            std::fs::create_dir_all(&er_dir).unwrap();
+            std::fs::write(
             std::path::Path::new(&er_dir).join("questions.json"),
             r#"{"version":1,"diff_hash":"h","questions":[{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}]}"#,
         )
         .unwrap();
 
-        let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        tab.populate_pr_tab(
-            raw,
-            None,
-            Vec::new(),
-            "main".to_string(),
-            Some("oid-9".to_string()),
-        );
+            let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+            tab.populate_pr_tab(
+                raw,
+                None,
+                Vec::new(),
+                "main".to_string(),
+                Some("oid-9".to_string()),
+            );
 
-        assert_eq!(tab.files.len(), 1, "diff parsed");
-        assert!(!tab.needs_initial_refresh, "populated");
-        assert_eq!(tab.last_diff_head_oid.as_deref(), Some("oid-9"));
-        assert_eq!(tab.mode, DiffMode::PrDiff);
-        assert_eq!(tab.diff_hash, crate::ai::compute_diff_hash(raw));
-        assert_eq!(
-            tab.ai
-                .questions
-                .as_ref()
-                .map(|q| q.questions.len())
-                .unwrap_or(0),
-            1,
-            "PR-bucket AI sidecars loaded by populate"
-        );
-        std::env::remove_var("ER_STORAGE_ROOT");
+            assert_eq!(tab.files.len(), 1, "diff parsed");
+            assert!(!tab.needs_initial_refresh, "populated");
+            assert_eq!(tab.last_diff_head_oid.as_deref(), Some("oid-9"));
+            assert_eq!(tab.mode, DiffMode::PrDiff);
+            assert_eq!(tab.diff_hash, crate::ai::compute_diff_hash(raw));
+            assert_eq!(
+                tab.ai
+                    .questions
+                    .as_ref()
+                    .map(|q| q.questions.len())
+                    .unwrap_or(0),
+                1,
+                "PR-bucket AI sidecars loaded by populate"
+            );
+        });
     }
 
     #[test]
     fn populate_pr_tab_switches_to_pr_diff_from_branch() {
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.mode = DiffMode::Branch;
-        tab.pr_number = Some(7);
-        tab.local_branch_view = Some("feat/x".into());
-        tab.remote_repo = Some("owner/repo".into());
-        let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        tab.populate_pr_tab(raw, None, Vec::new(), "main".to_string(), None);
-        assert_eq!(
-            tab.mode,
-            DiffMode::PrDiff,
-            "populated payload is gh pr diff; landing in Branch made Local Branch look stuck"
-        );
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.mode = DiffMode::Branch;
+            tab.pr_number = Some(7);
+            tab.local_branch_view = Some("feat/x".into());
+            tab.remote_repo = Some("owner/repo".into());
+            let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+            tab.populate_pr_tab(raw, None, Vec::new(), "main".to_string(), None);
+            assert_eq!(
+                tab.mode,
+                DiffMode::PrDiff,
+                "populated payload is gh pr diff; landing in Branch made Local Branch look stuck"
+            );
+        });
     }
 
     fn pr_data_with_head(number: u64, head_branch: &str) -> PrOverviewData {
@@ -14407,44 +14423,50 @@ mod tests {
 
     #[test]
     fn populate_pr_tab_promotes_pr_placeholder_to_head_branch() {
-        // Inbox "Open target" places the stub without a head-branch hint, so
-        // the view label is the `pr/<N>` placeholder until `gh pr view`
-        // answers. Adopt the real head then — keeping the placeholder left the
-        // sidecar scope disagreeing with review.json's head_branch.
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.pr_number = Some(1560);
-        tab.local_branch_view = Some(crate::storage::pr_placeholder_branch(1560));
-        tab.remote_repo = Some("owner/repo".into());
-        let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        tab.populate_pr_tab(
-            raw,
-            Some(pr_data_with_head(1560, "fix/superviewer-manager")),
-            Vec::new(),
-            "main".to_string(),
-            None,
-        );
-        assert_eq!(
-            tab.local_branch_view.as_deref(),
-            Some("fix/superviewer-manager")
-        );
-        assert_eq!(tab.storage_branch_scope(), Some("fix/superviewer-manager"));
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            // Inbox "Open target" places the stub without a head-branch hint, so
+            // the view label is the `pr/<N>` placeholder until `gh pr view`
+            // answers. Adopt the real head then — keeping the placeholder left the
+            // sidecar scope disagreeing with review.json's head_branch.
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.pr_number = Some(1560);
+            tab.local_branch_view = Some(crate::storage::pr_placeholder_branch(1560));
+            tab.remote_repo = Some("owner/repo".into());
+            let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+            tab.populate_pr_tab(
+                raw,
+                Some(pr_data_with_head(1560, "fix/superviewer-manager")),
+                Vec::new(),
+                "main".to_string(),
+                None,
+            );
+            assert_eq!(
+                tab.local_branch_view.as_deref(),
+                Some("fix/superviewer-manager")
+            );
+            assert_eq!(tab.storage_branch_scope(), Some("fix/superviewer-manager"));
+        });
     }
 
     #[test]
     fn populate_pr_tab_keeps_a_real_head_branch_label() {
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.pr_number = Some(7);
-        tab.local_branch_view = Some("feat/x".into());
-        tab.remote_repo = Some("owner/repo".into());
-        let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        tab.populate_pr_tab(
-            raw,
-            Some(pr_data_with_head(7, "feat/x-renamed")),
-            Vec::new(),
-            "main".to_string(),
-            None,
-        );
-        assert_eq!(tab.local_branch_view.as_deref(), Some("feat/x"));
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.pr_number = Some(7);
+            tab.local_branch_view = Some("feat/x".into());
+            tab.remote_repo = Some("owner/repo".into());
+            let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+            tab.populate_pr_tab(
+                raw,
+                Some(pr_data_with_head(7, "feat/x-renamed")),
+                Vec::new(),
+                "main".to_string(),
+                None,
+            );
+            assert_eq!(tab.local_branch_view.as_deref(), Some("feat/x"));
+        });
     }
 
     #[test]
@@ -14468,33 +14490,29 @@ mod tests {
         // routing + reviewed set apply synchronously, but the AI sidecars are
         // NOT read — the offload worker performs the single authoritative
         // `reload_ai_state()` after the command returns.
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-
-        let mut tab = TabState::new_for_test(vec![make_file(
-            "x",
-            vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
-            1,
-            1,
-        )]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "main".to_string();
-        tab.pr_number = Some(42);
-        tab.local_branch_view = Some("feature-x".to_string());
-        tab.pr_head_ref = Some("refs/er/pr/42/head".to_string());
-        let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
-        let hash = crate::ai::compute_diff_hash(raw);
-        tab.diff_hash = hash.clone();
-        tab.branch_diff_hash = hash.clone();
-        // Route to the PR bucket so the sidecar lands where the reload reads.
-        tab.mode = DiffMode::PrDiff;
-        tab.apply_managed_root();
-        let er_dir = std::path::PathBuf::from(tab.er_dir());
-        std::fs::create_dir_all(&er_dir).unwrap();
-        std::fs::write(
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![make_file(
+                "x",
+                vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
+                1,
+                1,
+            )]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "main".to_string();
+            tab.pr_number = Some(42);
+            tab.local_branch_view = Some("feature-x".to_string());
+            tab.pr_head_ref = Some("refs/er/pr/42/head".to_string());
+            let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+            let hash = crate::ai::compute_diff_hash(raw);
+            tab.diff_hash = hash.clone();
+            tab.branch_diff_hash = hash.clone();
+            // Route to the PR bucket so the sidecar lands where the reload reads.
+            tab.mode = DiffMode::PrDiff;
+            tab.apply_managed_root();
+            let er_dir = std::path::PathBuf::from(tab.er_dir());
+            std::fs::create_dir_all(&er_dir).unwrap();
+            std::fs::write(
             er_dir.join("questions.json"),
             format!(
                 r#"{{"version":1,"diff_hash":"{hash}","questions":[{{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}}]}}"#
@@ -14502,112 +14520,121 @@ mod tests {
         )
         .unwrap();
 
-        tab.enter_pr_diff_preloaded("head-oid-abc".to_string(), true)
-            .expect("deferred entry succeeds");
-        assert_eq!(tab.mode, DiffMode::PrDiff);
-        assert_eq!(tab.last_diff_head_oid.as_deref(), Some("head-oid-abc"));
-        assert!(
-            tab.ai
-                .questions
-                .as_ref()
-                .map(|q| q.questions.len())
-                .unwrap_or(0)
-                == 0,
-            "deferred entry must not read the sidecars"
-        );
+            tab.enter_pr_diff_preloaded("head-oid-abc".to_string(), true)
+                .expect("deferred entry succeeds");
+            assert_eq!(tab.mode, DiffMode::PrDiff);
+            assert_eq!(tab.last_diff_head_oid.as_deref(), Some("head-oid-abc"));
+            assert!(
+                tab.ai
+                    .questions
+                    .as_ref()
+                    .map(|q| q.questions.len())
+                    .unwrap_or(0)
+                    == 0,
+                "deferred entry must not read the sidecars"
+            );
 
-        // The offload worker's single authoritative reload picks them up.
-        tab.reload_ai_state();
-        assert_eq!(
-            tab.ai
-                .questions
-                .as_ref()
-                .map(|q| q.questions.len())
-                .unwrap_or(0),
-            1,
-            "authoritative reload loads the PR-bucket sidecar"
-        );
-        assert!(tab.ai.questions.as_ref().unwrap().questions[0]
-            .text
-            .contains("pending"));
-        std::env::remove_var("ER_STORAGE_ROOT");
+            // The offload worker's single authoritative reload picks them up.
+            tab.reload_ai_state();
+            assert_eq!(
+                tab.ai
+                    .questions
+                    .as_ref()
+                    .map(|q| q.questions.len())
+                    .unwrap_or(0),
+                1,
+                "authoritative reload loads the PR-bucket sidecar"
+            );
+            assert!(tab.ai.questions.as_ref().unwrap().questions[0]
+                .text
+                .contains("pending"));
+        });
     }
 
     #[test]
     fn enter_pr_diff_freshly_loaded_skips_refresh_when_files_already_loaded() {
-        // Simulates the desktop cold-open path: `new_local_pr_from_github_diff`
-        // has already parsed `inputs.raw_diff` into files/raw_diff/diff_hash
-        // before this call. Pre-set `pr_refs_fetched` so the first-entry
-        // git-fetch block (a separate, out-of-scope concern) is also skipped —
-        // this isolates the `refresh_diff()` guard. Outside a real git repo any
-        // `gh pr diff` call here would fail, so `Ok(())` is itself proof no
-        // refetch ran.
-        let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
-        let mut tab = TabState::new_for_test(vec![make_file(
-            "x",
-            vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
-            1,
-            1,
-        )]);
-        tab.pr_number = Some(42);
-        tab.pr_refs_fetched = true;
-        tab.raw_diff = Some(raw.to_string());
-        let loaded_hash = crate::ai::compute_diff_hash(raw);
-        tab.diff_hash = loaded_hash.clone();
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            // Simulates the desktop cold-open path: `new_local_pr_from_github_diff`
+            // has already parsed `inputs.raw_diff` into files/raw_diff/diff_hash
+            // before this call. Pre-set `pr_refs_fetched` so the first-entry
+            // git-fetch block (a separate, out-of-scope concern) is also skipped —
+            // this isolates the `refresh_diff()` guard. Outside a real git repo any
+            // `gh pr diff` call here would fail, so `Ok(())` is itself proof no
+            // refetch ran.
+            let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+            let mut tab = TabState::new_for_test(vec![make_file(
+                "x",
+                vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
+                1,
+                1,
+            )]);
+            tab.pr_number = Some(42);
+            tab.pr_refs_fetched = true;
+            tab.raw_diff = Some(raw.to_string());
+            let loaded_hash = crate::ai::compute_diff_hash(raw);
+            tab.diff_hash = loaded_hash.clone();
 
-        tab.enter_pr_diff_freshly_loaded()
-            .expect("freshly-loaded entry succeeds without a refetch");
+            tab.enter_pr_diff_freshly_loaded()
+                .expect("freshly-loaded entry succeeds without a refetch");
 
-        assert_eq!(tab.mode, DiffMode::PrDiff);
-        assert_eq!(tab.files.len(), 1, "pre-loaded files are left intact");
-        assert_eq!(
-            tab.diff_hash, loaded_hash,
-            "diff_hash is not recomputed — refresh_diff() did not run"
-        );
+            assert_eq!(tab.mode, DiffMode::PrDiff);
+            assert_eq!(tab.files.len(), 1, "pre-loaded files are left intact");
+            assert_eq!(
+                tab.diff_hash, loaded_hash,
+                "diff_hash is not recomputed — refresh_diff() did not run"
+            );
+        });
     }
 
     #[test]
     fn enter_pr_diff_freshly_loaded_falls_back_to_refresh_when_files_empty() {
-        // Defensive fallback: if `files` is empty (0-file PR, or caller
-        // misuse), the skip must not apply — a real refresh must still be
-        // attempted so the tab never silently shows a blank diff. Outside a
-        // real git repo this refetch attempt fails, which is itself proof the
-        // fallback path executed (not a silent no-op).
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.pr_number = Some(42);
-        tab.pr_refs_fetched = true;
-        tab.local_branch_view = Some("pr/42".to_string());
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            // Defensive fallback: if `files` is empty (0-file PR, or caller
+            // misuse), the skip must not apply — a real refresh must still be
+            // attempted so the tab never silently shows a blank diff. Outside a
+            // real git repo this refetch attempt fails, which is itself proof the
+            // fallback path executed (not a silent no-op).
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.pr_number = Some(42);
+            tab.pr_refs_fetched = true;
+            tab.local_branch_view = Some("pr/42".to_string());
 
-        let err = tab
-            .enter_pr_diff_freshly_loaded()
-            .expect_err("empty files must not silently skip the refresh");
-        assert!(!err.to_string().is_empty());
+            let err = tab
+                .enter_pr_diff_freshly_loaded()
+                .expect_err("empty files must not silently skip the refresh");
+            assert!(!err.to_string().is_empty());
+        });
     }
 
     #[test]
     fn enter_pr_diff_always_refreshes_even_when_files_already_loaded() {
-        // Guards against widening the skip to the general entry point: TUI
-        // (normal.rs) and desktop `set_mode` call `enter_pr_diff()` when
-        // switching from another mode (e.g. Unstaged) whose `files` holds a
-        // *different*, wrong-scope diff. `enter_pr_diff()` must always
-        // refresh, never trust pre-existing `files`.
-        let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
-        let mut tab = TabState::new_for_test(vec![make_file(
-            "x",
-            vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
-            1,
-            1,
-        )]);
-        tab.pr_number = Some(42);
-        tab.pr_refs_fetched = true;
-        tab.local_branch_view = Some("pr/42".to_string());
-        tab.raw_diff = Some(raw.to_string());
-        tab.diff_hash = crate::ai::compute_diff_hash(raw);
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            // Guards against widening the skip to the general entry point: TUI
+            // (normal.rs) and desktop `set_mode` call `enter_pr_diff()` when
+            // switching from another mode (e.g. Unstaged) whose `files` holds a
+            // *different*, wrong-scope diff. `enter_pr_diff()` must always
+            // refresh, never trust pre-existing `files`.
+            let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+            let mut tab = TabState::new_for_test(vec![make_file(
+                "x",
+                vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
+                1,
+                1,
+            )]);
+            tab.pr_number = Some(42);
+            tab.pr_refs_fetched = true;
+            tab.local_branch_view = Some("pr/42".to_string());
+            tab.raw_diff = Some(raw.to_string());
+            tab.diff_hash = crate::ai::compute_diff_hash(raw);
 
-        let err = tab
-            .enter_pr_diff()
-            .expect_err("must attempt a real refresh even with files already populated");
-        assert!(!err.to_string().is_empty());
+            let err = tab
+                .enter_pr_diff()
+                .expect_err("must attempt a real refresh even with files already populated");
+            assert!(!err.to_string().is_empty());
+        });
     }
 
     #[test]
@@ -14671,136 +14698,136 @@ mod tests {
 
     #[test]
     fn comments_dir_returns_managed_path_in_remote_mode() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".to_string());
-        tab.pr_number = Some(42);
-        tab.apply_managed_root();
-        let expected =
-            crate::storage::pr_bucket_dir(&crate::storage::repo_storage_slug("owner", "repo"), 42);
-        assert_eq!(tab.comments_dir(), expected.to_string_lossy());
+        let tmp = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.remote_repo = Some("owner/repo".to_string());
+            tab.pr_number = Some(42);
+            tab.apply_managed_root();
+            let expected = crate::storage::pr_bucket_dir(
+                &crate::storage::repo_storage_slug("owner", "repo"),
+                42,
+            );
+            assert_eq!(tab.comments_dir(), expected.to_string_lossy());
+        });
     }
 
     #[test]
     fn comments_dir_uses_viewed_branch_for_local_branch_tabs() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "main".to_string();
-        tab.local_branch_view = Some("claude/dev-5067".to_string());
-        tab.sync_managed_storage();
-        let repo_slug =
-            crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root);
-        let branch_slug = crate::storage::slug_branch("claude/dev-5067");
-        // Phase 1: storage is now in a view-bucket subdir, not the branch root
-        let expected = crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch");
-        assert_eq!(tab.comments_dir(), expected.to_string_lossy());
-        assert_ne!(
-            tab.comments_dir(),
-            crate::storage::view_bucket_dir(
-                &repo_slug,
-                &crate::storage::slug_branch("main"),
-                "branch"
-            )
-            .to_string_lossy()
-        );
+        let tmp = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "main".to_string();
+            tab.local_branch_view = Some("claude/dev-5067".to_string());
+            tab.sync_managed_storage();
+            let repo_slug =
+                crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root);
+            let branch_slug = crate::storage::slug_branch("claude/dev-5067");
+            // Phase 1: storage is now in a view-bucket subdir, not the branch root
+            let expected = crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch");
+            assert_eq!(tab.comments_dir(), expected.to_string_lossy());
+            assert_ne!(
+                tab.comments_dir(),
+                crate::storage::view_bucket_dir(
+                    &repo_slug,
+                    &crate::storage::slug_branch("main"),
+                    "branch"
+                )
+                .to_string_lossy()
+            );
+        });
     }
 
     #[test]
     fn reviewed_path_uses_viewed_branch_for_local_branch_tab() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "main".to_string();
-        tab.local_branch_view = Some("claude/dev-5067".to_string());
-        tab.sync_managed_storage();
-        let repo_slug =
-            crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root);
-        let branch_slug = crate::storage::slug_branch("claude/dev-5067");
-        let store = crate::store_registry::store();
-        let scope = er_store::Scope::dir(tab.er_dir()).unwrap();
-        let key = session_store::key::<session_store::ReviewedFiles>(&scope).unwrap();
-        let expected = crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch")
-            .join("reviewed.json");
-        assert_eq!(store.path(&key), expected);
-        assert!(!store
-            .path(&key)
-            .to_string_lossy()
-            .contains(&crate::storage::slug_branch("main")));
+        let tmp = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "main".to_string();
+            tab.local_branch_view = Some("claude/dev-5067".to_string());
+            tab.sync_managed_storage();
+            let repo_slug =
+                crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root);
+            let branch_slug = crate::storage::slug_branch("claude/dev-5067");
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(tab.er_dir()).unwrap();
+            let key = session_store::key::<session_store::ReviewedFiles>(&scope).unwrap();
+            let expected = crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch")
+                .join("reviewed.json");
+            assert_eq!(store.path(&key), expected);
+            assert!(!store
+                .path(&key)
+                .to_string_lossy()
+                .contains(&crate::storage::slug_branch("main")));
+        });
     }
 
     #[test]
     fn apply_checkout_branch_storage_change_reloads_reviewed() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "main".to_string();
+            tab.sync_managed_storage();
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "main".to_string();
-        tab.sync_managed_storage();
+            let repo_slug =
+                crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root);
+            // Phase 1: reviewed files live inside the view-bucket subdir, not the branch root
+            let main_dir = crate::storage::view_bucket_dir(
+                &repo_slug,
+                &crate::storage::slug_branch("main"),
+                "branch",
+            );
+            let feature_dir = crate::storage::view_bucket_dir(
+                &repo_slug,
+                &crate::storage::slug_branch("feature"),
+                "branch",
+            );
+            let store = crate::store_registry::store();
+            session_store::save_reviewed(
+                &store,
+                &er_store::Scope::dir(&main_dir).unwrap(),
+                &HashMap::from([("a.rs".to_string(), "hash-main".to_string())]),
+            )
+            .unwrap();
+            session_store::save_reviewed(
+                &store,
+                &er_store::Scope::dir(&feature_dir).unwrap(),
+                &HashMap::from([("b.rs".to_string(), "hash-feat".to_string())]),
+            )
+            .unwrap();
 
-        let repo_slug =
-            crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root);
-        // Phase 1: reviewed files live inside the view-bucket subdir, not the branch root
-        let main_dir = crate::storage::view_bucket_dir(
-            &repo_slug,
-            &crate::storage::slug_branch("main"),
-            "branch",
-        );
-        let feature_dir = crate::storage::view_bucket_dir(
-            &repo_slug,
-            &crate::storage::slug_branch("feature"),
-            "branch",
-        );
-        let store = crate::store_registry::store();
-        session_store::save_reviewed(
-            &store,
-            &er_store::Scope::dir(&main_dir).unwrap(),
-            &HashMap::from([("a.rs".to_string(), "hash-main".to_string())]),
-        )
-        .unwrap();
-        session_store::save_reviewed(
-            &store,
-            &er_store::Scope::dir(&feature_dir).unwrap(),
-            &HashMap::from([("b.rs".to_string(), "hash-feat".to_string())]),
-        )
-        .unwrap();
+            tab.reviewed
+                .insert("a.rs".to_string(), "hash-main".to_string());
+            tab.apply_checkout_branch_storage_change("feature").unwrap();
 
-        tab.reviewed
-            .insert("a.rs".to_string(), "hash-main".to_string());
-        tab.apply_checkout_branch_storage_change("feature").unwrap();
-
-        assert_eq!(tab.current_branch, "feature");
-        assert_eq!(
-            tab.reviewed.get("b.rs").map(String::as_str),
-            Some("hash-feat")
-        );
-        assert!(!tab.reviewed.contains_key("a.rs"));
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            assert_eq!(tab.current_branch, "feature");
+            assert_eq!(
+                tab.reviewed.get("b.rs").map(String::as_str),
+                Some("hash-feat")
+            );
+            assert!(!tab.reviewed.contains_key("a.rs"));
+        });
     }
 
     #[test]
     fn sync_storage_if_checkout_branch_changed_skips_local_branch_view() {
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "main".to_string();
-        tab.local_branch_view = Some("feature/x".to_string());
-        tab.sync_managed_storage();
-        let path_before = tab.er_root.er_dir();
-        tab.reviewed.insert("only.rs".to_string(), "h".to_string());
-        tab.sync_storage_if_checkout_branch_changed().unwrap();
-        assert_eq!(tab.er_root.er_dir(), path_before);
-        assert!(tab.reviewed.contains_key("only.rs"));
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "main".to_string();
+            tab.local_branch_view = Some("feature/x".to_string());
+            tab.sync_managed_storage();
+            let path_before = tab.er_root.er_dir();
+            tab.reviewed.insert("only.rs".to_string(), "h".to_string());
+            tab.sync_storage_if_checkout_branch_changed().unwrap();
+            assert_eq!(tab.er_root.er_dir(), path_before);
+            assert!(tab.reviewed.contains_key("only.rs"));
+        });
     }
 
     #[test]
@@ -14827,122 +14854,120 @@ mod tests {
 
     #[test]
     fn github_comments_path_uses_managed_dir_in_remote_mode() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".to_string());
-        tab.pr_number = Some(7);
-        tab.apply_managed_root();
-        let dir =
-            crate::storage::pr_bucket_dir(&crate::storage::repo_storage_slug("owner", "repo"), 7);
-        assert_eq!(
-            tab.github_comments_path(),
-            format!("{}/github-comments.json", dir.to_string_lossy())
-        );
+        let tmp = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.remote_repo = Some("owner/repo".to_string());
+            tab.pr_number = Some(7);
+            tab.apply_managed_root();
+            let dir = crate::storage::pr_bucket_dir(
+                &crate::storage::repo_storage_slug("owner", "repo"),
+                7,
+            );
+            assert_eq!(
+                tab.github_comments_path(),
+                format!("{}/github-comments.json", dir.to_string_lossy())
+            );
+        });
     }
 
     #[test]
     fn comments_dir_replaces_slash_in_slug_with_dash() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("my-org/my-repo".to_string());
-        tab.pr_number = Some(1);
-        tab.apply_managed_root();
-        let expected = crate::storage::pr_bucket_dir("my-org-my-repo-bcc89b7f", 1);
-        assert_eq!(tab.comments_dir(), expected.to_string_lossy());
-        assert!(
-            tab.comments_dir()
-                .contains("repos/my-org-my-repo-bcc89b7f/prs/pr-1"),
-            "the slash must become a dash: {}",
-            tab.comments_dir()
-        );
+        let tmp = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.remote_repo = Some("my-org/my-repo".to_string());
+            tab.pr_number = Some(1);
+            tab.apply_managed_root();
+            let expected = crate::storage::pr_bucket_dir("my-org-my-repo-bcc89b7f", 1);
+            assert_eq!(tab.comments_dir(), expected.to_string_lossy());
+            assert!(
+                tab.comments_dir()
+                    .contains("repos/my-org-my-repo-bcc89b7f/prs/pr-1"),
+                "the slash must become a dash: {}",
+                tab.comments_dir()
+            );
+        });
     }
 
     #[test]
     fn reload_remote_comments_loads_from_file() {
-        let repo_root = std::env::temp_dir()
-            .join(format!("er-test-reload-{}", std::process::id()))
-            .to_string_lossy()
-            .to_string();
-        // In normal mode, comments_dir() returns "{repo_root}/.er"
-        let er_dir = format!("{}/.er", repo_root);
-        std::fs::create_dir_all(&er_dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = tmp.path().to_string_lossy().to_string();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            // In normal mode, comments_dir() returns "{repo_root}/.er"
+            let er_dir = format!("{}/.er", repo_root);
+            std::fs::create_dir_all(&er_dir).unwrap();
 
-        let comments_json = serde_json::json!({
-            "version": 1,
-            "diff_hash": "abc123",
-            "comments": [
-                {
-                    "id": "c-1",
-                    "file": "src/lib.rs",
-                    "comment": "Looks good",
-                    "source": "local",
-                    "author": "You",
-                    "resolved": false
-                }
-            ]
+            let comments_json = serde_json::json!({
+                "version": 1,
+                "diff_hash": "abc123",
+                "comments": [
+                    {
+                        "id": "c-1",
+                        "file": "src/lib.rs",
+                        "comment": "Looks good",
+                        "source": "local",
+                        "author": "You",
+                        "resolved": false
+                    }
+                ]
+            });
+            let path = format!("{}/github-comments.json", er_dir);
+            std::fs::write(&path, serde_json::to_string(&comments_json).unwrap()).unwrap();
+
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = repo_root.clone();
+            tab.er_root = ErRoot::managed(format!("{}/.er", tab.repo_root));
+
+            tab.reload_remote_comments();
+
+            let gc = tab
+                .ai
+                .github_comments
+                .as_ref()
+                .expect("github_comments should be loaded");
+            assert_eq!(gc.comments.len(), 1);
+            assert_eq!(gc.comments[0].id, "c-1");
+            assert_eq!(gc.comments[0].comment, "Looks good");
         });
-        let path = format!("{}/github-comments.json", er_dir);
-        std::fs::write(&path, serde_json::to_string(&comments_json).unwrap()).unwrap();
-
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = repo_root.clone();
-        tab.er_root = ErRoot::managed(format!("{}/.er", tab.repo_root));
-
-        tab.reload_remote_comments();
-
-        let gc = tab
-            .ai
-            .github_comments
-            .as_ref()
-            .expect("github_comments should be loaded");
-        assert_eq!(gc.comments.len(), 1);
-        assert_eq!(gc.comments[0].id, "c-1");
-        assert_eq!(gc.comments[0].comment, "Looks good");
-
-        std::fs::remove_dir_all(&repo_root).ok();
     }
 
     #[test]
     fn reload_remote_comments_handles_missing_file_gracefully() {
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/nonexistent/path/that/does/not/exist".to_string();
-        // new_for_test pins er_root at /tmp/test; leftover github-comments.json
-        // there must not satisfy this assertion.
-        tab.er_root = ErRoot::managed(format!("{}/.er", tab.repo_root));
-        // Should not panic
-        tab.reload_remote_comments();
-        assert!(tab.ai.github_comments.is_none());
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/nonexistent/path/that/does/not/exist".to_string();
+            // new_for_test pins er_root at /tmp/test; leftover github-comments.json
+            // there must not satisfy this assertion.
+            tab.er_root = ErRoot::managed(format!("{}/.er", tab.repo_root));
+            // Should not panic
+            tab.reload_remote_comments();
+            assert!(tab.ai.github_comments.is_none());
+        });
     }
 
     #[test]
     fn reload_remote_comments_uses_remote_path_when_set() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.remote_repo = Some("owner/repo".to_string());
+            tab.pr_number = Some(99);
+            tab.apply_managed_root();
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".to_string());
-        tab.pr_number = Some(99);
-        tab.apply_managed_root();
+            let dir = tab.comments_dir();
+            assert!(dir.contains("pr-99"), "dir = {}", dir);
+            assert!(dir.contains("owner-repo"), "dir = {}", dir);
 
-        let dir = tab.comments_dir();
-        assert!(dir.contains("pr-99"), "dir = {}", dir);
-        assert!(dir.contains("owner-repo"), "dir = {}", dir);
+            let path = tab.github_comments_path();
+            assert!(path.ends_with("/github-comments.json"), "path = {}", path);
 
-        std::env::remove_var("ER_STORAGE_ROOT");
-
-        let path = tab.github_comments_path();
-        assert!(path.ends_with("/github-comments.json"), "path = {}", path);
-
-        // Reload should not panic even when the cache dir doesn't exist
-        tab.reload_remote_comments();
-        assert!(tab.ai.github_comments.is_none());
+            // Reload should not panic even when the cache dir doesn't exist
+            tab.reload_remote_comments();
+            assert!(tab.ai.github_comments.is_none());
+        });
     }
 
     // ── parse_stream_json_line ──
@@ -15502,48 +15527,50 @@ mod tests {
     #[test]
     fn pr_history_uses_cached_commits_and_loads_selected_older_diff() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        run_git_for_history_test(root, &["init", "-b", "main"]);
-        run_git_for_history_test(root, &["config", "user.email", "test@example.com"]);
-        run_git_for_history_test(root, &["config", "user.name", "Test User"]);
-        run_git_for_history_test(root, &["config", "commit.gpgsign", "false"]);
-        std::fs::write(root.join("file.txt"), "base\n").unwrap();
-        run_git_for_history_test(root, &["add", "file.txt"]);
-        run_git_for_history_test(root, &["commit", "-m", "base"]);
-        run_git_for_history_test(root, &["checkout", "-b", "feature"]);
-        std::fs::write(root.join("file.txt"), "base\nolder\n").unwrap();
-        run_git_for_history_test(root, &["commit", "-am", "older"]);
-        let older_hash = run_git_for_history_test(root, &["rev-parse", "HEAD"]);
-        std::fs::write(root.join("file.txt"), "base\nolder\nnewer\n").unwrap();
-        run_git_for_history_test(root, &["commit", "-am", "newer"]);
-        let newer_hash = run_git_for_history_test(root, &["rev-parse", "HEAD"]);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let root = tmp.path();
+            run_git_for_history_test(root, &["init", "-b", "main"]);
+            run_git_for_history_test(root, &["config", "user.email", "test@example.com"]);
+            run_git_for_history_test(root, &["config", "user.name", "Test User"]);
+            run_git_for_history_test(root, &["config", "commit.gpgsign", "false"]);
+            std::fs::write(root.join("file.txt"), "base\n").unwrap();
+            run_git_for_history_test(root, &["add", "file.txt"]);
+            run_git_for_history_test(root, &["commit", "-m", "base"]);
+            run_git_for_history_test(root, &["checkout", "-b", "feature"]);
+            std::fs::write(root.join("file.txt"), "base\nolder\n").unwrap();
+            run_git_for_history_test(root, &["commit", "-am", "older"]);
+            let older_hash = run_git_for_history_test(root, &["rev-parse", "HEAD"]);
+            std::fs::write(root.join("file.txt"), "base\nolder\nnewer\n").unwrap();
+            run_git_for_history_test(root, &["commit", "-am", "newer"]);
+            let newer_hash = run_git_for_history_test(root, &["rev-parse", "HEAD"]);
 
-        let mut tab = TabState::new_with_base_unloaded(
-            root.to_string_lossy().to_string(),
-            "main".into(),
-            Ports::cli(),
-        )
-        .unwrap();
-        tab.local_branch_view = Some("feature".to_string());
-        tab.pr_number = Some(42);
-        tab.pr_commits = vec![
-            history_commit_info(newer_hash, "newer"),
-            history_commit_info(older_hash.clone(), "older"),
-        ];
+            let mut tab = TabState::new_with_base_unloaded(
+                root.to_string_lossy().to_string(),
+                "main".into(),
+                Ports::cli(),
+            )
+            .unwrap();
+            tab.local_branch_view = Some("feature".to_string());
+            tab.pr_number = Some(42);
+            tab.pr_commits = vec![
+                history_commit_info(newer_hash, "newer"),
+                history_commit_info(older_hash.clone(), "older"),
+            ];
 
-        tab.set_mode(DiffMode::History);
-        let history = tab.history.as_mut().expect("history");
-        assert_eq!(history.commits.len(), 2);
-        assert!(history.all_loaded);
-        history.selected_commit = 1;
-        tab.history_load_selected_diff();
+            tab.set_mode(DiffMode::History);
+            let history = tab.history.as_mut().expect("history");
+            assert_eq!(history.commits.len(), 2);
+            assert!(history.all_loaded);
+            history.selected_commit = 1;
+            tab.history_load_selected_diff();
 
-        let history = tab.history.as_ref().expect("history");
-        assert_eq!(history.commits[history.selected_commit].hash, older_hash);
-        assert!(
-            history.commit_files.iter().any(|f| f.path == "file.txt"),
-            "older commit diff should be loaded from the selected cached PR commit"
-        );
+            let history = tab.history.as_ref().expect("history");
+            assert_eq!(history.commits[history.selected_commit].hash, older_hash);
+            assert!(
+                history.commit_files.iter().any(|f| f.path == "file.txt"),
+                "older commit diff should be loaded from the selected cached PR commit"
+            );
+        });
     }
 
     // ── local PR commit refresh decision (the seam shared with the remote path) ──
@@ -15905,39 +15932,35 @@ mod tests {
     /// bucket — not the branch bucket the active mode would otherwise imply.
     #[test]
     fn tour_bucket_follows_context() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let repo = tempfile::TempDir::new().unwrap();
-        let mut tab = local_pr_tab_with_remote(repo.path(), 42);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let repo = tempfile::TempDir::new().unwrap();
+            let mut tab = local_pr_tab_with_remote(repo.path(), 42);
 
-        tab.mode = DiffMode::Branch;
-        let d = tab.tour_bucket_er_dir().unwrap();
-        assert!(
-            d.contains("view-buckets/branch") && !d.contains("prs/pr-42"),
-            "{d}"
-        );
+            tab.mode = DiffMode::Branch;
+            let d = tab.tour_bucket_er_dir().unwrap();
+            assert!(
+                d.contains("view-buckets/branch") && !d.contains("prs/pr-42"),
+                "{d}"
+            );
 
-        tab.mode = DiffMode::PrDiff;
-        assert!(tab.tour_bucket_er_dir().unwrap().contains("prs/pr-42"));
+            tab.mode = DiffMode::PrDiff;
+            assert!(tab.tour_bucket_er_dir().unwrap().contains("prs/pr-42"));
 
-        // Guide opened from the PR view (Tour mode + tour_is_pr) must target the PR
-        // bucket — the regenerate write/read mismatch this guards against.
-        tab.mode = DiffMode::Tour;
-        tab.tour_is_pr = true;
-        assert!(
-            tab.tour_bucket_er_dir().unwrap().contains("prs/pr-42"),
-            "PR guide regenerated from Tour mode must target the PR bucket"
-        );
-        tab.tour_is_pr = false;
-        assert!(tab
-            .tour_bucket_er_dir()
-            .unwrap()
-            .contains("view-buckets/branch"));
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            // Guide opened from the PR view (Tour mode + tour_is_pr) must target the PR
+            // bucket — the regenerate write/read mismatch this guards against.
+            tab.mode = DiffMode::Tour;
+            tab.tour_is_pr = true;
+            assert!(
+                tab.tour_bucket_er_dir().unwrap().contains("prs/pr-42"),
+                "PR guide regenerated from Tour mode must target the PR bucket"
+            );
+            tab.tour_is_pr = false;
+            assert!(tab
+                .tour_bucket_er_dir()
+                .unwrap()
+                .contains("view-buckets/branch"));
+        });
     }
 
     /// Tour mode's review.json bucket follows `tour_is_pr`, matching the tour
@@ -15960,64 +15983,60 @@ mod tests {
     /// review.json). Entering from Local Branch stays on the branch view-bucket.
     #[test]
     fn set_mode_tour_keeps_origin_review_storage() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let repo = tempfile::TempDir::new().unwrap();
-        let mut tab = local_pr_tab_with_remote(repo.path(), 42);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let repo = tempfile::TempDir::new().unwrap();
+            let mut tab = local_pr_tab_with_remote(repo.path(), 42);
 
-        // PR Diff → managed PR bucket.
-        tab.mode = DiffMode::PrDiff;
-        tab.apply_managed_root();
-        let pr_dir = tab.er_dir();
-        assert!(
-            pr_dir.contains("prs/pr-42"),
-            "PR Diff must use PR bucket: {pr_dir}"
-        );
+            // PR Diff → managed PR bucket.
+            tab.mode = DiffMode::PrDiff;
+            tab.apply_managed_root();
+            let pr_dir = tab.er_dir();
+            assert!(
+                pr_dir.contains("prs/pr-42"),
+                "PR Diff must use PR bucket: {pr_dir}"
+            );
 
-        // Entering Tour from PR Diff: tour_is_pr + mode change must not move storage.
-        let prev_bucket = tab.review_bucket();
-        tab.tour_is_pr = true;
-        tab.mode = DiffMode::Tour;
-        assert_eq!(
-            tab.review_bucket(),
-            prev_bucket,
-            "Tour from PR Diff must keep ReviewBucket::Pr"
-        );
-        assert_eq!(tab.review_bucket(), ReviewBucket::Pr);
-        tab.apply_managed_root();
-        assert_eq!(
-            tab.er_dir(),
-            pr_dir,
-            "Tour from PR Diff must keep the same PR er_dir"
-        );
+            // Entering Tour from PR Diff: tour_is_pr + mode change must not move storage.
+            let prev_bucket = tab.review_bucket();
+            tab.tour_is_pr = true;
+            tab.mode = DiffMode::Tour;
+            assert_eq!(
+                tab.review_bucket(),
+                prev_bucket,
+                "Tour from PR Diff must keep ReviewBucket::Pr"
+            );
+            assert_eq!(tab.review_bucket(), ReviewBucket::Pr);
+            tab.apply_managed_root();
+            assert_eq!(
+                tab.er_dir(),
+                pr_dir,
+                "Tour from PR Diff must keep the same PR er_dir"
+            );
 
-        // Local Branch → branch view-bucket.
-        tab.mode = DiffMode::Branch;
-        tab.tour_is_pr = false;
-        tab.apply_managed_root();
-        let branch_dir = tab.er_dir();
-        assert!(
-            branch_dir.contains("view-buckets/branch") && !branch_dir.contains("prs/pr-42"),
-            "Branch mode must use branch view-bucket: {branch_dir}"
-        );
+            // Local Branch → branch view-bucket.
+            tab.mode = DiffMode::Branch;
+            tab.tour_is_pr = false;
+            tab.apply_managed_root();
+            let branch_dir = tab.er_dir();
+            assert!(
+                branch_dir.contains("view-buckets/branch") && !branch_dir.contains("prs/pr-42"),
+                "Branch mode must use branch view-bucket: {branch_dir}"
+            );
 
-        // Entering Tour from Local Branch stays on the branch bucket.
-        let prev_bucket = tab.review_bucket();
-        tab.tour_is_pr = false;
-        tab.mode = DiffMode::Tour;
-        assert_eq!(tab.review_bucket(), prev_bucket);
-        assert_eq!(tab.review_bucket(), ReviewBucket::Branch);
-        tab.apply_managed_root();
-        assert_eq!(
-            tab.er_dir(),
-            branch_dir,
-            "Tour from Local Branch must keep the branch er_dir"
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            // Entering Tour from Local Branch stays on the branch bucket.
+            let prev_bucket = tab.review_bucket();
+            tab.tour_is_pr = false;
+            tab.mode = DiffMode::Tour;
+            assert_eq!(tab.review_bucket(), prev_bucket);
+            assert_eq!(tab.review_bucket(), ReviewBucket::Branch);
+            tab.apply_managed_root();
+            assert_eq!(
+                tab.er_dir(),
+                branch_dir,
+                "Tour from Local Branch must keep the branch er_dir"
+            );
+        });
     }
 
     /// Branch-scoped tour freshness must baseline against `branch_diff_hash`,
@@ -16127,26 +16146,21 @@ mod tests {
     /// Sequence:
     #[test]
     fn reviewed_marks_survive_mark_and_reload() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![make_file("src/a.rs", vec![], 1, 0)]);
+            app.tab_mut().repo_root = "/home/user/my-project".to_string();
+            app.tab_mut().current_branch = "main".to_string();
+            app.tab_mut().apply_managed_root();
+            app.toggle_reviewed().unwrap();
+            assert!(app.tab().reviewed.contains_key("src/a.rs"));
 
-        let mut app = App::new_for_test(vec![make_file("src/a.rs", vec![], 1, 0)]);
-        app.tab_mut().repo_root = "/home/user/my-project".to_string();
-        app.tab_mut().current_branch = "main".to_string();
-        app.tab_mut().apply_managed_root();
-        app.toggle_reviewed().unwrap();
-        assert!(app.tab().reviewed.contains_key("src/a.rs"));
-
-        app.tab_mut().sync_managed_storage();
-        assert_eq!(
-            app.tab().reviewed.get("src/a.rs").map(String::as_str),
-            Some("")
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            app.tab_mut().sync_managed_storage();
+            assert_eq!(
+                app.tab().reviewed.get("src/a.rs").map(String::as_str),
+                Some("")
+            );
+        });
     }
 
     ///   1. Branch bucket: save "a.rs" reviewed.
@@ -16157,45 +16171,40 @@ mod tests {
     /// from the save path all the way through to the load path.
     #[test]
     fn reviewed_isolated_per_bucket_on_disk() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "main".to_string();
+            tab.mode = DiffMode::Branch;
+            // Point er_root at the Branch view-bucket under our TempDir.
+            tab.apply_managed_root();
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "main".to_string();
-        tab.mode = DiffMode::Branch;
-        // Point er_root at the Branch view-bucket under our TempDir.
-        tab.apply_managed_root();
+            // Write "a.rs" as reviewed in the Branch bucket.
+            tab.reviewed
+                .insert("a.rs".to_string(), "hash-branch".to_string());
+            tab.save_reviewed_files().unwrap();
 
-        // Write "a.rs" as reviewed in the Branch bucket.
-        tab.reviewed
-            .insert("a.rs".to_string(), "hash-branch".to_string());
-        tab.save_reviewed_files().unwrap();
+            // --- Switch to Unstaged bucket ---
+            tab.reviewed.clear();
+            tab.mode = DiffMode::Unstaged;
+            // sync_managed_storage: apply_managed_root (re-routes to unstaged dir) + reload.
+            tab.sync_managed_storage();
 
-        // --- Switch to Unstaged bucket ---
-        tab.reviewed.clear();
-        tab.mode = DiffMode::Unstaged;
-        // sync_managed_storage: apply_managed_root (re-routes to unstaged dir) + reload.
-        tab.sync_managed_storage();
+            assert!(
+                !tab.reviewed.contains_key("a.rs"),
+                "a.rs must NOT be reviewed in the Unstaged bucket (was only saved in Branch)"
+            );
 
-        assert!(
-            !tab.reviewed.contains_key("a.rs"),
-            "a.rs must NOT be reviewed in the Unstaged bucket (was only saved in Branch)"
-        );
+            // --- Switch back to Branch bucket ---
+            tab.mode = DiffMode::Branch;
+            tab.sync_managed_storage();
 
-        // --- Switch back to Branch bucket ---
-        tab.mode = DiffMode::Branch;
-        tab.sync_managed_storage();
-
-        assert!(
-            tab.reviewed.contains_key("a.rs"),
-            "a.rs must be reviewed again after returning to the Branch bucket"
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            assert!(
+                tab.reviewed.contains_key("a.rs"),
+                "a.rs must be reviewed again after returning to the Branch bucket"
+            );
+        });
     }
 
     /// PR-bucket convergence: the slug produced for a remote tab ("Acme/My-Repo")
@@ -16208,280 +16217,260 @@ mod tests {
     /// therefore the same storage directory.
     #[test]
     fn pr_bucket_convergence_case_insensitive() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            // The slug apply_managed_root() produces for a remote tab is:
+            //   repo_storage_slug_for(git, repo_root, Some(remote_repo))
+            // where remote_repo comes from the GitHub URL owner/repo string.
+            let remote_slug = crate::storage::repo_storage_slug("Acme", "My-Repo");
 
-        // The slug apply_managed_root() produces for a remote tab is:
-        //   repo_storage_slug_for(git, repo_root, Some(remote_repo))
-        // where remote_repo comes from the GitHub URL owner/repo string.
-        let remote_slug = crate::storage::repo_storage_slug("Acme", "My-Repo");
+            // A local clone tab routes via canonical_owner_repo_slug(repo_root), which
+            // asks repo_storage_slug for the origin's owner/repo.
+            let clone_slug = crate::storage::repo_storage_slug("acme", "my-repo");
 
-        // A local clone tab routes via canonical_owner_repo_slug(repo_root), which
-        // asks repo_storage_slug for the origin's owner/repo.
-        let clone_slug = crate::storage::repo_storage_slug("acme", "my-repo");
+            // Both must resolve to the same slug so they share the same pr-bucket dir.
+            assert_eq!(
+                remote_slug, clone_slug,
+                "remote slug and clone slug must match so the PR bucket is shared"
+            );
+            assert!(
+                remote_slug.starts_with("acme-my-repo-"),
+                "canonical PR bucket slug: {remote_slug}"
+            );
 
-        // Both must resolve to the same slug so they share the same pr-bucket dir.
-        assert_eq!(
-            remote_slug, clone_slug,
-            "remote slug and clone slug must match so the PR bucket is shared"
-        );
-        assert!(
-            remote_slug.starts_with("acme-my-repo-"),
-            "canonical PR bucket slug: {remote_slug}"
-        );
+            // Mixed-case variant must also converge.
+            let mixed_slug = crate::storage::repo_storage_slug("acme", "my-repo");
+            assert_eq!(
+                remote_slug, mixed_slug,
+                "lowercase PR URL must resolve to the same bucket"
+            );
 
-        // Mixed-case variant must also converge.
-        let mixed_slug = crate::storage::repo_storage_slug("acme", "my-repo");
-        assert_eq!(
-            remote_slug, mixed_slug,
-            "lowercase PR URL must resolve to the same bucket"
-        );
-
-        // The actual directory paths must be identical.
-        let dir_from_remote = crate::storage::pr_bucket_dir(&remote_slug, 42);
-        let dir_from_clone = crate::storage::pr_bucket_dir(&clone_slug, 42);
-        assert_eq!(
-            dir_from_remote, dir_from_clone,
-            "pr_bucket_dir must be identical regardless of case origin"
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            // The actual directory paths must be identical.
+            let dir_from_remote = crate::storage::pr_bucket_dir(&remote_slug, 42);
+            let dir_from_clone = crate::storage::pr_bucket_dir(&clone_slug, 42);
+            assert_eq!(
+                dir_from_remote, dir_from_clone,
+                "pr_bucket_dir must be identical regardless of case origin"
+            );
+        });
     }
 
     #[test]
     fn er_dir_routes_to_active_view_bucket_or_shared_pr_bucket() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "feat/buckets".to_string();
+            tab.local_branch_view = Some("feat/buckets".to_string());
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "feat/buckets".to_string();
-        tab.local_branch_view = Some("feat/buckets".to_string());
+            for (mode, bucket) in [
+                (DiffMode::Branch, "branch"),
+                (DiffMode::Unstaged, "unstaged"),
+                (DiffMode::Staged, "staged"),
+                (DiffMode::History, "history"),
+            ] {
+                tab.mode = mode;
+                tab.pr_number = None;
+                tab.remote_repo = None;
+                tab.apply_managed_root();
 
-        for (mode, bucket) in [
-            (DiffMode::Branch, "branch"),
-            (DiffMode::Unstaged, "unstaged"),
-            (DiffMode::Staged, "staged"),
-            (DiffMode::History, "history"),
-        ] {
-            tab.mode = mode;
-            tab.pr_number = None;
-            tab.remote_repo = None;
-            tab.apply_managed_root();
+                let expected = crate::storage::view_bucket_dir(
+                    &crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root),
+                    &crate::storage::slug_branch("feat/buckets"),
+                    bucket,
+                )
+                .to_string_lossy()
+                .into_owned();
+                assert_eq!(
+                    tab.er_dir(),
+                    expected,
+                    "{mode:?} should use {bucket} bucket"
+                );
+            }
 
-            let expected = crate::storage::view_bucket_dir(
-                &crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root),
-                &crate::storage::slug_branch("feat/buckets"),
-                bucket,
-            )
-            .to_string_lossy()
-            .into_owned();
-            assert_eq!(
-                tab.er_dir(),
-                expected,
-                "{mode:?} should use {bucket} bucket"
-            );
-        }
-
-        tab.pr_number = Some(99);
-        tab.remote_repo = Some("owner/repo".to_string());
-        for mode in [DiffMode::Branch, DiffMode::PrDiff] {
-            tab.mode = mode;
-            tab.apply_managed_root();
-            let expected = crate::storage::pr_bucket_dir(
-                &crate::storage::repo_storage_slug("owner", "repo"),
-                99,
-            )
-            .to_string_lossy()
-            .into_owned();
-            assert_eq!(tab.er_dir(), expected, "{mode:?} should use PR bucket");
-        }
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            tab.pr_number = Some(99);
+            tab.remote_repo = Some("owner/repo".to_string());
+            for mode in [DiffMode::Branch, DiffMode::PrDiff] {
+                tab.mode = mode;
+                tab.apply_managed_root();
+                let expected = crate::storage::pr_bucket_dir(
+                    &crate::storage::repo_storage_slug("owner", "repo"),
+                    99,
+                )
+                .to_string_lossy()
+                .into_owned();
+                assert_eq!(tab.er_dir(), expected, "{mode:?} should use PR bucket");
+            }
+        });
     }
 
     #[test]
     fn arbiter_overlay_changes_reload_even_with_older_mtime_and_deletion() {
         let dir = tempfile::tempdir().unwrap();
-        let mut tab = make_test_tab(vec![]);
-        tab.er_root = ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
-        let er_dir = std::path::PathBuf::from(tab.er_dir());
-        std::fs::create_dir_all(&er_dir).unwrap();
-        std::fs::write(
-            er_dir.join("review.json"),
-            r#"{"version":1,"diff_hash":"hash","files":{}}"#,
-        )
-        .unwrap();
-        tab.branch_diff_hash = "hash".into();
-        tab.reload_ai_state();
-        assert!(!tab.check_ai_files_changed());
-
-        let arbiter = er_dir.join("arbiter.json");
-        std::fs::write(
-            &arbiter,
-            r#"{"version":1,"diff_hash":"hash","verdicts":[]}"#,
-        )
-        .unwrap();
-        assert!(tab.check_ai_files_changed(), "creation must reload");
-        assert!(!tab.check_ai_files_changed());
-
-        std::fs::write(&arbiter, r#"{"version":1,"diff_hash":"old","verdicts":[]}"#).unwrap();
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&arbiter)
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut tab = make_test_tab(vec![]);
+            tab.er_root = ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
+            let er_dir = std::path::PathBuf::from(tab.er_dir());
+            std::fs::create_dir_all(&er_dir).unwrap();
+            std::fs::write(
+                er_dir.join("review.json"),
+                r#"{"version":1,"diff_hash":"hash","files":{}}"#,
+            )
             .unwrap();
-        file.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
-            .unwrap();
-        assert!(
-            tab.check_ai_files_changed(),
-            "older replacement must reload"
-        );
-        assert!(!tab.check_ai_files_changed());
+            tab.branch_diff_hash = "hash".into();
+            tab.reload_ai_state();
+            assert!(!tab.check_ai_files_changed());
 
-        std::fs::remove_file(&arbiter).unwrap();
-        assert!(tab.check_ai_files_changed(), "removal must reload");
-        assert!(!tab.check_ai_files_changed());
+            let arbiter = er_dir.join("arbiter.json");
+            std::fs::write(
+                &arbiter,
+                r#"{"version":1,"diff_hash":"hash","verdicts":[]}"#,
+            )
+            .unwrap();
+            assert!(tab.check_ai_files_changed(), "creation must reload");
+            assert!(!tab.check_ai_files_changed());
+
+            std::fs::write(&arbiter, r#"{"version":1,"diff_hash":"old","verdicts":[]}"#).unwrap();
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&arbiter)
+                .unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+                .unwrap();
+            assert!(
+                tab.check_ai_files_changed(),
+                "older replacement must reload"
+            );
+            assert!(!tab.check_ai_files_changed());
+
+            std::fs::remove_file(&arbiter).unwrap();
+            assert!(tab.check_ai_files_changed(), "removal must reload");
+            assert!(!tab.check_ai_files_changed());
+        });
     }
 
     #[test]
     fn completion_reload_picks_up_newer_sidecar_without_forced_reset() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "feature".to_string();
+            tab.local_branch_view = Some("feature".to_string());
+            tab.apply_managed_root();
+            let er_dir = std::path::PathBuf::from(tab.er_dir());
+            std::fs::create_dir_all(&er_dir).unwrap();
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "feature".to_string();
-        tab.local_branch_view = Some("feature".to_string());
-        tab.apply_managed_root();
-        let er_dir = std::path::PathBuf::from(tab.er_dir());
-        std::fs::create_dir_all(&er_dir).unwrap();
+            // Baseline sidecar + reload: last_ai_check = its mtime.
+            std::fs::write(er_dir.join("questions.json"), "[]").unwrap();
+            tab.reload_ai_state();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            assert!(
+                !tab.check_ai_files_changed(),
+                "no newer files — mtime comparison alone must not reload"
+            );
 
-        // Baseline sidecar + reload: last_ai_check = its mtime.
-        std::fs::write(er_dir.join("questions.json"), "[]").unwrap();
-        tab.reload_ai_state();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        assert!(
-            !tab.check_ai_files_changed(),
-            "no newer files — mtime comparison alone must not reload"
-        );
+            // Agent writes its output after the last check (completion path no
+            // longer resets last_ai_check to None — the newer mtime must fire the
+            // reload on its own).
+            std::fs::write(er_dir.join("review.json"), r#"{"head_branch":"feature"}"#).unwrap();
+            assert!(
+                tab.check_ai_files_changed(),
+                "newer sidecar must fire the reload without a forced reset"
+            );
 
-        // Agent writes its output after the last check (completion path no
-        // longer resets last_ai_check to None — the newer mtime must fire the
-        // reload on its own).
-        std::fs::write(er_dir.join("review.json"), r#"{"head_branch":"feature"}"#).unwrap();
-        assert!(
-            tab.check_ai_files_changed(),
-            "newer sidecar must fire the reload without a forced reset"
-        );
-
-        // And the state settles again after reload.
-        tab.reload_ai_state();
-        assert!(
-            !tab.check_ai_files_changed(),
-            "settled after reload — no redundant full re-read"
-        );
-        std::env::remove_var("ER_STORAGE_ROOT");
+            // And the state settles again after reload.
+            tab.reload_ai_state();
+            assert!(
+                !tab.check_ai_files_changed(),
+                "settled after reload — no redundant full re-read"
+            );
+        });
     }
 
     #[test]
     fn mark_sidecar_written_does_not_swallow_a_newer_review() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "feature".to_string();
+            tab.local_branch_view = Some("feature".to_string());
+            tab.apply_managed_root();
+            let er_dir = std::path::PathBuf::from(tab.er_dir());
+            std::fs::create_dir_all(&er_dir).unwrap();
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "feature".to_string();
-        tab.local_branch_view = Some("feature".to_string());
-        tab.apply_managed_root();
-        let er_dir = std::path::PathBuf::from(tab.er_dir());
-        std::fs::create_dir_all(&er_dir).unwrap();
+            std::fs::write(er_dir.join("questions.json"), "[]").unwrap();
+            tab.reload_ai_state();
+            std::thread::sleep(std::time::Duration::from_millis(20));
 
-        std::fs::write(er_dir.join("questions.json"), "[]").unwrap();
-        tab.reload_ai_state();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+            std::fs::write(er_dir.join("review.json"), r#"{"head_branch":"feature"}"#).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::fs::write(
+                er_dir.join("questions.json"),
+                r#"{"version":1,"diff_hash":"x","questions":[]}"#,
+            )
+            .unwrap();
+            tab.mark_sidecar_written(er_dir.join("questions.json").to_str().unwrap());
 
-        std::fs::write(er_dir.join("review.json"), r#"{"head_branch":"feature"}"#).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(
-            er_dir.join("questions.json"),
-            r#"{"version":1,"diff_hash":"x","questions":[]}"#,
-        )
-        .unwrap();
-        tab.mark_sidecar_written(er_dir.join("questions.json").to_str().unwrap());
-
-        assert!(
-            tab.check_ai_files_changed(),
-            "a newer review.json must still reload after marking our questions write"
-        );
-        std::env::remove_var("ER_STORAGE_ROOT");
+            assert!(
+                tab.check_ai_files_changed(),
+                "a newer review.json must still reload after marking our questions write"
+            );
+        });
     }
 
     #[test]
     fn mark_sidecar_written_ignores_github_comments_outside_view_bucket() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let repo = tempfile::TempDir::new().unwrap();
+            let root = repo.path();
+            run_git_for_history_test(root, &["init", "-q"]);
+            run_git_for_history_test(
+                root,
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.com/acme/widget.git",
+                ],
+            );
 
-        let repo = tempfile::TempDir::new().unwrap();
-        let root = repo.path();
-        run_git_for_history_test(root, &["init", "-q"]);
-        run_git_for_history_test(
-            root,
-            &[
-                "remote",
-                "add",
-                "origin",
-                "https://github.com/acme/widget.git",
-            ],
-        );
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.ports = Ports::cli();
+            tab.repo_root = root.to_string_lossy().to_string();
+            tab.current_branch = "feat/foo".to_string();
+            tab.local_branch_view = Some("feat/foo".to_string());
+            tab.pr_number = Some(99);
+            tab.remote_repo = None;
+            tab.mode = DiffMode::Branch;
+            tab.apply_managed_root();
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.ports = Ports::cli();
-        tab.repo_root = root.to_string_lossy().to_string();
-        tab.current_branch = "feat/foo".to_string();
-        tab.local_branch_view = Some("feat/foo".to_string());
-        tab.pr_number = Some(99);
-        tab.remote_repo = None;
-        tab.mode = DiffMode::Branch;
-        tab.apply_managed_root();
+            let view = std::path::PathBuf::from(tab.er_dir());
+            std::fs::create_dir_all(&view).unwrap();
+            tab.last_ai_check = None;
 
-        let view = std::path::PathBuf::from(tab.er_dir());
-        std::fs::create_dir_all(&view).unwrap();
-        tab.last_ai_check = None;
+            let gh_dir = std::path::PathBuf::from(tab.github_comments_dir());
+            assert!(
+                !gh_dir.starts_with(&view),
+                "github comments must live in the PR bucket, not the Branch view bucket"
+            );
+            std::fs::create_dir_all(&gh_dir).unwrap();
+            let gh_path = gh_dir.join("github-comments.json");
+            std::fs::write(&gh_path, "{}").unwrap();
+            tab.mark_sidecar_written(gh_path.to_str().unwrap());
 
-        let gh_dir = std::path::PathBuf::from(tab.github_comments_dir());
-        assert!(
-            !gh_dir.starts_with(&view),
-            "github comments must live in the PR bucket, not the Branch view bucket"
-        );
-        std::fs::create_dir_all(&gh_dir).unwrap();
-        let gh_path = gh_dir.join("github-comments.json");
-        std::fs::write(&gh_path, "{}").unwrap();
-        tab.mark_sidecar_written(gh_path.to_str().unwrap());
-
-        assert!(
-            tab.last_ai_check.is_none(),
-            "must not stamp last_ai_check from a sidecar outside er_dir"
-        );
-        assert!(
+            assert!(
+                tab.last_ai_check.is_none(),
+                "must not stamp last_ai_check from a sidecar outside er_dir"
+            );
+            assert!(
             !tab.check_ai_files_changed(),
             "empty view bucket plus a PR-bucket write must not take the deleted-files reload path"
         );
-        std::env::remove_var("ER_STORAGE_ROOT");
+        });
     }
 
     /// A local PR tab (remote_repo = None) must split its review artifacts by view:
@@ -16490,40 +16479,35 @@ mod tests {
     /// the PR bucket, so triage generated in one view does not leak into the other.
     #[test]
     fn local_pr_branch_mode_routes_to_view_bucket_not_pr_bucket() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "feat/foo".to_string();
+            tab.local_branch_view = Some("feat/foo".to_string());
+            tab.pr_number = Some(42);
+            tab.remote_repo = None;
+            tab.mode = DiffMode::Branch;
+            tab.apply_managed_root();
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "feat/foo".to_string();
-        tab.local_branch_view = Some("feat/foo".to_string());
-        tab.pr_number = Some(42);
-        tab.remote_repo = None;
-        tab.mode = DiffMode::Branch;
-        tab.apply_managed_root();
-
-        let expected = crate::storage::view_bucket_dir(
-            &crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root),
-            &crate::storage::slug_branch("feat/foo"),
-            "branch",
-        )
-        .to_string_lossy()
-        .into_owned();
-        assert_eq!(
+            let expected = crate::storage::view_bucket_dir(
+                &crate::storage::repo_storage_slug_from_root(&*tab.ports.git, &tab.repo_root),
+                &crate::storage::slug_branch("feat/foo"),
+                "branch",
+            )
+            .to_string_lossy()
+            .into_owned();
+            assert_eq!(
             tab.er_dir(),
             expected,
             "local PR tab in Branch mode must use the per-branch view bucket, not the PR bucket"
         );
-        assert!(
-            !tab.er_dir().contains("prs/pr-42"),
-            "local PR tab in Branch mode must not route to the PR bucket: {}",
-            tab.er_dir()
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            assert!(
+                !tab.er_dir().contains("prs/pr-42"),
+                "local PR tab in Branch mode must not route to the PR bucket: {}",
+                tab.er_dir()
+            );
+        });
     }
 
     // ── tour split (branch-scoped, hidden from PR Diff) ──
@@ -16533,34 +16517,40 @@ mod tests {
     /// from the PR Diff view.
     #[test]
     fn branch_bucket_er_dir_local_pr_uses_branch_view_bucket() {
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "feat/foo".to_string();
-        tab.local_branch_view = Some("feat/foo".to_string());
-        tab.pr_number = Some(42);
-        tab.remote_repo = None;
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "feat/foo".to_string();
+            tab.local_branch_view = Some("feat/foo".to_string());
+            tab.pr_number = Some(42);
+            tab.remote_repo = None;
 
-        let dir = tab.branch_bucket_er_dir().expect("branch bucket dir");
-        assert!(dir.contains("view-buckets/branch"), "dir = {dir}");
-        assert!(
-            dir.contains(&crate::storage::slug_branch("feat/foo")),
-            "dir = {dir}"
-        );
-        assert!(
-            !dir.contains("prs/pr-42"),
-            "tour must not live in the PR bucket: {dir}"
-        );
+            let dir = tab.branch_bucket_er_dir().expect("branch bucket dir");
+            assert!(dir.contains("view-buckets/branch"), "dir = {dir}");
+            assert!(
+                dir.contains(&crate::storage::slug_branch("feat/foo")),
+                "dir = {dir}"
+            );
+            assert!(
+                !dir.contains("prs/pr-42"),
+                "tour must not live in the PR bucket: {dir}"
+            );
+        });
     }
 
     /// Remote tabs have no working tree, so the tour bucket is the PR bucket.
     #[test]
     fn branch_bucket_er_dir_remote_uses_pr_bucket() {
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".to_string());
-        tab.pr_number = Some(7);
-        let dir = tab.branch_bucket_er_dir().expect("pr bucket dir");
-        assert!(dir.contains("prs/pr-7"), "dir = {dir}");
-        assert!(dir.contains("owner-repo"), "dir = {dir}");
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.remote_repo = Some("owner/repo".to_string());
+            tab.pr_number = Some(7);
+            let dir = tab.branch_bucket_er_dir().expect("pr bucket dir");
+            assert!(dir.contains("prs/pr-7"), "dir = {dir}");
+            assert!(dir.contains("owner-repo"), "dir = {dir}");
+        });
     }
 
     fn write_tour_json(dir: &str, diff_hash: &str, title: &str) {
@@ -16577,7 +16567,8 @@ mod tests {
     }
 
     /// Local PR tab backed by a real git repo with a GitHub origin, so
-    /// `canonical_owner_repo_slug` resolves the PR bucket. Caller sets ER_STORAGE_ROOT.
+    /// `canonical_owner_repo_slug` resolves the PR bucket. The caller wraps the
+    /// test in `with_test_storage_root`.
     fn local_pr_tab_with_remote(root: &std::path::Path, pr: u64) -> TabState {
         run_git_for_history_test(root, &["init", "-q"]);
         run_git_for_history_test(
@@ -16602,129 +16593,112 @@ mod tests {
     /// The PR Diff view shows its own tour (PR bucket) — option C, each view its own.
     #[test]
     fn reload_pr_diff_shows_own_tour() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.remote_repo = Some("owner/repo".to_string());
+            tab.pr_number = Some(42);
+            tab.mode = DiffMode::PrDiff;
+            tab.apply_managed_root();
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".to_string());
-        tab.pr_number = Some(42);
-        tab.mode = DiffMode::PrDiff;
-        tab.apply_managed_root();
-
-        write_tour_json(&tab.er_dir(), "x", "PR tour");
-        tab.reload_ai_state();
-        assert!(tab.ai.has_tour(), "PR Diff view must show its own tour");
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            write_tour_json(&tab.er_dir(), "x", "PR tour");
+            tab.reload_ai_state();
+            assert!(tab.ai.has_tour(), "PR Diff view must show its own tour");
+        });
     }
 
     /// Auto-share when identical: a branch tour whose hash matches the active diff is
     /// reused in the PR Diff view (no separate PR tour needed).
     #[test]
     fn reload_reuses_branch_tour_in_pr_diff_when_diff_matches() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let repo = tempfile::TempDir::new().unwrap();
-        let mut tab = local_pr_tab_with_remote(repo.path(), 99);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let repo = tempfile::TempDir::new().unwrap();
+            let mut tab = local_pr_tab_with_remote(repo.path(), 99);
 
-        // Branch tour (branch bucket), generated against diff hash "h".
-        tab.mode = DiffMode::Branch;
-        tab.apply_managed_root();
-        write_tour_json(&tab.er_dir(), "h", "Branch tour");
+            // Branch tour (branch bucket), generated against diff hash "h".
+            tab.mode = DiffMode::Branch;
+            tab.apply_managed_root();
+            write_tour_json(&tab.er_dir(), "h", "Branch tour");
 
-        // PR Diff view, identical diff (same hash) → reuse the branch tour.
-        tab.mode = DiffMode::PrDiff;
-        tab.apply_managed_root();
-        tab.branch_diff_hash = "h".to_string();
-        tab.reload_ai_state();
-        assert_eq!(
-            tab.ai.tour.as_ref().map(|t| t.title.as_str()),
-            Some("Branch tour"),
-            "PR Diff must reuse the branch tour when the diffs are identical"
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            // PR Diff view, identical diff (same hash) → reuse the branch tour.
+            tab.mode = DiffMode::PrDiff;
+            tab.apply_managed_root();
+            tab.branch_diff_hash = "h".to_string();
+            tab.reload_ai_state();
+            assert_eq!(
+                tab.ai.tour.as_ref().map(|t| t.title.as_str()),
+                Some("Branch tour"),
+                "PR Diff must reuse the branch tour when the diffs are identical"
+            );
+        });
     }
 
     /// When both buckets have a tour, the PR Diff view prefers its own (PR bucket).
     #[test]
     fn reload_pr_diff_prefers_own_tour() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let repo = tempfile::TempDir::new().unwrap();
-        let mut tab = local_pr_tab_with_remote(repo.path(), 99);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let repo = tempfile::TempDir::new().unwrap();
+            let mut tab = local_pr_tab_with_remote(repo.path(), 99);
 
-        tab.mode = DiffMode::Branch;
-        tab.apply_managed_root();
-        write_tour_json(&tab.er_dir(), "hbr", "Branch tour");
+            tab.mode = DiffMode::Branch;
+            tab.apply_managed_root();
+            write_tour_json(&tab.er_dir(), "hbr", "Branch tour");
 
-        tab.mode = DiffMode::PrDiff;
-        tab.apply_managed_root();
-        write_tour_json(&tab.er_dir(), "hpr", "PR tour");
-        tab.branch_diff_hash = "hpr".to_string();
-        tab.reload_ai_state();
-        assert_eq!(
-            tab.ai.tour.as_ref().map(|t| t.title.as_str()),
-            Some("PR tour"),
-            "PR Diff must prefer its own tour over the branch tour"
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            tab.mode = DiffMode::PrDiff;
+            tab.apply_managed_root();
+            write_tour_json(&tab.er_dir(), "hpr", "PR tour");
+            tab.branch_diff_hash = "hpr".to_string();
+            tab.reload_ai_state();
+            assert_eq!(
+                tab.ai.tour.as_ref().map(|t| t.title.as_str()),
+                Some("PR tour"),
+                "PR Diff must prefer its own tour over the branch tour"
+            );
+        });
     }
 
     /// GitHub PR comments are hidden in the Unstaged view (shown only in Local branch
     /// and PR Diff), even though they live in the shared PR bucket.
     #[test]
     fn github_comments_hidden_in_unstaged_view() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let repo = tempfile::TempDir::new().unwrap();
-        let mut tab = local_pr_tab_with_remote(repo.path(), 99);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let repo = tempfile::TempDir::new().unwrap();
+            let mut tab = local_pr_tab_with_remote(repo.path(), 99);
 
-        tab.mode = DiffMode::Branch;
-        tab.apply_managed_root();
-        let pr_dir = tab.github_comments_dir();
-        std::fs::create_dir_all(&pr_dir).unwrap();
-        let gc = serde_json::json!({
-            "version": 1, "diff_hash": "h",
-            "comments": [{
-                "id": "gc-1", "file": "a.rs", "comment": "x",
-                "source": "github", "author": "o", "resolved": false
-            }]
+            tab.mode = DiffMode::Branch;
+            tab.apply_managed_root();
+            let pr_dir = tab.github_comments_dir();
+            std::fs::create_dir_all(&pr_dir).unwrap();
+            let gc = serde_json::json!({
+                "version": 1, "diff_hash": "h",
+                "comments": [{
+                    "id": "gc-1", "file": "a.rs", "comment": "x",
+                    "source": "github", "author": "o", "resolved": false
+                }]
+            });
+            std::fs::write(
+                format!("{pr_dir}/github-comments.json"),
+                serde_json::to_string(&gc).unwrap(),
+            )
+            .unwrap();
+
+            tab.reload_ai_state();
+            assert!(
+                tab.ai.github_comments.is_some(),
+                "GitHub comments visible in the Local branch view"
+            );
+
+            tab.mode = DiffMode::Unstaged;
+            tab.apply_managed_root();
+            tab.reload_ai_state();
+            assert!(
+                tab.ai.github_comments.is_none(),
+                "GitHub comments must be hidden in the Unstaged view"
+            );
         });
-        std::fs::write(
-            format!("{pr_dir}/github-comments.json"),
-            serde_json::to_string(&gc).unwrap(),
-        )
-        .unwrap();
-
-        tab.reload_ai_state();
-        assert!(
-            tab.ai.github_comments.is_some(),
-            "GitHub comments visible in the Local branch view"
-        );
-
-        tab.mode = DiffMode::Unstaged;
-        tab.apply_managed_root();
-        tab.reload_ai_state();
-        assert!(
-            tab.ai.github_comments.is_none(),
-            "GitHub comments must be hidden in the Unstaged view"
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
     }
 
     /// When the PR bucket can't be resolved (no usable git remote), apply_managed_root
@@ -16732,76 +16706,67 @@ mod tests {
     /// previous mode's bucket.
     #[test]
     fn apply_managed_root_pr_view_falls_back_to_view_bucket_without_remote() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let repo = tempfile::TempDir::new().unwrap();
-        // Git repo with NO origin remote → canonical_owner_repo_slug returns None.
-        run_git_for_history_test(repo.path(), &["init", "-q"]);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let repo = tempfile::TempDir::new().unwrap();
+            // Git repo with NO origin remote → canonical_owner_repo_slug returns None.
+            run_git_for_history_test(repo.path(), &["init", "-q"]);
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = repo.path().to_string_lossy().to_string();
-        tab.current_branch = "feat/foo".to_string();
-        tab.local_branch_view = Some("feat/foo".to_string());
-        tab.pr_number = Some(7);
-        tab.remote_repo = None;
-        tab.mode = DiffMode::PrDiff;
-        // Sentinel: a clearly-wrong previous er_root that must be replaced.
-        tab.er_root = ErRoot::managed("/sentinel/.er");
-        tab.apply_managed_root();
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = repo.path().to_string_lossy().to_string();
+            tab.current_branch = "feat/foo".to_string();
+            tab.local_branch_view = Some("feat/foo".to_string());
+            tab.pr_number = Some(7);
+            tab.remote_repo = None;
+            tab.mode = DiffMode::PrDiff;
+            // Sentinel: a clearly-wrong previous er_root that must be replaced.
+            tab.er_root = ErRoot::managed("/sentinel/.er");
+            tab.apply_managed_root();
 
-        let dir = tab.er_dir();
-        assert!(dir.contains("view-buckets/branch"), "fell through: {dir}");
-        assert!(
-            !dir.contains("prs/pr-7"),
-            "must not be the PR bucket: {dir}"
-        );
-        assert!(
-            !dir.contains("sentinel"),
-            "stale er_root not replaced: {dir}"
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            let dir = tab.er_dir();
+            assert!(dir.contains("view-buckets/branch"), "fell through: {dir}");
+            assert!(
+                !dir.contains("prs/pr-7"),
+                "must not be the PR bucket: {dir}"
+            );
+            assert!(
+                !dir.contains("sentinel"),
+                "stale er_root not replaced: {dir}"
+            );
+        });
     }
 
     /// The Local branch tour is shown across the working-tree views (here: Unstaged),
     /// loaded out of the branch bucket.
     #[test]
     fn reload_loads_tour_from_branch_bucket_in_unstaged_view() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "feat/foo".to_string();
+            tab.local_branch_view = Some("feat/foo".to_string());
+            tab.mode = DiffMode::Unstaged;
+            tab.apply_managed_root();
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "feat/foo".to_string();
-        tab.local_branch_view = Some("feat/foo".to_string());
-        tab.mode = DiffMode::Unstaged;
-        tab.apply_managed_root();
+            let branch_dir = tab.branch_bucket_er_dir().unwrap();
+            std::fs::create_dir_all(&branch_dir).unwrap();
+            let tour = serde_json::json!({
+                "version": 1, "diff_hash": "x",
+                "pillars": [{"id": "p1", "title": "P1"}]
+            });
+            std::fs::write(
+                format!("{branch_dir}/tour.json"),
+                serde_json::to_string(&tour).unwrap(),
+            )
+            .unwrap();
 
-        let branch_dir = tab.branch_bucket_er_dir().unwrap();
-        std::fs::create_dir_all(&branch_dir).unwrap();
-        let tour = serde_json::json!({
-            "version": 1, "diff_hash": "x",
-            "pillars": [{"id": "p1", "title": "P1"}]
+            tab.reload_ai_state();
+            assert!(
+                tab.ai.has_tour(),
+                "tour must stay discoverable from the Unstaged view"
+            );
         });
-        std::fs::write(
-            format!("{branch_dir}/tour.json"),
-            serde_json::to_string(&tour).unwrap(),
-        )
-        .unwrap();
-
-        tab.reload_ai_state();
-        assert!(
-            tab.ai.has_tour(),
-            "tour must stay discoverable from the Unstaged view"
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
     }
 
     // ── GitHub comments shared (PR-scoped) across views ──
@@ -16818,12 +16783,15 @@ mod tests {
     /// Remote tabs resolve github-comments to the PR bucket.
     #[test]
     fn github_comments_dir_remote_uses_pr_bucket() {
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".to_string());
-        tab.pr_number = Some(7);
-        let dir = tab.github_comments_dir();
-        assert!(dir.contains("prs/pr-7"), "dir = {dir}");
-        assert!(dir.contains("owner-repo"), "dir = {dir}");
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.remote_repo = Some("owner/repo".to_string());
+            tab.pr_number = Some(7);
+            let dir = tab.github_comments_dir();
+            assert!(dir.contains("prs/pr-7"), "dir = {dir}");
+            assert!(dir.contains("owner-repo"), "dir = {dir}");
+        });
     }
 
     /// End-to-end: a local PR tab loads github-comments from the shared PR bucket in
@@ -16831,84 +16799,79 @@ mod tests {
     /// the PR Diff view (where the active bucket IS the PR bucket).
     #[test]
     fn local_pr_github_comments_shared_branch_and_pr_views() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            // Real git repo with a GitHub origin so canonical_owner_repo_slug resolves.
+            let repo = tempfile::TempDir::new().unwrap();
+            let root = repo.path();
+            run_git_for_history_test(root, &["init", "-q"]);
+            run_git_for_history_test(
+                root,
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.com/acme/widget.git",
+                ],
+            );
 
-        // Real git repo with a GitHub origin so canonical_owner_repo_slug resolves.
-        let repo = tempfile::TempDir::new().unwrap();
-        let root = repo.path();
-        run_git_for_history_test(root, &["init", "-q"]);
-        run_git_for_history_test(
-            root,
-            &[
-                "remote",
-                "add",
-                "origin",
-                "https://github.com/acme/widget.git",
-            ],
-        );
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.ports = Ports::cli();
+            tab.repo_root = root.to_string_lossy().to_string();
+            tab.current_branch = "feat/foo".to_string();
+            tab.local_branch_view = Some("feat/foo".to_string());
+            tab.pr_number = Some(99);
+            tab.remote_repo = None;
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.ports = Ports::cli();
-        tab.repo_root = root.to_string_lossy().to_string();
-        tab.current_branch = "feat/foo".to_string();
-        tab.local_branch_view = Some("feat/foo".to_string());
-        tab.pr_number = Some(99);
-        tab.remote_repo = None;
+            tab.mode = DiffMode::Branch;
+            tab.apply_managed_root();
+            let branch_dir = tab.er_dir();
+            let pr_dir = tab.github_comments_dir();
+            assert!(
+                pr_dir.contains("prs/pr-99"),
+                "github comments must resolve to the PR bucket: {pr_dir}"
+            );
+            assert_ne!(
+                pr_dir, branch_dir,
+                "PR bucket must differ from the Branch view bucket"
+            );
 
-        tab.mode = DiffMode::Branch;
-        tab.apply_managed_root();
-        let branch_dir = tab.er_dir();
-        let pr_dir = tab.github_comments_dir();
-        assert!(
-            pr_dir.contains("prs/pr-99"),
-            "github comments must resolve to the PR bucket: {pr_dir}"
-        );
-        assert_ne!(
-            pr_dir, branch_dir,
-            "PR bucket must differ from the Branch view bucket"
-        );
+            std::fs::create_dir_all(&pr_dir).unwrap();
+            let gc = serde_json::json!({
+                "version": 1, "diff_hash": "h",
+                "comments": [{
+                    "id": "gc-1", "file": "src/lib.rs", "comment": "PR note",
+                    "source": "github", "author": "octocat", "resolved": false
+                }]
+            });
+            std::fs::write(
+                format!("{pr_dir}/github-comments.json"),
+                serde_json::to_string(&gc).unwrap(),
+            )
+            .unwrap();
 
-        std::fs::create_dir_all(&pr_dir).unwrap();
-        let gc = serde_json::json!({
-            "version": 1, "diff_hash": "h",
-            "comments": [{
-                "id": "gc-1", "file": "src/lib.rs", "comment": "PR note",
-                "source": "github", "author": "octocat", "resolved": false
-            }]
+            // Branch view: github comments load from the PR bucket (shared).
+            tab.reload_ai_state();
+            let gc_branch = tab
+                .ai
+                .github_comments
+                .as_ref()
+                .expect("github comments visible in Branch view");
+            assert_eq!(gc_branch.comments.len(), 1);
+            assert_eq!(gc_branch.comments[0].id, "gc-1");
+
+            // PR Diff view: same github comments (active bucket IS the PR bucket).
+            tab.mode = DiffMode::PrDiff;
+            tab.apply_managed_root();
+            tab.reload_ai_state();
+            let gc_pr = tab
+                .ai
+                .github_comments
+                .as_ref()
+                .expect("github comments visible in PR Diff view");
+            assert_eq!(gc_pr.comments.len(), 1);
+            assert_eq!(gc_pr.comments[0].id, "gc-1");
         });
-        std::fs::write(
-            format!("{pr_dir}/github-comments.json"),
-            serde_json::to_string(&gc).unwrap(),
-        )
-        .unwrap();
-
-        // Branch view: github comments load from the PR bucket (shared).
-        tab.reload_ai_state();
-        let gc_branch = tab
-            .ai
-            .github_comments
-            .as_ref()
-            .expect("github comments visible in Branch view");
-        assert_eq!(gc_branch.comments.len(), 1);
-        assert_eq!(gc_branch.comments[0].id, "gc-1");
-
-        // PR Diff view: same github comments (active bucket IS the PR bucket).
-        tab.mode = DiffMode::PrDiff;
-        tab.apply_managed_root();
-        tab.reload_ai_state();
-        let gc_pr = tab
-            .ai
-            .github_comments
-            .as_ref()
-            .expect("github comments visible in PR Diff view");
-        assert_eq!(gc_pr.comments.len(), 1);
-        assert_eq!(gc_pr.comments[0].id, "gc-1");
-
-        std::env::remove_var("ER_STORAGE_ROOT");
     }
 
     #[test]
@@ -16931,141 +16894,148 @@ mod tests {
     /// `<storage_root>/repos/<owner-repo>/prs/pr-<N>/reviewed.json`.
     #[test]
     fn remote_reviewed_persists_to_pr_bucket_dir() {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.remote_repo = Some("owner/repo".to_string());
+            tab.pr_number = Some(42);
+            tab.mode = DiffMode::PrDiff;
+            // Route er_root to the PR bucket under the TempDir.
+            tab.apply_managed_root();
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".to_string());
-        tab.pr_number = Some(42);
-        tab.mode = DiffMode::PrDiff;
-        // Route er_root to the PR bucket under the TempDir.
-        tab.apply_managed_root();
+            tab.reviewed
+                .insert("src/lib.rs".to_string(), "hash-abc".to_string());
+            tab.save_reviewed_files().unwrap();
 
-        tab.reviewed
-            .insert("src/lib.rs".to_string(), "hash-abc".to_string());
-        tab.save_reviewed_files().unwrap();
+            let expected = crate::storage::pr_bucket_dir(
+                &crate::storage::repo_storage_slug("owner", "repo"),
+                42,
+            )
+            .join("reviewed.json");
 
-        let expected =
-            crate::storage::pr_bucket_dir(&crate::storage::repo_storage_slug("owner", "repo"), 42)
-                .join("reviewed.json");
+            assert!(
+                expected.exists(),
+                "reviewed file must exist at {:?} for remote PR tab",
+                expected
+            );
 
-        assert!(
-            expected.exists(),
-            "reviewed file must exist at {:?} for remote PR tab",
-            expected
-        );
-
-        let contents = std::fs::read_to_string(&expected).unwrap();
-        assert!(
-            contents.contains("src/lib.rs"),
-            "reviewed file must contain the saved path; got: {}",
-            contents
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+            let contents = std::fs::read_to_string(&expected).unwrap();
+            assert!(
+                contents.contains("src/lib.rs"),
+                "reviewed file must contain the saved path; got: {}",
+                contents
+            );
+        });
     }
 
     #[test]
     fn cleanup_triage_removes_only_triage_json() {
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        std::fs::write(er.join("triage.json"), "{}").unwrap();
-        std::fs::write(er.join("review.json"), "{}").unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::write(er.join("triage.json"), "{}").unwrap();
+            std::fs::write(er.join("review.json"), "{}").unwrap();
 
-        cleanup_triage(er.to_str().unwrap()).unwrap();
+            cleanup_triage(er.to_str().unwrap()).unwrap();
 
-        assert!(!er.join("triage.json").exists());
-        assert!(er.join("review.json").exists());
+            assert!(!er.join("triage.json").exists());
+            assert!(er.join("review.json").exists());
+        });
     }
 
     #[test]
     fn cleanup_review_artifacts_removes_review_sidecars_not_triage() {
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        std::fs::write(er.join("triage.json"), "{}").unwrap();
-        std::fs::write(er.join("review.json"), "{}").unwrap();
-        std::fs::write(er.join("order.json"), "{}").unwrap();
-        std::fs::write(er.join("checklist.json"), "{}").unwrap();
-        std::fs::write(er.join("summary.md"), "# hi").unwrap();
-        std::fs::write(er.join("professor.json"), "{}").unwrap();
-        let experts = er.join("experts");
-        std::fs::create_dir_all(&experts).unwrap();
-        std::fs::write(experts.join("security.json"), "{}").unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::write(er.join("triage.json"), "{}").unwrap();
+            std::fs::write(er.join("review.json"), "{}").unwrap();
+            std::fs::write(er.join("order.json"), "{}").unwrap();
+            std::fs::write(er.join("checklist.json"), "{}").unwrap();
+            std::fs::write(er.join("summary.md"), "# hi").unwrap();
+            std::fs::write(er.join("professor.json"), "{}").unwrap();
+            let experts = er.join("experts");
+            std::fs::create_dir_all(&experts).unwrap();
+            std::fs::write(experts.join("security.json"), "{}").unwrap();
 
-        cleanup_review_artifacts(er.to_str().unwrap()).unwrap();
+            cleanup_review_artifacts(er.to_str().unwrap()).unwrap();
 
-        assert!(er.join("triage.json").exists());
-        assert!(!er.join("review.json").exists());
-        assert!(!er.join("order.json").exists());
-        assert!(!er.join("checklist.json").exists());
-        assert!(!er.join("summary.md").exists());
-        assert!(!er.join("professor.json").exists());
-        assert!(!experts.join("security.json").exists());
+            assert!(er.join("triage.json").exists());
+            assert!(!er.join("review.json").exists());
+            assert!(!er.join("order.json").exists());
+            assert!(!er.join("checklist.json").exists());
+            assert!(!er.join("summary.md").exists());
+            assert!(!er.join("professor.json").exists());
+            assert!(!experts.join("security.json").exists());
+        });
     }
 
     #[test]
     fn cleanup_reviews_reports_a_busy_bucket_instead_of_clearing_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        std::fs::write(er.join("review.json"), "{}").unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::write(er.join("review.json"), "{}").unwrap();
 
-        let store = crate::store_registry::store();
-        let scope = er_store::Scope::dir(er).unwrap();
-        let guard = store
-            .lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
-            .unwrap();
-        let result = cleanup_reviews(er.to_str().unwrap());
-        drop(guard);
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(er).unwrap();
+            let guard = store
+                .lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
+                .unwrap();
+            let result = cleanup_reviews(er.to_str().unwrap());
+            drop(guard);
 
-        assert!(result.is_err(), "a busy bucket must be reported");
-        assert!(er.join("review.json").exists());
-        cleanup_reviews(er.to_str().unwrap()).unwrap();
-        assert!(!er.join("review.json").exists());
+            assert!(result.is_err(), "a busy bucket must be reported");
+            assert!(er.join("review.json").exists());
+            cleanup_reviews(er.to_str().unwrap()).unwrap();
+            assert!(!er.join("review.json").exists());
+        });
     }
 
     #[test]
     fn cleanup_review_artifacts_removes_validation_and_scoped_overlays() {
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        std::fs::write(er.join("review.json"), "{}").unwrap();
-        std::fs::write(er.join("validation.json"), "{}").unwrap();
-        std::fs::write(er.join("review-files.txt"), "src/a.rs\n").unwrap();
-        std::fs::write(er.join("questions.json"), "{}").unwrap();
-        std::fs::create_dir_all(er.join("scoped/experts")).unwrap();
-        std::fs::write(er.join("scoped/general.json"), "{}").unwrap();
-        std::fs::write(er.join("scoped/professor.json"), "{}").unwrap();
-        std::fs::write(er.join("scoped/experts/security.json"), "{}").unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::write(er.join("review.json"), "{}").unwrap();
+            std::fs::write(er.join("validation.json"), "{}").unwrap();
+            std::fs::write(er.join("review-files.txt"), "src/a.rs\n").unwrap();
+            std::fs::write(er.join("questions.json"), "{}").unwrap();
+            std::fs::create_dir_all(er.join("scoped/experts")).unwrap();
+            std::fs::write(er.join("scoped/general.json"), "{}").unwrap();
+            std::fs::write(er.join("scoped/professor.json"), "{}").unwrap();
+            std::fs::write(er.join("scoped/experts/security.json"), "{}").unwrap();
 
-        cleanup_review_artifacts(er.to_str().unwrap()).unwrap();
+            cleanup_review_artifacts(er.to_str().unwrap()).unwrap();
 
-        assert!(!er.join("validation.json").exists());
-        assert!(!er.join("review-files.txt").exists());
-        assert!(
-            !er.join("scoped").exists(),
-            "the whole scoped directory goes"
-        );
-        assert!(
-            er.join("questions.json").exists(),
-            "private annotations stay"
-        );
+            assert!(!er.join("validation.json").exists());
+            assert!(!er.join("review-files.txt").exists());
+            assert!(
+                !er.join("scoped").exists(),
+                "the whole scoped directory goes"
+            );
+            assert!(
+                er.join("questions.json").exists(),
+                "private annotations stay"
+            );
+        });
     }
 
     #[test]
     fn cleanup_review_artifacts_also_removes_expert_prev_snapshots() {
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        let experts = er.join("experts");
-        std::fs::create_dir_all(&experts).unwrap();
-        std::fs::write(experts.join("security.json"), "{}").unwrap();
-        std::fs::write(experts.join("security.prev.json"), "{}").unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            let experts = er.join("experts");
+            std::fs::create_dir_all(&experts).unwrap();
+            std::fs::write(experts.join("security.json"), "{}").unwrap();
+            std::fs::write(experts.join("security.prev.json"), "{}").unwrap();
 
-        cleanup_review_artifacts(er.to_str().unwrap()).unwrap();
+            cleanup_review_artifacts(er.to_str().unwrap()).unwrap();
 
-        assert!(!experts.join("security.json").exists());
-        assert!(!experts.join("security.prev.json").exists());
+            assert!(!experts.join("security.json").exists());
+            assert!(!experts.join("security.prev.json").exists());
+        });
     }
 
     // ── Notifications ──
@@ -17309,74 +17279,71 @@ mod tests {
     fn branch_change_drops_the_cached_stack() {
         use crate::gh_stack::StackInfo;
 
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "feat/a".to_string();
+            tab.sync_managed_storage();
+            tab.stack.info = Some(StackInfo::Unavailable("not in a stack".into()));
 
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.repo_root = "/home/user/my-project".to_string();
-        tab.current_branch = "feat/a".to_string();
-        tab.sync_managed_storage();
-        tab.stack.info = Some(StackInfo::Unavailable("not in a stack".into()));
+            // `gh stack view` reads the checked-out branch, so a cached lookup
+            // describes the branch we just left.
+            tab.apply_checkout_branch_storage_change("feat/b").unwrap();
 
-        // `gh stack view` reads the checked-out branch, so a cached lookup
-        // describes the branch we just left.
-        tab.apply_checkout_branch_storage_change("feat/b").unwrap();
-
-        assert_eq!(tab.current_branch, "feat/b");
-        assert!(tab.stack.info.is_none());
+            assert_eq!(tab.current_branch, "feat/b");
+            assert!(tab.stack.info.is_none());
+        });
     }
 
     // ── placeholder tab (no repo at launch) ──
 
     fn with_storage_root<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let root = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", root.path());
-        let out = f();
-        std::env::remove_var("ER_STORAGE_ROOT");
-        out
+        crate::storage::with_test_storage_root(root.path(), f)
     }
 
     #[test]
     fn new_empty_holds_one_placeholder_with_no_repo() {
-        let app = App::new_empty(Ports::for_test());
-        assert_eq!(app.tabs.len(), 1);
-        let tab = app.tab();
-        assert!(tab.placeholder);
-        assert_eq!(tab.repo_root, "");
-        assert_eq!(tab.current_branch, "");
-        assert!(tab.files.is_empty());
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let app = App::new_empty(Ports::for_test());
+            assert_eq!(app.tabs.len(), 1);
+            let tab = app.tab();
+            assert!(tab.placeholder);
+            assert_eq!(tab.repo_root, "");
+            assert_eq!(tab.current_branch, "");
+            assert!(tab.files.is_empty());
+        });
     }
 
     #[test]
     fn refresh_diff_reads_the_diff_through_the_git_handle() {
-        let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        let fake = std::sync::Arc::new(
-            er_git::FakeGit::default()
-                .with_current_branch(Ok("feature".into()))
-                .with_is_merge_in_progress(false)
-                .with_diff_shortstat((1, 1, 0))
-                .with_diff_raw(Ok(raw.to_string())),
-        );
-        let ports = Ports::with_git(fake.clone());
-        let mut tab = TabState::new_for_test_with_ports(Vec::new(), ports);
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+            let fake = std::sync::Arc::new(
+                er_git::FakeGit::default()
+                    .with_current_branch(Ok("feature".into()))
+                    .with_is_merge_in_progress(false)
+                    .with_diff_shortstat((1, 1, 0))
+                    .with_diff_raw(Ok(raw.to_string())),
+            );
+            let ports = Ports::with_git(fake.clone());
+            let mut tab = TabState::new_for_test_with_ports(Vec::new(), ports);
 
-        tab.refresh_diff().expect("refresh through the fake");
+            tab.refresh_diff().expect("refresh through the fake");
 
-        assert_eq!(tab.files.len(), 1);
-        assert_eq!(tab.files[0].path, "x.rs");
-        assert!(
-            fake.calls()
-                .iter()
-                .any(|c| c.starts_with("diff_raw(") && c.contains("mode=\"branch\"")),
-            "calls: {:?}",
-            fake.calls()
-        );
+            assert_eq!(tab.files.len(), 1);
+            assert_eq!(tab.files[0].path, "x.rs");
+            assert!(
+                fake.calls()
+                    .iter()
+                    .any(|c| c.starts_with("diff_raw(") && c.contains("mode=\"branch\"")),
+                "calls: {:?}",
+                fake.calls()
+            );
+        });
     }
 
     #[test]
@@ -17412,14 +17379,18 @@ mod tests {
 
     #[test]
     fn placeholder_app_carries_the_ports_it_was_given() {
-        let fake = std::sync::Arc::new(
-            er_git::FakeGit::default().with_remote_url(Ok("git@example.invalid:o/r.git".into())),
-        );
-        let app = App::new_empty(Ports::with_git(fake.clone()));
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let fake = std::sync::Arc::new(
+                er_git::FakeGit::default()
+                    .with_remote_url(Ok("git@example.invalid:o/r.git".into())),
+            );
+            let app = App::new_empty(Ports::with_git(fake.clone()));
 
-        let _ = app.tab().ports.git.remote_url("/x", "origin");
+            let _ = app.tab().ports.git.remote_url("/x", "origin");
 
-        assert!(fake.calls().iter().any(|c| c.starts_with("remote_url(")));
+            assert!(fake.calls().iter().any(|c| c.starts_with("remote_url(")));
+        });
     }
 
     #[test]

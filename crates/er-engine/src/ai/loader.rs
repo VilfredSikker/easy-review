@@ -504,15 +504,17 @@ mod tests {
     #[test]
     fn load_ai_state_ignores_feedback_json() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        std::fs::write(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            std::fs::write(
             dir.path().join("feedback.json"),
             r#"{"version":1,"diff_hash":"h","comments":[{"id":"fb-1","file":"a.rs","hunk_index":0,"comment":"old"}]}"#,
         )
         .unwrap();
-        let state = load_ai_state(er_dir, "h", None);
-        assert!(state.find_comment("fb-1").is_none());
-        assert!(state.comments_for_hunk("a.rs", 0).is_empty());
+            let state = load_ai_state(er_dir, "h", None);
+            assert!(state.find_comment("fb-1").is_none());
+            assert!(state.comments_for_hunk("a.rs", 0).is_empty());
+        });
     }
 
     #[test]
@@ -586,124 +588,132 @@ mod tests {
     #[test]
     fn arbiter_verdicts_follow_matching_review_identity_without_line_anchor() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        let key = super::super::identity::finding_key("src/a.rs", None, "claim");
-        std::fs::write(
-            path.join("review.json"),
-            serde_json::to_vec(&json!({
-                "version": 1, "diff_hash": "hash",
-                "files": { "src/a.rs": { "risk": "medium", "findings": [
-                    { "id": "f-1", "severity": "medium", "title": "claim", "line_start": null },
-                    { "id": "f-2", "severity": "medium", "title": "other", "line_start": null }
-                ] } }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        let write_arbiter = |hash| {
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            let key = super::super::identity::finding_key("src/a.rs", None, "claim");
             std::fs::write(
-                path.join("arbiter.json"),
+                path.join("review.json"),
                 serde_json::to_vec(&json!({
-                    "version": 1, "diff_hash": hash, "verdicts": [
-                        { "id": key, "verdict": "escalated", "confidence": "informational" },
-                        { "id": "orphan", "verdict": "kept" }
-                    ]
+                    "version": 1, "diff_hash": "hash",
+                    "files": { "src/a.rs": { "risk": "medium", "findings": [
+                        { "id": "f-1", "severity": "medium", "title": "claim", "line_start": null },
+                        { "id": "f-2", "severity": "medium", "title": "other", "line_start": null }
+                    ] } }
                 }))
                 .unwrap(),
             )
             .unwrap();
-        };
-        write_arbiter("hash");
-        let state = load_ai_state(path.to_str().unwrap(), "hash", None);
-        assert_eq!(state.arbiter_verdicts.len(), 1);
-        assert_eq!(
-            state
-                .arbiter_verdicts
-                .get(&key)
-                .map(|(verdict, _)| *verdict),
-            Some(super::super::arbiter::ArbiterRuling::Escalated)
-        );
-        write_arbiter("old-hash");
-        let stale = load_ai_state(path.to_str().unwrap(), "hash", None);
-        assert!(stale.arbiter_verdicts.is_empty());
+            let write_arbiter = |hash| {
+                std::fs::write(
+                    path.join("arbiter.json"),
+                    serde_json::to_vec(&json!({
+                        "version": 1, "diff_hash": hash, "verdicts": [
+                            { "id": key, "verdict": "escalated", "confidence": "informational" },
+                            { "id": "orphan", "verdict": "kept" }
+                        ]
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            };
+            write_arbiter("hash");
+            let state = load_ai_state(path.to_str().unwrap(), "hash", None);
+            assert_eq!(state.arbiter_verdicts.len(), 1);
+            assert_eq!(
+                state
+                    .arbiter_verdicts
+                    .get(&key)
+                    .map(|(verdict, _)| *verdict),
+                Some(super::super::arbiter::ArbiterRuling::Escalated)
+            );
+            write_arbiter("old-hash");
+            let stale = load_ai_state(path.to_str().unwrap(), "hash", None);
+            assert!(stale.arbiter_verdicts.is_empty());
+        });
     }
 
     #[test]
     fn captured_arbiter_bytes_are_the_bytes_loaded() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
-        let key = super::super::identity::finding_key("a.rs", None, "claim");
-        let overlay = |rationale| {
-            serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"escalated","rationale":rationale}]}).to_string()
-        };
-        let file = path.join("arbiter.json");
-        std::fs::write(&file, overlay("A")).unwrap();
-        let captured =
-            super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
-        std::fs::write(&file, overlay("B")).unwrap();
-        let state =
-            load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
-        assert_eq!(state.arbiter_verdicts.get(&key).unwrap().1, "A");
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
+            let key = super::super::identity::finding_key("a.rs", None, "claim");
+            let overlay = |rationale| {
+                serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"escalated","rationale":rationale}]}).to_string()
+            };
+            let file = path.join("arbiter.json");
+            std::fs::write(&file, overlay("A")).unwrap();
+            let captured =
+                super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
+            std::fs::write(&file, overlay("B")).unwrap();
+            let state =
+                load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
+            assert_eq!(state.arbiter_verdicts.get(&key).unwrap().1, "A");
+        });
     }
 
     #[test]
     fn an_arbiter_from_a_newer_version_is_not_overlaid() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
-        let key = super::super::identity::finding_key("a.rs", None, "claim");
-        std::fs::write(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
+            let key = super::super::identity::finding_key("a.rs", None, "claim");
+            std::fs::write(
             path.join("arbiter.json"),
             serde_json::json!({"version":2,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"dropped","rationale":"no"}]}).to_string(),
         )
         .unwrap();
-        let captured =
-            super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
+            let captured =
+                super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
 
-        let state =
-            load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
+            let state =
+                load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
 
-        assert_eq!(
-            state.arbiter_effect,
-            crate::ai::ArbiterEffect::default(),
-            "a newer arbiter is ignored"
-        );
-        assert_eq!(
-            state.review.expect("the review").files["a.rs"]
-                .findings
-                .len(),
-            1
-        );
+            assert_eq!(
+                state.arbiter_effect,
+                crate::ai::ArbiterEffect::default(),
+                "a newer arbiter is ignored"
+            );
+            assert_eq!(
+                state.review.expect("the review").files["a.rs"]
+                    .findings
+                    .len(),
+                1
+            );
+        });
     }
 
     #[test]
     fn captured_newer_bytes_are_not_overlaid_after_a_rewrite() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
-        let key = super::super::identity::finding_key("a.rs", None, "claim");
-        let arbiter = |version: u32, rationale: &str| {
-            serde_json::json!({"version":version,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"dropped","rationale":rationale}]}).to_string()
-        };
-        std::fs::write(path.join("arbiter.json"), arbiter(2, "from-v2")).unwrap();
-        let captured =
-            super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
-        // The file on disk becomes a valid version 1 before the load runs.
-        std::fs::write(path.join("arbiter.json"), arbiter(1, "from-v1")).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
+            let key = super::super::identity::finding_key("a.rs", None, "claim");
+            let arbiter = |version: u32, rationale: &str| {
+                serde_json::json!({"version":version,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"dropped","rationale":rationale}]}).to_string()
+            };
+            std::fs::write(path.join("arbiter.json"), arbiter(2, "from-v2")).unwrap();
+            let captured =
+                super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
+            // The file on disk becomes a valid version 1 before the load runs.
+            std::fs::write(path.join("arbiter.json"), arbiter(1, "from-v1")).unwrap();
 
-        let state =
-            load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
+            let state =
+                load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
 
-        let applied: Vec<&str> = state
-            .arbiter_verdicts
-            .values()
-            .map(|(_, rationale)| rationale.as_str())
-            .collect();
-        assert!(
-            !applied.contains(&"from-v2"),
-            "the captured version-2 bytes were overlaid: {applied:?}"
-        );
+            let applied: Vec<&str> = state
+                .arbiter_verdicts
+                .values()
+                .map(|(_, rationale)| rationale.as_str())
+                .collect();
+            assert!(
+                !applied.contains(&"from-v2"),
+                "the captured version-2 bytes were overlaid: {applied:?}"
+            );
+        });
     }
 
     #[test]
@@ -713,8 +723,9 @@ mod tests {
             verdict_target: &str,
         ) -> (tempfile::TempDir, AiState) {
             let dir = tempfile::tempdir().unwrap();
-            let er_dir = dir.path();
-            std::fs::write(
+            let state = crate::storage::with_test_storage_root(dir.path(), || {
+                let er_dir = dir.path();
+                std::fs::write(
                 er_dir.join("review.json"),
                 serde_json::to_vec(&json!({
                     "version": 1,
@@ -728,24 +739,24 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-            if let Some(diff_hash) = arbiter_hash {
-                let (line, title, raised_by, providers) = if verdict_target == "duplicate-b" {
-                    (
-                        9,
-                        "same claim",
-                        json!(["general", "security"]),
-                        json!(["provider-a", "provider-b"]),
-                    )
-                } else {
-                    (
-                        4,
-                        "unrelated claim",
-                        json!(["general"]),
-                        json!(["provider-a"]),
-                    )
-                };
-                let key = super::super::identity::finding_key("src/a.rs", Some(line), title);
-                std::fs::write(
+                if let Some(diff_hash) = arbiter_hash {
+                    let (line, title, raised_by, providers) = if verdict_target == "duplicate-b" {
+                        (
+                            9,
+                            "same claim",
+                            json!(["general", "security"]),
+                            json!(["provider-a", "provider-b"]),
+                        )
+                    } else {
+                        (
+                            4,
+                            "unrelated claim",
+                            json!(["general"]),
+                            json!(["provider-a"]),
+                        )
+                    };
+                    let key = super::super::identity::finding_key("src/a.rs", Some(line), title);
+                    std::fs::write(
                     er_dir.join("arbiter.json"),
                     serde_json::to_vec(&json!({
                         "version": 1, "diff_hash": diff_hash, "run_id": "run-1",
@@ -755,8 +766,9 @@ mod tests {
                     .unwrap(),
                 )
                 .unwrap();
-            }
-            let state = load_ai_state(er_dir.to_str().unwrap(), "hash", None);
+                }
+                load_ai_state(er_dir.to_str().unwrap(), "hash", None)
+            });
             (dir, state)
         }
 
@@ -842,15 +854,17 @@ mod tests {
     #[test]
     fn load_ai_state_ignores_summary_only_wrong_branch() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        std::fs::write(
-            dir.path().join("summary.md"),
-            "# Branch Review: claude/dev-5067\n\nOld summary.",
-        )
-        .unwrap();
-        let state = load_ai_state(er_dir, "abc", Some("dependabot/npm_and_yarn/foo"));
-        assert!(state.review.is_none());
-        assert!(state.summary.is_none());
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            std::fs::write(
+                dir.path().join("summary.md"),
+                "# Branch Review: claude/dev-5067\n\nOld summary.",
+            )
+            .unwrap();
+            let state = load_ai_state(er_dir, "abc", Some("dependabot/npm_and_yarn/foo"));
+            assert!(state.review.is_none());
+            assert!(state.summary.is_none());
+        });
     }
 
     #[test]
@@ -859,37 +873,39 @@ mod tests {
         // branch writes head_branch "unknown"; the branch-mismatch guard must
         // not discard the review over it.
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let review = serde_json::json!({
-            "version": 1,
-            "diff_hash": "abc",
-            "head_branch": "unknown",
-            "files": {
-                "a.rs": {
-                    "risk": "low",
-                    "findings": [{
-                        "id": "f1",
-                        "title": "t",
-                        "description": "d",
-                        "severity": "low",
-                        "category": "logic",
-                        "hunk_index": 0
-                    }]
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let review = serde_json::json!({
+                "version": 1,
+                "diff_hash": "abc",
+                "head_branch": "unknown",
+                "files": {
+                    "a.rs": {
+                        "risk": "low",
+                        "findings": [{
+                            "id": "f1",
+                            "title": "t",
+                            "description": "d",
+                            "severity": "low",
+                            "category": "logic",
+                            "hunk_index": 0
+                        }]
+                    }
                 }
-            }
-        });
-        std::fs::write(
-            dir.path().join("review.json"),
-            serde_json::to_string(&review).unwrap(),
-        )
-        .unwrap();
+            });
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::to_string(&review).unwrap(),
+            )
+            .unwrap();
 
-        let state = load_ai_state(er_dir, "abc", Some("mikkelam/dev-5713-add-outbox"));
-        let review = state
-            .review
-            .expect("review must survive unknown head_branch");
-        assert_eq!(review.files["a.rs"].findings.len(), 1);
-        assert!(!state.is_stale);
+            let state = load_ai_state(er_dir, "abc", Some("mikkelam/dev-5713-add-outbox"));
+            let review = state
+                .review
+                .expect("review must survive unknown head_branch");
+            assert_eq!(review.files["a.rs"].findings.len(), 1);
+            assert!(!state.is_stale);
+        });
     }
 
     #[test]
@@ -899,84 +915,88 @@ mod tests {
         // `line_start`. That must not fail deserialization of the whole review,
         // which showed "No findings written" despite a completed run.
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let review = serde_json::json!({
-            "version": 1,
-            "diff_hash": "abc",
-            "files": {
-                "a.rs": {
-                    "risk": "medium",
-                    "findings": [{
-                        "id": "f-1",
-                        "title": "deleted-line finding",
-                        "description": "d",
-                        "severity": "medium",
-                        "category": "testing",
-                        "hunk_index": 3,
-                        "line_start": -494
-                    }]
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let review = serde_json::json!({
+                "version": 1,
+                "diff_hash": "abc",
+                "files": {
+                    "a.rs": {
+                        "risk": "medium",
+                        "findings": [{
+                            "id": "f-1",
+                            "title": "deleted-line finding",
+                            "description": "d",
+                            "severity": "medium",
+                            "category": "testing",
+                            "hunk_index": 3,
+                            "line_start": -494
+                        }]
+                    }
                 }
-            }
-        });
-        std::fs::write(
-            dir.path().join("review.json"),
-            serde_json::to_string(&review).unwrap(),
-        )
-        .unwrap();
+            });
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::to_string(&review).unwrap(),
+            )
+            .unwrap();
 
-        let state = load_ai_state(er_dir, "abc", None);
-        let review = state
-            .review
-            .expect("review must survive a negative line anchor");
-        let finding = &review.files["a.rs"].findings[0];
-        // Anchor degrades to hunk level instead of poisoning the parse.
-        assert_eq!(finding.line_start, None);
-        assert_eq!(finding.hunk_index, Some(3));
-        assert!(!state.is_stale);
+            let state = load_ai_state(er_dir, "abc", None);
+            let review = state
+                .review
+                .expect("review must survive a negative line anchor");
+            let finding = &review.files["a.rs"].findings[0];
+            // Anchor degrades to hunk level instead of poisoning the parse.
+            assert_eq!(finding.line_start, None);
+            assert_eq!(finding.hunk_index, Some(3));
+            assert!(!state.is_stale);
+        });
     }
 
     #[test]
     fn load_ai_state_skips_malformed_finding_keeps_rest() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let review = serde_json::json!({
-            "version": 1,
-            "diff_hash": "abc",
-            "files": {
-                "a.rs": {
-                    "risk": "low",
-                    "findings": [
-                        {
-                            "id": "f-bad",
-                            "title": "t",
-                            "severity": "catastrophic",
-                            "hunk_index": 0
-                        },
-                        {
-                            "id": "f-good",
-                            "title": "t",
-                            "description": "d",
-                            "severity": "low",
-                            "category": "logic",
-                            "hunk_index": 1,
-                            "line_start": 12
-                        }
-                    ]
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let review = serde_json::json!({
+                "version": 1,
+                "diff_hash": "abc",
+                "files": {
+                    "a.rs": {
+                        "risk": "low",
+                        "findings": [
+                            {
+                                "id": "f-bad",
+                                "title": "t",
+                                "severity": "catastrophic",
+                                "hunk_index": 0
+                            },
+                            {
+                                "id": "f-good",
+                                "title": "t",
+                                "description": "d",
+                                "severity": "low",
+                                "category": "logic",
+                                "hunk_index": 1,
+                                "line_start": 12
+                            }
+                        ]
+                    }
                 }
-            }
-        });
-        std::fs::write(
-            dir.path().join("review.json"),
-            serde_json::to_string(&review).unwrap(),
-        )
-        .unwrap();
+            });
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::to_string(&review).unwrap(),
+            )
+            .unwrap();
 
-        let state = load_ai_state(er_dir, "abc", None);
-        let review = state.review.expect("review must survive one bad finding");
-        let findings = &review.files["a.rs"].findings;
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].id, "f-good");
-        assert_eq!(findings[0].line_start, Some(12));
+            let state = load_ai_state(er_dir, "abc", None);
+            let review = state.review.expect("review must survive one bad finding");
+            let findings = &review.files["a.rs"].findings;
+            assert_eq!(findings.len(), 1);
+            assert_eq!(findings[0].id, "f-good");
+            assert_eq!(findings[0].line_start, Some(12));
+        });
     }
 
     #[test]
@@ -984,24 +1004,26 @@ mod tests {
         // An agent that copies the prompt template literally leaves
         // "<head branch if known>" — also not a real declaration.
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let review = serde_json::json!({
-            "version": 1,
-            "diff_hash": "abc",
-            "head_branch": "<head branch if known>",
-            "files": {}
-        });
-        std::fs::write(
-            dir.path().join("review.json"),
-            serde_json::to_string(&review).unwrap(),
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let review = serde_json::json!({
+                "version": 1,
+                "diff_hash": "abc",
+                "head_branch": "<head branch if known>",
+                "files": {}
+            });
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::to_string(&review).unwrap(),
+            )
+            .unwrap();
 
-        let state = load_ai_state(er_dir, "abc", Some("feature/x"));
-        let r = state.review.expect("placeholder-head review should load");
-        assert_eq!(r.diff_hash, "abc");
-        assert!(r.files.is_empty());
-        assert!(!state.is_stale);
+            let state = load_ai_state(er_dir, "abc", Some("feature/x"));
+            let r = state.review.expect("placeholder-head review should load");
+            assert_eq!(r.diff_hash, "abc");
+            assert!(r.files.is_empty());
+            assert!(!state.is_stale);
+        });
     }
 
     fn write_review_for_head(dir: &std::path::Path, head_branch: &str) {
@@ -1038,15 +1060,17 @@ mod tests {
         // the real head. The label is not a branch — it must not disqualify
         // the review (nor the summary, which the early return also dropped).
         let dir = tempfile::tempdir().unwrap();
-        write_review_for_head(dir.path(), "fix/superviewer-manager");
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_review_for_head(dir.path(), "fix/superviewer-manager");
 
-        let state = load_ai_state(dir.path().to_str().unwrap(), "abc", Some("pr/1560"));
-        let review = state
-            .review
-            .expect("placeholder scope must not discard the review");
-        assert_eq!(review.files["tests/test_bots.py"].findings.len(), 1);
-        assert_eq!(state.summary.as_deref(), Some("Adds the managing group.\n"));
-        assert!(!state.is_stale);
+            let state = load_ai_state(dir.path().to_str().unwrap(), "abc", Some("pr/1560"));
+            let review = state
+                .review
+                .expect("placeholder scope must not discard the review");
+            assert_eq!(review.files["tests/test_bots.py"].findings.len(), 1);
+            assert_eq!(state.summary.as_deref(), Some("Adds the managing group.\n"));
+            assert!(!state.is_stale);
+        });
     }
 
     #[test]
@@ -1055,18 +1079,20 @@ mod tests {
         // `pr/1560` into head_branch; a tab that later knows the real head
         // must still load it.
         let dir = tempfile::tempdir().unwrap();
-        write_review_for_head(dir.path(), "pr/1560");
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_review_for_head(dir.path(), "pr/1560");
 
-        let state = load_ai_state(
-            dir.path().to_str().unwrap(),
-            "abc",
-            Some("fix/superviewer-manager"),
-        );
-        assert!(
-            state.review.is_some(),
-            "stored pr/<N> label is not a branch"
-        );
-        assert!(state.summary.is_some());
+            let state = load_ai_state(
+                dir.path().to_str().unwrap(),
+                "abc",
+                Some("fix/superviewer-manager"),
+            );
+            assert!(
+                state.review.is_some(),
+                "stored pr/<N> label is not a branch"
+            );
+            assert!(state.summary.is_some());
+        });
     }
 
     #[test]
@@ -1076,248 +1102,266 @@ mod tests {
         // stale — its experts' findings and summaries must load with it,
         // while an expert from an older generation stays out.
         let dir = tempfile::tempdir().unwrap();
-        let review = serde_json::json!({
-            "version": 1,
-            "diff_hash": "scoped",
-            "head_branch": "",
-            "files": {}
-        });
-        std::fs::write(
-            dir.path().join("review.json"),
-            serde_json::to_string(&review).unwrap(),
-        )
-        .unwrap();
-        let experts = dir.path().join("experts");
-        std::fs::create_dir_all(&experts).unwrap();
-        let expert = |id: &str, hash: &str, summary: &str| {
-            serde_json::json!({
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let review = serde_json::json!({
                 "version": 1,
-                "expert_id": id,
-                "diff_hash": hash,
-                "summary": summary,
-                "files": {
-                    "m.sql": {
-                        "findings": [{
-                            "id": "1",
-                            "title": "t",
-                            "description": "d",
-                            "severity": "medium",
-                            "category": "correctness",
-                            "hunk_index": 0
-                        }]
+                "diff_hash": "scoped",
+                "head_branch": "",
+                "files": {}
+            });
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::to_string(&review).unwrap(),
+            )
+            .unwrap();
+            let experts = dir.path().join("experts");
+            std::fs::create_dir_all(&experts).unwrap();
+            let expert = |id: &str, hash: &str, summary: &str| {
+                serde_json::json!({
+                    "version": 1,
+                    "expert_id": id,
+                    "diff_hash": hash,
+                    "summary": summary,
+                    "files": {
+                        "m.sql": {
+                            "findings": [{
+                                "id": "1",
+                                "title": "t",
+                                "description": "d",
+                                "severity": "medium",
+                                "category": "correctness",
+                                "hunk_index": 0
+                            }]
+                        }
                     }
-                }
-            })
-        };
-        std::fs::write(
-            experts.join("reliability.json"),
-            serde_json::to_string(&expert("reliability", "scoped", "Rel summary")).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            experts.join("security.json"),
-            serde_json::to_string(&expert("security", "older", "Old summary")).unwrap(),
-        )
-        .unwrap();
+                })
+            };
+            std::fs::write(
+                experts.join("reliability.json"),
+                serde_json::to_string(&expert("reliability", "scoped", "Rel summary")).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                experts.join("security.json"),
+                serde_json::to_string(&expert("security", "older", "Old summary")).unwrap(),
+            )
+            .unwrap();
 
-        let state = load_ai_state(dir.path().to_str().unwrap(), "full", None);
-        assert!(
-            state.is_stale,
-            "filtered-diff hash never matches the full tab diff"
-        );
-        let review = state.review.expect("review loads even when stale");
-        let ids: Vec<&str> = review.files["m.sql"]
-            .findings
-            .iter()
-            .map(|f| f.id.as_str())
-            .collect();
-        assert_eq!(
-            ids,
-            vec!["rel-1"],
-            "same-generation expert merged, older one skipped"
-        );
-        let summaries: Vec<&str> = state.agent_summaries.values().map(String::as_str).collect();
-        assert!(summaries.contains(&"Rel summary"));
-        assert!(!summaries.contains(&"Old summary"));
+            let state = load_ai_state(dir.path().to_str().unwrap(), "full", None);
+            assert!(
+                state.is_stale,
+                "filtered-diff hash never matches the full tab diff"
+            );
+            let review = state.review.expect("review loads even when stale");
+            let ids: Vec<&str> = review.files["m.sql"]
+                .findings
+                .iter()
+                .map(|f| f.id.as_str())
+                .collect();
+            assert_eq!(
+                ids,
+                vec!["rel-1"],
+                "same-generation expert merged, older one skipped"
+            );
+            let summaries: Vec<&str> = state.agent_summaries.values().map(String::as_str).collect();
+            assert!(summaries.contains(&"Rel summary"));
+            assert!(!summaries.contains(&"Old summary"));
+        });
     }
 
     #[test]
     fn a_review_json_with_another_diff_hash_loads_as_stale() {
         let dir = tempfile::tempdir().unwrap();
-        let review = serde_json::json!({
-            "version": 1,
-            "diff_hash": "old",
-            "files": {
-                "a.rs": {
-                    "risk": "medium",
-                    "findings": [{
-                        "id": "1",
-                        "title": "claim",
-                        "severity": "medium",
-                        "hunk_index": 0
-                    }]
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let review = serde_json::json!({
+                "version": 1,
+                "diff_hash": "old",
+                "files": {
+                    "a.rs": {
+                        "risk": "medium",
+                        "findings": [{
+                            "id": "1",
+                            "title": "claim",
+                            "severity": "medium",
+                            "hunk_index": 0
+                        }]
+                    }
                 }
-            }
+            });
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::to_string(&review).unwrap(),
+            )
+            .unwrap();
+
+            let state = load_ai_state(dir.path().to_str().unwrap(), "new", None);
+
+            assert!(state.is_stale);
+            let review = state.review.expect("a stale review still loads");
+            assert_eq!(review.diff_hash, "old");
+            assert_eq!(review.files["a.rs"].findings.len(), 1);
         });
-        std::fs::write(
-            dir.path().join("review.json"),
-            serde_json::to_string(&review).unwrap(),
-        )
-        .unwrap();
-
-        let state = load_ai_state(dir.path().to_str().unwrap(), "new", None);
-
-        assert!(state.is_stale);
-        let review = state.review.expect("a stale review still loads");
-        assert_eq!(review.diff_hash, "old");
-        assert_eq!(review.files["a.rs"].findings.len(), 1);
     }
 
     #[test]
     fn a_review_json_with_an_unknown_version_is_ignored() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("review.json"),
-            r#"{"version":2,"diff_hash":"new","files":{}}"#,
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(
+                dir.path().join("review.json"),
+                r#"{"version":2,"diff_hash":"new","files":{}}"#,
+            )
+            .unwrap();
 
-        let state = load_ai_state(dir.path().to_str().unwrap(), "new", None);
+            let state = load_ai_state(dir.path().to_str().unwrap(), "new", None);
 
-        assert!(
-            state.review.is_none(),
-            "a newer schema is ignored, never guessed at"
-        );
+            assert!(
+                state.review.is_none(),
+                "a newer schema is ignored, never guessed at"
+            );
+        });
     }
 
     #[test]
     fn a_malformed_review_json_loads_no_review_and_the_other_kinds_still_load() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("review.json"), "{ bad").unwrap();
-        std::fs::write(
-            dir.path().join("triage.json"),
-            r#"{"version":1,"diff_hash":"hash","verdict":{"primary":"general"}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("professor.json"),
-            r#"{"version":1,"diff_hash":"hash","summary":"the lesson"}"#,
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(dir.path().join("review.json"), "{ bad").unwrap();
+            std::fs::write(
+                dir.path().join("triage.json"),
+                r#"{"version":1,"diff_hash":"hash","verdict":{"primary":"general"}}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join("professor.json"),
+                r#"{"version":1,"diff_hash":"hash","summary":"the lesson"}"#,
+            )
+            .unwrap();
 
-        let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
+            let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
 
-        assert!(state.review.is_none(), "a malformed review reads as absent");
-        assert!(state.triage.is_some(), "triage still loads");
-        assert_eq!(
-            state
-                .agent_summaries
-                .get(crate::ai::professor::PROFESSOR_LABEL)
-                .map(String::as_str),
-            Some("the lesson"),
-            "the professor summary still loads"
-        );
+            assert!(state.review.is_none(), "a malformed review reads as absent");
+            assert!(state.triage.is_some(), "triage still loads");
+            assert_eq!(
+                state
+                    .agent_summaries
+                    .get(crate::ai::professor::PROFESSOR_LABEL)
+                    .map(String::as_str),
+                Some("the lesson"),
+                "the professor summary still loads"
+            );
+        });
     }
 
     #[test]
     fn a_review_json_over_the_size_limit_is_ignored() {
         let dir = tempfile::tempdir().unwrap();
-        let pad = "x".repeat(er_store::MAX_ARTIFACT_BYTES as usize + 1);
-        std::fs::write(
-            dir.path().join("review.json"),
-            format!(r#"{{"version":1,"diff_hash":"hash","pad":"{pad}"}}"#),
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let pad = "x".repeat(er_store::MAX_ARTIFACT_BYTES as usize + 1);
+            std::fs::write(
+                dir.path().join("review.json"),
+                format!(r#"{{"version":1,"diff_hash":"hash","pad":"{pad}"}}"#),
+            )
+            .unwrap();
 
-        let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
+            let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
 
-        assert!(state.review.is_none(), "an oversized review is ignored");
+            assert!(state.review.is_none(), "an oversized review is ignored");
+        });
     }
 
     #[test]
     fn review_file_written_by_an_agent_loads() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(
             dir.path().join("review.json"),
             r#"{"version":1,"diff_hash":"hash","head_branch":"","files":{"a.rs":{"risk":"medium","findings":[{"id":"1","title":"claim","severity":"medium","hunk_index":0}]}}}"#,
         )
         .unwrap();
 
-        let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
+            let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
 
-        let review = state.review.expect("the agent's review loads");
-        assert_eq!(review.files["a.rs"].findings.len(), 1);
-        assert!(!state.is_stale);
+            let review = state.review.expect("the agent's review loads");
+            assert_eq!(review.files["a.rs"].findings.len(), 1);
+            assert!(!state.is_stale);
+        });
     }
 
     #[test]
     fn a_malformed_order_json_is_ignored_and_the_other_kinds_still_load() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        std::fs::write(dir.path().join("order.json"), "{ bad").unwrap();
-        std::fs::write(
-            dir.path().join("review.json"),
-            serde_json::json!({"version": 1, "diff_hash": "abc", "files": {}}).to_string(),
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            std::fs::write(dir.path().join("order.json"), "{ bad").unwrap();
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::json!({"version": 1, "diff_hash": "abc", "files": {}}).to_string(),
+            )
+            .unwrap();
 
-        let state = load_ai_state(er_dir, "abc", None);
-        assert!(state.order.is_none());
-        assert!(state.review.is_some());
+            let state = load_ai_state(er_dir, "abc", None);
+            assert!(state.order.is_none());
+            assert!(state.review.is_some());
+        });
     }
 
     #[test]
     fn a_malformed_checklist_json_is_ignored_and_the_other_kinds_still_load() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        std::fs::write(dir.path().join("checklist.json"), "{ bad").unwrap();
-        std::fs::write(
-            dir.path().join("review.json"),
-            serde_json::json!({"version": 1, "diff_hash": "abc", "files": {}}).to_string(),
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            std::fs::write(dir.path().join("checklist.json"), "{ bad").unwrap();
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::json!({"version": 1, "diff_hash": "abc", "files": {}}).to_string(),
+            )
+            .unwrap();
 
-        let state = load_ai_state(er_dir, "abc", None);
-        assert!(state.checklist.is_none());
-        assert!(state.review.is_some());
+            let state = load_ai_state(er_dir, "abc", None);
+            assert!(state.checklist.is_none());
+            assert!(state.review.is_some());
+        });
     }
 
     #[test]
     fn load_ai_state_ignores_review_for_wrong_branch_scope() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let review = serde_json::json!({
-            "version": 1,
-            "diff_hash": "abc",
-            "head_branch": "claude/dev-5067",
-            "files": {
-                "a.rs": {
-                    "risk": "low",
-                    "findings": [{
-                        "id": "f1",
-                        "title": "t",
-                        "description": "d",
-                        "severity": "low",
-                        "category": "logic",
-                        "hunk_index": 0
-                    }]
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let review = serde_json::json!({
+                "version": 1,
+                "diff_hash": "abc",
+                "head_branch": "claude/dev-5067",
+                "files": {
+                    "a.rs": {
+                        "risk": "low",
+                        "findings": [{
+                            "id": "f1",
+                            "title": "t",
+                            "description": "d",
+                            "severity": "low",
+                            "category": "logic",
+                            "hunk_index": 0
+                        }]
+                    }
                 }
-            }
-        });
-        std::fs::write(
-            dir.path().join("review.json"),
-            serde_json::to_string(&review).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("summary.md"),
-            "# Branch Review: claude/dev-5067\n\nOld summary.",
-        )
-        .unwrap();
+            });
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::to_string(&review).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join("summary.md"),
+                "# Branch Review: claude/dev-5067\n\nOld summary.",
+            )
+            .unwrap();
 
-        let state = load_ai_state(er_dir, "abc", Some("dependabot/npm_and_yarn/foo"));
-        assert!(state.review.is_none());
-        assert!(state.summary.is_none());
+            let state = load_ai_state(er_dir, "abc", Some("dependabot/npm_and_yarn/foo"));
+            assert!(state.review.is_none());
+            assert!(state.summary.is_none());
+        });
     }
 
     /// The spec's "loads with `lens == \"security\"`" bullet, through the read
@@ -1326,70 +1370,74 @@ mod tests {
     #[test]
     fn load_ai_state_backfills_lens_from_the_id_prefix() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let review = serde_json::json!({
-            "version": 1,
-            "diff_hash": "abc",
-            "files": {
-                "a.rs": {
-                    "risk": "low",
-                    "findings": [
-                        { "id": "sec-1", "title": "t", "severity": "high" },
-                        { "id": "f-2", "title": "t", "severity": "low" }
-                    ]
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let review = serde_json::json!({
+                "version": 1,
+                "diff_hash": "abc",
+                "files": {
+                    "a.rs": {
+                        "risk": "low",
+                        "findings": [
+                            { "id": "sec-1", "title": "t", "severity": "high" },
+                            { "id": "f-2", "title": "t", "severity": "low" }
+                        ]
+                    }
                 }
-            }
+            });
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::to_string(&review).unwrap(),
+            )
+            .unwrap();
+
+            let state = load_ai_state(er_dir, "abc", None);
+
+            let findings = &state.review.expect("review loads").files["a.rs"].findings;
+            assert_eq!(findings[0].lens, "security", "expert prefix attributes");
+            assert_eq!(findings[1].lens, "general", "no prefix is the general pass");
         });
-        std::fs::write(
-            dir.path().join("review.json"),
-            serde_json::to_string(&review).unwrap(),
-        )
-        .unwrap();
-
-        let state = load_ai_state(er_dir, "abc", None);
-
-        let findings = &state.review.expect("review loads").files["a.rs"].findings;
-        assert_eq!(findings[0].lens, "security", "expert prefix attributes");
-        assert_eq!(findings[1].lens, "general", "no prefix is the general pass");
     }
 
     #[test]
     fn load_tour_sidecar_parses_pillars_and_load_ai_state_ignores_tour() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let tour = serde_json::json!({
-            "version": 1,
-            "diff_hash": "abc",
-            "title": "Tour: foo",
-            "overview": "intro",
-            "pillars": [{
-                "id": "p-1",
-                "title": "Foundation",
-                "description": "start here",
-                "order": 0,
-                "importance": 90,
-                "foundation": true,
-                "files": [{"path": "src/a.rs", "reason": "core", "finding_ids": ["f-1"]}]
-            }]
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let tour = serde_json::json!({
+                "version": 1,
+                "diff_hash": "abc",
+                "title": "Tour: foo",
+                "overview": "intro",
+                "pillars": [{
+                    "id": "p-1",
+                    "title": "Foundation",
+                    "description": "start here",
+                    "order": 0,
+                    "importance": 90,
+                    "foundation": true,
+                    "files": [{"path": "src/a.rs", "reason": "core", "finding_ids": ["f-1"]}]
+                }]
+            });
+            std::fs::write(
+                dir.path().join("tour.json"),
+                serde_json::to_string(&tour).unwrap(),
+            )
+            .unwrap();
+
+            // The tour is context-scoped and loaded by TabState (via the size-guarded
+            // `load_tour_sidecar`), not by `load_ai_state`.
+            let loaded = load_tour_sidecar(er_dir, "tour.json").unwrap();
+            assert_eq!(loaded.pillars.len(), 1);
+            assert_eq!(loaded.file_pillar("src/a.rs").unwrap().id, "p-1");
+            assert_eq!(loaded.diff_hash, "abc");
+
+            // load_ai_state does not load the tour and leaves staleness defaulted.
+            let state = load_ai_state(er_dir, "abc", None);
+            assert!(!state.has_tour());
+            assert!(!state.is_stale);
+            assert!(!state.tour_stale);
         });
-        std::fs::write(
-            dir.path().join("tour.json"),
-            serde_json::to_string(&tour).unwrap(),
-        )
-        .unwrap();
-
-        // The tour is context-scoped and loaded by TabState (via the size-guarded
-        // `load_tour_sidecar`), not by `load_ai_state`.
-        let loaded = load_tour_sidecar(er_dir, "tour.json").unwrap();
-        assert_eq!(loaded.pillars.len(), 1);
-        assert_eq!(loaded.file_pillar("src/a.rs").unwrap().id, "p-1");
-        assert_eq!(loaded.diff_hash, "abc");
-
-        // load_ai_state does not load the tour and leaves staleness defaulted.
-        let state = load_ai_state(er_dir, "abc", None);
-        assert!(!state.has_tour());
-        assert!(!state.is_stale);
-        assert!(!state.tour_stale);
     }
 
     fn write_diagram_envelope(dir: &Path, name: &str, hash: &str) {
@@ -1433,89 +1481,103 @@ mod tests {
     #[test]
     fn load_tour_sidecar_ignores_any_name_but_tour_json() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        write_tour(dir.path(), "tour.json", a_tour());
-        write_tour(dir.path(), "tour.pr.json", a_tour());
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            write_tour(dir.path(), "tour.json", a_tour());
+            write_tour(dir.path(), "tour.pr.json", a_tour());
 
-        assert!(load_tour_sidecar(er_dir, "tour.json").is_some());
-        assert!(load_tour_sidecar(er_dir, "tour.pr.json").is_none());
+            assert!(load_tour_sidecar(er_dir, "tour.json").is_some());
+            assert!(load_tour_sidecar(er_dir, "tour.pr.json").is_none());
+        });
     }
 
     #[test]
     fn a_malformed_tour_json_loads_as_none() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("tour.json"), "{ not valid json").unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(dir.path().join("tour.json"), "{ not valid json").unwrap();
 
-        assert!(load_tour_sidecar(dir.path().to_str().unwrap(), "tour.json").is_none());
+            assert!(load_tour_sidecar(dir.path().to_str().unwrap(), "tour.json").is_none());
+        });
     }
 
     #[test]
     fn a_tour_json_with_an_unknown_version_loads_as_none() {
         let dir = tempfile::tempdir().unwrap();
-        let mut tour = a_tour();
-        tour["version"] = serde_json::json!(2);
-        write_tour(dir.path(), "tour.json", tour);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut tour = a_tour();
+            tour["version"] = serde_json::json!(2);
+            write_tour(dir.path(), "tour.json", tour);
 
-        assert!(load_tour_sidecar(dir.path().to_str().unwrap(), "tour.json").is_none());
+            assert!(load_tour_sidecar(dir.path().to_str().unwrap(), "tour.json").is_none());
+        });
     }
 
     #[test]
     fn an_empty_or_whitespace_summary_is_no_summary() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        for body in ["", "   \n\t\n"] {
-            std::fs::write(dir.path().join("summary.md"), body).unwrap();
-            assert!(
-                load_ai_state(er_dir, "abc", None).summary.is_none(),
-                "{body:?}"
-            );
-        }
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            for body in ["", "   \n\t\n"] {
+                std::fs::write(dir.path().join("summary.md"), body).unwrap();
+                assert!(
+                    load_ai_state(er_dir, "abc", None).summary.is_none(),
+                    "{body:?}"
+                );
+            }
+        });
     }
 
     #[test]
     fn a_summary_over_the_size_limit_is_ignored() {
         let dir = tempfile::tempdir().unwrap();
-        let file = std::fs::File::create(dir.path().join("summary.md")).unwrap();
-        file.set_len(er_store::MAX_ARTIFACT_BYTES + 1).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let file = std::fs::File::create(dir.path().join("summary.md")).unwrap();
+            file.set_len(er_store::MAX_ARTIFACT_BYTES + 1).unwrap();
 
-        assert!(load_ai_state(dir.path().to_str().unwrap(), "abc", None)
-            .summary
-            .is_none());
+            assert!(load_ai_state(dir.path().to_str().unwrap(), "abc", None)
+                .summary
+                .is_none());
+        });
     }
 
     #[test]
     fn a_malformed_tour_does_not_hide_the_review_or_the_diagrams() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        std::fs::write(dir.path().join("tour.json"), "{ not valid json").unwrap();
-        std::fs::write(
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            std::fs::write(dir.path().join("tour.json"), "{ not valid json").unwrap();
+            std::fs::write(
             dir.path().join("review.json"),
             r#"{"version":1,"diff_hash":"abc","files":{"a.rs":{"risk":"medium","findings":[{"id":"1","title":"claim","severity":"medium","hunk_index":0}]}}}"#,
         )
         .unwrap();
-        write_diagram_envelope(dir.path(), "flows.json", "abc");
+            write_diagram_envelope(dir.path(), "flows.json", "abc");
 
-        let state = load_ai_state(er_dir, "abc", None);
+            let state = load_ai_state(er_dir, "abc", None);
 
-        assert_eq!(
-            state.review.expect("the review").files["a.rs"]
-                .findings
-                .len(),
-            1
-        );
-        assert_eq!(load_diagrams(er_dir, "abc").len(), 1);
+            assert_eq!(
+                state.review.expect("the review").files["a.rs"]
+                    .findings
+                    .len(),
+                1
+            );
+            assert_eq!(load_diagrams(er_dir, "abc").len(), 1);
+        });
     }
 
     #[test]
     fn diagram_files_with_an_unsafe_name_are_skipped() {
         let dir = tempfile::tempdir().unwrap();
-        write_diagram_envelope(dir.path(), "flows.json", "abc");
-        write_diagram_envelope(dir.path(), "my diagram.json", "abc");
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_diagram_envelope(dir.path(), "flows.json", "abc");
+            write_diagram_envelope(dir.path(), "my diagram.json", "abc");
 
-        let diagrams = load_diagrams(dir.path().to_str().unwrap(), "abc");
+            let diagrams = load_diagrams(dir.path().to_str().unwrap(), "abc");
 
-        let ids: Vec<&str> = diagrams.iter().map(|d| d.id.as_str()).collect();
-        assert_eq!(ids, vec!["flows"]);
+            let ids: Vec<&str> = diagrams.iter().map(|d| d.id.as_str()).collect();
+            assert_eq!(ids, vec!["flows"]);
+        });
     }
 
     #[test]
@@ -1542,67 +1604,69 @@ mod tests {
     #[test]
     fn load_diagrams_reads_dir_sets_id_and_stale() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        let diagrams_dir = dir.path().join("diagrams");
-        std::fs::create_dir_all(&diagrams_dir).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            let diagrams_dir = dir.path().join("diagrams");
+            std::fs::create_dir_all(&diagrams_dir).unwrap();
 
-        let write = |name: &str, kind: &str, hash: &str, created: &str, mermaid: &str| {
-            let payload = serde_json::json!({
-                "version": 1,
-                "diff_hash": hash,
-                "created_at": created,
-                "kind": kind,
-                "title": format!("title-{name}"),
-                "prompt": "",
-                "mermaid": mermaid,
-            });
-            let envelope = serde_json::json!({
-                "kind": "diagram",
-                "version": 1,
-                "diff_hash": hash,
-                "producer": "host",
-                "written_at": created,
-                "payload": payload,
-            });
-            std::fs::write(
-                diagrams_dir.join(name),
-                serde_json::to_string(&envelope).unwrap(),
-            )
-            .unwrap();
-        };
+            let write = |name: &str, kind: &str, hash: &str, created: &str, mermaid: &str| {
+                let payload = serde_json::json!({
+                    "version": 1,
+                    "diff_hash": hash,
+                    "created_at": created,
+                    "kind": kind,
+                    "title": format!("title-{name}"),
+                    "prompt": "",
+                    "mermaid": mermaid,
+                });
+                let envelope = serde_json::json!({
+                    "kind": "diagram",
+                    "version": 1,
+                    "diff_hash": hash,
+                    "producer": "host",
+                    "written_at": created,
+                    "payload": payload,
+                });
+                std::fs::write(
+                    diagrams_dir.join(name),
+                    serde_json::to_string(&envelope).unwrap(),
+                )
+                .unwrap();
+            };
 
-        write(
-            "flows.json",
-            "flows",
-            "abc",
-            "2026-08-11T10:00:00Z",
-            "flowchart TD\nA-->B",
-        );
-        write(
-            "mental-model.json",
-            "mental-model",
-            "stale-hash",
-            "2026-08-11T09:00:00Z",
-            "flowchart TD\nC-->D",
-        );
-        write(
-            "custom-1.json",
-            "custom",
-            "abc",
-            "2026-08-11T12:00:00Z",
-            "sequenceDiagram\nA->>B: hi",
-        );
-        // Empty mermaid source and malformed JSON are skipped, not fatal.
-        write("empty.json", "custom", "abc", "2026-08-11T13:00:00Z", "  ");
-        std::fs::write(diagrams_dir.join("broken.json"), "{not json").unwrap();
+            write(
+                "flows.json",
+                "flows",
+                "abc",
+                "2026-08-11T10:00:00Z",
+                "flowchart TD\nA-->B",
+            );
+            write(
+                "mental-model.json",
+                "mental-model",
+                "stale-hash",
+                "2026-08-11T09:00:00Z",
+                "flowchart TD\nC-->D",
+            );
+            write(
+                "custom-1.json",
+                "custom",
+                "abc",
+                "2026-08-11T12:00:00Z",
+                "sequenceDiagram\nA->>B: hi",
+            );
+            // Empty mermaid source and malformed JSON are skipped, not fatal.
+            write("empty.json", "custom", "abc", "2026-08-11T13:00:00Z", "  ");
+            std::fs::write(diagrams_dir.join("broken.json"), "{not json").unwrap();
 
-        let diagrams = load_diagrams(er_dir, "abc");
-        let ids: Vec<&str> = diagrams.iter().map(|d| d.id.as_str()).collect();
-        // Presets in fixed display order, then customs; broken/empty skipped.
-        assert_eq!(ids, vec!["mental-model", "flows", "custom-1"]);
-        assert!(!diagrams[1].stale); // flows matches the current diff hash
-        assert!(diagrams[0].stale); // mental-model was generated for another diff
-        assert_eq!(load_ai_state(er_dir, "abc", None).diagrams.len(), 3);
+            let diagrams = load_diagrams(er_dir, "abc");
+            let ids: Vec<&str> = diagrams.iter().map(|d| d.id.as_str()).collect();
+            // Presets in fixed display order, then customs; broken/empty skipped.
+            assert_eq!(ids, vec!["mental-model", "flows", "custom-1"]);
+            assert!(!diagrams[1].stale); // flows matches the current diff hash
+            assert!(diagrams[0].stale); // mental-model was generated for another diff
+            assert_eq!(load_ai_state(er_dir, "abc", None).diagrams.len(), 3);
+        });
     }
 
     #[test]

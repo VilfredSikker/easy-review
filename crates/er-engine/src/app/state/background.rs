@@ -359,41 +359,41 @@ mod tests {
         // is heavy — instead, just construct the small bit we need with the
         // public default-like API. Since TabState doesn't expose a stub
         // builder, use new_with_base if the repo exists; otherwise skip.
-        let tmp = std::env::temp_dir().join("er-bg-tab-match-test");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
         // Make it a git repo so TabState::new works.
         let ok = std::process::Command::new("git")
             .arg("init")
-            .current_dir(&tmp)
+            .current_dir(tmp.path())
             .output()
             .is_ok();
         if !ok {
             return;
         }
-        let mut tab = match TabState::new(
-            tmp.to_string_lossy().to_string(),
-            crate::ports::Ports::cli(),
-        ) {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        tab.current_branch = "feat-a".to_string();
-        let t_match = BackgroundTaskTarget {
-            repo_root: tab.repo_root.clone(),
-            er_dir: tab.er_dir(),
-            branch_label: "feat-a".to_string(),
-            base_branch: "main".to_string(),
-            scope: "branch".to_string(),
-            pr_number: None,
-            remote_repo: None,
-            managed_local: false,
-        };
-        let t_nomatch = BackgroundTaskTarget {
-            branch_label: "feat-b".to_string(),
-            ..t_match.clone()
-        };
-        assert!(tab.matches_target(&t_match));
-        assert!(!tab.matches_target(&t_nomatch));
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = match TabState::new(
+                tmp.path().to_string_lossy().to_string(),
+                crate::ports::Ports::cli(),
+            ) {
+                Ok(t) => t,
+                Err(_) => return,
+            };
+            tab.current_branch = "feat-a".to_string();
+            let t_match = BackgroundTaskTarget {
+                repo_root: tab.repo_root.clone(),
+                er_dir: tab.er_dir(),
+                branch_label: "feat-a".to_string(),
+                base_branch: "main".to_string(),
+                scope: "branch".to_string(),
+                pr_number: None,
+                remote_repo: None,
+                managed_local: false,
+            };
+            let t_nomatch = BackgroundTaskTarget {
+                branch_label: "feat-b".to_string(),
+                ..t_match.clone()
+            };
+            assert!(tab.matches_target(&t_match));
+            assert!(!tab.matches_target(&t_nomatch));
+        });
     }
 }
