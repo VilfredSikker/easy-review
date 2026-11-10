@@ -1,4 +1,4 @@
-//! Thread-scoped environment overrides for tests.
+//! Test-only helpers shared across the engine's test modules.
 //!
 //! `set_var` rewrites the process environment while parallel tests read it,
 //! which is a data race. A test that needs an isolated value overrides it for
@@ -6,6 +6,11 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::io::Write;
+use std::path::Path;
+#[cfg(unix)]
+use std::process::{Command, Stdio};
 
 thread_local! {
     static OVERRIDES: RefCell<HashMap<String, Option<String>>> = RefCell::new(HashMap::new());
@@ -76,4 +81,45 @@ pub fn var(name: &str) -> Option<String> {
 /// environment. `Some(None)` means the test explicitly unset it.
 pub fn explicit_var(name: &str) -> Option<Option<String>> {
     OVERRIDES.with(|overrides| overrides.borrow().get(name).cloned())
+}
+
+/// Write `body` as an executable script at `path`.
+///
+/// The bytes go through a child `sh`, so this process never holds a writable
+/// descriptor for the script. On Linux the kernel refuses to exec a file while
+/// any process holds it open for writing (ETXTBSY); a script written in-process
+/// can be caught by a fork on another test thread before that child execs. The
+/// child writer owns every write descriptor and is reaped before this returns,
+/// so a later exec cannot race a concurrent fork.
+#[cfg(unix)]
+pub fn write_executable_script(path: &Path, body: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg("cat > \"$1\" && chmod 755 \"$1\"")
+        .arg("sh")
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()?;
+    let written = child
+        .stdin
+        .take()
+        .map(|mut stdin| stdin.write_all(body.as_bytes()));
+    let status = child.wait()?;
+    written.transpose()?;
+    if !status.success() {
+        return Err(std::io::Error::other(format!(
+            "writing {} failed: {status}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Windows has no ETXTBSY and no execute bit, so a plain write is enough.
+#[cfg(not(unix))]
+pub fn write_executable_script(path: &Path, body: &str) -> std::io::Result<()> {
+    std::fs::write(path, body)
 }

@@ -5000,13 +5000,7 @@ mod background_queue_tests {
             // config, so leaving this to `config.agent` ran a real provider and
             // took 24 s. Completion frees a slot on the next poll.
             let fake = tmp.join("fake-agent");
-            std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&fake).unwrap().permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&fake, perms).unwrap();
-            }
+            crate::test_support::write_executable_script(&fake, "#!/bin/sh\nexit 0\n").unwrap();
             app.config.ai_hub.providers.clear();
             app.config.ai_hub.default_provider = Some("fake".to_string());
             app.config.ai_hub.providers.insert(
@@ -5054,7 +5048,6 @@ mod background_queue_tests {
     #[test]
     #[cfg(unix)]
     fn background_codex_review_ignores_user_config() {
-        use std::os::unix::fs::PermissionsExt;
         // The transcript this test inspects is opt-in, so turn it on. Left set
         // for the rest of the binary rather than removed: clear it mid-run and
         // a concurrently finishing spawn could skip its own write.
@@ -5068,10 +5061,7 @@ mod background_queue_tests {
                 return;
             };
             let fake_bin = tmp.join("codex");
-            std::fs::write(&fake_bin, "#!/bin/sh\nexit 0\n").unwrap();
-            let mut permissions = std::fs::metadata(&fake_bin).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&fake_bin, permissions).unwrap();
+            crate::test_support::write_executable_script(&fake_bin, "#!/bin/sh\nexit 0\n").unwrap();
 
             app.config.ai_hub.providers.clear();
             app.config.ai_hub.default_provider = Some("codex".to_string());
@@ -5446,8 +5436,6 @@ mod background_queue_tests {
     #[test]
     #[cfg(unix)]
     fn queued_flow_task_launches_from_frozen_provider_config() {
-        use std::os::unix::fs::PermissionsExt;
-
         let _serial = serial();
         let root = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(root.path(), || {
@@ -5464,17 +5452,14 @@ mod background_queue_tests {
 
             let argv_path = tmp.join("frozen-argv.txt");
             let frozen_command = tmp.join("frozen-agent");
-            std::fs::write(
+            crate::test_support::write_executable_script(
                 &frozen_command,
-                format!(
+                &format!(
                     "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > '{}'\nexit 0\n",
                     argv_path.display()
                 ),
             )
             .unwrap();
-            let mut permissions = std::fs::metadata(&frozen_command).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&frozen_command, permissions).unwrap();
 
             let mut frozen = ErConfig::default();
             frozen.ai_hub.default_provider = Some("frozen".into());
@@ -5587,22 +5572,18 @@ mod background_queue_tests {
         cli: &str,
         args: &[&str],
     ) -> ArgvCase {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tmp.join(format!("bin-{provider_id}"));
         std::fs::create_dir_all(&dir).unwrap();
         let argv_file = tmp.join(format!("argv-{provider_id}.txt"));
         let bin = dir.join(cli);
         let out = argv_file.display();
-        std::fs::write(
+        crate::test_support::write_executable_script(
             &bin,
-            format!(
+            &format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{out}.tmp\" && mv \"{out}.tmp\" \"{out}\"\n"
             ),
         )
         .unwrap();
-        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&bin, perms).unwrap();
         app.config.ai_hub.providers.insert(
             provider_id.to_string(),
             AiProviderConfig {
@@ -5741,8 +5722,6 @@ mod background_queue_tests {
     #[test]
     #[cfg(unix)]
     fn importance_launch_uses_read_only_builtin_arguments_and_environment() {
-        use std::os::unix::fs::PermissionsExt;
-
         let _serial = serial();
         let root = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(root.path(), || {
@@ -5766,10 +5745,7 @@ mod background_queue_tests {
                 args_path.display(),
                 env_path.display()
             );
-                std::fs::write(&command, script).unwrap();
-                let mut permissions = std::fs::metadata(&command).unwrap().permissions();
-                permissions.set_mode(0o755);
-                std::fs::set_permissions(&command, permissions).unwrap();
+                crate::test_support::write_executable_script(&command, &script).unwrap();
 
                 let model = AiModelConfig {
                     id: "test-model".into(),
@@ -5868,8 +5844,6 @@ mod background_queue_tests {
     #[test]
     #[cfg(unix)]
     fn importance_rejects_configured_permission_conflicts_before_launch() {
-        use std::os::unix::fs::PermissionsExt;
-
         let _serial = serial();
         let root = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(root.path(), || {
@@ -5898,10 +5872,8 @@ mod background_queue_tests {
                 ("opencode", vec!["run", "--permission", "allow", "{prompt}"]),
             ] {
                 let command = tmp.join(family);
-                std::fs::write(&command, "#!/bin/sh\nexit 23\n").unwrap();
-                let mut permissions = std::fs::metadata(&command).unwrap().permissions();
-                permissions.set_mode(0o755);
-                std::fs::set_permissions(&command, permissions).unwrap();
+                crate::test_support::write_executable_script(&command, "#!/bin/sh\nexit 23\n")
+                    .unwrap();
                 app.config.ai_hub.providers.insert(
                     family.into(),
                     AiProviderConfig {
