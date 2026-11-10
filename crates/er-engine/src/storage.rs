@@ -436,14 +436,6 @@ pub fn resolve_managed_root_for_pr_bucket(owner_repo_slug: &str, pr_number: u64)
     }
 }
 
-/// Shared mutex for tests that mutate `ER_STORAGE_ROOT`.
-///
-/// All tests setting `ER_STORAGE_ROOT` must hold this lock for the duration of the
-/// test.  Use `.lock().unwrap_or_else(|e| e.into_inner())` so a panicking test does
-/// not poison the mutex and cascade into sibling tests.
-#[cfg(test)]
-pub static STORAGE_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[cfg(test)]
 mod tests {
     use super::*;

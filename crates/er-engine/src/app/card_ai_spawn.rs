@@ -601,10 +601,8 @@ mod tests {
     #[test]
     fn the_reply_returns_on_the_result_line_and_the_slot_waits_for_exit() {
         static POOL: crate::agent_slots::SlotPool = crate::agent_slots::SlotPool::new();
-        let dir = std::env::temp_dir().join(format!("er-cardai-early-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let pid_file = dir.join("pid");
-        let _ = std::fs::remove_file(&pid_file);
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
 
         let script = format!(
             "echo $$ > {pid}; \

@@ -709,10 +709,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn kill_takes_down_grandchildren_in_the_group() {
-        let dir = std::env::temp_dir().join(format!("er-agentrun-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let pid_file = dir.join("grandchild.pid");
-        let _ = std::fs::remove_file(&pid_file);
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
 
         let handle = AgentRunHandle::new();
         let mut cmd = Command::new("sh");
@@ -878,10 +876,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn drop_of_a_live_handle_kills_the_child() {
-        let dir = std::env::temp_dir().join(format!("er-agentrun-drop-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let marker = dir.join("completed");
-        let _ = std::fs::remove_file(&marker);
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("completed");
 
         {
             let handle = AgentRunHandle::new();
