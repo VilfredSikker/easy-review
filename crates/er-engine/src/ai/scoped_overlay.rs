@@ -1732,18 +1732,23 @@ mod tests {
     fn reply_does_not_rewrite_an_unreadable_overlay() {
         let dir = temp_dir("broken-overlay");
         with_test_storage_root(&dir, || {
+            // A newer build's overlay parses here unless the store's version
+            // check runs, and it names a row this reply would match.
+            let newer: &[u8] = br#"{"version":99,"host_stamped":true,"scope_paths":["src/a.rs"],"files":{"src/a.rs":{"risk":"medium","findings":[{"id":"scoped-k","severity":"medium","title":"Row","line_start":1}]}}}"#;
             let broken: &[u8] = b"not json";
             std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
-            std::fs::write(dir.join("scoped/general.json"), broken).unwrap();
-            let mut edit = Some(|_: &mut Finding| -> anyhow::Result<()> { Ok(()) });
-            assert!(
-                !with_finding_in_overlay(dir.to_str().unwrap(), "scoped-k", &mut edit).unwrap()
-            );
-            assert_eq!(
-                std::fs::read(dir.join("scoped/general.json")).unwrap(),
-                broken,
-                "a broken overlay is left for the next run to replace"
-            );
+            for bytes in [newer, broken] {
+                std::fs::write(dir.join("scoped/general.json"), bytes).unwrap();
+                let mut edit = Some(|_: &mut Finding| -> anyhow::Result<()> { Ok(()) });
+                assert!(
+                    !with_finding_in_overlay(dir.to_str().unwrap(), "scoped-k", &mut edit).unwrap()
+                );
+                assert_eq!(
+                    std::fs::read(dir.join("scoped/general.json")).unwrap(),
+                    bytes,
+                    "an overlay this build cannot read is left for the next run to replace"
+                );
+            }
         });
         let _ = std::fs::remove_dir_all(dir);
     }
