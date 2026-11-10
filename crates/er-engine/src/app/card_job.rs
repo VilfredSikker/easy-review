@@ -242,8 +242,10 @@ pub fn run_card_ai_subprocess(
         Some(sink) => {
             let (tx, rx) = std::sync::mpsc::sync_channel(PROGRESS_CAPACITY);
             let drain = std::thread::spawn(move || {
-                while let Ok(JobProgress::StdoutLine(line)) = rx.recv() {
-                    sink(&line);
+                while let Ok(event) = rx.recv() {
+                    if let JobProgress::StdoutLine(line) = event {
+                        sink(&line);
+                    }
                 }
             });
             (Some(tx), Some(drain))
@@ -268,6 +270,10 @@ pub fn run_card_ai_subprocess(
         Err(JobError::TimedOut(limit)) => CardReply(format!(
             "Pending — invoke via CLI ({})",
             crate::agent_run::timed_out(limit)
+        )),
+        Err(JobError::Cancelled) => CardReply(format!(
+            "Pending — invoke via CLI ({})",
+            crate::agent_run::cancelled()
         )),
         Err(JobError::Spawn(error)) => CardReply(format!(
             "Pending — invoke via CLI (failed to spawn {}: {error})",

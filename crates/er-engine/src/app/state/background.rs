@@ -176,9 +176,9 @@ pub struct BackgroundTaskHandle {
     pub task: BackgroundTask,
     /// The running agent process, for a stop control and the deadline.
     ///
-    /// Held here rather than inside the worker so the App can reach it — the
-    /// worker keeps its own clone, and `AgentRunHandle` is built for exactly
-    /// that split. Nothing calls `kill` on it yet; the timeout watchdog does.
+    /// Held here rather than inside the runner so the App can reach it: a stop
+    /// clones this, releases the app lock, then calls `kill`. The runner gets
+    /// the same handle for the slot wait, spawn and timeout.
     pub run: std::sync::Arc<crate::agent_run::AgentRunHandle>,
     /// One-shot result channel; produces `Ok(())` on success or an `Err`
     /// describing the failure when the subprocess finishes.

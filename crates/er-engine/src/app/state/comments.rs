@@ -1,5 +1,33 @@
 use super::*;
 
+use er_agent::job::{JobError, JobProgress, JobRun, JobRunner, JobSpec, OutputContract};
+use er_agent::provider::ProviderSpec;
+
+/// Lines buffered ahead of the log drain. A stalled drain trips the provider
+/// timeout rather than blocking the job.
+const BACKGROUND_PROGRESS_CAPACITY: usize = 256;
+
+/// How a background task kind maps to the runner's job kind. `general` is a
+/// review; `importance` and `diagram:<kind>` have no runner variant yet.
+fn background_job_kind(kind: &str) -> er_agent::job::JobKind {
+    match kind {
+        "" | "review" | "general" => er_agent::job::JobKind::Review,
+        "triage" => er_agent::job::JobKind::Triage,
+        "professor" => er_agent::job::JobKind::Professor,
+        "tour" => er_agent::job::JobKind::Tour {
+            filename: "tour.json".into(),
+        },
+        "questions" => er_agent::job::JobKind::Questions,
+        "summary" => er_agent::job::JobKind::Summary,
+        "validate" => er_agent::job::JobKind::ValidateReview,
+        "validate-comments" => er_agent::job::JobKind::ValidateComments,
+        other => match other.strip_prefix("expert:") {
+            Some(id) => er_agent::job::JobKind::Expert(id.to_string()),
+            None => er_agent::job::JobKind::Other(other.to_string()),
+        },
+    }
+}
+
 /// Push the summary file to the PR body. An unreadable summary is skipped, same
 /// as an empty one.
 fn push_summary_to_pr(github: &dyn er_github::GitHub, er_dir: &str, repo_root: &str) -> Result<()> {
@@ -664,6 +692,37 @@ fn stdout_log_text(line: &str, is_stream_json: bool) -> Option<String> {
         Some(line.trim().to_string())
     };
     display.filter(|text| !text.is_empty())
+}
+
+/// Forward one runner progress event to the agent log, dropping stdout lines
+/// the stream-json parser finds empty.
+fn log_job_progress(
+    event: JobProgress,
+    is_stream_json: bool,
+    name_stdout: &std::sync::Arc<str>,
+    name_stderr: &std::sync::Arc<str>,
+    sender: &std::sync::mpsc::Sender<AgentLogEntry>,
+) {
+    let (command_name, source, text) = match event {
+        JobProgress::StdoutLine(line) => {
+            let line = line.trim_end_matches(['\r', '\n']);
+            let Some(text) = stdout_log_text(line, is_stream_json) else {
+                return;
+            };
+            (name_stdout.clone(), AgentLogSource::Stdout, text)
+        }
+        JobProgress::StderrLine(line) => (
+            name_stderr.clone(),
+            AgentLogSource::Stderr,
+            line.trim_end_matches(['\r', '\n']).to_string(),
+        ),
+    };
+    let _ = sender.send(AgentLogEntry {
+        timestamp: std::time::Instant::now(),
+        command_name,
+        source,
+        text,
+    });
 }
 
 /// A successful full run of a review lens clears the scoped overlay and
@@ -4120,21 +4179,12 @@ impl App {
             };
             let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                // Hard process-wide cap shared with arena reviewers. The
-                // App-level queue already bounds how many of these workers
-                // exist, so this only waits while arena rounds hold slots.
-                let _slot = crate::agent_slots::acquire_blocking(
-                    crate::agent_slots::Workload::Background,
-                    slot_cap,
-                    ceiling,
-                );
-                timer.mark_slot_acquired();
                 let debug_path = std::path::Path::new(&er_dir).join("debug-agent.log");
 
-                let mut agent_args: Vec<String> = config_args
-                    .iter()
-                    .map(|a| a.replace("{prompt}", &prompt))
-                    .collect();
+                // The argv still carries `{prompt}`; the runner substitutes the
+                // job prompt into it. The slot, the spawn and the stop verdicts
+                // are the runner's now.
+                let mut agent_args: Vec<String> = config_args.clone();
 
                 if is_stream_json {
                     if !agent_args.iter().any(|a| a == "--output-format") {
@@ -4169,6 +4219,20 @@ impl App {
                     validate_importance_launch(family, &agent_args, None, None)?;
                 }
 
+                // Captured before `prompt` moves into the spec. The debug
+                // transcript shows the argv the provider actually saw.
+                let debug_args = debug_agent_log_enabled().then(|| {
+                    let mut args: Vec<String> = agent_args
+                        .iter()
+                        .map(|arg| arg.replace("{prompt}", &prompt))
+                        .collect();
+                    if !agent_args.iter().any(|arg| arg.contains("{prompt}")) && !prompt.is_empty()
+                    {
+                        args.push(prompt.clone());
+                    }
+                    args
+                });
+
                 // managed_local: er_dir is outside repo_root but git must run from repo_root.
                 // is_remote / is_cache_er_dir without managed_local: cwd = er_dir (cache-dir or remote).
                 // A remote PR whose repo *is* the local checkout runs there instead, so the
@@ -4189,95 +4253,77 @@ impl App {
                 } else {
                     &er_dir
                 };
-                let mut cmd = std::process::Command::new(&agent_cmd);
-                cmd.args(&agent_args)
-                    .current_dir(work_dir)
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped());
-                if let Some((key, value)) = &opencode_env {
-                    cmd.env(key, value);
-                }
-                let mut child = run
-                    .spawn(&mut cmd)
-                    .with_context(|| format!("Failed to run review ({})", agent_cmd))?;
-                let child_id = child.id();
-                timer.mark_spawned();
+                let spec = JobSpec {
+                    kind: background_job_kind(&task_kind),
+                    provider: ProviderSpec {
+                        program: agent_cmd.clone(),
+                        args: agent_args,
+                        env: opencode_env.iter().cloned().collect(),
+                        protocol: if is_stream_json {
+                            crate::agent_runtime::OutputProtocol::ClaudeStreamJson
+                        } else {
+                            crate::agent_runtime::OutputProtocol::Plain
+                        },
+                        timeout: agent_timeout,
+                    },
+                    prompt,
+                    work_dir: work_dir.clone(),
+                    workload: crate::agent_slots::Workload::Background,
+                    output: OutputContract::Stdout,
+                };
 
-                let stdout = child.stdout.take();
-                let stderr = child.stderr.take();
-                // Hand ownership over only once the pipes are off it, so a
-                // timeout firing here still reaches the process.
-                run.register(child);
-                run.arm_timeout(agent_timeout);
-
-                let log_tx_out = log_tx_thread.clone();
-                let stdout_handle = std::thread::spawn(move || -> Vec<String> {
-                    let mut lines: Vec<String> = Vec::new();
-                    use std::io::BufRead;
-                    let pipe_lines = stdout.into_iter().flat_map(|pipe| {
-                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
-                    });
-                    // Lines that parse to None (noise like empty results) are kept
-                    // in `lines` but not logged.
-                    let log_texts = pipe_lines
-                        .inspect(|line| lines.push(line.clone()))
-                        .filter_map(|line| stdout_log_text(&line, is_stream_json));
-                    for text in log_texts {
-                        let _ = log_tx_out.send(AgentLogEntry {
-                            timestamp: std::time::Instant::now(),
-                            command_name: command_name_stdout.clone(),
-                            source: AgentLogSource::Stdout,
-                            text,
-                        });
+                // Log lines are drained off the job thread, so a slow UI
+                // cannot hold the runner's pipe readers.
+                let (progress_tx, progress_rx) =
+                    std::sync::mpsc::sync_channel::<JobProgress>(BACKGROUND_PROGRESS_CAPACITY);
+                let log_tx_drain = log_tx_thread.clone();
+                let name_out = command_name_stdout.clone();
+                let name_err = command_name_stderr.clone();
+                let drain = std::thread::spawn(move || {
+                    while let Ok(event) = progress_rx.recv() {
+                        log_job_progress(
+                            event,
+                            is_stream_json,
+                            &name_out,
+                            &name_err,
+                            &log_tx_drain,
+                        );
                     }
-                    lines
                 });
 
-                let log_tx_err = log_tx_thread.clone();
-                let stderr_handle = std::thread::spawn(move || -> Vec<String> {
-                    let mut lines: Vec<String> = Vec::new();
-                    use std::io::BufRead;
-                    let pipe_lines = stderr.into_iter().flat_map(|pipe| {
-                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
-                    });
-                    for line in pipe_lines {
-                        let _ = log_tx_err.send(AgentLogEntry {
-                            timestamp: std::time::Instant::now(),
-                            command_name: command_name_stderr.clone(),
-                            source: AgentLogSource::Stderr,
-                            text: line.clone(),
-                        });
-                        lines.push(line);
+                let runner = JobRunner::new(slot_cap, ceiling);
+                let outcome = runner.run_controlled(
+                    &spec,
+                    JobRun {
+                        // The App keeps this handle for the stop control.
+                        handle: std::sync::Arc::clone(&run),
+                        progress: Some(progress_tx),
+                        timer: Some(&mut timer),
+                    },
+                );
+                let _ = drain.join();
+                let output = match outcome {
+                    Ok(output) => output,
+                    Err(JobError::TimedOut(limit)) => {
+                        return Err(crate::agent_run::timed_out(limit));
                     }
-                    lines
-                });
+                    Err(JobError::Cancelled) => {
+                        return Err(crate::agent_run::cancelled());
+                    }
+                    Err(JobError::Spawn(error)) => {
+                        return Err(error)
+                            .with_context(|| format!("Failed to run review ({agent_cmd})"));
+                    }
+                };
+                let stdout_lines: Vec<String> = output.stdout.lines().map(str::to_string).collect();
+                let stderr_lines: Vec<String> = output.stderr.lines().map(str::to_string).collect();
+                let status = output.status;
 
-                let child = run
-                    .take_child(child_id)
-                    .with_context(|| format!("Lost the handle for review ({agent_cmd})"))?;
-                let status = run
-                    .wait_for(child)
-                    .with_context(|| format!("Failed to wait for review ({})", agent_cmd))?;
-                let stdout_lines = stdout_handle.join().unwrap_or_default();
-                let stderr_lines = stderr_handle.join().unwrap_or_default();
-                timer.mark_finished();
-
-                // The verdict, read once the child is reaped and the pipes are
-                // drained. Timeout first: a run killed by its deadline also
-                // has `cancel` set, and "you stopped this" would be the wrong
-                // story to tell about it.
-                if run.is_timed_out() {
-                    return Err(crate::agent_run::timed_out(agent_timeout));
-                }
-                if run.is_cancelled() {
-                    return Err(crate::agent_run::cancelled());
-                }
-
-                if debug_agent_log_enabled() {
+                if let Some(debug_args) = &debug_args {
                     let debug_content = format!(
                         "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
                         agent_cmd,
-                        agent_args.join(" "),
+                        debug_args.join(" "),
                         status
                             .code()
                             .map_or_else(|| "signal".to_string(), |c| c.to_string()),
@@ -4312,9 +4358,10 @@ impl App {
                 // and had no Write/Edit. Validate it and merge it into the
                 // global config, replacing only this repo's table.
                 if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
-                    let reply = stdout_lines.join("\n");
-                    let proposal =
-                        crate::config::RiskRuleProposal::from_reply(&reply).ok_or_else(|| {
+                    // The shared decoder's final text, not the raw stdout: a
+                    // stream-json run carries the table inside its result event.
+                    let proposal = crate::config::RiskRuleProposal::from_reply(&output.text)
+                        .ok_or_else(|| {
                             anyhow::anyhow!(
                                 "{command_name_fail}: the agent printed no importance table"
                             )
@@ -4331,7 +4378,7 @@ impl App {
                 // only the validated diagrams/<id>.json from stdout.
                 if let Some(hw) = &host_write_diagram {
                     crate::ai::persist_diagram_from_agent_stdout(
-                        &stdout_lines.join("\n"),
+                        &output.stdout,
                         is_stream_json,
                         &hw.kind,
                         &hw.diff_hash,
@@ -6433,6 +6480,270 @@ mod background_queue_tests {
                     .join("questions.json")
                     .exists(),
                 "a missing file must not be created"
+            );
+        });
+    }
+
+    #[test]
+    fn background_kinds_map_to_job_kinds() {
+        use er_agent::job::JobKind;
+        let cases = [
+            ("", JobKind::Review),
+            ("review", JobKind::Review),
+            ("general", JobKind::Review),
+            ("triage", JobKind::Triage),
+            ("professor", JobKind::Professor),
+            (
+                "tour",
+                JobKind::Tour {
+                    filename: "tour.json".into(),
+                },
+            ),
+            ("expert:security", JobKind::Expert("security".into())),
+            ("importance", JobKind::Other("importance".into())),
+            ("diagram:flows", JobKind::Other("diagram:flows".into())),
+            ("summary", JobKind::Summary),
+            ("validate", JobKind::ValidateReview),
+            ("validate-comments", JobKind::ValidateComments),
+            ("questions", JobKind::Questions),
+        ];
+        for (kind, expected) in cases {
+            assert_eq!(super::background_job_kind(kind), expected, "{kind}");
+        }
+    }
+
+    /// A host write the agent's output cannot satisfy fails the task, for both
+    /// host-owned kinds.
+    #[test]
+    fn host_write_failure_fails_the_task() {
+        let _serial = serial();
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 2) else {
+                return;
+            };
+
+            // Importance: a table for another repo is refused by the merge.
+            let importance_fake = tmp.join("importance-fake");
+            let table = tmp.join("importance-table.txt");
+            std::fs::write(
+                &table,
+                format!(
+                    "Here is the table.\n{}\n{}\n{}\n",
+                    crate::ai::prompts::IMPORTANCE_JSON_BEGIN,
+                    serde_json::json!({
+                        "repo": "some-other-repo",
+                        "default": "low",
+                        "rules": {},
+                        "report": "none",
+                    }),
+                    crate::ai::prompts::IMPORTANCE_JSON_END,
+                ),
+            )
+            .unwrap();
+            crate::test_support::write_executable_script(
+                &importance_fake,
+                &format!("#!/bin/sh\ncat '{}'\n", table.display()),
+            )
+            .unwrap();
+            app.config.ai_hub.providers.clear();
+            app.config.ai_hub.default_provider = Some("importance".into());
+            app.config.ai_hub.default_model = Some("m".into());
+            app.config.ai_hub.providers.insert(
+                "importance".into(),
+                AiProviderConfig {
+                    command: importance_fake.to_string_lossy().into_owned(),
+                    family: Some("claude".into()),
+                    args: vec!["--print".into(), "{prompt}".into()],
+                    models: vec![AiModelConfig {
+                        id: "m".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            );
+            app.current_ai_provider = Some("importance".into());
+            app.current_ai_model = Some("m".into());
+            app.spawn_background_agent_task(
+                crate::ai::prompts::IMPORTANCE_TASK_KIND.to_string(),
+                "importance",
+                target(tmp, "importance-fail"),
+                "p".into(),
+                false,
+                None,
+                None,
+            )
+            .unwrap();
+
+            // Diagram: output that carries no diagram JSON payload.
+            let diagram_fake = tmp.join("diagram-fake");
+            crate::test_support::write_executable_script(
+                &diagram_fake,
+                "#!/bin/sh\nprintf 'not a diagram'\n",
+            )
+            .unwrap();
+            app.config.ai_hub.providers.clear();
+            app.config.ai_hub.default_provider = Some("diagram".into());
+            app.config.ai_hub.providers.insert(
+                "diagram".into(),
+                AiProviderConfig {
+                    command: diagram_fake.to_string_lossy().into_owned(),
+                    args: vec!["{prompt}".into()],
+                    models: vec![AiModelConfig {
+                        id: "m".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            );
+            app.current_ai_provider = Some("diagram".into());
+            app.current_ai_model = Some("m".into());
+            let output_path = tmp.join(".er/diagrams/flows.json");
+            std::fs::create_dir_all(output_path.parent().unwrap()).unwrap();
+            app.spawn_background_diagram(
+                "flows",
+                target(tmp, "diagram-fail"),
+                "p".into(),
+                false,
+                crate::app::HostWriteDiagram {
+                    output_path,
+                    kind: "flows".into(),
+                    diff_hash: "h".into(),
+                    custom_prompt: None,
+                },
+            )
+            .unwrap();
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                app.poll_background_tasks();
+                let failed = |prefix: &str| {
+                    app.background_tasks.values().any(|handle| {
+                        handle.task.kind.starts_with(prefix)
+                            && matches!(handle.task.status, crate::app::CommandStatus::Failed(_))
+                    })
+                };
+                if failed("importance") && failed("diagram:") {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "host writes did not settle"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+
+            let error = |prefix: &str| -> String {
+                app.background_tasks
+                    .values()
+                    .find(|handle| handle.task.kind.starts_with(prefix))
+                    .and_then(|handle| handle.task.error.clone())
+                    .unwrap_or_default()
+            };
+            assert!(
+                error("importance").contains("failed to merge the importance table"),
+                "{}",
+                error("importance")
+            );
+            assert!(
+                error("diagram:").contains("failed to persist diagram sidecar"),
+                "{}",
+                error("diagram:")
+            );
+        });
+    }
+
+    /// The importance table is read from the shared decoder's final text, so a
+    /// stream-json run's `result` event is what gets parsed. A table for
+    /// another repo is parsed and then refused by the merge; unparsed input
+    /// fails earlier, with "no importance table".
+    #[test]
+    fn importance_parses_the_decoded_reply_of_a_stream_json_run() {
+        let _serial = serial();
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let tmp = root.path();
+            let Some(mut app) = test_app(tmp, 1) else {
+                return;
+            };
+
+            let payload = tmp.join("importance-ndjson");
+            let table = format!(
+                "Here is the table.\n{}\n{}\n{}\n",
+                crate::ai::prompts::IMPORTANCE_JSON_BEGIN,
+                serde_json::json!({
+                    "repo": "some-other-repo",
+                    "default": "low",
+                    "rules": {},
+                    "report": "ok",
+                }),
+                crate::ai::prompts::IMPORTANCE_JSON_END,
+            );
+            let event = serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "result": table,
+            });
+            std::fs::write(&payload, format!("{event}\n")).unwrap();
+
+            let fake = tmp.join("stream-importance");
+            crate::test_support::write_executable_script(
+                &fake,
+                &format!("#!/bin/sh\ncat '{}'\n", payload.display()),
+            )
+            .unwrap();
+            app.config.ai_hub.providers.clear();
+            app.config.ai_hub.default_provider = Some("stream".into());
+            app.config.ai_hub.default_model = Some("m".into());
+            app.config.ai_hub.providers.insert(
+                "stream".into(),
+                AiProviderConfig {
+                    command: fake.to_string_lossy().into_owned(),
+                    family: Some("claude".into()),
+                    args: vec!["--print".into(), "{prompt}".into()],
+                    models: vec![AiModelConfig {
+                        id: "m".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            );
+            app.current_ai_provider = Some("stream".into());
+            app.current_ai_model = Some("m".into());
+
+            app.spawn_background_agent_task(
+                crate::ai::prompts::IMPORTANCE_TASK_KIND.to_string(),
+                "importance",
+                target(tmp, "importance-stream"),
+                "p".into(),
+                false,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let error = loop {
+                app.poll_background_tasks();
+                if let Some(handle) = app.background_tasks.values().find(|handle| {
+                    matches!(handle.task.status, crate::app::CommandStatus::Failed(_))
+                }) {
+                    break handle.task.error.clone().unwrap_or_default();
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the importance run did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            };
+            assert!(
+                error.contains("failed to merge the importance table"),
+                "the stream-json table was not parsed: {error}"
+            );
+            assert!(
+                !error.contains("no importance table"),
+                "the raw stdout was parsed instead of the decoded reply: {error}"
             );
         });
     }

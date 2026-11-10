@@ -59,6 +59,18 @@ pub fn spawn(
     work_dir: &str,
 ) -> Result<(Arc<AgentRunHandle>, Child), ProviderError> {
     let run = AgentRunHandle::new();
+    let child = spawn_with(Arc::clone(&run), spec, work_dir)?;
+    Ok((run, child))
+}
+
+/// Spawn the provider on a handle the caller already holds, so a host can keep
+/// a stop control on the same run. Null stdin, env, process group and timeout
+/// arming are the same as [`spawn`].
+pub fn spawn_with(
+    run: Arc<AgentRunHandle>,
+    spec: &ProviderSpec,
+    work_dir: &str,
+) -> Result<Child, ProviderError> {
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args)
         .current_dir(work_dir)
@@ -70,7 +82,7 @@ pub fn spawn(
     }
     let child = run.spawn(&mut cmd).map_err(ProviderError::Spawn)?;
     run.arm_timeout(spec.timeout);
-    Ok((run, child))
+    Ok(child)
 }
 
 /// Run to completion, draining both pipes concurrently. No slot.
