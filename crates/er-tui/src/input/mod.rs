@@ -1754,36 +1754,36 @@ mod tests {
         // With a review but zero GitHub comments, PromptValidate must still
         // prepare the diff artifacts: gating the ensure call on comments makes
         // validate silently no-op.
-        let output_dir = "/tmp/er-tui-validate-f1";
-        let _ = std::fs::remove_dir_all(output_dir);
-        std::fs::create_dir_all(output_dir).unwrap(); // storage creates it in the real flow
-        let mut app = app_with_managed_dir(output_dir);
-        let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
-        app.tab_mut().set_raw_diff_for_test(raw);
-        app.tab_mut().ai.review = Some(er_engine::ai::ErReview {
-            version: 1,
-            diff_hash: String::new(),
-            created_at: String::new(),
-            base_branch: "main".into(),
-            head_branch: "feature".into(),
-            files: std::collections::HashMap::new(),
-            file_hashes: std::collections::HashMap::new(),
+        let dir = tempfile::tempdir().unwrap();
+        let output_dir = dir.path().to_str().unwrap();
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            let mut app = app_with_managed_dir(output_dir);
+            let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+            app.tab_mut().set_raw_diff_for_test(raw);
+            app.tab_mut().ai.review = Some(er_engine::ai::ErReview {
+                version: 1,
+                diff_hash: String::new(),
+                created_at: String::new(),
+                base_branch: "main".into(),
+                head_branch: "feature".into(),
+                files: std::collections::HashMap::new(),
+                file_hashes: std::collections::HashMap::new(),
+            });
+            // The handler fires a real agent subprocess on success — keep the
+            // child inert so the test has no external side effect (ratchet-6).
+            app.config.agent.command = "/bin/true".to_string();
+
+            dispatch_hub_action(&mut app, HubAction::PromptValidate).expect("validate dispatch");
+
+            assert!(
+                std::fs::metadata(format!("{output_dir}/.diff-tmp.sha256")).is_ok(),
+                "artifacts ensured even with zero comments"
+            );
+            assert!(
+                std::fs::metadata(format!("{output_dir}/diff-annotated")).is_ok(),
+                "annotated diff ensured"
+            );
         });
-        // The handler fires a real agent subprocess on success — keep the
-        // child inert so the test has no external side effect (ratchet-6).
-        app.config.agent.command = "/bin/true".to_string();
-
-        dispatch_hub_action(&mut app, HubAction::PromptValidate).expect("validate dispatch");
-
-        assert!(
-            std::fs::metadata(format!("{output_dir}/.diff-tmp.sha256")).is_ok(),
-            "artifacts ensured even with zero comments"
-        );
-        assert!(
-            std::fs::metadata(format!("{output_dir}/diff-annotated")).is_ok(),
-            "annotated diff ensured"
-        );
-        let _ = std::fs::remove_dir_all(output_dir);
     }
 
     #[test]
@@ -1823,43 +1823,43 @@ mod tests {
         // The sandboxed agent cannot reach GitHub, so a remote review must not
         // be told to `gh pr diff` from the artifact directory — it uses the
         // prepared-diff prompt, as desktop does.
-        let output_dir = "/tmp/er-tui-remote-review";
-        let _ = std::fs::remove_dir_all(output_dir);
-        std::fs::create_dir_all(output_dir).unwrap();
-        let mut app = app_with_managed_dir(output_dir);
-        app.tab_mut().remote_repo = Some("reshapebiotech/discovery".into());
-        app.tab_mut().pr_number = Some(1473);
-        app.tab_mut().mode = DiffMode::PrDiff;
-        app.tab_mut().base_branch = "main".into();
-        app.tab_mut().current_branch = "agent/refresh-all-experiment-metrics".into();
-        let raw = "diff --git a/x.rs b/x.rs\nindex 0000000..1111111 100644\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1,2 @@\n fn x() {}\n+fn y() {}\n";
-        app.tab_mut().set_raw_diff_for_test(raw);
-        app.config.agent.command = "/bin/true".to_string();
+        let dir = tempfile::tempdir().unwrap();
+        let output_dir = dir.path().to_str().unwrap();
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            let mut app = app_with_managed_dir(output_dir);
+            app.tab_mut().remote_repo = Some("reshapebiotech/discovery".into());
+            app.tab_mut().pr_number = Some(1473);
+            app.tab_mut().mode = DiffMode::PrDiff;
+            app.tab_mut().base_branch = "main".into();
+            app.tab_mut().current_branch = "agent/refresh-all-experiment-metrics".into();
+            let raw = "diff --git a/x.rs b/x.rs\nindex 0000000..1111111 100644\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1,2 @@\n fn x() {}\n+fn y() {}\n";
+            app.tab_mut().set_raw_diff_for_test(raw);
+            app.config.agent.command = "/bin/true".to_string();
 
-        let er_dir = app.tab().er_dir();
-        let hash = "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1";
-        let prompt =
-            build_agent_review_prompt(&mut app, &er_dir, hash).expect("remote review prompt");
-        assert_managed_prompt(&prompt, output_dir, "review.json");
-        assert!(
-            prompt.contains("prepared diff"),
-            "remote review must use the prepared-diff prompt:\n{prompt}"
-        );
-        assert!(
-            !prompt.contains("gh pr diff"),
-            "sandboxed remote agent must not be told to fetch via gh:\n{prompt}"
-        );
+            let er_dir = app.tab().er_dir();
+            let hash = "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1";
+            let prompt =
+                build_agent_review_prompt(&mut app, &er_dir, hash).expect("remote review prompt");
+            assert_managed_prompt(&prompt, output_dir, "review.json");
+            assert!(
+                prompt.contains("prepared diff"),
+                "remote review must use the prepared-diff prompt:\n{prompt}"
+            );
+            assert!(
+                !prompt.contains("gh pr diff"),
+                "sandboxed remote agent must not be told to fetch via gh:\n{prompt}"
+            );
 
-        dispatch_hub_action(&mut app, HubAction::PromptReview).expect("review dispatch");
-        assert!(
-            std::fs::metadata(format!("{output_dir}/diff-tmp")).is_ok(),
-            "parent must write diff-tmp before spawning the agent"
-        );
-        assert!(
-            std::fs::metadata(format!("{output_dir}/diff-annotated")).is_ok(),
-            "parent must write diff-annotated before spawning the agent"
-        );
-        let _ = std::fs::remove_dir_all(output_dir);
+            dispatch_hub_action(&mut app, HubAction::PromptReview).expect("review dispatch");
+            assert!(
+                std::fs::metadata(format!("{output_dir}/diff-tmp")).is_ok(),
+                "parent must write diff-tmp before spawning the agent"
+            );
+            assert!(
+                std::fs::metadata(format!("{output_dir}/diff-annotated")).is_ok(),
+                "parent must write diff-annotated before spawning the agent"
+            );
+        });
     }
 
     #[test]
@@ -2181,28 +2181,32 @@ mod tests {
         use crate::app::InputMode;
         use er_engine::ai::CommentType;
 
-        let mut app = er_engine::app::App::new_for_test(Vec::new());
-        {
-            let tab = app.tab_mut();
-            tab.remote_repo = Some("owner/repo".to_string());
-            tab.pr_number = Some(7);
-            tab.comment_file = "src/a.rs".to_string();
-            tab.comment_hunk = 0;
-            tab.comment_line_num = Some(3);
-            tab.comment_type = CommentType::GitHubComment;
-            tab.comment_textarea = tui_textarea::TextArea::new(vec!["keep me".to_string()]);
-        }
-        app.input_mode = InputMode::Comment;
-        app.set_github_comment_poster(std::sync::Arc::new(FailingCommentPoster));
+        let dir = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            let mut app = er_engine::app::App::new_for_test(Vec::new());
+            {
+                let tab = app.tab_mut();
+                tab.remote_repo = Some("owner/repo".to_string());
+                tab.pr_number = Some(7);
+                tab.comment_file = "src/a.rs".to_string();
+                tab.comment_hunk = 0;
+                tab.comment_line_num = Some(3);
+                tab.comment_type = CommentType::GitHubComment;
+                tab.comment_textarea = tui_textarea::TextArea::new(vec!["keep me".to_string()]);
+            }
+            app.input_mode = InputMode::Comment;
+            app.set_github_comment_poster(std::sync::Arc::new(FailingCommentPoster));
 
-        handle_comment_input(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+            handle_comment_input(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+                .unwrap();
 
-        assert_eq!(app.input_mode, InputMode::Comment);
-        assert_eq!(app.tab().comment_textarea.lines().join("\n"), "keep me");
-        assert!(app
-            .notification
-            .as_ref()
-            .is_some_and(|n| n.message.contains("Comment not posted")));
+            assert_eq!(app.input_mode, InputMode::Comment);
+            assert_eq!(app.tab().comment_textarea.lines().join("\n"), "keep me");
+            assert!(app
+                .notification
+                .as_ref()
+                .is_some_and(|n| n.message.contains("Comment not posted")));
+        });
     }
 
     #[test]

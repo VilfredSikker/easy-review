@@ -21,6 +21,12 @@ pub fn with_var<R>(name: &str, value: impl Into<String>, f: impl FnOnce() -> R) 
     with_override(name, Some(value.into()), f)
 }
 
+/// Run `f` with `name` unset on this thread, even when the process environment
+/// has a value.
+pub fn with_var_unset<R>(name: &str, f: impl FnOnce() -> R) -> R {
+    with_override(name, None, f)
+}
+
 fn with_override<R>(name: &str, value: Option<String>, f: impl FnOnce() -> R) -> R {
     struct Restore {
         name: String,

@@ -107,27 +107,33 @@ mod tests {
 
     #[test]
     fn resolve_pr_from_url() {
-        let pr = resolve_pr_target(&PrTargetInput {
-            pr_url: Some("https://github.com/acme/widgets/pull/42/files"),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(pr.owner, "acme");
-        assert_eq!(pr.repo, "widgets");
-        assert_eq!(pr.number, 42);
-        assert!(pr.bucket_path.contains("prs/pr-42"));
+        let dir = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            let pr = resolve_pr_target(&PrTargetInput {
+                pr_url: Some("https://github.com/acme/widgets/pull/42/files"),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(pr.owner, "acme");
+            assert_eq!(pr.repo, "widgets");
+            assert_eq!(pr.number, 42);
+            assert!(pr.bucket_path.contains("prs/pr-42"));
+        });
     }
 
     #[test]
     fn resolve_pr_from_repo_and_number() {
-        let pr = resolve_pr_target(&PrTargetInput {
-            repo: Some("acme/widgets"),
-            number: Some(7),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(pr.number, 7);
-        assert!(pr.bucket_path.contains("prs/pr-7"));
+        let dir = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            let pr = resolve_pr_target(&PrTargetInput {
+                repo: Some("acme/widgets"),
+                number: Some(7),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(pr.number, 7);
+            assert!(pr.bucket_path.contains("prs/pr-7"));
+        });
     }
 
     #[test]

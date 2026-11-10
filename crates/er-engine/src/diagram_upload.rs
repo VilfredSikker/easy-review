@@ -190,17 +190,10 @@ pub fn list_diagrams(owner: &str, repo: &str, pr: u64) -> (String, Vec<ErDiagram
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::STORAGE_TEST_ENV_LOCK;
 
     fn with_storage_root<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let root = tempfile::tempdir().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", root.path());
-        let out = f();
-        std::env::remove_var("ER_STORAGE_ROOT");
-        out
+        crate::storage::with_test_storage_root(root.path(), f)
     }
 
     fn write_diff_tmp(er_dir: &str, diff: &str) -> String {
