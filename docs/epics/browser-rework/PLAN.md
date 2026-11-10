@@ -77,8 +77,6 @@ never start simultaneous suites, even across worktrees. The brief gives setup.
 LOCK=/home/agent/.codex/skills/confidence-merge/scripts/locked.sh
 REPO=$(git rev-parse --show-toplevel)
 "$LOCK" "$REPO" just docs-check
-"$LOCK" "$REPO" ./scripts/er-tui.sh test -p er-engine browser_annotations
-"$LOCK" "$REPO" ./scripts/er-tui.sh test -p er-engine browser_prompt
 "$LOCK" "$REPO" ./scripts/er-tui.sh test -p er-engine export
 "$LOCK" "$REPO" cargo test -p er-desktop browser
 "$LOCK" "$REPO" cargo test -p er-desktop snapshot
@@ -121,7 +119,7 @@ other PRs touching those hot files. No database lane applies.
 | ER29 / er29-presentation | Presentation/Sol | ER26, passed ER22; native lane free | T09 sole presentation owner, leases, bounds/focus races; desktop `browser`, check-ui/test-ui, macOS preservation scenarios | Drafts/capture; high/M |
 | ER30+31 / er30-31-runtime-drafts | Runtime/editor/Sol | ER28, ER29, ER32a/b, passed ER23/24; save contract resolved | T10+T11 isolated picking/locators plus trusted host editor/drafts/save, merged together; desktop `browser`, engine annotation filter, check-ui/test-ui, real-window trust/draft checks | Capture/export; high/L |
 | ER33 / er33-capture | Capture/Sol | ER30+31, ER32a/b, passed ER25; marker contract resolved | T13 snapshot coordinator, crop, preview and invalidation; desktop `browser`, check-ui/test-ui, real-window scale/cancellation checks | Display capture/new adapters; high/M |
-| ER34a / er34a-renderer | Engine/Sol | ER32a | T14 shared pure prompt renderer only; engine `browser_prompt` and `export`; checks below | Switching current export/Copy readers; high/S |
+| ER34a / er34a-renderer | Engine/Sol | ER32a | T14 shared pure prompt renderer only; engine `export`; checks below | Switching current export/Copy readers; high/S |
 | ER34b / er34b-export | Export/Terra | ER34a, ER30+31; delivery contract resolved | Remaining T14 Copy/file/explicit agent text wiring; engine `export`, desktop `browser`, check-ui/test-ui | Adapter image support or automatic send; med/S |
 | ER35 / er35-mcp | MCP/Sol | ER32a, ER34a | T15 MCP tool, same bucket resolution, bounded image delivery; MCP suite, checks below | Browser product/capture integration; high/S |
 | ER36 / er36-cutover | Release/Sol | Every predecessor complete; all native acceptance passed | T16 replacement audit, deletion, platform checks, release notes; full gates below | New features; high/M |
@@ -157,7 +155,7 @@ normalization policy remains open before any live caller persists page evidence.
 Keep capture-time geometry distinct from current resolution. No screenshot marker
 number strategy is selected by this storage slice.
 
-Run engine `browser_annotations`, `cargo fmt --all -- --check`, and
+Run `cargo fmt --all -- --check` and
 `just clippy` through the lock. Cover missing/corrupt/future-version metadata;
 mutations refusing corrupt files; full round trip and unknown optional fields;
 idempotency and deletion/monotonic numbering; concurrent saves; invalid/oversized/
