@@ -29,6 +29,8 @@ pub fn registry() -> Registry {
         registry
             .register::<crate::projects_pins::ProjectsFile>()
             .expect("the projects kind registers once");
+        crate::release_update::register(&mut registry)
+            .expect("the update-check kind registers once");
     }
     registry
 }
@@ -73,6 +75,7 @@ mod tests {
             ("order.json", "order"),
             ("checklist.json", "checklist"),
             ("projects.json", "projects"),
+            ("update-check.json", "update-check"),
         ] {
             assert_eq!(
                 registry.kind_for(std::path::Path::new(file)),

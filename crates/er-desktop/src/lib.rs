@@ -14,7 +14,6 @@ pub mod github_image;
 pub mod inbox;
 pub mod main_webview_policy;
 pub mod native_notify;
-mod persist;
 pub mod pr_cache;
 pub mod pr_open_cache;
 pub mod profile_log;

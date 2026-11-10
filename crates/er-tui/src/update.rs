@@ -2,6 +2,7 @@
 //! The decisions live in `er_engine::release_update`; this module only fetches.
 
 use anyhow::{anyhow, bail, Context, Result};
+use er_engine::release_install;
 use er_engine::release_update::{self, LatestRelease};
 use std::io::Read;
 use std::time::Duration;
@@ -51,12 +52,11 @@ pub fn spawn_background_check() -> std::sync::mpsc::Receiver<String> {
         return rx;
     }
     std::thread::spawn(move || {
-        let cache = release_update::check_cache_path();
-        let release = match release_update::load_cached_release(&cache, release_update::CHECK_TTL) {
+        let release = match release_update::load_cached_release(release_update::CHECK_TTL) {
             Some(r) => r,
             None => match fetch_latest() {
                 Ok(r) => {
-                    let _ = release_update::save_cached_release(&cache, &r);
+                    let _ = release_update::save_cached_release(&r);
                     r
                 }
                 Err(_) => return,
@@ -111,8 +111,8 @@ pub fn run() -> Result<()> {
     if !status.success() {
         bail!("tar could not extract {asset}");
     }
-    release_update::replace_executable(&exe, &work.path().join("er"))?;
-    let _ = release_update::save_cached_release(&release_update::check_cache_path(), &release);
+    release_install::replace_executable(&exe, &work.path().join("er"))?;
+    let _ = release_update::save_cached_release(&release);
 
     println!(
         "Updated er {current} → {} at {}",

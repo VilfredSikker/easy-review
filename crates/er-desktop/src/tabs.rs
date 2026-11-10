@@ -1,17 +1,17 @@
-//! Tab persistence — serializes the open tab list to `~/.config/er/tabs.json`
-//! so the multi-tab layout survives app restart.
+//! Tab persistence — stores the open tab list as the app's `tabs` record in
+//! the artifact store so the multi-tab layout survives app restart.
 //!
 //! A tab is reconstructed from a [`TabDescriptor`]: enough to recreate the
 //! `TabState` via one of the engine's constructors (`new`, `new_local_branch`,
 //! `new_remote`). Heavy state (diff content, AI sidecar files) is not persisted
 //! — it's rederived on launch.
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
+use er_store::{Artifact, Loaded, Mode};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TabKind {
     Working,
@@ -21,7 +21,7 @@ pub enum TabKind {
     LocalPr,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct TabDescriptor {
     pub kind: TabKind,
     pub repo_root: String,
@@ -47,30 +47,36 @@ pub struct TabDescriptor {
     pub browser_layout: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct TabsFile {
     pub tabs: Vec<TabDescriptor>,
     #[serde(default)]
     pub active_idx: usize,
 }
 
-/// Location of the persisted tab file. `~/.config/er/tabs.json` on Linux/mac,
-/// platform equivalent elsewhere via the `dirs` crate.
-fn tabs_path() -> Option<PathBuf> {
-    let dir = dirs::config_dir()?.join("er");
-    Some(dir.join("tabs.json"))
+impl Artifact for TabsFile {
+    const KIND: &'static str = "tabs";
+    const VERSION: u32 = 1;
+    const MODE: Mode = Mode::Enveloped;
+    const FILE: &'static str = "tabs.json";
+    type Slot = ();
 }
 
-/// Persist tab descriptors to `~/.config/er/tabs.json`. Writes atomically via
-/// tmp file + rename so a crash mid-save never produces a truncated file.
+/// Register this record's kind beside the engine's kinds.
+#[cfg(test)]
+pub(crate) fn register(registry: &mut er_store::Registry) -> Result<(), er_store::StoreError> {
+    registry.register::<TabsFile>()
+}
+
+/// Persist tab descriptors as the app's tabs record.
 pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
-    let path = tabs_path().context("no config dir")?;
+    let key = er_engine::store_registry::app_key::<TabsFile>()?;
     let file = TabsFile {
         tabs: tabs.to_vec(),
         active_idx,
     };
-    crate::persist::save_json_atomic(&path, &file)
-        .with_context(|| format!("persist {}", path.display()))
+    er_engine::store_registry::store().write(&key, &file)?;
+    Ok(())
 }
 
 /// Serialize the live tab list and active index to disk.
@@ -106,12 +112,14 @@ pub fn persist_app_tabs(app: &er_engine::app::App) {
     }
 }
 
-/// Load persisted tabs. Returns `None` if the file is missing or unreadable —
+/// Load persisted tabs. Returns `None` if the record is missing or unreadable —
 /// callers fall back to the default single-tab launch.
 pub fn load_tabs() -> Option<TabsFile> {
-    let path = tabs_path()?;
-    let content = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&content).ok()
+    let key = er_engine::store_registry::app_key::<TabsFile>().ok()?;
+    match er_engine::store_registry::store().read(&key).ok()? {
+        Loaded::Found(stored) => Some(stored.value),
+        Loaded::Absent | Loaded::Unreadable(_) => None,
+    }
 }
 
 fn browser_descriptor_fields(tab: &er_engine::app::TabState) -> (Option<String>, Option<String>) {
@@ -431,22 +439,41 @@ mod tests {
                 browser_layout: None,
             },
         ];
-        let file = TabsFile {
-            tabs: tabs.clone(),
-            active_idx: 1,
-        };
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("tabs.json");
-        let json = serde_json::to_string_pretty(&file).expect("serialize");
-        std::fs::write(&path, &json).expect("write");
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            save_tabs(&tabs, 1).expect("save");
 
-        let loaded_raw = std::fs::read_to_string(&path).expect("read");
-        let loaded: TabsFile = serde_json::from_str(&loaded_raw).expect("deserialize");
+            let loaded = load_tabs().expect("a saved record");
 
-        assert_eq!(loaded.tabs.len(), 4);
-        assert_eq!(loaded.tabs, tabs);
-        assert_eq!(loaded.active_idx, 1);
+            assert_eq!(loaded.tabs.len(), 4);
+            assert_eq!(loaded.tabs, tabs);
+            assert_eq!(loaded.active_idx, 1);
+        });
+    }
+
+    #[test]
+    fn tabs_round_trip_through_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            let tabs = vec![TabDescriptor {
+                kind: TabKind::RemotePr,
+                repo_root: String::new(),
+                branch: None,
+                pr_owner: Some("octo".to_string()),
+                pr_repo: Some("cat".to_string()),
+                pr_number: Some(42),
+                pr_head_ref: None,
+                base_ref: None,
+                browser_url: None,
+                browser_layout: None,
+            }];
+            save_tabs(&tabs, 0).expect("save");
+
+            let loaded = load_tabs().expect("a saved record");
+            assert_eq!(loaded.tabs, tabs);
+            assert_eq!(loaded.active_idx, 0);
+        });
     }
 
     fn init_git_repo(path: &std::path::Path) {

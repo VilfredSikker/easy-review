@@ -1126,7 +1126,7 @@ pub struct BranchInfo {
     pub pr_number: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct PrInfo {
     pub number: u64,
     pub title: String,
@@ -1745,7 +1745,7 @@ pub struct TriageGuardSnapshot {
     pub evidence: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CheckSummary {
     pub name: String,
     pub status: String,
@@ -1784,7 +1784,7 @@ impl From<er_engine::github::CheckRun> for CheckSummary {
 
 /// One person (or team) on the PR's reviewer list: a pending request, a
 /// submitted review, or both. Folded by `er_engine::github::pr_reviewers`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GhReviewerSummary {
     pub reviewer: String,
     pub is_team: bool,
@@ -1812,7 +1812,7 @@ pub fn github_reviewers(
         .collect()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GhCommentSummary {
     pub author: String,
     pub body: String,
@@ -1820,7 +1820,7 @@ pub struct GhCommentSummary {
     pub url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GhReviewSummary {
     pub author: String,
     pub state: String,
@@ -1828,7 +1828,7 @@ pub struct GhReviewSummary {
     pub submitted_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GithubStatusSnapshot {
     pub owner: String,
     pub repo: String,
@@ -1900,7 +1900,7 @@ pub struct GithubStatusSnapshot {
 
 /// Repository merge settings the merge box needs. Cached per repo in the
 /// engine, so this costs a `gh` call once per TTL, not once per poll.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, schemars::JsonSchema)]
 pub struct RepoMergeSnapshot {
     pub merge_commit_allowed: bool,
     pub squash_merge_allowed: bool,
