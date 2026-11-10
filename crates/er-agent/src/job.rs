@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use crate::agent_run::AgentRunHandle;
 use crate::agent_slots::{self, Workload};
+use crate::agent_timing::AgentRunTimer;
 use crate::decode::{decode_final_text, is_final_result_line, OutputProtocol};
 use crate::provider::{self, ProviderSpec};
 
@@ -67,6 +68,8 @@ pub struct JobOutput {
 pub enum JobError {
     Spawn(anyhow::Error),
     TimedOut(Duration),
+    /// The run was stopped, either while queued for a slot or while running.
+    Cancelled,
 }
 
 impl fmt::Display for JobError {
@@ -74,6 +77,7 @@ impl fmt::Display for JobError {
         match self {
             Self::Spawn(error) => write!(f, "job failed to spawn: {error}"),
             Self::TimedOut(limit) => write!(f, "job timed out after {limit:?}"),
+            Self::Cancelled => write!(f, "job was cancelled"),
         }
     }
 }
@@ -93,6 +97,15 @@ impl From<provider::ProviderError> for JobError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobProgress {
     StdoutLine(String),
+    StderrLine(String),
+}
+
+/// The host-owned pieces of a run: the handle it keeps for a stop control,
+/// the progress sink, and where to put the timing marks.
+pub struct JobRun<'a> {
+    pub handle: Arc<AgentRunHandle>,
+    pub progress: Option<SyncSender<JobProgress>>,
+    pub timer: Option<&'a mut AgentRunTimer>,
 }
 
 /// What a run that may return before exit came to.
@@ -133,6 +146,84 @@ impl JobRunner {
             stdout: output.stdout,
             stderr: output.stderr,
             status: output.status,
+        })
+    }
+
+    /// Run to completion while streaming both pipes as progress, on a handle
+    /// the caller owns. The slot wait is cancellable through `run.handle`.
+    ///
+    /// The verdict order is timeout first: a run killed by its deadline also
+    /// has its cancel flag set, and reporting that as a user stop would tell
+    /// the wrong story.
+    pub fn run_controlled(&self, spec: &JobSpec, run: JobRun<'_>) -> Result<JobOutput, JobError> {
+        let JobRun {
+            handle,
+            progress,
+            mut timer,
+        } = run;
+        let _slot = agent_slots::acquire(
+            spec.workload,
+            self.slot_cap,
+            self.ceiling,
+            handle.cancel_flag(),
+        )
+        .ok_or(JobError::Cancelled)?;
+        if let Some(timer) = timer.as_mut() {
+            timer.mark_slot_acquired();
+        }
+
+        let provider = Self::provider_for(spec);
+        let mut child = provider::spawn_with(Arc::clone(&handle), &provider, &spec.work_dir)?;
+        if let Some(timer) = timer.as_mut() {
+            timer.mark_spawned();
+        }
+        let id = child.id();
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        handle.register(child);
+
+        let Some(stdout) = stdout else {
+            return Err(JobError::Spawn(anyhow::anyhow!(
+                "provider stdout was not piped"
+            )));
+        };
+        let progress_out = progress.clone();
+        let handle_out = Arc::clone(&handle);
+        let stdout_reader = std::thread::spawn(move || {
+            read_progress_lines(stdout, progress_out, &handle_out, true)
+        });
+        let handle_err = Arc::clone(&handle);
+        let stderr_reader = std::thread::spawn(move || {
+            stderr.and_then(|pipe| read_progress_lines(pipe, progress, &handle_err, false))
+        });
+
+        let Some(child) = handle.take_child(id) else {
+            return Err(JobError::Spawn(anyhow::anyhow!(
+                "provider: lost its own child"
+            )));
+        };
+        let status = handle
+            .wait_for(child)
+            .map_err(|error| JobError::Spawn(error.into()))?;
+        let stdout = stdout_reader.join().ok().flatten();
+        let stderr = stderr_reader.join().ok().flatten();
+        if let Some(timer) = timer.as_mut() {
+            timer.mark_finished();
+        }
+
+        if handle.is_timed_out() {
+            return Err(JobError::TimedOut(provider.timeout));
+        }
+        if handle.is_cancelled() {
+            return Err(JobError::Cancelled);
+        }
+        let stdout = stdout.unwrap_or_default();
+        let text = decode_final_text(&stdout, provider.protocol);
+        Ok(JobOutput {
+            text,
+            stdout,
+            stderr: stderr.unwrap_or_default(),
+            status,
         })
     }
 
@@ -182,11 +273,12 @@ impl JobRunner {
             }
             let text = String::from_utf8_lossy(&line).to_string();
             seen.push_str(&text);
-            if !send_progress(progress.as_ref(), &text, &run) {
+            let is_final = provider.protocol == OutputProtocol::ClaudeStreamJson
+                && is_final_result_line(&text);
+            if !send_progress(progress.as_ref(), JobProgress::StdoutLine(text), &run) {
                 return Err(JobError::TimedOut(provider.timeout));
             }
-            if provider.protocol == OutputProtocol::ClaudeStreamJson && is_final_result_line(&text)
-            {
+            if is_final {
                 let reply = decode_final_text(&seen, provider.protocol);
                 drop(progress);
                 let run = Arc::clone(&run);
@@ -235,18 +327,18 @@ impl JobRunner {
     }
 }
 
-/// Offer one line to the progress sink without blocking past the run's
+/// Offer one event to the progress sink without blocking past the run's
 /// deadline. A slow or absent drain turns into the provider timeout rather
 /// than a thread stuck on the channel.
 fn send_progress(
     progress: Option<&SyncSender<JobProgress>>,
-    line: &str,
+    event: JobProgress,
     run: &AgentRunHandle,
 ) -> bool {
     let Some(tx) = progress else {
         return true;
     };
-    let mut event = JobProgress::StdoutLine(line.to_string());
+    let mut event = event;
     loop {
         match tx.try_send(event) {
             Ok(()) | Err(TrySendError::Disconnected(_)) => return true,
@@ -259,6 +351,37 @@ fn send_progress(
             }
         }
     }
+}
+
+/// Read one pipe line by line, forwarding each line as progress and returning
+/// the full text. `None` when the run timed out while the sink was full.
+fn read_progress_lines(
+    pipe: impl Read,
+    progress: Option<SyncSender<JobProgress>>,
+    run: &AgentRunHandle,
+    stdout: bool,
+) -> Option<String> {
+    let mut reader = BufReader::new(pipe);
+    let mut seen = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        seen.extend_from_slice(&line);
+        let text = String::from_utf8_lossy(&line).to_string();
+        let event = if stdout {
+            JobProgress::StdoutLine(text)
+        } else {
+            JobProgress::StderrLine(text)
+        };
+        if !send_progress(progress.as_ref(), event, run) {
+            return None;
+        }
+    }
+    Some(String::from_utf8_lossy(&seen).to_string())
 }
 
 /// Substitute `{prompt}` in the provider's args. Without a placeholder, a
@@ -420,6 +543,206 @@ mod tests {
         assert_eq!(output.status.code(), Some(3));
         assert_eq!(output.stderr.trim(), "boom");
         assert_eq!(agent_slots::active_count(), 0);
+    }
+
+    /// The controlled path draws from the same process-wide pool: holding it
+    /// through another `agent_slots` call site must park the job.
+    #[test]
+    fn a_controlled_job_waits_for_a_slot() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let runner = JobRunner::new(1, 1);
+        let spec = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!("printf x >> '{}'; printf done", marker.display()),
+            ],
+            dir.path(),
+        );
+
+        let held = agent_slots::acquire_blocking(Workload::Background, 1, 1);
+        let handle = std::thread::spawn(move || {
+            runner.run_controlled(
+                &spec,
+                JobRun {
+                    handle: AgentRunHandle::new(),
+                    progress: None,
+                    timer: None,
+                },
+            )
+        });
+
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            !marker.exists(),
+            "the job ran while the process-wide pool was held"
+        );
+
+        drop(held);
+        let out = handle.join().unwrap().expect("job runs");
+        assert!(marker.exists(), "the job did not run after the slot freed");
+        assert_eq!(out.text, "done");
+    }
+
+    /// A run past its deadline is a timeout, and the slot it held is freed.
+    #[test]
+    fn a_run_past_its_deadline_times_out_and_frees_its_slot() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = prompt_spec("sh", vec!["-c".into(), "sleep 5".into()], dir.path());
+        spec.provider.timeout = Duration::from_millis(200);
+        let runner = JobRunner::new(1, 1);
+
+        let started = std::time::Instant::now();
+        let result = runner.run_controlled(
+            &spec,
+            JobRun {
+                handle: AgentRunHandle::new(),
+                progress: None,
+                timer: None,
+            },
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(result, Err(JobError::TimedOut(limit)) if limit == spec.provider.timeout),
+            "{result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "the deadline took {elapsed:?}"
+        );
+        assert_eq!(agent_slots::active_count(), 0, "the slot leaked");
+        drop(agent_slots::acquire_blocking(Workload::Background, 1, 1));
+    }
+
+    /// A stop while the job is queued ends it promptly instead of parking
+    /// until a slot frees.
+    #[test]
+    fn a_stop_while_waiting_for_a_slot_reports_cancelled() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let runner = JobRunner::new(1, 1);
+        let spec = prompt_spec(
+            "sh",
+            vec!["-c".into(), format!("printf x >> '{}'", marker.display())],
+            dir.path(),
+        );
+
+        let held = agent_slots::acquire_blocking(Workload::Background, 1, 1);
+        let run = AgentRunHandle::new();
+        let stop = Arc::clone(&run);
+        let handle = std::thread::spawn(move || {
+            runner.run_controlled(
+                &spec,
+                JobRun {
+                    handle: run,
+                    progress: None,
+                    timer: None,
+                },
+            )
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        stop.kill();
+        // Free the slot so a runner that ignored the stop runs the job and
+        // shows it, instead of parking until the suite gives up.
+        drop(held);
+
+        let result = handle.join().expect("the waiter returns");
+        assert!(matches!(result, Err(JobError::Cancelled)), "{result:?}");
+        assert!(!marker.exists(), "a stopped waiter still ran its job");
+    }
+
+    /// A stop after the child spawned is a cancellation, not the exit it
+    /// happened to leave behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_run_reports_cancelled() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let spec = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!("sleep 30 & echo $! > {}; wait", pid_file.display()),
+            ],
+            dir.path(),
+        );
+        let runner = JobRunner::new(1, 1);
+        let run = AgentRunHandle::new();
+        let stop = Arc::clone(&run);
+        let handle = std::thread::spawn(move || {
+            runner.run_controlled(
+                &spec,
+                JobRun {
+                    handle: run,
+                    progress: None,
+                    timer: None,
+                },
+            )
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !pid_file.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child never started"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        stop.kill();
+
+        let result = handle.join().expect("the run returns");
+        assert!(matches!(result, Err(JobError::Cancelled)), "{result:?}");
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let pid = pid.trim();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while pid_alive(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!pid_alive(pid), "the child survived its stop");
+    }
+
+    /// Both pipes reach the progress sink while the job runs, and the returned
+    /// output holds the full text.
+    #[test]
+    fn a_controlled_run_streams_stdout_and_stderr() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let spec = prompt_spec(
+            "sh",
+            vec!["-c".into(), "printf 'out\\n'; printf 'err\\n' >&2".into()],
+            dir.path(),
+        );
+        let runner = JobRunner::new(1, 1);
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+
+        let out = runner
+            .run_controlled(
+                &spec,
+                JobRun {
+                    handle: AgentRunHandle::new(),
+                    progress: Some(tx),
+                    timer: None,
+                },
+            )
+            .expect("the run completes");
+
+        let events: Vec<JobProgress> = rx.try_iter().collect();
+        assert!(
+            events.contains(&JobProgress::StdoutLine("out\n".into())),
+            "{events:?}"
+        );
+        assert!(
+            events.contains(&JobProgress::StderrLine("err\n".into())),
+            "{events:?}"
+        );
+        assert_eq!(out.stdout, "out\n");
+        assert_eq!(out.stderr, "err\n");
+        assert_eq!(out.text, "out\n");
     }
 
     #[cfg(unix)]
