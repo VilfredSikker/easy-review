@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 09:05 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 10:35 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -10,12 +10,12 @@
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
 | T1 | T5 GitHub port | [#391](https://github.com/VilfredSikker/easy-review/issues/391) P20 | E |
-| T2 | T4 git port | idle; next #441 after P19 and P20 | – |
-| D4 | T6 store core | [#390](https://github.com/VilfredSikker/easy-review/issues/390) P19 | E |
+| T2 | T4 git port | preparing #441 (starts after P20) | – |
+| D4 | T6 store core | [#395](https://github.com/VilfredSikker/easy-review/issues/395) P24 | C |
 | D1 | D6 | idle | – |
 | D2, D3, D5 | – | idle | – |
 
-**Phases 0 and 1 are complete; in phase 2, P14–P18, P22 and P23 are merged.** P19 (D4) and P20 (T1) run at the same time in the AI loaders; whichever merges second merges the release branch in. The project-list import (#453, T2) is in review. #441 waits for P19 and P20. Next: P20 unblocks P21, and P19 unblocks P24 (with P23 done).
+**Phases 0 and 1 are complete; in phase 2, P14–P19, P22 and P23 are merged.** P20 (#457, T1) is in review and P24 (#395, D4) has started. When both merge: P21 (after P20), then #441, then the #396 phase-3 gate.
 
 ## Progress
 
@@ -48,12 +48,12 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P16 | [#387](https://github.com/VilfredSikker/easy-review/issues/387) Comments and notes through the store | C/E/F | opus | ✅ | [#443](https://github.com/VilfredSikker/easy-review/pull/443), [#444](https://github.com/VilfredSikker/easy-review/pull/444) | two parts; follow-ups #441, #445 |
 | P17 | [#388](https://github.com/VilfredSikker/easy-review/issues/388) Session state through the store | C/E | opus | ✅ | [#450](https://github.com/VilfredSikker/easy-review/pull/450) | reviewed save 2.9x accepted (5 ms budget) |
 | P18 | [#389](https://github.com/VilfredSikker/easy-review/issues/389) Review artifacts through the store | E | opus | ✅ | [#454](https://github.com/VilfredSikker/easy-review/pull/454) | follow-ups carried into P19 |
-| P19 | [#390](https://github.com/VilfredSikker/easy-review/issues/390) Remaining AI artifacts through the store | C/E | opus | 🔵 | [#456](https://github.com/VilfredSikker/easy-review/pull/456) | D4; in review |
+| P19 | [#390](https://github.com/VilfredSikker/easy-review/issues/390) Remaining AI artifacts through the store | C/E | opus | ✅ | [#456](https://github.com/VilfredSikker/easy-review/pull/456) | closes the P18 follow-ups |
 | P20 | [#391](https://github.com/VilfredSikker/easy-review/issues/391) Findings projection | E | sonnet | 🔵 | [#457](https://github.com/VilfredSikker/easy-review/pull/457) | T1; in review; ADR 0058 |
 | P21 | [#392](https://github.com/VilfredSikker/easy-review/issues/392) Scoped re-review as its own artifact | E/F | opus | ⬜ | | after P20 |
 | P22 | [#393](https://github.com/VilfredSikker/easy-review/issues/393) App records through the store | F | opus | ✅ | [#449](https://github.com/VilfredSikker/easy-review/pull/449), [#451](https://github.com/VilfredSikker/easy-review/pull/451) | two PRs; the import is #452 |
 | P23 | [#394](https://github.com/VilfredSikker/easy-review/issues/394) Cross-process locks, change notifications | C | opus | ✅ | [#434](https://github.com/VilfredSikker/easy-review/pull/434) | ADR 0057; Linux watcher fix proven on CI |
-| P24 | [#395](https://github.com/VilfredSikker/easy-review/issues/395) MCP uploads through the store | C | opus | ⬜ | | after P19, P23 |
+| P24 | [#395](https://github.com/VilfredSikker/easy-review/issues/395) MCP uploads through the store | C | opus | 🟡 | | D4 |
 
 ## Designs
 
