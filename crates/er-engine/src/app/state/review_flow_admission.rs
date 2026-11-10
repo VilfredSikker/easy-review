@@ -202,6 +202,7 @@ mod tests {
                 host_write_diagram: None,
                 ai_selection: None,
                 launch_config: None,
+                scoped_stamp: None,
             },
         );
         assert!(app.acquire_review_flow_lease("/tmp/test/.er").is_err());
@@ -275,32 +276,38 @@ mod tests {
 
     #[test]
     fn review_flow_admission_tour_runs_beside_a_flow_lease() {
-        let mut app = app();
-        let lease = app.acquire_review_flow_lease("/tmp/test/.er").unwrap();
-        app.spawn_background_tour(target("/tmp/test/.er"), String::new(), true)
-            .unwrap();
-        assert!(
-            app.pending_background_tasks
-                .iter()
-                .any(|task| task.task.kind == TOUR_TASK_KIND)
-                || app
-                    .background_tasks
-                    .values()
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let mut app = app();
+            let lease = app.acquire_review_flow_lease("/tmp/test/.er").unwrap();
+            app.spawn_background_tour(target("/tmp/test/.er"), String::new(), true)
+                .unwrap();
+            assert!(
+                app.pending_background_tasks
+                    .iter()
                     .any(|task| task.task.kind == TOUR_TASK_KIND)
-        );
-        // A queued or running tour must not hold the flow's lease open.
-        assert!(app.release_review_flow_lease(&lease).is_ok());
+                    || app
+                        .background_tasks
+                        .values()
+                        .any(|task| task.task.kind == TOUR_TASK_KIND)
+            );
+            // A queued or running tour must not hold the flow's lease open.
+            assert!(app.release_review_flow_lease(&lease).is_ok());
+        });
     }
 
     #[test]
     fn review_flow_admission_tour_does_not_block_acquire() {
-        let mut app = app();
-        app.spawn_background_tour(target("/tmp/test/.er"), String::new(), true)
-            .unwrap();
-        app.tab_mut()
-            .command_status
-            .insert(TOUR_TASK_KIND.into(), CommandStatus::Running);
-        assert!(app.acquire_review_flow_lease("/tmp/test/.er").is_ok());
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let mut app = app();
+            app.spawn_background_tour(target("/tmp/test/.er"), String::new(), true)
+                .unwrap();
+            app.tab_mut()
+                .command_status
+                .insert(TOUR_TASK_KIND.into(), CommandStatus::Running);
+            assert!(app.acquire_review_flow_lease("/tmp/test/.er").is_ok());
+        });
     }
 
     #[test]
@@ -308,7 +315,7 @@ mod tests {
         let mut app = app();
         let _lease = app.acquire_review_flow_lease("/tmp/test/.er").unwrap();
         assert!(app
-            .spawn_background_review(target("/tmp/test/.er"), String::new(), true)
+            .spawn_background_review(target("/tmp/test/.er"), String::new(), true, None)
             .is_err());
     }
 }

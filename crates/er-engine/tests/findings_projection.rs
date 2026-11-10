@@ -541,6 +541,7 @@ fn case_07_expert_order() -> Value {
         experts: &experts,
         professor: None,
         arbiter: None,
+        validation: None,
         current_diff_hash: "H",
         accepted_provenance: &|_, _| ProvenanceRead::default(),
     });
@@ -600,6 +601,7 @@ fn case_08_provenance_before_the_arbiter() -> Value {
         experts: &[],
         professor: None,
         arbiter: Some(&arbiter),
+        validation: None,
         current_diff_hash: "H",
         accepted_provenance: &|_, rows| {
             let mut read = ProvenanceRead::default();

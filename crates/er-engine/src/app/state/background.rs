@@ -155,6 +155,10 @@ pub struct PendingBackgroundTask {
     /// Full provider configuration captured for flow-owned tasks. Resource
     /// limits remain live App policy and are deliberately not frozen here.
     pub launch_config: Option<crate::config::ErConfig>,
+    /// A scoped run's host stamp, captured before spawn so completion can merge
+    /// the lens overlay. `None` for full runs, whose success clears the old
+    /// overlay instead.
+    pub scoped_stamp: Option<crate::ai::ScopedRunStamp>,
 }
 
 /// Host-owned diagram write target — agent emits JSON; Easy Review persists it.

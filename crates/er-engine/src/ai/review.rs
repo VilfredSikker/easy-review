@@ -885,6 +885,8 @@ pub struct AiState {
     /// Verdicts matched to the loaded review, keyed by canonical claim identity.
     /// This is a load-time overlay and is never written into producer sidecars.
     pub arbiter_verdicts: HashMap<String, (super::arbiter::ArbiterRuling, String)>,
+    /// What the validate pass applied on this load (diagnostics only in 1.0).
+    pub validation_effect: super::validation::ValidationEffect,
     /// Lazily-built comment index for O(1) lookups.
     /// An empty cell means unbuilt; rebuilt on first query after invalidation.
     comment_index: RefCell<OnceCell<CommentIndexData>>,
@@ -910,6 +912,7 @@ impl Default for AiState {
             arbiter_effect: super::arbiter::ArbiterEffect::default(),
             arbiter_graded_keys: HashSet::new(),
             arbiter_verdicts: HashMap::new(),
+            validation_effect: super::validation::ValidationEffect::default(),
             comment_index: RefCell::new(OnceCell::new()),
         }
     }

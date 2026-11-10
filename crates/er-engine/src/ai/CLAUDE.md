@@ -21,9 +21,16 @@ the kinds stay `Bare`. `promote.rs` is the only conversion from a private
 annotation to a GitHub write.
 
 **AI-owned, read-only to `er` as a whole:** `review.json`, `order.json`,
-`summary.md`, `triage.json`, `professor.json`, `experts/*.json`, `tour.json`.
-The loader reads them through the store; `tour.json` is its `tour` kind and
-`summary.md` its plain-text `summary` kind.
+`summary.md`, `triage.json`, `professor.json`, `experts/*.json`, `tour.json`,
+`validation.json`, `scoped/*.json`. The loader reads them through the store;
+`tour.json` is its `tour` kind and `summary.md` its plain-text `summary` kind.
+
+**Agent-emitted, host-stamped:** `validation.json` and the `scoped/` overlays
+(`scoped/general.json`, `scoped/professor.json`, `scoped/experts/<id>.json`).
+A scoped run writes only its lens's overlay; on success the host adds
+`scope_paths` and the base file's identity, and the loader applies the overlay
+only while that identity still matches. A successful full run of a lens clears
+them. `docs/adr/0059-validation-and-scoped-overlays.md`.
 
 **`checklist.json` is split by field.** Its *items* are AI-owned like the rest;
 its `checked` flags are the reviewer's own progress, written by the toggle in
@@ -50,9 +57,10 @@ stores behind a `type` discriminator.
 ## The finding lifecycle is the one AI-owned write
 
 `finding_responses.rs` (validation replies) and `finding_cleanup.rs`
-(resolve/remove) write back to whichever of `review.json`, `professor.json`, or
-`experts/*.json` owns the finding, through the store's `ArtifactStore`; a
-sidecar that cannot be read is skipped, never overwritten. Both attach a
+(resolve/remove) write back to whichever of `review.json`, `professor.json`,
+`experts/*.json`, or the matching `scoped/` overlay owns the finding, through
+the store's `ArtifactStore`; a sidecar that cannot be read is skipped, never
+overwritten. Both attach a
 reaction or drop the finding;
 neither rewrites the finding's own text — a report that no longer says what the
 review claimed cannot be trusted as the AI's output. Disagree with a finding by
