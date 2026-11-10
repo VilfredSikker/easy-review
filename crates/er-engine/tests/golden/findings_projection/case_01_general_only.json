@@ -1,0 +1,80 @@
+{
+  "arbiter_effect": {
+    "dropped": 0,
+    "kept": 0,
+    "merged": 0,
+    "regraded": 0,
+    "unmatched": 0
+  },
+  "arbiter_graded_keys": [],
+  "arbiter_verdicts": [],
+  "review": {
+    "base_branch": "main",
+    "created_at": "2026-01-01T00:00:00Z",
+    "diff_hash": "H",
+    "file_hashes": {},
+    "files": {
+      "a.rs": {
+        "findings": [
+          {
+            "category": "logic",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "sec-1",
+            "lens": "security",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 1,
+            "outside_diff": false,
+            "providers": [],
+            "raised_by": [
+              "security"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "low",
+            "suggestion": "",
+            "title": "t",
+            "verification_plan": ""
+          },
+          {
+            "category": "logic",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "f-2",
+            "lens": "general",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 2,
+            "outside_diff": false,
+            "providers": [],
+            "raised_by": [
+              "general"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "low",
+            "suggestion": "",
+            "title": "t2",
+            "verification_plan": ""
+          }
+        ],
+        "risk": "low",
+        "risk_reason": "",
+        "summary": ""
+      }
+    },
+    "head_branch": "feat/x",
+    "version": 1
+  }
+}

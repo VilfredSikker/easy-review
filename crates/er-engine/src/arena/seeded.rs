@@ -28,8 +28,9 @@ use std::collections::{BTreeMap, HashMap};
 ///
 /// `review_hash` is the loaded review's `diff_hash`, if there is one: an expert
 /// sidecar from the same generation as a stale review is still accepted on that
-/// hash, matching `merge_experts_into_review`. Pass `""` when no review is
-/// loaded, and only sidecars matching `current_diff_hash` are read.
+/// hash, matching `build_findings_projection`'s expert filter. Pass `""` when
+/// no review is loaded, and only sidecars matching `current_diff_hash` are
+/// read.
 ///
 /// Writes nothing and calls no model. Findings from an unregistered expert are
 /// skipped, so every raiser recorded here is a real lens id.

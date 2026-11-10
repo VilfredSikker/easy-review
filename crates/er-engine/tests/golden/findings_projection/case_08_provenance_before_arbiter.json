@@ -1,0 +1,99 @@
+{
+  "arbiter_effect": {
+    "dropped": 0,
+    "kept": 1,
+    "merged": 0,
+    "regraded": 0,
+    "unmatched": 0
+  },
+  "arbiter_graded_keys": [
+    "0c3df00bfbd39327d51967bd68bd8772caf383a1"
+  ],
+  "arbiter_verdicts": [
+    {
+      "key": "0c3df00bfbd39327d51967bd68bd8772caf383a1",
+      "rationale": "kept",
+      "ruling": "kept"
+    }
+  ],
+  "review": {
+    "base_branch": "",
+    "created_at": "",
+    "diff_hash": "H",
+    "file_hashes": {},
+    "files": {
+      "a.rs": {
+        "findings": [
+          {
+            "category": "",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "arena-run-1-a",
+            "lens": "security",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 1,
+            "outside_diff": false,
+            "providers": [
+              "host-a"
+            ],
+            "raised_by": [
+              "security"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "low",
+            "suggestion": "",
+            "title": "A",
+            "verification_plan": ""
+          }
+        ],
+        "risk": "low",
+        "risk_reason": "",
+        "summary": ""
+      },
+      "b.rs": {
+        "findings": [
+          {
+            "category": "",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "arena-run-1-b",
+            "lens": "general",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 2,
+            "outside_diff": false,
+            "providers": [
+              "arbiter-b"
+            ],
+            "raised_by": [
+              "general"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "low",
+            "suggestion": "",
+            "title": "B",
+            "verification_plan": ""
+          }
+        ],
+        "risk": "low",
+        "risk_reason": "",
+        "summary": ""
+      }
+    },
+    "head_branch": "",
+    "version": 1
+  }
+}

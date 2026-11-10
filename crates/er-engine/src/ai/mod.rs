@@ -13,6 +13,7 @@ mod loader;
 pub mod mtime;
 pub mod prepared_diff;
 pub mod professor;
+pub mod projection;
 pub mod promote;
 pub mod prompts;
 pub mod raw_sidecar;
@@ -38,6 +39,7 @@ pub use identity::*;
 pub use loader::*;
 pub use mtime::{latest_er_mtime, latest_er_mtime_skipping};
 pub use professor::*;
+pub use projection::*;
 #[cfg(feature = "ui")]
 pub(crate) use raw_sidecar::read_sidecar;
 pub use relocate::*;
