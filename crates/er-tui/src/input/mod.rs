@@ -1122,7 +1122,7 @@ pub fn build_agent_professor_prompt(
                 mode.git_mode(),
                 er_dir,
                 None,
-                false,
+                None,
                 diff_hash,
             ),
         ),
@@ -1157,6 +1157,7 @@ pub fn build_agent_expert_prompt(
                 er_dir,
                 expert_id,
                 diff_hash,
+                None,
             ),
         ),
         _ => {
@@ -1260,7 +1261,7 @@ pub fn build_agent_review_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -
     match mode {
         DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {
             Some(er_engine::ai::prompts::build_review_prompt_prepared_diff(
-                &scope, er_dir, &base, &head, diff_hash,
+                &scope, er_dir, &base, &head, diff_hash, None,
             ))
         }
         _ => {
@@ -1787,34 +1788,37 @@ mod tests {
 
     #[test]
     fn local_ai_prompt_builders_target_tab_er_dir() {
-        let output_dir = "/tmp/er-tui-managed";
-        let mut app = app_with_managed_dir(output_dir);
-        let er_dir = app.tab().er_dir();
-        let hash = "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1";
+        let root = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(root.path(), || {
+            let output_dir = "/tmp/er-tui-managed";
+            let mut app = app_with_managed_dir(output_dir);
+            let er_dir = app.tab().er_dir();
+            let hash = "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1";
 
-        let review = build_agent_review_prompt(&mut app, &er_dir, hash).expect("review prompt");
-        assert_managed_prompt(&review, output_dir, "review.json");
+            let review = build_agent_review_prompt(&mut app, &er_dir, hash).expect("review prompt");
+            assert_managed_prompt(&review, output_dir, "review.json");
 
-        let validate =
-            build_agent_validate_prompt(&mut app, &er_dir, hash).expect("validate prompt");
-        assert_managed_prompt(&validate, output_dir, "review.json");
+            let validate =
+                build_agent_validate_prompt(&mut app, &er_dir, hash).expect("validate prompt");
+            assert_managed_prompt(&validate, output_dir, "review.json");
 
-        let questions = build_agent_questions_prompt(&mut app).expect("questions prompt");
-        assert_managed_prompt(&questions, output_dir, "questions.json");
+            let questions = build_agent_questions_prompt(&mut app).expect("questions prompt");
+            assert_managed_prompt(&questions, output_dir, "questions.json");
 
-        let summary = build_agent_summary_prompt(&mut app).expect("summary prompt");
-        assert_managed_prompt(&summary, output_dir, "summary.md");
+            let summary = build_agent_summary_prompt(&mut app).expect("summary prompt");
+            assert_managed_prompt(&summary, output_dir, "summary.md");
 
-        let triage = build_agent_triage_prompt(&mut app, &er_dir, hash).expect("triage prompt");
-        assert_managed_prompt(&triage, output_dir, "triage.json");
+            let triage = build_agent_triage_prompt(&mut app, &er_dir, hash).expect("triage prompt");
+            assert_managed_prompt(&triage, output_dir, "triage.json");
 
-        let professor =
-            build_agent_professor_prompt(&mut app, &er_dir, hash).expect("professor prompt");
-        assert_managed_prompt(&professor, output_dir, "professor.json");
+            let professor =
+                build_agent_professor_prompt(&mut app, &er_dir, hash).expect("professor prompt");
+            assert_managed_prompt(&professor, output_dir, "professor.json");
 
-        let expert =
-            build_agent_expert_prompt(&mut app, "security", &er_dir, hash).expect("expert prompt");
-        assert_managed_prompt(&expert, output_dir, "experts/security.json");
+            let expert = build_agent_expert_prompt(&mut app, "security", &er_dir, hash)
+                .expect("expert prompt");
+            assert_managed_prompt(&expert, output_dir, "experts/security.json");
+        });
     }
 
     #[test]

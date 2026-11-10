@@ -148,6 +148,12 @@ fn edit_finding_sidecars<F>(er_dir: &str, mut edit: F) -> std::io::Result<bool>
 where
     F: FnMut(&mut Vec<Finding>, Option<&str>) -> bool,
 {
+    // A scoped overlay row is the displayed row for its lens; edit it first and
+    // leave the full-review sidecars alone when it matched.
+    if super::scoped_overlay::edit_finding_overlays(er_dir, &mut edit).map_err(io_error)? {
+        return Ok(true);
+    }
+
     let store = store_registry::store();
     let scope = er_store::Scope::dir(er_dir).map_err(io_error)?;
     let mut changed = false;

@@ -1078,6 +1078,11 @@ pub struct TabState {
     pub command_runs:
         std::collections::HashMap<String, std::sync::Arc<crate::agent_run::AgentRunHandle>>,
 
+    /// The review bucket each shell agent command was spawned into, captured at
+    /// spawn. Completion clears that bucket's full-run leftovers, not the tab's
+    /// current bucket — the user may have switched worktrees mid-run (ADR 0059).
+    pub command_buckets: std::collections::HashMap<String, String>,
+
     /// Sender for streaming agent log entries from background threads
     pub log_tx: std::sync::mpsc::Sender<AgentLogEntry>,
 
@@ -1656,6 +1661,7 @@ impl TabState {
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             command_runs: std::collections::HashMap::new(),
+            command_buckets: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -1797,6 +1803,7 @@ impl TabState {
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             command_runs: std::collections::HashMap::new(),
+            command_buckets: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -1934,6 +1941,7 @@ impl TabState {
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             command_runs: std::collections::HashMap::new(),
+            command_buckets: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -2088,6 +2096,7 @@ impl TabState {
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             command_runs: std::collections::HashMap::new(),
+            command_buckets: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -9802,6 +9811,9 @@ pub fn cleanup_review_artifacts(er_dir: &str) -> Result<(), er_store::StoreError
             }
         }
     }
+    // A cleaned bucket holds no stale overlay or outcome; removing the whole
+    // directory also clears any file an older overlay kind left behind.
+    let _ = std::fs::remove_dir_all(std::path::Path::new(er_dir).join("scoped"));
     Ok(())
 }
 
@@ -9817,6 +9829,11 @@ fn cleanup_sidecars(er_dir: &str, artifacts: bool) -> Result<(), er_store::Store
     }
     if let Ok(file) = er_store::RelPath::new("summary.md") {
         let _ = crate::store_registry::store().delete_text_locked(&guard, &file);
+    }
+    if artifacts {
+        if let Ok(file) = er_store::RelPath::new("review-files.txt") {
+            let _ = crate::store_registry::store().delete_text_locked(&guard, &file);
+        }
     }
     Ok(())
 }
@@ -9843,6 +9860,28 @@ fn delete_review_artifacts(scope: &er_store::Scope, guard: &er_store::ScopeGuard
         for slot in slots {
             if let Ok(key) =
                 er_store::ArtifactKey::<crate::ai::ExpertReview>::new(scope.clone(), slot)
+            {
+                let _ = store.delete_locked(guard, &key);
+            }
+        }
+    }
+    // Scoped overlays and validation are review state: the full cleanup drops
+    // them, while the per-lens clearing at run completion drops only its own.
+    if let Ok(key) = er_store::ArtifactKey::<crate::ai::ValidationReview>::new(scope.clone(), ()) {
+        let _ = store.delete_locked(guard, &key);
+    }
+    if let Ok(key) = er_store::ArtifactKey::<crate::ai::ScopedReview>::new(scope.clone(), ()) {
+        let _ = store.delete_locked(guard, &key);
+    }
+    if let Ok(key) =
+        er_store::ArtifactKey::<crate::ai::ScopedProfessorReview>::new(scope.clone(), ())
+    {
+        let _ = store.delete_locked(guard, &key);
+    }
+    if let Ok(slots) = store.list::<crate::ai::ScopedExpertReview>(scope) {
+        for slot in slots {
+            if let Ok(key) =
+                er_store::ArtifactKey::<crate::ai::ScopedExpertReview>::new(scope.clone(), slot)
             {
                 let _ = store.delete_locked(guard, &key);
             }
@@ -10102,6 +10141,7 @@ mod tests {
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             command_runs: std::collections::HashMap::new(),
+            command_buckets: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -17056,6 +17096,35 @@ mod tests {
             assert!(er.join("review.json").exists());
             cleanup_reviews(er.to_str().unwrap()).unwrap();
             assert!(!er.join("review.json").exists());
+        });
+    }
+
+    #[test]
+    fn cleanup_review_artifacts_removes_validation_and_scoped_overlays() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::write(er.join("review.json"), "{}").unwrap();
+            std::fs::write(er.join("validation.json"), "{}").unwrap();
+            std::fs::write(er.join("review-files.txt"), "src/a.rs\n").unwrap();
+            std::fs::write(er.join("questions.json"), "{}").unwrap();
+            std::fs::create_dir_all(er.join("scoped/experts")).unwrap();
+            std::fs::write(er.join("scoped/general.json"), "{}").unwrap();
+            std::fs::write(er.join("scoped/professor.json"), "{}").unwrap();
+            std::fs::write(er.join("scoped/experts/security.json"), "{}").unwrap();
+
+            cleanup_review_artifacts(er.to_str().unwrap()).unwrap();
+
+            assert!(!er.join("validation.json").exists());
+            assert!(!er.join("review-files.txt").exists());
+            assert!(
+                !er.join("scoped").exists(),
+                "the whole scoped directory goes"
+            );
+            assert!(
+                er.join("questions.json").exists(),
+                "private annotations stay"
+            );
         });
     }
 

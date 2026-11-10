@@ -68,9 +68,9 @@
     try {
       const body = await invoke<string>("read_review_json", { revisionId: null });
       await copyToClipboard(body);
-      app.showToast("success", `Copied review.json (${body.length} bytes)`);
+      app.showToast("success", `Copied findings JSON (${body.length} bytes)`);
     } catch {
-      app.showToast("error", "No review.json found for this review tab");
+      app.showToast("error", "No review found for this review tab");
     }
   }
 
@@ -197,7 +197,7 @@
       </p>
 
       <div class="ex-sec mt-3">Raw</div>
-      <button type="button" class="ex-btn ghost self-start" onclick={copyReviewJson}>Copy review.json</button>
+      <button type="button" class="ex-btn ghost self-start" onclick={copyReviewJson}>Copy findings JSON</button>
     </div>
 
     <div class="ex-prev">

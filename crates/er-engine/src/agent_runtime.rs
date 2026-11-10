@@ -2,7 +2,7 @@
 
 use crate::ai::{
     ErChecklist, ErGithubComments, ErOrder, ErQuestions, ErReview, ErTour, ExpertReview,
-    ProfessorReview, TriageReview,
+    ProfessorReview, TriageReview, ValidationReview,
 };
 use crate::config::{inject_provider_effort, ErConfig};
 use anyhow::{Context, Result};
@@ -590,9 +590,9 @@ impl ArtifactBaseline {
             }
             ArtifactContract::Summary => validate_non_empty(output_dir.join("summary.md"))?,
             ArtifactContract::ValidateReview => {
-                validate_json_hash::<ErReview>(
+                validate_json_hash::<ValidationReview>(
                     output_dir,
-                    "review.json",
+                    "validation.json",
                     expected_hash.as_deref(),
                     |v| &v.diff_hash,
                 )?;
@@ -642,7 +642,7 @@ impl ArtifactContract {
             Self::Tour { filename } => vec![filename.clone()],
             Self::Questions => vec!["questions.json".into(), "questions.prev.json".into()],
             Self::Summary => vec!["summary.md".into()],
-            Self::ValidateReview => vec!["review.json".into(), "summary.md".into()],
+            Self::ValidateReview => vec!["validation.json".into(), "summary.md".into()],
             Self::ValidateComments => vec!["github-comments.json".into()],
         }
     }
@@ -1442,6 +1442,29 @@ mod tests {
     }
 
     #[test]
+    fn validate_contract_rejects_missing_validation_json() {
+        let dir = temp_dir("validate-missing-validation");
+        let diff = "validate diff";
+        let hash = crate::ai::compute_diff_hash(diff);
+        std::fs::write(dir.join("diff-tmp"), diff).unwrap();
+        let baseline =
+            ArtifactBaseline::capture(ArtifactContract::ValidateReview, dir.to_str().unwrap())
+                .unwrap();
+        std::fs::write(
+            dir.join("review.json"),
+            format!(r#"{{"version":1,"diff_hash":"{hash}","files":{{}}}}"#),
+        )
+        .unwrap();
+        std::fs::write(dir.join("summary.md"), "validated").unwrap();
+        let error = baseline
+            .validate(dir.to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("validation.json"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn specialized_artifact_contracts_parse_and_match_diff() {
         let diff = "specialized diff";
         let hash = crate::ai::compute_diff_hash(diff);
@@ -1503,8 +1526,10 @@ mod tests {
                 ArtifactContract::ValidateReview,
                 vec![
                     (
-                        "review.json",
-                        format!(r#"{{"version":1,"diff_hash":"{hash}","files":{{}}}}"#),
+                        "validation.json",
+                        format!(
+                            r#"{{"version":1,"diff_hash":"{hash}","review_created_at":"t0","outcomes":[]}}"#
+                        ),
                     ),
                     ("summary.md", "validated".into()),
                 ],

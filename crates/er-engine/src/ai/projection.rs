@@ -23,6 +23,7 @@ use super::experts::{backfill_finding_lenses, expert_by_id, expert_hash_accepted
 use super::identity::finding_key;
 use super::professor::{merge_professor_into_review, ProfessorReview};
 use super::review::{ErFileReview, ErReview, RiskLevel};
+use super::validation::{apply_validation, ValidationEffect, ValidationReview};
 use std::collections::{HashMap, HashSet};
 
 pub struct ProjectionInputs<'a> {
@@ -33,6 +34,9 @@ pub struct ProjectionInputs<'a> {
     /// The arbitrated overlay captured from `arbiter.json`, never a second
     /// disk read.
     pub arbiter: Option<&'a ArbiterReview>,
+    /// The validate pass's outcomes; applied between provenance and the
+    /// arbiter.
+    pub validation: Option<&'a ValidationReview>,
     pub current_diff_hash: &'a str,
     /// The only disk-backed input. `load_ai_state_with_arbiter` binds it to
     /// the bucket's `arena/` runs; tests bind it to a fixed map.
@@ -48,6 +52,7 @@ pub struct FindingsProjection {
     /// Diagnostics from the accepted-run read; `load_ai_state_with_arbiter`
     /// logs each one with `crate::dev_log::arena_line`.
     pub provenance_diagnostics: Vec<String>,
+    pub validation_effect: ValidationEffect,
 }
 
 pub fn build_findings_projection(inputs: ProjectionInputs<'_>) -> FindingsProjection {
@@ -56,6 +61,7 @@ pub fn build_findings_projection(inputs: ProjectionInputs<'_>) -> FindingsProjec
         experts,
         professor,
         arbiter,
+        validation,
         current_diff_hash,
         accepted_provenance,
     } = inputs;
@@ -108,6 +114,11 @@ pub fn build_findings_projection(inputs: ProjectionInputs<'_>) -> FindingsProjec
         provenance_diagnostics = apply_accepted_provenance(general, accepted_provenance);
     }
 
+    let mut validation_effect = ValidationEffect::default();
+    if let (Some(general), Some(validation)) = (review.as_mut(), validation) {
+        validation_effect = apply_validation(general, validation);
+    }
+
     let mut arbiter_effect = ArbiterEffect::default();
     let mut arbiter_graded_keys = HashSet::new();
     let mut arbiter_verdicts = HashMap::new();
@@ -147,6 +158,7 @@ pub fn build_findings_projection(inputs: ProjectionInputs<'_>) -> FindingsProjec
         arbiter_graded_keys,
         arbiter_verdicts,
         provenance_diagnostics,
+        validation_effect,
     }
 }
 
@@ -245,6 +257,7 @@ mod tests {
     use super::*;
     use crate::ai::experts::ExpertFileReview;
     use crate::ai::review::{Confidence, Finding};
+    use crate::ai::ArbiterVerdict;
     use std::collections::HashMap;
 
     fn sample_finding(id: &str) -> Finding {
@@ -282,6 +295,7 @@ mod tests {
             experts,
             professor: None,
             arbiter: None,
+            validation: None,
             current_diff_hash,
             accepted_provenance: &|_, _| ProvenanceRead::default(),
         });
@@ -458,5 +472,134 @@ mod tests {
             !expert_hash_accepted(&experts[0], "", "full"),
             "without a review hash only the tab's own hash is accepted"
         );
+    }
+
+    fn review_with_one_finding(line: usize, title: &str) -> ErReview {
+        let mut finding = sample_finding("f-1");
+        finding.title = title.to_string();
+        finding.line_start = Some(line);
+        ErReview {
+            version: 1,
+            diff_hash: "hash".to_string(),
+            created_at: "t0".to_string(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::from([(
+                "src/a.rs".to_string(),
+                ErFileReview {
+                    risk: RiskLevel::Medium,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings: vec![finding],
+                },
+            )]),
+            file_hashes: HashMap::new(),
+        }
+    }
+
+    fn verdict(id: String) -> ArbiterReview {
+        ArbiterReview {
+            version: 1,
+            diff_hash: "hash".to_string(),
+            created_at: "t1".to_string(),
+            run_id: String::new(),
+            verdicts: vec![ArbiterVerdict {
+                id,
+                file: "src/a.rs".to_string(),
+                verdict: ArbiterRuling::Dropped,
+                confidence: None,
+                merged_into: None,
+                rationale: String::new(),
+                raised_by: Vec::new(),
+                providers: Vec::new(),
+            }],
+        }
+    }
+
+    fn project_with_validation(
+        review: ErReview,
+        validation: &crate::ai::validation::ValidationReview,
+        arbiter: &ArbiterReview,
+    ) -> FindingsProjection {
+        build_findings_projection(ProjectionInputs {
+            general: Some(review),
+            experts: &[],
+            professor: None,
+            arbiter: Some(arbiter),
+            validation: Some(validation),
+            current_diff_hash: "hash",
+            accepted_provenance: &|_, _| ProvenanceRead::default(),
+        })
+    }
+
+    /// Validation runs before the arbiter, so a shifted row is re-keyed and an
+    /// arbiter verdict keyed to the old anchor no longer matches it.
+    #[test]
+    fn a_shifted_finding_loses_an_arbiter_verdict_keyed_to_its_old_anchor() {
+        use crate::ai::validation::{
+            ValidationOutcome, ValidationPatch, ValidationResult, ValidationReview,
+        };
+        let old_key = finding_key("src/a.rs", Some(9), "claim");
+        let mut shifted = ValidationOutcome {
+            key: old_key,
+            result: ValidationResult::Shifted,
+            file: "src/a.rs".to_string(),
+            patch: ValidationPatch::default(),
+        };
+        shifted.patch.line_start = Some(12);
+        let validation = ValidationReview {
+            version: 1,
+            diff_hash: "hash".to_string(),
+            review_created_at: "t0".to_string(),
+            created_at: "t1".to_string(),
+            outcomes: vec![shifted],
+        };
+        let old_anchor_verdict = verdict(finding_key("src/a.rs", Some(9), "claim"));
+
+        let projection = project_with_validation(
+            review_with_one_finding(9, "claim"),
+            &validation,
+            &old_anchor_verdict,
+        );
+
+        assert_eq!(projection.validation_effect.applied, 1);
+        assert_eq!(projection.arbiter_effect.unmatched, 1);
+        let row = &projection.review.expect("a review").files["src/a.rs"].findings[0];
+        assert_eq!(row.line_start, Some(12));
+        assert!(row.is_active(), "the dropped verdict did not land");
+    }
+
+    #[test]
+    fn an_arbiter_verdict_keyed_to_the_shifted_anchor_still_applies() {
+        use crate::ai::validation::{
+            ValidationOutcome, ValidationPatch, ValidationResult, ValidationReview,
+        };
+        let old_key = finding_key("src/a.rs", Some(9), "claim");
+        let mut shifted = ValidationOutcome {
+            key: old_key,
+            result: ValidationResult::Shifted,
+            file: "src/a.rs".to_string(),
+            patch: ValidationPatch::default(),
+        };
+        shifted.patch.line_start = Some(12);
+        let validation = ValidationReview {
+            version: 1,
+            diff_hash: "hash".to_string(),
+            review_created_at: "t0".to_string(),
+            created_at: "t1".to_string(),
+            outcomes: vec![shifted],
+        };
+        let shifted_verdict = verdict(finding_key("src/a.rs", Some(12), "claim"));
+
+        let projection = project_with_validation(
+            review_with_one_finding(9, "claim"),
+            &validation,
+            &shifted_verdict,
+        );
+
+        assert_eq!(projection.arbiter_effect.unmatched, 0);
+        let row = &projection.review.expect("a review").files["src/a.rs"].findings[0];
+        assert_eq!(row.confidence, Confidence::Dropped);
+        assert!(!row.is_active());
     }
 }

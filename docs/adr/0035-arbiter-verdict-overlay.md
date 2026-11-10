@@ -15,11 +15,14 @@ Two facts made that the wrong choice here.
 **`review.json` already has three writers.** The general review writes it wholesale.
 Finding validation reads, modifies and rewrites it
 (`crates/er-engine/src/ai/prompts.rs:1248-1260`, `:1292-1302`). Scoped runs overwrite
-it with findings for a subset of paths — which is why `ai/scoped_merge.rs` exists,
-snapshotting to `.prev.json` and merging on exit. The arena import also overwrites
+it with findings for a subset of paths, which needed a snapshot-and-merge workaround.
+The arena import also overwrites
 `review.diff_hash` with its run's hash, so importing into a fresher review silently
 re-stamps it as matching a different diff. Adding a fourth writer compounds a problem
 that already needed a workaround.
+
+Both of the first two have since moved out of `review.json` into their own
+artifacts — `docs/adr/0059-validation-and-scoped-overlays.md`.
 
 **Expert findings use positional ids.** The expert prompt assigns `sec-1`, `sec-2`
 and so on (`ai/prompts.rs:381`). Re-run the security expert and `sec-1` is a

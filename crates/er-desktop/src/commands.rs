@@ -2510,12 +2510,7 @@ pub fn read_review_json(
 ) -> Result<String, String> {
     let _ = revision_id; // single-revision model — ignored
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let er_dir = app.tab().er_dir();
-    let review_path = std::path::Path::new(&er_dir).join("review.json");
-    if !review_path.exists() {
-        return Err("No review.json found".to_string());
-    }
-    std::fs::read_to_string(&review_path).map_err(|e| e.to_string())
+    projected_review_json(&app)
 }
 
 // ── Filter / search ───────────────────────────────────────────────────────────
@@ -4002,6 +3997,7 @@ pub async fn run_ai_review(
             &base_branch,
             &branch_label,
             &diff_hash,
+            None,
         );
         let target = er_engine::app::BackgroundTaskTarget {
             repo_root,
@@ -4013,7 +4009,7 @@ pub async fn run_ai_review(
             remote_repo,
             managed_local: !is_remote,
         };
-        app.spawn_background_review(target, prompt, true)
+        app.spawn_background_review(target, prompt, true, None)
             .map_err(|e| e.to_string())?;
         let debug_bg = er_engine::app::debug_bg_enabled();
         if debug_bg {
@@ -4366,7 +4362,7 @@ pub async fn run_ai_expert_review(
         )?;
 
         let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
-            &scope, &er_dir, &expert_id, &diff_hash,
+            &scope, &er_dir, &expert_id, &diff_hash, None,
         );
 
         let target = er_engine::app::BackgroundTaskTarget {
@@ -4380,7 +4376,7 @@ pub async fn run_ai_expert_review(
             managed_local: !is_remote,
         };
 
-        app.spawn_background_expert_review(&expert_id, target, prompt, true)
+        app.spawn_background_expert_review(&expert_id, target, prompt, true, None)
             .map_err(|e| e.to_string())?;
 
         state
@@ -4473,26 +4469,25 @@ pub async fn run_ai_scoped_review(
         }
 
         let scoped_files = !paths.is_empty();
-        let file_count = paths.len();
+        let mut scope_paths = paths;
+        scope_paths.sort();
+        scope_paths.dedup();
+        let file_count = scope_paths.len();
         let er_path = std::path::Path::new(&er_dir);
         let diff_body = if scoped_files {
-            let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
+            let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &scope_paths);
             if filtered.trim().is_empty() {
                 return Err("No diff for selected files".to_string());
             }
-            let mut sorted_paths = paths;
-            sorted_paths.sort();
-            let manifest = sorted_paths.join("\n");
+            let manifest = scope_paths.join("\n");
             std::fs::write(er_path.join("review-files.txt"), format!("{manifest}\n"))
                 .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
-            // Keep prior findings for files outside this selection: snapshot
-            // before the agent overwrites the sidecars, then merge on exit.
-            er_engine::ai::snapshot_before_scoped_review(er_path, &reviewer_kinds)
-                .map_err(|e| format!("Failed to snapshot review for merge: {e}"))?;
+            // The agent writes only its lens's overlay; the host stamps the
+            // scope and the base identity on exit.
+            std::fs::create_dir_all(er_path.join("scoped/experts"))
+                .map_err(|e| format!("Failed to create scoped output directory: {e}"))?;
             filtered
         } else {
-            // Full-diff multi-reviewer run: no file manifest / no merge.
-            er_engine::ai::clear_scoped_review_snapshots(er_path);
             let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
                 &repo_root,
                 remote_repo.as_deref(),
@@ -4527,13 +4522,19 @@ pub async fn run_ai_scoped_review(
             managed_local: !is_remote,
         };
 
+        let stamps = if scoped_files {
+            scope_stamps(&er_dir, &scope_paths, &reviewer_kinds)
+        } else {
+            std::collections::HashMap::new()
+        };
+
         let (started, skipped) = spawn_scoped_reviewers(
             &mut app,
             target,
             &reviewer_kinds,
             focus_prompt.as_deref(),
-            scoped_files,
             &diff_hash,
+            &stamps,
         )?;
 
         state
@@ -4577,13 +4578,103 @@ pub async fn run_ai_scoped_review(
     .await
 }
 
+/// Per-lens stamps for a scoped run: the sorted selected paths, the base
+/// file's identity captured before the agent starts, and the overlay bytes.
+fn scope_stamps(
+    er_dir: &str,
+    scope_paths: &[String],
+    reviewer_kinds: &[String],
+) -> std::collections::HashMap<String, er_engine::ai::ScopedRunStamp> {
+    use er_engine::ai::ReviewerKind;
+
+    let er_path = std::path::Path::new(er_dir);
+    let store = er_engine::store_registry::store();
+    let Ok(scope) = er_store::Scope::dir(er_dir) else {
+        return std::collections::HashMap::new();
+    };
+    let mut stamps = std::collections::HashMap::new();
+    for kind in reviewer_kinds {
+        let Some(parsed) = er_engine::ai::parse_reviewer_kind(kind) else {
+            continue;
+        };
+        let (command_name, base) = match &parsed {
+            ReviewerKind::Triage => continue,
+            ReviewerKind::General => (
+                "review".to_string(),
+                base_identity(&store, &scope, (), |review: &er_engine::ai::ErReview| {
+                    (&review.diff_hash, &review.created_at)
+                }),
+            ),
+            ReviewerKind::Professor => (
+                "professor".to_string(),
+                base_identity(
+                    &store,
+                    &scope,
+                    (),
+                    |review: &er_engine::ai::ProfessorReview| {
+                        (&review.diff_hash, &review.created_at)
+                    },
+                ),
+            ),
+            ReviewerKind::Expert(id) => {
+                let Ok(slot) = er_store::ExpertId::new(id) else {
+                    continue;
+                };
+                (
+                    format!("expert-{id}"),
+                    base_identity(
+                        &store,
+                        &scope,
+                        slot,
+                        |review: &er_engine::ai::ExpertReview| {
+                            (&review.diff_hash, &review.created_at)
+                        },
+                    ),
+                )
+            }
+        };
+        let Some(overlay_path) = er_engine::ai::scoped_overlay_path(&command_name) else {
+            continue;
+        };
+        stamps.insert(
+            kind.clone(),
+            er_engine::ai::ScopedRunStamp {
+                scope_paths: scope_paths.to_vec(),
+                base_diff_hash: base.0,
+                base_created_at: base.1,
+                previous_overlay: std::fs::read(er_path.join(&overlay_path)).ok(),
+            },
+        );
+    }
+    stamps
+}
+
+/// The `(diff_hash, created_at)` of a lens's full file, empty when absent.
+/// Read through the store so an old enveloped file resolves the same way the
+/// loader will read it.
+fn base_identity<T: er_store::Artifact>(
+    store: &er_store::ArtifactStore,
+    scope: &er_store::Scope,
+    slot: T::Slot,
+    pick: impl Fn(&T) -> (&str, &str),
+) -> (String, String) {
+    let Ok(key) = er_store::ArtifactKey::<T>::new(scope.clone(), slot) else {
+        return (String::new(), String::new());
+    };
+    let Ok(er_store::Loaded::Found(stored)) = store.read(&key) else {
+        return (String::new(), String::new());
+    };
+    let (diff_hash, created_at) = pick(&stored.value);
+    (diff_hash.to_string(), created_at.to_string())
+}
+
 fn spawn_scoped_reviewers(
     app: &mut er_engine::app::App,
     target: er_engine::app::BackgroundTaskTarget,
     reviewer_kinds: &[String],
     focus_prompt: Option<&str>,
-    scoped_files: bool,
     diff_hash: &str,
+    stamps: &std::collections::HashMap<String, er_engine::ai::ScopedRunStamp>,
 ) -> Result<(Vec<String>, Vec<String>), String> {
     use er_engine::ai::{prompts, ReviewerKind};
 
@@ -4601,6 +4692,7 @@ fn spawn_scoped_reviewers(
             .find(|r| r.kind == *kind)
             .map(|r| r.label)
             .unwrap_or_else(|| kind.clone());
+        let stamp = stamps.get(kind).cloned();
 
         let spawn_result = match &parsed {
             ReviewerKind::Triage => {
@@ -4609,35 +4701,50 @@ fn spawn_scoped_reviewers(
                 app.spawn_background_triage_review(target.clone(), prompt, true)
             }
             ReviewerKind::General => {
-                let mut prompt = prompts::build_review_prompt_prepared_diff(
-                    scope,
+                let overlay = er_engine::ai::scoped_overlay_path("review");
+                let prompt = prompts::append_file_scope_if_present(
+                    prompts::build_review_prompt_prepared_diff(
+                        scope,
+                        er_dir,
+                        &target.base_branch,
+                        &target.branch_label,
+                        diff_hash,
+                        overlay.as_deref(),
+                    ),
                     er_dir,
-                    &target.base_branch,
-                    &target.branch_label,
-                    diff_hash,
+                    overlay.as_deref(),
                 );
-                if scoped_files {
-                    prompt = prompts::append_file_scope_if_present(prompt, er_dir);
-                }
-                app.spawn_background_review(target.clone(), prompt, true)
+                app.spawn_background_review(target.clone(), prompt, true, stamp)
             }
             ReviewerKind::Expert(id) => {
-                let mut prompt =
-                    prompts::build_expert_review_prompt_prepared_diff(scope, er_dir, id, diff_hash);
-                if scoped_files {
-                    prompt = prompts::append_file_scope_if_present(prompt, er_dir);
-                }
-                app.spawn_background_expert_review(id, target.clone(), prompt, true)
+                let overlay = er_engine::ai::scoped_overlay_path(&format!("expert-{id}"));
+                let prompt = prompts::append_file_scope_if_present(
+                    prompts::build_expert_review_prompt_prepared_diff(
+                        scope,
+                        er_dir,
+                        id,
+                        diff_hash,
+                        overlay.as_deref(),
+                    ),
+                    er_dir,
+                    overlay.as_deref(),
+                );
+                app.spawn_background_expert_review(id, target.clone(), prompt, true, stamp)
             }
             ReviewerKind::Professor => {
-                let prompt = prompts::build_professor_review_prompt_prepared_diff(
-                    scope,
+                let overlay = er_engine::ai::scoped_overlay_path("professor");
+                let prompt = prompts::append_file_scope_if_present(
+                    prompts::build_professor_review_prompt_prepared_diff(
+                        scope,
+                        er_dir,
+                        focus_prompt,
+                        overlay.as_deref(),
+                        diff_hash,
+                    ),
                     er_dir,
-                    focus_prompt,
-                    scoped_files,
-                    diff_hash,
+                    overlay.as_deref(),
                 );
-                app.spawn_background_professor_review(target.clone(), prompt, true)
+                app.spawn_background_professor_review(target.clone(), prompt, true, stamp)
             }
         };
 
@@ -14019,6 +14126,125 @@ mod tests {
             assert!(
                 stored.questions.iter().all(|q| q.id != "q-1"),
                 "the source question is gone from the file"
+            );
+        });
+    }
+}
+
+/// The active tab's review as the projection sees it — scoped overlays replace
+/// their paths and the validate pass's outcomes are applied — never the raw
+/// `review.json`.
+fn projected_review_json(app: &er_engine::app::App) -> Result<String, String> {
+    let er_dir = app.tab().er_dir();
+    let branch_scope = app.tab().storage_branch_scope().map(str::to_string);
+    let overlay = er_engine::ai::arbiter_overlay_stamp(&er_dir);
+    let ai = er_engine::ai::load_ai_state_with_arbiter(
+        &er_dir,
+        &app.tab().branch_diff_hash,
+        branch_scope.as_deref(),
+        overlay.as_deref(),
+    );
+    let Some(review) = ai.review else {
+        return Err("No review.json found".to_string());
+    };
+    // Collapse the duplicate rows the display hides, so the copy matches what
+    // the reviewer sees; active, resolved and dropped rows all stay.
+    let mut visible = review.clone();
+    visible.files = review
+        .files
+        .iter()
+        .map(|(path, file)| {
+            let rows = er_engine::ai::project_visible_findings(
+                file.findings.iter().map(|finding| (path.as_str(), finding)),
+                &ai.arbiter_graded_keys,
+            );
+            (
+                path.clone(),
+                er_engine::ai::ErFileReview {
+                    risk: file.risk,
+                    risk_reason: file.risk_reason.clone(),
+                    summary: file.summary.clone(),
+                    findings: rows
+                        .into_iter()
+                        .map(|(_, finding)| finding.clone())
+                        .collect(),
+                },
+            )
+        })
+        .collect();
+    serde_json::to_string_pretty(&visible).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod projected_review_tests {
+    use super::projected_review_json;
+
+    #[test]
+    fn read_review_json_returns_the_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            let bucket = dir.path().join("bucket");
+            std::fs::create_dir_all(&bucket).unwrap();
+            std::fs::write(
+                bucket.join("review.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "diff_hash": "hash", "created_at": "t0",
+                    "files": { "src/a.rs": { "risk": "medium", "findings": [
+                        { "id": "a1", "severity": "medium", "title": "Old A", "line_start": 1 }
+                    ] },
+                    "src/b.rs": { "risk": "medium", "findings": [
+                        { "id": "b1", "severity": "medium", "title": "Resolved B", "line_start": 2 }
+                    ] }
+                }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::create_dir_all(bucket.join("scoped/experts")).unwrap();
+            std::fs::write(
+                bucket.join("scoped/general.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "diff_hash": "hash", "created_at": "t1",
+                    "files": { "src/a.rs": { "risk": "medium", "findings": [
+                        { "id": "n1", "severity": "medium", "title": "New A", "line_start": 5 }
+                    ] } },
+                    "scope_paths": ["src/a.rs"],
+                    "base_diff_hash": "hash",
+                    "base_created_at": "t0",
+                    "host_stamped": true
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let key = er_engine::ai::identity::finding_key("src/b.rs", Some(2), "Resolved B");
+            std::fs::write(
+                bucket.join("validation.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "diff_hash": "hash", "review_created_at": "t0",
+                    "created_at": "t1",
+                    "outcomes": [{ "key": key, "file": "src/b.rs", "result": "resolved" }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let mut app = er_engine::app::App::new_for_test(Vec::new());
+            app.tab_mut().er_root =
+                er_engine::ErRoot::managed(bucket.to_string_lossy().to_string());
+            app.tab_mut().branch_diff_hash = "hash".to_string();
+
+            let json = projected_review_json(&app).unwrap();
+            let review: er_engine::ai::ErReview = serde_json::from_str(&json).unwrap();
+            let a_titles: Vec<&str> = review.files["src/a.rs"]
+                .findings
+                .iter()
+                .map(|finding| finding.title.as_str())
+                .collect();
+            assert_eq!(a_titles, ["New A"], "the overlay replaced its path");
+            assert_eq!(
+                review.files["src/b.rs"].findings[0].confidence,
+                er_engine::ai::Confidence::Dropped,
+                "the validation was applied"
             );
         });
     }

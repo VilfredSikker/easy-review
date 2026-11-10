@@ -150,7 +150,7 @@
       app.showToast("success", `Copied ${count} findings as JSON`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      app.showToast("error", msg.includes("review.json") ? "No review.json found" : msg);
+      app.showToast("error", msg.includes("No review") ? "No review found" : msg);
     }
   }
 
@@ -386,7 +386,7 @@
   <PanelActions
     actions={[
       { glyph: "✓", label: "Validate findings", title: validateHint, disabled: !canValidate, run: validate },
-      { glyph: "⧉", label: "Copy findings JSON", title: "Copy findings from review.json for an agent prompt", disabled: view.openCount === 0, run: copyFindingsJson },
+      { glyph: "⧉", label: "Copy findings JSON", title: "Copy the projected findings for an agent prompt", disabled: view.openCount === 0, run: copyFindingsJson },
       { glyph: "▢", label: "Reveal review files", title: "Open the review files folder", run: () => void invoke("reveal_er_folder").catch(() => {}) },
       { glyph: "×", label: "Clear review", title: "Delete this view's review: its findings and summary", run: () => void clearReview() },
     ]}

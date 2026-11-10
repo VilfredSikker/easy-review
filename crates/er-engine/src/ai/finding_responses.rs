@@ -67,7 +67,7 @@ fn iso_now() -> String {
 
 /// Find the first finding matching `finding_id` (replaying the `id_prefix`
 /// applied at merge time) and apply `f` to it. Returns whether it was found.
-fn apply_to_findings<F>(
+pub(crate) fn apply_to_findings<F>(
     files: &mut [&mut Vec<Finding>],
     finding_id: &str,
     id_prefix: Option<&str>,
@@ -102,9 +102,15 @@ fn with_finding_mut<F>(er_dir: &str, finding_id: &str, f: F) -> anyhow::Result<(
 where
     F: FnOnce(&mut Finding) -> anyhow::Result<()>,
 {
+    let mut f = Some(f);
+    // A scoped overlay row is the displayed row for its lens; write it there
+    // before looking at the full-review sidecars.
+    if super::scoped_overlay::with_finding_in_overlay(er_dir, finding_id, &mut f)? {
+        return Ok(());
+    }
+
     let store = crate::store_registry::store();
     let scope = er_store::Scope::dir(er_dir)?;
-    let mut f = Some(f);
 
     // General findings keep their original id in `review.json` (no prefix). A
     // corrupt/unreadable review.json falls through to the other sidecars rather

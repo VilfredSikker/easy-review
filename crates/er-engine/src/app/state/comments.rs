@@ -666,6 +666,23 @@ fn stdout_log_text(line: &str, is_stream_json: bool) -> Option<String> {
     display.filter(|text| !text.is_empty())
 }
 
+/// A successful full run of a review lens clears the scoped overlay and
+/// validation its bucket holds. Best-effort: the run already succeeded, and a
+/// stale overlay cannot apply once the full run rewrote the base identity.
+fn clear_full_run_if_lens(er_dir: &str, command_name: &str) {
+    let covered = command_name == "review"
+        || command_name == "professor"
+        || command_name.starts_with("expert-");
+    if !covered {
+        return;
+    }
+    let Ok(scope) = er_store::Scope::dir(er_dir) else {
+        return;
+    };
+    let _ =
+        crate::ai::clear_full_run_artifacts(&crate::store_registry::store(), &scope, command_name);
+}
+
 /// Cap a command failure at 80 chars for the status bar (safe for multi-byte UTF-8).
 fn status_bar_failure(msg: String) -> String {
     if msg.len() <= 80 {
@@ -3082,6 +3099,7 @@ impl App {
                     continue;
                 };
                 tab.command_rx.remove(&name);
+                let spawn_bucket = tab.command_buckets.remove(&name);
                 match result {
                     Ok(()) => {
                         tab.command_status.insert(name.clone(), CommandStatus::Done);
@@ -3091,6 +3109,11 @@ impl App {
                             source: AgentLogSource::Status,
                             text: format!("{} completed", name),
                         });
+                        // A successful full run drops this lens's scoped overlay
+                        // and validation, in the bucket it was spawned into.
+                        if let Some(er_dir) = spawn_bucket.as_deref() {
+                            clear_full_run_if_lens(er_dir, &name);
+                        }
                         // Force AI reload for commands that write sidecar artifacts.
                         // reload_ai_state() resets last_ai_check itself.
                         if Self::agent_command_writes_ai_artifacts(&name) {
@@ -3134,6 +3157,7 @@ impl App {
 
         let repo_root = self.tab().repo_root.clone();
         let er_dir_path = self.tab().er_dir();
+        let bucket_for_tab = er_dir_path.clone();
         let is_remote = self.tab().is_remote();
         let remote_repo = self.tab().remote_repo.clone();
         let selection = if let Some(selection) = self.pending_ai_selection_override.clone() {
@@ -3472,6 +3496,9 @@ impl App {
             .command_status
             .insert(name.to_string(), CommandStatus::Running);
         self.tab_mut().command_runs.insert(run_name, run_for_tab);
+        self.tab_mut()
+            .command_buckets
+            .insert(name.to_string(), bucket_for_tab);
         self.notify(&format!("{} started...", name));
         Ok(())
     }
@@ -3482,6 +3509,7 @@ impl App {
         target: super::background::BackgroundTaskTarget,
         prompt: String,
         prepared_diff: bool,
+        scoped_stamp: Option<crate::ai::ScopedRunStamp>,
     ) -> Result<()> {
         self.spawn_background_agent_task(
             "review".to_string(),
@@ -3490,6 +3518,7 @@ impl App {
             prompt,
             prepared_diff,
             None,
+            scoped_stamp,
         )
     }
 
@@ -3501,6 +3530,7 @@ impl App {
         target: super::background::BackgroundTaskTarget,
         prompt: String,
         prepared_diff: bool,
+        scoped_stamp: Option<crate::ai::ScopedRunStamp>,
     ) -> Result<()> {
         let def = crate::ai::expert_by_id(expert_id)
             .ok_or_else(|| anyhow::anyhow!("unknown expert: {expert_id}"))?;
@@ -3511,6 +3541,7 @@ impl App {
             prompt,
             prepared_diff,
             None,
+            scoped_stamp,
         )
     }
 
@@ -3530,6 +3561,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
             None,
             None,
         )
@@ -3589,6 +3621,7 @@ impl App {
             target,
             prompt,
             false,
+            None,
             None,
         )
     }
@@ -3672,6 +3705,7 @@ impl App {
             prompt,
             prepared_diff,
             Some(host_write),
+            None,
         )
     }
 
@@ -3681,6 +3715,7 @@ impl App {
         target: super::background::BackgroundTaskTarget,
         prompt: String,
         prepared_diff: bool,
+        scoped_stamp: Option<crate::ai::ScopedRunStamp>,
     ) -> Result<()> {
         self.spawn_background_agent_task(
             crate::ai::professor_task_kind(),
@@ -3689,6 +3724,7 @@ impl App {
             prompt,
             prepared_diff,
             None,
+            scoped_stamp,
         )
     }
 
@@ -3705,6 +3741,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
             None,
         )
     }
@@ -3746,6 +3783,10 @@ impl App {
     /// App-level background agent task (review or expert). When the number
     /// of running tasks has reached `ai_hub.max_concurrent_reviews`, the
     /// task is queued and launched later by `poll_background_tasks`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the parameters are the launch configuration the spawned task needs"
+    )]
     fn spawn_background_agent_task(
         &mut self,
         kind: String,
@@ -3754,6 +3795,7 @@ impl App {
         prompt: String,
         prepared_diff: bool,
         host_write_diagram: Option<super::background::HostWriteDiagram>,
+        scoped_stamp: Option<crate::ai::ScopedRunStamp>,
     ) -> Result<()> {
         self.check_review_bucket_admission(&target.er_dir)?;
         self.enqueue_background_agent_task(
@@ -3764,6 +3806,7 @@ impl App {
             prepared_diff,
             host_write_diagram,
             None,
+            scoped_stamp,
         )
         .map(|_| ())
     }
@@ -3784,6 +3827,7 @@ impl App {
         prepared_diff: bool,
         host_write_diagram: Option<super::background::HostWriteDiagram>,
         launch_config: Option<crate::config::ErConfig>,
+        scoped_stamp: Option<crate::ai::ScopedRunStamp>,
     ) -> Result<String> {
         self.enqueue_background_agent_task_in_checkout(
             kind,
@@ -3794,6 +3838,7 @@ impl App {
             host_write_diagram,
             launch_config,
             None,
+            scoped_stamp,
         )
     }
 
@@ -3813,6 +3858,7 @@ impl App {
         host_write_diagram: Option<super::background::HostWriteDiagram>,
         launch_config: Option<crate::config::ErConfig>,
         execution_root: Option<String>,
+        scoped_stamp: Option<crate::ai::ScopedRunStamp>,
     ) -> Result<String> {
         use super::background::{BackgroundTask, PendingBackgroundTask};
 
@@ -3857,6 +3903,7 @@ impl App {
                     },
                 )),
                 launch_config,
+                scoped_stamp,
             };
         let task_id = pending.task.id.clone();
 
@@ -3893,6 +3940,7 @@ impl App {
             host_write_diagram,
             ai_selection,
             launch_config,
+            scoped_stamp,
         } = pending;
         let command_name = command_name.as_str();
         let target = task.target.clone();
@@ -4091,6 +4139,9 @@ impl App {
         let progress_notify = self.background_progress_notify.clone();
         let git_handle = self.ports.git.clone();
         let github_handle = self.ports.github.clone();
+        // Capture the store on the host thread: the worker then commits its
+        // overlay in the storage root the task was launched under.
+        let artifact_store = crate::store_registry::store();
         std::thread::spawn(move || {
             let mut progress_signal = NotifyBackgroundProgressOnDrop {
                 result_tx: Some(result_tx),
@@ -4320,15 +4371,33 @@ impl App {
                         format!("{command_name_fail}: failed to persist diagram sidecar")
                     })?;
                 }
-                // Selected-file reviews overwrite sidecars with a subset —
-                // merge back into the pre-scoped snapshot when present.
-                if let Err(e) = crate::ai::apply_scoped_sidecar_merge(
-                    std::path::Path::new(&er_dir),
-                    &command_name_fail,
-                ) {
-                    anyhow::bail!(
-                        "{command_name_fail} wrote artifacts but failed to merge with previous review: {e}"
-                    );
+                // A scoped run commits its own overlay; a successful full run
+                // clears its lens's old overlay and validation. A failed run
+                // never reaches here.
+                let scope = er_store::Scope::dir(&er_dir)
+                    .with_context(|| format!("{command_name_fail}: invalid bucket {er_dir}"))?;
+                if let Some(stamp) = &scoped_stamp {
+                    crate::ai::stamp_scoped_overlay(
+                        &artifact_store,
+                        &scope,
+                        &command_name_fail,
+                        stamp,
+                    )
+                    .with_context(|| {
+                        format!("{command_name_fail} failed to stamp its scoped overlay")
+                    })?;
+                } else if command_name_fail.as_ref() == "review"
+                    || command_name_fail.as_ref() == "professor"
+                    || command_name_fail.starts_with("expert-")
+                {
+                    crate::ai::clear_full_run_artifacts(
+                        &artifact_store,
+                        &scope,
+                        &command_name_fail,
+                    )
+                    .with_context(|| {
+                        format!("{command_name_fail} failed to clear its old artifacts")
+                    })?;
                 }
                 Ok(())
             })();
@@ -5159,6 +5228,7 @@ mod background_queue_tests {
                     true,
                     None,
                     None,
+                    None,
                 )
                 .unwrap();
             app.register_review_flow_task(owned_id.clone());
@@ -5169,6 +5239,7 @@ mod background_queue_tests {
                     unowned_target,
                     "p".into(),
                     true,
+                    None,
                     None,
                     None,
                 )
@@ -5227,10 +5298,10 @@ mod background_queue_tests {
             })));
 
             app.config.agent.args = vec!["-c".into(), "exit 0".into()];
-            app.spawn_background_review(target(tmp, "callback-success"), "p".into(), false)
+            app.spawn_background_review(target(tmp, "callback-success"), "p".into(), false, None)
                 .unwrap();
             app.config.agent.args = vec!["-c".into(), "exit 1".into()];
-            app.spawn_background_review(target(tmp, "callback-failure"), "p".into(), false)
+            app.spawn_background_review(target(tmp, "callback-failure"), "p".into(), false, None)
                 .unwrap();
 
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -5252,6 +5323,215 @@ mod background_queue_tests {
                 .background_tasks
                 .values()
                 .any(|task| matches!(task.task.status, crate::app::CommandStatus::Failed(_))));
+        });
+    }
+
+    /// A scoped run's overlay and validation survive a failed full run; a
+    /// successful full run clears them. Both runs share the bucket.
+    fn run_full_review_to_completion(app: &mut App, target: BackgroundTaskTarget, exit: &str) {
+        app.config.agent.command = "sh".into();
+        app.config.agent.args = vec!["-c".into(), exit.into()];
+        app.spawn_background_review(target, "p".into(), false, None)
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            app.poll_background_tasks();
+            if app.background_tasks.values().any(|task| {
+                matches!(
+                    task.task.status,
+                    crate::app::CommandStatus::Done | crate::app::CommandStatus::Failed(_)
+                )
+            }) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the full review did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// A bucket holding the artifacts a scoped run and a validate leave behind.
+    fn seeded_bucket(tmp: &std::path::Path) -> (std::path::PathBuf, BackgroundTaskTarget) {
+        let bucket = tmp.join("bucket");
+        std::fs::create_dir_all(bucket.join("scoped/experts")).unwrap();
+        std::fs::write(
+            bucket.join("scoped/general.json"),
+            r#"{"version":1,"files":{}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            bucket.join("validation.json"),
+            r#"{"version":1,"outcomes":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(bucket.join("review-files.txt"), "src/a.rs\n").unwrap();
+        let target = BackgroundTaskTarget {
+            repo_root: tmp.to_string_lossy().to_string(),
+            er_dir: bucket.to_string_lossy().to_string(),
+            branch_label: "feat".into(),
+            base_branch: "main".into(),
+            scope: "branch".into(),
+            pr_number: None,
+            remote_repo: None,
+            managed_local: false,
+        };
+        (bucket, target)
+    }
+
+    fn wait_for_terminal(app: &mut App) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            app.poll_background_tasks();
+            if app.background_tasks.values().any(|task| {
+                matches!(
+                    task.task.status,
+                    crate::app::CommandStatus::Done | crate::app::CommandStatus::Failed(_)
+                )
+            }) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the full review did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn review_flow_full_run_clears_on_success() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (bucket, task_target) = seeded_bucket(tmp.path());
+        let checkout = tmp.path().join("checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            app.config.agent.command = "sh".into();
+            app.config.agent.args = vec!["-c".into(), "exit 0".into()];
+            app.enqueue_background_agent_task_in_checkout(
+                "review".into(),
+                "review",
+                task_target,
+                "p".into(),
+                false,
+                None,
+                None,
+                Some(checkout.to_string_lossy().to_string()),
+                None,
+            )
+            .unwrap();
+
+            wait_for_terminal(&mut app);
+
+            assert!(!bucket.join("scoped/general.json").exists());
+            assert!(!bucket.join("validation.json").exists());
+            assert!(!bucket.join("review-files.txt").exists());
+        });
+    }
+
+    #[test]
+    fn full_run_failure_keeps_the_overlay_and_validation() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (bucket, task_target) = seeded_bucket(tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+
+            run_full_review_to_completion(&mut app, task_target, "exit 1");
+
+            assert!(bucket.join("scoped/general.json").exists());
+            assert!(bucket.join("validation.json").exists());
+            assert!(bucket.join("review-files.txt").exists());
+        });
+    }
+
+    #[test]
+    fn full_run_success_clears_overlay_and_validation() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (bucket, task_target) = seeded_bucket(tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+
+            run_full_review_to_completion(&mut app, task_target, "exit 0");
+
+            assert!(!bucket.join("scoped/general.json").exists());
+            assert!(!bucket.join("validation.json").exists());
+            assert!(!bucket.join("review-files.txt").exists());
+        });
+    }
+
+    /// The clear is not tied to a diff change: the same manifest and review sit
+    /// in the bucket before and after the run.
+    #[test]
+    fn full_run_on_the_same_diff_clears_overlay_and_validation() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (bucket, task_target) = seeded_bucket(tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+
+            run_full_review_to_completion(&mut app, task_target, "exit 0");
+
+            assert!(!bucket.join("scoped/general.json").exists());
+            assert!(!bucket.join("validation.json").exists());
+        });
+    }
+
+    /// A2: the shell path clears the bucket the run was spawned into, even when
+    /// the tab has since moved to another bucket.
+    #[test]
+    fn shell_full_run_clears_the_bucket_captured_at_spawn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spawned = tmp.path().join("spawned");
+        let current = tmp.path().join("current");
+        std::fs::create_dir_all(spawned.join("scoped/experts")).unwrap();
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(
+            spawned.join("scoped/general.json"),
+            r#"{"version":1,"files":{}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            spawned.join("validation.json"),
+            r#"{"version":1,"outcomes":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(spawned.join("review-files.txt"), "src/a.rs\n").unwrap();
+        std::fs::write(current.join("review-files.txt"), "src/b.rs\n").unwrap();
+
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(Ok(())).unwrap();
+            drop(tx);
+            {
+                let tab = app.tab_mut();
+                tab.er_root = crate::ErRoot::managed(current.to_string_lossy().to_string());
+                tab.command_rx.insert("review".into(), rx);
+                tab.command_status
+                    .insert("review".into(), crate::app::CommandStatus::Running);
+                tab.command_buckets
+                    .insert("review".into(), spawned.to_string_lossy().to_string());
+            }
+
+            app.check_commands();
+
+            assert!(!spawned.join("scoped/general.json").exists());
+            assert!(!spawned.join("validation.json").exists());
+            assert!(!spawned.join("review-files.txt").exists());
+            assert!(
+                current.join("review-files.txt").exists(),
+                "the tab's current bucket must not be cleared"
+            );
+            assert_eq!(
+                app.tab().command_status.get("review"),
+                Some(&crate::app::CommandStatus::Done)
+            );
+            assert!(app.tab().command_buckets.is_empty());
         });
     }
 
@@ -5328,6 +5608,7 @@ mod background_queue_tests {
                     true,
                     None,
                     Some(ErConfig::default()),
+                    None,
                 )
                 .unwrap();
             app.register_review_flow_task(id.clone());
@@ -5363,7 +5644,7 @@ mod background_queue_tests {
             let lease = app.acquire_review_flow_lease(&target.er_dir).unwrap();
 
             let error = app
-                .spawn_background_review(target.clone(), "p".into(), true)
+                .spawn_background_review(target.clone(), "p".into(), true, None)
                 .unwrap_err();
             assert!(error.to_string().contains("review flow is already using"));
             assert!(app.pending_background_tasks.is_empty());
@@ -5410,6 +5691,7 @@ mod background_queue_tests {
                     true,
                     None,
                     None,
+                    None,
                 )
                 .unwrap();
             app.register_review_flow_task(flow_id.clone());
@@ -5420,6 +5702,7 @@ mod background_queue_tests {
                     target(tmp, "legacy-queued"),
                     "p".into(),
                     true,
+                    None,
                     None,
                     None,
                 )
@@ -5505,6 +5788,7 @@ mod background_queue_tests {
                     true,
                     None,
                     Some(frozen.clone()),
+                    None,
                 )
                 .unwrap();
             app.register_review_flow_task(id.clone());
@@ -5803,6 +6087,7 @@ mod background_queue_tests {
                     "fake importance prompt".into(),
                     false,
                     None,
+                    None,
                 )
                 .unwrap();
                 let new_id = app
@@ -5930,6 +6215,7 @@ mod background_queue_tests {
                         target(tmp, family),
                         "fake importance prompt".into(),
                         false,
+                        None,
                         None,
                     )
                     .is_err());
