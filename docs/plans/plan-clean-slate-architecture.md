@@ -616,7 +616,7 @@ These can be deleted regardless of whether the rest of this plan goes ahead.
 - [ ] `ER_REPO_LOCAL` / `ErRoot::RepoLocal`
 - [ ] Back-compat deserialisers for `Finding` and `Confidence`
       (`ai/review.rs`)
-- [ ] `ai/browser_annotations*` and `ai/browser_prompt.rs`. Their own header
+- [x] `ai/browser_annotations*` and `ai/browser_prompt.rs`. Their own header
       says "No runtime caller". Delete them or wire them up; do not keep them.
 - [ ] The unpushed-local-comment review path: the `submit_github_review`
       command and the Comments-panel push that bundles unsynced comments from

@@ -42,7 +42,6 @@ which supersedes the historical Claude-home path in original task files:
 ```bash
 LOCK=/home/agent/.codex/skills/confidence-merge/scripts/locked.sh
 REPO=$(git rev-parse --show-toplevel)
-"$LOCK" "$REPO" ./scripts/er-tui.sh test -p er-engine browser_annotations
 "$LOCK" "$REPO" just docs-check
 ```
 
