@@ -28,6 +28,7 @@ pub mod github;
 pub mod github_post;
 #[cfg(feature = "highlight")]
 pub mod highlight;
+mod legacy_projects;
 pub mod model_discovery;
 pub mod paths;
 pub mod ports;
@@ -47,7 +48,7 @@ pub mod uninstall;
 #[cfg(feature = "watch")]
 pub mod watch;
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 pub use paths::ErRoot;

@@ -12907,6 +12907,8 @@ mod tests {
         use er_engine::app::TabState;
         use er_engine::config::FileKindRepoConfig;
 
+        // `place_tab` registers the tab's remote as a project, which writes to
+        // the store: keep that out of the real data directory.
         let tmp = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(tmp.path(), || {
             let mut app = make_app_with_n_tabs(1);
