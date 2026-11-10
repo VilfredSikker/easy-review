@@ -6,11 +6,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-#[cfg(unix)]
-use std::io::Write;
 use std::path::Path;
-#[cfg(unix)]
-use std::process::{Command, Stdio};
 
 thread_local! {
     static OVERRIDES: RefCell<HashMap<String, Option<String>>> = RefCell::new(HashMap::new());
@@ -93,28 +89,12 @@ pub fn explicit_var(name: &str) -> Option<Option<String>> {
 /// so a later exec cannot race a concurrent fork.
 #[cfg(unix)]
 pub fn write_executable_script(path: &Path, body: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg("cat > \"$1\" && chmod 755 \"$1\"")
-        .arg("sh")
-        .arg(path)
-        .stdin(Stdio::piped())
-        .spawn()?;
-    let written = child
-        .stdin
-        .take()
-        .map(|mut stdin| stdin.write_all(body.as_bytes()));
-    let status = child.wait()?;
-    written.transpose()?;
-    if !status.success() {
-        return Err(std::io::Error::other(format!(
-            "writing {} failed: {status}",
-            path.display()
-        )));
-    }
+    std::fs::write(path, body)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
 }
 
