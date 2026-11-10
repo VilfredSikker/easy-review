@@ -6,9 +6,7 @@
 
 use std::path::PathBuf;
 
-use er_store::{
-    Artifact, ArtifactKey, ArtifactStore, Loaded, Registry, Scope, StoreError,
-};
+use er_store::{Artifact, ArtifactKey, ArtifactStore, Loaded, Registry, Scope, StoreError};
 
 /// The engine's registered artifact kinds.
 ///

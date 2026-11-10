@@ -62,8 +62,6 @@ pub struct ArbiterVerdict {
     pub providers: Vec<String>,
 }
 
-const MAX_SIDECAR_BYTES: u64 = 10_000_000;
-
 impl er_store::Artifact for ArbiterReview {
     const KIND: &'static str = "arbiter";
     const VERSION: u32 = 1;
@@ -81,15 +79,19 @@ pub fn load_arbiter_review(er_dir: &str) -> Option<ArbiterReview> {
     crate::store_registry::read_found::<ArbiterReview>(er_dir, ())
 }
 
-/// Capture the exact bytes used for both overlay loading and change detection.
+/// Capture the exact bytes used for change detection and for the overlay value.
+///
+/// The store still decides whether the file is usable at load time (version,
+/// size, shape); these bytes are the generation a caller stamps and loads, so
+/// the value stays tied to the stamp it was captured with.
 pub fn arbiter_overlay_stamp(er_dir: &str) -> Option<Vec<u8>> {
     use std::io::Read;
     let file = std::fs::File::open(std::path::Path::new(er_dir).join("arbiter.json")).ok()?;
     let mut bytes = Vec::new();
-    file.take(MAX_SIDECAR_BYTES + 1)
+    file.take(er_store::MAX_ARTIFACT_BYTES + 1)
         .read_to_end(&mut bytes)
         .ok()?;
-    (bytes.len() <= MAX_SIDECAR_BYTES as usize).then_some(bytes)
+    (bytes.len() <= er_store::MAX_ARTIFACT_BYTES as usize).then_some(bytes)
 }
 
 /// Serialize verdicts for `<er_dir>/arbiter.json`, atomically.
@@ -375,6 +377,22 @@ mod tests {
         let loaded = load_arbiter_review(dir.path().to_str().unwrap()).expect("the written file");
         assert_eq!(loaded.diff_hash, HASH);
         assert_eq!(loaded.verdicts.len(), 1);
+    }
+
+    #[test]
+    fn arbiter_file_written_by_an_agent_loads() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("arbiter.json"),
+            r#"{"version":1,"diff_hash":"hash","verdicts":[{"id":"v1","verdict":"kept","rationale":"checked"}]}"#,
+        )
+        .unwrap();
+
+        let loaded = load_arbiter_review(dir.path().to_str().unwrap()).expect("the agent's file");
+
+        assert_eq!(loaded.diff_hash, "hash");
+        assert_eq!(loaded.verdicts.len(), 1);
+        assert_eq!(loaded.verdicts[0].verdict, ArbiterRuling::Kept);
     }
 
     #[test]

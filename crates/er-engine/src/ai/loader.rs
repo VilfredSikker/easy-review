@@ -367,10 +367,15 @@ pub fn load_ai_state_with_arbiter(
     }
 
     // Overlay arbiter verdicts last, so they grade every finding the merges
-    // above put into the review rather than only the review's own.
-    if let Some(arbiter) = overlay
-        .and_then(|bytes| serde_json::from_slice::<super::arbiter::ArbiterReview>(bytes).ok())
-    {
+    // above put into the review rather than only the review's own. The store
+    // decides whether an overlay is usable at all, so a newer-version file is
+    // ignored here too; the captured bytes are the generation the caller
+    // stamped, so the loaded value stays tied to its stamp.
+    let arbiter = overlay.and_then(|bytes| {
+        crate::store_registry::read_found::<super::arbiter::ArbiterReview>(er_dir, ())?;
+        serde_json::from_slice::<super::arbiter::ArbiterReview>(bytes).ok()
+    });
+    if let Some(arbiter) = arbiter {
         if let Some(review) = state.review.as_mut() {
             if arbiter.diff_hash == review.diff_hash {
                 let verdicts: HashMap<&str, (super::arbiter::ArbiterRuling, &str)> = arbiter
@@ -730,6 +735,36 @@ mod tests {
         let state =
             load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
         assert_eq!(state.arbiter_verdicts.get(&key).unwrap().1, "A");
+    }
+
+    #[test]
+    fn an_arbiter_from_a_newer_version_is_not_overlaid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
+        let key = super::super::identity::finding_key("a.rs", None, "claim");
+        std::fs::write(
+            path.join("arbiter.json"),
+            serde_json::json!({"version":2,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"dropped","rationale":"no"}]}).to_string(),
+        )
+        .unwrap();
+        let captured =
+            super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
+
+        let state =
+            load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
+
+        assert_eq!(
+            state.arbiter_effect,
+            crate::ai::ArbiterEffect::default(),
+            "a newer arbiter is ignored"
+        );
+        assert_eq!(
+            state.review.expect("the review").files["a.rs"]
+                .findings
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1214,6 +1249,66 @@ mod tests {
             state.review.is_none(),
             "a newer schema is ignored, never guessed at"
         );
+    }
+
+    #[test]
+    fn a_malformed_review_json_loads_no_review_and_the_other_kinds_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("review.json"), "{ bad").unwrap();
+        std::fs::write(
+            dir.path().join("triage.json"),
+            r#"{"version":1,"diff_hash":"hash","verdict":{"primary":"general"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("professor.json"),
+            r#"{"version":1,"diff_hash":"hash","summary":"the lesson"}"#,
+        )
+        .unwrap();
+
+        let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
+
+        assert!(state.review.is_none(), "a malformed review reads as absent");
+        assert!(state.triage.is_some(), "triage still loads");
+        assert_eq!(
+            state
+                .agent_summaries
+                .get(crate::ai::professor::PROFESSOR_LABEL)
+                .map(String::as_str),
+            Some("the lesson"),
+            "the professor summary still loads"
+        );
+    }
+
+    #[test]
+    fn a_review_json_over_the_size_limit_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let pad = "x".repeat(er_store::MAX_ARTIFACT_BYTES as usize + 1);
+        std::fs::write(
+            dir.path().join("review.json"),
+            format!(r#"{{"version":1,"diff_hash":"hash","pad":"{pad}"}}"#),
+        )
+        .unwrap();
+
+        let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
+
+        assert!(state.review.is_none(), "an oversized review is ignored");
+    }
+
+    #[test]
+    fn review_file_written_by_an_agent_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("review.json"),
+            r#"{"version":1,"diff_hash":"hash","head_branch":"","files":{"a.rs":{"risk":"medium","findings":[{"id":"1","title":"claim","severity":"medium","hunk_index":0}]}}}"#,
+        )
+        .unwrap();
+
+        let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
+
+        let review = state.review.expect("the agent's review loads");
+        assert_eq!(review.files["a.rs"].findings.len(), 1);
+        assert!(!state.is_stale);
     }
 
     #[test]
