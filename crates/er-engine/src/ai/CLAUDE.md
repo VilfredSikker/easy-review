@@ -22,6 +22,8 @@ annotation to a GitHub write.
 
 **AI-owned, read-only to `er` as a whole:** `review.json`, `order.json`,
 `summary.md`, `triage.json`, `professor.json`, `experts/*.json`, `tour.json`.
+The loader reads them through the store; `tour.json` is its `tour` kind and
+`summary.md` its plain-text `summary` kind.
 
 **`checklist.json` is split by field.** Its *items* are AI-owned like the rest;
 its `checked` flags are the reviewer's own progress, written by the toggle in
@@ -30,7 +32,8 @@ Nothing else in the file is theirs to write, and the agent that generates it
 never sets `checked`.
 
 **Agent-emitted, host-written:** `diagrams/*.json`. The diagram agent runs
-read-only and prints its JSON on stdout; the host parses and writes the file.
+read-only and prints its JSON on stdout; the host parses and writes the file
+through the store's enveloped `diagram` kind.
 Never hand that agent a write path — its prompt carries untrusted diff content,
 so `Write` there is a prompt-injection primitive. Read-only is enforced per CLI
 family (Claude allowlist, OpenCode permission env, Codex `--sandbox read-only`,

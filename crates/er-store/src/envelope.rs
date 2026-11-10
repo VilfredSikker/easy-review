@@ -51,7 +51,10 @@ pub(crate) struct Envelope<'a, T> {
 }
 
 /// Parse a JSON document as one artifact kind.
-pub(crate) fn parse<T: Artifact>(value: Value) -> Loaded<T> {
+///
+/// Public so a caller holding a captured copy of a file (a stamped overlay)
+/// can apply the same version and shape rules as a store read.
+pub fn parse<T: Artifact>(value: Value) -> Loaded<T> {
     match T::MODE {
         Mode::Enveloped => parse_enveloped::<T>(value),
         Mode::Bare => parse_bare::<T>(value),

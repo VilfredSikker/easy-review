@@ -23,7 +23,7 @@ pub fn registry() -> Registry {
             .expect("the annotation kinds register once");
         crate::ai::checklist_store::register(&mut registry)
             .expect("the checklist kinds register once");
-        register_review_kinds(&mut registry).expect("the review kinds register once");
+        register_ai_kinds(&mut registry).expect("the AI kinds register once");
         #[cfg(feature = "ui")]
         crate::app::session_store::register(&mut registry)
             .expect("the session kinds register once");
@@ -36,12 +36,15 @@ pub fn registry() -> Registry {
     registry
 }
 
-fn register_review_kinds(registry: &mut Registry) -> Result<(), er_store::StoreError> {
+fn register_ai_kinds(registry: &mut Registry) -> Result<(), er_store::StoreError> {
     registry.register::<crate::ai::ErReview>()?;
     registry.register::<crate::ai::ExpertReview>()?;
     registry.register::<crate::ai::ProfessorReview>()?;
     registry.register::<crate::ai::TriageReview>()?;
     registry.register::<crate::ai::ArbiterReview>()?;
+    registry.register::<crate::ai::ErTour>()?;
+    registry.register::<crate::ai::ErDiagram>()?;
+    registry.register_text("summary", "summary.md")?;
     Ok(())
 }
 
@@ -105,6 +108,9 @@ mod tests {
             ("professor.json", "professor"),
             ("triage.json", "triage"),
             ("arbiter.json", "arbiter"),
+            ("tour.json", "tour"),
+            ("diagrams/flows.json", "diagram"),
+            ("summary.md", "summary"),
             ("projects.json", "projects"),
             ("update-check.json", "update-check"),
         ] {
@@ -121,7 +127,7 @@ mod tests {
         let mut registry = registry();
         assert!(crate::ai::annotation_store::register(&mut registry).is_err());
         assert!(crate::ai::checklist_store::register(&mut registry).is_err());
-        assert!(register_review_kinds(&mut registry).is_err());
+        assert!(register_ai_kinds(&mut registry).is_err());
         assert!(crate::app::session_store::register(&mut registry).is_err());
     }
 }
