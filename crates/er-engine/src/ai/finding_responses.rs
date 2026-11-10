@@ -808,4 +808,104 @@ mod tests {
             assert!(u.files["a.rs"].findings[0].responses.is_empty());
         });
     }
+
+    /// Append a reply through the base writer, pausing after its read so a
+    /// read-then-write has time to overlap the other thread's write.
+    fn append_after_pause(
+        store: &er_store::ArtifactStore,
+        scope: &er_store::Scope,
+        id: &str,
+        text: &str,
+    ) -> bool {
+        let written = sidecar_update::<ErReview, _>(store, scope, (), |review| {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            let mut files: Vec<&mut Vec<Finding>> = review
+                .files
+                .values_mut()
+                .map(|file| &mut file.findings)
+                .collect();
+            apply_to_findings(
+                &mut files,
+                id,
+                None,
+                &mut Some(|finding: &mut Finding| {
+                    finding.responses.push(AiResponse {
+                        id: text.to_string(),
+                        in_reply_to: String::new(),
+                        timestamp: "t1".to_string(),
+                        text: text.to_string(),
+                        new_findings: Vec::new(),
+                    });
+                    Ok(())
+                }),
+            )
+        })
+        .unwrap();
+        written == SidecarWrite::Written
+    }
+
+    // Two writes through `sidecar_update` on one review.json must both land:
+    // the store lock covers the read, so the second write starts from the
+    // first one's bytes. The edit sleeps between its read and write, so a
+    // read-then-write loses one every run.
+    #[test]
+    fn concurrent_appends_to_one_review_keep_both_responses() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_process_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            let review = ErReview {
+                version: 1,
+                diff_hash: "h".to_string(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ErFileReview {
+                        risk: RiskLevel::Low,
+                        risk_reason: String::new(),
+                        summary: String::new(),
+                        findings: vec![bare_finding("f1"), bare_finding("f2")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+                file_hashes: HashMap::new(),
+            };
+            write_json_atomic(&er.join("review.json"), &review).unwrap();
+
+            let er_dir = er.to_string_lossy().into_owned();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let spawn = |id: &'static str, text: &'static str| {
+                let store = crate::store_registry::store();
+                let scope = er_store::Scope::dir(&er_dir).unwrap();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    assert!(append_after_pause(&store, &scope, id, text));
+                })
+            };
+            let first = spawn("f1", "first");
+            let second = spawn("f2", "second");
+            barrier.wait();
+            first.join().unwrap();
+            second.join().unwrap();
+
+            let loaded: ErReview =
+                serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
+                    .unwrap();
+            let findings = &loaded.files["a.rs"].findings;
+            assert!(
+                findings
+                    .iter()
+                    .any(|f| f.responses.iter().any(|r| r.text == "first")),
+                "the first reply survived"
+            );
+            assert!(
+                findings
+                    .iter()
+                    .any(|f| f.responses.iter().any(|r| r.text == "second")),
+                "the second reply survived"
+            );
+        });
+    }
 }

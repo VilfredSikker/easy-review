@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 18:24 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-10 18:53 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -10,12 +10,12 @@
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
 | D3 | – | idle | – |
-| D1 | D6 | [#474](https://github.com/VilfredSikker/easy-review/issues/474) P27, step plan | E, F |
-| D4 | T6 store core | [#464](https://github.com/VilfredSikker/easy-review/issues/464) store-lock fix | E, W |
+| D1 | D6 | [#474](https://github.com/VilfredSikker/easy-review/issues/474) P27, coding | E, F |
+| D4 | T6 store core | idle (first for P32a) | – |
 | T2 | T4 git port | [#493](https://github.com/VilfredSikker/easy-review/issues/493) agent_spawn matcher gaps | C |
 | T1, D2, D5 | – | idle | – |
 
-**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35, P26a and P26b are merged; P27 is next; P30a waits for #464.
+**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35, P26a and P26b are merged; P27 is next; 
 
 ## Progress
 
@@ -54,17 +54,17 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P22 | [#393](https://github.com/VilfredSikker/easy-review/issues/393) App records through the store | F | opus | ✅ | [#449](https://github.com/VilfredSikker/easy-review/pull/449), [#451](https://github.com/VilfredSikker/easy-review/pull/451) | two PRs; the import is #452 |
 | P23 | [#394](https://github.com/VilfredSikker/easy-review/issues/394) Cross-process locks, change notifications | C | opus | ✅ | [#434](https://github.com/VilfredSikker/easy-review/pull/434) | ADR 0057; Linux watcher fix proven on CI |
 | P24 | [#395](https://github.com/VilfredSikker/easy-review/issues/395) MCP uploads through the store | C | opus | ✅ | [#458](https://github.com/VilfredSikker/easy-review/pull/458) | schemas derived; every release path pinned |
-| Lock | [#464](https://github.com/VilfredSikker/easy-review/issues/464) Sidecar writers outside the store lock | E/W | opus | 🔵 | [#491](https://github.com/VilfredSikker/easy-review/pull/491) | D4; round 2 in review |
+| Lock | [#464](https://github.com/VilfredSikker/easy-review/issues/464) Sidecar writers outside the store lock | E/W | opus | ✅ | [#491](https://github.com/VilfredSikker/easy-review/pull/491) | D4; two rounds |
 | Flaky-c | [#468](https://github.com/VilfredSikker/easy-review/issues/468) ETXTBSY when tests write and run a script | E | sonnet | ✅ | [#469](https://github.com/VilfredSikker/easy-review/pull/469) | T2; Linux plant proven on draft #470 |
 | P35 | [#471](https://github.com/VilfredSikker/easy-review/issues/471) D1: delete the browser annotation modules | E | sonnet | ✅ | [#490](https://github.com/VilfredSikker/easy-review/pull/490) | D3 |
 | P26a | [#472](https://github.com/VilfredSikker/easy-review/issues/472) Create er-agent (runtime and the guardrail) | C/E/F | opus | ✅ | [#492](https://github.com/VilfredSikker/easy-review/pull/492) | D1; follow-up [#493](https://github.com/VilfredSikker/easy-review/issues/493) |
 | Spawn-gaps | [#493](https://github.com/VilfredSikker/easy-review/issues/493) agent_spawn matcher gaps from the P26a review | C/F | sonnet | 🟡 | | T2; before P33b |
 | P26b | [#473](https://github.com/VilfredSikker/easy-review/issues/473) ProviderSpec, one decoder, JobSpec/JobRunner | C/E | opus | ✅ | [#494](https://github.com/VilfredSikker/easy-review/pull/494) | D1 |
-| P27 | [#474](https://github.com/VilfredSikker/easy-review/issues/474) Card AI and model discovery onto the Provider | E/F | opus | 🟡 | | D1; step plan |
+| P27 | [#474](https://github.com/VilfredSikker/easy-review/issues/474) Card AI and model discovery onto the Provider | E/F | opus | 🟡 | | D1; plan approved |
 | P28a | [#475](https://github.com/VilfredSikker/easy-review/issues/475) Background queue onto the JobRunner | E/W | opus | ⬜ | | after #474 |
 | P28b | [#476](https://github.com/VilfredSikker/easy-review/issues/476) Review-flow launch and the Deep-run cancel/orphan test | W | opus | ⬜ | | after #475 |
 | P29 | [#477](https://github.com/VilfredSikker/easy-review/issues/477) Tab-local prompts, the shell path and the summary job (D18) | E | opus | ⬜ | | after #476 |
-| P30a | [#478](https://github.com/VilfredSikker/easy-review/issues/478) Host commits job outputs | E/C | opus | ⬜ | | after #475, #477, #464 |
+| P30a | [#478](https://github.com/VilfredSikker/easy-review/issues/478) Host commits job outputs | E/C | opus | ⬜ | | after #475, #477 |
 | P32a | [#479](https://github.com/VilfredSikker/easy-review/issues/479) Workflow record and crash resume | W | opus | ⬜ | | after #476 |
 | P32b | [#480](https://github.com/VilfredSikker/easy-review/issues/480) Panel stage and the free round measurement (D17) | W | opus | ⬜ | | after #479 |
 | P33a | [#481](https://github.com/VilfredSikker/easy-review/issues/481) Arena reviewers and arbiter onto the JobRunner | W | opus | ⬜ | | after #480 |
