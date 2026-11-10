@@ -91,6 +91,7 @@ pub fn parse_env_and_args(args: &mut Vec<String>) -> Option<Vec<String>> {
     if let Some(ref g) = groups {
         if !g.is_empty() {
             let joined = g.join(",");
+            // Process-wide on purpose: spawned agents inherit the filter.
             std::env::set_var("ER_LOG", &joined);
         }
     }

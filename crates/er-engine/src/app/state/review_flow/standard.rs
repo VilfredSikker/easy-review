@@ -176,35 +176,37 @@ mod tests {
     fn standard_instead_queues_the_triaged_lenses_without_an_arena() {
         let _serial = crate::agent_slots::test_serial();
         let dir = tempfile::tempdir().unwrap();
-        let mut app = fake_app(&dir);
-        let bucket = app.tab().er_dir();
-        app.start_review_flow("branch").unwrap();
-        tick_until(&mut app, &bucket, |s| *s == FlowState::AwaitingConfirmation);
-        let lenses = app.review_flow_for(&bucket).unwrap().lenses.clone();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir);
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            tick_until(&mut app, &bucket, |s| *s == FlowState::AwaitingConfirmation);
+            let lenses = app.review_flow_for(&bucket).unwrap().lenses.clone();
 
-        app.run_review_flow_standard(&bucket).unwrap();
+            app.run_review_flow_standard(&bucket).unwrap();
 
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert_eq!(flow.depth, Some(FlowDepth::Standard));
-        assert_eq!(flow.state, FlowState::Finding);
-        assert_eq!(flow.lenses, lenses, "triage is not repeated");
-        assert!(flow.tasks.iter().all(|task| task.round.is_none()));
-        for lens in &lenses {
-            let row = flow
-                .tasks
-                .iter()
-                .find(|task| task.id == format!("finding:{lens}"))
-                .expect("a finder row per lens");
-            assert!(row.background_task_id.is_some());
-            assert_ne!(row.status, FlowTaskStatus::Waiting);
-        }
-        assert!(app.arena_registry.active_run_ids().is_empty());
-        assert!(app.run_review_flow_standard(&bucket).is_err());
-        assert!(app.confirm_review_flow(&bucket).is_err());
-        assert!(app.decline_review_flow(&bucket).is_err());
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert_eq!(flow.depth, Some(FlowDepth::Standard));
+            assert_eq!(flow.state, FlowState::Finding);
+            assert_eq!(flow.lenses, lenses, "triage is not repeated");
+            assert!(flow.tasks.iter().all(|task| task.round.is_none()));
+            for lens in &lenses {
+                let row = flow
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == format!("finding:{lens}"))
+                    .expect("a finder row per lens");
+                assert!(row.background_task_id.is_some());
+                assert_ne!(row.status, FlowTaskStatus::Waiting);
+            }
+            assert!(app.arena_registry.active_run_ids().is_empty());
+            assert!(app.run_review_flow_standard(&bucket).is_err());
+            assert!(app.confirm_review_flow(&bucket).is_err());
+            assert!(app.decline_review_flow(&bucket).is_err());
 
-        tick_until(&mut app, &bucket, |s| {
-            !matches!(s, FlowState::Finding | FlowState::Verifying)
+            tick_until(&mut app, &bucket, |s| {
+                !matches!(s, FlowState::Finding | FlowState::Verifying)
+            });
         });
     }
 
@@ -212,17 +214,19 @@ mod tests {
     fn standard_instead_requires_a_pending_deep_confirmation() {
         let _serial = crate::agent_slots::test_serial();
         let dir = tempfile::tempdir().unwrap();
-        let mut app = fake_app(&dir);
-        let bucket = app.tab().er_dir();
-        assert!(app.run_review_flow_standard(&bucket).is_err());
-        app.start_review_flow("branch").unwrap();
-        assert!(
-            app.run_review_flow_standard(&bucket).is_err(),
-            "still triaging"
-        );
-        tick_until(&mut app, &bucket, |s| *s == FlowState::AwaitingConfirmation);
-        app.decline_review_flow(&bucket).unwrap();
-        assert!(app.run_review_flow_standard(&bucket).is_err());
-        tick_until(&mut app, &bucket, |s| *s == FlowState::Cancelled);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir);
+            let bucket = app.tab().er_dir();
+            assert!(app.run_review_flow_standard(&bucket).is_err());
+            app.start_review_flow("branch").unwrap();
+            assert!(
+                app.run_review_flow_standard(&bucket).is_err(),
+                "still triaging"
+            );
+            tick_until(&mut app, &bucket, |s| *s == FlowState::AwaitingConfirmation);
+            app.decline_review_flow(&bucket).unwrap();
+            assert!(app.run_review_flow_standard(&bucket).is_err());
+            tick_until(&mut app, &bucket, |s| *s == FlowState::Cancelled);
+        });
     }
 }

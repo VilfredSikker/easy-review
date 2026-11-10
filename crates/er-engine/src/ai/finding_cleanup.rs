@@ -472,143 +472,152 @@ mod tests {
     #[test]
     fn remove_finding_from_review_and_expert_sidecars() {
         let dir = tempdir().unwrap();
-        let er = dir.path().to_str().unwrap();
-        std::fs::create_dir_all(format!("{er}/experts")).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path().to_str().unwrap();
+            std::fs::create_dir_all(format!("{er}/experts")).unwrap();
 
-        let review = ErReview {
-            version: 1,
-            diff_hash: "h".into(),
-            created_at: String::new(),
-            base_branch: String::new(),
-            head_branch: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                crate::ai::review::ErFileReview {
-                    risk: RiskLevel::Info,
-                    risk_reason: String::new(),
-                    summary: String::new(),
-                    findings: vec![sample_finding("f-2")],
-                },
-            ))
-            .collect(),
-            file_hashes: Default::default(),
-        };
-        write_json_atomic(&Path::new(er).join("review.json"), &review).unwrap();
+            let review = ErReview {
+                version: 1,
+                diff_hash: "h".into(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    crate::ai::review::ErFileReview {
+                        risk: RiskLevel::Info,
+                        risk_reason: String::new(),
+                        summary: String::new(),
+                        findings: vec![sample_finding("f-2")],
+                    },
+                ))
+                .collect(),
+                file_hashes: Default::default(),
+            };
+            write_json_atomic(&Path::new(er).join("review.json"), &review).unwrap();
 
-        let expert = ExpertReview {
-            version: 1,
-            expert_id: "security".into(),
-            diff_hash: "h".into(),
-            diff_scope: String::new(),
-            created_at: String::new(),
-            summary: String::new(),
-            files: std::iter::once((
-                "a.rs".into(),
-                crate::ai::experts::ExpertFileReview {
-                    findings: vec![sample_finding("f-1")],
-                },
-            ))
-            .collect(),
-        };
-        write_json_atomic(&Path::new(er).join("experts/security.json"), &expert).unwrap();
+            let expert = ExpertReview {
+                version: 1,
+                expert_id: "security".into(),
+                diff_hash: "h".into(),
+                diff_scope: String::new(),
+                created_at: String::new(),
+                summary: String::new(),
+                files: std::iter::once((
+                    "a.rs".into(),
+                    crate::ai::experts::ExpertFileReview {
+                        findings: vec![sample_finding("f-1")],
+                    },
+                ))
+                .collect(),
+            };
+            write_json_atomic(&Path::new(er).join("experts/security.json"), &expert).unwrap();
 
-        assert!(remove_finding_from_sidecars(er, "sec-f-1").unwrap());
+            assert!(remove_finding_from_sidecars(er, "sec-f-1").unwrap());
 
-        let review2: ErReview =
-            serde_json::from_str(&std::fs::read_to_string(format!("{er}/review.json")).unwrap())
-                .unwrap();
-        assert_eq!(review2.files["a.rs"].findings.len(), 1);
-        assert_eq!(review2.files["a.rs"].findings[0].id, "f-2");
+            let review2: ErReview = serde_json::from_str(
+                &std::fs::read_to_string(format!("{er}/review.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(review2.files["a.rs"].findings.len(), 1);
+            assert_eq!(review2.files["a.rs"].findings[0].id, "f-2");
 
-        let expert2: ExpertReview = serde_json::from_str(
-            &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(expert2.files["a.rs"].findings.is_empty());
+            let expert2: ExpertReview = serde_json::from_str(
+                &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(expert2.files["a.rs"].findings.is_empty());
+        });
     }
 
     #[test]
     fn removing_a_finding_leaves_a_malformed_professor_file_untouched() {
         let dir = tempdir().unwrap();
-        let er = dir.path().to_str().unwrap();
-        std::fs::write(format!("{er}/professor.json"), "{ not valid json").unwrap();
-        let before = std::fs::read_to_string(format!("{er}/professor.json")).unwrap();
-        write_expert_with(er, sample_finding("f-1"));
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path().to_str().unwrap();
+            std::fs::write(format!("{er}/professor.json"), "{ not valid json").unwrap();
+            let before = std::fs::read_to_string(format!("{er}/professor.json")).unwrap();
+            write_expert_with(er, sample_finding("f-1"));
 
-        assert!(remove_finding_from_sidecars(er, "sec-f-1").unwrap());
+            assert!(remove_finding_from_sidecars(er, "sec-f-1").unwrap());
 
-        assert_eq!(
-            std::fs::read_to_string(format!("{er}/professor.json")).unwrap(),
-            before,
-            "a malformed sidecar is skipped, never rewritten"
-        );
-        let expert: ExpertReview = serde_json::from_str(
-            &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(expert.files["a.rs"].findings.is_empty());
+            assert_eq!(
+                std::fs::read_to_string(format!("{er}/professor.json")).unwrap(),
+                before,
+                "a malformed sidecar is skipped, never rewritten"
+            );
+            let expert: ExpertReview = serde_json::from_str(
+                &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(expert.files["a.rs"].findings.is_empty());
+        });
     }
 
     #[test]
     fn removing_a_finding_leaves_a_newer_review_file_untouched() {
         let dir = tempdir().unwrap();
-        let er = dir.path().to_str().unwrap();
-        let newer = r#"{"version":2,"diff_hash":"h","files":{}}"#;
-        std::fs::write(format!("{er}/review.json"), newer).unwrap();
-        write_expert_with(er, sample_finding("f-1"));
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path().to_str().unwrap();
+            let newer = r#"{"version":2,"diff_hash":"h","files":{}}"#;
+            std::fs::write(format!("{er}/review.json"), newer).unwrap();
+            write_expert_with(er, sample_finding("f-1"));
 
-        assert!(remove_finding_from_sidecars(er, "sec-f-1").unwrap());
+            assert!(remove_finding_from_sidecars(er, "sec-f-1").unwrap());
 
-        assert_eq!(
-            std::fs::read_to_string(format!("{er}/review.json")).unwrap(),
-            newer,
-            "a newer file is left alone"
-        );
-        let expert: ExpertReview = serde_json::from_str(
-            &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(expert.files["a.rs"].findings.is_empty());
+            assert_eq!(
+                std::fs::read_to_string(format!("{er}/review.json")).unwrap(),
+                newer,
+                "a newer file is left alone"
+            );
+            let expert: ExpertReview = serde_json::from_str(
+                &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(expert.files["a.rs"].findings.is_empty());
+        });
     }
 
     #[test]
     fn a_held_bucket_lock_keeps_the_finding_file_unchanged() {
         let dir = tempdir().unwrap();
-        let er = dir.path().to_str().unwrap();
-        let review = ErReview {
-            version: 1,
-            diff_hash: "h".into(),
-            created_at: String::new(),
-            base_branch: String::new(),
-            head_branch: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                crate::ai::review::ErFileReview {
-                    risk: RiskLevel::Info,
-                    risk_reason: String::new(),
-                    summary: String::new(),
-                    findings: vec![sample_finding("f-1")],
-                },
-            ))
-            .collect(),
-            file_hashes: Default::default(),
-        };
-        write_json_atomic(&Path::new(er).join("review.json"), &review).unwrap();
-        let before = std::fs::read_to_string(Path::new(er).join("review.json")).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path().to_str().unwrap();
+            let review = ErReview {
+                version: 1,
+                diff_hash: "h".into(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    crate::ai::review::ErFileReview {
+                        risk: RiskLevel::Info,
+                        risk_reason: String::new(),
+                        summary: String::new(),
+                        findings: vec![sample_finding("f-1")],
+                    },
+                ))
+                .collect(),
+                file_hashes: Default::default(),
+            };
+            write_json_atomic(&Path::new(er).join("review.json"), &review).unwrap();
+            let before = std::fs::read_to_string(Path::new(er).join("review.json")).unwrap();
 
-        let store = crate::store_registry::store();
-        let scope = er_store::Scope::dir(er).unwrap();
-        let guard = store
-            .lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
-            .unwrap();
-        let result = set_finding_resolved(er, "f-1", true);
-        drop(guard);
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(er).unwrap();
+            let guard = store
+                .lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
+                .unwrap();
+            let result = set_finding_resolved(er, "f-1", true);
+            drop(guard);
 
-        assert!(result.is_err(), "a held lock must block the rewrite");
-        assert_eq!(
-            std::fs::read_to_string(Path::new(er).join("review.json")).unwrap(),
-            before
-        );
+            assert!(result.is_err(), "a held lock must block the rewrite");
+            assert_eq!(
+                std::fs::read_to_string(Path::new(er).join("review.json")).unwrap(),
+                before
+            );
+        });
     }
 
     fn write_expert_with(er: &str, finding: Finding) {
@@ -642,52 +651,58 @@ mod tests {
     #[test]
     fn resolving_a_finding_flips_status_and_keeps_the_claim() {
         let dir = tempdir().unwrap();
-        let er = dir.path().to_str().unwrap();
-        let mut finding = sample_finding("f-1");
-        finding.description = "the AI's claim".into();
-        write_expert_with(er, finding);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path().to_str().unwrap();
+            let mut finding = sample_finding("f-1");
+            finding.description = "the AI's claim".into();
+            write_expert_with(er, finding);
 
-        assert!(set_finding_resolved(er, "sec-f-1", true).unwrap());
-        let resolved = read_expert_finding(er);
-        assert!(resolved.resolved);
-        assert!(!resolved.resolved_at.is_empty());
-        assert_eq!(resolved.title, "t");
-        assert_eq!(resolved.description, "the AI's claim");
+            assert!(set_finding_resolved(er, "sec-f-1", true).unwrap());
+            let resolved = read_expert_finding(er);
+            assert!(resolved.resolved);
+            assert!(!resolved.resolved_at.is_empty());
+            assert_eq!(resolved.title, "t");
+            assert_eq!(resolved.description, "the AI's claim");
 
-        assert!(set_finding_resolved(er, "sec-f-1", false).unwrap());
-        let reopened = read_expert_finding(er);
-        assert!(!reopened.resolved);
-        assert!(reopened.resolved_at.is_empty());
+            assert!(set_finding_resolved(er, "sec-f-1", false).unwrap());
+            let reopened = read_expert_finding(er);
+            assert!(!reopened.resolved);
+            assert!(reopened.resolved_at.is_empty());
+        });
     }
 
     #[test]
     fn unresolving_clears_a_leftover_resolved_note() {
         let dir = tempdir().unwrap();
-        let er = dir.path().to_str().unwrap();
-        let mut finding = sample_finding("f-1");
-        finding.resolved = true;
-        finding.resolved_note = "null check added".into();
-        finding.resolved_at = "2026-01-01T00:00:00Z".into();
-        write_expert_with(er, finding);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path().to_str().unwrap();
+            let mut finding = sample_finding("f-1");
+            finding.resolved = true;
+            finding.resolved_note = "null check added".into();
+            finding.resolved_at = "2026-01-01T00:00:00Z".into();
+            write_expert_with(er, finding);
 
-        assert!(set_finding_resolved(er, "sec-f-1", false).unwrap());
-        let reopened = read_expert_finding(er);
-        assert!(!reopened.resolved);
-        assert!(reopened.resolved_note.is_empty());
-        assert!(reopened.resolved_at.is_empty());
+            assert!(set_finding_resolved(er, "sec-f-1", false).unwrap());
+            let reopened = read_expert_finding(er);
+            assert!(!reopened.resolved);
+            assert!(reopened.resolved_note.is_empty());
+            assert!(reopened.resolved_at.is_empty());
+        });
     }
 
     #[test]
     fn resolving_is_idempotent_and_reports_unknown_ids() {
         let dir = tempdir().unwrap();
-        let er = dir.path().to_str().unwrap();
-        let mut finding = sample_finding("f-1");
-        finding.resolved = true;
-        finding.resolved_at = "2026-01-01T00:00:00Z".into();
-        write_expert_with(er, finding);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path().to_str().unwrap();
+            let mut finding = sample_finding("f-1");
+            finding.resolved = true;
+            finding.resolved_at = "2026-01-01T00:00:00Z".into();
+            write_expert_with(er, finding);
 
-        assert!(set_finding_resolved(er, "sec-f-1", true).unwrap());
-        assert_eq!(read_expert_finding(er).resolved_at, "2026-01-01T00:00:00Z");
-        assert!(!set_finding_resolved(er, "sec-missing", true).unwrap());
+            assert!(set_finding_resolved(er, "sec-f-1", true).unwrap());
+            assert_eq!(read_expert_finding(er).resolved_at, "2026-01-01T00:00:00Z");
+            assert!(!set_finding_resolved(er, "sec-missing", true).unwrap());
+        });
     }
 }

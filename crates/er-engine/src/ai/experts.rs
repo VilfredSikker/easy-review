@@ -401,52 +401,56 @@ mod tests {
     #[test]
     fn expert_files_are_listed_sorted_and_hidden_or_foreign_files_are_skipped() {
         let dir = tempfile::TempDir::new().unwrap();
-        let experts = dir.path().join("experts");
-        std::fs::create_dir_all(&experts).unwrap();
-        for (name, hash) in [
-            ("security.json", "hash-security"),
-            ("api.json", "hash-api"),
-            (".hidden.json", "hash-hidden"),
-            ("security.prev.json", "hash-prev"),
-            ("notes.txt", "hash-text"),
-            (".security.json.tmp", "hash-temp"),
-        ] {
-            std::fs::write(
-                experts.join(name),
-                format!(r#"{{"version":1,"expert_id":"x","diff_hash":"{hash}","files":{{}}}}"#),
-            )
-            .unwrap();
-        }
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let experts = dir.path().join("experts");
+            std::fs::create_dir_all(&experts).unwrap();
+            for (name, hash) in [
+                ("security.json", "hash-security"),
+                ("api.json", "hash-api"),
+                (".hidden.json", "hash-hidden"),
+                ("security.prev.json", "hash-prev"),
+                ("notes.txt", "hash-text"),
+                (".security.json.tmp", "hash-temp"),
+            ] {
+                std::fs::write(
+                    experts.join(name),
+                    format!(r#"{{"version":1,"expert_id":"x","diff_hash":"{hash}","files":{{}}}}"#),
+                )
+                .unwrap();
+            }
 
-        let loaded = load_expert_reviews(dir.path().to_str().unwrap());
+            let loaded = load_expert_reviews(dir.path().to_str().unwrap());
 
-        let hashes: Vec<&str> = loaded
-            .iter()
-            .map(|expert| expert.diff_hash.as_str())
-            .collect();
-        assert_eq!(
-            hashes,
-            ["hash-api", "hash-security"],
-            "only expert ids load, sorted by slot"
-        );
+            let hashes: Vec<&str> = loaded
+                .iter()
+                .map(|expert| expert.diff_hash.as_str())
+                .collect();
+            assert_eq!(
+                hashes,
+                ["hash-api", "hash-security"],
+                "only expert ids load, sorted by slot"
+            );
+        });
     }
 
     #[test]
     fn expert_file_written_by_an_agent_loads() {
         let dir = tempfile::TempDir::new().unwrap();
-        let experts = dir.path().join("experts");
-        std::fs::create_dir_all(&experts).unwrap();
-        std::fs::write(
-            experts.join("security.json"),
-            r#"{"version":1,"expert_id":"security","diff_hash":"hash","summary":"lens view","files":{"a.rs":{"findings":[{"id":"1","title":"t","severity":"medium","hunk_index":0}]}}}"#,
-        )
-        .unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let experts = dir.path().join("experts");
+            std::fs::create_dir_all(&experts).unwrap();
+            std::fs::write(
+                experts.join("security.json"),
+                r#"{"version":1,"expert_id":"security","diff_hash":"hash","summary":"lens view","files":{"a.rs":{"findings":[{"id":"1","title":"t","severity":"medium","hunk_index":0}]}}}"#,
+            )
+            .unwrap();
 
-        let loaded = load_expert_reviews(dir.path().to_str().unwrap());
+            let loaded = load_expert_reviews(dir.path().to_str().unwrap());
 
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].expert_id, "security");
-        assert_eq!(loaded[0].files["a.rs"].findings.len(), 1);
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].expert_id, "security");
+            assert_eq!(loaded[0].files["a.rs"].findings.len(), 1);
+        });
     }
 
     #[test]

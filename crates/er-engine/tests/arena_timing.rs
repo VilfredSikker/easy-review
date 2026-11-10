@@ -184,7 +184,9 @@ fn run_arena(label: &str, reviewers: usize, rounds: Option<u8>, tmp: &Path) -> D
 /// still serialise its three reviewers.
 #[test]
 fn arena_wall_clock_tracks_round_count_not_the_cap() {
-    // Must be set before anything calls into agent_timing.
+    // Process-wide on purpose: provider runs read the flag from their own
+    // threads and `agent_timing::enabled` caches it once per process. This
+    // binary holds one test, so nothing else reads it.
     std::env::set_var("ER_AGENT_TIMING", "1");
     let tmp = tempfile::tempdir().expect("tempdir");
 

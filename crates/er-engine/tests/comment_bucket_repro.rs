@@ -12,14 +12,9 @@
 )]
 
 use std::process::Command;
-use std::sync::Mutex;
 
 use er_engine::ai::CommentType;
 use er_engine::app::{App, CommentTarget};
-
-/// These tests mutate the process-global `ER_STORAGE_ROOT` env var, so they must
-/// not run concurrently with each other.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn git(dir: &std::path::Path, args: &[&str]) {
     let status = Command::new("git")
@@ -34,134 +29,124 @@ fn git(dir: &std::path::Path, args: &[&str]) {
 
 #[test]
 fn local_comments_survive_late_pr_number_assignment() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let base = std::env::temp_dir().join(format!(
-        "er-bucket-repro-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let repo = base.join("repo");
-    let storage = base.join("storage");
+    let base = tempfile::tempdir().unwrap();
+    let repo = base.path().join("repo");
+    let storage = base.path().join("storage");
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(&storage).unwrap();
 
-    std::env::set_var("ER_STORAGE_ROOT", &storage);
+    er_engine::storage::with_test_storage_root(&storage, || {
+        // Build a repo with a `main` base and a `feature` branch carrying one change.
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/widgets.git",
+            ],
+        );
+        std::fs::write(repo.join("f.txt"), "line1\nline2\nline3\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "base"]);
+        git(&repo, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.join("f.txt"), "line1\nCHANGED\nline3\nline4\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "change"]);
 
-    // Build a repo with a `main` base and a `feature` branch carrying one change.
-    git(&repo, &["init", "-q", "-b", "main"]);
-    git(&repo, &["config", "user.email", "t@example.com"]);
-    git(&repo, &["config", "user.name", "Test"]);
-    git(
-        &repo,
-        &[
-            "remote",
-            "add",
-            "origin",
-            "https://github.com/acme/widgets.git",
-        ],
-    );
-    std::fs::write(repo.join("f.txt"), "line1\nline2\nline3\n").unwrap();
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-q", "-m", "base"]);
-    git(&repo, &["checkout", "-q", "-b", "feature"]);
-    std::fs::write(repo.join("f.txt"), "line1\nCHANGED\nline3\nline4\n").unwrap();
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-q", "-m", "change"]);
+        let repo_str = repo.to_string_lossy().to_string();
+        let mut app = App::new_with_args(&[repo_str], er_engine::ports::Ports::cli()).expect("app");
 
-    let repo_str = repo.to_string_lossy().to_string();
-    let mut app = App::new_with_args(&[repo_str], er_engine::ports::Ports::cli()).expect("app");
+        // Sanity: Branch mode, no PR yet.
+        assert_eq!(app.tab().pr_number, None);
+        let file = app.tab().files[0].path.clone();
 
-    // Sanity: Branch mode, no PR yet.
-    assert_eq!(app.tab().pr_number, None);
-    let file = app.tab().files[0].path.clone();
+        // Add two comments BEFORE the PR number is known (as happens when a user
+        // comments on a freshly opened local branch before toggling PR Diff).
+        app.submit_comment_text(
+            CommentTarget {
+                file: file.clone(),
+                hunk_idx: 0,
+                line_num: Some(2),
+                line_num_end: None,
+            },
+            "comment one".to_string(),
+            CommentType::GitHubComment,
+            None,
+            None,
+        )
+        .unwrap();
+        app.submit_comment_text(
+            CommentTarget {
+                file: file.clone(),
+                hunk_idx: 0,
+                line_num: Some(2),
+                line_num_end: None,
+            },
+            "comment two".to_string(),
+            CommentType::GitHubComment,
+            None,
+            None,
+        )
+        .unwrap();
 
-    // Add two comments BEFORE the PR number is known (as happens when a user
-    // comments on a freshly opened local branch before toggling PR Diff).
-    app.submit_comment_text(
-        CommentTarget {
-            file: file.clone(),
-            hunk_idx: 0,
-            line_num: Some(2),
-            line_num_end: None,
-        },
-        "comment one".to_string(),
-        CommentType::GitHubComment,
-        None,
-        None,
-    )
-    .unwrap();
-    app.submit_comment_text(
-        CommentTarget {
-            file: file.clone(),
-            hunk_idx: 0,
-            line_num: Some(2),
-            line_num_end: None,
-        },
-        "comment two".to_string(),
-        CommentType::GitHubComment,
-        None,
-        None,
-    )
-    .unwrap();
+        let count_before = app
+            .tab()
+            .ai
+            .github_comments
+            .as_ref()
+            .map(|gc| gc.comments.len())
+            .unwrap_or(0);
+        assert_eq!(count_before, 2, "two local comments should be visible");
 
-    let count_before = app
-        .tab()
-        .ai
-        .github_comments
-        .as_ref()
-        .map(|gc| gc.comments.len())
-        .unwrap_or(0);
-    assert_eq!(count_before, 2, "two local comments should be visible");
+        // Now the PR number becomes known (desktop set_mode / PR detection), and the
+        // AI state reloads.
+        app.tab_mut().pr_number = Some(7);
+        app.tab_mut().reload_ai_state();
 
-    // Now the PR number becomes known (desktop set_mode / PR detection), and the
-    // AI state reloads.
-    app.tab_mut().pr_number = Some(7);
-    app.tab_mut().reload_ai_state();
+        let after: Vec<String> = app
+            .tab()
+            .ai
+            .github_comments
+            .as_ref()
+            .map(|gc| gc.comments.iter().map(|c| c.comment.clone()).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            after.len(),
+            2,
+            "local comments must survive late pr_number assignment (found {after:?})"
+        );
+        assert!(after.iter().any(|c| c == "comment one"));
+        assert!(after.iter().any(|c| c == "comment two"));
 
-    let after: Vec<String> = app
-        .tab()
-        .ai
-        .github_comments
-        .as_ref()
-        .map(|gc| gc.comments.iter().map(|c| c.comment.clone()).collect())
-        .unwrap_or_default();
-    assert_eq!(
-        after.len(),
-        2,
-        "local comments must survive late pr_number assignment (found {after:?})"
-    );
-    assert!(after.iter().any(|c| c == "comment one"));
-    assert!(after.iter().any(|c| c == "comment two"));
+        // A comment added after the flip accumulates with the migrated ones.
+        app.submit_comment_text(
+            CommentTarget {
+                file,
+                hunk_idx: 0,
+                line_num: Some(2),
+                line_num_end: None,
+            },
+            "comment three".to_string(),
+            CommentType::GitHubComment,
+            None,
+            None,
+        )
+        .unwrap();
+        app.tab_mut().reload_ai_state();
+        let total = app
+            .tab()
+            .ai
+            .github_comments
+            .as_ref()
+            .map(|gc| gc.comments.len())
+            .unwrap_or(0);
 
-    // A comment added after the flip accumulates with the migrated ones.
-    app.submit_comment_text(
-        CommentTarget {
-            file,
-            hunk_idx: 0,
-            line_num: Some(2),
-            line_num_end: None,
-        },
-        "comment three".to_string(),
-        CommentType::GitHubComment,
-        None,
-        None,
-    )
-    .unwrap();
-    app.tab_mut().reload_ai_state();
-    let total = app
-        .tab()
-        .ai
-        .github_comments
-        .as_ref()
-        .map(|gc| gc.comments.len())
-        .unwrap_or(0);
-
-    std::fs::remove_dir_all(&base).ok();
-
-    assert_eq!(total, 3, "all three local comments should be visible");
+        assert_eq!(total, 3, "all three local comments should be visible");
+    });
 }
 
 /// A freshly submitted comment must be anchored to the active view's `diff_hash`
@@ -172,93 +157,84 @@ fn local_comments_survive_late_pr_number_assignment() {
 /// "newly added comments don't show up in the comments panel".
 #[test]
 fn fresh_comment_is_anchored_to_diff_hash_and_survives_relocate() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let base = std::env::temp_dir().join(format!(
-        "er-fresh-anchor-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let repo = base.join("repo");
-    let storage = base.join("storage");
+    let base = tempfile::tempdir().unwrap();
+    let repo = base.path().join("repo");
+    let storage = base.path().join("storage");
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(&storage).unwrap();
-    std::env::set_var("ER_STORAGE_ROOT", &storage);
-
-    git(&repo, &["init", "-q", "-b", "main"]);
-    git(&repo, &["config", "user.email", "t@example.com"]);
-    git(&repo, &["config", "user.name", "Test"]);
-    git(
-        &repo,
-        &[
-            "remote",
-            "add",
-            "origin",
-            "https://github.com/acme/gadgets.git",
-        ],
-    );
-    std::fs::write(repo.join("f.txt"), "line1\nline2\nline3\n").unwrap();
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-q", "-m", "base"]);
-    git(&repo, &["checkout", "-q", "-b", "feature"]);
-    std::fs::write(repo.join("f.txt"), "line1\nCHANGED\nline3\nline4\n").unwrap();
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-q", "-m", "change"]);
-
-    let repo_str = repo.to_string_lossy().to_string();
-    let mut app = App::new_with_args(&[repo_str], er_engine::ports::Ports::cli()).expect("app");
-    let file = app.tab().files[0].path.clone();
-
-    // Simulate a PR-diff-style view where the active diff hash differs from the
-    // branch diff hash (the file/anchor still belongs to the active diff).
-    app.tab_mut().branch_diff_hash = "branch-hash-distinct".to_string();
-    let active_diff_hash = app.tab().diff_hash.clone();
-    assert_ne!(active_diff_hash, app.tab().branch_diff_hash);
-
-    app.submit_comment_text(
-        CommentTarget {
-            file,
-            hunk_idx: 0,
-            line_num: Some(2),
-            line_num_end: None,
-        },
-        "fresh comment".to_string(),
-        CommentType::GitHubComment,
-        None,
-        None,
-    )
-    .unwrap();
-
-    // The comment must be stamped with the active diff hash so relocate skips it.
-    {
-        let gc = app.tab().ai.github_comments.as_ref().expect("comments");
-        assert_eq!(gc.comments.len(), 1);
-        assert_eq!(
-            gc.comments[0].relocated_at_hash, active_diff_hash,
-            "fresh comment must be anchored to the active diff_hash"
+    er_engine::storage::with_test_storage_root(&storage, || {
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/gadgets.git",
+            ],
         );
-        assert!(!gc.comments[0].stale, "fresh comment must not be stale");
-    }
+        std::fs::write(repo.join("f.txt"), "line1\nline2\nline3\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "base"]);
+        git(&repo, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.join("f.txt"), "line1\nCHANGED\nline3\nline4\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "change"]);
 
-    // A relocate pass (runs on every refresh) must leave the fresh comment
-    // untouched — not re-anchor it and risk a stale verdict.
-    app.tab_mut().relocate_all_comments();
-    let stale_after = app
-        .tab()
-        .ai
-        .github_comments
-        .as_ref()
-        .and_then(|gc| gc.comments.first())
-        .map(|c| c.stale)
-        .unwrap_or(true);
+        let repo_str = repo.to_string_lossy().to_string();
+        let mut app = App::new_with_args(&[repo_str], er_engine::ports::Ports::cli()).expect("app");
+        let file = app.tab().files[0].path.clone();
 
-    std::fs::remove_dir_all(&base).ok();
-    assert!(
-        !stale_after,
-        "fresh comment must stay non-stale after relocate"
-    );
+        // Simulate a PR-diff-style view where the active diff hash differs from the
+        // branch diff hash (the file/anchor still belongs to the active diff).
+        app.tab_mut().branch_diff_hash = "branch-hash-distinct".to_string();
+        let active_diff_hash = app.tab().diff_hash.clone();
+        assert_ne!(active_diff_hash, app.tab().branch_diff_hash);
+
+        app.submit_comment_text(
+            CommentTarget {
+                file,
+                hunk_idx: 0,
+                line_num: Some(2),
+                line_num_end: None,
+            },
+            "fresh comment".to_string(),
+            CommentType::GitHubComment,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // The comment must be stamped with the active diff hash so relocate skips it.
+        {
+            let gc = app.tab().ai.github_comments.as_ref().expect("comments");
+            assert_eq!(gc.comments.len(), 1);
+            assert_eq!(
+                gc.comments[0].relocated_at_hash, active_diff_hash,
+                "fresh comment must be anchored to the active diff_hash"
+            );
+            assert!(!gc.comments[0].stale, "fresh comment must not be stale");
+        }
+
+        // A relocate pass (runs on every refresh) must leave the fresh comment
+        // untouched — not re-anchor it and risk a stale verdict.
+        app.tab_mut().relocate_all_comments();
+        let stale_after = app
+            .tab()
+            .ai
+            .github_comments
+            .as_ref()
+            .and_then(|gc| gc.comments.first())
+            .map(|c| c.stale)
+            .unwrap_or(true);
+
+        assert!(
+            !stale_after,
+            "fresh comment must stay non-stale after relocate"
+        );
+    });
 }
 
 /// Adding a local (unpushed) GitHub comment must not call `reload_ai_state`,
@@ -269,116 +245,106 @@ fn adding_local_github_comment_does_not_reload_all_ai_sidecars() {
     use er_engine::ai::ErReview;
     use std::collections::HashMap;
 
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let base = std::env::temp_dir().join(format!(
-        "er-comment-no-reload-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let repo = base.join("repo");
-    let storage = base.join("storage");
+    let base = tempfile::tempdir().unwrap();
+    let repo = base.path().join("repo");
+    let storage = base.path().join("storage");
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(&storage).unwrap();
 
-    std::env::set_var("ER_STORAGE_ROOT", &storage);
+    er_engine::storage::with_test_storage_root(&storage, || {
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "line1\nline2\nline3\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "base"]);
+        git(&repo, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.join("f.txt"), "line1\nCHANGED\nline3\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "change"]);
 
-    git(&repo, &["init", "-q", "-b", "main"]);
-    git(&repo, &["config", "user.email", "t@example.com"]);
-    git(&repo, &["config", "user.name", "Test"]);
-    std::fs::write(repo.join("f.txt"), "line1\nline2\nline3\n").unwrap();
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-q", "-m", "base"]);
-    git(&repo, &["checkout", "-q", "-b", "feature"]);
-    std::fs::write(repo.join("f.txt"), "line1\nCHANGED\nline3\n").unwrap();
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-q", "-m", "change"]);
+        let mut app = App::new_with_args(
+            &[repo.to_string_lossy().to_string()],
+            er_engine::ports::Ports::cli(),
+        )
+        .expect("app");
+        let file = app.tab().files[0].path.clone();
 
-    let mut app = App::new_with_args(
-        &[repo.to_string_lossy().to_string()],
-        er_engine::ports::Ports::cli(),
-    )
-    .expect("app");
-    let file = app.tab().files[0].path.clone();
+        // Plant a review that exists only in memory (no review.json on disk).
+        app.tab_mut().ai.review = Some(ErReview {
+            version: 1,
+            diff_hash: "memory-only".to_string(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::new(),
+            file_hashes: HashMap::new(),
+        });
 
-    // Plant a review that exists only in memory (no review.json on disk).
-    app.tab_mut().ai.review = Some(ErReview {
-        version: 1,
-        diff_hash: "memory-only".to_string(),
-        created_at: String::new(),
-        base_branch: String::new(),
-        head_branch: String::new(),
-        files: HashMap::new(),
-        file_hashes: HashMap::new(),
+        app.submit_comment_text(
+            CommentTarget {
+                file,
+                hunk_idx: 0,
+                line_num: Some(2),
+                line_num_end: None,
+            },
+            "local only".to_string(),
+            CommentType::GitHubComment,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let review_hash = app
+            .tab()
+            .ai
+            .review
+            .as_ref()
+            .map(|r| r.diff_hash.as_str())
+            .unwrap_or("")
+            .to_string();
+        let comment_count = app
+            .tab()
+            .ai
+            .github_comments
+            .as_ref()
+            .map(|gc| gc.comments.len())
+            .unwrap_or(0);
+        let source = app
+            .tab()
+            .ai
+            .github_comments
+            .as_ref()
+            .and_then(|gc| gc.comments.last())
+            .map(|c| c.source.clone())
+            .unwrap_or_default();
+
+        assert_eq!(
+            review_hash, "memory-only",
+            "adding a local GitHub comment must not reload_ai_state (would drop in-memory review)"
+        );
+        assert_eq!(comment_count, 1, "the new local comment must be visible");
+        assert_eq!(
+            source, "local",
+            "a submit_comment_text comment is recorded locally"
+        );
+
+        let reloaded = app.tab_mut().check_ai_files_changed();
+        assert!(
+            !reloaded,
+            "the next poll must not treat our own sidecar write as an AI reload"
+        );
+        let review_hash_after_poll = app
+            .tab()
+            .ai
+            .review
+            .as_ref()
+            .map(|r| r.diff_hash.as_str())
+            .unwrap_or("")
+            .to_string();
+        assert_eq!(
+            review_hash_after_poll, "memory-only",
+            "in-memory review must survive the poll after a local comment write"
+        );
     });
-
-    app.submit_comment_text(
-        CommentTarget {
-            file,
-            hunk_idx: 0,
-            line_num: Some(2),
-            line_num_end: None,
-        },
-        "local only".to_string(),
-        CommentType::GitHubComment,
-        None,
-        None,
-    )
-    .unwrap();
-
-    let review_hash = app
-        .tab()
-        .ai
-        .review
-        .as_ref()
-        .map(|r| r.diff_hash.as_str())
-        .unwrap_or("")
-        .to_string();
-    let comment_count = app
-        .tab()
-        .ai
-        .github_comments
-        .as_ref()
-        .map(|gc| gc.comments.len())
-        .unwrap_or(0);
-    let source = app
-        .tab()
-        .ai
-        .github_comments
-        .as_ref()
-        .and_then(|gc| gc.comments.last())
-        .map(|c| c.source.clone())
-        .unwrap_or_default();
-
-    assert_eq!(
-        review_hash, "memory-only",
-        "adding a local GitHub comment must not reload_ai_state (would drop in-memory review)"
-    );
-    assert_eq!(comment_count, 1, "the new local comment must be visible");
-    assert_eq!(
-        source, "local",
-        "a submit_comment_text comment is recorded locally"
-    );
-
-    let reloaded = app.tab_mut().check_ai_files_changed();
-    assert!(
-        !reloaded,
-        "the next poll must not treat our own sidecar write as an AI reload"
-    );
-    let review_hash_after_poll = app
-        .tab()
-        .ai
-        .review
-        .as_ref()
-        .map(|r| r.diff_hash.as_str())
-        .unwrap_or("")
-        .to_string();
-    assert_eq!(
-        review_hash_after_poll, "memory-only",
-        "in-memory review must survive the poll after a local comment write"
-    );
-
-    std::fs::remove_dir_all(&base).ok();
 }

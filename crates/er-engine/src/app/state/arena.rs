@@ -754,115 +754,119 @@ mod review_flow_arena_inputs_tests {
         let mut app = configured_app();
         app.config.ai_hub.default_effort = Some("low".into());
         let tmp = tempdir().unwrap();
-        let _env = fake_arena(&app);
-        let bucket = tmp.path().join("captured-bucket");
-        std::fs::create_dir_all(&bucket).unwrap();
-        std::fs::write(
-            bucket.join("review.json"),
-            serde_json::to_vec(&json!({
-                "version": 1, "diff_hash": "flow-hash",
-                "files": { "src/a.rs": { "risk": "medium", "findings": [{
-                    "id": "general-1", "severity": "medium", "title": "general claim",
-                    "description": "body", "line_start": 5
-                }] }}
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        let lease = app
-            .acquire_review_flow_lease(bucket.to_str().unwrap())
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let _env = fake_arena(&app);
+            let bucket = tmp.path().join("captured-bucket");
+            std::fs::create_dir_all(&bucket).unwrap();
+            std::fs::write(
+                bucket.join("review.json"),
+                serde_json::to_vec(&json!({
+                    "version": 1, "diff_hash": "flow-hash",
+                    "files": { "src/a.rs": { "risk": "medium", "findings": [{
+                        "id": "general-1", "severity": "medium", "title": "general claim",
+                        "description": "body", "line_start": 5
+                    }] }}
+                }))
+                .unwrap(),
+            )
             .unwrap();
-        app.tabs.push(TabState::new_for_test(Vec::new()));
-        app.active_tab = 1;
-        let params = SeededStartParams {
-            er_dir: bucket.to_string_lossy().into_owned(),
-            branch_ref: "captured/head".into(),
-            base_branch: "captured/base".into(),
-            scope: ArenaScope::Branch,
-            diff_hash: "flow-hash".into(),
-            review_hash: String::new(),
-            raw_diff: "captured raw diff".into(),
-            arbiter: Some(reviewer()),
-            include_general: true,
-            source_lenses: Some(vec!["general".into()]),
-            lens_providers: std::collections::BTreeMap::from([("general".into(), reviewer())]),
-            reviewed_ref_note: None,
-        };
-        let mut captured_config = prepared_config();
-        captured_config.ai_hub.default_effort = Some("high".into());
-        let run_id = app
-            .arena_start_seeded_for("/captured/repo".into(), captured_config, params, &lease)
-            .unwrap()
-            .unwrap();
-        let run = load_run(&ArenaPaths::for_run(&bucket, &run_id)).unwrap();
-        assert_eq!(run.branch_ref, "captured/head");
-        assert_eq!(run.findings.len(), 1);
-        assert_eq!(run.findings[0].raised_by, vec!["general"]);
-        assert_eq!(
-            run.config.reviewers[0].agent_kind.as_deref(),
-            Some("general")
-        );
-        assert_eq!(run.config.effort.as_deref(), Some("high"));
+            let lease = app
+                .acquire_review_flow_lease(bucket.to_str().unwrap())
+                .unwrap();
+            app.tabs.push(TabState::new_for_test(Vec::new()));
+            app.active_tab = 1;
+            let params = SeededStartParams {
+                er_dir: bucket.to_string_lossy().into_owned(),
+                branch_ref: "captured/head".into(),
+                base_branch: "captured/base".into(),
+                scope: ArenaScope::Branch,
+                diff_hash: "flow-hash".into(),
+                review_hash: String::new(),
+                raw_diff: "captured raw diff".into(),
+                arbiter: Some(reviewer()),
+                include_general: true,
+                source_lenses: Some(vec!["general".into()]),
+                lens_providers: std::collections::BTreeMap::from([("general".into(), reviewer())]),
+                reviewed_ref_note: None,
+            };
+            let mut captured_config = prepared_config();
+            captured_config.ai_hub.default_effort = Some("high".into());
+            let run_id = app
+                .arena_start_seeded_for("/captured/repo".into(), captured_config, params, &lease)
+                .unwrap()
+                .unwrap();
+            let run = load_run(&ArenaPaths::for_run(&bucket, &run_id)).unwrap();
+            assert_eq!(run.branch_ref, "captured/head");
+            assert_eq!(run.findings.len(), 1);
+            assert_eq!(run.findings[0].raised_by, vec!["general"]);
+            assert_eq!(
+                run.config.reviewers[0].agent_kind.as_deref(),
+                Some("general")
+            );
+            assert_eq!(run.config.effort.as_deref(), Some("high"));
+        });
     }
 
     #[test]
     fn review_flow_seeded_legacy_wrapper_keeps_false_none_defaults() {
         let tmp = tempdir().unwrap();
-        let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        let run_git = |args: &[&str]| {
-            let output = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "git command failed: {:?}: {}",
-                args,
-                String::from_utf8_lossy(&output.stderr)
-            );
-            output
-        };
-        run_git(&["init", "-q"]);
-        run_git(&["config", "user.name", "Test"]);
-        run_git(&["config", "user.email", "test@example.invalid"]);
-        std::fs::write(repo.join("file.txt"), "before\n").unwrap();
-        run_git(&["add", "file.txt"]);
-        run_git(&["-c", "commit.gpgsign=false", "commit", "-qm", "base"]);
-        std::fs::write(repo.join("file.txt"), "after\n").unwrap();
-        let raw_diff = String::from_utf8(run_git(&["diff", "--binary"]).stdout).unwrap();
-        let current_branch = String::from_utf8(run_git(&["branch", "--show-current"]).stdout)
-            .unwrap()
-            .trim()
-            .to_string();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let repo = tmp.path().join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            let run_git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "git command failed: {:?}: {}",
+                    args,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                output
+            };
+            run_git(&["init", "-q"]);
+            run_git(&["config", "user.name", "Test"]);
+            run_git(&["config", "user.email", "test@example.invalid"]);
+            std::fs::write(repo.join("file.txt"), "before\n").unwrap();
+            run_git(&["add", "file.txt"]);
+            run_git(&["-c", "commit.gpgsign=false", "commit", "-qm", "base"]);
+            std::fs::write(repo.join("file.txt"), "after\n").unwrap();
+            let raw_diff = String::from_utf8(run_git(&["diff", "--binary"]).stdout).unwrap();
+            let current_branch = String::from_utf8(run_git(&["branch", "--show-current"]).stdout)
+                .unwrap()
+                .trim()
+                .to_string();
 
-        let bucket = tmp.path().join("active");
-        std::fs::create_dir_all(&bucket).unwrap();
-        let mut app = configured_app();
-        app.tab_mut().repo_root = repo.to_string_lossy().into_owned();
-        app.tab_mut().current_branch = current_branch;
-        app.tab_mut().local_branch_checkout_root = Some(repo.to_string_lossy().into_owned());
-        app.tab_mut().set_raw_diff_for_test(&raw_diff);
-        app.tab_mut().er_root = crate::paths::ErRoot::Managed {
-            agent_dir: bucket.to_string_lossy().into_owned(),
-            session_dir: bucket.to_string_lossy().into_owned(),
-        };
-        let review = json!({
-            "version": 1,
-            "diff_hash": crate::ai::compute_diff_hash(&raw_diff),
-            "files": { "file.txt": { "risk": "medium", "findings": [{
-                "id": "general-1", "severity": "medium", "title": "general claim",
-                "description": "body", "line_start": 1
-            }] }}
+            let bucket = tmp.path().join("active");
+            std::fs::create_dir_all(&bucket).unwrap();
+            let mut app = configured_app();
+            app.tab_mut().repo_root = repo.to_string_lossy().into_owned();
+            app.tab_mut().current_branch = current_branch;
+            app.tab_mut().local_branch_checkout_root = Some(repo.to_string_lossy().into_owned());
+            app.tab_mut().set_raw_diff_for_test(&raw_diff);
+            app.tab_mut().er_root = crate::paths::ErRoot::Managed {
+                agent_dir: bucket.to_string_lossy().into_owned(),
+                session_dir: bucket.to_string_lossy().into_owned(),
+            };
+            let review = json!({
+                "version": 1,
+                "diff_hash": crate::ai::compute_diff_hash(&raw_diff),
+                "files": { "file.txt": { "risk": "medium", "findings": [{
+                    "id": "general-1", "severity": "medium", "title": "general claim",
+                    "description": "body", "line_start": 1
+                }] }}
+            });
+            std::fs::write(
+                bucket.join("review.json"),
+                serde_json::to_vec(&review).unwrap(),
+            )
+            .unwrap();
+            assert!(app.arena_start_seeded().unwrap().is_none());
         });
-        std::fs::write(
-            bucket.join("review.json"),
-            serde_json::to_vec(&review).unwrap(),
-        )
-        .unwrap();
-        assert!(app.arena_start_seeded().unwrap().is_none());
     }
 
     #[test]
@@ -989,31 +993,33 @@ mod tests {
     #[test]
     fn raw_diff_for_arena_uses_branch_view_not_head() {
         let dir = init_repo_with_branches();
-        let root = dir.path().to_string_lossy().into_owned();
-        let mut tab = TabState::new_with_base_unloaded(
-            root.clone(),
-            "main".into(),
-            crate::ports::Ports::cli(),
-        )
-        .unwrap();
-        tab.local_branch_view = Some("feature".into());
-
-        let naive = crate::ports::Ports::cli()
-            .git
-            .diff_raw("branch", "main", &root, None)
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let root = dir.path().to_string_lossy().into_owned();
+            let mut tab = TabState::new_with_base_unloaded(
+                root.clone(),
+                "main".into(),
+                crate::ports::Ports::cli(),
+            )
             .unwrap();
-        assert!(
-            naive.trim().is_empty(),
-            "HEAD on main should not show feature vs main"
-        );
+            tab.local_branch_view = Some("feature".into());
 
-        let arena = tab.raw_diff_for_arena(ArenaScope::Branch, None).unwrap();
-        let review = tab.raw_diff_for_review("branch").unwrap();
-        assert_eq!(arena, review);
-        assert!(
-            arena.contains("feature"),
-            "arena should use branch-view diff"
-        );
+            let naive = crate::ports::Ports::cli()
+                .git
+                .diff_raw("branch", "main", &root, None)
+                .unwrap();
+            assert!(
+                naive.trim().is_empty(),
+                "HEAD on main should not show feature vs main"
+            );
+
+            let arena = tab.raw_diff_for_arena(ArenaScope::Branch, None).unwrap();
+            let review = tab.raw_diff_for_review("branch").unwrap();
+            assert_eq!(arena, review);
+            assert!(
+                arena.contains("feature"),
+                "arena should use branch-view diff"
+            );
+        });
     }
 
     // ── Tab-independent run resolution (background runs) ──────────────────
@@ -1309,22 +1315,25 @@ mod tests {
     fn arena_accept_findings_resolves_nonactive_tab() {
         let ta = tempfile::tempdir().unwrap();
         let tb = tempfile::tempdir().unwrap();
-        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
-        let er_b = app.tabs[1].er_dir();
-        let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-acc");
-        crate::arena::save_run(&paths, &sample_run("arena-acc")).unwrap();
+        crate::storage::with_test_storage_root(tb.path(), || {
+            let mut app =
+                app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+            let er_b = app.tabs[1].er_dir();
+            let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-acc");
+            crate::arena::save_run(&paths, &sample_run("arena-acc")).unwrap();
 
-        // Active tab is A; the import must write review.json under B's er_dir.
-        app.arena_accept_findings("arena-acc", None).unwrap();
-        assert!(
-            Path::new(&er_b).join("review.json").is_file(),
-            "accept must import into the run's own er_dir, not the active tab's"
-        );
-        assert!(
-            !Path::new(&app.tabs[0].er_dir())
-                .join("review.json")
-                .is_file(),
-            "active tab A must be untouched by accepting a run that lives on B"
-        );
+            // Active tab is A; the import must write review.json under B's er_dir.
+            app.arena_accept_findings("arena-acc", None).unwrap();
+            assert!(
+                Path::new(&er_b).join("review.json").is_file(),
+                "accept must import into the run's own er_dir, not the active tab's"
+            );
+            assert!(
+                !Path::new(&app.tabs[0].er_dir())
+                    .join("review.json")
+                    .is_file(),
+                "active tab A must be untouched by accepting a run that lives on B"
+            );
+        });
     }
 }

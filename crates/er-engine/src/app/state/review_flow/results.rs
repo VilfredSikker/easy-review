@@ -674,60 +674,74 @@ mod tests {
     #[test]
     fn recovery_noninitial_tab_bucket_unblocks_guarded_acceptance() {
         let mut fixture = fixture();
-        let paths = historical_run(&fixture, "interrupted", RunStatus::Running { round: 1 });
-        let captured = fixture.app.tabs.remove(0);
-        fixture
-            .app
-            .tabs
-            .push(crate::app::TabState::new_for_test(Vec::new()));
-        fixture.app.reconcile_arena_runs();
-        // Startup visited the other bucket. Enter the captured target later.
-        fixture.app.tabs.push(captured);
-        fixture.app.select_tab(1);
-        assert!(matches!(
-            load_run(&paths).unwrap().status,
-            RunStatus::Failed
-        ));
-        assert_eq!(
+        let storage = fixture.repo.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let paths = historical_run(&fixture, "interrupted", RunStatus::Running { round: 1 });
+            let captured = fixture.app.tabs.remove(0);
             fixture
                 .app
-                .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
-                .unwrap(),
-            1
-        );
-        assert!(matches!(
-            load_run(&paths).unwrap().status,
-            RunStatus::Failed
-        ));
+                .tabs
+                .push(crate::app::TabState::new_for_test(Vec::new()));
+            fixture.app.reconcile_arena_runs();
+            // Startup visited the other bucket. Enter the captured target later.
+            fixture.app.tabs.push(captured);
+            fixture.app.select_tab(1);
+            assert!(matches!(
+                load_run(&paths).unwrap().status,
+                RunStatus::Failed
+            ));
+            assert_eq!(
+                fixture
+                    .app
+                    .accept_review_flow_findings(
+                        &fixture.er_dir,
+                        &fixture.run_id,
+                        vec!["kept".into()]
+                    )
+                    .unwrap(),
+                1
+            );
+            assert!(matches!(
+                load_run(&paths).unwrap().status,
+                RunStatus::Failed
+            ));
+        });
     }
 
     #[test]
     fn recovery_noninitial_mode_bucket_history_unblocks_guarded_acceptance() {
         let mut fixture = fixture();
-        let paths = historical_run(&fixture, "interrupted", RunStatus::Queued);
-        let captured_root = fixture.app.tab().er_root.clone();
-        fixture.app.tab_mut().mode = DiffMode::Staged;
-        fixture.app.tab_mut().er_root = ErRoot::managed(format!(
-            "{}/.er",
-            fixture.repo.path().join("other-view").to_string_lossy()
-        ));
-        fixture.app.reconcile_arena_runs();
-        fixture.app.tab_mut().mode = DiffMode::Branch;
-        fixture.app.tab_mut().er_root = captured_root;
-        let before = std::fs::read(paths.run_json()).unwrap();
-        fixture.app.arena_list_summaries(None).unwrap();
-        assert_eq!(std::fs::read(paths.run_json()).unwrap(), before);
-        assert_eq!(
-            fixture
-                .app
-                .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
-                .unwrap(),
-            1
-        );
-        assert!(matches!(
-            load_run(&paths).unwrap().status,
-            RunStatus::Failed
-        ));
+        let storage = fixture.repo.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let paths = historical_run(&fixture, "interrupted", RunStatus::Queued);
+            let captured_root = fixture.app.tab().er_root.clone();
+            fixture.app.tab_mut().mode = DiffMode::Staged;
+            fixture.app.tab_mut().er_root = ErRoot::managed(format!(
+                "{}/.er",
+                fixture.repo.path().join("other-view").to_string_lossy()
+            ));
+            fixture.app.reconcile_arena_runs();
+            fixture.app.tab_mut().mode = DiffMode::Branch;
+            fixture.app.tab_mut().er_root = captured_root;
+            let before = std::fs::read(paths.run_json()).unwrap();
+            fixture.app.arena_list_summaries(None).unwrap();
+            assert_eq!(std::fs::read(paths.run_json()).unwrap(), before);
+            assert_eq!(
+                fixture
+                    .app
+                    .accept_review_flow_findings(
+                        &fixture.er_dir,
+                        &fixture.run_id,
+                        vec!["kept".into()]
+                    )
+                    .unwrap(),
+                1
+            );
+            assert!(matches!(
+                load_run(&paths).unwrap().status,
+                RunStatus::Failed
+            ));
+        });
     }
 
     #[test]
@@ -756,27 +770,30 @@ mod tests {
     fn recovery_incomplete_historical_manifests_allow_guarded_acceptance() {
         for malformed in [false, true] {
             let mut fixture = fixture();
-            let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), "orphan");
-            paths.ensure_dirs().unwrap();
-            std::fs::write(paths.diff_patch(), "recoverable input").unwrap();
-            if malformed {
-                std::fs::write(paths.run_json(), "{broken").unwrap();
-            }
-            assert_eq!(
-                fixture
-                    .app
-                    .accept_review_flow_findings(
-                        &fixture.er_dir,
-                        &fixture.run_id,
-                        vec!["kept".into()]
-                    )
-                    .unwrap(),
-                1
-            );
-            assert_eq!(
-                std::fs::read_to_string(paths.diff_patch()).unwrap(),
-                "recoverable input"
-            );
+            let storage = fixture.repo.path().to_path_buf();
+            crate::storage::with_test_storage_root(&storage, || {
+                let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), "orphan");
+                paths.ensure_dirs().unwrap();
+                std::fs::write(paths.diff_patch(), "recoverable input").unwrap();
+                if malformed {
+                    std::fs::write(paths.run_json(), "{broken").unwrap();
+                }
+                assert_eq!(
+                    fixture
+                        .app
+                        .accept_review_flow_findings(
+                            &fixture.er_dir,
+                            &fixture.run_id,
+                            vec!["kept".into()]
+                        )
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    std::fs::read_to_string(paths.diff_patch()).unwrap(),
+                    "recoverable input"
+                );
+            });
         }
     }
 
@@ -1005,59 +1022,62 @@ mod tests {
     #[test]
     fn acceptance_supersedes_old_overlay_but_allows_later_verification() {
         let mut fixture = fixture();
-        seed_old_overlay(&fixture);
-        fixture
-            .app
-            .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
-            .unwrap();
-        let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
-        let run = load_run(&paths).unwrap();
-        let state = crate::ai::load_ai_state(&fixture.er_dir, &run.diff_hash, None);
-        let review = state.review.unwrap();
-        let rows = &review.files["file.txt"].findings;
-        assert_eq!(
-            crate::ai::project_visible_findings(
-                rows.iter()
-                    .filter(|f| f.is_active())
-                    .map(|f| ("file.txt", f)),
-                &state.arbiter_graded_keys
-            )
-            .len(),
-            1
-        );
-        let accepted = rows.iter().find(|f| f.id == "arena-flow-run-kept").unwrap();
-        assert!(
-            accepted.is_active(),
-            "old Quick verdict must not hide accepted Deep findings"
-        );
-        assert_eq!(accepted.raised_by, vec!["general"]);
-        assert_eq!(accepted.providers, vec!["deep-provider"]);
-        assert!(!rows
-            .iter()
-            .find(|f| f.id == "unrelated")
-            .unwrap()
-            .is_active());
-        let mut later = crate::ai::load_arbiter_review(&fixture.er_dir).unwrap();
-        assert!(
-            later.run_id.is_empty(),
-            "mixed rulings do not belong to the old Quick run"
-        );
-        assert!(later.created_at.is_empty());
-        later.run_id = "later-verification".into();
-        later.verdicts.push(
+        let storage = fixture.repo.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            seed_old_overlay(&fixture);
+            fixture
+                .app
+                .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
+                .unwrap();
+            let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
+            let run = load_run(&paths).unwrap();
+            let state = crate::ai::load_ai_state(&fixture.er_dir, &run.diff_hash, None);
+            let review = state.review.unwrap();
+            let rows = &review.files["file.txt"].findings;
+            assert_eq!(
+                crate::ai::project_visible_findings(
+                    rows.iter()
+                        .filter(|f| f.is_active())
+                        .map(|f| ("file.txt", f)),
+                    &state.arbiter_graded_keys
+                )
+                .len(),
+                1
+            );
+            let accepted = rows.iter().find(|f| f.id == "arena-flow-run-kept").unwrap();
+            assert!(
+                accepted.is_active(),
+                "old Quick verdict must not hide accepted Deep findings"
+            );
+            assert_eq!(accepted.raised_by, vec!["general"]);
+            assert_eq!(accepted.providers, vec!["deep-provider"]);
+            assert!(!rows
+                .iter()
+                .find(|f| f.id == "unrelated")
+                .unwrap()
+                .is_active());
+            let mut later = crate::ai::load_arbiter_review(&fixture.er_dir).unwrap();
+            assert!(
+                later.run_id.is_empty(),
+                "mixed rulings do not belong to the old Quick run"
+            );
+            assert!(later.created_at.is_empty());
+            later.run_id = "later-verification".into();
+            later.verdicts.push(
             serde_json::from_value(json!({
                 "id":crate::ai::finding_key("file.txt", Some(2), "Kept finding"),"verdict":"dropped"
             }))
             .unwrap(),
         );
-        crate::ai::write_arbiter_review(&fixture.er_dir, &later).unwrap();
-        let state = crate::ai::load_ai_state(&fixture.er_dir, &run.diff_hash, None);
-        assert!(!state.review.unwrap().files["file.txt"]
-            .findings
-            .iter()
-            .find(|f| f.id == "arena-flow-run-kept")
-            .unwrap()
-            .is_active());
+            crate::ai::write_arbiter_review(&fixture.er_dir, &later).unwrap();
+            let state = crate::ai::load_ai_state(&fixture.er_dir, &run.diff_hash, None);
+            assert!(!state.review.unwrap().files["file.txt"]
+                .findings
+                .iter()
+                .find(|f| f.id == "arena-flow-run-kept")
+                .unwrap()
+                .is_active());
+        });
     }
 
     #[test]
@@ -1090,125 +1110,145 @@ mod tests {
     #[test]
     fn run_save_failure_restores_superseded_overlay_byte_for_byte() {
         let mut fixture = fixture();
-        let original = seed_old_overlay(&fixture);
-        let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
-        std::fs::create_dir(paths.run_json().with_extension("tmp")).unwrap();
-        assert!(fixture
-            .app
-            .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
-            .is_err());
-        assert_eq!(
-            std::fs::read(Path::new(&fixture.er_dir).join("arbiter.json")).unwrap(),
-            original
-        );
-        let archived = Path::new(&fixture.er_dir)
-            .join("flow-backups")
-            .read_dir()
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path().join("arbiter.json"))
-            .find(|path| path.is_file())
-            .expect("original overlay remains recoverable");
-        assert_eq!(std::fs::read(archived).unwrap(), original);
+        let storage = fixture.repo.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let original = seed_old_overlay(&fixture);
+            let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
+            std::fs::create_dir(paths.run_json().with_extension("tmp")).unwrap();
+            assert!(fixture
+                .app
+                .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
+                .is_err());
+            assert_eq!(
+                std::fs::read(Path::new(&fixture.er_dir).join("arbiter.json")).unwrap(),
+                original
+            );
+            let archived = Path::new(&fixture.er_dir)
+                .join("flow-backups")
+                .read_dir()
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path().join("arbiter.json"))
+                .find(|path| path.is_file())
+                .expect("original overlay remains recoverable");
+            assert_eq!(std::fs::read(archived).unwrap(), original);
+        });
     }
 
     #[test]
     fn acceptance_after_tab_switch_uses_captured_bucket_and_archives_old_review() {
         let mut fixture = fixture();
-        let old_review = br#"{"version":1,"diff_hash":"old-generation","files":{"legacy.rs":{"risk":"medium","findings":[{"id":"legacy","severity":"medium","title":"Old generation finding"}]}}}"#;
-        let review_path = Path::new(&fixture.er_dir).join("review.json");
-        std::fs::create_dir_all(Path::new(&fixture.er_dir)).unwrap();
-        std::fs::write(&review_path, old_review).unwrap();
-        fixture
-            .app
-            .tabs
-            .push(crate::app::TabState::new_for_test(Vec::new()));
-        fixture.app.active_tab = 1;
+        let storage = fixture.repo.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let old_review = br#"{"version":1,"diff_hash":"old-generation","files":{"legacy.rs":{"risk":"medium","findings":[{"id":"legacy","severity":"medium","title":"Old generation finding"}]}}}"#;
+            let review_path = Path::new(&fixture.er_dir).join("review.json");
+            std::fs::create_dir_all(Path::new(&fixture.er_dir)).unwrap();
+            std::fs::write(&review_path, old_review).unwrap();
+            fixture
+                .app
+                .tabs
+                .push(crate::app::TabState::new_for_test(Vec::new()));
+            fixture.app.active_tab = 1;
 
-        let accepted = fixture
-            .app
-            .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
-            .unwrap();
-        assert_eq!(accepted, 1);
-        let review: crate::ai::ErReview =
-            serde_json::from_slice(&std::fs::read(&review_path).unwrap()).unwrap();
-        assert_eq!(
-            review.diff_hash,
-            load_run(&ArenaPaths::for_run(
+            let accepted = fixture
+                .app
+                .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
+                .unwrap();
+            assert_eq!(accepted, 1);
+            let review: crate::ai::ErReview =
+                serde_json::from_slice(&std::fs::read(&review_path).unwrap()).unwrap();
+            assert_eq!(
+                review.diff_hash,
+                load_run(&ArenaPaths::for_run(
+                    Path::new(&fixture.er_dir),
+                    &fixture.run_id
+                ))
+                .unwrap()
+                .diff_hash
+            );
+            assert_eq!(
+                review.files["file.txt"].findings[0].id,
+                format!("arena-{}-kept", fixture.run_id)
+            );
+            let backup_root = review_path.parent().unwrap().join("flow-backups");
+            let archived = std::fs::read_dir(backup_root)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path().join("review.json"))
+                .find(|path| path.is_file())
+                .expect("older review should remain in the recovery archive");
+            assert_eq!(std::fs::read(archived).unwrap().as_slice(), old_review);
+            assert!(!review.files.contains_key("legacy.rs"));
+            assert_eq!(review.files["file.txt"].findings.len(), 1);
+            let run = load_run(&ArenaPaths::for_run(
                 Path::new(&fixture.er_dir),
-                &fixture.run_id
+                &fixture.run_id,
             ))
-            .unwrap()
-            .diff_hash
-        );
-        assert_eq!(
-            review.files["file.txt"].findings[0].id,
-            format!("arena-{}-kept", fixture.run_id)
-        );
-        let backup_root = review_path.parent().unwrap().join("flow-backups");
-        let archived = std::fs::read_dir(backup_root)
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path().join("review.json"))
-            .find(|path| path.is_file())
-            .expect("older review should remain in the recovery archive");
-        assert_eq!(std::fs::read(archived).unwrap().as_slice(), old_review);
-        assert!(!review.files.contains_key("legacy.rs"));
-        assert_eq!(review.files["file.txt"].findings.len(), 1);
-        let run = load_run(&ArenaPaths::for_run(
-            Path::new(&fixture.er_dir),
-            &fixture.run_id,
-        ))
-        .unwrap();
-        assert_eq!(run.accepted_finding_ids, vec!["kept"]);
-        assert!(matches!(
-            &fixture.app.review_flows[&fixture.er_dir].state,
-            FlowState::Done {
-                awaiting_accept: 0,
-                ..
-            }
-        ));
+            .unwrap();
+            assert_eq!(run.accepted_finding_ids, vec!["kept"]);
+            assert!(matches!(
+                &fixture.app.review_flows[&fixture.er_dir].state,
+                FlowState::Done {
+                    awaiting_accept: 0,
+                    ..
+                }
+            ));
+        });
     }
 
     #[test]
     fn acceptance_rejects_dropped_unknown_changed_and_stale_selection() {
         let mut fixture = fixture();
-        assert!(fixture
-            .app
-            .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["dropped".into()])
-            .is_err());
-        assert!(fixture
-            .app
-            .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["missing".into()])
-            .is_err());
-        assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
+        let storage = fixture.repo.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            assert!(fixture
+                .app
+                .accept_review_flow_findings(
+                    &fixture.er_dir,
+                    &fixture.run_id,
+                    vec!["dropped".into()]
+                )
+                .is_err());
+            assert!(fixture
+                .app
+                .accept_review_flow_findings(
+                    &fixture.er_dir,
+                    &fixture.run_id,
+                    vec!["missing".into()]
+                )
+                .is_err());
+            assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
 
-        fixture
-            .app
-            .review_flow_results(&fixture.er_dir, &fixture.run_id)
-            .unwrap();
-        fixture
-            .app
-            .review_flows
-            .get_mut(&fixture.er_dir)
-            .unwrap()
-            .arena_run_id = Some("new-flow-run".into());
-        assert!(fixture
-            .app
-            .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
-            .is_err());
+            fixture
+                .app
+                .review_flow_results(&fixture.er_dir, &fixture.run_id)
+                .unwrap();
+            fixture
+                .app
+                .review_flows
+                .get_mut(&fixture.er_dir)
+                .unwrap()
+                .arena_run_id = Some("new-flow-run".into());
+            assert!(fixture
+                .app
+                .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
+                .is_err());
+        });
     }
 
     #[test]
     fn acceptance_rejects_a_changed_working_diff() {
         let mut fixture = fixture();
-        let repo = Path::new(&fixture.app.tabs[0].repo_root);
-        std::fs::write(repo.join("file.txt"), "changed after review\n").unwrap();
-        assert!(fixture
-            .app
-            .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
-            .is_err());
-        assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
+        let storage = fixture.repo.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let repo = Path::new(&fixture.app.tabs[0].repo_root);
+            std::fs::write(repo.join("file.txt"), "changed after review\n").unwrap();
+            assert!(fixture
+                .app
+                .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
+                .is_err());
+            assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
+        });
     }
 
     #[test]
@@ -1225,57 +1265,63 @@ mod tests {
     #[test]
     fn run_save_failure_rolls_back_a_new_review_when_none_existed() {
         let mut fixture = fixture();
-        let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
-        std::fs::create_dir(paths.run_json().with_extension("tmp")).unwrap();
+        let storage = fixture.repo.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
+            std::fs::create_dir(paths.run_json().with_extension("tmp")).unwrap();
 
-        let error = fixture
-            .app
-            .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("accepted IDs could not be saved to the run"),
-            "{error:#}"
-        );
-        assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
-        assert!(load_run(&paths).unwrap().accepted_finding_ids.is_empty());
-        assert!(Path::new(&fixture.er_dir)
-            .join("flow-backups")
-            .read_dir()
-            .unwrap()
-            .next()
-            .is_some());
+            let error = fixture
+                .app
+                .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("accepted IDs could not be saved to the run"),
+                "{error:#}"
+            );
+            assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
+            assert!(load_run(&paths).unwrap().accepted_finding_ids.is_empty());
+            assert!(Path::new(&fixture.er_dir)
+                .join("flow-backups")
+                .read_dir()
+                .unwrap()
+                .next()
+                .is_some());
+        });
     }
 
     #[test]
     fn run_save_failure_restores_same_generation_review_byte_for_byte() {
         let mut fixture = fixture();
-        let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
-        let run = load_run(&paths).unwrap();
-        let review_path = Path::new(&fixture.er_dir).join("review.json");
-        std::fs::create_dir_all(Path::new(&fixture.er_dir)).unwrap();
-        let original = serde_json::to_vec(&json!({
+        let storage = fixture.repo.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
+            let run = load_run(&paths).unwrap();
+            let review_path = Path::new(&fixture.er_dir).join("review.json");
+            std::fs::create_dir_all(Path::new(&fixture.er_dir)).unwrap();
+            let original = serde_json::to_vec(&json!({
             "version": 1,
             "diff_hash": run.diff_hash,
             "base_branch": "main",
             "head_branch": "feature",
             "files": {"legacy.rs": {"risk":"medium","findings":[{"id":"legacy","severity":"medium","title":"Existing finding"}]}}
         })).unwrap();
-        std::fs::write(&review_path, &original).unwrap();
-        std::fs::create_dir(paths.run_json().with_extension("tmp")).unwrap();
+            std::fs::write(&review_path, &original).unwrap();
+            std::fs::create_dir(paths.run_json().with_extension("tmp")).unwrap();
 
-        let error = fixture
-            .app
-            .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("accepted IDs could not be saved to the run"),
-            "{error:#}"
-        );
-        assert_eq!(std::fs::read(review_path).unwrap(), original);
-        assert!(load_run(&paths).unwrap().accepted_finding_ids.is_empty());
+            let error = fixture
+                .app
+                .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("accepted IDs could not be saved to the run"),
+                "{error:#}"
+            );
+            assert_eq!(std::fs::read(review_path).unwrap(), original);
+            assert!(load_run(&paths).unwrap().accepted_finding_ids.is_empty());
+        });
     }
 }

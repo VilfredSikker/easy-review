@@ -29,7 +29,9 @@ fn write_sidecar(dir: &Path, rel: &str, content: &str) {
 }
 
 fn load(dir: &Path) -> AiState {
-    load_ai_state(dir.to_str().expect("utf-8 temp path"), "H", None)
+    er_engine::storage::with_test_storage_root(dir, || {
+        load_ai_state(dir.to_str().expect("utf-8 temp path"), "H", None)
+    })
 }
 
 fn ids(state: &AiState, file: &str) -> Vec<String> {

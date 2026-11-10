@@ -18,6 +18,10 @@ enum Previous {
 
 /// Run `f` with `name` set to `value` on this thread.
 pub fn with_var<R>(name: &str, value: impl Into<String>, f: impl FnOnce() -> R) -> R {
+    with_override(name, Some(value.into()), f)
+}
+
+fn with_override<R>(name: &str, value: Option<String>, f: impl FnOnce() -> R) -> R {
     struct Restore {
         name: String,
         previous: Previous,
@@ -40,15 +44,13 @@ pub fn with_var<R>(name: &str, value: impl Into<String>, f: impl FnOnce() -> R) 
         }
     }
 
-    let previous = OVERRIDES.with(|overrides| {
-        match overrides
-            .borrow_mut()
-            .insert(name.to_string(), Some(value.into()))
-        {
-            Some(value) => Previous::Value(value),
-            None => Previous::NoOverride,
-        }
-    });
+    let previous =
+        OVERRIDES.with(
+            |overrides| match overrides.borrow_mut().insert(name.to_string(), value) {
+                Some(value) => Previous::Value(value),
+                None => Previous::NoOverride,
+            },
+        );
     let _restore = Restore {
         name: name.to_string(),
         previous,
@@ -58,9 +60,14 @@ pub fn with_var<R>(name: &str, value: impl Into<String>, f: impl FnOnce() -> R) 
 
 /// The variable's value: this thread's override when present, else the process environment.
 pub fn var(name: &str) -> Option<String> {
-    let overridden = OVERRIDES.with(|overrides| overrides.borrow().get(name).cloned());
-    match overridden {
+    match explicit_var(name) {
         Some(value) => value,
         None => std::env::var(name).ok(),
     }
+}
+
+/// This thread's override for `name`, without falling back to the process
+/// environment. `Some(None)` means the test explicitly unset it.
+pub fn explicit_var(name: &str) -> Option<Option<String>> {
+    OVERRIDES.with(|overrides| overrides.borrow().get(name).cloned())
 }

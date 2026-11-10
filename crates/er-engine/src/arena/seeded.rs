@@ -468,168 +468,184 @@ mod tests {
     #[test]
     fn general_and_expert_exact_duplicates_keep_both_raisers() {
         let dir = tempdir().unwrap();
-        write_general(dir.path(), HASH, "unchecked user input", 10);
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "unchecked user input", 10)],
-        );
-        let out = dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].raised_by, vec!["general", "security"]);
-        assert_eq!(
-            out[0].id,
-            finding_key("src/a.rs", Some(10), "unchecked user input")
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_general(dir.path(), HASH, "unchecked user input", 10);
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "unchecked user input", 10)],
+            );
+            let out = dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].raised_by, vec!["general", "security"]);
+            assert_eq!(
+                out[0].id,
+                finding_key("src/a.rs", Some(10), "unchecked user input")
+            );
+        });
     }
 
     #[test]
     fn general_and_expert_fuzzy_duplicates_keep_both_raisers() {
         let dir = tempdir().unwrap();
-        write_general(dir.path(), HASH, "unvalidated input in cache key", 10);
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "unvalidated input in cache key.", 12)],
-        );
-        let out = dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].raised_by, vec!["general", "security"]);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_general(dir.path(), HASH, "unvalidated input in cache key", 10);
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "unvalidated input in cache key.", 12)],
+            );
+            let out = dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].raised_by, vec!["general", "security"]);
+        });
     }
 
     #[test]
     fn general_review_requires_accepted_hash_and_explicit_inclusion() {
         let dir = tempdir().unwrap();
-        write_general(dir.path(), "old-generation", "old claim", 10);
-        assert!(dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true).is_empty());
-        assert_eq!(
-            dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "old-generation", true).len(),
-            1
-        );
-        assert!(
-            dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "old-generation", false)
-                .is_empty()
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_general(dir.path(), "old-generation", "old claim", 10);
+            assert!(dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true).is_empty());
+            assert_eq!(
+                dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "old-generation", true)
+                    .len(),
+                1
+            );
+            assert!(dedupe_flow_findings(
+                dir.path().to_str().unwrap(),
+                HASH,
+                "old-generation",
+                false
+            )
+            .is_empty());
+        });
     }
 
     #[test]
     fn source_lenses_filter_before_exact_and_fuzzy_collapse() {
         let dir = tempdir().unwrap();
-        write_general(dir.path(), HASH, "unchecked user input", 10);
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "unchecked user input", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "reliability",
-            &[("src/a.rs", "another claim", 40)],
-        );
-        let sources = vec!["general".to_string()];
-        let out = dedupe_flow_findings_filtered(
-            dir.path().to_str().unwrap(),
-            HASH,
-            "",
-            true,
-            Some(&sources),
-        );
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].raised_by, vec!["general"]);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_general(dir.path(), HASH, "unchecked user input", 10);
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "unchecked user input", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "reliability",
+                &[("src/a.rs", "another claim", 40)],
+            );
+            let sources = vec!["general".to_string()];
+            let out = dedupe_flow_findings_filtered(
+                dir.path().to_str().unwrap(),
+                HASH,
+                "",
+                true,
+                Some(&sources),
+            );
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].raised_by, vec!["general"]);
+        });
     }
 
     #[test]
     fn seeded_general_reviewer_kind_is_normalized() {
         let dir = tempdir().unwrap();
-        write_general(dir.path(), HASH, "general claim", 10);
-        let findings = dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true);
-        let mut config = ErConfig::default();
-        crate::config::supplement_ai_hub(&mut config.ai_hub);
-        let run = build_seeded_run(
-            &config,
-            SeededRunParams {
-                id: "run".into(),
-                diff_hash: HASH.into(),
-                base_branch: "main".into(),
-                branch_ref: "branch".into(),
-                scope: ArenaScope::Branch,
-                arbiter: ReviewerRef {
-                    provider_id: "openai".into(),
-                    model_id: "gpt".into(),
-                    agent_kind: None,
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_general(dir.path(), HASH, "general claim", 10);
+            let findings = dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true);
+            let mut config = ErConfig::default();
+            crate::config::supplement_ai_hub(&mut config.ai_hub);
+            let run = build_seeded_run(
+                &config,
+                SeededRunParams {
+                    id: "run".into(),
+                    diff_hash: HASH.into(),
+                    base_branch: "main".into(),
+                    branch_ref: "branch".into(),
+                    scope: ArenaScope::Branch,
+                    arbiter: ReviewerRef {
+                        provider_id: "openai".into(),
+                        model_id: "gpt".into(),
+                        agent_kind: None,
+                    },
+                    lens_providers: BTreeMap::new(),
+                    strict_provenance: false,
                 },
-                lens_providers: BTreeMap::new(),
-                strict_provenance: false,
-            },
-            findings,
-        )
-        .unwrap();
-        assert_eq!(
-            run.config.reviewers[0].agent_kind.as_deref(),
-            Some("general")
-        );
+                findings,
+            )
+            .unwrap();
+            assert_eq!(
+                run.config.reviewers[0].agent_kind.as_deref(),
+                Some("general")
+            );
+        });
     }
 
     #[test]
     fn strict_security_only_seeded_run_requires_captured_assignment() {
         let dir = tempdir().unwrap();
-        write_expert(dir.path(), "security", &[("src/a.rs", "secure claim", 10)]);
-        let findings = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
-        let mut config = ErConfig::default();
-        crate::config::supplement_ai_hub(&mut config.ai_hub);
-        let arbiter = crate::arena::default_arbiter_from_hub(&config.ai_hub).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(dir.path(), "security", &[("src/a.rs", "secure claim", 10)]);
+            let findings = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+            let mut config = ErConfig::default();
+            crate::config::supplement_ai_hub(&mut config.ai_hub);
+            let arbiter = crate::arena::default_arbiter_from_hub(&config.ai_hub).unwrap();
 
-        let missing = build_seeded_run(
-            &config,
-            SeededRunParams {
-                id: "strict-missing".into(),
-                diff_hash: HASH.into(),
-                base_branch: "main".into(),
-                branch_ref: "feature".into(),
-                scope: ArenaScope::Branch,
-                arbiter: arbiter.clone(),
-                lens_providers: BTreeMap::new(),
-                strict_provenance: true,
-            },
-            findings.clone(),
-        );
-        assert!(missing.unwrap_err().to_string().contains("security"));
+            let missing = build_seeded_run(
+                &config,
+                SeededRunParams {
+                    id: "strict-missing".into(),
+                    diff_hash: HASH.into(),
+                    base_branch: "main".into(),
+                    branch_ref: "feature".into(),
+                    scope: ArenaScope::Branch,
+                    arbiter: arbiter.clone(),
+                    lens_providers: BTreeMap::new(),
+                    strict_provenance: true,
+                },
+                findings.clone(),
+            );
+            assert!(missing.unwrap_err().to_string().contains("security"));
 
-        let provider_id = config
-            .ai_hub
-            .providers
-            .keys()
-            .find(|provider| provider.as_str() != arbiter.provider_id.as_str())
-            .unwrap()
-            .clone();
-        let model_id = config.ai_hub.providers[&provider_id].models[0].id.clone();
-        let assignment = ReviewerRef {
-            provider_id: provider_id.clone(),
-            model_id: model_id.clone(),
-            agent_kind: None,
-        };
-        let run = build_seeded_run(
-            &config,
-            SeededRunParams {
-                id: "strict-security".into(),
-                diff_hash: HASH.into(),
-                base_branch: "main".into(),
-                branch_ref: "feature".into(),
-                scope: ArenaScope::Branch,
-                arbiter,
-                lens_providers: BTreeMap::from([("security".into(), assignment)]),
-                strict_provenance: true,
-            },
-            findings,
-        )
-        .unwrap();
-        assert_eq!(run.config.reviewers.len(), 1);
-        assert_eq!(run.config.reviewers[0].provider_id, provider_id);
-        assert_eq!(run.config.reviewers[0].model_id, model_id);
-        assert_eq!(
-            run.config.reviewers[0].agent_kind.as_deref(),
-            Some("expert:security")
-        );
+            let provider_id = config
+                .ai_hub
+                .providers
+                .keys()
+                .find(|provider| provider.as_str() != arbiter.provider_id.as_str())
+                .unwrap()
+                .clone();
+            let model_id = config.ai_hub.providers[&provider_id].models[0].id.clone();
+            let assignment = ReviewerRef {
+                provider_id: provider_id.clone(),
+                model_id: model_id.clone(),
+                agent_kind: None,
+            };
+            let run = build_seeded_run(
+                &config,
+                SeededRunParams {
+                    id: "strict-security".into(),
+                    diff_hash: HASH.into(),
+                    base_branch: "main".into(),
+                    branch_ref: "feature".into(),
+                    scope: ArenaScope::Branch,
+                    arbiter,
+                    lens_providers: BTreeMap::from([("security".into(), assignment)]),
+                    strict_provenance: true,
+                },
+                findings,
+            )
+            .unwrap();
+            assert_eq!(run.config.reviewers.len(), 1);
+            assert_eq!(run.config.reviewers[0].provider_id, provider_id);
+            assert_eq!(run.config.reviewers[0].model_id, model_id);
+            assert_eq!(
+                run.config.reviewers[0].agent_kind.as_deref(),
+                Some("expert:security")
+            );
+        });
     }
 
     /// An identical claim from three lenses is one row, and the row names all
@@ -638,33 +654,35 @@ mod tests {
     #[test]
     fn the_same_claim_from_three_experts_collapses_to_one_row() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "unchecked user input", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "reliability",
-            &[("src/a.rs", "unchecked user input", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "patterns",
-            &[("src/a.rs", "unchecked user input", 10)],
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "unchecked user input", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "reliability",
+                &[("src/a.rs", "unchecked user input", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "patterns",
+                &[("src/a.rs", "unchecked user input", 10)],
+            );
 
-        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+            let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
-        assert_eq!(out.len(), 1, "one issue, one row");
-        assert_eq!(
-            out[0].raised_by,
-            vec!["patterns", "reliability", "security"]
-        );
-        assert!(
-            out[0].merged_children.is_empty(),
-            "an identical id merges outright, with nothing left over"
-        );
+            assert_eq!(out.len(), 1, "one issue, one row");
+            assert_eq!(
+                out[0].raised_by,
+                vec!["patterns", "reliability", "security"]
+            );
+            assert!(
+                out[0].merged_children.is_empty(),
+                "an identical id merges outright, with nothing left over"
+            );
+        });
     }
 
     /// Near-duplicates (different wording, nearby lines) go through the arena's
@@ -673,68 +691,74 @@ mod tests {
     #[test]
     fn near_duplicates_collapse_with_children_recorded() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "unvalidated input in cache key", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "reliability",
-            &[("src/a.rs", "unvalidated input in cache key.", 12)],
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "unvalidated input in cache key", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "reliability",
+                &[("src/a.rs", "unvalidated input in cache key.", 12)],
+            );
 
-        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+            let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
-        assert_eq!(out.len(), 1, "near-duplicates collapse");
-        assert_eq!(out[0].raised_by, vec!["reliability", "security"]);
-        assert_eq!(out[0].merged_children.len(), 1, "the other is recorded");
-        assert!(
-            out[0].merge_candidates.is_empty(),
-            "the group is resolved, so the proposal would dangle"
-        );
-        assert!(out[0].merged_children[0].merge_candidates.is_empty());
+            assert_eq!(out.len(), 1, "near-duplicates collapse");
+            assert_eq!(out[0].raised_by, vec!["reliability", "security"]);
+            assert_eq!(out[0].merged_children.len(), 1, "the other is recorded");
+            assert!(
+                out[0].merge_candidates.is_empty(),
+                "the group is resolved, so the proposal would dangle"
+            );
+            assert!(out[0].merged_children[0].merge_candidates.is_empty());
+        });
     }
 
     #[test]
     fn distinct_issues_stay_separate() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "security",
-            &[
-                ("src/a.rs", "unchecked user input", 10),
-                ("src/a.rs", "missing timeout on retry", 40),
-            ],
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "security",
+                &[
+                    ("src/a.rs", "unchecked user input", 10),
+                    ("src/a.rs", "missing timeout on retry", 40),
+                ],
+            );
 
-        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+            let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
-        assert_eq!(out.len(), 2);
-        let titles: Vec<&str> = out.iter().map(|f| f.title.as_str()).collect();
-        assert!(titles.contains(&"unchecked user input"));
-        assert!(titles.contains(&"missing timeout on retry"));
+            assert_eq!(out.len(), 2);
+            let titles: Vec<&str> = out.iter().map(|f| f.title.as_str()).collect();
+            assert!(titles.contains(&"unchecked user input"));
+            assert!(titles.contains(&"missing timeout on retry"));
+        });
     }
 
     /// The arena's proposer guards this; the adapter must not lose the guard.
     #[test]
     fn the_same_title_in_different_files_never_merges() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "missing null check", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "reliability",
-            &[("src/b.rs", "missing null check", 10)],
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "missing null check", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "reliability",
+                &[("src/b.rs", "missing null check", 10)],
+            );
 
-        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+            let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
-        assert_eq!(out.len(), 2, "same title, different file");
-        assert!(out.iter().all(|f| f.raised_by.len() == 1));
+            assert_eq!(out.len(), 2, "same title, different file");
+            assert!(out.iter().all(|f| f.raised_by.len() == 1));
+        });
     }
 
     /// The survivor is the worst claim in the group, so collapsing cannot
@@ -742,44 +766,48 @@ mod tests {
     #[test]
     fn the_survivor_carries_the_worst_severity() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "unvalidated input in cache key", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "reliability",
-            &[("src/a.rs", "unvalidated input in cache key.", 12)],
-        );
-        // Raise the second one to high without changing its identity.
-        let path = dir.path().join("experts/reliability.json");
-        let bumped = std::fs::read_to_string(&path)
-            .unwrap()
-            .replace("\"severity\":\"medium\"", "\"severity\":\"high\"");
-        std::fs::write(&path, bumped).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "unvalidated input in cache key", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "reliability",
+                &[("src/a.rs", "unvalidated input in cache key.", 12)],
+            );
+            // Raise the second one to high without changing its identity.
+            let path = dir.path().join("experts/reliability.json");
+            let bumped = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("\"severity\":\"medium\"", "\"severity\":\"high\"");
+            std::fs::write(&path, bumped).unwrap();
 
-        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+            let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
-        assert_eq!(out.len(), 1);
-        assert_eq!(
-            out[0].severity_by_round.get(&1),
-            Some(&crate::ai::RiskLevel::High)
-        );
+            assert_eq!(out.len(), 1);
+            assert_eq!(
+                out[0].severity_by_round.get(&1),
+                Some(&crate::ai::RiskLevel::High)
+            );
+        });
     }
 
     #[test]
     fn sidecars_from_another_diff_are_skipped() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "unchecked user input", 10)],
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "unchecked user input", 10)],
+            );
 
-        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), "other-hash", "");
+            let out = dedupe_expert_findings(dir.path().to_str().unwrap(), "other-hash", "");
 
-        assert!(out.is_empty());
+            assert!(out.is_empty());
+        });
     }
 
     /// An expert file whose id is not in the registry would put a non-lens
@@ -787,15 +815,17 @@ mod tests {
     #[test]
     fn an_unregistered_expert_contributes_nothing() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "retired-lens",
-            &[("src/a.rs", "unchecked user input", 10)],
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "retired-lens",
+                &[("src/a.rs", "unchecked user input", 10)],
+            );
 
-        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+            let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
-        assert!(out.is_empty());
+            assert!(out.is_empty());
+        });
     }
 
     /// The id keys on file + title, so two genuinely different issues sharing a
@@ -805,51 +835,55 @@ mod tests {
     #[test]
     fn a_title_collision_keeps_the_second_claims_text() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "missing null check", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "reliability",
-            &[("src/a.rs", "missing null check", 400)],
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "missing null check", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "reliability",
+                &[("src/a.rs", "missing null check", 400)],
+            );
 
-        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+            let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
-        // The key carries the anchor line, so these are different claims and
-        // stay two rows. Title alone could not tell them apart, and merging them
-        // would have quietly dropped one.
-        assert_eq!(out.len(), 2, "different anchors, different findings");
-        let mut anchors: Vec<Option<usize>> = out.iter().map(|f| f.line).collect();
-        anchors.sort();
-        assert_eq!(anchors, vec![Some(10), Some(400)]);
-        for finding in &out {
-            assert_eq!(finding.raised_by.len(), 1, "each has its own raiser");
-            assert!(finding.merged_children.is_empty());
-        }
+            // The key carries the anchor line, so these are different claims and
+            // stay two rows. Title alone could not tell them apart, and merging them
+            // would have quietly dropped one.
+            assert_eq!(out.len(), 2, "different anchors, different findings");
+            let mut anchors: Vec<Option<usize>> = out.iter().map(|f| f.line).collect();
+            anchors.sort();
+            assert_eq!(anchors, vec![Some(10), Some(400)]);
+            for finding in &out {
+                assert_eq!(finding.raised_by.len(), 1, "each has its own raiser");
+                assert!(finding.merged_children.is_empty());
+            }
+        });
     }
 
     /// The same claim at the same anchor from two experts is still one row.
     #[test]
     fn the_same_claim_at_the_same_anchor_still_merges() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "missing null check", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "reliability",
-            &[("src/a.rs", "missing null check", 10)],
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "missing null check", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "reliability",
+                &[("src/a.rs", "missing null check", 10)],
+            );
 
-        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+            let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].raised_by, vec!["reliability", "security"]);
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].raised_by, vec!["reliability", "security"]);
+        });
     }
 
     /// The run's reviewers are the experts that actually raised something —
@@ -858,26 +892,28 @@ mod tests {
     #[test]
     fn contributing_lenses_names_every_raiser_once() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "unchecked input", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "reliability",
-            &[("src/a.rs", "unchecked input", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "patterns",
-            &[("src/b.rs", "missing null check", 5)],
-        );
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "unchecked input", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "reliability",
+                &[("src/a.rs", "unchecked input", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "patterns",
+                &[("src/b.rs", "missing null check", 5)],
+            );
 
-        let findings = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
-        let lenses = contributing_lenses(&findings);
+            let findings = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+            let lenses = contributing_lenses(&findings);
 
-        assert_eq!(lenses, vec!["patterns", "reliability", "security"]);
+            assert_eq!(lenses, vec!["patterns", "reliability", "security"]);
+        });
     }
 
     #[test]
@@ -924,65 +960,67 @@ mod tests {
     #[test]
     fn a_seeded_run_lists_its_contributing_experts_as_reviewers() {
         let dir = tempdir().unwrap();
-        write_expert(
-            dir.path(),
-            "security",
-            &[("src/a.rs", "unchecked input", 10)],
-        );
-        write_expert(
-            dir.path(),
-            "testing",
-            &[("src/b.rs", "no negative case", 4)],
-        );
-        let findings = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+        crate::storage::with_test_storage_root(dir.path(), || {
+            write_expert(
+                dir.path(),
+                "security",
+                &[("src/a.rs", "unchecked input", 10)],
+            );
+            write_expert(
+                dir.path(),
+                "testing",
+                &[("src/b.rs", "no negative case", 4)],
+            );
+            let findings = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
-        // `resolve_reviewers` looks providers up in the hub, and a bare
-        // `ErConfig::default()` has an empty one — the catalog is what a real
-        // load seeds it with.
-        let mut config = ErConfig::default();
-        crate::config::supplement_ai_hub(&mut config.ai_hub);
-        let provider_id = config
-            .ai_hub
-            .default_provider
-            .clone()
-            .expect("catalog names a default provider");
-        let model_id = config
-            .ai_hub
-            .default_model
-            .clone()
-            .expect("catalog names a default model");
+            // `resolve_reviewers` looks providers up in the hub, and a bare
+            // `ErConfig::default()` has an empty one — the catalog is what a real
+            // load seeds it with.
+            let mut config = ErConfig::default();
+            crate::config::supplement_ai_hub(&mut config.ai_hub);
+            let provider_id = config
+                .ai_hub
+                .default_provider
+                .clone()
+                .expect("catalog names a default provider");
+            let model_id = config
+                .ai_hub
+                .default_model
+                .clone()
+                .expect("catalog names a default model");
 
-        let run = build_seeded_run(
-            &config,
-            SeededRunParams {
-                id: "arena-seeded-2".to_string(),
-                diff_hash: HASH.to_string(),
-                base_branch: "main".to_string(),
-                branch_ref: "feature".to_string(),
-                scope: ArenaScope::Branch,
-                arbiter: ReviewerRef {
-                    provider_id,
-                    model_id,
-                    agent_kind: None,
+            let run = build_seeded_run(
+                &config,
+                SeededRunParams {
+                    id: "arena-seeded-2".to_string(),
+                    diff_hash: HASH.to_string(),
+                    base_branch: "main".to_string(),
+                    branch_ref: "feature".to_string(),
+                    scope: ArenaScope::Branch,
+                    arbiter: ReviewerRef {
+                        provider_id,
+                        model_id,
+                        agent_kind: None,
+                    },
+                    lens_providers: BTreeMap::new(),
+                    strict_provenance: false,
                 },
-                lens_providers: BTreeMap::new(),
-                strict_provenance: false,
-            },
-            findings,
-        )
-        .expect("builds");
+                findings,
+            )
+            .expect("builds");
 
-        assert_eq!(run.config.reviewers.len(), 2);
-        let kinds: Vec<&str> = run
-            .config
-            .reviewers
-            .iter()
-            .filter_map(|r| r.agent_kind.as_deref())
-            .collect();
-        assert_eq!(kinds, vec!["expert:security", "expert:testing"]);
-        assert!(run
-            .reviewers
-            .iter()
-            .all(|r| matches!(r.status, ReviewerRunStatus::Ok)));
+            assert_eq!(run.config.reviewers.len(), 2);
+            let kinds: Vec<&str> = run
+                .config
+                .reviewers
+                .iter()
+                .filter_map(|r| r.agent_kind.as_deref())
+                .collect();
+            assert_eq!(kinds, vec!["expert:security", "expert:testing"]);
+            assert!(run
+                .reviewers
+                .iter()
+                .all(|r| matches!(r.status, ReviewerRunStatus::Ok)));
+        });
     }
 }

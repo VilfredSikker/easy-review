@@ -1950,70 +1950,72 @@ mod tests {
     fn seeded_fuzzy_overlay_grades_every_producer_for_kept_and_dropped() {
         use serde_json::json;
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        std::fs::create_dir(dir.path().join("experts")).unwrap();
-        std::fs::write(dir.path().join("review.json"), serde_json::to_vec(&json!({
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er_dir = dir.path().to_str().unwrap();
+            std::fs::create_dir(dir.path().join("experts")).unwrap();
+            std::fs::write(dir.path().join("review.json"), serde_json::to_vec(&json!({
             "version":1,"diff_hash":"hash","files":{"src/a.rs":{"risk":"medium","findings":[
                 {"id":"general-1","severity":"medium","title":"unvalidated input in cache key","description":"Long detailed general claim with supporting evidence","line_start":10}
             ]}}
         })).unwrap()).unwrap();
-        std::fs::write(dir.path().join("experts/security.json"), serde_json::to_vec(&json!({
+            std::fs::write(dir.path().join("experts/security.json"), serde_json::to_vec(&json!({
             "version":1,"expert_id":"security","diff_hash":"hash","files":{"src/a.rs":{"findings":[
                 {"id":"sec-1","severity":"medium","title":"unvalidated input in cache key.","description":"short","line_start":12}
             ]}}
         })).unwrap()).unwrap();
-        let findings = super::super::seeded::dedupe_flow_findings(er_dir, "hash", "", true);
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].line, Some(10));
-        let mut config = ErConfig::default();
-        crate::config::supplement_ai_hub(&mut config.ai_hub);
-        let mut run = super::super::seeded::build_seeded_run(
-            &config,
-            super::super::seeded::SeededRunParams {
-                id: "seeded".into(),
-                diff_hash: "hash".into(),
-                base_branch: "main".into(),
-                branch_ref: "feature".into(),
-                scope: ArenaScope::Branch,
-                arbiter: ReviewerRef {
-                    provider_id: "arbiter".into(),
-                    model_id: "model".into(),
-                    agent_kind: None,
+            let findings = super::super::seeded::dedupe_flow_findings(er_dir, "hash", "", true);
+            assert_eq!(findings.len(), 1);
+            assert_eq!(findings[0].line, Some(10));
+            let mut config = ErConfig::default();
+            crate::config::supplement_ai_hub(&mut config.ai_hub);
+            let mut run = super::super::seeded::build_seeded_run(
+                &config,
+                super::super::seeded::SeededRunParams {
+                    id: "seeded".into(),
+                    diff_hash: "hash".into(),
+                    base_branch: "main".into(),
+                    branch_ref: "feature".into(),
+                    scope: ArenaScope::Branch,
+                    arbiter: ReviewerRef {
+                        provider_id: "arbiter".into(),
+                        model_id: "model".into(),
+                        agent_kind: None,
+                    },
+                    lens_providers: std::collections::BTreeMap::new(),
+                    strict_provenance: false,
                 },
-                lens_providers: std::collections::BTreeMap::new(),
-                strict_provenance: false,
-            },
-            findings,
-        )
-        .unwrap();
-        for verdict in [Verdict::Kept, Verdict::Dropped] {
-            run.findings[0].verdict = verdict.clone();
-            run.findings[0].confidence = 0.95;
-            let overlay = arbiter_review_from_run(&run, "seeded", "hash");
-            crate::ai::write_arbiter_review(er_dir, &overlay).unwrap();
-            let state = crate::ai::load_ai_state(er_dir, "hash", None);
-            let review = state.review.unwrap();
-            let rows = review.files.iter().flat_map(|(path, file)| {
-                file.findings
-                    .iter()
-                    .filter(|f| f.is_active())
-                    .map(move |f| (path.as_str(), f))
-            });
-            let visible = crate::ai::project_visible_findings(rows, &state.arbiter_graded_keys);
-            if verdict == Verdict::Kept {
-                assert_eq!(visible.len(), 1, "fuzzy child must be merged away");
-                assert_eq!(visible[0].1.raised_by, vec!["general", "security"]);
-                assert_eq!(
-                    visible[0].1.providers,
-                    super::super::provenance::providers_for(&run.findings[0], &run.reviewers)
-                );
-            } else {
-                assert!(
-                    visible.is_empty(),
-                    "a dropped fuzzy claim must hide every producer"
-                );
+                findings,
+            )
+            .unwrap();
+            for verdict in [Verdict::Kept, Verdict::Dropped] {
+                run.findings[0].verdict = verdict.clone();
+                run.findings[0].confidence = 0.95;
+                let overlay = arbiter_review_from_run(&run, "seeded", "hash");
+                crate::ai::write_arbiter_review(er_dir, &overlay).unwrap();
+                let state = crate::ai::load_ai_state(er_dir, "hash", None);
+                let review = state.review.unwrap();
+                let rows = review.files.iter().flat_map(|(path, file)| {
+                    file.findings
+                        .iter()
+                        .filter(|f| f.is_active())
+                        .map(move |f| (path.as_str(), f))
+                });
+                let visible = crate::ai::project_visible_findings(rows, &state.arbiter_graded_keys);
+                if verdict == Verdict::Kept {
+                    assert_eq!(visible.len(), 1, "fuzzy child must be merged away");
+                    assert_eq!(visible[0].1.raised_by, vec!["general", "security"]);
+                    assert_eq!(
+                        visible[0].1.providers,
+                        super::super::provenance::providers_for(&run.findings[0], &run.reviewers)
+                    );
+                } else {
+                    assert!(
+                        visible.is_empty(),
+                        "a dropped fuzzy claim must hide every producer"
+                    );
+                }
             }
-        }
+        });
     }
 
     #[test]

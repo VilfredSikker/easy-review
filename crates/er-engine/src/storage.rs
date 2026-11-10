@@ -40,10 +40,65 @@ pub fn with_test_storage_root<R>(root: impl Into<PathBuf>, f: impl FnOnce() -> R
     )
 }
 
+/// The process-wide test root, for storage reached from a spawned thread.
+///
+/// [`with_test_storage_root`] overrides only the calling thread. The arena
+/// supervisor writes sidecars from its own thread, so a test that drives it
+/// needs a root every thread can see. Only [`with_process_test_storage_root`]
+/// sets this, and it holds a lock for the test's duration.
+#[cfg(any(test, feature = "test-support"))]
+static PROCESS_STORAGE_ROOT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Serializes process-wide test roots, and lets the guard test prove no root
+/// is installed while it runs.
+#[cfg(any(test, feature = "test-support"))]
+static PROCESS_STORAGE_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Run `f` with the storage root overridden for every thread in the process.
+///
+/// For tests whose storage access happens on a spawned thread (the arena
+/// supervisor), where [`with_test_storage_root`] cannot reach. Tests using
+/// this run one at a time: the lock is held for the whole body, so two roots
+/// never overlap.
+#[cfg(any(test, feature = "test-support"))]
+pub fn with_process_test_storage_root<R>(root: impl Into<PathBuf>, f: impl FnOnce() -> R) -> R {
+    struct Restore {
+        previous: Option<String>,
+    }
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            *PROCESS_STORAGE_ROOT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = self.previous.take();
+        }
+    }
+
+    let _serial = PROCESS_STORAGE_ROOT_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let previous = PROCESS_STORAGE_ROOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .replace(root.into().to_string_lossy().into_owned());
+    let _restore = Restore { previous };
+    f()
+}
+
 fn storage_root_override() -> Option<String> {
     #[cfg(any(test, feature = "test-support"))]
     {
-        crate::test_support::var("ER_STORAGE_ROOT")
+        if let Some(value) = crate::test_support::explicit_var("ER_STORAGE_ROOT") {
+            return value;
+        }
+        if let Some(root) = PROCESS_STORAGE_ROOT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            return Some(root);
+        }
+        std::env::var("ER_STORAGE_ROOT").ok()
     }
     #[cfg(not(any(test, feature = "test-support")))]
     {
@@ -69,11 +124,8 @@ pub fn storage_base() -> PathBuf {
 /// `ER_STORAGE_ROOT` is used as given so every test that points it at a temp
 /// directory keeps that directory as the root.
 pub fn storage_root() -> PathBuf {
-    storage_root_from(
-        storage_root_override().as_deref(),
-        dirs::data_dir(),
-        dirs::home_dir(),
-    )
+    let override_path = storage_root_override();
+    storage_root_from(override_path.as_deref(), dirs::data_dir(), dirs::home_dir())
 }
 
 /// [`storage_base`] with its inputs passed in, so tests need no environment.
@@ -245,7 +297,7 @@ fn named_slug(raw: &str, readable: &str) -> String {
 ///
 /// The override, when set, names the root directly, so there is no old data.
 pub fn legacy_root_entries() -> Vec<PathBuf> {
-    let override_set = std::env::var("ER_STORAGE_ROOT").is_ok_and(|value| !value.is_empty());
+    let override_set = storage_root_override().is_some_and(|value| !value.is_empty());
     legacy_root_entries_in(&storage_base(), override_set)
 }
 
@@ -658,47 +710,50 @@ mod tests {
 
     #[test]
     fn resolve_managed_root_creates_branch_dir() {
-        let _guard = STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let root = resolve_managed_root_from_slugs("test-repo", "feature-branch");
-        std::env::remove_var("ER_STORAGE_ROOT");
-        let crate::ErRoot::Managed {
-            agent_dir,
-            session_dir,
-        } = root;
-        assert_eq!(agent_dir, session_dir);
-        assert!(agent_dir.contains("test-repo"));
-        assert!(agent_dir.contains("feature-branch"));
+        with_test_storage_root(tmp.path(), || {
+            let root = resolve_managed_root_from_slugs("test-repo", "feature-branch");
+            let crate::ErRoot::Managed {
+                agent_dir,
+                session_dir,
+            } = root;
+            assert_eq!(agent_dir, session_dir);
+            assert!(agent_dir.contains("test-repo"));
+            assert!(agent_dir.contains("feature-branch"));
+        });
     }
 
     #[test]
     fn view_bucket_dir_contains_expected_components() {
-        let dir = view_bucket_dir("my-repo", "feature-branch", "unstaged");
-        let s = dir.to_string_lossy();
-        assert!(s.contains("my-repo"), "missing repo slug: {s}");
-        assert!(s.contains("feature-branch"), "missing branch slug: {s}");
-        assert!(
-            s.contains("view-buckets/unstaged"),
-            "missing bucket path: {s}"
-        );
+        let tmp = TempDir::new().unwrap();
+        with_test_storage_root(tmp.path(), || {
+            let dir = view_bucket_dir("my-repo", "feature-branch", "unstaged");
+            let s = dir.to_string_lossy();
+            assert!(s.contains("my-repo"), "missing repo slug: {s}");
+            assert!(s.contains("feature-branch"), "missing branch slug: {s}");
+            assert!(
+                s.contains("view-buckets/unstaged"),
+                "missing bucket path: {s}"
+            );
+        });
     }
 
     #[test]
     fn local_branch_bucket_dir_uses_branch_view_bucket() {
-        let ports = crate::ports::Ports::for_test();
-        let repo = repo_storage_slug_from_root(&*ports.git, "/tmp/example-repo");
-        let branch = slug_branch("feature/foo");
-        let dir = local_branch_bucket_dir(&*ports.git, "/tmp/example-repo", "feature/foo");
-        let s = dir.to_string_lossy();
-        assert!(
-            s.contains(&format!(
-                "repos/{repo}/branches/{branch}/view-buckets/branch"
-            )),
-            "{s}"
-        );
+        let tmp = TempDir::new().unwrap();
+        with_test_storage_root(tmp.path(), || {
+            let ports = crate::ports::Ports::for_test();
+            let repo = repo_storage_slug_from_root(&*ports.git, "/tmp/example-repo");
+            let branch = slug_branch("feature/foo");
+            let dir = local_branch_bucket_dir(&*ports.git, "/tmp/example-repo", "feature/foo");
+            let s = dir.to_string_lossy();
+            assert!(
+                s.contains(&format!(
+                    "repos/{repo}/branches/{branch}/view-buckets/branch"
+                )),
+                "{s}"
+            );
+        });
     }
 
     #[test]
@@ -719,75 +774,67 @@ mod tests {
 
     #[test]
     fn pr_bucket_dir_contains_expected_components() {
-        let dir = pr_bucket_dir("myorg-myrepo", 42);
-        let s = dir.to_string_lossy();
-        assert!(s.contains("myorg-myrepo"), "missing owner-repo slug: {s}");
-        assert!(s.contains("prs/pr-42"), "missing pr path: {s}");
+        let tmp = TempDir::new().unwrap();
+        with_test_storage_root(tmp.path(), || {
+            let dir = pr_bucket_dir("myorg-myrepo", 42);
+            let s = dir.to_string_lossy();
+            assert!(s.contains("myorg-myrepo"), "missing owner-repo slug: {s}");
+            assert!(s.contains("prs/pr-42"), "missing pr path: {s}");
+        });
     }
 
     #[test]
     fn resolve_managed_root_for_view_bucket_creates_dir() {
-        let _guard = STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let root = resolve_managed_root_for_view_bucket("test-repo", "main", "branch");
-        std::env::remove_var("ER_STORAGE_ROOT");
-        let crate::ErRoot::Managed {
-            agent_dir,
-            session_dir,
-        } = root;
-        assert_eq!(agent_dir, session_dir);
-        assert!(
-            agent_dir.contains("view-buckets/branch"),
-            "unexpected path: {agent_dir}"
-        );
-        assert!(
-            agent_dir.contains("test-repo"),
-            "missing repo slug: {agent_dir}"
-        );
+        with_test_storage_root(tmp.path(), || {
+            let root = resolve_managed_root_for_view_bucket("test-repo", "main", "branch");
+            let crate::ErRoot::Managed {
+                agent_dir,
+                session_dir,
+            } = root;
+            assert_eq!(agent_dir, session_dir);
+            assert!(
+                agent_dir.contains("view-buckets/branch"),
+                "unexpected path: {agent_dir}"
+            );
+            assert!(
+                agent_dir.contains("test-repo"),
+                "missing repo slug: {agent_dir}"
+            );
+        });
     }
 
     #[test]
     fn resolve_managed_root_for_pr_bucket_creates_dir() {
-        let _guard = STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let root = resolve_managed_root_for_pr_bucket("myorg-myrepo", 7);
-        std::env::remove_var("ER_STORAGE_ROOT");
-        let crate::ErRoot::Managed {
-            agent_dir,
-            session_dir,
-        } = root;
-        assert_eq!(agent_dir, session_dir);
-        assert!(
-            agent_dir.contains("prs/pr-7"),
-            "unexpected path: {agent_dir}"
-        );
-        assert!(
-            agent_dir.contains("myorg-myrepo"),
-            "missing slug: {agent_dir}"
-        );
+        with_test_storage_root(tmp.path(), || {
+            let root = resolve_managed_root_for_pr_bucket("myorg-myrepo", 7);
+            let crate::ErRoot::Managed {
+                agent_dir,
+                session_dir,
+            } = root;
+            assert_eq!(agent_dir, session_dir);
+            assert!(
+                agent_dir.contains("prs/pr-7"),
+                "unexpected path: {agent_dir}"
+            );
+            assert!(
+                agent_dir.contains("myorg-myrepo"),
+                "missing slug: {agent_dir}"
+            );
+        });
     }
 
     #[test]
-    fn repo_local_env_var_is_ignored() {
-        let _guard = STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    fn local_branch_buckets_are_always_managed() {
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        std::env::set_var("ER_REPO_LOCAL", "1");
-        let dir = local_branch_bucket_dir(
-            &*crate::ports::Ports::for_test().git,
-            "/some/repo",
-            "feature",
-        );
-        std::env::remove_var("ER_REPO_LOCAL");
-        std::env::remove_var("ER_STORAGE_ROOT");
+        let dir = with_test_storage_root(tmp.path(), || {
+            local_branch_bucket_dir(
+                &*crate::ports::Ports::for_test().git,
+                "/some/repo",
+                "feature",
+            )
+        });
 
         let s = dir.to_string_lossy();
         assert!(
@@ -799,24 +846,21 @@ mod tests {
 
     #[test]
     fn a_failed_mkdir_still_names_the_managed_path() {
-        let _guard = STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         let blocker = tmp.path().join("blocker");
         std::fs::write(&blocker, b"not a directory").unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", blocker.join("root"));
-        let root = resolve_managed_root_for_view_bucket("r", "b", "branch");
-        let expected = view_bucket_dir("r", "b", "branch");
-        std::env::remove_var("ER_STORAGE_ROOT");
+        with_test_storage_root(blocker.join("root"), || {
+            let root = resolve_managed_root_for_view_bucket("r", "b", "branch");
+            let expected = view_bucket_dir("r", "b", "branch");
 
-        assert_eq!(root.er_dir(), expected.to_string_lossy());
+            assert_eq!(root.er_dir(), expected.to_string_lossy());
+        });
     }
 }
 
 #[cfg(test)]
 mod store_scope_tests {
-    use super::{pr_bucket_dir, storage_root, view_bucket_dir, STORAGE_TEST_ENV_LOCK};
+    use super::{pr_bucket_dir, storage_root, view_bucket_dir, with_test_storage_root};
     use er_store::{Artifact, ArtifactKey, ArtifactStore, BranchView, Mode, Scope, Slug};
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
@@ -837,46 +881,42 @@ mod store_scope_tests {
 
     #[test]
     fn store_scope_paths_equal_the_engine_bucket_dirs() {
-        let _guard = STORAGE_TEST_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
-        let store = ArtifactStore::new(storage_root());
+        with_test_storage_root(tmp.path(), || {
+            let store = ArtifactStore::new(storage_root());
 
-        let repo = Slug::new("my-repo").unwrap();
-        let branch = Slug::new("feature-x").unwrap();
-        for view in [
-            BranchView::Branch,
-            BranchView::Unstaged,
-            BranchView::Staged,
-            BranchView::History,
-        ] {
-            let key = ArtifactKey::<ScopeTestArtifact>::new(
-                Scope::Branch {
-                    repo: repo.clone(),
-                    branch: branch.clone(),
-                    view,
-                },
-                (),
-            )
-            .unwrap();
+            let repo = Slug::new("my-repo").unwrap();
+            let branch = Slug::new("feature-x").unwrap();
+            for view in [
+                BranchView::Branch,
+                BranchView::Unstaged,
+                BranchView::Staged,
+                BranchView::History,
+            ] {
+                let key = ArtifactKey::<ScopeTestArtifact>::new(
+                    Scope::Branch {
+                        repo: repo.clone(),
+                        branch: branch.clone(),
+                        view,
+                    },
+                    (),
+                )
+                .unwrap();
+                assert_eq!(
+                    store.path(&key).parent().unwrap(),
+                    view_bucket_dir("my-repo", "feature-x", view.as_str()).as_path()
+                );
+            }
+
+            let pr = Scope::Pr {
+                repo: Slug::new("owner-repo").unwrap(),
+                number: 42,
+            };
+            let key = ArtifactKey::<ScopeTestArtifact>::new(pr, ()).unwrap();
             assert_eq!(
                 store.path(&key).parent().unwrap(),
-                view_bucket_dir("my-repo", "feature-x", view.as_str()).as_path()
+                pr_bucket_dir("owner-repo", 42).as_path()
             );
-        }
-
-        let pr = Scope::Pr {
-            repo: Slug::new("owner-repo").unwrap(),
-            number: 42,
-        };
-        let key = ArtifactKey::<ScopeTestArtifact>::new(pr, ()).unwrap();
-        assert_eq!(
-            store.path(&key).parent().unwrap(),
-            pr_bucket_dir("owner-repo", 42).as_path()
-        );
-
-        std::env::remove_var("ER_STORAGE_ROOT");
+        });
     }
 }

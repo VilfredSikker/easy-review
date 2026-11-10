@@ -356,62 +356,64 @@ mod tests {
     #[test]
     fn append_and_update_finding_response() {
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        let finding = Finding {
-            id: "f1".to_string(),
-            severity: RiskLevel::Medium,
-            lens: String::new(),
-            category: "correctness".to_string(),
-            raised_by: Vec::new(),
-            providers: Vec::new(),
-            title: "t".to_string(),
-            description: "d".to_string(),
-            hunk_index: None,
-            line_start: None,
-            line_end: None,
-            line_content: String::new(),
-            stale: false,
-            suggestion: String::new(),
-            related_files: Vec::new(),
-            outside_diff: false,
-            confidence: Confidence::default(),
-            verification_plan: String::new(),
-            evidence: Vec::new(),
-            responses: Vec::new(),
-            resolved: false,
-            resolved_note: String::new(),
-            resolved_at: String::new(),
-            promoted_to: None,
-        };
-        let review = ErReview {
-            version: 1,
-            diff_hash: "h".to_string(),
-            created_at: String::new(),
-            base_branch: String::new(),
-            head_branch: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                ErFileReview {
-                    risk: RiskLevel::Low,
-                    risk_reason: String::new(),
-                    summary: String::new(),
-                    findings: vec![finding],
-                },
-            ))
-            .collect::<HashMap<_, _>>(),
-            file_hashes: HashMap::new(),
-        };
-        write_json_atomic(&er.join("review.json"), &review).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            let finding = Finding {
+                id: "f1".to_string(),
+                severity: RiskLevel::Medium,
+                lens: String::new(),
+                category: "correctness".to_string(),
+                raised_by: Vec::new(),
+                providers: Vec::new(),
+                title: "t".to_string(),
+                description: "d".to_string(),
+                hunk_index: None,
+                line_start: None,
+                line_end: None,
+                line_content: String::new(),
+                stale: false,
+                suggestion: String::new(),
+                related_files: Vec::new(),
+                outside_diff: false,
+                confidence: Confidence::default(),
+                verification_plan: String::new(),
+                evidence: Vec::new(),
+                responses: Vec::new(),
+                resolved: false,
+                resolved_note: String::new(),
+                resolved_at: String::new(),
+                promoted_to: None,
+            };
+            let review = ErReview {
+                version: 1,
+                diff_hash: "h".to_string(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ErFileReview {
+                        risk: RiskLevel::Low,
+                        risk_reason: String::new(),
+                        summary: String::new(),
+                        findings: vec![finding],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+                file_hashes: HashMap::new(),
+            };
+            write_json_atomic(&er.join("review.json"), &review).unwrap();
 
-        let id = append_finding_response(er.to_str().unwrap(), "f1", "first").unwrap();
-        update_finding_response(er.to_str().unwrap(), "f1", &id, "updated").unwrap();
+            let id = append_finding_response(er.to_str().unwrap(), "f1", "first").unwrap();
+            update_finding_response(er.to_str().unwrap(), "f1", &id, "updated").unwrap();
 
-        let content = std::fs::read_to_string(er.join("review.json")).unwrap();
-        let loaded: ErReview = serde_json::from_str(&content).unwrap();
-        assert_eq!(
-            loaded.files["a.rs"].findings[0].responses[0].text,
-            "updated"
-        );
+            let content = std::fs::read_to_string(er.join("review.json")).unwrap();
+            let loaded: ErReview = serde_json::from_str(&content).unwrap();
+            assert_eq!(
+                loaded.files["a.rs"].findings[0].responses[0].text,
+                "updated"
+            );
+        });
     }
 
     fn bare_finding(id: &str) -> Finding {
@@ -451,35 +453,37 @@ mod tests {
         use crate::ai::experts::{ExpertFileReview, ExpertReview};
 
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        std::fs::create_dir_all(er.join("experts")).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::create_dir_all(er.join("experts")).unwrap();
 
-        let expert = ExpertReview {
-            version: 1,
-            expert_id: "api".to_string(),
-            diff_hash: "h".to_string(),
-            diff_scope: String::new(),
-            created_at: String::new(),
-            summary: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                ExpertFileReview {
-                    findings: vec![bare_finding("1")],
-                },
-            ))
-            .collect::<HashMap<_, _>>(),
-        };
-        write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
+            let expert = ExpertReview {
+                version: 1,
+                expert_id: "api".to_string(),
+                diff_hash: "h".to_string(),
+                diff_scope: String::new(),
+                created_at: String::new(),
+                summary: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ExpertFileReview {
+                        findings: vec![bare_finding("1")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+            };
+            write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
 
-        // No review.json at all — must not error with "No such file or directory".
-        append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
+            // No review.json at all — must not error with "No such file or directory".
+            append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
 
-        let content = std::fs::read_to_string(er.join("experts/api.json")).unwrap();
-        let loaded: ExpertReview = serde_json::from_str(&content).unwrap();
-        assert_eq!(
-            loaded.files["a.rs"].findings[0].responses[0].text,
-            "validated"
-        );
+            let content = std::fs::read_to_string(er.join("experts/api.json")).unwrap();
+            let loaded: ExpertReview = serde_json::from_str(&content).unwrap();
+            assert_eq!(
+                loaded.files["a.rs"].findings[0].responses[0].text,
+                "validated"
+            );
+        });
     }
 
     // A corrupt review.json must not be rewritten as an empty review when the
@@ -489,42 +493,45 @@ mod tests {
         use crate::ai::experts::{ExpertFileReview, ExpertReview};
 
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        std::fs::create_dir_all(er.join("experts")).unwrap();
-        let corrupt = "{ not valid json";
-        std::fs::write(er.join("review.json"), corrupt).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::create_dir_all(er.join("experts")).unwrap();
+            let corrupt = "{ not valid json";
+            std::fs::write(er.join("review.json"), corrupt).unwrap();
 
-        let expert = ExpertReview {
-            version: 1,
-            expert_id: "api".to_string(),
-            diff_hash: "h".to_string(),
-            diff_scope: String::new(),
-            created_at: String::new(),
-            summary: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                ExpertFileReview {
-                    findings: vec![bare_finding("1")],
-                },
-            ))
-            .collect::<HashMap<_, _>>(),
-        };
-        write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
+            let expert = ExpertReview {
+                version: 1,
+                expert_id: "api".to_string(),
+                diff_hash: "h".to_string(),
+                diff_scope: String::new(),
+                created_at: String::new(),
+                summary: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ExpertFileReview {
+                        findings: vec![bare_finding("1")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+            };
+            write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
 
-        append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
+            append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
 
-        assert_eq!(
-            std::fs::read_to_string(er.join("review.json")).unwrap(),
-            corrupt,
-            "a malformed sidecar is skipped, never rewritten"
-        );
-        let loaded: ExpertReview =
-            serde_json::from_str(&std::fs::read_to_string(er.join("experts/api.json")).unwrap())
-                .unwrap();
-        assert_eq!(
-            loaded.files["a.rs"].findings[0].responses[0].text,
-            "validated"
-        );
+            assert_eq!(
+                std::fs::read_to_string(er.join("review.json")).unwrap(),
+                corrupt,
+                "a malformed sidecar is skipped, never rewritten"
+            );
+            let loaded: ExpertReview = serde_json::from_str(
+                &std::fs::read_to_string(er.join("experts/api.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                loaded.files["a.rs"].findings[0].responses[0].text,
+                "validated"
+            );
+        });
     }
 
     // A newer review.json must not be rewritten when the reply belongs to an
@@ -534,42 +541,45 @@ mod tests {
         use crate::ai::experts::{ExpertFileReview, ExpertReview};
 
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        std::fs::create_dir_all(er.join("experts")).unwrap();
-        let newer = r#"{"version":2,"diff_hash":"h","files":{}}"#;
-        std::fs::write(er.join("review.json"), newer).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::create_dir_all(er.join("experts")).unwrap();
+            let newer = r#"{"version":2,"diff_hash":"h","files":{}}"#;
+            std::fs::write(er.join("review.json"), newer).unwrap();
 
-        let expert = ExpertReview {
-            version: 1,
-            expert_id: "api".to_string(),
-            diff_hash: "h".to_string(),
-            diff_scope: String::new(),
-            created_at: String::new(),
-            summary: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                ExpertFileReview {
-                    findings: vec![bare_finding("1")],
-                },
-            ))
-            .collect::<HashMap<_, _>>(),
-        };
-        write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
+            let expert = ExpertReview {
+                version: 1,
+                expert_id: "api".to_string(),
+                diff_hash: "h".to_string(),
+                diff_scope: String::new(),
+                created_at: String::new(),
+                summary: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ExpertFileReview {
+                        findings: vec![bare_finding("1")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+            };
+            write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
 
-        append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
+            append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
 
-        assert_eq!(
-            std::fs::read_to_string(er.join("review.json")).unwrap(),
-            newer,
-            "a newer file is left alone"
-        );
-        let loaded: ExpertReview =
-            serde_json::from_str(&std::fs::read_to_string(er.join("experts/api.json")).unwrap())
-                .unwrap();
-        assert_eq!(
-            loaded.files["a.rs"].findings[0].responses[0].text,
-            "validated"
-        );
+            assert_eq!(
+                std::fs::read_to_string(er.join("review.json")).unwrap(),
+                newer,
+                "a newer file is left alone"
+            );
+            let loaded: ExpertReview = serde_json::from_str(
+                &std::fs::read_to_string(er.join("experts/api.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                loaded.files["a.rs"].findings[0].responses[0].text,
+                "validated"
+            );
+        });
     }
 
     // With both sidecars present, a general finding still lands in review.json
@@ -579,65 +589,67 @@ mod tests {
         use crate::ai::experts::{ExpertFileReview, ExpertReview};
 
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        std::fs::create_dir_all(er.join("experts")).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::create_dir_all(er.join("experts")).unwrap();
 
-        let review = ErReview {
-            version: 1,
-            diff_hash: "h".to_string(),
-            created_at: String::new(),
-            base_branch: String::new(),
-            head_branch: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                ErFileReview {
-                    risk: RiskLevel::Low,
-                    risk_reason: String::new(),
-                    summary: String::new(),
-                    findings: vec![bare_finding("f-1")],
-                },
-            ))
-            .collect::<HashMap<_, _>>(),
-            file_hashes: HashMap::new(),
-        };
-        write_json_atomic(&er.join("review.json"), &review).unwrap();
+            let review = ErReview {
+                version: 1,
+                diff_hash: "h".to_string(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ErFileReview {
+                        risk: RiskLevel::Low,
+                        risk_reason: String::new(),
+                        summary: String::new(),
+                        findings: vec![bare_finding("f-1")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+                file_hashes: HashMap::new(),
+            };
+            write_json_atomic(&er.join("review.json"), &review).unwrap();
 
-        let expert = ExpertReview {
-            version: 1,
-            expert_id: "security".to_string(),
-            diff_hash: "h".to_string(),
-            diff_scope: String::new(),
-            created_at: String::new(),
-            summary: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                ExpertFileReview {
-                    findings: vec![bare_finding("2")],
-                },
-            ))
-            .collect::<HashMap<_, _>>(),
-        };
-        write_json_atomic(&er.join("experts/security.json"), &expert).unwrap();
+            let expert = ExpertReview {
+                version: 1,
+                expert_id: "security".to_string(),
+                diff_hash: "h".to_string(),
+                diff_scope: String::new(),
+                created_at: String::new(),
+                summary: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ExpertFileReview {
+                        findings: vec![bare_finding("2")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+            };
+            write_json_atomic(&er.join("experts/security.json"), &expert).unwrap();
 
-        append_finding_response(er.to_str().unwrap(), "f-1", "general-reply").unwrap();
-        append_finding_response(er.to_str().unwrap(), "sec-2", "expert-reply").unwrap();
+            append_finding_response(er.to_str().unwrap(), "f-1", "general-reply").unwrap();
+            append_finding_response(er.to_str().unwrap(), "sec-2", "expert-reply").unwrap();
 
-        let r: ErReview =
-            serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
-                .unwrap();
-        assert_eq!(
-            r.files["a.rs"].findings[0].responses[0].text,
-            "general-reply"
-        );
+            let r: ErReview =
+                serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                r.files["a.rs"].findings[0].responses[0].text,
+                "general-reply"
+            );
 
-        let e: ExpertReview = serde_json::from_str(
-            &std::fs::read_to_string(er.join("experts/security.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            e.files["a.rs"].findings[0].responses[0].text,
-            "expert-reply"
-        );
+            let e: ExpertReview = serde_json::from_str(
+                &std::fs::read_to_string(er.join("experts/security.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                e.files["a.rs"].findings[0].responses[0].text,
+                "expert-reply"
+            );
+        });
     }
 
     // A corrupt review.json must not block validation of a finding that lives in
@@ -647,37 +659,39 @@ mod tests {
         use crate::ai::experts::{ExpertFileReview, ExpertReview};
 
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        std::fs::create_dir_all(er.join("experts")).unwrap();
-        std::fs::write(er.join("review.json"), "{ not valid json").unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::create_dir_all(er.join("experts")).unwrap();
+            std::fs::write(er.join("review.json"), "{ not valid json").unwrap();
 
-        let expert = ExpertReview {
-            version: 1,
-            expert_id: "security".to_string(),
-            diff_hash: "h".to_string(),
-            diff_scope: String::new(),
-            created_at: String::new(),
-            summary: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                ExpertFileReview {
-                    findings: vec![bare_finding("3")],
-                },
-            ))
-            .collect::<HashMap<_, _>>(),
-        };
-        write_json_atomic(&er.join("experts/security.json"), &expert).unwrap();
+            let expert = ExpertReview {
+                version: 1,
+                expert_id: "security".to_string(),
+                diff_hash: "h".to_string(),
+                diff_scope: String::new(),
+                created_at: String::new(),
+                summary: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ExpertFileReview {
+                        findings: vec![bare_finding("3")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+            };
+            write_json_atomic(&er.join("experts/security.json"), &expert).unwrap();
 
-        append_finding_response(er.to_str().unwrap(), "sec-3", "validated").unwrap();
+            append_finding_response(er.to_str().unwrap(), "sec-3", "validated").unwrap();
 
-        let loaded: ExpertReview = serde_json::from_str(
-            &std::fs::read_to_string(er.join("experts/security.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            loaded.files["a.rs"].findings[0].responses[0].text,
-            "validated"
-        );
+            let loaded: ExpertReview = serde_json::from_str(
+                &std::fs::read_to_string(er.join("experts/security.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                loaded.files["a.rs"].findings[0].responses[0].text,
+                "validated"
+            );
+        });
     }
 
     // Professor insights merge with a `prof-` id prefix and persist in
@@ -687,34 +701,36 @@ mod tests {
         use crate::ai::professor::{ProfessorFileReview, ProfessorReview};
 
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
 
-        let prof = ProfessorReview {
-            version: 1,
-            diff_hash: "h".to_string(),
-            diff_scope: String::new(),
-            created_at: String::new(),
-            focus_prompt: String::new(),
-            summary: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                ProfessorFileReview {
-                    findings: vec![bare_finding("1")],
-                },
-            ))
-            .collect::<HashMap<_, _>>(),
-        };
-        write_json_atomic(&er.join("professor.json"), &prof).unwrap();
+            let prof = ProfessorReview {
+                version: 1,
+                diff_hash: "h".to_string(),
+                diff_scope: String::new(),
+                created_at: String::new(),
+                focus_prompt: String::new(),
+                summary: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ProfessorFileReview {
+                        findings: vec![bare_finding("1")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+            };
+            write_json_atomic(&er.join("professor.json"), &prof).unwrap();
 
-        append_finding_response(er.to_str().unwrap(), "prof-1", "validated").unwrap();
+            append_finding_response(er.to_str().unwrap(), "prof-1", "validated").unwrap();
 
-        let loaded: ProfessorReview =
-            serde_json::from_str(&std::fs::read_to_string(er.join("professor.json")).unwrap())
-                .unwrap();
-        assert_eq!(
-            loaded.files["a.rs"].findings[0].responses[0].text,
-            "validated"
-        );
+            let loaded: ProfessorReview =
+                serde_json::from_str(&std::fs::read_to_string(er.join("professor.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                loaded.files["a.rs"].findings[0].responses[0].text,
+                "validated"
+            );
+        });
     }
 
     // An unknown expert (not in the registry) is never merged into the in-memory
@@ -725,63 +741,65 @@ mod tests {
         use crate::ai::experts::{ExpertFileReview, ExpertReview};
 
         let dir = tempfile::tempdir().unwrap();
-        let er = dir.path();
-        std::fs::create_dir_all(er.join("experts")).unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            std::fs::create_dir_all(er.join("experts")).unwrap();
 
-        let review = ErReview {
-            version: 1,
-            diff_hash: "h".to_string(),
-            created_at: String::new(),
-            base_branch: String::new(),
-            head_branch: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                ErFileReview {
-                    risk: RiskLevel::Low,
-                    risk_reason: String::new(),
-                    summary: String::new(),
-                    findings: vec![bare_finding("1")],
-                },
-            ))
-            .collect::<HashMap<_, _>>(),
-            file_hashes: HashMap::new(),
-        };
-        write_json_atomic(&er.join("review.json"), &review).unwrap();
+            let review = ErReview {
+                version: 1,
+                diff_hash: "h".to_string(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ErFileReview {
+                        risk: RiskLevel::Low,
+                        risk_reason: String::new(),
+                        summary: String::new(),
+                        findings: vec![bare_finding("1")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+                file_hashes: HashMap::new(),
+            };
+            write_json_atomic(&er.join("review.json"), &review).unwrap();
 
-        // Unknown expert id with a colliding bare finding id "1".
-        let unknown = ExpertReview {
-            version: 1,
-            expert_id: "made-up".to_string(),
-            diff_hash: "h".to_string(),
-            diff_scope: String::new(),
-            created_at: String::new(),
-            summary: String::new(),
-            files: std::iter::once((
-                "a.rs".to_string(),
-                ExpertFileReview {
-                    findings: vec![bare_finding("1")],
-                },
-            ))
-            .collect::<HashMap<_, _>>(),
-        };
-        write_json_atomic(&er.join("experts/made-up.json"), &unknown).unwrap();
+            // Unknown expert id with a colliding bare finding id "1".
+            let unknown = ExpertReview {
+                version: 1,
+                expert_id: "made-up".to_string(),
+                diff_hash: "h".to_string(),
+                diff_scope: String::new(),
+                created_at: String::new(),
+                summary: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ExpertFileReview {
+                        findings: vec![bare_finding("1")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+            };
+            write_json_atomic(&er.join("experts/made-up.json"), &unknown).unwrap();
 
-        append_finding_response(er.to_str().unwrap(), "1", "general-reply").unwrap();
+            append_finding_response(er.to_str().unwrap(), "1", "general-reply").unwrap();
 
-        // The reply lands in review.json…
-        let r: ErReview =
-            serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
-                .unwrap();
-        assert_eq!(
-            r.files["a.rs"].findings[0].responses[0].text,
-            "general-reply"
-        );
+            // The reply lands in review.json…
+            let r: ErReview =
+                serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                r.files["a.rs"].findings[0].responses[0].text,
+                "general-reply"
+            );
 
-        // …and the unknown sidecar is left untouched (no responses written).
-        let u: ExpertReview = serde_json::from_str(
-            &std::fs::read_to_string(er.join("experts/made-up.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(u.files["a.rs"].findings[0].responses.is_empty());
+            // …and the unknown sidecar is left untouched (no responses written).
+            let u: ExpertReview = serde_json::from_str(
+                &std::fs::read_to_string(er.join("experts/made-up.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(u.files["a.rs"].findings[0].responses.is_empty());
+        });
     }
 }
