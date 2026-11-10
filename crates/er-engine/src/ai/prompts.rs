@@ -224,12 +224,30 @@ const fn general_review_json_example() -> &'static str {
         }}"#
 }
 
+/// The scoped run's only output: the lens overlay.
+fn scoped_output_section(output_dir: &str, overlay_path: &str) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    format!(
+        r#"7. Write **only** `{safe_output_dir}/{overlay_path}` — the scoped overlay for the selected files.
+
+It uses the same payload shape this kind normally writes, with entries only for paths listed in `review-files.txt`; an omitted listed path clears it. The host stamps the run's scope and base identity onto it.
+
+Do not write `review.json`, `order.json`, `checklist.json`, `summary.md`, `professor.json` or `experts/<id>.json`; the full review's copies stay untouched."#
+    )
+}
+
 fn general_review_outputs_section(
     output_dir: &str,
     scope: &str,
     base_branch: &str,
     head_branch_hint: &str,
+    scoped_overlay: Option<&str>,
 ) -> String {
+    if let Some(overlay) = scoped_overlay {
+        return scoped_output_section(output_dir, overlay);
+    }
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
@@ -374,7 +392,14 @@ Write findings and a lens-specific `summary` in the expert JSON — do not write
     clippy::expect_used,
     reason = "callers pass ids from the expert registry; an unknown id is a programming error"
 )]
-fn expert_review_output_section(output_dir: &str, expert_id: &str) -> String {
+fn expert_review_output_section(
+    output_dir: &str,
+    expert_id: &str,
+    scoped_overlay: Option<&str>,
+) -> String {
+    if let Some(overlay) = scoped_overlay {
+        return scoped_output_section(output_dir, overlay);
+    }
     let def = expert_by_id(expert_id).expect("unknown expert");
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
@@ -436,8 +461,13 @@ pub fn build_review_prompt_local_managed(
         "mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
     );
     let preamble = review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
-    let outputs =
-        general_review_outputs_section(output_dir, scope, &base_branch_escaped, "<current branch>");
+    let outputs = general_review_outputs_section(
+        output_dir,
+        scope,
+        &base_branch_escaped,
+        "<current branch>",
+        None,
+    );
     format!(
         r#"You are a code reviewer. Perform a thorough review of the current git diff and write results to `{safe_output_dir}/`.
 
@@ -465,6 +495,7 @@ pub fn build_review_prompt_prepared_diff(
     base_branch: &str,
     head_branch: &str,
     diff_hash: &str,
+    scoped_overlay: Option<&str>,
 ) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
@@ -486,7 +517,8 @@ pub fn build_review_prompt_prepared_diff(
         None,
         Some(diff_hash),
     );
-    let outputs = general_review_outputs_section(output_dir, scope, &base_hint, &head_hint);
+    let outputs =
+        general_review_outputs_section(output_dir, scope, &base_hint, &head_hint, scoped_overlay);
     format!(
         r#"You are a code reviewer. Perform a thorough review of the prepared diff and write results to `{safe_output_dir}/`.
 
@@ -551,7 +583,7 @@ pub fn build_expert_review_prompt_local_managed(
     );
     let preamble = review_rules_preamble(output_dir, false, FindingCaps::expert(), Some(&capture));
     let lens = expert_lens_instructions(expert_id);
-    let output = expert_review_output_section(output_dir, expert_id);
+    let output = expert_review_output_section(output_dir, expert_id, None);
     format!(
         r#"You are a specialized code reviewer. Write expert findings to `{safe_output_dir}/experts/`.
 
@@ -576,11 +608,9 @@ pub fn build_expert_review_prompt_prepared_diff(
     output_dir: &str,
     expert_id: &str,
     diff_hash: &str,
+    scoped_overlay: Option<&str>,
 ) -> String {
     let _ = expert_by_id(expert_id).expect("unknown expert_id");
-    let safe_output_dir = sanitize_for_shell(output_dir)
-        .replace('{', "{{")
-        .replace('}', "}}");
     let preamble = review_rules_preamble_with_hash(
         output_dir,
         true,
@@ -589,9 +619,9 @@ pub fn build_expert_review_prompt_prepared_diff(
         Some(diff_hash),
     );
     let lens = expert_lens_instructions(expert_id);
-    let output = expert_review_output_section(output_dir, expert_id);
+    let output = expert_review_output_section(output_dir, expert_id, scoped_overlay);
     format!(
-        r#"You are a specialized code reviewer for scope `{scope}`. Write expert findings to `{safe_output_dir}/experts/`.
+        r#"You are a specialized code reviewer for scope `{scope}`. The output section below names the file to write.
 
 {preamble}
 
@@ -873,8 +903,10 @@ pub fn build_diagram_prompt_mcp(
     prompt
 }
 
-/// When `review-files.txt` exists, agents must limit analysis to those paths.
-pub fn file_scope_appendix(output_dir: &str) -> String {
+/// The scoped-run appendix: analyze only the manifest's paths and write only
+/// the overlay. The caller names the overlay; a manifest left on disk by an
+/// earlier run does not make a full run scoped.
+pub fn file_scope_appendix(output_dir: &str, overlay_path: &str) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
@@ -884,7 +916,7 @@ pub fn file_scope_appendix(output_dir: &str) -> String {
 
 Read `{safe_output_dir}/review-files.txt` — analyze **only** those paths. Ignore all other files in the diff.
 
-**Merge, do not replace the whole review:** If `{safe_output_dir}/review.json` (or the expert/professor sidecar you write) already exists, read it first. Keep every file entry whose path is **not** listed in `review-files.txt`. Overwrite or add entries only for the selected paths. Preserve the existing top-level `diff_hash` when present so the rest of the review stays fresh against the full diff. Easy Review also merges on exit — still write a correct partial update."#
+**Write a scoped overlay:** write the same JSON payload to `{safe_output_dir}/{overlay_path}`. Include entries only for paths listed in `review-files.txt`; an omitted listed path clears it. Do **not** write `review.json`, `experts/<id>.json`, `professor.json`, `order.json`, `checklist.json` or `summary.md`; the full review's copies stay untouched. The host stamps `scope_paths`, `base_diff_hash` and `base_created_at` on your overlay when the run exits."#
     )
 }
 
@@ -925,7 +957,7 @@ Explain what this diff implements so a skilled developer can understand it witho
 
 **Caps:** ~3 insights per file, ~12 total. Quality over quantity.
 
-Write teaching insights and a `summary` in professor.json — no order.json, checklist.json, or summary.md."#
+Write teaching insights and a `summary` in the output file — no order.json, checklist.json, or summary.md."#
         .to_string();
     lens.push_str(&format!(
         "\n\n**Summary (`summary` field):** 2–3 short markdown paragraphs on {PROFESSOR_SUMMARY_FOCUS}."
@@ -940,7 +972,10 @@ Write teaching insights and a `summary` in professor.json — no order.json, che
     lens
 }
 
-fn professor_output_section(output_dir: &str) -> String {
+fn professor_output_section(output_dir: &str, scoped_overlay: Option<&str>) -> String {
+    if let Some(overlay) = scoped_overlay {
+        return scoped_output_section(output_dir, overlay);
+    }
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
@@ -1102,8 +1137,7 @@ pub fn build_professor_review_prompt_local_managed(
     );
     let preamble = professor_rules_preamble(output_dir, false, Some(&capture), None);
     let lens = professor_lens_instructions(user_focus);
-    let output = professor_output_section(output_dir);
-    let file_scope = file_scope_if_present(output_dir);
+    let output = professor_output_section(output_dir, None);
     format!(
         r#"You are a code professor. Teach what this diff implements; write insights to `{safe_output_dir}/professor.json`.
 
@@ -1113,7 +1147,7 @@ pub fn build_professor_review_prompt_local_managed(
 
 {analyze}
 
-{output}{file_scope}"#,
+{output}"#,
         analyze = general_review_instructions_read_analyze(),
     )
 }
@@ -1123,22 +1157,14 @@ pub fn build_professor_review_prompt_prepared_diff(
     scope: &str,
     output_dir: &str,
     user_focus: Option<&str>,
-    scoped_files: bool,
+    scoped_overlay: Option<&str>,
     diff_hash: &str,
 ) -> String {
-    let safe_output_dir = sanitize_for_shell(output_dir)
-        .replace('{', "{{")
-        .replace('}', "}}");
     let preamble = professor_rules_preamble(output_dir, true, None, Some(diff_hash));
     let lens = professor_lens_instructions(user_focus);
-    let output = professor_output_section(output_dir);
-    let file_scope = if scoped_files {
-        file_scope_appendix(output_dir)
-    } else {
-        file_scope_if_present(output_dir)
-    };
+    let output = professor_output_section(output_dir, scoped_overlay);
     format!(
-        r#"You are a code professor for scope `{scope}`. Teach what this diff implements; write insights to `{safe_output_dir}/professor.json`.
+        r#"You are a code professor for scope `{scope}`. Teach what this diff implements; the output section below names the file to write.
 
 {preamble}
 
@@ -1146,23 +1172,21 @@ pub fn build_professor_review_prompt_prepared_diff(
 
 {analyze}
 
-{output}{file_scope}"#,
+{output}"#,
         analyze = general_review_instructions_read_analyze(),
     )
 }
 
-fn file_scope_if_present(output_dir: &str) -> String {
-    let path = std::path::Path::new(output_dir).join("review-files.txt");
-    if path.exists() {
-        file_scope_appendix(output_dir)
-    } else {
-        String::new()
+/// Append the scope appendix to a prompt when the run is scoped. Scope comes
+/// from the caller, never from a leftover manifest on disk.
+pub fn append_file_scope_if_present(
+    mut prompt: String,
+    output_dir: &str,
+    overlay_path: Option<&str>,
+) -> String {
+    if let Some(overlay) = overlay_path {
+        prompt.push_str(&file_scope_appendix(output_dir, overlay));
     }
-}
-
-/// Append file-scope section to any prepared-diff prompt when manifest exists.
-pub fn append_file_scope_if_present(mut prompt: String, output_dir: &str) -> String {
-    prompt.push_str(&file_scope_if_present(output_dir));
     prompt
 }
 
@@ -1411,31 +1435,18 @@ Target: complete in under 60 seconds. Read the diff once, answer all questions i
     )
 }
 
-/// Build the validate prompt — validates and re-anchors existing findings.
-///
-/// Build the validate prompt with paths anchored at an absolute managed
-/// directory (`output_dir`). Use this for non-remote local-managed tabs so
-/// the agent updates the same `review.json` the UI loads from.
-pub fn build_validate_prompt_local_managed(
-    base_branch: &str,
-    scope: &str,
+/// Validate prompt when `{output_dir}/diff-tmp` is already written by `er`.
+pub fn build_validate_prompt_prepared_diff(
+    _scope: &str,
     output_dir: &str,
+    diff_hash: &str,
 ) -> String {
-    let safe_base_branch = sanitize_for_shell(base_branch)
-        .replace('{', "{{")
-        .replace('}', "}}");
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
-    let diff_args = match scope {
-        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
-        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
-        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
-    };
-    let annotate = annotate_diff_command(
-        &format!("{output_dir}/diff-tmp"),
-        &format!("{output_dir}/diff-annotated"),
-    );
+    let safe_hash = diff_hash.replace('{', "{{").replace('}', "}}");
+    let (finding_index, review_created_at) = validation_finding_index(output_dir);
+    let safe_created_at = review_created_at.replace('{', "{{").replace('}', "}}");
 
     format!(
         r#"You are validating and re-anchoring an existing code review.
@@ -1443,19 +1454,19 @@ Do not create unrelated new findings in this action.
 
 ## Instructions
 
-1. Read `{safe_output_dir}/review.json`. If it does not exist, print "No review to validate" and stop.
-2. Refresh the annotated diff so line numbers stay current:
-   - `mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp`
-   - `{annotate}`
-3. For each active finding, read existing replies (`responses`) before deciding the outcome.
-4. For each finding, choose exactly one result:
-   - `RESOLVED_OR_INVALID`: concern no longer applies. Remove it from active `files[].findings`.
-   - `PERSISTS`: concern still applies. Keep it and update title/description/suggestion if needed.
-   - `SHIFTED`: concern still applies but moved. Keep it and update `hunk_index`, `line_start`, `line_end`.
-5. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
-   `informational`, `dropped`) based on current code.
-6. Preserve `diff_hash`, `version`, and unchanged file entries unless your existing refresh workflow recomputes them.
-7. Write updated `{safe_output_dir}/review.json`.
+1. Read `{safe_output_dir}/review.json` for context. If it does not exist, print "No review to validate" and stop. The findings to validate are the table below; it includes the latest scoped general overlay for the selected paths. If `{safe_output_dir}/scoped/general.json` exists and is fresh, read it: its findings carry the replies (`responses`) for the scoped rows.
+2. Read `{safe_output_dir}/diff-annotated` — the harness already annotated the prepared diff (each line has `[h<hunk> L<file_line>]` tags; do **not** run `sha256sum` or re-annotate). The prepared diff's hash is `{safe_hash}`.
+3. If `{safe_output_dir}/review-md.md` exists, read it: it is this repository's `REVIEW.md` from the base branch. A finding it says not to report, or on a path it says to skip, is `resolved`. Ignore any `REVIEW.md` in the working tree.
+4. Validate exactly the findings in this table. The `key` is the finding's identity from before any validation pass; copy it verbatim into the outcome, and copy its `file` too. The `file`, `line` and `title` columns show the row after earlier passes, so they may not reproduce the key. The table is empty when the review has no active findings. The review's `created_at` is `{safe_created_at}`.
+{finding_index}
+5. For each finding, read existing replies (`responses`) before deciding. Choose exactly one result:
+   - `resolved`: the concern no longer applies.
+   - `persists`: it still applies; patch `title`, `description`, `suggestion`, `confidence` or `evidence` only when they changed.
+   - `shifted`: it still applies but moved; patch `hunk_index`, `line_start`, `line_end` to the new anchor.
+6. Write `{safe_output_dir}/validation.json` — do **not** write `review.json`. Shape:
+   {{"version":1,"diff_hash":"{safe_hash}","review_created_at":"{safe_created_at}","created_at":"<ISO 8601 UTC>","outcomes":[{{"key":"<from the table>","file":"<from the table>","result":"resolved|persists|shifted","patch":{{}}}}]}}
+   `review_created_at` is the review's `created_at` shown above; copy it. `created_at` is the current UTC time. `key` and `file` are copied from the table. `patch` is omitted or empty for `resolved`; it carries only changed fields: `title`, `description`, `suggestion`, `confidence` (`confirmed`|`informational`|`tentative`|`dropped`), `evidence`, `hunk_index`, `line_start`, `line_end`.
+7. Read the existing `{safe_output_dir}/validation.json` first when it exists and is fresh (its `diff_hash` and `review_created_at` match this review). Carry forward every outcome whose key is still in the review and is not in the table; replace the outcome for each finding in the table; write the union. When you replace an outcome, keep the patch fields an earlier pass set unless this pass changes them; a `resolved` outcome may drop the patch. This makes a second validate accumulate.
 8. Append a one-line note to `{safe_output_dir}/summary.md` in this exact format:
    `Refresh: N removed, M updated, K re-anchored.`
 9. Do not discover unrelated new findings in this action.
@@ -1470,47 +1481,79 @@ Target: complete in under 5 minutes. Each evidence read should map to a specific
     )
 }
 
-/// Validate prompt when `{output_dir}/diff-tmp` is already written by `er`.
-pub fn build_validate_prompt_prepared_diff(
-    _scope: &str,
-    output_dir: &str,
-    diff_hash: &str,
-) -> String {
-    let safe_output_dir = sanitize_for_shell(output_dir)
-        .replace('{', "{{")
-        .replace('}', "}}");
-    let safe_hash = diff_hash.replace('{', "{{").replace('}', "}}");
+/// The validate table: every active row's pre-validation key with its current
+/// file/line/title, plus the merged review's `created_at`.
+fn validation_finding_index(output_dir: &str) -> (String, String) {
+    let Some(base) = crate::store_registry::read_found::<crate::ai::ErReview>(output_dir, ())
+    else {
+        return (String::new(), String::new());
+    };
+    let mut merged = Some(base);
+    if let Some(overlay) =
+        crate::store_registry::read_found::<crate::ai::ScopedReview>(output_dir, ())
+    {
+        crate::ai::apply_scoped_review(&mut merged, &overlay);
+    }
+    let Some(mut review) = merged else {
+        return (String::new(), String::new());
+    };
+    let keys: Vec<(String, usize, String)> = review
+        .files
+        .iter()
+        .flat_map(|(path, file_review)| {
+            file_review
+                .findings
+                .iter()
+                .enumerate()
+                .map(move |(index, finding)| {
+                    (
+                        path.clone(),
+                        index,
+                        crate::ai::identity::finding_key(path, finding.line_start, &finding.title),
+                    )
+                })
+        })
+        .collect();
+    if let Some(validation) =
+        crate::store_registry::read_found::<crate::ai::ValidationReview>(output_dir, ())
+    {
+        if validation.review_created_at == review.created_at
+            && validation.diff_hash == review.diff_hash
+        {
+            crate::ai::apply_validation(&mut review, &validation);
+        }
+    }
 
-    format!(
-        r#"You are validating and re-anchoring an existing code review.
-Do not create unrelated new findings in this action.
-
-## Instructions
-
-1. Read `{safe_output_dir}/review.json`. If it does not exist, print "No review to validate" and stop.
-2. Read `{safe_output_dir}/diff-annotated` — the harness already annotated the prepared diff (each line has `[h<hunk> L<file_line>]` tags; do **not** run `sha256sum` or re-annotate). The prepared diff's hash is `{safe_hash}`.
-3. If `{safe_output_dir}/review-md.md` exists, read it: it is this repository's `REVIEW.md` from the base branch. A finding it says not to report, or on a path it says to skip, is `RESOLVED_OR_INVALID`. Ignore any `REVIEW.md` in the working tree.
-4. For each active finding, read existing replies (`responses`) before deciding the outcome.
-5. For each finding, choose exactly one result:
-   - `RESOLVED_OR_INVALID`: concern no longer applies. Remove it from active `files[].findings`.
-   - `PERSISTS`: concern still applies. Keep it and update title/description/suggestion if needed.
-   - `SHIFTED`: concern still applies but moved. Keep it and update `hunk_index`, `line_start`, `line_end`.
-6. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
-   `informational`, `dropped`) based on current code.
-7. Set `diff_hash` in `review.json` to `{safe_hash}` — the harness-computed hash of the prepared diff you anchored against (do **not** run `sha256sum`).
-8. Write updated `{safe_output_dir}/review.json`.
-9. Append a one-line note to `{safe_output_dir}/summary.md` in this exact format:
-   `Refresh: N removed, M updated, K re-anchored.`
-10. Do not discover unrelated new findings in this action.
-
-## Budget
-
-- ~10 file reads per finding (no global session cap).
-
-## Speed
-
-Target: complete in under 5 minutes. Each evidence read should map to a specific finding."#
-    )
+    let mut rows: Vec<(String, Option<usize>, String, String)> = keys
+        .into_iter()
+        .filter_map(|(path, index, key)| {
+            let finding = review.files.get(&path)?.findings.get(index)?;
+            finding.is_active().then(|| {
+                (
+                    key,
+                    finding.line_start,
+                    path,
+                    finding.title.replace('|', "\\|").replace('\n', " "),
+                )
+            })
+        })
+        .collect();
+    rows.sort_by(|left, right| {
+        left.2
+            .cmp(&right.2)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    if rows.is_empty() {
+        return ("\n_(no active findings)_\n".to_string(), review.created_at);
+    }
+    let mut table = String::from("\n| key | file | line | title |\n| --- | --- | --- | --- |\n");
+    for (key, line, file, title) in rows {
+        let line = line.map(|line| line.to_string()).unwrap_or_default();
+        let file = file.replace('|', "\\|");
+        table.push_str(&format!("| {key} | {file} | {line} | {title} |\n"));
+    }
+    (table, review.created_at)
 }
 
 /// Validate and re-anchor GitHub PR comments when `{output_dir}/diff-tmp` is already on disk.
@@ -1618,7 +1661,7 @@ pub fn build_review_prompt_remote(
         "mkdir -p {safe_output_dir} && gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
     );
     let preamble = review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
-    let outputs = general_review_outputs_section(output_dir, "branch", "", "");
+    let outputs = general_review_outputs_section(output_dir, "branch", "", "", None);
     format!(
         r#"You are a code reviewer. Perform a thorough review of the GitHub PR diff and write results to `{safe_output_dir}/`.
 
@@ -2314,7 +2357,7 @@ mod tests {
         assert!(prompt.contains("\"verification_plan\""));
     }
 
-    // ── build_validate_prompt_local_managed ──
+    // ── build_validate_github_comments_prompt_prepared_diff ──
 
     #[test]
     fn validate_github_comments_prompt_reads_github_comments_json() {
@@ -2324,45 +2367,18 @@ mod tests {
         assert!(prompt.contains("diff-annotated"));
     }
 
-    #[test]
-    fn validate_prompt_reads_review_and_diff_annotated() {
-        let prompt = build_validate_prompt_local_managed("main", "branch", "/tmp/er-test");
-        assert!(prompt.contains("'/tmp/er-test'/review.json"));
-        assert!(prompt.contains("'/tmp/er-test/diff-annotated'"));
-    }
-
-    #[test]
-    fn validate_prompt_uses_unified_20_for_refresh() {
-        let prompt = build_validate_prompt_local_managed("main", "branch", "/tmp/er-test");
-        assert!(prompt.contains("--unified=20"));
-    }
-
-    #[test]
-    fn validate_prompt_explains_confidence_transitions() {
-        let prompt = build_validate_prompt_local_managed("main", "branch", "/tmp/er-test");
-        assert!(prompt.contains("confirmed"));
-        assert!(prompt.contains("informational"));
-        assert!(prompt.contains("dropped"));
-    }
-
-    #[test]
-    fn validate_prompt_branch_scope_includes_base() {
-        let prompt = build_validate_prompt_local_managed("develop", "branch", "/tmp/er-test");
-        assert!(prompt.contains("'develop'"));
-    }
-
-    #[test]
-    fn validate_prompt_staged_scope_uses_staged_flag() {
-        let prompt = build_validate_prompt_local_managed("main", "staged", "/tmp/er-test");
-        assert!(prompt.contains("--staged --unified=20"));
-    }
-
     // ── prepared diff prompts (desktop) ──
 
     #[test]
     fn prepared_review_prompt_uses_harness_hash_and_pre_annotated_diff() {
-        let prompt =
-            build_review_prompt_prepared_diff("branch", "/tmp/er-managed", "main", "feat/x", HASH);
+        let prompt = build_review_prompt_prepared_diff(
+            "branch",
+            "/tmp/er-managed",
+            "main",
+            "feat/x",
+            HASH,
+            None,
+        );
         assert!(prompt.contains("`'/tmp/er-managed'/diff-tmp`"));
         assert!(prompt.contains(HASH), "hash embedded for the agent");
         assert!(prompt.contains("do **not** run `sha256sum`"));
@@ -2373,7 +2389,7 @@ mod tests {
     #[test]
     fn prepared_review_prompt_references_pre_annotated_file() {
         let prompt =
-            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH);
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH, None);
         assert!(prompt.contains("`'/tmp/out'/diff-tmp`"));
         assert!(prompt.contains("`'/tmp/out'/diff-annotated`"));
     }
@@ -2386,6 +2402,7 @@ mod tests {
             "main",
             "mikkelam/dev-5713-add-outbox",
             HASH,
+            None,
         );
         assert!(prompt.contains(r#""head_branch": "mikkelam/dev-5713-add-outbox""#));
         assert!(prompt.contains(r#""base_branch": "main""#));
@@ -2395,7 +2412,7 @@ mod tests {
 
     #[test]
     fn prepared_review_prompt_falls_back_to_placeholders_when_unknown() {
-        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out", "", "  ", HASH);
+        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out", "", "  ", HASH, None);
         assert!(prompt.contains(r#""head_branch": "<head branch if known>""#));
         assert!(prompt.contains(r#""base_branch": "<base branch if known>""#));
     }
@@ -2403,10 +2420,181 @@ mod tests {
     #[test]
     fn prepared_validate_prompt_no_git_or_gh() {
         let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
+        assert!(prompt.contains("validation.json"));
         assert!(prompt.contains("`'/tmp/out'/diff-annotated`"));
         assert!(prompt.contains("do **not** run `sha256sum`"));
         assert!(!prompt.contains("git diff"));
         assert!(!prompt.contains("gh pr"));
+    }
+
+    #[test]
+    fn prepared_validate_prompt_writes_validation_json_not_review_json() {
+        let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
+        assert!(prompt.contains("`'/tmp/out'/validation.json`"));
+        assert!(prompt.contains("do **not** write `review.json`"));
+        assert!(prompt.contains("\"key\":\"<from the table>\""));
+        assert!(prompt.contains("\"file\":\"<from the table>\""));
+        assert!(
+            prompt.contains("write the union"),
+            "a second pass accumulates"
+        );
+        assert!(prompt.contains("Carry forward every outcome whose key is still in the review"));
+    }
+
+    /// The table is computed from review.json plus a fresh scoped overlay, so
+    /// the agent validates the rows the projection shows, keyed before any
+    /// validation pass moves them.
+    #[test]
+    fn prepared_validate_prompt_lists_scoped_findings() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            std::fs::write(
+                path.join("review.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "diff_hash": HASH, "created_at": "t0",
+                    "files": {
+                        "src/a.rs": { "risk": "medium", "findings": [
+                            { "id": "a1", "severity": "medium", "title": "Old A", "line_start": 1 }
+                        ] },
+                        "src/b.rs": { "risk": "medium", "findings": [
+                            { "id": "b1", "severity": "medium", "title": "Already dropped",
+                              "line_start": 2, "confidence": "dropped" }
+                        ] }
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::create_dir_all(path.join("scoped/experts")).unwrap();
+            std::fs::write(
+                path.join("scoped/general.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "diff_hash": HASH, "created_at": "t1",
+                    "files": { "src/a.rs": { "risk": "medium", "findings": [
+                        { "id": "n1", "severity": "medium", "title": "New A", "line_start": 5 }
+                    ] } },
+                    "scope_paths": ["src/a.rs"],
+                    "base_diff_hash": HASH,
+                    "base_created_at": "t0",
+                    "host_stamped": true
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let old_key = crate::ai::identity::finding_key("src/a.rs", Some(1), "Old A");
+            let new_key = crate::ai::identity::finding_key("src/a.rs", Some(5), "New A");
+            // An earlier pass moved the row; the next table keeps the key from
+            // before any validation and shows the row's post-validation anchor.
+            std::fs::write(
+                path.join("validation.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "diff_hash": HASH, "review_created_at": "t0",
+                    "created_at": "t1",
+                    "outcomes": [{ "key": new_key, "file": "src/a.rs", "result": "persists" }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let prompt =
+                build_validate_prompt_prepared_diff("branch", path.to_str().unwrap(), HASH);
+
+            assert!(prompt.contains(&new_key), "{prompt}");
+            assert!(prompt.contains("New A"), "the scoped row is listed");
+            assert!(!prompt.contains(&old_key), "the replaced row is gone");
+            let dropped_key =
+                crate::ai::identity::finding_key("src/b.rs", Some(2), "Already dropped");
+            assert!(
+                !prompt.contains(&dropped_key) && !prompt.contains("Already dropped"),
+                "inactive rows are not validated"
+            );
+            assert!(prompt.contains("t0"), "the review generation is named");
+        });
+    }
+
+    #[test]
+    fn prepared_validate_prompt_lists_finding_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "diff_hash": HASH, "created_at": "t0",
+                    "files": { "src/a.rs": { "risk": "medium", "findings": [
+                        { "id": "a1", "severity": "medium", "title": "Bug", "line_start": 3 }
+                    ] } }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let prompt =
+                build_validate_prompt_prepared_diff("branch", dir.path().to_str().unwrap(), HASH);
+            let key = crate::ai::identity::finding_key("src/a.rs", Some(3), "Bug");
+            assert!(prompt.contains(&key), "{prompt}");
+            assert!(prompt.contains("| key | file | line | title |"));
+            assert!(prompt.contains("t0"));
+        });
+    }
+
+    #[test]
+    fn prepared_validate_prompt_lists_unresolved_findings() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(
+                dir.path().join("review.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "diff_hash": HASH, "created_at": "t0",
+                    "files": { "src/a.rs": { "risk": "medium", "findings": [
+                        { "id": "a1", "severity": "medium", "title": "Active", "line_start": 1 },
+                        { "id": "a2", "severity": "medium", "title": "Dropped",
+                          "line_start": 2, "confidence": "dropped" },
+                        { "id": "a3", "severity": "medium", "title": "Resolved",
+                          "line_start": 3, "resolved": true }
+                    ] } }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let prompt =
+                build_validate_prompt_prepared_diff("branch", dir.path().to_str().unwrap(), HASH);
+            assert!(prompt.contains("Active"));
+            assert!(!prompt.contains("Dropped"), "{prompt}");
+            assert!(!prompt.contains("Resolved"), "{prompt}");
+        });
+    }
+
+    #[test]
+    fn prepared_validate_prompt_carries_existing_outcomes() {
+        let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
+        assert!(prompt.contains("Read the existing `'/tmp/out'/validation.json` first"));
+        assert!(prompt.contains("Carry forward every outcome whose key is still in the review"));
+        assert!(prompt.contains("write the union"));
+    }
+
+    #[test]
+    fn validation_accumulates_previous_outcomes() {
+        let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
+        assert!(
+            prompt.contains("This makes a second validate accumulate"),
+            "the agent is told the second pass keeps the first pass's outcomes"
+        );
+        assert!(prompt.contains("keep the patch fields an earlier pass set"));
+    }
+
+    #[test]
+    fn full_prompt_ignores_a_leftover_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("review-files.txt"), "src/a.rs\n").unwrap();
+        let prompt = append_file_scope_if_present(
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH, None),
+            "/tmp/out",
+            None,
+        );
+        assert!(
+            !prompt.contains("selected files only"),
+            "scope comes from the caller, never from a leftover manifest"
+        );
     }
 
     #[test]
@@ -2548,10 +2736,10 @@ mod tests {
     fn scope_rules_reach_every_review_prompt_family() {
         let local = build_review_prompt_local_managed("main", "branch", "/tmp/er-test");
         let prepared =
-            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH);
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH, None);
         let remote = build_review_prompt_remote("owner", "repo", 42, "/tmp/cache");
         let expert =
-            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH);
+            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH, None);
         for prompt in [&local, &prepared, &remote, &expert] {
             assert!(prompt.contains("### Scope"), "missing Scope: {prompt}");
         }
@@ -2585,7 +2773,7 @@ mod tests {
     #[test]
     fn general_prompt_still_requests_four_output_files() {
         let prompt =
-            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH);
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH, None);
         assert!(prompt.contains("review.json"));
         assert!(prompt.contains("order.json"));
         assert!(prompt.contains("checklist.json"));
@@ -2599,7 +2787,7 @@ mod tests {
     #[test]
     fn checklist_prompt_pins_the_outcome_categories() {
         let prompt =
-            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH);
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH, None);
         for category in ["schema", "tests", "api", "auth", "plan"] {
             assert!(
                 prompt.contains(&format!("`{category}` —")),
@@ -2612,7 +2800,7 @@ mod tests {
     #[test]
     fn expert_prepared_prompt_targets_expert_json_only() {
         let prompt =
-            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH);
+            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH, None);
         assert!(prompt.contains("Expert lens: Security"));
         assert!(prompt.contains("experts/security.json"));
         assert!(prompt.contains("Max 2 findings per file, max 10 total"));
@@ -2652,8 +2840,13 @@ mod tests {
 
     #[test]
     fn mentorship_expert_prompt_is_positive_only() {
-        let prompt =
-            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "mentorship", HASH);
+        let prompt = build_expert_review_prompt_prepared_diff(
+            "branch",
+            "/tmp/out",
+            "mentorship",
+            HASH,
+            None,
+        );
         assert!(prompt.contains("Expert lens: Mentorship"));
         assert!(prompt.contains("positive-only"));
         assert!(prompt.contains("experts/mentorship.json"));
@@ -2662,7 +2855,7 @@ mod tests {
     #[test]
     fn professor_prompt_targets_professor_json_only() {
         let prompt =
-            build_professor_review_prompt_prepared_diff("branch", "/tmp/out", None, false, HASH);
+            build_professor_review_prompt_prepared_diff("branch", "/tmp/out", None, None, HASH);
         assert!(prompt.contains("Professor lens"));
         assert!(prompt.contains("professor.json"));
         // The loader sets `lens`; a professor prompt claims no defect kind, so
@@ -2679,7 +2872,7 @@ mod tests {
             "branch",
             "/tmp/out",
             Some("auth flow"),
-            false,
+            None,
             HASH,
         );
         assert!(prompt.contains("Learner focus"));
@@ -2687,11 +2880,74 @@ mod tests {
     }
 
     #[test]
-    fn file_scope_appendix_mentions_review_files() {
-        let appendix = file_scope_appendix("/tmp/out");
+    fn file_scope_appendix_writes_only_the_overlay() {
+        let appendix = file_scope_appendix("/tmp/out", "scoped/general.json");
         assert!(appendix.contains("review-files.txt"));
         assert!(appendix.contains("selected files only"));
-        assert!(appendix.contains("Merge, do not replace"));
+        assert!(appendix.contains("`'/tmp/out'/scoped/general.json`"));
+        assert!(appendix.contains("Do **not** write `review.json`"));
+        assert!(!appendix.contains("Merge, do not replace"));
+    }
+
+    #[test]
+    fn scoped_review_prompt_names_only_the_overlay() {
+        let prompt = append_file_scope_if_present(
+            build_review_prompt_prepared_diff(
+                "branch",
+                "/tmp/out",
+                "main",
+                "feat",
+                HASH,
+                Some("scoped/general.json"),
+            ),
+            "/tmp/out",
+            Some("scoped/general.json"),
+        );
+        assert!(prompt.contains("`'/tmp/out'/scoped/general.json`"));
+        assert!(prompt.contains("Do **not** write `review.json`"));
+        assert!(!prompt.contains("Write these four files"));
+    }
+
+    #[test]
+    fn scoped_expert_prompt_names_only_the_overlay() {
+        let prompt = append_file_scope_if_present(
+            build_expert_review_prompt_prepared_diff(
+                "branch",
+                "/tmp/out",
+                "security",
+                HASH,
+                Some("scoped/experts/security.json"),
+            ),
+            "/tmp/out",
+            Some("scoped/experts/security.json"),
+        );
+        assert!(prompt.contains("`'/tmp/out'/scoped/experts/security.json`"));
+        assert!(prompt.contains("Do **not** write `review.json`"));
+        assert!(!prompt.contains("`'/tmp/out'/experts/security.json`"));
+    }
+
+    #[test]
+    fn scoped_professor_prompt_names_only_the_overlay() {
+        let prompt = build_professor_review_prompt_prepared_diff(
+            "branch",
+            "/tmp/out",
+            None,
+            Some("scoped/professor.json"),
+            HASH,
+        );
+        assert!(prompt.contains("`'/tmp/out'/scoped/professor.json`"));
+        assert!(prompt.contains("Do not write `review.json`"));
+        assert!(!prompt.contains("`'/tmp/out'/professor.json`"));
+    }
+
+    #[test]
+    fn unscoped_review_prompt_has_no_scope_appendix() {
+        let prompt = append_file_scope_if_present(
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH, None),
+            "/tmp/out",
+            None,
+        );
+        assert!(!prompt.contains("selected files only"));
     }
 
     #[test]
@@ -2725,7 +2981,8 @@ mod tests {
         assert!(triage.contains(r#""reach": {"#));
         assert!(!triage.contains("blast radius"));
 
-        let review = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH);
+        let review =
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH, None);
         assert!(review.contains("change-facts.md"));
         assert!(review.contains("Weigh reach as well as correctness"));
     }
@@ -2733,8 +2990,8 @@ mod tests {
     #[test]
     fn review_prompts_point_at_base_branch_review_md() {
         let prompts = [
-            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH),
-            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH),
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH, None),
+            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH, None),
             build_triage_review_prompt_prepared_diff("branch", "/tmp/out", HASH),
             build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH),
         ];

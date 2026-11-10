@@ -44,6 +44,10 @@ fn register_ai_kinds(registry: &mut Registry) -> Result<(), er_store::StoreError
     registry.register::<crate::ai::ArbiterReview>()?;
     registry.register::<crate::ai::ErTour>()?;
     registry.register::<crate::ai::ErDiagram>()?;
+    registry.register::<crate::ai::ValidationReview>()?;
+    registry.register::<crate::ai::ScopedReview>()?;
+    registry.register::<crate::ai::ScopedProfessorReview>()?;
+    registry.register::<crate::ai::ScopedExpertReview>()?;
     registry.register_text("summary", "summary.md")?;
     Ok(())
 }
@@ -110,9 +114,32 @@ mod tests {
             ("arbiter.json", "arbiter"),
             ("tour.json", "tour"),
             ("diagrams/flows.json", "diagram"),
+            ("validation.json", "validation"),
+            ("scoped/general.json", "scoped-general"),
+            ("scoped/professor.json", "scoped-professor"),
+            ("scoped/experts/security.json", "scoped-expert"),
             ("summary.md", "summary"),
             ("projects.json", "projects"),
             ("update-check.json", "update-check"),
+        ] {
+            assert_eq!(
+                registry.kind_for(std::path::Path::new(file)),
+                Some(kind),
+                "{file}"
+            );
+        }
+    }
+
+    /// The two new artifact families resolve by their published patterns,
+    /// including the scoped expert slot.
+    #[test]
+    fn registry_accepts_the_validation_and_scoped_kinds() {
+        let registry = registry();
+        for (file, kind) in [
+            ("validation.json", "validation"),
+            ("scoped/general.json", "scoped-general"),
+            ("scoped/professor.json", "scoped-professor"),
+            ("scoped/experts/security.json", "scoped-expert"),
         ] {
             assert_eq!(
                 registry.kind_for(std::path::Path::new(file)),

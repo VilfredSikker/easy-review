@@ -209,6 +209,7 @@ mod tests {
                 host_write_diagram: None,
                 ai_selection: None,
                 launch_config: None,
+                scoped_stamp: None,
             },
         );
         assert!(app.acquire_review_flow_lease("/tmp/test/.er").is_err());
@@ -317,7 +318,7 @@ mod tests {
         let mut app = app();
         let _lease = app.acquire_review_flow_lease("/tmp/test/.er").unwrap();
         assert!(app
-            .spawn_background_review(target("/tmp/test/.er"), String::new(), true)
+            .spawn_background_review(target("/tmp/test/.er"), String::new(), true, None)
             .is_err());
     }
 }

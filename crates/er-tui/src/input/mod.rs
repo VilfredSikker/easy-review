@@ -1122,7 +1122,7 @@ pub fn build_agent_professor_prompt(
                 mode.git_mode(),
                 er_dir,
                 None,
-                false,
+                None,
                 diff_hash,
             ),
         ),
@@ -1157,6 +1157,7 @@ pub fn build_agent_expert_prompt(
                 er_dir,
                 expert_id,
                 diff_hash,
+                None,
             ),
         ),
         _ => {
@@ -1260,7 +1261,7 @@ pub fn build_agent_review_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -
     match mode {
         DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {
             Some(er_engine::ai::prompts::build_review_prompt_prepared_diff(
-                &scope, er_dir, &base, &head, diff_hash,
+                &scope, er_dir, &base, &head, diff_hash, None,
             ))
         }
         _ => {

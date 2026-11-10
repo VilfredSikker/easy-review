@@ -225,11 +225,31 @@ pub fn load_ai_state_with_arbiter(
 
     // Load .er/review.json. A sidecar that cannot be used reads as absent.
     // The projection below owns the lens backfill and the expert/professor
-    // merges; `is_stale` still comes from the file's own hash.
+    // merges; the review's staleness contribution comes from the projection.
     let mut general: Option<ErReview> = None;
     if let Some(review) = crate::store_registry::read_found::<ErReview>(er_dir, ()) {
-        state.is_stale = review.diff_hash != current_diff_hash;
         general = Some(review);
+    }
+    // A completed scoped run overlays only its paths; the base identity it
+    // stamped decides freshness.
+    if let Some(overlay) =
+        crate::store_registry::read_found::<super::scoped_overlay::ScopedReview>(er_dir, ())
+    {
+        super::scoped_overlay::apply_scoped_review(&mut general, &overlay);
+    }
+
+    // A validation matching the current diff refreshes a stale review in place.
+    // Moving the hash here, before the expert/professor filters below, is what
+    // drops old-generation sidecars exactly as the old rewrite did.
+    let validation =
+        crate::store_registry::read_found::<super::validation::ValidationReview>(er_dir, ());
+    if let (Some(general), Some(validation)) = (general.as_mut(), validation.as_ref()) {
+        if validation.diff_hash == current_diff_hash
+            && validation.review_created_at == general.created_at
+            && general.diff_hash != current_diff_hash
+        {
+            general.diff_hash = current_diff_hash.to_string();
+        }
     }
 
     // The store-backed sidecars share one scope; an invalid directory skips them.
@@ -295,8 +315,12 @@ pub fn load_ai_state_with_arbiter(
 
     // Expert sidecars from the same generation as a (possibly stale) general
     // review ride along with it — see `expert_hash_accepted`. Their findings
-    // are appended by the projection, not here.
-    let experts = load_expert_reviews(er_dir);
+    // are appended by the projection, not here. A completed scoped run
+    // overlays only its paths.
+    let mut experts = load_expert_reviews(er_dir);
+    for overlay in load_scoped_expert_overlays(er_dir) {
+        super::scoped_overlay::apply_scoped_expert(&mut experts, &overlay);
+    }
     let review_hash = general
         .as_ref()
         .map(|review| review.diff_hash.as_str())
@@ -323,7 +347,13 @@ pub fn load_ai_state_with_arbiter(
         state.triage = Some(triage);
     }
 
-    let professor = load_professor_review(er_dir);
+    let mut professor = load_professor_review(er_dir);
+    if let Some(overlay) = crate::store_registry::read_found::<
+        super::scoped_overlay::ScopedProfessorReview,
+    >(er_dir, ())
+    {
+        super::scoped_overlay::apply_scoped_professor(&mut professor, &overlay);
+    }
     if let Some(prof) = professor.as_ref() {
         let summary = prof.summary.trim();
         if prof.diff_hash == current_diff_hash && !summary.is_empty() {
@@ -352,6 +382,7 @@ pub fn load_ai_state_with_arbiter(
             experts: &experts,
             professor: professor.as_ref(),
             arbiter: arbiter.as_ref(),
+            validation: validation.as_ref(),
             current_diff_hash,
             accepted_provenance: &|review_hash, rows| {
                 super::accepted_provenance::accepted_provenance_for_rows(
@@ -364,15 +395,45 @@ pub fn load_ai_state_with_arbiter(
     for diagnostic in projection.provenance_diagnostics {
         crate::dev_log::arena_line(diagnostic);
     }
+    // The review's staleness comes from the projected hash; order, checklist
+    // and triage may already have marked the state stale.
+    let review_stale = projection
+        .review
+        .as_ref()
+        .is_some_and(|review| review.diff_hash != current_diff_hash);
+    state.is_stale |= review_stale;
     state.review = projection.review;
     state.arbiter_effect = projection.arbiter_effect;
     state.arbiter_graded_keys = projection.arbiter_graded_keys;
     state.arbiter_verdicts = projection.arbiter_verdicts;
+    state.validation_effect = projection.validation_effect;
 
     // Load .er/diagrams/*.json (mermaid diagrams — one file per generated diagram)
     state.diagrams = load_diagrams(er_dir, current_diff_hash);
 
     state
+}
+
+/// Every completed scoped expert overlay in the bucket, in slot order.
+fn load_scoped_expert_overlays(er_dir: &str) -> Vec<super::scoped_overlay::ScopedExpertReview> {
+    if er_dir.is_empty() {
+        return Vec::new();
+    }
+    let store = crate::store_registry::store();
+    let Ok(scope) = er_store::Scope::dir(er_dir) else {
+        return Vec::new();
+    };
+    let Ok(slots) = store.list::<super::scoped_overlay::ScopedExpertReview>(&scope) else {
+        return Vec::new();
+    };
+    slots
+        .into_iter()
+        .filter_map(|slot| {
+            crate::store_registry::read_found::<super::scoped_overlay::ScopedExpertReview>(
+                er_dir, slot,
+            )
+        })
+        .collect()
 }
 
 /// Read and parse the guided-tour sidecar from a directory.
@@ -465,6 +526,7 @@ mod tests {
                     experts: &[],
                     professor: None,
                     arbiter: None,
+                    validation: None,
                     current_diff_hash: "hash",
                     accepted_provenance: &|review_hash, rows| {
                         crate::ai::accepted_provenance::accepted_provenance_for_rows(
@@ -1702,5 +1764,188 @@ mod tests {
             compute_per_file_hash(MULTI_DIFF, "absent.rs").is_none(),
             "a path absent from the diff has no hash"
         );
+    }
+
+    fn write_review(path: &Path, hash: &str, created_at: &str) {
+        std::fs::write(
+            path.join("review.json"),
+            serde_json::to_vec(&json!({
+                "version": 1, "diff_hash": hash, "created_at": created_at,
+                "files": {
+                    "src/a.rs": { "risk": "medium", "findings": [
+                        { "id": "a1", "severity": "medium", "title": "Old A", "line_start": 1 }
+                    ] },
+                    "src/b.rs": { "risk": "medium", "findings": [
+                        { "id": "b1", "severity": "medium", "title": "Old B", "line_start": 2 }
+                    ] }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_scoped_general(path: &Path, scope: &str, base_created_at: &str, title: &str) {
+        std::fs::create_dir_all(path.join("scoped/experts")).unwrap();
+        std::fs::write(
+            path.join("scoped/general.json"),
+            serde_json::to_vec(&json!({
+                "version": 1, "diff_hash": "hash", "created_at": "t1",
+                "files": { scope: { "risk": "medium", "findings": [
+                    { "id": "n1", "severity": "medium", "title": title, "line_start": 5 }
+                ] } },
+                "scope_paths": [scope],
+                "base_diff_hash": "hash",
+                "base_created_at": base_created_at,
+                "host_stamped": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn scoped_overlay_applies_through_the_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            write_review(path, "hash", "t0");
+            write_scoped_general(path, "src/a.rs", "t0", "New A");
+
+            let state = load_ai_state(path.to_str().unwrap(), "hash", None);
+
+            let review = state.review.expect("a projected review");
+            assert_eq!(review.files["src/a.rs"].findings[0].title, "New A");
+            assert_eq!(review.files["src/b.rs"].findings[0].title, "Old B");
+            assert_eq!(review.diff_hash, "hash", "the base identity stays put");
+            assert!(!state.is_stale);
+        });
+    }
+
+    #[test]
+    fn scoped_overlay_with_a_changed_base_is_not_applied_by_the_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            write_review(path, "hash", "t0");
+            write_scoped_general(path, "src/a.rs", "t-moved", "New A");
+
+            let state = load_ai_state(path.to_str().unwrap(), "hash", None);
+
+            let review = state.review.expect("a projected review");
+            assert_eq!(review.files["src/a.rs"].findings[0].title, "Old A");
+        });
+    }
+
+    /// A validation matching the current diff refreshes the review's hash, so
+    /// experts from the old generation no longer ride along.
+    #[test]
+    fn validation_refreshes_a_stale_review_and_drops_stale_experts() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            write_review(path, "old", "t0");
+            std::fs::create_dir_all(path.join("experts")).unwrap();
+            std::fs::write(
+                path.join("experts/security.json"),
+                serde_json::to_vec(&json!({
+                    "version": 1, "expert_id": "security", "diff_hash": "old",
+                    "created_at": "t0", "summary": "security summary",
+                    "files": { "src/a.rs": { "findings": [
+                        { "id": "sec-1", "severity": "high", "title": "Stale expert row" }
+                    ] } }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                path.join("validation.json"),
+                serde_json::to_vec(&json!({
+                    "version": 1, "diff_hash": "new", "review_created_at": "t0",
+                    "created_at": "t1", "outcomes": []
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let state = load_ai_state(path.to_str().unwrap(), "new", None);
+
+            let review = state.review.expect("a projected review");
+            assert_eq!(review.diff_hash, "new", "validation refreshed the review");
+            assert!(!state.is_stale);
+            assert!(
+                !review.files["src/a.rs"]
+                    .findings
+                    .iter()
+                    .any(|finding| finding.title == "Stale expert row"),
+                "an expert from the old generation must not ride along"
+            );
+            assert!(!state.agent_summaries.contains_key("Security"));
+        });
+    }
+
+    /// The scoped general rerun keeps the base's identity, so a validation that
+    /// matched the base still applies after the rerun.
+    #[test]
+    fn scoped_general_rerun_keeps_validation_outcomes() {
+        use crate::ai::review::Confidence;
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            std::fs::write(
+                path.join("review.json"),
+                serde_json::to_vec(&json!({
+                    "version": 1, "diff_hash": "hash", "created_at": "t0",
+                    "files": {
+                        "src/a.rs": { "risk": "medium", "findings": [
+                            { "id": "a1", "severity": "medium", "title": "Old A", "line_start": 1 }
+                        ] },
+                        "src/b.rs": { "risk": "medium", "findings": [
+                            { "id": "b1", "severity": "medium", "title": "Resolved B", "line_start": 2 }
+                        ] }
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            write_scoped_general(path, "src/a.rs", "t0", "New A");
+            let key = crate::ai::identity::finding_key("src/b.rs", Some(2), "Resolved B");
+            std::fs::write(
+                path.join("validation.json"),
+                serde_json::to_vec(&json!({
+                    "version": 1, "diff_hash": "hash", "review_created_at": "t0",
+                    "created_at": "t1",
+                    "outcomes": [{ "key": key, "file": "src/b.rs", "result": "resolved" }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let state = load_ai_state(path.to_str().unwrap(), "hash", None);
+
+            let review = state.review.expect("a projected review");
+            assert_eq!(review.files["src/a.rs"].findings[0].title, "New A");
+            assert_eq!(
+                review.files["src/b.rs"].findings[0].confidence,
+                Confidence::Dropped,
+                "the validation survived the scoped rerun"
+            );
+            assert_eq!(state.validation_effect.applied, 1);
+        });
+    }
+
+    /// Loading never clears: clearing happens on run success, so a scoped
+    /// overlay still applies while the full review is on disk.
+    #[test]
+    fn loading_never_clears_the_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path();
+            write_review(path, "hash", "t0");
+            write_scoped_general(path, "src/a.rs", "t0", "New A");
+            let state = load_ai_state(path.to_str().unwrap(), "hash", None);
+            let review = state.review.expect("a projected review");
+            assert_eq!(review.files["src/a.rs"].findings[0].title, "New A");
+        });
     }
 }

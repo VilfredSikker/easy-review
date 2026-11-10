@@ -327,6 +327,7 @@ impl App {
             None,
             Some(config),
             Some(execution_root),
+            None,
         );
         self.pending_ai_selection_override = previous;
         result
@@ -810,6 +811,7 @@ impl App {
                     &context.base_branch,
                     &context.branch_ref,
                     &flow.diff_hash,
+                    None,
                 )
             } else {
                 crate::ai::prompts::build_expert_review_prompt_prepared_diff(
@@ -817,6 +819,7 @@ impl App {
                     &context.target.er_dir,
                     &assignment.lens,
                     &flow.diff_hash,
+                    None,
                 )
             };
             let prompt = crate::ai::prompts::with_reviewed_ref_note(

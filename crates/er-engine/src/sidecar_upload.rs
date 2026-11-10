@@ -123,6 +123,7 @@ fn build_prompt(kind: SidecarKind, er_dir: &str, base: &str, head: &str) -> Stri
             head,
             &crate::ai::prepared_diff::diff_tmp_hash(er_dir)
                 .unwrap_or_else(|| "<DIFF_HASH>".into()),
+            None,
         ),
         SidecarKind::Tour => build_tour_prompt_prepared_diff(
             "PR diff",
@@ -710,6 +711,7 @@ fn spec_for(kind: SidecarKind, output_dir: &str, base: &str, head: &str) -> Arti
                 base,
                 head,
                 "<DIFF_HASH>",
+                None,
             ),
             notes: vec![
                 "All four files are required for upload_artifacts kind=review.",
