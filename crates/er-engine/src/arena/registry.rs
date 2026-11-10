@@ -60,6 +60,26 @@ impl ArenaRegistry {
         }
     }
 
+    /// Join a run's supervisor thread, surfacing a panic it hit.
+    ///
+    /// Test-support only: lets an integration test fail with the worker's own
+    /// message instead of waiting out its poll deadline. The handle stays in
+    /// the registry, so the run's cancellation and child registration still
+    /// work while the join waits.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn join_supervisor(&self, run_id: &str) -> std::thread::Result<()> {
+        let join = self
+            .runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(run_id)
+            .and_then(|handle| handle.join.take());
+        match join {
+            Some(join) => join.join(),
+            None => Ok(()),
+        }
+    }
+
     pub fn take(&self, run_id: &str) -> Option<ArenaRunHandle> {
         self.runs.lock().ok()?.remove(run_id)
     }
