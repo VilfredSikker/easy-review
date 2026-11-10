@@ -1,0 +1,166 @@
+{
+  "arbiter_effect": {
+    "dropped": 1,
+    "kept": 2,
+    "merged": 1,
+    "regraded": 1,
+    "unmatched": 1
+  },
+  "arbiter_graded_keys": [
+    "0a1cd13e37e122385a2c4ddca1d22b84ff40a89e",
+    "68e9e250eafac81c7b3ad30e5a036a78837e839b",
+    "f81243e574c96c8375a322ee9791fab55fa79ef4",
+    "fb4d56a09645d658ff03e2e84143f42a28e8f550"
+  ],
+  "arbiter_verdicts": [
+    {
+      "key": "0a1cd13e37e122385a2c4ddca1d22b84ff40a89e",
+      "rationale": "needs the owner",
+      "ruling": "escalated"
+    },
+    {
+      "key": "68e9e250eafac81c7b3ad30e5a036a78837e839b",
+      "rationale": "duplicate of Alpha",
+      "ruling": "merged"
+    },
+    {
+      "key": "f81243e574c96c8375a322ee9791fab55fa79ef4",
+      "rationale": "checked by hand",
+      "ruling": "kept"
+    },
+    {
+      "key": "fb4d56a09645d658ff03e2e84143f42a28e8f550",
+      "rationale": "not a defect",
+      "ruling": "dropped"
+    }
+  ],
+  "review": {
+    "base_branch": "",
+    "created_at": "2026-01-01T00:00:00Z",
+    "diff_hash": "H",
+    "file_hashes": {},
+    "files": {
+      "a.rs": {
+        "findings": [
+          {
+            "category": "",
+            "confidence": "dropped",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "a-1",
+            "lens": "general",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 1,
+            "outside_diff": false,
+            "providers": [],
+            "raised_by": [
+              "general"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "high",
+            "suggestion": "",
+            "title": "Alpha",
+            "verification_plan": ""
+          },
+          {
+            "category": "",
+            "confidence": "dropped",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "b-1",
+            "lens": "general",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 2,
+            "outside_diff": false,
+            "providers": [],
+            "raised_by": [
+              "general"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "high",
+            "suggestion": "",
+            "title": "Beta",
+            "verification_plan": ""
+          },
+          {
+            "category": "",
+            "confidence": "confirmed",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "c-1",
+            "lens": "general",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 3,
+            "outside_diff": false,
+            "providers": [],
+            "raised_by": [
+              "general"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [
+              {
+                "id": "arbiter-1",
+                "in_reply_to": "",
+                "new_findings": [],
+                "text": "Arbiter regraded this from tentative to confirmed: checked by hand",
+                "timestamp": ""
+              }
+            ],
+            "severity": "high",
+            "suggestion": "",
+            "title": "Gamma",
+            "verification_plan": ""
+          },
+          {
+            "category": "",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "d-1",
+            "lens": "general",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 4,
+            "outside_diff": false,
+            "providers": [],
+            "raised_by": [
+              "general"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "high",
+            "suggestion": "",
+            "title": "Delta",
+            "verification_plan": ""
+          }
+        ],
+        "risk": "low",
+        "risk_reason": "",
+        "summary": ""
+      }
+    },
+    "head_branch": "",
+    "version": 1
+  }
+}
