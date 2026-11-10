@@ -61,6 +61,12 @@ pub fn remote_slug_as_written(remote: &str) -> String {
         .unwrap_or_else(|| remote.trim().to_string())
 }
 
+/// Split a project remote into `(owner, repo)` keeping its spelling, which is
+/// what the sidebar passes and so what the remote open cache is keyed by.
+pub(crate) fn remote_owner_repo(remote: &str) -> Option<(String, String)> {
+    er_engine::github::RepoSlug::parse(remote).map(|slug| (slug.owner, slug.repo))
+}
+
 /// Like [`normalize_remote_slug`], but returns `None` unless the result is a
 /// well-formed `owner/repo` slug.
 fn valid_remote_slug(remote: &str) -> Option<String> {
@@ -964,6 +970,18 @@ mod tests {
         assert_eq!(file.projects[0].root_path, "");
         assert_eq!(file.projects[0].remote.as_deref(), Some("owner/repo"));
         assert_eq!(file.projects[0].name, "owner/repo");
+    }
+
+    /// Keeps the project's spelling: the remote open cache is keyed by what the
+    /// sidebar passes, so a lowercased owner would miss its prefetch.
+    #[test]
+    fn remote_owner_repo_keeps_spelling_and_strips_url() {
+        assert_eq!(
+            remote_owner_repo("https://github.com/ReshapeBiotech/ai-models.git"),
+            Some(("ReshapeBiotech".to_string(), "ai-models".to_string()))
+        );
+        assert_eq!(remote_owner_repo("owner"), None);
+        assert_eq!(remote_owner_repo("a/b/c"), None);
     }
 
     #[test]

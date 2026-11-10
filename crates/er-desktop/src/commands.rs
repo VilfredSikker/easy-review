@@ -8615,7 +8615,7 @@ fn inbox_open_target_in(
     let proj = file.projects.iter().find(|p| p.id == project_id)?;
     if proj.root_path.is_empty() {
         let remote = proj.remote.as_deref().or(target.remote.as_deref())?;
-        let (owner, repo) = remote_owner_repo(remote)?;
+        let (owner, repo) = crate::projects::remote_owner_repo(remote)?;
         return Some(InboxOpenTarget::RemotePr {
             owner,
             repo,
@@ -8632,12 +8632,6 @@ fn inbox_open_target_in(
         pr_number,
         hint,
     })
-}
-
-/// Split a project remote into `(owner, repo)` keeping its spelling, which is
-/// what the sidebar passes and so what the remote open cache is keyed by.
-fn remote_owner_repo(remote: &str) -> Option<(String, String)> {
-    er_engine::github::RepoSlug::parse(remote).map(|slug| (slug.owner, slug.repo))
 }
 
 fn inbox_item_target(id: &str, state: &AppState) -> Option<InboxTarget> {
@@ -13768,18 +13762,6 @@ mod tests {
             Some(InboxOpenTarget::LocalPr { ref project_id, pr_number: 7, hint: Some(_) })
                 if project_id == "tp"
         ));
-    }
-
-    /// Keeps the project's spelling: the remote open cache is keyed by what the
-    /// sidebar passes, so a lowercased owner would miss its prefetch.
-    #[test]
-    fn remote_owner_repo_keeps_spelling_and_strips_url() {
-        assert_eq!(
-            remote_owner_repo("https://github.com/ReshapeBiotech/ai-models.git"),
-            Some(("ReshapeBiotech".to_string(), "ai-models".to_string()))
-        );
-        assert_eq!(remote_owner_repo("owner"), None);
-        assert_eq!(remote_owner_repo("a/b/c"), None);
     }
 
     struct RefusingCommentPoster;

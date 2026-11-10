@@ -78,6 +78,17 @@ fn flight_key(req: &AutoTriageRequest) -> String {
     format!("{}#{}#{}", req.remote, req.pr_number, req.head_oid)
 }
 
+/// Split a project's remote text into an `owner/repo` pair, naming the remote
+/// when it does not parse.
+///
+/// A project record holds a bare slug, but legacy and hand-edited records can
+/// carry any remote form git writes, so the split goes through the shared
+/// project parser rather than the first `/`.
+fn remote_owner_repo(remote: &str) -> Result<(String, String), String> {
+    crate::projects::remote_owner_repo(remote)
+        .ok_or_else(|| format!("Invalid remote slug: {remote}"))
+}
+
 fn fetch_pr_diff(
     git: &dyn er_engine::git::Git,
     repo_root: &str,
@@ -87,10 +98,8 @@ fn fetch_pr_diff(
     if !repo_root.is_empty() {
         return er_engine::github::gh_pr_diff(git, pr_number, repo_root).map_err(|e| e.to_string());
     }
-    let Some((owner, repo)) = remote.split_once('/') else {
-        return Err(format!("Invalid remote slug: {remote}"));
-    };
-    er_engine::github::gh_pr_diff_remote(git, owner, repo, pr_number).map_err(|e| e.to_string())
+    let (owner, repo) = remote_owner_repo(remote)?;
+    er_engine::github::gh_pr_diff_remote(git, &owner, &repo, pr_number).map_err(|e| e.to_string())
 }
 
 fn resolve_er_dir(
@@ -470,5 +479,68 @@ mod tests {
             &pr("abc"),
             ctx(false, true, true, None)
         ));
+    }
+
+    #[test]
+    fn remote_owner_repo_reads_every_form_a_project_can_hold() {
+        for (remote, owner, repo) in [
+            // The form the project writers store.
+            ("reshapebiotech/discovery", "reshapebiotech", "discovery"),
+            // A legacy or hand-edited record can keep the spelling and suffix.
+            (
+                "ReshapeBiotech/Discovery.git",
+                "ReshapeBiotech",
+                "Discovery",
+            ),
+            (
+                "https://github.com/reshapebiotech/discovery",
+                "reshapebiotech",
+                "discovery",
+            ),
+            (
+                "https://github.com/reshapebiotech/discovery.git",
+                "reshapebiotech",
+                "discovery",
+            ),
+            (
+                "https://github.com/reshapebiotech/discovery/",
+                "reshapebiotech",
+                "discovery",
+            ),
+            (
+                "git@github.com:reshapebiotech/discovery.git",
+                "reshapebiotech",
+                "discovery",
+            ),
+            (
+                "ssh://git@github.com/reshapebiotech/discovery.git",
+                "reshapebiotech",
+                "discovery",
+            ),
+            (
+                "git://github.com/reshapebiotech/discovery",
+                "reshapebiotech",
+                "discovery",
+            ),
+        ] {
+            assert_eq!(
+                remote_owner_repo(remote),
+                Ok((owner.to_string(), repo.to_string())),
+                "{remote}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_owner_repo_rejects_text_that_is_not_a_repository() {
+        for remote in [
+            "",
+            "reshapebiotech",
+            "/Users/me/discovery",
+            "C:/Users/me/discovery",
+            "a b/c",
+        ] {
+            assert!(remote_owner_repo(remote).is_err(), "{remote:?}");
+        }
     }
 }
