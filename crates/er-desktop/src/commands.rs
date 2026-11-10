@@ -11905,145 +11905,157 @@ mod tests {
     #[test]
     fn review_flow_lease_refuses_delete_before_review_artifact_mutation() {
         let dir = ReviewFlowTestDir::new();
-        let state = review_flow_test_state(&dir);
-        let (bucket, review_path) = {
-            let mut app = state.app.lock().unwrap();
-            let bucket = app.tab().er_dir();
-            app.start_review_flow("branch").unwrap();
-            let review_path = std::path::Path::new(&bucket).join("review.json");
-            std::fs::write(&review_path, b"preserve exact review bytes").unwrap();
-            (bucket, review_path)
-        };
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let state = review_flow_test_state(&dir);
+            let (bucket, review_path) = {
+                let mut app = state.app.lock().unwrap();
+                let bucket = app.tab().er_dir();
+                app.start_review_flow("branch").unwrap();
+                let review_path = std::path::Path::new(&bucket).join("review.json");
+                std::fs::write(&review_path, b"preserve exact review bytes").unwrap();
+                (bucket, review_path)
+            };
 
-        let before_bytes = std::fs::read(&review_path).unwrap();
-        let before_task_ids = state
-            .app
-            .lock()
-            .unwrap()
-            .background_task_snapshots()
-            .into_iter()
-            .map(|task| task.id)
-            .collect::<Vec<_>>();
-        let result = {
-            let mut app = state.app.lock().unwrap();
-            delete_review_artifact_from_app(&mut app, "review")
-        };
+            let before_bytes = std::fs::read(&review_path).unwrap();
+            let before_task_ids = state
+                .app
+                .lock()
+                .unwrap()
+                .background_task_snapshots()
+                .into_iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>();
+            let result = {
+                let mut app = state.app.lock().unwrap();
+                delete_review_artifact_from_app(&mut app, "review")
+            };
 
-        assert!(result.is_err());
-        assert_eq!(std::fs::read(&review_path).unwrap(), before_bytes);
-        let after_task_ids = state
-            .app
-            .lock()
-            .unwrap()
-            .background_task_snapshots()
-            .into_iter()
-            .map(|task| task.id)
-            .collect::<Vec<_>>();
-        assert_eq!(after_task_ids, before_task_ids);
-        assert_eq!(
-            state.app.lock().unwrap().tab().er_dir(),
-            bucket,
-            "the helper must guard the same captured bucket"
-        );
+            assert!(result.is_err());
+            assert_eq!(std::fs::read(&review_path).unwrap(), before_bytes);
+            let after_task_ids = state
+                .app
+                .lock()
+                .unwrap()
+                .background_task_snapshots()
+                .into_iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>();
+            assert_eq!(after_task_ids, before_task_ids);
+            assert_eq!(
+                state.app.lock().unwrap().tab().er_dir(),
+                bucket,
+                "the helper must guard the same captured bucket"
+            );
+        });
     }
 
     #[test]
     fn local_branch_tab_uses_main_checkout_for_dirty_tracked_diff() {
         let dir = ReviewFlowTestDir::new();
-        let repo = init_local_branch_fixture(&dir);
-        std::fs::write(
-            repo.join("tracked.rs"),
-            "fn tracked() {\n    2 // dirty main checkout\n}\n",
-        )
-        .unwrap();
-        let root = repo.to_string_lossy().into_owned();
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let repo = init_local_branch_fixture(&dir);
+            std::fs::write(
+                repo.join("tracked.rs"),
+                "fn tracked() {\n    2 // dirty main checkout\n}\n",
+            )
+            .unwrap();
+            let root = repo.to_string_lossy().into_owned();
 
-        let mut tab = build_local_branch_tab_for_repo(
-            &root,
-            "main".into(),
-            "main".into(),
-            &er_engine::ports::Ports::cli(),
-        )
-        .unwrap();
-        assert_eq!(tab.repo_root, root);
-        assert_eq!(tab.local_branch_view.as_deref(), Some("main"));
-        assert_eq!(
-            tab.local_branch_checkout_root.as_deref(),
-            Some(root.as_str())
-        );
-        assert_local_branch_working_modes(&tab);
+            let mut tab = build_local_branch_tab_for_repo(
+                &root,
+                "main".into(),
+                "main".into(),
+                &er_engine::ports::Ports::cli(),
+            )
+            .unwrap();
+            assert_eq!(tab.repo_root, root);
+            assert_eq!(tab.local_branch_view.as_deref(), Some("main"));
+            assert_eq!(
+                tab.local_branch_checkout_root.as_deref(),
+                Some(root.as_str())
+            );
+            assert_local_branch_working_modes(&tab);
 
-        tab.refresh_diff_without_remote_fetch_quick().unwrap();
-        let raw = tab.raw_diff_for_review("branch").unwrap();
-        assert!(raw.contains("dirty main checkout"), "{raw}");
+            tab.refresh_diff_without_remote_fetch_quick().unwrap();
+            let raw = tab.raw_diff_for_review("branch").unwrap();
+            assert!(raw.contains("dirty main checkout"), "{raw}");
+        });
     }
 
     #[test]
     fn local_branch_tab_uses_linked_checkout_without_changing_repo_root() {
         let dir = ReviewFlowTestDir::new();
-        let repo = init_local_branch_fixture(&dir);
-        let linked = dir.path().join("linked-checkout");
-        let linked_arg = linked.to_string_lossy().into_owned();
-        git_fixture_command(
-            &repo,
-            &["worktree", "add", "-qb", "linked", &linked_arg, "HEAD"],
-        );
-        std::fs::write(
-            linked.join("tracked.rs"),
-            "fn tracked() {\n    2 // dirty linked checkout\n}\n",
-        )
-        .unwrap();
-        let root = repo.to_string_lossy().into_owned();
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let repo = init_local_branch_fixture(&dir);
+            let linked = dir.path().join("linked-checkout");
+            let linked_arg = linked.to_string_lossy().into_owned();
+            git_fixture_command(
+                &repo,
+                &["worktree", "add", "-qb", "linked", &linked_arg, "HEAD"],
+            );
+            std::fs::write(
+                linked.join("tracked.rs"),
+                "fn tracked() {\n    2 // dirty linked checkout\n}\n",
+            )
+            .unwrap();
+            let root = repo.to_string_lossy().into_owned();
 
-        let mut tab = build_local_branch_tab_for_repo(
-            &root,
-            "main".into(),
-            "linked".into(),
-            &er_engine::ports::Ports::cli(),
-        )
-        .unwrap();
-        let expected_checkout = linked
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        assert_eq!(tab.repo_root, root);
-        assert_eq!(tab.local_branch_view.as_deref(), Some("linked"));
-        assert_eq!(
-            tab.local_branch_checkout_root.as_deref(),
-            Some(expected_checkout.as_str())
-        );
-        assert_local_branch_working_modes(&tab);
+            let mut tab = build_local_branch_tab_for_repo(
+                &root,
+                "main".into(),
+                "linked".into(),
+                &er_engine::ports::Ports::cli(),
+            )
+            .unwrap();
+            let expected_checkout = linked
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            assert_eq!(tab.repo_root, root);
+            assert_eq!(tab.local_branch_view.as_deref(), Some("linked"));
+            assert_eq!(
+                tab.local_branch_checkout_root.as_deref(),
+                Some(expected_checkout.as_str())
+            );
+            assert_local_branch_working_modes(&tab);
 
-        tab.refresh_diff_without_remote_fetch_quick().unwrap();
-        let raw = tab.raw_diff_for_review("branch").unwrap();
-        assert!(raw.contains("dirty linked checkout"), "{raw}");
+            tab.refresh_diff_without_remote_fetch_quick().unwrap();
+            let raw = tab.raw_diff_for_review("branch").unwrap();
+            assert!(raw.contains("dirty linked checkout"), "{raw}");
+        });
     }
 
     #[test]
     fn local_branch_tab_without_checkout_remains_read_only() {
         let dir = ReviewFlowTestDir::new();
-        let repo = init_local_branch_fixture(&dir);
-        let root = repo.to_string_lossy().into_owned();
-        let tab = build_local_branch_tab_for_repo(
-            &root,
-            "main".into(),
-            "not-checked-out".into(),
-            &er_engine::ports::Ports::cli(),
-        )
-        .unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let repo = init_local_branch_fixture(&dir);
+            let root = repo.to_string_lossy().into_owned();
+            let tab = build_local_branch_tab_for_repo(
+                &root,
+                "main".into(),
+                "not-checked-out".into(),
+                &er_engine::ports::Ports::cli(),
+            )
+            .unwrap();
 
-        assert_eq!(tab.repo_root, root);
-        assert_eq!(tab.local_branch_view.as_deref(), Some("not-checked-out"));
-        assert!(tab.local_branch_checkout_root.is_none());
-        let mut config = er_engine::config::ErConfig::default();
-        config.features.view_branch = true;
-        config.features.view_unstaged = true;
-        config.features.view_staged = true;
-        let modes = tab.visible_modes(&config);
-        assert!(modes.contains(&er_engine::app::DiffMode::Branch));
-        assert!(!modes.contains(&er_engine::app::DiffMode::Unstaged));
-        assert!(!modes.contains(&er_engine::app::DiffMode::Staged));
+            assert_eq!(tab.repo_root, root);
+            assert_eq!(tab.local_branch_view.as_deref(), Some("not-checked-out"));
+            assert!(tab.local_branch_checkout_root.is_none());
+            let mut config = er_engine::config::ErConfig::default();
+            config.features.view_branch = true;
+            config.features.view_unstaged = true;
+            config.features.view_staged = true;
+            let modes = tab.visible_modes(&config);
+            assert!(modes.contains(&er_engine::app::DiffMode::Branch));
+            assert!(!modes.contains(&er_engine::app::DiffMode::Unstaged));
+            assert!(!modes.contains(&er_engine::app::DiffMode::Staged));
+        });
     }
 
     fn ann(id: &str) -> UiAnnotation {
@@ -12633,99 +12645,105 @@ mod tests {
     #[test]
     fn resolve_thread_updates_question_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let q_path = tmp.path().join("questions.json");
-        let gc_path = tmp.path().join("github-comments.json");
-        let questions = ErQuestions {
-            version: 1,
-            diff_hash: "x".to_string(),
-            questions: vec![PrivateAnnotation {
-                id: "q-1".to_string(),
-                timestamp: "t".to_string(),
-                file: "a.rs".to_string(),
-                hunk_index: Some(0),
-                line_start: Some(1),
-                line_end: None,
-                line_content: String::new(),
-                text: "question".to_string(),
-                resolved: false,
-                stale: false,
-                context_before: vec![],
-                context_after: vec![],
-                old_line_start: None,
-                side: "RIGHT".to_string(),
-                hunk_header: String::new(),
-                anchor_status: "original".to_string(),
-                relocated_at_hash: String::new(),
-                in_reply_to: None,
-                author: "You".to_string(),
-                promoted_to: None,
-                finding_ref: None,
-                ai_action: None,
-            }],
-        };
-        std::fs::write(&q_path, serde_json::to_string_pretty(&questions).unwrap()).unwrap();
-        std::fs::write(&gc_path, r#"{"version":1,"diff_hash":"x","comments":[]}"#).unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let q_path = tmp.path().join("questions.json");
+            let gc_path = tmp.path().join("github-comments.json");
+            let questions = ErQuestions {
+                version: 1,
+                diff_hash: "x".to_string(),
+                questions: vec![PrivateAnnotation {
+                    id: "q-1".to_string(),
+                    timestamp: "t".to_string(),
+                    file: "a.rs".to_string(),
+                    hunk_index: Some(0),
+                    line_start: Some(1),
+                    line_end: None,
+                    line_content: String::new(),
+                    text: "question".to_string(),
+                    resolved: false,
+                    stale: false,
+                    context_before: vec![],
+                    context_after: vec![],
+                    old_line_start: None,
+                    side: "RIGHT".to_string(),
+                    hunk_header: String::new(),
+                    anchor_status: "original".to_string(),
+                    relocated_at_hash: String::new(),
+                    in_reply_to: None,
+                    author: "You".to_string(),
+                    promoted_to: None,
+                    finding_ref: None,
+                    ai_action: None,
+                }],
+            };
+            std::fs::write(&q_path, serde_json::to_string_pretty(&questions).unwrap()).unwrap();
+            std::fs::write(&gc_path, r#"{"version":1,"diff_hash":"x","comments":[]}"#).unwrap();
 
-        let changed = mark_thread_resolved_in_files(
-            "q-1",
-            &tmp.path().to_string_lossy(),
-            &tmp.path().to_string_lossy(),
-        )
-        .unwrap();
-        assert_eq!(changed, Some(q_path.to_string_lossy().to_string()));
-        let updated: ErQuestions =
-            serde_json::from_str(&std::fs::read_to_string(&q_path).unwrap()).unwrap();
-        assert!(updated.questions[0].resolved);
+            let changed = mark_thread_resolved_in_files(
+                "q-1",
+                &tmp.path().to_string_lossy(),
+                &tmp.path().to_string_lossy(),
+            )
+            .unwrap();
+            assert_eq!(changed, Some(q_path.to_string_lossy().to_string()));
+            let updated: ErQuestions =
+                serde_json::from_str(&std::fs::read_to_string(&q_path).unwrap()).unwrap();
+            assert!(updated.questions[0].resolved);
+        });
     }
 
     #[test]
     fn resolve_thread_updates_github_comment_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let q_path = tmp.path().join("questions.json");
-        let gc_path = tmp.path().join("github-comments.json");
-        std::fs::write(&q_path, r#"{"version":1,"diff_hash":"x","questions":[]}"#).unwrap();
-        let comments = ErGithubComments {
-            version: 1,
-            diff_hash: "x".to_string(),
-            github: None,
-            comments: vec![GithubComment {
-                id: "c-1".to_string(),
-                timestamp: "t".to_string(),
-                file: "a.rs".to_string(),
-                hunk_index: Some(0),
-                line_start: Some(2),
-                line_end: None,
-                line_content: String::new(),
-                comment: "note".to_string(),
-                in_reply_to: None,
-                resolved: false,
-                source: "local".to_string(),
-                github_id: None,
-                author: "You".to_string(),
-                outdated: false,
-                stale: false,
-                context_before: vec![],
-                context_after: vec![],
-                old_line_start: None,
-                hunk_header: String::new(),
-                anchor_status: "original".to_string(),
-                relocated_at_hash: String::new(),
-                finding_ref: None,
-                side: "RIGHT".to_string(),
-            }],
-        };
-        std::fs::write(&gc_path, serde_json::to_string_pretty(&comments).unwrap()).unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let q_path = tmp.path().join("questions.json");
+            let gc_path = tmp.path().join("github-comments.json");
+            std::fs::write(&q_path, r#"{"version":1,"diff_hash":"x","questions":[]}"#).unwrap();
+            let comments = ErGithubComments {
+                version: 1,
+                diff_hash: "x".to_string(),
+                github: None,
+                comments: vec![GithubComment {
+                    id: "c-1".to_string(),
+                    timestamp: "t".to_string(),
+                    file: "a.rs".to_string(),
+                    hunk_index: Some(0),
+                    line_start: Some(2),
+                    line_end: None,
+                    line_content: String::new(),
+                    comment: "note".to_string(),
+                    in_reply_to: None,
+                    resolved: false,
+                    source: "local".to_string(),
+                    github_id: None,
+                    author: "You".to_string(),
+                    outdated: false,
+                    stale: false,
+                    context_before: vec![],
+                    context_after: vec![],
+                    old_line_start: None,
+                    hunk_header: String::new(),
+                    anchor_status: "original".to_string(),
+                    relocated_at_hash: String::new(),
+                    finding_ref: None,
+                    side: "RIGHT".to_string(),
+                }],
+            };
+            std::fs::write(&gc_path, serde_json::to_string_pretty(&comments).unwrap()).unwrap();
 
-        let changed = mark_thread_resolved_in_files(
-            "c-1",
-            &tmp.path().to_string_lossy(),
-            &tmp.path().to_string_lossy(),
-        )
-        .unwrap();
-        assert_eq!(changed, Some(gc_path.to_string_lossy().to_string()));
-        let updated: ErGithubComments =
-            serde_json::from_str(&std::fs::read_to_string(&gc_path).unwrap()).unwrap();
-        assert!(updated.comments[0].resolved);
+            let changed = mark_thread_resolved_in_files(
+                "c-1",
+                &tmp.path().to_string_lossy(),
+                &tmp.path().to_string_lossy(),
+            )
+            .unwrap();
+            assert_eq!(changed, Some(gc_path.to_string_lossy().to_string()));
+            let updated: ErGithubComments =
+                serde_json::from_str(&std::fs::read_to_string(&gc_path).unwrap()).unwrap();
+            assert!(updated.comments[0].resolved);
+        });
     }
 
     #[test]
@@ -12973,56 +12991,71 @@ mod tests {
 
     #[test]
     fn branch_preload_target_skips_non_pr_tabs() {
-        let app = make_app_with_n_tabs(1);
-        assert!(branch_preload_target(&app, 0).is_none());
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let app = make_app_with_n_tabs(1);
+            assert!(branch_preload_target(&app, 0).is_none());
+        });
     }
 
     #[test]
     fn branch_preload_target_skips_pr_without_number() {
-        let mut app = make_app_with_n_tabs(1);
-        app.tab_mut().local_branch_view = Some("feature".into());
-        assert!(branch_preload_target(&app, 0).is_none());
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            app.tab_mut().local_branch_view = Some("feature".into());
+            assert!(branch_preload_target(&app, 0).is_none());
+        });
     }
 
     #[test]
     fn branch_preload_target_local_pr_without_checkout_is_eligible() {
-        let mut app = make_app_with_n_tabs(1);
-        let tab = app.tab_mut();
-        tab.local_branch_view = Some("feature-x".into());
-        tab.pr_number = Some(42);
-        tab.pr_head_ref = Some("refs/er/pr/42/head".into());
-        tab.base_branch = "main".into();
-        let inputs = branch_preload_target(&app, 0).expect("eligible");
-        assert_eq!(inputs.pr_number, Some(42));
-        assert_eq!(inputs.local_branch_view.as_deref(), Some("feature-x"));
-        assert_eq!(inputs.base_branch, "main");
-        assert!(inputs.remote_repo.is_none());
-        assert!(inputs.checkout_root.is_none());
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            let tab = app.tab_mut();
+            tab.local_branch_view = Some("feature-x".into());
+            tab.pr_number = Some(42);
+            tab.pr_head_ref = Some("refs/er/pr/42/head".into());
+            tab.base_branch = "main".into();
+            let inputs = branch_preload_target(&app, 0).expect("eligible");
+            assert_eq!(inputs.pr_number, Some(42));
+            assert_eq!(inputs.local_branch_view.as_deref(), Some("feature-x"));
+            assert_eq!(inputs.base_branch, "main");
+            assert!(inputs.remote_repo.is_none());
+            assert!(inputs.checkout_root.is_none());
+        });
     }
 
     #[test]
     fn branch_preload_target_skips_checked_out_pr() {
-        let mut app = make_app_with_n_tabs(1);
-        let tab = app.tab_mut();
-        tab.local_branch_view = Some("feature-x".into());
-        tab.pr_number = Some(42);
-        tab.local_branch_checkout_root = Some("/worktree".into());
-        assert!(
-            branch_preload_target(&app, 0).is_none(),
-            "working-tree scope is local + staleness-prone — no preload"
-        );
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            let tab = app.tab_mut();
+            tab.local_branch_view = Some("feature-x".into());
+            tab.pr_number = Some(42);
+            tab.local_branch_checkout_root = Some("/worktree".into());
+            assert!(
+                branch_preload_target(&app, 0).is_none(),
+                "working-tree scope is local + staleness-prone — no preload"
+            );
+        });
     }
 
     #[test]
     fn branch_preload_target_remote_pr_is_eligible() {
-        let mut app = make_app_with_n_tabs(1);
-        let tab = app.tab_mut();
-        tab.remote_repo = Some("owner/repo".into());
-        tab.pr_number = Some(7);
-        let inputs = branch_preload_target(&app, 0).expect("eligible");
-        assert_eq!(inputs.remote_repo.as_deref(), Some("owner/repo"));
-        assert_eq!(inputs.pr_number, Some(7));
-        assert_eq!(inputs.dedupe_key(), ("owner/repo".to_string(), 7));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            let tab = app.tab_mut();
+            tab.remote_repo = Some("owner/repo".into());
+            tab.pr_number = Some(7);
+            let inputs = branch_preload_target(&app, 0).expect("eligible");
+            assert_eq!(inputs.remote_repo.as_deref(), Some("owner/repo"));
+            assert_eq!(inputs.pr_number, Some(7));
+            assert_eq!(inputs.dedupe_key(), ("owner/repo".to_string(), 7));
+        });
     }
 
     #[test]
@@ -13094,143 +13127,162 @@ mod tests {
 
     #[test]
     fn arbiter_verdict_and_rationale_invalidate_content_revision() {
-        let mut app = make_app_with_n_tabs(1);
-        let before = compute_content_revision(&app);
-        app.tab_mut().ai.arbiter_verdicts.insert(
-            "claim".into(),
-            (
-                er_engine::ai::ArbiterRuling::Escalated,
-                "first reason".into(),
-            ),
-        );
-        let with_verdict = compute_content_revision(&app);
-        assert_ne!(before, with_verdict);
-        app.tab_mut()
-            .ai
-            .arbiter_verdicts
-            .get_mut("claim")
-            .unwrap()
-            .1 = "new reason".into();
-        assert_ne!(with_verdict, compute_content_revision(&app));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            let before = compute_content_revision(&app);
+            app.tab_mut().ai.arbiter_verdicts.insert(
+                "claim".into(),
+                (
+                    er_engine::ai::ArbiterRuling::Escalated,
+                    "first reason".into(),
+                ),
+            );
+            let with_verdict = compute_content_revision(&app);
+            assert_ne!(before, with_verdict);
+            app.tab_mut()
+                .ai
+                .arbiter_verdicts
+                .get_mut("claim")
+                .unwrap()
+                .1 = "new reason".into();
+            assert_ne!(with_verdict, compute_content_revision(&app));
+        });
     }
 
     #[test]
     fn confidence_regrade_invalidates_content_revision_without_verdict_change() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim","confidence":"tentative"}]}}}"#).unwrap();
-        let mut app = make_app_with_n_tabs(1);
-        app.tab_mut().ai = er_engine::ai::load_ai_state(dir.path().to_str().unwrap(), "hash", None);
-        let before = compute_content_revision(&app);
-        app.tab_mut()
-            .ai
-            .review
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut("a.rs")
-            .unwrap()
-            .findings[0]
-            .confidence = er_engine::ai::Confidence::Confirmed;
-        assert_ne!(before, compute_content_revision(&app));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            std::fs::write(dir.path().join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim","confidence":"tentative"}]}}}"#).unwrap();
+            let mut app = make_app_with_n_tabs(1);
+            app.tab_mut().ai =
+                er_engine::ai::load_ai_state(dir.path().to_str().unwrap(), "hash", None);
+            let before = compute_content_revision(&app);
+            app.tab_mut()
+                .ai
+                .review
+                .as_mut()
+                .unwrap()
+                .files
+                .get_mut("a.rs")
+                .unwrap()
+                .findings[0]
+                .confidence = er_engine::ai::Confidence::Confirmed;
+            assert_ne!(before, compute_content_revision(&app));
+        });
     }
 
     #[test]
     fn arbiter_metadata_change_invalidates_content_revision() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().join(".er");
-        std::fs::create_dir_all(&er_dir).unwrap();
-        std::fs::write(er_dir.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim","confidence":"tentative"}]}}}"#).unwrap();
-        let key = er_engine::ai::finding_key("a.rs", None, "claim");
-        let overlay = |provider| {
-            serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[{"id":key,"verdict":"escalated","rationale":"same","providers":[provider]}]}).to_string()
-        };
-        std::fs::write(er_dir.join("arbiter.json"), overlay("first")).unwrap();
-        let mut app = make_app_with_n_tabs(1);
-        app.tab_mut().er_root =
-            er_engine::paths::ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
-        app.tab_mut().branch_diff_hash = "hash".into();
-        app.tab_mut().reload_ai_state();
-        let before = compute_content_revision(&app);
-        assert_eq!(
-            app.tab().ai.review.as_ref().unwrap().files["a.rs"].findings[0].providers,
-            vec!["first"]
-        );
-        std::fs::write(er_dir.join("arbiter.json"), overlay("second")).unwrap();
-        assert!(app.tab_mut().check_ai_files_changed());
-        assert_eq!(
-            app.tab().ai.review.as_ref().unwrap().files["a.rs"].findings[0].providers,
-            vec!["second"]
-        );
-        assert_ne!(before, compute_content_revision(&app));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let er_dir = dir.path().join(".er");
+            std::fs::create_dir_all(&er_dir).unwrap();
+            std::fs::write(er_dir.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim","confidence":"tentative"}]}}}"#).unwrap();
+            let key = er_engine::ai::finding_key("a.rs", None, "claim");
+            let overlay = |provider| {
+                serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[{"id":key,"verdict":"escalated","rationale":"same","providers":[provider]}]}).to_string()
+            };
+            std::fs::write(er_dir.join("arbiter.json"), overlay("first")).unwrap();
+            let mut app = make_app_with_n_tabs(1);
+            app.tab_mut().er_root =
+                er_engine::paths::ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
+            app.tab_mut().branch_diff_hash = "hash".into();
+            app.tab_mut().reload_ai_state();
+            let before = compute_content_revision(&app);
+            assert_eq!(
+                app.tab().ai.review.as_ref().unwrap().files["a.rs"].findings[0].providers,
+                vec!["first"]
+            );
+            std::fs::write(er_dir.join("arbiter.json"), overlay("second")).unwrap();
+            assert!(app.tab_mut().check_ai_files_changed());
+            assert_eq!(
+                app.tab().ai.review.as_ref().unwrap().files["a.rs"].findings[0].providers,
+                vec!["second"]
+            );
+            assert_ne!(before, compute_content_revision(&app));
+        });
     }
 
     #[test]
     fn other_bucket_arbiter_change_invalidates_only_review_views() {
-        let mut app = make_app_with_n_tabs(1);
-        let tab = app.tab_mut();
-        tab.mode = DiffMode::PrDiff;
-        tab.pr_number = Some(7);
-        tab.current_branch = "feature".into();
-        assert!(crate::snapshot::other_bucket_dir(tab).is_some());
-        let before = compute_content_revision_with_arbiter(&app, None);
-        let with_arbiter = compute_content_revision_with_arbiter(&app, Some(b"first"));
-        assert_ne!(before, with_arbiter);
-        assert_ne!(
-            with_arbiter,
-            compute_content_revision_with_arbiter(&app, Some(b"second"))
-        );
-        assert_eq!(before, compute_content_revision_with_arbiter(&app, None));
-        app.tab_mut().mode = DiffMode::Unstaged;
-        let unrelated = compute_content_revision_with_arbiter(&app, None);
-        assert_eq!(
-            unrelated,
-            compute_content_revision_with_arbiter(&app, Some(b"third"))
-        );
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            let tab = app.tab_mut();
+            tab.mode = DiffMode::PrDiff;
+            tab.pr_number = Some(7);
+            tab.current_branch = "feature".into();
+            assert!(crate::snapshot::other_bucket_dir(tab).is_some());
+            let before = compute_content_revision_with_arbiter(&app, None);
+            let with_arbiter = compute_content_revision_with_arbiter(&app, Some(b"first"));
+            assert_ne!(before, with_arbiter);
+            assert_ne!(
+                with_arbiter,
+                compute_content_revision_with_arbiter(&app, Some(b"second"))
+            );
+            assert_eq!(before, compute_content_revision_with_arbiter(&app, None));
+            app.tab_mut().mode = DiffMode::Unstaged;
+            let unrelated = compute_content_revision_with_arbiter(&app, None);
+            assert_eq!(
+                unrelated,
+                compute_content_revision_with_arbiter(&app, Some(b"third"))
+            );
+        });
     }
 
     #[test]
     fn preview_file_keys_invalidate_content_revision_without_hunk_changes() {
-        let mut app = make_app_with_n_tabs(1);
-        let raw = "diff --git a/readme.md b/readme.md\nindex abcdef0..0000000 100644\n--- a/readme.md\n+++ b/readme.md\n@@ -1 +1 @@\n-old\n+new\n";
-        let tab = app.tab_mut();
-        tab.set_raw_diff_for_test(raw);
-        tab.files = er_engine::git::parse_diff(raw);
-        tab.file_headers = er_engine::git::parse_diff_headers(raw);
-        tab.mtime_cache
-            .insert("readme.md".into(), std::time::SystemTime::UNIX_EPOCH);
-        let context = tab.preview_context_key();
-        let revision = compute_content_revision(&app);
-        app.tab_mut().mtime_cache.insert(
-            "readme.md".into(),
-            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
-        );
-        assert_eq!(context, app.tab().preview_context_key());
-        assert_ne!(revision, compute_content_revision(&app));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            let raw = "diff --git a/readme.md b/readme.md\nindex abcdef0..0000000 100644\n--- a/readme.md\n+++ b/readme.md\n@@ -1 +1 @@\n-old\n+new\n";
+            let tab = app.tab_mut();
+            tab.set_raw_diff_for_test(raw);
+            tab.files = er_engine::git::parse_diff(raw);
+            tab.file_headers = er_engine::git::parse_diff_headers(raw);
+            tab.mtime_cache
+                .insert("readme.md".into(), std::time::SystemTime::UNIX_EPOCH);
+            let context = tab.preview_context_key();
+            let revision = compute_content_revision(&app);
+            app.tab_mut().mtime_cache.insert(
+                "readme.md".into(),
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
+            );
+            assert_eq!(context, app.tab().preview_context_key());
+            assert_ne!(revision, compute_content_revision(&app));
+        });
     }
 
     #[test]
     fn branch_preload_target_stays_eligible_when_preload_already_seeded() {
         use er_engine::app::PreloadedBranchRaw;
-        let mut app = make_app_with_n_tabs(1);
-        let tab = app.tab_mut();
-        tab.remote_repo = Some("owner/repo".into());
-        tab.pr_number = Some(7);
-        tab.preloaded_branch_raw = Some(PreloadedBranchRaw {
-            raw: "diff".into(),
-            preview_head_oid: None,
-            base_branch: "main".into(),
-            pr_number: Some(7),
-            local_branch_view: None,
-            checkout_root: None,
-            remote_repo: Some("owner/repo".into()),
-            pr_head_ref: None,
-            parity: true,
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            let tab = app.tab_mut();
+            tab.remote_repo = Some("owner/repo".into());
+            tab.pr_number = Some(7);
+            tab.preloaded_branch_raw = Some(PreloadedBranchRaw {
+                raw: "diff".into(),
+                preview_head_oid: None,
+                base_branch: "main".into(),
+                pr_number: Some(7),
+                local_branch_view: None,
+                checkout_root: None,
+                remote_repo: Some("owner/repo".into()),
+                pr_head_ref: None,
+                parity: true,
+            });
+            assert!(
+                branch_preload_target(&app, 0).is_some(),
+                "seeded tabs stay eligible: the worker skips the refetch but still \
+                 preloads the branch-view AI sidecars (collapsed-view fix)"
+            );
         });
-        assert!(
-            branch_preload_target(&app, 0).is_some(),
-            "seeded tabs stay eligible: the worker skips the refetch but still \
-             preloads the branch-view AI sidecars (collapsed-view fix)"
-        );
     }
 
     #[test]
@@ -13395,11 +13447,14 @@ mod tests {
 
     #[test]
     fn clone_inbox_prefs_reads_app_config() {
-        let mut app = make_app_with_n_tabs(1);
-        app.config.inbox.notify.ai_review_done = false;
-        let prefs = clone_inbox_prefs(&Arc::new(Mutex::new(app)));
-        assert!(!prefs.notify.ai_review_done);
-        assert!(prefs.show.ai_review_done);
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = make_app_with_n_tabs(1);
+            app.config.inbox.notify.ai_review_done = false;
+            let prefs = clone_inbox_prefs(&Arc::new(Mutex::new(app)));
+            assert!(!prefs.notify.ai_review_done);
+            assert!(prefs.show.ai_review_done);
+        });
     }
 
     #[test]
@@ -13798,34 +13853,37 @@ mod tests {
         use std::sync::Arc;
 
         let dir = ReviewFlowTestDir::new();
-        let state = review_flow_test_state(&dir);
-        {
-            let mut app = state.app.lock().unwrap();
-            app.tab_mut().remote_repo = Some("owner/repo".to_string());
-            app.tab_mut().pr_number = Some(7);
-            app.set_github_comment_poster(Arc::new(RefusingCommentPoster));
-        }
-        let comments_path = state.app.lock().unwrap().tab().github_comments_path();
-        assert!(!std::path::Path::new(&comments_path).exists());
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let state = review_flow_test_state(&dir);
+            {
+                let mut app = state.app.lock().unwrap();
+                app.tab_mut().remote_repo = Some("owner/repo".to_string());
+                app.tab_mut().pr_number = Some(7);
+                app.set_github_comment_poster(Arc::new(RefusingCommentPoster));
+            }
+            let comments_path = state.app.lock().unwrap().tab().github_comments_path();
+            assert!(!std::path::Path::new(&comments_path).exists());
 
-        let error = add_comment_impl(
-            "src/lib.rs".to_string(),
-            0,
-            Some(1),
-            None,
-            "hello".to_string(),
-            Some("RIGHT".to_string()),
-            None,
-            None,
-            &state,
-        )
-        .unwrap_err();
+            let error = add_comment_impl(
+                "src/lib.rs".to_string(),
+                0,
+                Some(1),
+                None,
+                "hello".to_string(),
+                Some("RIGHT".to_string()),
+                None,
+                None,
+                &state,
+            )
+            .unwrap_err();
 
-        assert!(error.contains("Comment not posted"), "{error}");
-        assert!(
-            !std::path::Path::new(&comments_path).exists(),
-            "a failed post must write nothing"
-        );
+            assert!(error.contains("Comment not posted"), "{error}");
+            assert!(
+                !std::path::Path::new(&comments_path).exists(),
+                "a failed post must write nothing"
+            );
+        });
     }
 
     #[test]
