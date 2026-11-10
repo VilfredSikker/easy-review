@@ -66,7 +66,7 @@ pub enum PanelContent {
 
 // ── .er-review.json ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ErReview {
     pub version: u32,
     pub diff_hash: String,
@@ -83,7 +83,19 @@ pub struct ErReview {
     pub file_hashes: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl er_store::Artifact for ErReview {
+    const KIND: &'static str = "review";
+    const VERSION: u32 = 1;
+    const MODE: er_store::Mode = er_store::Mode::Bare;
+    const FILE: &'static str = "review.json";
+    type Slot = ();
+
+    fn diff_hash(&self) -> Option<&str> {
+        Some(&self.diff_hash)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ErFileReview {
     pub risk: RiskLevel,
     #[serde(default)]
@@ -158,7 +170,9 @@ where
         .unwrap_or(RiskLevel::Info))
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum RiskLevel {
     High,
@@ -195,7 +209,9 @@ impl RiskLevel {
 }
 
 /// Confidence in a finding, set by the AI based on what it could verify.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Confidence {
     /// Default for older review.json files. Review pass uses this when a finding
@@ -252,7 +268,7 @@ impl Confidence {
 }
 
 /// One read or grep result the AI used to justify (or revise) a finding.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct EvidenceItem {
     pub file: String,
     #[serde(default, deserialize_with = "lenient_line_anchor")]
@@ -267,7 +283,7 @@ pub struct EvidenceItem {
 /// nothing else claims a finding. See CONTEXT.md, "Lens".
 pub const GENERAL_LENS: &str = "general";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Finding {
     pub id: String,
     pub severity: RiskLevel,
@@ -509,7 +525,7 @@ fn visible_representative_key(finding: &Finding) -> (u8, &str, &str) {
     )
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AiResponse {
     pub id: String,
     #[serde(default)]

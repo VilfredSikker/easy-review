@@ -57,9 +57,7 @@ pub struct TourSummary {
 }
 
 fn load_er_review(er_dir: &Path) -> Option<ErReview> {
-    let path = er_dir.join("review.json");
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+    crate::store_registry::read_found::<ErReview>(er_dir.to_str()?, ())
 }
 
 fn summarize_triage(t: &TriageReview) -> TriageSummary {

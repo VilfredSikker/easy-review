@@ -48,7 +48,9 @@ stores behind a `type` discriminator.
 
 `finding_responses.rs` (validation replies) and `finding_cleanup.rs`
 (resolve/remove) write back to whichever of `review.json`, `professor.json`, or
-`experts/*.json` owns the finding. Both attach a reaction or drop the finding;
+`experts/*.json` owns the finding, through the store's `ArtifactStore`; a
+sidecar that cannot be read is skipped, never overwritten. Both attach a
+reaction or drop the finding;
 neither rewrites the finding's own text — a report that no longer says what the
 review claimed cannot be trusted as the AI's output. Disagree with a finding by
 removing it. Those two paths are not licence to add in-place editing.
