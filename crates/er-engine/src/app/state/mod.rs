@@ -9722,28 +9722,28 @@ pub fn cleanup_question_answers(er_dir: &str) {
     });
 }
 
-/// Delete AI review sidecar files. Errors are ignored (files may not exist).
-pub fn cleanup_reviews(er_dir: &str) {
-    cleanup_sidecars(er_dir, false);
+/// Delete AI review sidecar files.
+///
+/// A busy bucket returns the lock error instead of reporting the review gone
+/// while its files stay behind.
+pub fn cleanup_reviews(er_dir: &str) -> Result<(), er_store::StoreError> {
+    cleanup_sidecars(er_dir, false)
 }
 
-/// Delete triage sidecar only. Errors are ignored (file may not exist).
-pub fn cleanup_triage(er_dir: &str) {
+/// Delete triage sidecar only. A busy bucket returns the lock error.
+pub fn cleanup_triage(er_dir: &str) -> Result<(), er_store::StoreError> {
     let store = crate::store_registry::store();
-    let Ok(scope) = er_store::Scope::dir(er_dir) else {
-        return;
-    };
-    let Ok(guard) = store.lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT) else {
-        return;
-    };
+    let scope = er_store::Scope::dir(er_dir)?;
+    let guard = store.lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)?;
     if let Ok(key) = er_store::ArtifactKey::<crate::ai::TriageReview>::new(scope, ()) {
         let _ = store.delete_locked(&guard, &key);
     }
+    Ok(())
 }
 
 /// Delete all AI review artifacts (general, expert, professor). Leaves triage intact.
-pub fn cleanup_review_artifacts(er_dir: &str) {
-    cleanup_sidecars(er_dir, true);
+pub fn cleanup_review_artifacts(er_dir: &str) -> Result<(), er_store::StoreError> {
+    cleanup_sidecars(er_dir, true)?;
     // `experts/<id>.prev.json` is a scoped re-review snapshot, not a store kind,
     // so it and any other JSON left in the directory go through the raw path.
     let experts_dir = std::path::Path::new(er_dir).join("experts");
@@ -9755,22 +9755,21 @@ pub fn cleanup_review_artifacts(er_dir: &str) {
             }
         }
     }
+    Ok(())
 }
 
 /// Remove the sidecars under one lock hold; `artifacts` adds the professor file
 /// and every expert file, which only the full cleanup removes.
-fn cleanup_sidecars(er_dir: &str, artifacts: bool) {
-    if let Ok(scope) = er_store::Scope::dir(er_dir) {
-        if let Ok(guard) =
-            crate::store_registry::store().lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
-        {
-            delete_common_sidecars(&scope, &guard);
-            if artifacts {
-                delete_review_artifacts(&scope, &guard);
-            }
-        }
+fn cleanup_sidecars(er_dir: &str, artifacts: bool) -> Result<(), er_store::StoreError> {
+    let scope = er_store::Scope::dir(er_dir)?;
+    let guard =
+        crate::store_registry::store().lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)?;
+    delete_common_sidecars(&scope, &guard);
+    if artifacts {
+        delete_review_artifacts(&scope, &guard);
     }
     let _ = std::fs::remove_file(std::path::Path::new(er_dir).join("summary.md"));
+    Ok(())
 }
 
 fn delete_common_sidecars(scope: &er_store::Scope, guard: &er_store::ScopeGuard) {
@@ -16934,7 +16933,7 @@ mod tests {
         std::fs::write(er.join("triage.json"), "{}").unwrap();
         std::fs::write(er.join("review.json"), "{}").unwrap();
 
-        cleanup_triage(er.to_str().unwrap());
+        cleanup_triage(er.to_str().unwrap()).unwrap();
 
         assert!(!er.join("triage.json").exists());
         assert!(er.join("review.json").exists());
@@ -16953,9 +16952,8 @@ mod tests {
         let experts = er.join("experts");
         std::fs::create_dir_all(&experts).unwrap();
         std::fs::write(experts.join("security.json"), "{}").unwrap();
-        std::fs::write(experts.join("security.prev.json"), "{}").unwrap();
 
-        cleanup_review_artifacts(er.to_str().unwrap());
+        cleanup_review_artifacts(er.to_str().unwrap()).unwrap();
 
         assert!(er.join("triage.json").exists());
         assert!(!er.join("review.json").exists());
@@ -16963,6 +16961,40 @@ mod tests {
         assert!(!er.join("checklist.json").exists());
         assert!(!er.join("summary.md").exists());
         assert!(!er.join("professor.json").exists());
+        assert!(!experts.join("security.json").exists());
+    }
+
+    #[test]
+    fn cleanup_reviews_reports_a_busy_bucket_instead_of_clearing_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::write(er.join("review.json"), "{}").unwrap();
+
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(er).unwrap();
+        let guard = store
+            .lock_scope(&scope, er_store::DEFAULT_LOCK_TIMEOUT)
+            .unwrap();
+        let result = cleanup_reviews(er.to_str().unwrap());
+        drop(guard);
+
+        assert!(result.is_err(), "a busy bucket must be reported");
+        assert!(er.join("review.json").exists());
+        cleanup_reviews(er.to_str().unwrap()).unwrap();
+        assert!(!er.join("review.json").exists());
+    }
+
+    #[test]
+    fn cleanup_review_artifacts_removes_the_prev_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        let experts = er.join("experts");
+        std::fs::create_dir_all(&experts).unwrap();
+        std::fs::write(experts.join("security.json"), "{}").unwrap();
+        std::fs::write(experts.join("security.prev.json"), "{}").unwrap();
+
+        cleanup_review_artifacts(er.to_str().unwrap()).unwrap();
+
         assert!(!experts.join("security.json").exists());
         assert!(!experts.join("security.prev.json").exists());
     }

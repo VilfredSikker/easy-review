@@ -9295,8 +9295,8 @@ fn delete_review_artifact_from_app(app: &mut App, kind: &str) -> Result<(), Stri
         .map_err(|e| e.to_string())?;
 
     match kind {
-        "triage" => er_engine::app::cleanup_triage(&er_dir),
-        "review" => er_engine::app::cleanup_review_artifacts(&er_dir),
+        "triage" => er_engine::app::cleanup_triage(&er_dir).map_err(|e| e.to_string())?,
+        "review" => er_engine::app::cleanup_review_artifacts(&er_dir).map_err(|e| e.to_string())?,
         other => return Err(format!("Unknown review artifact kind: {other}")),
     }
 
