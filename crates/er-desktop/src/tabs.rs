@@ -521,45 +521,51 @@ mod tests {
 
     #[test]
     fn descriptor_local_pr_without_head_ref() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        init_git_repo(tmp.path());
-        let root = tmp.path().to_string_lossy().to_string();
-        let mut tab = er_engine::app::TabState::new_with_base_unloaded(
-            root,
-            "main".to_string(),
-            er_engine::ports::Ports::cli(),
-        )
-        .expect("tab");
-        tab.pr_number = Some(42);
-        tab.local_branch_view = Some("dependabot/cargo-abc".to_string());
-        let d = descriptor_from_tab(&tab);
-        assert_eq!(d.kind, TabKind::LocalPr);
-        assert_eq!(d.pr_number, Some(42));
-        assert!(d.pr_head_ref.is_none());
-        assert_eq!(d.branch.as_deref(), Some("dependabot/cargo-abc"));
+        let storage = tempfile::tempdir().expect("tempdir");
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            init_git_repo(tmp.path());
+            let root = tmp.path().to_string_lossy().to_string();
+            let mut tab = er_engine::app::TabState::new_with_base_unloaded(
+                root,
+                "main".to_string(),
+                er_engine::ports::Ports::cli(),
+            )
+            .expect("tab");
+            tab.pr_number = Some(42);
+            tab.local_branch_view = Some("dependabot/cargo-abc".to_string());
+            let d = descriptor_from_tab(&tab);
+            assert_eq!(d.kind, TabKind::LocalPr);
+            assert_eq!(d.pr_number, Some(42));
+            assert!(d.pr_head_ref.is_none());
+            assert_eq!(d.branch.as_deref(), Some("dependabot/cargo-abc"));
+        });
     }
 
     #[test]
     fn descriptor_local_pr_with_remote_slug_is_not_remote() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        init_git_repo(tmp.path());
-        let root = tmp.path().to_string_lossy().to_string();
-        let mut tab = er_engine::app::TabState::new_with_base_unloaded(
-            root,
-            "origin/main".to_string(),
-            er_engine::ports::Ports::cli(),
-        )
-        .expect("tab");
-        tab.pr_number = Some(1425);
-        tab.local_branch_view = Some("feat/delete-plates".to_string());
-        tab.remote_repo = Some("reshapebiotech/discovery".to_string());
-        tab.base_branch = "origin/main".to_string();
-        let d = descriptor_from_tab(&tab);
-        assert_eq!(d.kind, TabKind::LocalPr);
-        assert_eq!(d.pr_number, Some(1425));
-        assert_eq!(d.branch.as_deref(), Some("feat/delete-plates"));
-        assert_eq!(d.base_ref.as_deref(), Some("origin/main"));
-        assert!(d.pr_owner.is_none());
+        let storage = tempfile::tempdir().expect("tempdir");
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            init_git_repo(tmp.path());
+            let root = tmp.path().to_string_lossy().to_string();
+            let mut tab = er_engine::app::TabState::new_with_base_unloaded(
+                root,
+                "origin/main".to_string(),
+                er_engine::ports::Ports::cli(),
+            )
+            .expect("tab");
+            tab.pr_number = Some(1425);
+            tab.local_branch_view = Some("feat/delete-plates".to_string());
+            tab.remote_repo = Some("reshapebiotech/discovery".to_string());
+            tab.base_branch = "origin/main".to_string();
+            let d = descriptor_from_tab(&tab);
+            assert_eq!(d.kind, TabKind::LocalPr);
+            assert_eq!(d.pr_number, Some(1425));
+            assert_eq!(d.branch.as_deref(), Some("feat/delete-plates"));
+            assert_eq!(d.base_ref.as_deref(), Some("origin/main"));
+            assert!(d.pr_owner.is_none());
+        });
     }
 
     #[test]
@@ -580,24 +586,28 @@ mod tests {
 
     #[test]
     fn rebuild_remote_pr_stub_restores_head_and_base() {
-        let d = TabDescriptor {
-            kind: TabKind::RemotePr,
-            repo_root: String::new(),
-            branch: Some("feat/from-fork".to_string()),
-            pr_owner: Some("reshapebiotech".to_string()),
-            pr_repo: Some("discovery".to_string()),
-            pr_number: Some(1425),
-            pr_head_ref: None,
-            base_ref: Some("main".to_string()),
-            browser_url: None,
-            browser_layout: None,
-        };
-        let tab = rebuild_remote_pr(&d, true, &er_engine::ports::Ports::for_test()).expect("stub");
-        assert_eq!(tab.current_branch, "feat/from-fork");
-        assert_eq!(tab.base_branch, "main");
-        assert_eq!(tab.pr_number, Some(1425));
-        assert!(tab.local_branch_view.is_none());
-        assert!(tab.is_remote());
+        let storage = tempfile::tempdir().expect("tempdir");
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let d = TabDescriptor {
+                kind: TabKind::RemotePr,
+                repo_root: String::new(),
+                branch: Some("feat/from-fork".to_string()),
+                pr_owner: Some("reshapebiotech".to_string()),
+                pr_repo: Some("discovery".to_string()),
+                pr_number: Some(1425),
+                pr_head_ref: None,
+                base_ref: Some("main".to_string()),
+                browser_url: None,
+                browser_layout: None,
+            };
+            let tab =
+                rebuild_remote_pr(&d, true, &er_engine::ports::Ports::for_test()).expect("stub");
+            assert_eq!(tab.current_branch, "feat/from-fork");
+            assert_eq!(tab.base_branch, "main");
+            assert_eq!(tab.pr_number, Some(1425));
+            assert!(tab.local_branch_view.is_none());
+            assert!(tab.is_remote());
+        });
     }
 
     #[test]
@@ -655,23 +665,29 @@ mod tests {
 
     #[test]
     fn save_app_tabs_clamps_active_index() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        init_git_repo(tmp.path());
-        let root = tmp.path().to_string_lossy().to_string();
-        let mut app =
-            er_engine::app::App::new_unloaded(root, er_engine::ports::Ports::cli()).expect("app");
-        app.active_tab = 99;
-        let (descriptors, active) = persisted_tabs(&app);
-        assert_eq!(active, 0);
-        assert_eq!(descriptors.len(), 1);
+        let storage = tempfile::tempdir().expect("tempdir");
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            init_git_repo(tmp.path());
+            let root = tmp.path().to_string_lossy().to_string();
+            let mut app = er_engine::app::App::new_unloaded(root, er_engine::ports::Ports::cli())
+                .expect("app");
+            app.active_tab = 99;
+            let (descriptors, active) = persisted_tabs(&app);
+            assert_eq!(active, 0);
+            assert_eq!(descriptors.len(), 1);
+        });
     }
 
     #[test]
     fn placeholder_tab_is_not_persisted() {
-        // Saving it would make the next launch try to restore a tab with no repo.
-        let app = er_engine::app::App::new_empty(er_engine::ports::Ports::for_test());
-        let (descriptors, active) = persisted_tabs(&app);
-        assert!(descriptors.is_empty());
-        assert_eq!(active, 0);
+        let storage = tempfile::tempdir().expect("tempdir");
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            // Saving it would make the next launch try to restore a tab with no repo.
+            let app = er_engine::app::App::new_empty(er_engine::ports::Ports::for_test());
+            let (descriptors, active) = persisted_tabs(&app);
+            assert!(descriptors.is_empty());
+            assert_eq!(active, 0);
+        });
     }
 }

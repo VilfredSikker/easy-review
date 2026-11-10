@@ -125,6 +125,14 @@ pub fn storage_base() -> PathBuf {
 /// directory keeps that directory as the root.
 pub fn storage_root() -> PathBuf {
     let override_path = storage_root_override();
+    #[cfg(any(test, feature = "test-support"))]
+    if override_path.as_deref().is_none_or(str::is_empty) {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>");
+        panic!(
+            "test resolved the real storage root (thread {name}); wrap it in er_engine::storage::with_test_storage_root"
+        );
+    }
     storage_root_from(override_path.as_deref(), dirs::data_dir(), dirs::home_dir())
 }
 
@@ -427,14 +435,6 @@ pub fn resolve_managed_root_for_pr_bucket(owner_repo_slug: &str, pr_number: u64)
         session_dir: path_str,
     }
 }
-
-/// Shared mutex for tests that mutate `ER_STORAGE_ROOT`.
-///
-/// All tests setting `ER_STORAGE_ROOT` must hold this lock for the duration of the
-/// test.  Use `.lock().unwrap_or_else(|e| e.into_inner())` so a panicking test does
-/// not poison the mutex and cascade into sibling tests.
-#[cfg(test)]
-pub static STORAGE_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -855,6 +855,26 @@ mod tests {
 
             assert_eq!(root.er_dir(), expected.to_string_lossy());
         });
+    }
+
+    /// A test that forgets to scope its root must fail loudly instead of
+    /// writing into the developer's real storage.
+    #[test]
+    #[should_panic(expected = "test resolved the real storage root")]
+    fn resolving_the_real_root_in_a_test_is_a_panic() {
+        // Wait out any process-wide root first: it would make the guard stand
+        // down for a legitimate reason, and this test is about the default.
+        let _serial = PROCESS_STORAGE_ROOT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(
+            PROCESS_STORAGE_ROOT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none(),
+            "a process-wide test root leaked"
+        );
+        crate::test_support::with_var_unset("ER_STORAGE_ROOT", storage_root);
     }
 }
 

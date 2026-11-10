@@ -323,18 +323,20 @@ mod tests {
     #[test]
     fn session_round_trips_and_restore_rejects_a_changed_diff() {
         let tmp = TempDir::new().unwrap();
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.er_root = ErRoot::managed(tmp.path().to_string_lossy());
-        tab.branch_diff_hash = "hash-a".to_string();
-        tab.selected_file = 3;
-        tab.save_session();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.er_root = ErRoot::managed(tmp.path().to_string_lossy());
+            tab.branch_diff_hash = "hash-a".to_string();
+            tab.selected_file = 3;
+            tab.save_session();
 
-        let (store, scope) = store_and_scope(&tmp);
-        let session = load_session(&store, &scope).expect("the saved session");
-        assert_eq!(session.diff_hash, "hash-a");
-        assert_eq!(session.selected_file, 3);
+            let (store, scope) = store_and_scope(&tmp);
+            let session = load_session(&store, &scope).expect("the saved session");
+            assert_eq!(session.diff_hash, "hash-a");
+            assert_eq!(session.selected_file, 3);
 
-        tab.branch_diff_hash = "hash-b".to_string();
-        assert!(!tab.restore_session());
+            tab.branch_diff_hash = "hash-b".to_string();
+            assert!(!tab.restore_session());
+        });
     }
 }

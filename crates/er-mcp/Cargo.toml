@@ -24,6 +24,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 schemars = "1"
 
 [dev-dependencies]
+# The tests scope the engine's storage root per thread; that helper is behind
+# this feature, which a plain `cargo test -p er-mcp` would otherwise omit.
+er-engine = { path = "../er-engine", default-features = false, features = ["test-support"] }
 tempfile = "3"
 
 [lints]

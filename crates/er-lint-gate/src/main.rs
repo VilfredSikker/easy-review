@@ -395,15 +395,8 @@ mod tests {
 
     #[test]
     fn a_missing_allow_key_means_an_empty_list() {
-        let dir = std::env::temp_dir().join(format!(
-            "er-lint-gate-allow-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         std::fs::write(
             dir.join("Cargo.toml"),
             r#"
@@ -426,8 +419,7 @@ allow = ["crates/x/src/a.rs"]
         )
         .unwrap();
 
-        let config = gate_config(&dir).expect("config without an allow key");
-        std::fs::remove_dir_all(&dir).ok();
+        let config = gate_config(dir).expect("config without an allow key");
 
         assert!(config.spawn_git.allow.is_empty());
         assert_eq!(config.spawn_gh.allow, ["crates/x/src/a.rs"]);

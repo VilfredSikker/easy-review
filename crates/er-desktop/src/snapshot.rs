@@ -6385,15 +6385,19 @@ mod tests {
     /// `shows_branch_base_diff` fallback (which requires `pr_number.is_none()`).
     #[test]
     fn pr_tab_in_branch_view_lights_pill_when_head_advanced() {
-        let (app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let (app, pr_cache) =
+                pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
 
-        let stale = diff_stale_for(&app, &pr_cache).expect("pill should be lit");
-        assert_eq!(stale.kind, "pr_head");
-        assert_eq!(stale.message, "PR head updated on origin — Sync to refresh");
-        assert_eq!(stale.built_from_oid, "head1");
-        assert_eq!(stale.latest_oid, "head2");
-        // "/tmp/test" is no repository, so there is nothing to count in.
-        assert_eq!(stale.commits_behind, None);
+            let stale = diff_stale_for(&app, &pr_cache).expect("pill should be lit");
+            assert_eq!(stale.kind, "pr_head");
+            assert_eq!(stale.message, "PR head updated on origin — Sync to refresh");
+            assert_eq!(stale.built_from_oid, "head1");
+            assert_eq!(stale.latest_oid, "head2");
+            // "/tmp/test" is no repository, so there is nothing to count in.
+            assert_eq!(stale.commits_behind, None);
+        });
     }
 
     fn snapshot_with_cache(app: &App, pr_cache: &PrCache) -> AppSnapshot {
@@ -6408,53 +6412,64 @@ mod tests {
 
     #[test]
     fn active_tab_stale_flag_follows_the_pill() {
-        let (app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
-        assert!(snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let (app, pr_cache) =
+                pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
+            assert!(snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
 
-        let (app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head1");
-        assert!(!snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
+            let (app, pr_cache) =
+                pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head1");
+            assert!(!snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
+        });
     }
 
     /// An inactive tab carries no `diff_stale`, so its dot comes from comparing
     /// its own `last_diff_head_oid` to the PR-list cache.
     #[test]
     fn inactive_pr_tab_is_stale_when_its_pr_head_moved() {
-        let (mut app, pr_cache) =
-            pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
-        let mut working = TabState::new_for_test(vec![]);
-        working.ports = er_engine::ports::Ports::cli();
-        working.repo_root = "/tmp/test".to_string();
-        app.tabs.push(working);
-        app.tabs.swap(0, 1);
-        app.active_tab = 0;
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let (mut app, pr_cache) =
+                pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
+            let mut working = TabState::new_for_test(vec![]);
+            working.ports = er_engine::ports::Ports::cli();
+            working.repo_root = "/tmp/test".to_string();
+            app.tabs.push(working);
+            app.tabs.swap(0, 1);
+            app.active_tab = 0;
 
-        let snap = snapshot_with_cache(&app, &pr_cache);
-        assert!(
-            !snap.tabs[0].stale,
-            "a working tab without a PR is never PR-stale"
-        );
-        assert!(snap.tabs[1].stale, "the PR tab's head moved on origin");
+            let snap = snapshot_with_cache(&app, &pr_cache);
+            assert!(
+                !snap.tabs[0].stale,
+                "a working tab without a PR is never PR-stale"
+            );
+            assert!(snap.tabs[1].stale, "the PR tab's head moved on origin");
 
-        // The refresh that brings the PR head back in line clears it.
-        if let Ok(mut cache) = pr_cache.lock() {
-            if let Some(prs) = cache.get_mut("owner/repo") {
-                prs[0].head_oid = "head1".to_string();
+            // The refresh that brings the PR head back in line clears it.
+            if let Ok(mut cache) = pr_cache.lock() {
+                if let Some(prs) = cache.get_mut("owner/repo") {
+                    prs[0].head_oid = "head1".to_string();
+                }
             }
-        }
-        assert!(!snapshot_with_cache(&app, &pr_cache).tabs[1].stale);
+            assert!(!snapshot_with_cache(&app, &pr_cache).tabs[1].stale);
+        });
     }
 
     /// A restored tab has no `last_diff_head_oid` until its diff loads; an
     /// unknown baseline must not light the dot.
     #[test]
     fn inactive_pr_tab_without_a_baseline_is_not_stale() {
-        let (mut app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, None, "head2");
-        let mut working = TabState::new_for_test(vec![]);
-        working.ports = er_engine::ports::Ports::cli();
-        app.tabs.push(working);
-        app.active_tab = 1;
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let (mut app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, None, "head2");
+            let mut working = TabState::new_for_test(vec![]);
+            working.ports = er_engine::ports::Ports::cli();
+            app.tabs.push(working);
+            app.active_tab = 1;
 
-        assert!(!snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
+            assert!(!snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
+        });
     }
 
     /// Two cached repos can share a PR number. The tab's dot must read the
@@ -6462,89 +6477,100 @@ mod tests {
     /// one in the tab's own remote's bucket, whatever the map's order.
     #[test]
     fn pr_tab_stale_flag_agrees_active_and_inactive_across_buckets() {
-        let pr = |head: &str| {
-            let mut p = minimal_pr_info(42, "PR");
-            p.head_oid = head.to_string();
-            p
-        };
-        let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([
-            ("owner/a".to_string(), vec![pr("headA")]),
-            ("owner/b".to_string(), vec![pr("headB")]),
-        ])));
-        for (built_from, expect_stale) in [("headA", false), ("headB", true)] {
-            let mut app = App::new_for_test(vec![]);
-            {
-                let tab = app.tab_mut();
-                tab.repo_root = "/tmp/test".to_string();
-                tab.remote_repo = Some("owner/a".to_string());
-                tab.pr_number = Some(42);
-                tab.mode = DiffMode::PrDiff;
-                tab.last_diff_head_oid = Some(built_from.to_string());
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let pr = |head: &str| {
+                let mut p = minimal_pr_info(42, "PR");
+                p.head_oid = head.to_string();
+                p
+            };
+            let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([
+                ("owner/a".to_string(), vec![pr("headA")]),
+                ("owner/b".to_string(), vec![pr("headB")]),
+            ])));
+            for (built_from, expect_stale) in [("headA", false), ("headB", true)] {
+                let mut app = App::new_for_test(vec![]);
+                {
+                    let tab = app.tab_mut();
+                    tab.repo_root = "/tmp/test".to_string();
+                    tab.remote_repo = Some("owner/a".to_string());
+                    tab.pr_number = Some(42);
+                    tab.mode = DiffMode::PrDiff;
+                    tab.last_diff_head_oid = Some(built_from.to_string());
+                }
+                let mut working = TabState::new_for_test(vec![]);
+                working.ports = er_engine::ports::Ports::cli();
+                app.tabs.push(working);
+
+                app.active_tab = 0;
+                let active = snapshot_with_cache(&app, &pr_cache);
+                app.active_tab = 1;
+                let inactive = snapshot_with_cache(&app, &pr_cache).tabs[0].stale;
+
+                assert_eq!(
+                    active.tabs[0].stale, expect_stale,
+                    "built from {built_from}"
+                );
+                assert_eq!(inactive, expect_stale, "built from {built_from}");
+                assert_eq!(active.diff_stale.is_some(), expect_stale);
             }
-            let mut working = TabState::new_for_test(vec![]);
-            working.ports = er_engine::ports::Ports::cli();
-            app.tabs.push(working);
-
-            app.active_tab = 0;
-            let active = snapshot_with_cache(&app, &pr_cache);
-            app.active_tab = 1;
-            let inactive = snapshot_with_cache(&app, &pr_cache).tabs[0].stale;
-
-            assert_eq!(
-                active.tabs[0].stale, expect_stale,
-                "built from {built_from}"
-            );
-            assert_eq!(inactive, expect_stale, "built from {built_from}");
-            assert_eq!(active.diff_stale.is_some(), expect_stale);
-        }
+        });
     }
 
     /// Pushing moves the PR-list cache's head without touching the worktree, so
     /// only a chrome-only build follows. That build must still recount `ahead`.
     #[test]
     fn chrome_only_build_recounts_ahead_when_the_pr_head_moves() {
-        let tmp = init_repo_with_feature_commit();
-        let main = rev_parse(tmp.path(), "main");
-        let feature = rev_parse(tmp.path(), "feature");
-        let (mut app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some(&main), &main);
-        {
-            let tab = app.tab_mut();
-            tab.repo_root = tmp.path().to_string_lossy().to_string();
-            tab.local_branch_view = None;
-        }
-        let sources = SnapshotSources {
-            pr_cache: Some(&pr_cache),
-            ..SnapshotSources::default()
-        };
-
-        let full = build_snapshot_with_delta(&app, &sources)
-            .local_branch_divergence
-            .expect("local PR tab in the local branch view");
-        assert_eq!(full.ahead, Some(1), "one unpushed commit");
-        assert_eq!(full.unstaged_files, Some(0));
-
-        if let Ok(mut cache) = pr_cache.lock() {
-            if let Some(prs) = cache.get_mut("owner/repo") {
-                prs[0].head_oid = feature.clone();
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let tmp = init_repo_with_feature_commit();
+            let main = rev_parse(tmp.path(), "main");
+            let feature = rev_parse(tmp.path(), "feature");
+            let (mut app, pr_cache) =
+                pr_tab_app_with_cache(42, DiffMode::Branch, Some(&main), &main);
+            {
+                let tab = app.tab_mut();
+                tab.repo_root = tmp.path().to_string_lossy().to_string();
+                tab.local_branch_view = None;
             }
-        }
-        let chrome = build_chrome_snapshot(&app, &sources)
-            .local_branch_divergence
-            .expect("still a local PR tab");
-        assert_eq!(chrome.pr_head_oid, feature);
-        assert_eq!(chrome.ahead, Some(0), "the push landed");
-        assert_eq!(
-            chrome.unstaged_files, None,
-            "a chrome-only build does not re-read the worktree"
-        );
+            let sources = SnapshotSources {
+                pr_cache: Some(&pr_cache),
+                ..SnapshotSources::default()
+            };
+
+            let full = build_snapshot_with_delta(&app, &sources)
+                .local_branch_divergence
+                .expect("local PR tab in the local branch view");
+            assert_eq!(full.ahead, Some(1), "one unpushed commit");
+            assert_eq!(full.unstaged_files, Some(0));
+
+            if let Ok(mut cache) = pr_cache.lock() {
+                if let Some(prs) = cache.get_mut("owner/repo") {
+                    prs[0].head_oid = feature.clone();
+                }
+            }
+            let chrome = build_chrome_snapshot(&app, &sources)
+                .local_branch_divergence
+                .expect("still a local PR tab");
+            assert_eq!(chrome.pr_head_oid, feature);
+            assert_eq!(chrome.ahead, Some(0), "the push landed");
+            assert_eq!(
+                chrome.unstaged_files, None,
+                "a chrome-only build does not re-read the worktree"
+            );
+        });
     }
 
     /// Equal oids → no pill (the diff is already at the latest head).
     #[test]
     fn pr_tab_no_pill_when_head_matches() {
-        let (app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head1");
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let (app, pr_cache) =
+                pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head1");
 
-        assert!(diff_stale_for(&app, &pr_cache).is_none());
+            assert!(diff_stale_for(&app, &pr_cache).is_none());
+        });
     }
 
     /// The welcome screen (`naturalEmpty` in App.svelte) shows only for a
@@ -6552,26 +6578,32 @@ mod tests {
     /// snapshot misses either, a fresh install opens an empty review shell.
     #[test]
     fn empty_app_snapshot_matches_the_welcome_condition() {
-        let app = App::new_empty(er_engine::ports::Ports::cli());
-        let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
-        assert_eq!(snap.branch, "");
-        assert!(snap.files.is_empty());
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let app = App::new_empty(er_engine::ports::Ports::cli());
+            let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
+            assert_eq!(snap.branch, "");
+            assert!(snap.files.is_empty());
+        });
     }
 
     /// pr_cache has no entry for this PR → None. Preserves the "don't guess"
     /// rule in `compute_oid_staleness` (an unknown latest oid never wedges stale).
     #[test]
     fn pr_tab_no_pill_when_cache_missing_pr() {
-        let (app, _) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
-        // pr_cache that only knows a *different* PR number.
-        let mut other = minimal_pr_info(99, "other");
-        other.head_oid = "headX".to_string();
-        let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([(
-            "owner/repo".to_string(),
-            vec![other],
-        )])));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let (app, _) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
+            // pr_cache that only knows a *different* PR number.
+            let mut other = minimal_pr_info(99, "other");
+            other.head_oid = "headX".to_string();
+            let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([(
+                "owner/repo".to_string(),
+                vec![other],
+            )])));
 
-        assert!(diff_stale_for(&app, &pr_cache).is_none());
+            assert!(diff_stale_for(&app, &pr_cache).is_none());
+        });
     }
 
     // ── pr_cache_fingerprint folds in head_oid ──
@@ -6673,33 +6705,36 @@ mod tests {
 
     #[test]
     fn pr_commit_snapshot_in_history_mode_keeps_unknown_stats_unknown() {
-        // History on a PR review tab is seeded from `pr_commits`, whose zeros
-        // mean "not reported" — they must not surface as a real +0 −0.
-        let tmp = init_repo_with_feature_commit();
-        let feature_sha = run_git(tmp.path(), &["rev-parse", "feature"]);
-        let mut tab = TabState::new_with_base_unloaded(
-            tmp.path().to_string_lossy().to_string(),
-            "main".into(),
-            er_engine::ports::Ports::cli(),
-        )
-        .unwrap();
-        tab.pr_number = Some(42);
-        tab.local_branch_view = Some("feature".to_string());
-        tab.pr_commits = vec![
-            commit_info(&feature_sha, "feature commit"),
-            commit_info("dddddddddddddddddddddddddddddddddddddddd", "not fetched"),
-        ];
-        tab.set_mode(DiffMode::History);
-        assert_eq!(tab.history.as_ref().map(|h| h.commits.len()), Some(2));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            // History on a PR review tab is seeded from `pr_commits`, whose zeros
+            // mean "not reported" — they must not surface as a real +0 −0.
+            let tmp = init_repo_with_feature_commit();
+            let feature_sha = run_git(tmp.path(), &["rev-parse", "feature"]);
+            let mut tab = TabState::new_with_base_unloaded(
+                tmp.path().to_string_lossy().to_string(),
+                "main".into(),
+                er_engine::ports::Ports::cli(),
+            )
+            .unwrap();
+            tab.pr_number = Some(42);
+            tab.local_branch_view = Some("feature".to_string());
+            tab.pr_commits = vec![
+                commit_info(&feature_sha, "feature commit"),
+                commit_info("dddddddddddddddddddddddddddddddddddddddd", "not fetched"),
+            ];
+            tab.set_mode(DiffMode::History);
+            assert_eq!(tab.history.as_ref().map(|h| h.commits.len()), Some(2));
 
-        let commits = build_commits_snapshot(&tab);
+            let commits = build_commits_snapshot(&tab);
 
-        assert_eq!(commits.len(), 2);
-        assert_eq!(commits[0].additions, Some(1));
-        assert_eq!(commits[0].deletions, Some(0));
-        assert_eq!(commits[1].additions, None);
-        assert_eq!(commits[1].deletions, None);
-        assert!(commits.iter().all(|c| !c.unpushed));
+            assert_eq!(commits.len(), 2);
+            assert_eq!(commits[0].additions, Some(1));
+            assert_eq!(commits[0].deletions, Some(0));
+            assert_eq!(commits[1].additions, None);
+            assert_eq!(commits[1].deletions, None);
+            assert!(commits.iter().all(|c| !c.unpushed));
+        });
     }
 
     #[test]
@@ -6939,116 +6974,128 @@ mod tests {
 
     #[test]
     fn differential_snapshot_omits_unchanged_hunks() {
-        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
-        let mut app = er_engine::app::App::new_for_test(files);
-        use_cli_ports(&mut app);
-        let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+            let mut app = er_engine::app::App::new_for_test(files);
+            use_cli_ports(&mut app);
+            let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
 
-        // First snapshot sends full hunks.
-        let s1 = delta_snap(&app, &sent);
-        let f1 = &s1.files[0];
-        assert!(!f1.hunks_omitted, "first send must carry hunks");
-        assert!(!f1.hunks.is_empty());
+            // First snapshot sends full hunks.
+            let s1 = delta_snap(&app, &sent);
+            let f1 = &s1.files[0];
+            assert!(!f1.hunks_omitted, "first send must carry hunks");
+            assert!(!f1.hunks.is_empty());
 
-        // Unchanged content → hunks omitted, metadata + delta_key still present.
-        let s2 = delta_snap(&app, &sent);
-        let f2 = &s2.files[0];
-        assert!(f2.hunks_omitted, "second send should omit unchanged hunks");
-        assert!(f2.hunks.is_empty());
-        assert!(!f2.is_lazy_stub, "omitted is not a lazy stub");
-        assert_eq!(f2.delta_key, f1.delta_key);
-        assert_eq!(f2.additions, f1.additions);
-        assert_eq!(f2.cache_key, f1.cache_key);
+            // Unchanged content → hunks omitted, metadata + delta_key still present.
+            let s2 = delta_snap(&app, &sent);
+            let f2 = &s2.files[0];
+            assert!(f2.hunks_omitted, "second send should omit unchanged hunks");
+            assert!(f2.hunks.is_empty());
+            assert!(!f2.is_lazy_stub, "omitted is not a lazy stub");
+            assert_eq!(f2.delta_key, f1.delta_key);
+            assert_eq!(f2.additions, f1.additions);
+            assert_eq!(f2.cache_key, f1.cache_key);
+        });
     }
 
     #[test]
     fn differential_snapshot_resends_on_content_change() {
-        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
-        let mut app = er_engine::app::App::new_for_test(files);
-        use_cli_ports(&mut app);
-        let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+            let mut app = er_engine::app::App::new_for_test(files);
+            use_cli_ports(&mut app);
+            let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
 
-        let s1 = delta_snap(&app, &sent);
-        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+            let s1 = delta_snap(&app, &sent);
+            assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
 
-        // Diff content changed → full resend with a new delta_key, and the
-        // per-file cache_key advances (highlights re-run for this file only).
-        app.tab_mut().files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF_V2);
-        let s3 = delta_snap(&app, &sent);
-        let f3 = &s3.files[0];
-        assert!(!f3.hunks_omitted, "changed file must be resent");
-        assert!(!f3.hunks.is_empty());
-        assert_ne!(f3.delta_key, s1.files[0].delta_key);
-        assert_ne!(f3.cache_key, s1.files[0].cache_key);
+            // Diff content changed → full resend with a new delta_key, and the
+            // per-file cache_key advances (highlights re-run for this file only).
+            app.tab_mut().files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF_V2);
+            let s3 = delta_snap(&app, &sent);
+            let f3 = &s3.files[0];
+            assert!(!f3.hunks_omitted, "changed file must be resent");
+            assert!(!f3.hunks.is_empty());
+            assert_ne!(f3.delta_key, s1.files[0].delta_key);
+            assert_ne!(f3.cache_key, s1.files[0].cache_key);
 
-        // And the new content is omitted again on the next poll.
-        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+            // And the new content is omitted again on the next poll.
+            assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+        });
     }
 
     #[test]
     fn differential_snapshot_resends_when_threads_change() {
-        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
-        let mut app = er_engine::app::App::new_for_test(files);
-        use_cli_ports(&mut app);
-        let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+            let mut app = er_engine::app::App::new_for_test(files);
+            use_cli_ports(&mut app);
+            let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
 
-        let s1 = delta_snap(&app, &sent);
-        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+            let s1 = delta_snap(&app, &sent);
+            assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
 
-        // A new comment thread inside the hunk changes the wire payload even
-        // though diff lines are identical — must be resent, not omitted.
-        let mut comment = github_comment(false, false);
-        comment.file = "src/foo.rs".to_string();
-        comment.hunk_index = Some(0);
-        comment.line_start = Some(2);
-        app.tab_mut().ai.github_comments = Some(ErGithubComments {
-            version: 1,
-            diff_hash: "hash".to_string(),
-            github: None,
-            comments: vec![comment],
+            // A new comment thread inside the hunk changes the wire payload even
+            // though diff lines are identical — must be resent, not omitted.
+            let mut comment = github_comment(false, false);
+            comment.file = "src/foo.rs".to_string();
+            comment.hunk_index = Some(0);
+            comment.line_start = Some(2);
+            app.tab_mut().ai.github_comments = Some(ErGithubComments {
+                version: 1,
+                diff_hash: "hash".to_string(),
+                github: None,
+                comments: vec![comment],
+            });
+
+            let s3 = delta_snap(&app, &sent);
+            let f3 = &s3.files[0];
+            assert!(!f3.hunks_omitted, "thread change must resend hunks");
+            assert!(
+                f3.hunks.iter().any(|h| !h.threads.is_empty()),
+                "resent hunks should carry the new thread"
+            );
+            assert_ne!(f3.delta_key, s1.files[0].delta_key);
+            // Lines are unchanged, so the highlight cache key must NOT move.
+            assert_eq!(f3.cache_key, s1.files[0].cache_key);
         });
-
-        let s3 = delta_snap(&app, &sent);
-        let f3 = &s3.files[0];
-        assert!(!f3.hunks_omitted, "thread change must resend hunks");
-        assert!(
-            f3.hunks.iter().any(|h| !h.threads.is_empty()),
-            "resent hunks should carry the new thread"
-        );
-        assert_ne!(f3.delta_key, s1.files[0].delta_key);
-        // Lines are unchanged, so the highlight cache key must NOT move.
-        assert_eq!(f3.cache_key, s1.files[0].cache_key);
     }
 
     #[test]
     fn differential_snapshot_clears_on_view_change_and_reset() {
-        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
-        let mut app = er_engine::app::App::new_for_test(files);
-        use_cli_ports(&mut app);
-        let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+            let mut app = er_engine::app::App::new_for_test(files);
+            use_cli_ports(&mut app);
+            let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
 
-        let _ = delta_snap(&app, &sent);
-        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+            let _ = delta_snap(&app, &sent);
+            assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
 
-        // View switch (mode change) — first visit of the new token resends.
-        app.tab_mut().mode = DiffMode::Unstaged;
-        let s3 = delta_snap(&app, &sent);
-        assert!(
-            !s3.files[0].hunks_omitted,
-            "new view token must resend hunks"
-        );
-        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+            // View switch (mode change) — first visit of the new token resends.
+            app.tab_mut().mode = DiffMode::Unstaged;
+            let s3 = delta_snap(&app, &sent);
+            assert!(
+                !s3.files[0].hunks_omitted,
+                "new view token must resend hunks"
+            );
+            assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
 
-        // Switch back to the original view — keys for that token are kept.
-        app.tab_mut().mode = DiffMode::Branch;
-        assert!(
-            delta_snap(&app, &sent).files[0].hunks_omitted,
-            "revisit of a remembered view must omit unchanged hunks"
-        );
+            // Switch back to the original view — keys for that token are kept.
+            app.tab_mut().mode = DiffMode::Branch;
+            assert!(
+                delta_snap(&app, &sent).files[0].hunks_omitted,
+                "revisit of a remembered view must omit unchanged hunks"
+            );
 
-        // Reset (frontend re-fetches from scratch) — full resend.
-        sent.lock().unwrap().reset();
-        assert!(!delta_snap(&app, &sent).files[0].hunks_omitted);
+            // Reset (frontend re-fetches from scratch) — full resend.
+            sent.lock().unwrap().reset();
+            assert!(!delta_snap(&app, &sent).files[0].hunks_omitted);
+        });
     }
 
     #[test]
@@ -7447,9 +7494,11 @@ mod tests {
 
     #[test]
     fn escalated_dropped_grade_remains_visible_and_respects_resolution() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        std::fs::write(path.join("review.json"), serde_json::to_vec(&serde_json::json!({
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path();
+            std::fs::write(path.join("review.json"), serde_json::to_vec(&serde_json::json!({
             "version": 1, "diff_hash": "hash",
             "files": { "a.rs": { "risk": "medium", "findings": [
                 { "id": "open", "severity": "high", "title": "Open", "confidence": "dropped" },
@@ -7458,135 +7507,151 @@ mod tests {
                 { "id": "dropped", "severity": "low", "title": "Dropped", "confidence": "dropped" }
             ] } }
         })).unwrap()).unwrap();
-        std::fs::write(path.join("arbiter.json"), serde_json::to_vec(&serde_json::json!({
+            std::fs::write(path.join("arbiter.json"), serde_json::to_vec(&serde_json::json!({
             "version": 1, "diff_hash": "hash", "verdicts": [
                 { "id": er_engine::ai::finding_key("a.rs", None, "Open"), "verdict": "escalated" },
                 { "id": er_engine::ai::finding_key("a.rs", None, "Resolved"), "verdict": "escalated" }
             ]
         })).unwrap()).unwrap();
-        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        let mut tab = TabState::new_for_test(er_engine::git::parse_diff(raw));
-        tab.ai = er_engine::ai::load_ai_state(path.to_str().unwrap(), "hash", None);
-        let snapshot = build_ai_snapshot(&tab, None);
-        assert_eq!(
-            snapshot
-                .findings
-                .iter()
-                .map(|f| f.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["open"]
-        );
-        assert_eq!(snapshot.findings[0].confidence, "dropped");
-        assert_eq!(
-            snapshot.findings[0].arbiter_verdict.as_deref(),
-            Some("escalated")
-        );
-        assert_eq!(
-            snapshot
-                .resolved_findings
-                .iter()
-                .map(|f| f.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["resolved"]
-        );
-        assert_eq!(
-            snapshot
-                .dropped_findings
-                .iter()
-                .map(|f| f.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["dropped"]
-        );
-        assert_eq!((snapshot.high, snapshot.med, snapshot.low), (1, 0, 0));
-        assert_eq!(
-            build_file_snapshot(0, &tab.files[0], &tab, None, false).finding_count,
-            1
-        );
-        assert_eq!(
-            OtherBucketFacts::read(path.to_str().unwrap()).finding_count,
-            1
-        );
-        let dir = path.to_str().unwrap();
-        assert_eq!(
-            other_bucket_facts_cached(dir, er_engine::ai::arbiter_overlay_stamp(dir).as_deref())
+            let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+            let mut tab = TabState::new_for_test(er_engine::git::parse_diff(raw));
+            tab.ai = er_engine::ai::load_ai_state(path.to_str().unwrap(), "hash", None);
+            let snapshot = build_ai_snapshot(&tab, None);
+            assert_eq!(
+                snapshot
+                    .findings
+                    .iter()
+                    .map(|f| f.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["open"]
+            );
+            assert_eq!(snapshot.findings[0].confidence, "dropped");
+            assert_eq!(
+                snapshot.findings[0].arbiter_verdict.as_deref(),
+                Some("escalated")
+            );
+            assert_eq!(
+                snapshot
+                    .resolved_findings
+                    .iter()
+                    .map(|f| f.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["resolved"]
+            );
+            assert_eq!(
+                snapshot
+                    .dropped_findings
+                    .iter()
+                    .map(|f| f.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["dropped"]
+            );
+            assert_eq!((snapshot.high, snapshot.med, snapshot.low), (1, 0, 0));
+            assert_eq!(
+                build_file_snapshot(0, &tab.files[0], &tab, None, false).finding_count,
+                1
+            );
+            assert_eq!(
+                OtherBucketFacts::read(path.to_str().unwrap()).finding_count,
+                1
+            );
+            let dir = path.to_str().unwrap();
+            assert_eq!(
+                other_bucket_facts_cached(
+                    dir,
+                    er_engine::ai::arbiter_overlay_stamp(dir).as_deref()
+                )
                 .finding_count,
-            1
-        );
-        let arbiter = path.join("arbiter.json");
-        let original = std::fs::read(&arbiter).unwrap();
-        std::fs::write(
-            &arbiter,
-            r#"{"version":1,"diff_hash":"older","verdicts":[]}"#,
-        )
-        .unwrap();
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&arbiter)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+                1
+            );
+            let arbiter = path.join("arbiter.json");
+            let original = std::fs::read(&arbiter).unwrap();
+            std::fs::write(
+                &arbiter,
+                r#"{"version":1,"diff_hash":"older","verdicts":[]}"#,
+            )
             .unwrap();
-        assert_eq!(
-            other_bucket_facts_cached(dir, er_engine::ai::arbiter_overlay_stamp(dir).as_deref())
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&arbiter)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+                .unwrap();
+            assert_eq!(
+                other_bucket_facts_cached(
+                    dir,
+                    er_engine::ai::arbiter_overlay_stamp(dir).as_deref()
+                )
                 .finding_count,
-            0
-        );
-        // The file now holds B. A snapshot stamped A must still load A.
-        assert_eq!(
-            other_bucket_facts_cached(dir, Some(&original)).finding_count,
-            1
-        );
-        std::fs::write(&arbiter, &original).unwrap();
-        assert_eq!(
-            other_bucket_facts_cached(dir, er_engine::ai::arbiter_overlay_stamp(dir).as_deref())
+                0
+            );
+            // The file now holds B. A snapshot stamped A must still load A.
+            assert_eq!(
+                other_bucket_facts_cached(dir, Some(&original)).finding_count,
+                1
+            );
+            std::fs::write(&arbiter, &original).unwrap();
+            assert_eq!(
+                other_bucket_facts_cached(
+                    dir,
+                    er_engine::ai::arbiter_overlay_stamp(dir).as_deref()
+                )
                 .finding_count,
-            1
-        );
-        std::fs::remove_file(&arbiter).unwrap();
-        assert_eq!(
-            other_bucket_facts_cached(dir, er_engine::ai::arbiter_overlay_stamp(dir).as_deref())
+                1
+            );
+            std::fs::remove_file(&arbiter).unwrap();
+            assert_eq!(
+                other_bucket_facts_cached(
+                    dir,
+                    er_engine::ai::arbiter_overlay_stamp(dir).as_deref()
+                )
                 .finding_count,
-            0
-        );
+                0
+            );
+        });
     }
 
     #[test]
     fn snapshot_carries_matching_escalated_verdict_without_a_line_anchor() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        let key = er_engine::ai::finding_key("a.rs", None, "Needs review");
-        std::fs::write(path.join("review.json"), serde_json::to_vec(&serde_json::json!({
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path();
+            let key = er_engine::ai::finding_key("a.rs", None, "Needs review");
+            std::fs::write(path.join("review.json"), serde_json::to_vec(&serde_json::json!({
             "version": 1, "diff_hash": "hash",
             "files": { "a.rs": { "risk": "medium", "findings": [
                 { "id": "f-1", "severity": "medium", "title": "Needs review", "line_start": null, "confidence": "informational" },
                 { "id": "f-2", "severity": "medium", "title": "Other", "line_start": null }
             ] } }
         })).unwrap()).unwrap();
-        std::fs::write(path.join("arbiter.json"), serde_json::to_vec(&serde_json::json!({
+            std::fs::write(path.join("arbiter.json"), serde_json::to_vec(&serde_json::json!({
             "version": 1, "diff_hash": "hash", "verdicts": [
                 { "id": key, "verdict": "escalated", "confidence": "informational", "rationale": "Evidence conflicts" }
             ]
         })).unwrap()).unwrap();
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.ai = er_engine::ai::load_ai_state(path.to_str().unwrap(), "hash", None);
-        let snapshot = build_ai_snapshot(&tab, None);
-        let escalated = snapshot.findings.iter().find(|f| f.id == "f-1").unwrap();
-        assert_eq!(escalated.arbiter_verdict.as_deref(), Some("escalated"));
-        assert_eq!(
-            escalated.arbiter_rationale.as_deref(),
-            Some("Evidence conflicts")
-        );
-        assert_eq!(escalated.confidence, "informational");
-        assert_eq!(escalated.severity, "med");
-        assert_eq!(escalated.line, None);
-        assert_eq!(
-            snapshot
-                .findings
-                .iter()
-                .find(|f| f.id == "f-2")
-                .unwrap()
-                .arbiter_verdict,
-            None
-        );
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.ai = er_engine::ai::load_ai_state(path.to_str().unwrap(), "hash", None);
+            let snapshot = build_ai_snapshot(&tab, None);
+            let escalated = snapshot.findings.iter().find(|f| f.id == "f-1").unwrap();
+            assert_eq!(escalated.arbiter_verdict.as_deref(), Some("escalated"));
+            assert_eq!(
+                escalated.arbiter_rationale.as_deref(),
+                Some("Evidence conflicts")
+            );
+            assert_eq!(escalated.confidence, "informational");
+            assert_eq!(escalated.severity, "med");
+            assert_eq!(escalated.line, None);
+            assert_eq!(
+                snapshot
+                    .findings
+                    .iter()
+                    .find(|f| f.id == "f-2")
+                    .unwrap()
+                    .arbiter_verdict,
+                None
+            );
+        });
     }
 
     #[test]
@@ -7959,43 +8024,46 @@ mod tests {
 
     #[test]
     fn other_bucket_facts_count_expert_and_professor_findings_without_review_json() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        let finding = |id: &str, line: u32| {
-            serde_json::json!({
-                "id": id, "severity": "medium", "category": "logic",
-                "title": format!("finding {id}"), "description": "d",
-                "hunk_index": 0, "line_start": line, "line_end": line
-            })
-        };
-        std::fs::create_dir_all(dir.join("experts")).unwrap();
-        std::fs::write(
-            dir.join("experts/security.json"),
-            serde_json::json!({
-                "version": 1, "expert_id": "security", "diff_hash": "pr-hash",
-                "created_at": "2026-10-30T10:00:00Z",
-                "files": {"src/a.rs": {"findings": [finding("s1", 3), finding("s2", 9)]}}
-            })
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("professor.json"),
-            serde_json::json!({
-                "version": 1, "diff_hash": "pr-hash",
-                "created_at": "2026-10-30T10:05:00Z",
-                "files": {"src/b.rs": {"findings": [finding("p1", 5)]}}
-            })
-            .to_string(),
-        )
-        .unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path();
+            let finding = |id: &str, line: u32| {
+                serde_json::json!({
+                    "id": id, "severity": "medium", "category": "logic",
+                    "title": format!("finding {id}"), "description": "d",
+                    "hunk_index": 0, "line_start": line, "line_end": line
+                })
+            };
+            std::fs::create_dir_all(dir.join("experts")).unwrap();
+            std::fs::write(
+                dir.join("experts/security.json"),
+                serde_json::json!({
+                    "version": 1, "expert_id": "security", "diff_hash": "pr-hash",
+                    "created_at": "2026-10-30T10:00:00Z",
+                    "files": {"src/a.rs": {"findings": [finding("s1", 3), finding("s2", 9)]}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("professor.json"),
+                serde_json::json!({
+                    "version": 1, "diff_hash": "pr-hash",
+                    "created_at": "2026-10-30T10:05:00Z",
+                    "files": {"src/b.rs": {"findings": [finding("p1", 5)]}}
+                })
+                .to_string(),
+            )
+            .unwrap();
 
-        let facts = OtherBucketFacts::read(dir.to_str().unwrap());
-        assert_eq!(facts.review_hash.as_deref(), Some("pr-hash"));
-        assert_eq!(facts.finding_count, 3);
-        let summary = summarize_other_bucket("pr", &facts, None, &["pr-hash"]);
-        assert!(summary.has_review);
-        assert!(summary.same_diff);
+            let facts = OtherBucketFacts::read(dir.to_str().unwrap());
+            assert_eq!(facts.review_hash.as_deref(), Some("pr-hash"));
+            assert_eq!(facts.finding_count, 3);
+            let summary = summarize_other_bucket("pr", &facts, None, &["pr-hash"]);
+            assert!(summary.has_review);
+            assert!(summary.same_diff);
+        });
     }
 
     #[test]
@@ -8081,31 +8149,40 @@ mod tests {
     /// write and the optimistic comment disappears on confirm.
     #[test]
     fn painted_view_matches_on_working_tab_with_branch() {
-        let mut app = App::new_for_test(Vec::new());
-        use_cli_ports(&mut app);
-        app.tab_mut().current_branch = "feature".into();
-        let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
-        assert!(optimistic_view_matches(&app, &painted_view(&snap)));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = App::new_for_test(Vec::new());
+            use_cli_ports(&mut app);
+            app.tab_mut().current_branch = "feature".into();
+            let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
+            assert!(optimistic_view_matches(&app, &painted_view(&snap)));
+        });
     }
 
     #[test]
     fn painted_view_matches_on_local_branch_tab() {
-        let mut app = App::new_for_test(Vec::new());
-        app.tab_mut().current_branch = "main".into();
-        app.tab_mut().local_branch_view = Some("feature".into());
-        let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
-        assert!(optimistic_view_matches(&app, &painted_view(&snap)));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = App::new_for_test(Vec::new());
+            app.tab_mut().current_branch = "main".into();
+            app.tab_mut().local_branch_view = Some("feature".into());
+            let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
+            assert!(optimistic_view_matches(&app, &painted_view(&snap)));
+        });
     }
 
     #[test]
     fn painted_view_rejects_a_switched_mode() {
-        let mut app = App::new_for_test(Vec::new());
-        use_cli_ports(&mut app);
-        app.tab_mut().current_branch = "feature".into();
-        let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
-        let mut view = painted_view(&snap);
-        view.mode = "staged".into();
-        assert!(!optimistic_view_matches(&app, &view));
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = App::new_for_test(Vec::new());
+            use_cli_ports(&mut app);
+            app.tab_mut().current_branch = "feature".into();
+            let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
+            let mut view = painted_view(&snap);
+            view.mode = "staged".into();
+            assert!(!optimistic_view_matches(&app, &view));
+        });
     }
 
     #[test]
