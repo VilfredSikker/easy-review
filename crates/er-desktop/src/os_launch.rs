@@ -4,8 +4,21 @@
 //! `er::agent_spawn` treats this module as the desktop's one place to launch a
 //! program. Every call is a user-visible handoff, so it takes no agent slot.
 
+use portable_pty::CommandBuilder;
 use std::path::Path;
 use std::process::Command;
+
+/// The command for the in-app terminal: the user's `$SHELL`, falling back to
+/// zsh, with the TTY defaults. The PTY handoff itself stays in `terminal.rs`.
+pub fn shell_command(cwd: &str) -> CommandBuilder {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let mut cmd = CommandBuilder::new(shell);
+    if !cwd.is_empty() {
+        cmd.cwd(cwd);
+    }
+    cmd.env("TERM", "xterm-256color");
+    cmd
+}
 
 /// Open `file_path` at `line_num` in the user's editor.
 pub fn open_editor_at(repo_root: &str, file_path: &Path, line_num: usize) -> anyhow::Result<()> {

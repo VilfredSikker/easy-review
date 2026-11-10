@@ -15,9 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
-use syn::{Expr, ExprCall, ExprLit, Item, Lit, Macro, UseTree};
+use syn::{Expr, ExprCall, ExprLit, ExprPath, Item, Lit, Macro, Path, UseTree};
 
-use crate::attrs::{is_test_item, item_attrs};
+use crate::attrs::{impl_item_attrs, is_test_item, is_test_support_gate, item_attrs};
 use crate::diagnostics::Diagnostic;
 
 /// The code the gate reports these findings under.
@@ -54,6 +54,13 @@ impl<'ast> Visit<'ast> for SpawnFinder<'_> {
         visit::visit_item(self, item);
     }
 
+    fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {
+        if is_test_item(impl_item_attrs(item)) {
+            return;
+        }
+        visit::visit_impl_item(self, item);
+    }
+
     fn visit_expr_call(&mut self, call: &'ast ExprCall) {
         if is_command_new(&call.func, self.aliases) && !is_literal_owned_spawn(call.args.first()) {
             self.findings.push(Finding {
@@ -61,14 +68,35 @@ impl<'ast> Visit<'ast> for SpawnFinder<'_> {
                 message: message_for(call.args.first()),
             });
         }
-        visit::visit_expr_call(self, call);
+        // A matching path callee was just reported; walking it again would
+        // report the same call twice. Every other callee still gets visited,
+        // because an immediately invoked closure keeps its body there.
+        let func: &Expr = &call.func;
+        match func {
+            Expr::Path(path) if is_command_new_path(&path.path, self.aliases) => {}
+            func => self.visit_expr(func),
+        }
+        for arg in &call.args {
+            self.visit_expr(arg);
+        }
+    }
+
+    fn visit_expr_path(&mut self, path: &'ast ExprPath) {
+        if is_command_new_path(&path.path, self.aliases) {
+            let owner = &path.path.segments[path.path.segments.len() - 2].ident;
+            self.findings.push(Finding {
+                line: path.span().start().line,
+                message: format!("`{owner}::new` used as a value"),
+            });
+        }
+        visit::visit_expr_path(self, path);
     }
 
     fn visit_macro(&mut self, mac: &'ast Macro) {
-        if let Some(line) = command_new_in_tokens(mac.tokens.clone(), self.aliases) {
+        if let Some((line, owner)) = command_new_in_tokens(mac.tokens.clone(), self.aliases) {
             self.findings.push(Finding {
                 line,
-                message: "`Command::new(..)` inside a macro".into(),
+                message: format!("`{owner}::new(..)` inside a macro"),
             });
         }
         visit::visit_macro(self, mac);
@@ -81,7 +109,15 @@ pub fn findings(source: &str) -> Vec<Finding> {
         return Vec::new();
     };
     let mut collector = AliasCollector::default();
-    collector.visit_file(&file);
+    // Type aliases can point at each other in any order, so collect until the
+    // set stops growing.
+    loop {
+        let before = collector.aliases.len();
+        collector.visit_file(&file);
+        if collector.aliases.len() == before {
+            break;
+        }
+    }
     let mut finder = SpawnFinder {
         aliases: &collector.aliases,
         findings: Vec::new(),
@@ -105,8 +141,29 @@ impl<'ast> Visit<'ast> for AliasCollector {
         if let Item::Use(item_use) = item {
             collect_use_aliases(&item_use.tree, &mut self.aliases);
         }
+        if let Item::Type(alias) = item {
+            if let syn::Type::Path(target) = &*alias.ty {
+                if path_names_command(&target.path, &self.aliases) {
+                    self.aliases.insert(alias.ident.to_string());
+                }
+            }
+        }
         visit::visit_item(self, item);
     }
+
+    fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {
+        if is_test_item(impl_item_attrs(item)) {
+            return;
+        }
+        visit::visit_impl_item(self, item);
+    }
+}
+
+/// Whether the last segment names `Command` or one of its aliases.
+fn path_names_command(path: &Path, aliases: &BTreeSet<String>) -> bool {
+    path.segments.last().is_some_and(|segment| {
+        segment.ident == "Command" || aliases.contains(&segment.ident.to_string())
+    })
 }
 
 fn collect_use_aliases(tree: &UseTree, aliases: &mut BTreeSet<String>) {
@@ -125,15 +182,18 @@ fn collect_use_aliases(tree: &UseTree, aliases: &mut BTreeSet<String>) {
 }
 
 fn is_command_new(func: &Expr, aliases: &BTreeSet<String>) -> bool {
-    let Expr::Path(path) = func else {
-        return false;
-    };
-    let segments = &path.path.segments;
+    matches!(func, Expr::Path(path) if is_command_new_path(&path.path, aliases))
+}
+
+/// Whether the path names `Command::new`, an alias of it, or the PTY crate's
+/// `CommandBuilder::new`, whether called or passed as a value.
+fn is_command_new_path(path: &Path, aliases: &BTreeSet<String>) -> bool {
+    let segments = &path.segments;
     if segments.len() < 2 {
         return false;
     }
     let owner = &segments[segments.len() - 2].ident;
-    (owner == "Command" || aliases.contains(&owner.to_string()))
+    (owner == "Command" || owner == "CommandBuilder" || aliases.contains(&owner.to_string()))
         && segments[segments.len() - 1].ident == "new"
 }
 
@@ -161,18 +221,22 @@ fn message_for(first: Option<&Expr>) -> String {
 /// A `Command::new` inside a macro's token stream, e.g.
 /// `vec![Command::new("sh")]`. `syn` does not parse macro tokens as
 /// expressions, so the tokens are walked directly.
-fn command_new_in_tokens(tokens: TokenStream, aliases: &BTreeSet<String>) -> Option<usize> {
+fn command_new_in_tokens(
+    tokens: TokenStream,
+    aliases: &BTreeSet<String>,
+) -> Option<(usize, String)> {
     let trees: Vec<TokenTree> = tokens.into_iter().collect();
     for (index, tree) in trees.iter().enumerate() {
         if let TokenTree::Group(group) = tree {
-            if let Some(line) = command_new_in_tokens(group.stream(), aliases) {
-                return Some(line);
+            if let Some(found) = command_new_in_tokens(group.stream(), aliases) {
+                return Some(found);
             }
         }
         let TokenTree::Ident(ident) = tree else {
             continue;
         };
-        if ident != "Command" && !aliases.contains(&ident.to_string()) {
+        if ident != "Command" && ident != "CommandBuilder" && !aliases.contains(&ident.to_string())
+        {
             continue;
         }
         let colon_one =
@@ -192,7 +256,7 @@ fn command_new_in_tokens(tokens: TokenStream, aliases: &BTreeSet<String>) -> Opt
         if first_macro_token_is_owned_spawn(&args.stream()) {
             continue;
         }
-        return Some(ident.span().start().line);
+        return Some((ident.span().start().line, ident.to_string()));
     }
     None
 }
@@ -298,6 +362,36 @@ fn os_launch_crate(entry: &str) -> Option<&str> {
     }
 }
 
+/// The rule exempts the reviewed test-support module by path. That is safe
+/// only while the module itself is gated to test builds; this check fails when
+/// `crates/er-engine/src/lib.rs` declares `mod test_support` without that gate.
+pub fn validate_test_support_gate(source: &str, code: &str) -> Vec<Diagnostic> {
+    let Ok(file) = syn::parse_file(source) else {
+        return Vec::new();
+    };
+    let module = file.items.iter().find_map(|item| match item {
+        Item::Mod(module) if module.ident == "test_support" => Some(module),
+        _ => None,
+    });
+    let Some(module) = module else {
+        return vec![error(
+            "crates/er-engine/src/lib.rs",
+            1,
+            code,
+            "er-engine no longer declares `mod test_support`; remove its agent-spawn exemption",
+        )];
+    };
+    if is_test_support_gate(&module.attrs) {
+        return Vec::new();
+    }
+    vec![error(
+        "crates/er-engine/src/lib.rs",
+        module.span().start().line,
+        code,
+        "`mod test_support` must stay behind #[cfg(any(test, feature = \"test-support\"))]; the agent-spawn rule exempts its file by path",
+    )]
+}
+
 fn error(file: &str, line: usize, code: &str, message: &str) -> Diagnostic {
     Diagnostic {
         level: "error".into(),
@@ -361,6 +455,93 @@ mod tests {
         ] {
             assert!(findings(source).is_empty(), "{source}");
         }
+    }
+
+    #[test]
+    fn a_spawn_inside_an_immediately_invoked_closure_is_flagged() {
+        // The closure is the callee of an IIFE, not an argument: the finder
+        // must still walk it.
+        let source = r#"
+            struct App;
+            impl App {
+                pub fn spawn(&self) {
+                    let _ = (|| -> Result<(), ()> {
+                        std::process::Command::new("sh");
+                        Ok(())
+                    })();
+                }
+            }
+        "#;
+        assert_eq!(findings(source).len(), 1);
+    }
+
+    #[test]
+    fn a_spawn_passed_as_a_value_is_flagged() {
+        for source in [
+            "fn f() { let _ = [\"a\"].map(Command::new); }",
+            "use std::process::Command as Cmd; fn f() { let _ = [\"a\"].map(Cmd::new); }",
+            "fn f() { let _ = [\"a\"].map(std::process::Command::new); }",
+        ] {
+            assert_eq!(findings(source).len(), 1, "{source}");
+        }
+    }
+
+    #[test]
+    fn a_type_alias_of_command_is_followed() {
+        for source in [
+            "type Cmd = Command; fn f() { Cmd::new(\"sh\"); }",
+            "type Base = std::process::Command; type Cmd = Base; fn f() { Cmd::new(\"sh\"); }",
+        ] {
+            assert_eq!(findings(source).len(), 1, "{source}");
+        }
+    }
+
+    #[test]
+    fn a_cfg_test_method_inside_an_impl_is_skipped() {
+        let source = r#"
+            struct S;
+            impl S {
+                #[cfg(test)]
+                fn f(&self) { Command::new("sh"); }
+                #[cfg(test)]
+                type X = Command;
+            }
+        "#;
+        assert!(findings(source).is_empty());
+    }
+
+    #[test]
+    fn command_builder_new_is_flagged() {
+        for source in [
+            "fn f() { portable_pty::CommandBuilder::new(\"sh\"); }",
+            "use portable_pty::CommandBuilder; fn f() { CommandBuilder::new(\"sh\"); }",
+            "fn f() { let _ = [\"sh\"].map(CommandBuilder::new); }",
+            "fn f() { let _ = vec![CommandBuilder::new(\"sh\")]; }",
+        ] {
+            assert_eq!(findings(source).len(), 1, "{source}");
+        }
+    }
+
+    #[test]
+    fn the_test_support_module_must_keep_its_gate() {
+        let gated = "#[cfg(any(test, feature = \"test-support\"))]\nmod test_support;";
+        assert!(validate_test_support_gate(gated, CODE).is_empty());
+        let ungated = "mod test_support;";
+        let diags = validate_test_support_gate(ungated, CODE);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].rendered.contains("mod test_support"), "{diags:?}");
+        let not_test = "#[cfg(not(test))]\nmod test_support;";
+        assert_eq!(validate_test_support_gate(not_test, CODE).len(), 1);
+    }
+
+    #[test]
+    fn a_missing_test_support_module_fails_the_exemption() {
+        let diags = validate_test_support_gate("pub mod other;", CODE);
+        assert_eq!(diags.len(), 1);
+        assert!(
+            diags[0].rendered.contains("no longer declares"),
+            "{diags:?}"
+        );
     }
 
     #[test]

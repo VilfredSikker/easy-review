@@ -263,6 +263,14 @@ fn agent_spawn_diagnostics(
         os_launch,
         agent_spawn::CODE,
     ));
+    // The test-support file exemption is by path; keep its premise checked.
+    let engine_lib = root.join("crates/er-engine/src/lib.rs");
+    if let Ok(source) = std::fs::read_to_string(engine_lib) {
+        out.extend(agent_spawn::validate_test_support_gate(
+            &source,
+            agent_spawn::CODE,
+        ));
+    }
     Ok(out)
 }
 

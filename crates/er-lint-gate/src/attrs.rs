@@ -19,6 +19,22 @@ pub(crate) fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// Whether the item exists only under `test` or the `test-support` feature.
+///
+/// The reviewed test-support module compiles when either is on; the spawn rules
+/// exempt its file on that premise.
+pub(crate) fn is_test_support_gate(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .meta
+                .require_list()
+                .ok()
+                .and_then(|list| syn::parse2::<syn::Meta>(list.tokens.clone()).ok())
+                .is_some_and(|meta| predicate_is_test_or_support(&meta))
+    })
+}
+
 /// Whether an item only exists in a test build: `#[cfg(test)]`, or a test
 /// harness attribute such as `#[test]` / `#[tokio::test]`.
 ///
@@ -33,6 +49,21 @@ pub(crate) fn is_test_item(attrs: &[syn::Attribute]) -> bool {
                 .last()
                 .is_some_and(|segment| segment.ident == "test")
         })
+}
+
+/// The attributes an impl item can carry.
+///
+/// `item_attrs` sees the impl's own attributes, not its methods'; a rule that
+/// skips test code must also check the `ImplItem`s, or `#[cfg(test)]` methods
+/// inside an impl are treated as production.
+pub(crate) fn impl_item_attrs(item: &syn::ImplItem) -> &[syn::Attribute] {
+    match item {
+        syn::ImplItem::Const(item) => &item.attrs,
+        syn::ImplItem::Fn(item) => &item.attrs,
+        syn::ImplItem::Macro(item) => &item.attrs,
+        syn::ImplItem::Type(item) => &item.attrs,
+        _ => &[],
+    }
 }
 
 /// The attributes an item can carry. `None` for items that cannot be
@@ -55,6 +86,41 @@ pub(crate) fn item_attrs(item: &syn::Item) -> Option<&[syn::Attribute]> {
         syn::Item::Union(item) => Some(&item.attrs),
         syn::Item::Use(item) => Some(&item.attrs),
         _ => None,
+    }
+}
+
+/// Whether the predicate can hold only under `test` or the `test-support`
+/// feature. Every arm of an `any` must qualify; one arm of an `all` is enough.
+fn predicate_is_test_or_support(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) => {
+            let Some(name) = list.path.get_ident() else {
+                return false;
+            };
+            let Ok(nested) =
+                list.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+            else {
+                return false;
+            };
+            if name == "any" {
+                !nested.is_empty() && nested.iter().all(predicate_is_test_or_support)
+            } else if name == "all" {
+                nested.iter().any(predicate_is_test_or_support)
+            } else {
+                false
+            }
+        }
+        syn::Meta::NameValue(value) => {
+            value.path.is_ident("feature")
+                && matches!(
+                    &value.value,
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(feature),
+                        ..
+                    }) if feature.value() == "test-support"
+                )
+        }
     }
 }
 
@@ -119,5 +185,37 @@ mod tests {
         assert!(!is_test_item(&fn_attrs(
             "#[cfg(feature = \"x\")] fn f() {}"
         )));
+    }
+
+    #[test]
+    fn the_test_support_module_gate_is_recognized() {
+        let module = |source: &str| -> syn::ItemMod { syn::parse_str(source).unwrap() };
+        for source in [
+            "#[cfg(any(test, feature = \"test-support\"))] mod test_support;",
+            "#[cfg(test)] mod test_support;",
+            "#[cfg(all(test, unix))] mod test_support;",
+        ] {
+            assert!(is_test_support_gate(&module(source).attrs), "{source}");
+        }
+        for source in [
+            "#[cfg(any(test, unix))] mod test_support;",
+            "#[cfg(not(test))] mod test_support;",
+            "mod test_support;",
+        ] {
+            assert!(!is_test_support_gate(&module(source).attrs), "{source}");
+        }
+    }
+
+    #[test]
+    fn a_cfg_test_impl_method_is_test_code() {
+        let item: syn::ItemImpl = syn::parse_str("impl S { #[cfg(test)] fn f(&self) {} }").unwrap();
+        let method = &item.items[0];
+        assert!(is_test_item(impl_item_attrs(method)));
+    }
+
+    #[test]
+    fn a_plain_impl_method_is_production_code() {
+        let item: syn::ItemImpl = syn::parse_str("impl S { fn f(&self) {} }").unwrap();
+        assert!(!is_test_item(impl_item_attrs(&item.items[0])));
     }
 }

@@ -11,7 +11,7 @@ use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{Expr, ExprCall, ExprLit, Item, Lit, UseTree};
 
-use crate::attrs::{is_cfg_test, item_attrs};
+use crate::attrs::{impl_item_attrs, is_cfg_test, is_test_item, item_attrs};
 use crate::diagnostics::Diagnostic;
 
 /// The code the gate reports these findings under.
@@ -36,6 +36,13 @@ impl<'ast> Visit<'ast> for SpawnFinder<'_> {
             return;
         }
         visit::visit_item(self, item);
+    }
+
+    fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {
+        if is_test_item(impl_item_attrs(item)) {
+            return;
+        }
+        visit::visit_impl_item(self, item);
     }
 
     fn visit_expr_call(&mut self, call: &'ast ExprCall) {
@@ -89,6 +96,13 @@ impl<'ast> Visit<'ast> for AliasCollector {
             collect_use_aliases(&item_use.tree, &mut self.aliases);
         }
         visit::visit_item(self, item);
+    }
+
+    fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {
+        if is_test_item(impl_item_attrs(item)) {
+            return;
+        }
+        visit::visit_impl_item(self, item);
     }
 }
 
@@ -211,6 +225,18 @@ mod tests {
         ] {
             assert!(findings(source, "git").is_empty(), "{source}");
         }
+    }
+
+    #[test]
+    fn a_cfg_test_method_inside_an_impl_is_skipped() {
+        let source = r#"
+            struct S;
+            impl S {
+                #[cfg(test)]
+                fn f(&self) { Command::new("git"); }
+            }
+        "#;
+        assert!(findings(source, "git").is_empty());
     }
 
     #[test]

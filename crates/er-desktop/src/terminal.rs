@@ -6,7 +6,7 @@
 //! because the user closed the terminal or because the app exited), the child
 //! process is killed via the `Drop` impl below.
 
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, MasterPty, PtySize};
 use std::io::{Read, Write};
 
 pub struct PtySession {
@@ -28,13 +28,7 @@ impl PtySession {
             pixel_height: 0,
         })?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-        let mut cmd = CommandBuilder::new(shell);
-        if !cwd.is_empty() {
-            cmd.cwd(cwd);
-        }
-        // Sane defaults for a TTY-aware shell.
-        cmd.env("TERM", "xterm-256color");
+        let cmd = crate::os_launch::shell_command(cwd);
 
         let child = pair.slave.spawn_command(cmd)?;
         // Drop the slave half — the child holds its own fd. Keeping it open in
