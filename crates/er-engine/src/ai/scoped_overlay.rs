@@ -418,10 +418,6 @@ fn sorted_unique(mut paths: Vec<String>) -> Vec<String> {
     paths
 }
 
-fn merge_scope_paths(previous: &[String], new: &[String]) -> Vec<String> {
-    sorted_unique(previous.iter().chain(new).cloned().collect())
-}
-
 fn review_files_for_edit(overlay: &mut ScopedReview) -> Vec<&mut Vec<Finding>> {
     let scope = scope_set(&overlay.scope_paths);
     overlay
@@ -452,28 +448,63 @@ fn expert_files_for_edit(overlay: &mut ScopedExpertReview) -> Vec<&mut Vec<Findi
         .collect()
 }
 
-fn read_overlay<T: Artifact>(
-    store: &ArtifactStore,
-    key: &ArtifactKey<T>,
-) -> anyhow::Result<Option<T>> {
-    match store.read(key)? {
-        er_store::Loaded::Found(stored) => Ok(Some(stored.value)),
-        _ => Ok(None),
-    }
+/// Why one overlay update stopped without writing.
+#[derive(Debug)]
+enum OverlayStop {
+    /// The file is absent, or exists but reads as `None`; never overwrite it.
+    Missing,
+    /// The closure found nothing to change in this lens.
+    NoMatch,
 }
 
-/// Stamping reads an unreadable overlay as an error: the agent's file is either
-/// usable JSON or a failed run to report, never silently skipped.
-fn read_overlay_for_stamp<T: Artifact>(
+/// What one stamp did with the lens's overlay.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StampWrite {
+    /// A merged overlay was written under the lock.
+    Written,
+    /// The agent left the file exactly as captured at spawn.
+    Unchanged,
+    /// No readable agent overlay; there was nothing to stamp.
+    Absent,
+}
+
+/// Apply `apply` under the store lock and write the result.
+///
+/// A file that exists but cannot be read arrives as `None` here, so the update
+/// refuses instead of replacing bytes this build cannot see. `false` means the
+/// lens had no row to change or no readable overlay.
+fn update_overlay_files<T, F>(
     store: &ArtifactStore,
     key: &ArtifactKey<T>,
-) -> anyhow::Result<Option<T>> {
-    match store.read(key)? {
-        er_store::Loaded::Found(stored) => Ok(Some(stored.value)),
-        er_store::Loaded::Absent => Ok(None),
-        er_store::Loaded::Unreadable(reason) => {
-            anyhow::bail!("{} is unreadable: {reason:?}", store.path(key).display())
+    apply: F,
+) -> anyhow::Result<bool>
+where
+    T: Artifact,
+    F: FnOnce(&mut T) -> anyhow::Result<bool>,
+{
+    let mut failure = None;
+    let outcome = store.update(key, er_store::DEFAULT_LOCK_TIMEOUT, |current| {
+        let Some(mut overlay) = current else {
+            return Err(OverlayStop::Missing);
+        };
+        match apply(&mut overlay) {
+            Ok(true) => Ok(overlay),
+            Ok(false) => Err(OverlayStop::NoMatch),
+            Err(error) => {
+                failure = Some(error);
+                Err(OverlayStop::NoMatch)
+            }
         }
+    });
+    match outcome {
+        Ok(_) => Ok(true),
+        Err(er_store::UpdateError::Apply(OverlayStop::NoMatch)) => match failure {
+            Some(error) => Err(error),
+            None => Ok(false),
+        },
+        Err(er_store::UpdateError::Apply(OverlayStop::Missing)) => Ok(false),
+        Err(er_store::UpdateError::Store(er_store::StoreError::NewerVersion { .. })) => Ok(false),
+        Err(er_store::UpdateError::Store(error)) => Err(error.into()),
     }
 }
 
@@ -496,40 +527,25 @@ where
             return Ok(false);
         };
         let key = ArtifactKey::<ScopedExpertReview>::new(scope, slot)?;
-        let Some(mut overlay) = read_overlay(&store, &key)? else {
-            return Ok(false);
-        };
-        let mut files = expert_files_for_edit(&mut overlay);
-        if !apply_to_findings(&mut files, finding_id, prefix, f)? {
-            return Ok(false);
-        }
-        store.write(&key, &overlay)?;
-        return Ok(true);
+        return update_overlay_files(&store, &key, |overlay| {
+            let mut files = expert_files_for_edit(overlay);
+            apply_to_findings(&mut files, finding_id, prefix, f)
+        });
     }
 
     if prefix == Some(PROFESSOR_ID_PREFIX) {
         let key = ArtifactKey::<ScopedProfessorReview>::new(scope, ())?;
-        let Some(mut overlay) = read_overlay(&store, &key)? else {
-            return Ok(false);
-        };
-        let mut files = professor_files_for_edit(&mut overlay);
-        if !apply_to_findings(&mut files, finding_id, Some(PROFESSOR_ID_PREFIX), f)? {
-            return Ok(false);
-        }
-        store.write(&key, &overlay)?;
-        return Ok(true);
+        return update_overlay_files(&store, &key, |overlay| {
+            let mut files = professor_files_for_edit(overlay);
+            apply_to_findings(&mut files, finding_id, Some(PROFESSOR_ID_PREFIX), f)
+        });
     }
 
     let key = ArtifactKey::<ScopedReview>::new(scope, ())?;
-    let Some(mut overlay) = read_overlay(&store, &key)? else {
-        return Ok(false);
-    };
-    let mut files = review_files_for_edit(&mut overlay);
-    if !apply_to_findings(&mut files, finding_id, None, f)? {
-        return Ok(false);
-    }
-    store.write(&key, &overlay)?;
-    Ok(true)
+    update_overlay_files(&store, &key, |overlay| {
+        let mut files = review_files_for_edit(overlay);
+        apply_to_findings(&mut files, finding_id, None, f)
+    })
 }
 
 /// Apply `edit` to every lens overlay, in general, professor, expert order.
@@ -543,43 +559,34 @@ where
     let mut changed = false;
 
     let review_key = ArtifactKey::<ScopedReview>::new(scope.clone(), ())?;
-    if let Some(mut overlay) = read_overlay::<ScopedReview>(&store, &review_key)? {
+    changed |= update_overlay_files(&store, &review_key, |overlay| {
         let mut edited = false;
-        for findings in review_files_for_edit(&mut overlay) {
+        for findings in review_files_for_edit(overlay) {
             edited |= edit(findings, None);
         }
-        if edited {
-            store.write(&review_key, &overlay)?;
-            changed = true;
-        }
-    }
+        Ok(edited)
+    })?;
 
     let professor_key = ArtifactKey::<ScopedProfessorReview>::new(scope.clone(), ())?;
-    if let Some(mut overlay) = read_overlay::<ScopedProfessorReview>(&store, &professor_key)? {
+    changed |= update_overlay_files(&store, &professor_key, |overlay| {
         let mut edited = false;
-        for findings in professor_files_for_edit(&mut overlay) {
+        for findings in professor_files_for_edit(overlay) {
             edited |= edit(findings, Some(PROFESSOR_ID_PREFIX));
         }
-        if edited {
-            store.write(&professor_key, &overlay)?;
-            changed = true;
-        }
-    }
+        Ok(edited)
+    })?;
 
     for slot in store.list::<ScopedExpertReview>(&scope)? {
         let key = ArtifactKey::<ScopedExpertReview>::new(scope.clone(), slot.clone())?;
-        let Some(mut overlay) = read_overlay::<ScopedExpertReview>(&store, &key)? else {
-            continue;
-        };
-        let prefix = expert_by_id(&overlay.expert_id).map(|def| def.id_prefix);
-        let mut edited = false;
-        for findings in expert_files_for_edit(&mut overlay) {
-            edited |= edit(findings, prefix);
-        }
-        if edited {
-            store.write(&key, &overlay)?;
-            changed = true;
-        }
+        let mut prefix = None;
+        changed |= update_overlay_files(&store, &key, |overlay| {
+            prefix = expert_by_id(&overlay.expert_id).map(|def| def.id_prefix);
+            let mut edited = false;
+            for findings in expert_files_for_edit(overlay) {
+                edited |= edit(findings, prefix);
+            }
+            Ok(edited)
+        })?;
     }
 
     Ok(changed)
@@ -624,59 +631,121 @@ fn read_previous<T: serde::de::DeserializeOwned>(stamp: &ScopedRunStamp) -> Opti
     serde_json::from_slice(stamp.previous_overlay.as_deref()?).ok()
 }
 
-fn stamp_review(
+/// One stamp's read-merge-write, under the store lock.
+///
+/// `previous` is the overlay captured at spawn, already filtered to this base
+/// generation. The merge starts from the file's current value, so a lifecycle
+/// write or a second stamp that landed in between is kept.
+fn update_stamp<T, S, M>(
     store: &ArtifactStore,
-    scope: &Scope,
+    key: &ArtifactKey<T>,
+    command_name: &str,
     stamp: &ScopedRunStamp,
-) -> anyhow::Result<bool> {
-    let key = ArtifactKey::<ScopedReview>::new(scope.clone(), ())?;
-    let path = store.path(&key);
-    if unchanged_since_spawn(&path, stamp) {
-        remove_prev_file(store, scope, "review");
-        return Ok(true);
-    }
-    let Some(agent) = read_overlay_for_stamp::<ScopedReview>(store, &key)? else {
-        return Ok(false);
-    };
-    let previous = read_previous::<ScopedReview>(stamp).filter(|previous| {
-        previous_identity_matches(stamp, &previous.base_diff_hash, &previous.base_created_at)
+    previous: Option<T>,
+    strict: S,
+    merge: M,
+) -> anyhow::Result<StampWrite>
+where
+    T: Artifact,
+    S: FnOnce(&T) -> anyhow::Result<()>,
+    M: FnOnce(T, Option<&T>, &ScopedRunStamp) -> T,
+{
+    let scope = key.scope();
+    let path = store.path(key);
+    let mut unchanged = false;
+    let mut failure = None;
+    let outcome = store.update(key, er_store::DEFAULT_LOCK_TIMEOUT, |current| {
+        if unchanged_since_spawn(&path, stamp) {
+            unchanged = true;
+            return Err(OverlayStop::NoMatch);
+        }
+        let Some(agent) = current else {
+            // A file that exists but reads as None arrived from `update` with
+            // its bytes unreadable; never replace it.
+            if store.exists(key) {
+                let reason = match store.read(key) {
+                    Ok(er_store::Loaded::Unreadable(reason)) => format!("{reason:?}"),
+                    _ => "unreadable".to_string(),
+                };
+                failure = Some(anyhow::anyhow!(
+                    "{} is unreadable: {reason}",
+                    path.display()
+                ));
+            }
+            return Err(OverlayStop::Missing);
+        };
+        if let Err(error) = strict(&agent) {
+            failure = Some(error);
+            return Err(OverlayStop::NoMatch);
+        }
+        Ok(merge(agent, previous.as_ref(), stamp))
     });
+    match outcome {
+        Ok(_) => {
+            remove_prev_file(store, scope, command_name);
+            Ok(StampWrite::Written)
+        }
+        Err(er_store::UpdateError::Apply(OverlayStop::NoMatch)) => match failure {
+            Some(error) => Err(error),
+            None if unchanged => {
+                remove_prev_file(store, scope, command_name);
+                Ok(StampWrite::Unchanged)
+            }
+            None => Ok(StampWrite::Absent),
+        },
+        Err(er_store::UpdateError::Apply(OverlayStop::Missing)) => match failure {
+            Some(error) => Err(error),
+            None => Ok(StampWrite::Absent),
+        },
+        Err(er_store::UpdateError::Store(er_store::StoreError::NewerVersion { found, .. })) => Err(
+            anyhow::anyhow!("{} is unreadable: newer version {found}", path.display()),
+        ),
+        Err(er_store::UpdateError::Store(error)) => Err(error.into()),
+    }
+}
+
+/// Union of the previous overlay's paths, the file's current paths (a write
+/// that landed between spawn and stamp) and this run's manifest.
+fn merge_all_scope_paths(previous: &[String], current: &[String], new: &[String]) -> Vec<String> {
+    sorted_unique(previous.iter().chain(current).chain(new).cloned().collect())
+}
+
+fn merge_review(
+    agent: ScopedReview,
+    previous: Option<&ScopedReview>,
+    stamp: &ScopedRunStamp,
+) -> ScopedReview {
+    let mut files = previous.map(|p| p.files.clone()).unwrap_or_default();
+    let mut file_hashes = previous.map(|p| p.file_hashes.clone()).unwrap_or_default();
+    for (path, file) in &agent.files {
+        files.insert(path.clone(), file.clone());
+    }
+    for (path, hash) in &agent.file_hashes {
+        file_hashes.insert(path.clone(), hash.clone());
+    }
     let mut merged = ScopedReview {
         version: agent.version,
         diff_hash: agent.diff_hash.clone(),
         created_at: previous
-            .as_ref()
-            .map(|previous| previous.created_at.clone())
+            .map(|p| p.created_at.clone())
             .unwrap_or_else(|| agent.created_at.clone()),
         base_branch: if agent.base_branch.is_empty() {
-            previous
-                .as_ref()
-                .map(|previous| previous.base_branch.clone())
-                .unwrap_or_default()
+            previous.map(|p| p.base_branch.clone()).unwrap_or_default()
         } else {
             agent.base_branch.clone()
         },
         head_branch: if agent.head_branch.is_empty() {
-            previous
-                .as_ref()
-                .map(|previous| previous.head_branch.clone())
-                .unwrap_or_default()
+            previous.map(|p| p.head_branch.clone()).unwrap_or_default()
         } else {
             agent.head_branch.clone()
         },
-        files: previous
-            .as_ref()
-            .map(|previous| previous.files.clone())
-            .unwrap_or_default(),
-        file_hashes: previous
-            .as_ref()
-            .map(|previous| previous.file_hashes.clone())
-            .unwrap_or_default(),
-        scope_paths: merge_scope_paths(
-            &previous
-                .as_ref()
-                .map(|previous| previous.scope_paths.clone())
+        files,
+        file_hashes,
+        scope_paths: merge_all_scope_paths(
+            previous
+                .map(|p| p.scope_paths.as_slice())
                 .unwrap_or_default(),
+            &agent.scope_paths,
             &stamp.scope_paths,
         ),
         base_diff_hash: stamp.base_diff_hash.clone(),
@@ -699,13 +768,34 @@ fn stamp_review(
         }
     }
     re_id_review_files(&mut merged.files);
-    store.write(&key, &merged)?;
-    // The rows on these paths were re-produced, so the validate pass's
-    // outcomes for them no longer describe the rows now shown. Other paths keep
-    // their outcomes; the base's identity did not move, so those still apply.
-    drop_validation_outcomes_for_paths(store, scope, &stamp.scope_paths)?;
-    remove_prev_file(store, scope, "review");
-    Ok(true)
+    merged
+}
+
+fn stamp_review(
+    store: &ArtifactStore,
+    scope: &Scope,
+    stamp: &ScopedRunStamp,
+) -> anyhow::Result<bool> {
+    let key = ArtifactKey::<ScopedReview>::new(scope.clone(), ())?;
+    let previous = read_previous::<ScopedReview>(stamp).filter(|previous| {
+        previous_identity_matches(stamp, &previous.base_diff_hash, &previous.base_created_at)
+    });
+    let outcome = update_stamp(
+        store,
+        &key,
+        "review",
+        stamp,
+        previous,
+        |_| Ok(()),
+        merge_review,
+    )?;
+    if outcome == StampWrite::Written {
+        // The rows on these paths were re-produced, so the validate pass's
+        // outcomes for them no longer describe the rows now shown. Other paths
+        // keep theirs; the base's identity did not move, so those still apply.
+        drop_validation_outcomes_for_paths(store, scope, &stamp.scope_paths)?;
+    }
+    Ok(outcome != StampWrite::Absent)
 }
 
 fn drop_validation_outcomes_for_paths(
@@ -714,77 +804,66 @@ fn drop_validation_outcomes_for_paths(
     paths: &[String],
 ) -> anyhow::Result<()> {
     let key = ArtifactKey::<ValidationReview>::new(scope.clone(), ())?;
-    let Some(mut validation) = read_overlay::<ValidationReview>(store, &key)? else {
-        return Ok(());
-    };
-    let scope = scope_set(paths);
-    let before = validation.outcomes.len();
-    validation
-        .outcomes
-        .retain(|outcome| !scope.contains(outcome.file.as_str()));
-    if validation.outcomes.len() != before {
-        store.write(&key, &validation)?;
+    let outcome = store.update(&key, er_store::DEFAULT_LOCK_TIMEOUT, |current| {
+        let Some(mut validation) = current else {
+            return Err(OverlayStop::Missing);
+        };
+        let scope = scope_set(paths);
+        let before = validation.outcomes.len();
+        validation
+            .outcomes
+            .retain(|outcome| !scope.contains(outcome.file.as_str()));
+        if validation.outcomes.len() == before {
+            return Err(OverlayStop::NoMatch);
+        }
+        Ok(validation)
+    });
+    match outcome {
+        Ok(_) => Ok(()),
+        // Absent, no outcome on these paths, or unreadable: leave the bytes.
+        Err(er_store::UpdateError::Apply(_)) => Ok(()),
+        // A file a newer build owns stays as it is.
+        Err(er_store::UpdateError::Store(er_store::StoreError::NewerVersion { .. })) => Ok(()),
+        Err(er_store::UpdateError::Store(error)) => Err(error.into()),
     }
-    Ok(())
 }
 
-fn stamp_professor(
-    store: &ArtifactStore,
-    scope: &Scope,
+fn merge_professor(
+    agent: ScopedProfessorReview,
+    previous: Option<&ScopedProfessorReview>,
     stamp: &ScopedRunStamp,
-) -> anyhow::Result<bool> {
-    let key = ArtifactKey::<ScopedProfessorReview>::new(scope.clone(), ())?;
-    let path = store.path(&key);
-    if unchanged_since_spawn(&path, stamp) {
-        remove_prev_file(store, scope, "professor");
-        return Ok(true);
+) -> ScopedProfessorReview {
+    let mut files = previous.map(|p| p.files.clone()).unwrap_or_default();
+    for (path, file) in &agent.files {
+        files.insert(path.clone(), file.clone());
     }
-    let Some(agent) = read_overlay_for_stamp::<ScopedProfessorReview>(store, &key)? else {
-        return Ok(false);
-    };
-    let previous = read_previous::<ScopedProfessorReview>(stamp).filter(|previous| {
-        previous_identity_matches(stamp, &previous.base_diff_hash, &previous.base_created_at)
-    });
     let mut merged = ScopedProfessorReview {
         version: agent.version,
         diff_hash: agent.diff_hash.clone(),
         diff_scope: if agent.diff_scope.is_empty() {
-            previous
-                .as_ref()
-                .map(|previous| previous.diff_scope.clone())
-                .unwrap_or_default()
+            previous.map(|p| p.diff_scope.clone()).unwrap_or_default()
         } else {
             agent.diff_scope.clone()
         },
         created_at: previous
-            .as_ref()
-            .map(|previous| previous.created_at.clone())
+            .map(|p| p.created_at.clone())
             .unwrap_or_else(|| agent.created_at.clone()),
         focus_prompt: if agent.focus_prompt.is_empty() {
-            previous
-                .as_ref()
-                .map(|previous| previous.focus_prompt.clone())
-                .unwrap_or_default()
+            previous.map(|p| p.focus_prompt.clone()).unwrap_or_default()
         } else {
             agent.focus_prompt.clone()
         },
         summary: if agent.summary.is_empty() {
-            previous
-                .as_ref()
-                .map(|previous| previous.summary.clone())
-                .unwrap_or_default()
+            previous.map(|p| p.summary.clone()).unwrap_or_default()
         } else {
             agent.summary.clone()
         },
-        files: previous
-            .as_ref()
-            .map(|previous| previous.files.clone())
-            .unwrap_or_default(),
-        scope_paths: merge_scope_paths(
-            &previous
-                .as_ref()
-                .map(|previous| previous.scope_paths.clone())
+        files,
+        scope_paths: merge_all_scope_paths(
+            previous
+                .map(|p| p.scope_paths.as_slice())
                 .unwrap_or_default(),
+            &agent.scope_paths,
             &stamp.scope_paths,
         ),
         base_diff_hash: stamp.base_diff_hash.clone(),
@@ -801,70 +880,62 @@ fn stamp_professor(
         }
     }
     re_id_professor_files(&mut merged.files);
-    store.write(&key, &merged)?;
-    remove_prev_file(store, scope, "professor");
-    Ok(true)
+    merged
 }
 
-fn stamp_expert(
+fn stamp_professor(
     store: &ArtifactStore,
     scope: &Scope,
-    expert_id: &str,
     stamp: &ScopedRunStamp,
 ) -> anyhow::Result<bool> {
-    let Ok(slot) = ExpertId::new(expert_id) else {
-        return Ok(false);
-    };
-    let key = ArtifactKey::<ScopedExpertReview>::new(scope.clone(), slot)?;
-    let path = store.path(&key);
-    if unchanged_since_spawn(&path, stamp) {
-        remove_prev_file(store, scope, &format!("expert-{expert_id}"));
-        return Ok(true);
-    }
-    let Some(agent) = read_overlay_for_stamp::<ScopedExpertReview>(store, &key)? else {
-        return Ok(false);
-    };
-    anyhow::ensure!(
-        agent.expert_id == expert_id,
-        "{expert_id} wrote an overlay naming expert_id {:?}",
-        agent.expert_id
-    );
-    let previous = read_previous::<ScopedExpertReview>(stamp).filter(|previous| {
+    let key = ArtifactKey::<ScopedProfessorReview>::new(scope.clone(), ())?;
+    let previous = read_previous::<ScopedProfessorReview>(stamp).filter(|previous| {
         previous_identity_matches(stamp, &previous.base_diff_hash, &previous.base_created_at)
     });
+    let outcome = update_stamp(
+        store,
+        &key,
+        "professor",
+        stamp,
+        previous,
+        |_| Ok(()),
+        merge_professor,
+    )?;
+    Ok(outcome != StampWrite::Absent)
+}
+
+fn merge_expert(
+    agent: ScopedExpertReview,
+    previous: Option<&ScopedExpertReview>,
+    stamp: &ScopedRunStamp,
+) -> ScopedExpertReview {
+    let mut files = previous.map(|p| p.files.clone()).unwrap_or_default();
+    for (path, file) in &agent.files {
+        files.insert(path.clone(), file.clone());
+    }
     let mut merged = ScopedExpertReview {
         version: agent.version,
-        expert_id: expert_id.to_string(),
+        expert_id: agent.expert_id.clone(),
         diff_hash: agent.diff_hash.clone(),
         diff_scope: if agent.diff_scope.is_empty() {
-            previous
-                .as_ref()
-                .map(|previous| previous.diff_scope.clone())
-                .unwrap_or_default()
+            previous.map(|p| p.diff_scope.clone()).unwrap_or_default()
         } else {
             agent.diff_scope.clone()
         },
         created_at: previous
-            .as_ref()
-            .map(|previous| previous.created_at.clone())
+            .map(|p| p.created_at.clone())
             .unwrap_or_else(|| agent.created_at.clone()),
         summary: if agent.summary.is_empty() {
-            previous
-                .as_ref()
-                .map(|previous| previous.summary.clone())
-                .unwrap_or_default()
+            previous.map(|p| p.summary.clone()).unwrap_or_default()
         } else {
             agent.summary.clone()
         },
-        files: previous
-            .as_ref()
-            .map(|previous| previous.files.clone())
-            .unwrap_or_default(),
-        scope_paths: merge_scope_paths(
-            &previous
-                .as_ref()
-                .map(|previous| previous.scope_paths.clone())
+        files,
+        scope_paths: merge_all_scope_paths(
+            previous
+                .map(|p| p.scope_paths.as_slice())
                 .unwrap_or_default(),
+            &agent.scope_paths,
             &stamp.scope_paths,
         ),
         base_diff_hash: stamp.base_diff_hash.clone(),
@@ -881,9 +952,39 @@ fn stamp_expert(
         }
     }
     re_id_expert_files(&mut merged.files);
-    store.write(&key, &merged)?;
-    remove_prev_file(store, scope, &format!("expert-{expert_id}"));
-    Ok(true)
+    merged
+}
+
+fn stamp_expert(
+    store: &ArtifactStore,
+    scope: &Scope,
+    expert_id: &str,
+    stamp: &ScopedRunStamp,
+) -> anyhow::Result<bool> {
+    let Ok(slot) = ExpertId::new(expert_id) else {
+        return Ok(false);
+    };
+    let key = ArtifactKey::<ScopedExpertReview>::new(scope.clone(), slot)?;
+    let previous = read_previous::<ScopedExpertReview>(stamp).filter(|previous| {
+        previous_identity_matches(stamp, &previous.base_diff_hash, &previous.base_created_at)
+    });
+    let outcome = update_stamp(
+        store,
+        &key,
+        &format!("expert-{expert_id}"),
+        stamp,
+        previous,
+        |agent| {
+            anyhow::ensure!(
+                agent.expert_id == expert_id,
+                "{expert_id} wrote an overlay naming expert_id {:?}",
+                agent.expert_id
+            );
+            Ok(())
+        },
+        merge_expert,
+    )?;
+    Ok(outcome != StampWrite::Absent)
 }
 
 /// Delete exactly this lens's old `*.prev.json`; never the questions or notes
@@ -1394,6 +1495,7 @@ mod tests {
 
     #[test]
     fn unchanged_scoped_output_is_kept() {
+        use crate::ai::validation::{ValidationOutcome, ValidationResult};
         let dir = temp_dir("unchanged");
         with_test_storage_root(&dir, || {
             let store = crate::store_registry::store();
@@ -1406,6 +1508,23 @@ mod tests {
             );
             std::fs::write(&path, serde_json::to_vec(&overlay).unwrap()).unwrap();
             let bytes = std::fs::read(&path).unwrap();
+            let validation = ValidationReview {
+                version: 1,
+                diff_hash: "hash".to_string(),
+                review_created_at: "t0".to_string(),
+                created_at: "t1".to_string(),
+                outcomes: vec![ValidationOutcome {
+                    key: "k-a".to_string(),
+                    result: ValidationResult::Persists,
+                    file: "src/a.rs".to_string(),
+                    patch: Default::default(),
+                }],
+            };
+            std::fs::write(
+                dir.join("validation.json"),
+                serde_json::to_vec(&validation).unwrap(),
+            )
+            .unwrap();
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/a.rs".to_string()],
                 base_diff_hash: "hash".to_string(),
@@ -1414,6 +1533,14 @@ mod tests {
             };
             assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            let kept: ValidationReview =
+                serde_json::from_slice(&std::fs::read(dir.join("validation.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                kept.outcomes.len(),
+                1,
+                "no row was re-produced, so its validation outcome still applies"
+            );
         });
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1841,5 +1968,303 @@ mod tests {
         );
         assert_eq!(scoped_overlay_path("triage"), None);
         assert_eq!(scoped_overlay_path("summary"), None);
+    }
+
+    // Both writers start together, and each edit sleeps after its read, so a
+    // read-then-write loses one of them.
+    #[test]
+    fn concurrent_overlay_replies_keep_both_rows() {
+        let dir = temp_dir("race-reply");
+        crate::storage::with_process_test_storage_root(&dir, || {
+            std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
+            let overlay = scoped(
+                vec![(
+                    "src/a.rs",
+                    vec![finding("scoped-a", "A", 1), finding("scoped-b", "B", 2)],
+                )],
+                &["src/a.rs"],
+            );
+            std::fs::write(
+                dir.join("scoped/general.json"),
+                serde_json::to_vec(&overlay).unwrap(),
+            )
+            .unwrap();
+            let er_dir = dir.to_string_lossy().into_owned();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let spawn = |id: &'static str, text: &'static str| {
+                let er_dir = er_dir.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let mut edit = Some(|f: &mut Finding| -> anyhow::Result<()> {
+                        std::thread::sleep(std::time::Duration::from_millis(80));
+                        f.responses.push(crate::ai::review::AiResponse {
+                            id: text.to_string(),
+                            in_reply_to: String::new(),
+                            timestamp: "t1".to_string(),
+                            text: text.to_string(),
+                            new_findings: Vec::new(),
+                        });
+                        Ok(())
+                    });
+                    assert!(with_finding_in_overlay(&er_dir, id, &mut edit).unwrap());
+                })
+            };
+            let first = spawn("scoped-a", "one");
+            let second = spawn("scoped-b", "two");
+            barrier.wait();
+            first.join().unwrap();
+            second.join().unwrap();
+
+            let stored: ScopedReview =
+                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
+                    .unwrap();
+            let rows = &stored.files["src/a.rs"].findings;
+            assert!(
+                rows.iter()
+                    .any(|f| f.responses.iter().any(|r| r.text == "one")),
+                "the first reply survived"
+            );
+            assert!(
+                rows.iter()
+                    .any(|f| f.responses.iter().any(|r| r.text == "two")),
+                "the second reply survived"
+            );
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_overlay_resolves_keep_both_rows() {
+        let dir = temp_dir("race-resolve");
+        crate::storage::with_process_test_storage_root(&dir, || {
+            std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
+            let overlay = scoped(
+                vec![(
+                    "src/a.rs",
+                    vec![finding("scoped-a", "A", 1), finding("scoped-b", "B", 2)],
+                )],
+                &["src/a.rs"],
+            );
+            std::fs::write(
+                dir.join("scoped/general.json"),
+                serde_json::to_vec(&overlay).unwrap(),
+            )
+            .unwrap();
+            let er_dir = dir.to_string_lossy().into_owned();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let spawn = |id: &'static str| {
+                let er_dir = er_dir.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let mut edit = Some(|f: &mut Finding| -> anyhow::Result<()> {
+                        std::thread::sleep(std::time::Duration::from_millis(80));
+                        f.resolved = true;
+                        f.resolved_note = id.to_string();
+                        Ok(())
+                    });
+                    assert!(with_finding_in_overlay(&er_dir, id, &mut edit).unwrap());
+                })
+            };
+            let first = spawn("scoped-a");
+            let second = spawn("scoped-b");
+            barrier.wait();
+            first.join().unwrap();
+            second.join().unwrap();
+
+            let stored: ScopedReview =
+                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
+                    .unwrap();
+            let rows = &stored.files["src/a.rs"].findings;
+            assert!(rows.iter().all(|f| f.resolved), "both resolves survived");
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The edit one racing thread applies: rename its own row after a pause,
+    /// so a read-then-write has time to overlap the other thread's write.
+    fn edit_row(
+        id: &'static str,
+        note: &'static str,
+    ) -> impl FnMut(&mut Vec<Finding>, Option<&str>) -> bool {
+        move |findings, _prefix| {
+            let Some(finding) = findings.iter_mut().find(|f| f.id == id) else {
+                return false;
+            };
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            finding.description = note.to_string();
+            true
+        }
+    }
+
+    #[test]
+    fn concurrent_overlay_edits_keep_both_rows() {
+        let dir = temp_dir("race-edit");
+        crate::storage::with_process_test_storage_root(&dir, || {
+            std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
+            let overlay = scoped(
+                vec![(
+                    "src/a.rs",
+                    vec![finding("scoped-a", "A", 1), finding("scoped-b", "B", 2)],
+                )],
+                &["src/a.rs"],
+            );
+            std::fs::write(
+                dir.join("scoped/general.json"),
+                serde_json::to_vec(&overlay).unwrap(),
+            )
+            .unwrap();
+            let er_dir = dir.to_string_lossy().into_owned();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let spawn = |id: &'static str, note: &'static str| {
+                let er_dir = er_dir.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let mut edit = edit_row(id, note);
+                    assert!(edit_finding_overlays(&er_dir, &mut edit).unwrap());
+                })
+            };
+            let first = spawn("scoped-a", "first edit");
+            let second = spawn("scoped-b", "second edit");
+            barrier.wait();
+            first.join().unwrap();
+            second.join().unwrap();
+
+            let stored: ScopedReview =
+                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
+                    .unwrap();
+            let rows = &stored.files["src/a.rs"].findings;
+            assert!(
+                rows.iter().any(|f| f.description == "first edit"),
+                "the first edit survived"
+            );
+            assert!(
+                rows.iter().any(|f| f.description == "second edit"),
+                "the second edit survived"
+            );
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Each stamp re-produces `src/a.rs` and restores one earlier path from the
+    // overlay it captured at spawn. Each must start from the file's current
+    // content, or the second stamp drops the path the first one restored.
+    #[test]
+    fn concurrent_stamps_keep_both_previous_paths() {
+        let dir = temp_dir("race-stamp");
+        crate::storage::with_process_test_storage_root(&dir, || {
+            std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
+            let agent = scoped(vec![("src/a.rs", vec![finding("", "A", 1)])], &["src/a.rs"]);
+            std::fs::write(
+                dir.join("scoped/general.json"),
+                serde_json::to_vec(&agent).unwrap(),
+            )
+            .unwrap();
+            let er_dir = dir.to_string_lossy().into_owned();
+            let previous_for = |path: &str, title: &str| {
+                serde_json::to_vec(&scoped(vec![(path, vec![finding("", title, 2)])], &[path]))
+                    .unwrap()
+            };
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let spawn = |path: &'static str, title: &'static str| {
+                let er_dir = er_dir.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                let previous = previous_for(path, title);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let store = crate::store_registry::store();
+                    let scope = Scope::dir(&er_dir).unwrap();
+                    let stamp = ScopedRunStamp {
+                        scope_paths: vec!["src/a.rs".to_string()],
+                        base_diff_hash: "hash".to_string(),
+                        base_created_at: "t0".to_string(),
+                        previous_overlay: Some(previous),
+                    };
+                    assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
+                })
+            };
+            let first = spawn("src/b.rs", "B");
+            let second = spawn("src/c.rs", "C");
+            barrier.wait();
+            first.join().unwrap();
+            second.join().unwrap();
+
+            let stored: ScopedReview =
+                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
+                    .unwrap();
+            for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
+                assert!(
+                    stored.files.contains_key(path),
+                    "{path} survived the concurrent stamps"
+                );
+            }
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_validation_drops_keep_both_paths() {
+        let dir = temp_dir("race-drop");
+        crate::storage::with_process_test_storage_root(&dir, || {
+            std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
+            let agent = scoped(vec![("src/a.rs", vec![finding("", "A", 1)])], &["src/a.rs"]);
+            std::fs::write(
+                dir.join("scoped/general.json"),
+                serde_json::to_vec(&agent).unwrap(),
+            )
+            .unwrap();
+            let outcome = |key: &str, file: &str| crate::ai::validation::ValidationOutcome {
+                key: key.to_string(),
+                result: crate::ai::validation::ValidationResult::Persists,
+                file: file.to_string(),
+                patch: Default::default(),
+            };
+            let validation = ValidationReview {
+                version: 1,
+                diff_hash: "hash".to_string(),
+                review_created_at: "t0".to_string(),
+                created_at: "t1".to_string(),
+                outcomes: vec![outcome("k-a", "src/a.rs"), outcome("k-b", "src/b.rs")],
+            };
+            std::fs::write(
+                dir.join("validation.json"),
+                serde_json::to_vec(&validation).unwrap(),
+            )
+            .unwrap();
+            let er_dir = dir.to_string_lossy().into_owned();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let spawn = |manifest: &'static str| {
+                let er_dir = er_dir.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let store = crate::store_registry::store();
+                    let scope = Scope::dir(&er_dir).unwrap();
+                    let stamp = ScopedRunStamp {
+                        scope_paths: vec![manifest.to_string()],
+                        base_diff_hash: "hash".to_string(),
+                        base_created_at: "t0".to_string(),
+                        previous_overlay: None,
+                    };
+                    assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
+                })
+            };
+            let first = spawn("src/a.rs");
+            let second = spawn("src/b.rs");
+            barrier.wait();
+            first.join().unwrap();
+            second.join().unwrap();
+
+            let stored: ValidationReview =
+                serde_json::from_slice(&std::fs::read(dir.join("validation.json")).unwrap())
+                    .unwrap();
+            assert!(
+                stored.outcomes.is_empty(),
+                "both paths' outcomes were dropped"
+            );
+        });
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

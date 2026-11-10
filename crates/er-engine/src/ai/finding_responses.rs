@@ -808,4 +808,66 @@ mod tests {
             assert!(u.files["a.rs"].findings[0].responses.is_empty());
         });
     }
+
+    // Two replies on one review.json must both land: the store lock covers the
+    // read, so the second write starts from the first one's bytes.
+    #[test]
+    fn concurrent_appends_to_one_review_keep_both_responses() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_process_test_storage_root(dir.path(), || {
+            let er = dir.path();
+            let review = ErReview {
+                version: 1,
+                diff_hash: "h".to_string(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files: std::iter::once((
+                    "a.rs".to_string(),
+                    ErFileReview {
+                        risk: RiskLevel::Low,
+                        risk_reason: String::new(),
+                        summary: String::new(),
+                        findings: vec![bare_finding("f1"), bare_finding("f2")],
+                    },
+                ))
+                .collect::<HashMap<_, _>>(),
+                file_hashes: HashMap::new(),
+            };
+            write_json_atomic(&er.join("review.json"), &review).unwrap();
+
+            let er_dir = er.to_string_lossy().into_owned();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let spawn = |id: &'static str, text: &'static str| {
+                let er_dir = er_dir.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    append_finding_response(&er_dir, id, text).unwrap();
+                })
+            };
+            let first = spawn("f1", "first");
+            let second = spawn("f2", "second");
+            barrier.wait();
+            first.join().unwrap();
+            second.join().unwrap();
+
+            let loaded: ErReview =
+                serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
+                    .unwrap();
+            let findings = &loaded.files["a.rs"].findings;
+            assert!(
+                findings
+                    .iter()
+                    .any(|f| f.responses.iter().any(|r| r.text == "first")),
+                "the first reply survived"
+            );
+            assert!(
+                findings
+                    .iter()
+                    .any(|f| f.responses.iter().any(|r| r.text == "second")),
+                "the second reply survived"
+            );
+        });
+    }
 }
