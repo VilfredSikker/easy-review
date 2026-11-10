@@ -1975,12 +1975,8 @@ fn backup_invalid_config(path: &std::path::Path) -> (Option<std::path::PathBuf>,
 /// exists but cannot be read or parsed. A missing file is not an error.
 pub fn load_config_from(path: &std::path::Path) -> (ErConfig, Option<ConfigLoadError>) {
     match parse_config_from_path(path) {
-        Ok(config) => {
-            clear_config_load_failure(path);
-            (config, None)
-        }
+        Ok(config) => (config, None),
         Err(ConfigReadError::Read(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            clear_config_load_failure(path);
             (ErConfig::default(), None)
         }
         Err(error) => {
@@ -1999,22 +1995,42 @@ pub fn load_config_from(path: &std::path::Path) -> (ErConfig, Option<ConfigLoadE
     }
 }
 
+/// Load `path` and, on success, clear a recorded failed-load mark. Call this
+/// only where the result becomes the app's config (startup and the Settings
+/// reload). A load whose result is used and discarded must use
+/// [`load_config_from`], which never clears the mark.
+pub fn adopt_config_from(path: &std::path::Path) -> (ErConfig, Option<ConfigLoadError>) {
+    let (config, error) = load_config_from(path);
+    if error.is_none() {
+        clear_config_load_failure(path);
+    }
+    (config, error)
+}
+
 /// Load the global config from managed storage (with one-time legacy migration).
 pub fn load_global_config() -> ErConfig {
-    load_global_config_checked().0
+    load_managed_config(false).0
 }
 
 /// Load the global config, reporting a failed managed-config load instead of
 /// only defaulting. A legacy fallback is best-effort and never blocks a save:
 /// saves write the managed path, so the legacy file is not at risk.
 pub fn load_global_config_checked() -> (ErConfig, Option<ConfigLoadError>) {
+    load_managed_config(true)
+}
+
+fn load_managed_config(adopt: bool) -> (ErConfig, Option<ConfigLoadError>) {
     let managed = managed_config_path();
     if !managed.exists() {
         migrate_legacy_config();
     }
 
     let (mut config, error) = if managed.exists() {
-        load_config_from(&managed)
+        if adopt {
+            adopt_config_from(&managed)
+        } else {
+            load_config_from(&managed)
+        }
     } else {
         // Migration failed or no legacy file — try legacy paths for this session
         // so a transient write error does not silently drop the user's settings.
@@ -4588,7 +4604,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[display]\ntheme = \"paper\"\n").unwrap();
 
-        let (mut config, error) = load_config_from(&path);
+        let (mut config, error) = adopt_config_from(&path);
         assert!(error.is_none(), "{error:?}");
         config.display.theme = "ember".to_string();
         save_config_to(&path, &config).unwrap();
@@ -4620,13 +4636,47 @@ mod tests {
         );
 
         // A successful reload adopts the repaired values and lifts the refusal.
-        let (reloaded, error) = load_config_from(&path);
+        let (reloaded, error) = adopt_config_from(&path);
         assert!(error.is_none(), "{error:?}");
         assert_eq!(reloaded.display.theme, "paper");
         save_config_to(&path, &reloaded).unwrap();
         let (saved, error) = load_config_from(&path);
         assert!(error.is_none(), "{error:?}");
         assert_eq!(saved.display.theme, "paper");
+    }
+
+    #[test]
+    fn a_non_adopting_load_does_not_clear_the_failed_load_mark() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "{").unwrap();
+        assert!(load_config_from(&path).1.is_some());
+
+        // The user repairs the file while the app still holds the defaults.
+        std::fs::write(&path, "[agent]\nmodel = \"keepme\"\n").unwrap();
+
+        // A new tab, a finished review or a desktop command loads and discards.
+        let (loaded, error) = load_config_from(&path);
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(loaded.agent.model, "keepme");
+
+        // The discarded load must not lift the refusal: the stale app config
+        // still cannot win.
+        let error = save_config_to(&path, &ErConfig::default()).unwrap_err();
+        assert!(
+            error.to_string().contains("failed to load earlier"),
+            "{error}"
+        );
+        assert!(std::fs::read_to_string(&path).unwrap().contains("keepme"));
+
+        // Only an adopting load clears the mark.
+        let (adopted, error) = adopt_config_from(&path);
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(adopted.agent.model, "keepme");
+        save_config_to(&path, &adopted).unwrap();
+        let (reloaded, error) = load_config_from(&path);
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(reloaded.agent.model, "keepme");
     }
 
     #[test]

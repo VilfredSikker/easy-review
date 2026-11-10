@@ -8477,20 +8477,28 @@ impl App {
         }
     }
 
+    /// Re-read the managed config after a failed load. A repaired file is
+    /// adopted and clears the save refusal; a file that still fails keeps the
+    /// banner and the defaults.
+    pub fn reload_config_if_failed(&mut self) {
+        if self.config_load_error.is_none() {
+            return;
+        }
+        let (config, error) = config::load_global_config_checked();
+        self.config = config;
+        self.config_load_error = error
+            .as_ref()
+            .map(|_| config::CONFIG_LOAD_BANNER.to_string());
+        if let Some(error) = error {
+            self.notify_long(&error.to_string());
+        }
+    }
+
     pub fn open_config_hub(&mut self) {
         // A failed load left `self.config` at the defaults. Re-read the file on
         // open: a repaired file is adopted and clears the save refusal; a file
         // that still fails keeps the banner and the defaults.
-        if self.config_load_error.is_some() {
-            let (config, error) = config::load_global_config_checked();
-            self.config = config;
-            self.config_load_error = error
-                .as_ref()
-                .map(|_| config::CONFIG_LOAD_BANNER.to_string());
-            if let Some(error) = error {
-                self.notify_long(&error.to_string());
-            }
-        }
+        self.reload_config_if_failed();
         let tab = config::SettingsScope::General;
         let items = config::config_hub_items_for_scope(&self.config, tab);
         let selected = Self::config_hub_first_selectable(&items);

@@ -830,6 +830,8 @@ export interface AppSnapshot {
   /** True when the viewed local branch is checked out (enables Unstaged/Staged/Commits scopes). */
   local_branch_checked_out?: boolean;
   notification: NotificationSnapshot | null;
+  /** Set while the managed config failed to load; the shell keeps a banner up. */
+  config_load_error?: string | null;
   tabs: TabSummary[];
   active_tab: number;
   /** Browser-view annotations for the active tab. */

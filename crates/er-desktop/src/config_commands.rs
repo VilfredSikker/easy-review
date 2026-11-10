@@ -101,7 +101,10 @@ fn family_options() -> Vec<String> {
 
 #[tauri::command]
 pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    // Reopening Settings is the desktop's reload point: a file the user repaired
+    // in place is adopted here, before the page reads `app.config`.
+    app.reload_config_if_failed();
     let settings = desktop_settings_snapshot(
         &app.config,
         &app.tab().repo_root,
