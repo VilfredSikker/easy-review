@@ -159,7 +159,6 @@ agent-spawn-os-launch = [
   "crates/er-tui/src/os_launch.rs",
 ]
 agent-spawn-allow = [
-  "crates/er-engine/src/app/state/comments.rs",
   "crates/er-engine/src/arena/adapter.rs",
 ]
 

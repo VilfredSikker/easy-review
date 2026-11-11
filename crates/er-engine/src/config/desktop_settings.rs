@@ -346,11 +346,6 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
                 config.hints.verbose = v;
             }
         }
-        "commands.summary" => {
-            if let ConfigFieldValue::String(v) = value {
-                config.commands.summary = if v.is_empty() { None } else { Some(v) };
-            }
-        }
         "commands.test" => {
             if let ConfigFieldValue::String(v) = value {
                 config.commands.test = if v.is_empty() { None } else { Some(v) };

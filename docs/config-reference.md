@@ -91,7 +91,7 @@ Diff summary / changelog generation: `command` (defaults to `agent.command`), `a
 
 ### `[commands]`
 
-Shell strings run via `sh -c` for hub actions: `summary`, `test`, `lint`, `typecheck`, `security` — each optional. Placeholders: `{base}`, `{branch}`, `{repo}`, `{output}` (default output path, e.g. the managed `{er_dir}/summary.md`).
+Shell strings run via `sh -c` for hub actions: `test`, `lint`, `typecheck`, `security` — each optional. Placeholders: `{base}`, `{branch}`, `{repo}`, `{output}` (default output path, e.g. the managed `{er_dir}/summary.md`). The summary is built in: Generate summary runs an agent job, and a `summary` key here is no longer read.
 
 ### `[packages]`
 
