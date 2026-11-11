@@ -917,6 +917,21 @@ fn retired_summary_notice(config_path: &std::path::Path) -> Option<String> {
     ))
 }
 
+/// Marker under the storage root: the retired project `auto_triage` flag was
+/// announced. Separate from the legacy-root and retired-summary markers.
+const RETIRED_AUTO_TRIAGE_NOTICED: &str = ".retired-auto-triage-noticed";
+
+/// The notice that the per-project `auto_triage` flag is no longer read.
+fn retired_auto_triage_notice(projects_path: &std::path::Path) -> Option<String> {
+    if !crate::projects_pins::retired_auto_triage_set() {
+        return None;
+    }
+    Some(format!(
+        "The project auto-triage setting is no longer read: triage starts from the sidebar. You can remove it from {}.",
+        projects_path.display()
+    ))
+}
+
 impl App {
     // ── Comment System ──
 
@@ -2872,6 +2887,17 @@ impl App {
                 let _ = std::fs::create_dir_all(root);
                 let _ = std::fs::write(&retired_marker, b"");
                 messages.push(message);
+            }
+        }
+
+        let retired_triage_marker = root.join(RETIRED_AUTO_TRIAGE_NOTICED);
+        if !retired_triage_marker.exists() {
+            if let Some(path) = crate::projects_pins::projects_artifact_path() {
+                if let Some(message) = retired_auto_triage_notice(&path) {
+                    let _ = std::fs::create_dir_all(root);
+                    let _ = std::fs::write(&retired_triage_marker, b"");
+                    messages.push(message);
+                }
             }
         }
 
@@ -7296,6 +7322,105 @@ mod legacy_root_notice_tests {
                 app.announce_legacy_root_in(&base, &root);
                 assert!(app.notification.is_none(), "second launch must be silent");
             });
+        });
+    }
+
+    /// Write a projects record shaped the way a pre-1.0 build wrote it.
+    fn write_old_projects_record(auto_triage: bool) {
+        let old = format!(
+            r#"{{"active_id":"p1","projects":[{{"id":"p1","name":"One","root_path":"/repos/one","auto_triage":{auto_triage}}}]}}"#
+        );
+        let parsed: crate::projects_pins::ProjectsFile =
+            serde_json::from_str(&old).expect("an old record parses");
+        crate::projects_pins::update(|file| {
+            file.projects = parsed.projects;
+            Ok(true)
+        })
+        .expect("write the projects record");
+    }
+
+    #[test]
+    fn a_retired_auto_triage_flag_joins_the_first_launch_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let root = dir.path().join("root");
+        let config_path = dir.path().join("config.toml");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        // The legacy-root marker is unrelated and already set.
+        std::fs::write(root.join(".legacy-root-noticed"), b"").unwrap();
+        // The summary key retires in the same release; one launch tells both.
+        std::fs::write(&config_path, "[commands]\nsummary = \"claude -p\"\n").unwrap();
+
+        crate::config::with_managed_config_path(&config_path, || {
+            crate::storage::with_test_storage_root(&root, || {
+                write_old_projects_record(true);
+                let mut app = App::new_for_test(Vec::new());
+
+                app.announce_legacy_root_in(&base, &root);
+
+                let notice = app.notification.as_ref().expect("the retired-key notice");
+                assert!(notice.long);
+                assert!(
+                    notice.message.contains("[commands].summary"),
+                    "{}",
+                    notice.message
+                );
+                assert!(notice.message.contains("auto-triage"), "{}", notice.message);
+                assert!(
+                    notice.message.contains("projects.json"),
+                    "{}",
+                    notice.message
+                );
+                assert!(root.join(".retired-auto-triage-noticed").exists());
+
+                app.clear_notification();
+                app.announce_legacy_root_in(&base, &root);
+                assert!(app.notification.is_none(), "second launch must be silent");
+            });
+        });
+    }
+
+    #[test]
+    fn a_summary_marker_does_not_hide_the_auto_triage_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".legacy-root-noticed"), b"").unwrap();
+        std::fs::write(root.join(".retired-summary-noticed"), b"").unwrap();
+
+        crate::storage::with_test_storage_root(&root, || {
+            write_old_projects_record(true);
+            let mut app = App::new_for_test(Vec::new());
+
+            app.announce_legacy_root_in(&base, &root);
+
+            let notice = app.notification.as_ref().expect("the retired-flag notice");
+            assert!(notice.message.contains("auto-triage"), "{}", notice.message);
+            assert!(root.join(".retired-auto-triage-noticed").exists());
+        });
+    }
+
+    #[test]
+    fn a_false_auto_triage_flag_is_left_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".legacy-root-noticed"), b"").unwrap();
+        std::fs::write(root.join(".retired-summary-noticed"), b"").unwrap();
+
+        crate::storage::with_test_storage_root(&root, || {
+            write_old_projects_record(false);
+            let mut app = App::new_for_test(Vec::new());
+
+            app.announce_legacy_root_in(&base, &root);
+
+            assert!(app.notification.is_none(), "a disabled flag says nothing");
+            assert!(!root.join(".retired-auto-triage-noticed").exists());
         });
     }
 

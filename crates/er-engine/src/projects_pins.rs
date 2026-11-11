@@ -52,12 +52,7 @@ pub struct ProjectRecord {
     /// PRs the user has manually bookmarked (max 50 persisted).
     #[serde(default)]
     pub saved_prs: Vec<SavedPrEntry>,
-    #[serde(default)]
-    pub auto_triage: bool,
-    #[serde(default)]
-    pub auto_triage_own_prs: bool,
-    #[serde(default = "default_auto_triage_when")]
-    pub auto_triage_when: String,
+    /// Skip triage when the filtered diff exceeds this size (KB). `0` = no limit.
     #[serde(default)]
     pub auto_triage_max_diff_kb: u32,
     #[serde(default)]
@@ -65,10 +60,6 @@ pub struct ProjectRecord {
     /// Fields written by another build, preserved across a read-modify-write.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
-}
-
-fn default_auto_triage_when() -> String {
-    "new-and-push".to_string()
 }
 
 impl Default for ProjectRecord {
@@ -84,9 +75,6 @@ impl Default for ProjectRecord {
             dismissed_branches: Vec::new(),
             recent_prs: Vec::new(),
             saved_prs: Vec::new(),
-            auto_triage: false,
-            auto_triage_own_prs: false,
-            auto_triage_when: default_auto_triage_when(),
             auto_triage_max_diff_kb: 0,
             review_ignore_globs: Vec::new(),
             extra: serde_json::Map::new(),
@@ -212,6 +200,21 @@ pub fn load() -> ProjectsFile {
         Ok(Loaded::Found(stored)) => stored.value,
         Ok(Loaded::Absent | Loaded::Unreadable(_)) | Err(_) => ProjectsFile::default(),
     }
+}
+
+/// Whether any project still carries the retired `auto_triage` flag set.
+///
+/// The typed record no longer reads the field, so an old value survives in
+/// `extra`. Only `true` counts: every pre-1.0 record also writes
+/// `auto_triage: false`, and a notice for those users would be noise.
+pub(crate) fn retired_auto_triage_set() -> bool {
+    load().projects.iter().any(|project| {
+        project
+            .extra
+            .get("auto_triage")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    })
 }
 
 /// The one writer. `op` returns whether it changed anything; the record is
@@ -549,11 +552,12 @@ mod tests {
         with_temp_store(|| {
             let mut extra = serde_json::Map::new();
             extra.insert("custom_future_field".into(), json!({"nested": true}));
+            // A field this build no longer reads still rides through `extra`.
+            extra.insert("auto_triage".into(), json!(true));
+            extra.insert("auto_triage_when".into(), json!("new-only"));
             let mut record = project("p1", "/tmp/widgets", Some("acme/widgets"), &[]);
             record.name = "Widgets".into();
             record.tracked_prs = vec![99];
-            record.auto_triage = true;
-            record.auto_triage_when = "new-only".into();
             record.extra = extra;
             write_projects(&ProjectsFile {
                 projects: vec![record],
@@ -565,14 +569,44 @@ mod tests {
             let loaded = load();
             let p = &loaded.projects[0];
             assert_eq!(p.tracked_prs, vec![99]);
-            assert!(p.auto_triage);
-            assert_eq!(p.auto_triage_when, "new-only");
+            assert_eq!(p.extra["auto_triage"], json!(true));
+            assert_eq!(p.extra["auto_triage_when"], json!("new-only"));
             assert_eq!(p.extra["custom_future_field"], json!({"nested": true}));
             assert_eq!(p.root_path, "/tmp/widgets");
             assert_eq!(p.saved_prs.len(), 1);
             assert_eq!(p.saved_prs[0].number, 5);
             assert_eq!(loaded.active_id.as_deref(), Some("p1"));
         });
+    }
+
+    #[test]
+    fn an_old_record_parses_and_keeps_the_retired_auto_triage_fields() {
+        let old = r#"{
+            "active_id": "p1",
+            "projects": [{
+                "id": "p1",
+                "name": "One",
+                "root_path": "/repos/one",
+                "auto_triage": true,
+                "auto_triage_own_prs": true,
+                "auto_triage_when": "new-only"
+            }]
+        }"#;
+
+        let file: ProjectsFile = serde_json::from_str(old).expect("an old record parses");
+        let record = &file.projects[0];
+        assert_eq!(record.extra["auto_triage"], json!(true));
+        assert_eq!(record.auto_triage_max_diff_kb, 0);
+
+        let text = serde_json::to_string(&file).unwrap();
+        let again: ProjectsFile = serde_json::from_str(&text).unwrap();
+        assert_eq!(again.projects[0].extra["auto_triage"], json!(true));
+        assert_eq!(again.projects[0].extra["auto_triage_own_prs"], json!(true));
+        assert_eq!(
+            again.projects[0].extra["auto_triage_when"],
+            json!("new-only")
+        );
+        assert_eq!(again.projects[0].auto_triage_max_diff_kb, 0);
     }
 
     #[test]

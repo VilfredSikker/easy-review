@@ -151,8 +151,6 @@ commands.allow = [
   "unsave_pr",
   "list_available_prs",
   "set_active_project",
-  "set_project_auto_triage",
-  "set_project_auto_triage_own_prs",
   "patch_project_review_settings",
   "add_tracked_branch",
   "remove_tracked_branch",
