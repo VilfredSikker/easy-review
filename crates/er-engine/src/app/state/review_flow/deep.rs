@@ -204,6 +204,9 @@ impl App {
         context.arena_progress_round = 0;
         self.review_flow_run_targets
             .insert((er_dir.to_owned(), run_id.clone()), target);
+        if let Some(flow) = self.review_flows.get(er_dir) {
+            Self::sync_workflow_record(er_dir, flow);
+        }
         self.bump_review_flow_revision();
         Ok(())
     }
@@ -237,6 +240,9 @@ impl App {
         });
         if let Some(notice) = notice {
             self.notify(&notice);
+        }
+        if let Some(flow) = self.review_flows.get(er_dir) {
+            Self::sync_workflow_record(er_dir, flow);
         }
         self.bump_review_flow_revision();
         Ok(())

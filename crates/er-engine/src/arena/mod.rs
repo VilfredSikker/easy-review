@@ -45,7 +45,6 @@ pub use schema::{
     validate_round1_output, validate_round2_output, validate_round3_output, Round1Output,
     Round2Output, Round3Output,
 };
-pub(crate) use storage::load_historical_run;
 // `seeded` is reached by `orchestrator` through `super::seeded::`, and nothing
 // outside the arena uses it, so it stays unexported rather than widening the
 // public surface with no caller.

@@ -531,6 +531,7 @@ pub fn attach_arena_notify(app: &mut App, desktop_revision: Arc<std::sync::atomi
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     })));
     app.reconcile_arena_runs();
+    app.reconcile_workflow_records();
 }
 
 #[cfg(test)]

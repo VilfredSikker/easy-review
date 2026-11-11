@@ -155,6 +155,13 @@ and whose arbiter grades their findings. A run is bound to its starting diff
 hash. Deep requires cost confirmation and explicit result acceptance.
 _Avoid_: pipeline, auto-review, full review
 
+**Workflow record**:
+The durable `workflow.json` for a review bucket: one stage per planned piece of
+work with its status, the artifact it wrote, and the diff generation it ran
+against. It lets a crash leave the finished stages readable and the rest
+offered for a re-run. See [`docs/adr/0060`](./docs/adr/0060-workflow-record.md).
+_Avoid_: flow state, checkpoint, resume file
+
 **Depth**:
 The review spend chosen by triage: Quick, Standard, or Deep. It is distinct
 from a file's Tier.

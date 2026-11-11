@@ -146,6 +146,7 @@ fn run_arena(label: &str, reviewers: usize, rounds: Option<u8>, tmp: &Path) -> D
             reviewed_ref_note: None,
         },
         params,
+        None,
     )
     .expect("arena starts");
 

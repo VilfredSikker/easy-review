@@ -432,13 +432,14 @@ pub fn start_arena_run(
     config: ErConfig,
     inputs: ArenaRunInputs,
     params: ArenaStartParams,
+    workflow: Option<crate::ai::workflow_record::ArenaWorkflow>,
 ) -> Result<String> {
     let run_kind = if params.agent_kind.is_some() {
         ArenaRunKind::Agent
     } else {
         ArenaRunKind::Models
     };
-    start_arena_run_with_kind(registry, config, inputs, params, run_kind)
+    start_arena_run_with_kind(registry, config, inputs, params, run_kind, workflow)
 }
 
 /// Flow ownership is written with the first run record, before the supervisor starts.
@@ -448,7 +449,14 @@ pub(crate) fn start_review_flow_run(
     inputs: ArenaRunInputs,
     params: ArenaStartParams,
 ) -> Result<String> {
-    start_arena_run_with_kind(registry, config, inputs, params, ArenaRunKind::ReviewFlow)
+    start_arena_run_with_kind(
+        registry,
+        config,
+        inputs,
+        params,
+        ArenaRunKind::ReviewFlow,
+        None,
+    )
 }
 
 /// Put the base branch's `REVIEW.md` text in the run directory for the prompts
@@ -468,6 +476,7 @@ fn start_arena_run_with_kind(
     inputs: ArenaRunInputs,
     params: ArenaStartParams,
     run_kind: ArenaRunKind,
+    workflow: Option<crate::ai::workflow_record::ArenaWorkflow>,
 ) -> Result<String> {
     let ArenaRunInputs {
         repo_root,
@@ -568,6 +577,13 @@ fn start_arena_run_with_kind(
         },
     };
     save_run(&paths, &run)?;
+    if let Some(workflow) = workflow.as_ref() {
+        crate::ai::workflow_record::begin_arena_run(
+            &crate::store_registry::store(),
+            workflow,
+            &run_id,
+        )?;
+    }
 
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_handle = Arc::clone(&cancel);
@@ -617,6 +633,19 @@ fn start_arena_run_with_kind(
                         let _ = save_run(&paths_clone, &run);
                     }
                 }
+            }
+            if let Some(workflow) = workflow.as_ref() {
+                let outcome = match load_run(&paths_clone).map(|run| run.status) {
+                    Ok(RunStatus::Complete) => crate::ai::WorkflowOutcome::Complete,
+                    Ok(RunStatus::Cancelled) => crate::ai::WorkflowOutcome::Cancelled,
+                    _ => crate::ai::WorkflowOutcome::Failed,
+                };
+                let _ = crate::ai::workflow_record::end_arena_run(
+                    &crate::store_registry::store(),
+                    workflow,
+                    &run_id_thread,
+                    outcome,
+                );
             }
             registry_thread.release_run(&run_id_thread);
             registry_thread.notify_progress();
@@ -671,6 +700,7 @@ pub fn start_seeded_run(
     config: ErConfig,
     repo_root: String,
     params: SeededStartParams,
+    workflow: Option<crate::ai::workflow_record::ArenaWorkflow>,
 ) -> Result<Option<String>> {
     let strict_provenance = params.source_lenses.is_some();
     let findings = match params.source_lenses.as_deref() {
@@ -724,6 +754,13 @@ pub fn start_seeded_run(
         store_review_md(&paths, &repo_root, &params.base_branch, &params.raw_diff);
     }
     save_run(&paths, &run)?;
+    if let Some(workflow) = workflow.as_ref() {
+        crate::ai::workflow_record::begin_arena_run(
+            &crate::store_registry::store(),
+            workflow,
+            &run_id,
+        )?;
+    }
 
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_handle = Arc::clone(&cancel);
@@ -796,6 +833,19 @@ pub fn start_seeded_run(
                     run.completed_at = Some(crate::app::chrono_now());
                     let _ = save_run(&paths_clone, &run);
                 }
+            }
+            if let Some(workflow) = workflow.as_ref() {
+                let outcome = match load_run(&paths_clone).map(|run| run.status) {
+                    Ok(RunStatus::Complete) => crate::ai::WorkflowOutcome::Complete,
+                    Ok(RunStatus::Cancelled) => crate::ai::WorkflowOutcome::Cancelled,
+                    _ => crate::ai::WorkflowOutcome::Failed,
+                };
+                let _ = crate::ai::workflow_record::end_arena_run(
+                    &crate::store_registry::store(),
+                    workflow,
+                    &run_id_thread,
+                    outcome,
+                );
             }
             registry_thread.release_run(&run_id_thread);
             registry_thread.notify_progress();
@@ -887,6 +937,7 @@ pub fn start_arena_batch(
     config: ErConfig,
     inputs: ArenaRunInputs,
     batch: ArenaBatchStartParams,
+    workflow: Option<crate::ai::workflow_record::ArenaWorkflow>,
 ) -> Result<Vec<String>> {
     let mut run_ids = Vec::new();
     let mut total_est = 0.0f32;
@@ -944,6 +995,7 @@ pub fn start_arena_batch(
             config.clone(),
             inputs.clone(),
             params,
+            workflow.clone(),
         )?;
         run_ids.push(id);
     }

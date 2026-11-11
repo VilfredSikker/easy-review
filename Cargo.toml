@@ -126,6 +126,7 @@ sidecar-fs-deny = [
   "crates/er-engine/src/ai/finding_responses.rs",
   "crates/er-engine/src/ai/scoped_overlay.rs",
   "crates/er-engine/src/ai/validation.rs",
+  "crates/er-engine/src/ai/workflow_record.rs",
   "crates/er-engine/src/sidecar_upload.rs",
   "crates/er-engine/src/diagram_upload.rs",
   "crates/er-engine/src/app/state/session_store.rs",
