@@ -157,6 +157,26 @@ impl WorkflowRecord {
                 .any(|stage| matches!(stage.status, StageStatus::Interrupted | StageStatus::Failed))
     }
 
+    /// Whether the record's unfinished stages can actually be continued.
+    ///
+    /// A Deep record restarts from triage, so any unfinished stage resumes.
+    /// Quick and Standard resume at finding or verification: a plan whose
+    /// only unfinished stage is triage has nothing to continue, and starting
+    /// a new flow runs triage anyway. Offering `r` for such a record would
+    /// promise a re-run the resume then refuses.
+    pub fn resumable(&self) -> bool {
+        if !self.offers_rerun() {
+            return false;
+        }
+        match self.kind {
+            Some(WorkflowKind::Quick | WorkflowKind::Standard) => self.stages.iter().any(|stage| {
+                stage.status != StageStatus::Complete
+                    && matches!(stage.stage, StageKind::Finding | StageKind::Verifying)
+            }),
+            _ => true,
+        }
+    }
+
     /// The stages a re-run must produce again, in plan order.
     pub fn plan_resume(&self, current_diff_hash: &str) -> ResumePlan {
         if self.diff_hash != current_diff_hash {

@@ -129,7 +129,7 @@ impl App {
                 });
                 drop(guard);
             }
-            if record.offers_rerun() {
+            if record.resumable() {
                 projections.push((er_dir, flow_from_record(&record)));
             }
         }
@@ -312,6 +312,105 @@ mod tests {
                 app.review_flow_for(&er_dir).map(|flow| &flow.state),
                 Some(crate::ai::review_flow::FlowState::Interrupted { .. })
             ));
+        });
+    }
+
+    /// A user cancel whose finders were still draining when the process died
+    /// is not an invitation to finish the run.
+    #[test]
+    fn a_user_cancel_is_not_offered_on_load() {
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let mut app = test_app(&root.path().join("bucket"));
+            let er_dir = app.tab().er_dir();
+            let lease = app.acquire_review_flow_lease(&er_dir).unwrap();
+            let holder = app.workflow_leases[&er_dir].holder();
+            let holder = WorkflowHolder {
+                pid: holder.pid,
+                label: holder.label.clone(),
+            };
+            let flow = flow_with(vec![
+                task("triage", FlowTaskStage::Triage, FlowTaskStatus::Done),
+                task(
+                    "finding:security",
+                    FlowTaskStage::Finding,
+                    FlowTaskStatus::Running,
+                ),
+            ]);
+            App::create_workflow_record(
+                &er_dir,
+                Some(WorkflowKind::Standard),
+                "hash",
+                &flow.tasks,
+                None,
+                holder,
+            )
+            .unwrap();
+            // The terminal poll records the cancel while the finder drains;
+            // the process then dies before that finder finishes.
+            App::finish_workflow_record(&er_dir, WorkflowOutcome::Cancelled);
+            app.release_review_flow_lease(&lease).unwrap();
+
+            app.reconcile_workflow_records();
+
+            let scope = Scope::dir(&er_dir).unwrap();
+            let record = workflow_record::load(&crate::store_registry::store(), &scope)
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.outcome, Some(WorkflowOutcome::Cancelled));
+            assert_eq!(
+                record.stage("finding:security").unwrap().status,
+                StageStatus::Interrupted
+            );
+            assert!(
+                app.review_flow_for(&er_dir).is_none(),
+                "a cancelled run must not be offered for a re-run"
+            );
+            assert!(app.pending_background_tasks.is_empty());
+        });
+    }
+
+    /// A Quick or Standard record whose only unfinished stage is triage has
+    /// nothing the resume can continue; the load must not offer `r`.
+    #[test]
+    fn a_triage_only_record_is_not_offered_on_load() {
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            let mut app = test_app(&root.path().join("bucket"));
+            let er_dir = app.tab().er_dir();
+            let scope = Scope::dir(&er_dir).unwrap();
+            let tasks = [task(
+                "triage",
+                FlowTaskStage::Triage,
+                FlowTaskStatus::Running,
+            )];
+            let record = WorkflowRecord::new(
+                Some(WorkflowKind::Standard),
+                "hash",
+                "t0".to_string(),
+                WorkflowHolder {
+                    pid: 1,
+                    label: "flow-1".to_string(),
+                },
+                &tasks,
+                None,
+            );
+            workflow_record::save(&crate::store_registry::store(), &scope, &record).unwrap();
+
+            app.reconcile_workflow_records();
+
+            let stored = workflow_record::load(&crate::store_registry::store(), &scope)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                stored.stage("triage").unwrap().status,
+                StageStatus::Interrupted
+            );
+            assert!(!stored.resumable(), "a triage-only plan cannot resume");
+            assert!(
+                app.review_flow_for(&er_dir).is_none(),
+                "an unresumable record must not be offered"
+            );
         });
     }
 
