@@ -101,14 +101,6 @@ fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
             title: "Commands".into(),
         },
         ConfigHubFieldDto::Text {
-            key: "commands.summary".into(),
-            label: "Summary".into(),
-            description: "Generate diff summary".into(),
-            placeholder: "e.g. claude -p 'Summarize: {diff}'".into(),
-            value: config.commands.summary.clone().unwrap_or_default(),
-            strict: true,
-        },
-        ConfigHubFieldDto::Text {
             key: "commands.test".into(),
             label: "Test".into(),
             description: "Run tests".into(),

@@ -68,6 +68,86 @@ pub fn is_final_result_line(line: &str) -> bool {
             .is_some_and(|result| !result.trim().is_empty())
 }
 
+/// One line of a provider's `stream-json` log, reduced to what a log shows.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogEvent {
+    /// An assistant event's content, in order.
+    Assistant(Vec<LogPart>),
+    /// A system event worth showing (cost, usage, result), with its text.
+    SystemNote(String),
+}
+
+/// One piece of an assistant event's content.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogPart {
+    Text(String),
+    ToolUse { name: String, input: Option<Value> },
+}
+
+/// What one log line carries, or `None` when it shows nothing: a non-JSON
+/// line, a tool result, the final result event, a hook or an unknown event.
+///
+/// The display form belongs to the front end; this only decides what each
+/// event says.
+pub fn decode_log_line(line: &str) -> Option<LogEvent> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    let object = value.as_object()?;
+
+    match object.get("type")?.as_str()? {
+        "assistant" => {
+            let message = object.get("message")?.as_object()?;
+            let content = message.get("content")?.as_array()?;
+            let mut parts = Vec::new();
+            for item in content {
+                let Some(item) = item.as_object() else {
+                    continue;
+                };
+                match item.get("type").and_then(|kind| kind.as_str()) {
+                    Some("text") => {
+                        let Some(text) = item.get("text").and_then(|text| text.as_str()) else {
+                            continue;
+                        };
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            parts.push(LogPart::Text(trimmed.to_string()));
+                        }
+                    }
+                    Some("tool_use") => {
+                        let name = item
+                            .get("name")
+                            .and_then(|name| name.as_str())
+                            .unwrap_or("tool");
+                        parts.push(LogPart::ToolUse {
+                            name: name.to_string(),
+                            input: item.get("input").cloned(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            (!parts.is_empty()).then_some(LogEvent::Assistant(parts))
+        }
+        "system" => {
+            let subtype = object
+                .get("subtype")
+                .and_then(|subtype| subtype.as_str())
+                .unwrap_or("");
+            if !(subtype.contains("cost")
+                || subtype.contains("usage")
+                || subtype.contains("result"))
+            {
+                return None;
+            }
+            let text = object
+                .get("message")
+                .and_then(|message| message.as_str())
+                .unwrap_or(subtype);
+            Some(LogEvent::SystemNote(text.to_string()))
+        }
+        _ => None,
+    }
+}
+
 /// The trimmed, non-empty text blocks of one `stream-json` assistant event, in
 /// order.
 fn assistant_text_blocks(event: &Value) -> impl Iterator<Item = String> + '_ {
@@ -191,5 +271,56 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}"#
         ));
         assert!(!is_final_result_line("not json"));
+    }
+
+    /// One assistant event holds text and tool calls interleaved; the order is
+    /// the order they arrived in, since the log reprints it verbatim.
+    #[test]
+    fn a_log_line_decodes_assistant_parts_in_order() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"  Reading file  "},{"type":"tool_use","name":"Read","input":{"file_path":"/src/lib.rs"}},{"type":"text","text":"done"}]}}"#;
+        assert_eq!(
+            decode_log_line(line),
+            Some(LogEvent::Assistant(vec![
+                LogPart::Text("Reading file".into()),
+                LogPart::ToolUse {
+                    name: "Read".into(),
+                    input: Some(serde_json::json!({"file_path": "/src/lib.rs"})),
+                },
+                LogPart::Text("done".into()),
+            ]))
+        );
+    }
+
+    #[test]
+    fn a_log_line_suppresses_events_with_nothing_to_show() {
+        for line in [
+            r#"{"type":"tool_result","content":"some output"}"#,
+            r#"{"type":"result","result":"done"}"#,
+            r#"{"type":"system","subtype":"hook"}"#,
+            r#"{"type":"unknown_event","data":"something"}"#,
+            r#"{"type":"assistant","message":{"content":[]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"   "}]}}"#,
+            "not json at all",
+            "{invalid}",
+            "",
+        ] {
+            assert_eq!(decode_log_line(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_system_note_uses_its_message_or_its_subtype() {
+        assert_eq!(
+            decode_log_line(r#"{"type":"system","subtype":"cost","message":"$0.05 used"}"#),
+            Some(LogEvent::SystemNote("$0.05 used".into()))
+        );
+        assert_eq!(
+            decode_log_line(r#"{"type":"system","subtype":"usage","message":"1000 tokens"}"#),
+            Some(LogEvent::SystemNote("1000 tokens".into()))
+        );
+        assert_eq!(
+            decode_log_line(r#"{"type":"system","subtype":"usage"}"#),
+            Some(LogEvent::SystemNote("usage".into()))
+        );
     }
 }
