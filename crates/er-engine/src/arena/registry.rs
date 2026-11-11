@@ -61,6 +61,11 @@ impl Drop for ReleaseOnExit<'_> {
 #[derive(Clone)]
 pub struct ArenaRegistry {
     runs: Arc<Mutex<HashMap<String, ArenaRunHandle>>>,
+    /// Joins of supervisors that finished and released their run. Test support
+    /// only: it lets `join_supervisor` still surface a panic after the entry is
+    /// gone.
+    #[cfg(any(test, feature = "test-support"))]
+    finished_joins: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     pub notify: ArenaNotify,
 }
 
@@ -68,6 +73,8 @@ impl ArenaRegistry {
     pub fn new(notify: ArenaNotify) -> Self {
         Self {
             runs: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(any(test, feature = "test-support"))]
+            finished_joins: Arc::new(Mutex::new(HashMap::new())),
             notify,
         }
     }
@@ -78,10 +85,11 @@ impl ArenaRegistry {
 
     /// Register a run and start its supervisor, in that order.
     ///
-    /// A supervisor that finishes at once still finds its entry and releases
-    /// it; one that panics releases it through [`ReleaseOnExit`]. The join is
-    /// attached after the thread starts, so a run that already finished simply
-    /// has no join to store.
+    /// The run is inserted before any thread exists, the join is attached, and
+    /// only then is the supervisor released to run. A supervisor that finishes
+    /// at once still finds its entry and releases it; one that panics releases
+    /// it through [`ReleaseOnExit`]. If the thread cannot be spawned, the
+    /// inserted entry is taken back out, so a failed start cannot leak a run.
     pub(crate) fn start_supervised(
         self: &Arc<Self>,
         run_id: String,
@@ -89,7 +97,7 @@ impl ArenaRegistry {
         children: Arc<Mutex<Vec<Child>>>,
         status: Arc<Mutex<RunStatus>>,
         supervisor: impl FnOnce(&Arc<ArenaRegistry>) + Send + 'static,
-    ) {
+    ) -> std::io::Result<()> {
         self.insert(
             run_id.clone(),
             ArenaRunHandle {
@@ -101,11 +109,29 @@ impl ArenaRegistry {
         );
         let registry = Arc::clone(self);
         let id = run_id.clone();
-        let join = std::thread::spawn(move || {
+        let (start_tx, start_rx) = std::sync::mpsc::channel::<()>();
+        // Unnamed on purpose: `storage::storage_root_override` lets only
+        // unnamed workers borrow the process-wide test root, and the arena
+        // supervisor writes sidecars from this thread.
+        let join = std::thread::Builder::new().spawn(move || {
+            // The join must be stored before the supervisor is observable;
+            // otherwise a fast finish releases a run whose join nobody can
+            // reach, and `join_supervisor` would report success.
+            let _ = start_rx.recv();
             let _release = ReleaseOnExit::new(&registry, id);
             supervisor(&registry);
         });
-        self.attach_join(&run_id, join);
+        match join {
+            Ok(join) => {
+                self.attach_join(&run_id, join);
+                let _ = start_tx.send(());
+                Ok(())
+            }
+            Err(error) => {
+                self.take(&run_id);
+                Err(error)
+            }
+        }
     }
 
     pub fn insert(&self, run_id: String, handle: ArenaRunHandle) {
@@ -117,18 +143,26 @@ impl ArenaRegistry {
     /// Join a run's supervisor thread, surfacing a panic it hit.
     ///
     /// Test-support only: lets an integration test fail with the worker's own
-    /// message instead of waiting out its poll deadline. The handle stays in
-    /// the registry, so the run's cancellation and child registration still
-    /// work while the join waits.
+    /// message instead of waiting out its poll deadline. The join is taken from
+    /// the live handle, or from the finished set once the supervisor has
+    /// released its run, so a panic that races the release still surfaces.
     #[cfg(any(test, feature = "test-support"))]
     pub fn join_supervisor(&self, run_id: &str) -> std::thread::Result<()> {
-        let join = self
+        let live = self
             .runs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get_mut(run_id)
             .and_then(|handle| handle.join.take());
-        match join {
+        if let Some(join) = live {
+            return join.join();
+        }
+        let finished = self
+            .finished_joins
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(run_id);
+        match finished {
             Some(join) => join.join(),
             None => Ok(()),
         }
@@ -142,6 +176,8 @@ impl ArenaRegistry {
     ///
     /// Must be called from the supervisor thread when the run finishes. Joining the
     /// stored `JoinHandle` from that same thread would deadlock on macOS (EDEADLK).
+    /// Test-support builds keep the join in `finished_joins` so `join_supervisor`
+    /// can still wait on it; other builds drop it.
     pub fn release_run(&self, run_id: &str) {
         let Ok(mut map) = self.runs.lock() else {
             return;
@@ -151,6 +187,12 @@ impl ArenaRegistry {
         };
         handle.kill_children();
         if let Some(join) = handle.join.take() {
+            #[cfg(any(test, feature = "test-support"))]
+            self.finished_joins
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(run_id.to_string(), join);
+            #[cfg(not(any(test, feature = "test-support")))]
             std::mem::forget(join);
         }
     }
@@ -276,26 +318,48 @@ mod tests {
     where
         F: FnOnce(&Arc<ArenaRegistry>) + Send + 'static,
     {
-        registry.start_supervised(
-            run_id.to_string(),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(RunStatus::Running { round: 1 })),
-            supervisor,
-        );
+        registry
+            .start_supervised(
+                run_id.to_string(),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(RunStatus::Running { round: 1 })),
+                supervisor,
+            )
+            .expect("the supervisor starts");
     }
 
-    /// The supervisor is registered before it starts, so one that returns at
-    /// once is still released. Repeated because the old order lost the race
-    /// only sometimes, and one loss leaves the run active forever.
+    /// Holding the registry map blocks the start before any thread can run.
+    /// The old spawn-then-insert order let the supervisor run while the run was
+    /// still unregistered, which is the leak this fix closes.
     #[test]
-    fn a_supervisor_that_finishes_at_once_is_released() {
-        for i in 0..50 {
-            let registry = registry();
-            let run_id = format!("instant-{i}");
-            start(&registry, &run_id, |_| {});
-            wait_released(&registry, &run_id);
-        }
+    fn the_supervisor_cannot_start_before_its_run_is_registered() {
+        let registry = Arc::new(ArenaRegistry::new(Arc::new(|| {})));
+        let held = registry.runs.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let starter = {
+            let registry = Arc::clone(&registry);
+            std::thread::spawn(move || {
+                registry
+                    .start_supervised(
+                        "ordered".into(),
+                        Arc::new(AtomicBool::new(false)),
+                        Arc::new(Mutex::new(Vec::new())),
+                        Arc::new(Mutex::new(RunStatus::Running { round: 1 })),
+                        move |_| {
+                            let _ = tx.send(());
+                        },
+                    )
+                    .expect("the supervisor starts");
+            })
+        };
+        let early = rx.recv_timeout(std::time::Duration::from_millis(300));
+        drop(held);
+        starter.join().unwrap();
+        assert!(
+            early.is_err(),
+            "the supervisor ran before its run was registered"
+        );
     }
 
     /// A panicking supervisor releases through the drop guard instead of
@@ -311,5 +375,26 @@ mod tests {
         rx.recv_timeout(std::time::Duration::from_secs(2))
             .expect("the supervisor ran");
         wait_released(&registry, "panics");
+    }
+
+    /// The panic diagnostic keeps working after the guard released the run:
+    /// the join is handed back, so `join_supervisor` waits and returns the
+    /// panic instead of reporting a clean finish.
+    #[test]
+    fn join_supervisor_surfaces_a_panic_after_the_run_released() {
+        let registry = registry();
+        start(&registry, "panics-join", |_| {
+            panic!("supervisor boom");
+        });
+        wait_released(&registry, "panics-join");
+        let payload = registry
+            .join_supervisor("panics-join")
+            .expect_err("the supervisor panic must surface");
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|message| (*message).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        assert!(message.contains("supervisor boom"), "{message}");
     }
 }
