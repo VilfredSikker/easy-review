@@ -332,7 +332,12 @@ mod tests {
     impl Drop for FakeArenaEnv {
         fn drop(&mut self) {
             for run_id in self.registry.active_run_ids() {
+                let deadline = Instant::now() + Duration::from_secs(30);
                 while self.registry.is_active(&run_id) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "arena run {run_id} never released its registry entry"
+                    );
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -682,20 +687,26 @@ mod tests {
             .collect()
     }
 
-    fn wait_for_pids(path: &Path, wanted: usize) -> Vec<String> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let pids = read_pids(path);
-            if pids.len() >= wanted {
-                return pids;
-            }
+    /// Poll until `condition` holds, failing at `timeout` with the thing being
+    /// waited for. Every wait in this test goes through it, so none can hang.
+    fn wait_until(what: &str, timeout: Duration, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + timeout;
+        while !condition() {
             assert!(
                 Instant::now() < deadline,
-                "only {} of {wanted} children started",
-                pids.len()
+                "timed out after {timeout:?} waiting for {what}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn wait_for_pids(path: &Path, wanted: usize) -> Vec<String> {
+        wait_until(
+            &format!("{wanted} children to start"),
+            Duration::from_secs(10),
+            || read_pids(path).len() >= wanted,
+        );
+        read_pids(path)
     }
 
     /// `ER_TEST_SLOW_ARENA` makes the fake provider sleep instead of exiting,
@@ -708,9 +719,25 @@ mod tests {
 
     impl SlowArenaEnv {
         fn install() -> Self {
-            let guard = crate::arena::ARENA_TEST_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            // Bounded acquisition: another test that owns the lock should
+            // finish long before this, and a deadlock here must fail the test,
+            // not hang the suite.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let guard = loop {
+                match crate::arena::ARENA_TEST_ENV_LOCK.try_lock() {
+                    Ok(guard) => break guard,
+                    Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                        break poisoned.into_inner();
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "timed out waiting for the arena env lock"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
+            };
             let previous = std::env::var_os("ER_TEST_SLOW_ARENA");
             std::env::set_var("ER_TEST_SLOW_ARENA", "1");
             Self {
@@ -759,27 +786,16 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
             // Runner half: the triage agent is alive when the flow is
             // cancelled, and the lease stays held until that child is gone.
             app.start_review_flow("branch").unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let triage_pid = loop {
+            wait_until("the triage agent to start", Duration::from_secs(10), || {
                 app.poll_background_tasks();
-                app.advance_review_flows();
-                let triaging = app
-                    .review_flow_for(&bucket_key)
-                    .is_some_and(|flow| flow.state == FlowState::Triaging);
-                if triaging {
-                    if let Some(pid) = read_pids(&pids_path).first() {
-                        break pid.clone();
-                    }
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "the triage agent never started: state={:?} pids={:?}",
-                    app.review_flow_for(&bucket_key)
-                        .map(|flow| flow.state.clone()),
-                    read_pids(&pids_path)
-                );
-                std::thread::sleep(Duration::from_millis(10));
-            };
+                app.review_flow_for(&bucket_key)
+                    .is_some_and(|flow| flow.state == FlowState::Triaging)
+                    && !read_pids(&pids_path).is_empty()
+            });
+            let triage_pid = read_pids(&pids_path)
+                .first()
+                .cloned()
+                .expect("the triage agent wrote its pid");
             let _triage_guard = PidGuard(vec![triage_pid.clone()]);
             assert!(
                 pid_running(&triage_pid),
@@ -808,18 +824,14 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
                 "the draining triage agent should still hold a slot"
             );
 
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                app.poll_background_tasks();
-                if !app.review_flow_is_draining(&bucket_key) {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "the cancelled triage agent never drained"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
+            wait_until(
+                "the cancelled flow to drain",
+                Duration::from_secs(5),
+                || {
+                    app.poll_background_tasks();
+                    !app.review_flow_is_draining(&bucket_key)
+                },
+            );
             assert!(
                 !pid_running(&triage_pid),
                 "the lease was released before the triage agent died"
@@ -874,15 +886,14 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
             assert!(app.arena_registry.is_active(&run_id));
 
             assert!(app.cancel_review_flow(&bucket_key));
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while app.arena_registry.is_active(&run_id) {
-                app.poll_background_tasks();
-                assert!(
-                    Instant::now() < deadline,
-                    "the cancelled arena never drained"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
+            wait_until(
+                "the cancelled arena to release",
+                Duration::from_secs(10),
+                || {
+                    app.poll_background_tasks();
+                    !app.arena_registry.is_active(&run_id)
+                },
+            );
             drop(slow);
             let survivors: Vec<&String> =
                 arena_pids.iter().filter(|pid| pid_running(pid)).collect();

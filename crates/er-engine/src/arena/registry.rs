@@ -36,6 +36,28 @@ impl Drop for ArenaRunHandle {
     }
 }
 
+/// Release a run when its supervisor exits, including on panic.
+///
+/// `release_run` at the end of the supervisor only covers a clean return. A
+/// supervisor that unwinds leaves its registry entry behind, and every
+/// `is_active` wait then treats the run as live forever.
+pub(crate) struct ReleaseOnExit<'a> {
+    registry: &'a ArenaRegistry,
+    run_id: String,
+}
+
+impl<'a> ReleaseOnExit<'a> {
+    pub(crate) fn new(registry: &'a ArenaRegistry, run_id: String) -> Self {
+        Self { registry, run_id }
+    }
+}
+
+impl Drop for ReleaseOnExit<'_> {
+    fn drop(&mut self) {
+        self.registry.release_run(&self.run_id);
+    }
+}
+
 #[derive(Clone)]
 pub struct ArenaRegistry {
     runs: Arc<Mutex<HashMap<String, ArenaRunHandle>>>,
@@ -52,6 +74,38 @@ impl ArenaRegistry {
 
     pub fn notify_progress(&self) {
         (self.notify)();
+    }
+
+    /// Register a run and start its supervisor, in that order.
+    ///
+    /// A supervisor that finishes at once still finds its entry and releases
+    /// it; one that panics releases it through [`ReleaseOnExit`]. The join is
+    /// attached after the thread starts, so a run that already finished simply
+    /// has no join to store.
+    pub(crate) fn start_supervised(
+        self: &Arc<Self>,
+        run_id: String,
+        cancel: Arc<AtomicBool>,
+        children: Arc<Mutex<Vec<Child>>>,
+        status: Arc<Mutex<RunStatus>>,
+        supervisor: impl FnOnce(&Arc<ArenaRegistry>) + Send + 'static,
+    ) {
+        self.insert(
+            run_id.clone(),
+            ArenaRunHandle {
+                cancel,
+                children,
+                status,
+                join: None,
+            },
+        );
+        let registry = Arc::clone(self);
+        let id = run_id.clone();
+        let join = std::thread::spawn(move || {
+            let _release = ReleaseOnExit::new(&registry, id);
+            supervisor(&registry);
+        });
+        self.attach_join(&run_id, join);
     }
 
     pub fn insert(&self, run_id: String, handle: ArenaRunHandle) {
@@ -197,4 +251,65 @@ pub fn new_run_id() -> String {
         .unwrap_or(0);
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     format!("arena-{ms}-{n}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry() -> Arc<ArenaRegistry> {
+        Arc::new(ArenaRegistry::new(Arc::new(|| {})))
+    }
+
+    fn wait_released(registry: &ArenaRegistry, run_id: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while registry.is_active(run_id) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "run {run_id} was never released"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn start<F>(registry: &Arc<ArenaRegistry>, run_id: &str, supervisor: F)
+    where
+        F: FnOnce(&Arc<ArenaRegistry>) + Send + 'static,
+    {
+        registry.start_supervised(
+            run_id.to_string(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(RunStatus::Running { round: 1 })),
+            supervisor,
+        );
+    }
+
+    /// The supervisor is registered before it starts, so one that returns at
+    /// once is still released. Repeated because the old order lost the race
+    /// only sometimes, and one loss leaves the run active forever.
+    #[test]
+    fn a_supervisor_that_finishes_at_once_is_released() {
+        for i in 0..50 {
+            let registry = registry();
+            let run_id = format!("instant-{i}");
+            start(&registry, &run_id, |_| {});
+            wait_released(&registry, &run_id);
+        }
+    }
+
+    /// A panicking supervisor releases through the drop guard instead of
+    /// leaving the run active forever.
+    #[test]
+    fn a_panicking_supervisor_still_releases_its_run() {
+        let registry = registry();
+        let (tx, rx) = std::sync::mpsc::channel();
+        start(&registry, "panics", move |_| {
+            let _ = tx.send(());
+            panic!("simulated supervisor panic");
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the supervisor ran");
+        wait_released(&registry, "panics");
+    }
 }
