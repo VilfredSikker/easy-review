@@ -1,4 +1,9 @@
 //! Deep review confirmation and explicit-input arena start.
+//!
+//! A Deep run spans two progress channels until P33b: its triage stage reports
+//! through the runner's `JobProgress` stream, and its verifying stage reports
+//! through the arena's `ProgressEvent` state. Both stop once their owner is
+//! cancelled.
 
 use super::progress;
 use super::{App, ReviewFlowContext};
@@ -327,7 +332,12 @@ mod tests {
     impl Drop for FakeArenaEnv {
         fn drop(&mut self) {
             for run_id in self.registry.active_run_ids() {
+                let deadline = Instant::now() + Duration::from_secs(30);
                 while self.registry.is_active(&run_id) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "arena run {run_id} never released its registry entry"
+                    );
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -339,20 +349,25 @@ mod tests {
     }
 
     fn fake_app(dir: &TestDir) -> App {
-        let repo = dir.path().join("repo");
         let bucket = dir.path().join("bucket");
-        std::fs::create_dir_all(&repo).unwrap();
-        std::fs::create_dir_all(&bucket).unwrap();
         let script = "case \"$1\" in\n\
              *triage.json*) hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{\"primary\":\"arena\",\"experts\":[]}}' \"$hash\" > '__BUCKET__/triage.json' ;;\n\
              *) echo \"unexpected review-flow prompt\" >&2; exit 2 ;;\n\
              esac"
             .replace("__BUCKET__", &bucket.to_string_lossy());
+        fake_app_with_script(dir, &script)
+    }
+
+    fn fake_app_with_script(dir: &TestDir, script: &str) -> App {
+        let repo = dir.path().join("repo");
+        let bucket = dir.path().join("bucket");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&bucket).unwrap();
         let provider = || AiProviderConfig {
             command: "/bin/sh".into(),
             args: vec![
                 "-c".into(),
-                script.clone(),
+                script.to_string(),
                 "fake-flow".into(),
                 "{prompt}".into(),
             ],
@@ -626,6 +641,277 @@ mod tests {
             );
             assert!(!Path::new(&bucket).join("review.json").exists());
             drop(fake_arena);
+        });
+    }
+
+    /// Whether the pid names a live process. A zombie is dead: the arena
+    /// registry clears its child list without reaping, so its killed children
+    /// stay visible to `kill -0` until the process exits (P33b closes that).
+    fn pid_running(pid: &str) -> bool {
+        let Ok(output) = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+        else {
+            return false;
+        };
+        let stat = String::from_utf8_lossy(&output.stdout);
+        let stat = stat.trim();
+        !stat.is_empty() && !stat.starts_with('Z')
+    }
+
+    /// Kill any pid still running on drop, so a failing assertion or plant
+    /// leaves no sleeper behind.
+    struct PidGuard(Vec<String>);
+
+    impl Drop for PidGuard {
+        fn drop(&mut self) {
+            for pid in &self.0 {
+                if pid_running(pid) {
+                    let _ = std::process::Command::new("/bin/kill")
+                        .args(["-KILL", pid])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+            }
+        }
+    }
+
+    fn read_pids(path: &Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Poll until `condition` holds, failing at `timeout` with the thing being
+    /// waited for. Every wait in this test goes through it, so none can hang.
+    fn wait_until(what: &str, timeout: Duration, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + timeout;
+        while !condition() {
+            assert!(
+                Instant::now() < deadline,
+                "timed out after {timeout:?} waiting for {what}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_pids(path: &Path, wanted: usize) -> Vec<String> {
+        wait_until(
+            &format!("{wanted} children to start"),
+            Duration::from_secs(10),
+            || read_pids(path).len() >= wanted,
+        );
+        read_pids(path)
+    }
+
+    /// `ER_TEST_SLOW_ARENA` makes the fake provider sleep instead of exiting,
+    /// so the arena has live children to cancel. The lock serializes it with
+    /// the other arena tests that touch the process environment.
+    struct SlowArenaEnv {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl SlowArenaEnv {
+        fn install() -> Self {
+            // Bounded acquisition: another test that owns the lock should
+            // finish long before this, and a deadlock here must fail the test,
+            // not hang the suite.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let guard = loop {
+                match crate::arena::ARENA_TEST_ENV_LOCK.try_lock() {
+                    Ok(guard) => break guard,
+                    Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                        break poisoned.into_inner();
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "timed out waiting for the arena env lock"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
+            };
+            let previous = std::env::var_os("ER_TEST_SLOW_ARENA");
+            std::env::set_var("ER_TEST_SLOW_ARENA", "1");
+            Self {
+                _guard: guard,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for SlowArenaEnv {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("ER_TEST_SLOW_ARENA", value),
+                None => std::env::remove_var("ER_TEST_SLOW_ARENA"),
+            }
+        }
+    }
+
+    /// A Deep run spans both owners: the runner owns its triage stage, the
+    /// arena registry owns its verifying stage. Cancelling either must end its
+    /// children, and the lease must outlive the runner child it is draining.
+    #[test]
+    fn a_deep_cancel_kills_every_child_across_the_runner_and_the_arena() {
+        let _serial = serial();
+        let dir = TestDir::new();
+        crate::storage::with_process_test_storage_root(dir.path(), || {
+            let pids_path = dir.path().join("pids");
+            let bucket = dir.path().join("bucket");
+            // Every child writes its pid. With the slow-arena flag set it
+            // sleeps; otherwise it is the triage run, which writes the plan and
+            // exits. Prompt matching cannot tell the two apart reliably.
+            let script = r#"echo $$ >> '__PIDS__'
+if [ -n "${ER_TEST_SLOW_ARENA-}" ]; then exec sleep 30; fi
+sleep 1
+hash=$(cat '__BUCKET__/.diff-tmp.sha256')
+printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}}' "$hash" > '__BUCKET__/triage.json'
+"#
+                .replace("__BUCKET__", &bucket.to_string_lossy())
+                .replace("__PIDS__", &pids_path.to_string_lossy());
+            let mut app = fake_app_with_script(&dir, &script);
+            // Round 1's reviewers must all be live before the cancel, so the
+            // test sees every child the arena starts.
+            app.config.ai_hub.max_concurrent_arena_reviews = 16;
+            let bucket_key = app.tab().er_dir();
+
+            // Runner half: the triage agent is alive when the flow is
+            // cancelled, and the lease stays held until that child is gone.
+            app.start_review_flow("branch").unwrap();
+            wait_until("the triage agent to start", Duration::from_secs(10), || {
+                app.poll_background_tasks();
+                app.review_flow_for(&bucket_key)
+                    .is_some_and(|flow| flow.state == FlowState::Triaging)
+                    && !read_pids(&pids_path).is_empty()
+            });
+            let triage_pid = read_pids(&pids_path)
+                .first()
+                .cloned()
+                .expect("the triage agent wrote its pid");
+            let _triage_guard = PidGuard(vec![triage_pid.clone()]);
+            assert!(
+                pid_running(&triage_pid),
+                "the triage agent should be alive now"
+            );
+
+            assert!(app.cancel_review_flow(&bucket_key));
+            assert!(
+                app.review_flow_is_draining(&bucket_key),
+                "the flow released its lease at cancel while the triage agent still ran"
+            );
+            assert!(
+                app.check_review_bucket_admission(&bucket_key).is_err(),
+                "the lease must stay held while the triage agent drains"
+            );
+            assert!(
+                pid_running(&triage_pid),
+                "the triage agent should still be running right after the cancel"
+            );
+            assert!(
+                app.running_background_task_count() >= 1,
+                "the draining triage agent should still be a running task"
+            );
+            assert!(
+                crate::agent_slots::active_count() >= 1,
+                "the draining triage agent should still hold a slot"
+            );
+
+            wait_until(
+                "the cancelled flow to drain",
+                Duration::from_secs(5),
+                || {
+                    app.poll_background_tasks();
+                    !app.review_flow_is_draining(&bucket_key)
+                },
+            );
+            assert!(
+                !pid_running(&triage_pid),
+                "the lease was released before the triage agent died"
+            );
+            assert!(app.check_review_bucket_admission(&bucket_key).is_ok());
+            assert_eq!(crate::agent_slots::active_count(), 0);
+
+            app.poll_background_tasks();
+            let log_tail: usize = app
+                .background_tasks
+                .values()
+                .map(|handle| handle.recent_log.len())
+                .sum();
+            std::thread::sleep(Duration::from_millis(100));
+            app.poll_background_tasks();
+            assert_eq!(
+                app.background_tasks
+                    .values()
+                    .map(|handle| handle.recent_log.len())
+                    .sum::<usize>(),
+                log_tail,
+                "the runner progress channel moved after the drain"
+            );
+
+            // Arena half: confirm a second Deep flow and cancel it while the
+            // round-1 reviewers are alive.
+            app.start_review_flow("branch").unwrap();
+            await_confirmation(&mut app, &bucket_key);
+            let before = read_pids(&pids_path).len();
+            let slow = SlowArenaEnv::install();
+            app.confirm_review_flow(&bucket_key).unwrap();
+            let _ = wait_for_pids(&pids_path, before + 4);
+            // A pid is visible just before its parent registers the child; give
+            // every spawn that final step before the cancel can race it.
+            std::thread::sleep(Duration::from_millis(100));
+            let all = read_pids(&pids_path);
+            let arena_pids = all[before..].to_vec();
+            let _arena_guard = PidGuard(arena_pids.clone());
+            let first_command = std::process::Command::new("ps")
+                .args(["-o", "command=", "-p", &arena_pids[0]])
+                .output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                .unwrap_or_default();
+            assert!(
+                first_command.contains("sleep 30"),
+                "the arena child is not sleeping: {first_command}"
+            );
+            let run_id = app
+                .review_flow_for(&bucket_key)
+                .and_then(|flow| flow.arena_run_id.clone())
+                .expect("the Deep arena started");
+            assert!(app.arena_registry.is_active(&run_id));
+
+            assert!(app.cancel_review_flow(&bucket_key));
+            wait_until(
+                "the cancelled arena to release",
+                Duration::from_secs(10),
+                || {
+                    app.poll_background_tasks();
+                    !app.arena_registry.is_active(&run_id)
+                },
+            );
+            drop(slow);
+            let survivors: Vec<&String> =
+                arena_pids.iter().filter(|pid| pid_running(pid)).collect();
+            assert!(
+                survivors.is_empty(),
+                "arena children still running after the cancel: {survivors:?}"
+            );
+
+            let paths = crate::arena::ArenaPaths::for_run(Path::new(&bucket_key), &run_id);
+            let run = crate::arena::load_run(&paths).unwrap();
+            assert_eq!(run.status, crate::arena::RunStatus::Cancelled);
+            let progress = std::fs::read_to_string(paths.progress_jsonl()).unwrap_or_default();
+            std::thread::sleep(Duration::from_millis(200));
+            assert_eq!(
+                std::fs::read_to_string(paths.progress_jsonl()).unwrap_or_default(),
+                progress,
+                "the arena progress channel moved after the cancel"
+            );
         });
     }
 }
