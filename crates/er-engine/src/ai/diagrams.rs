@@ -160,10 +160,31 @@ pub fn diagram_output_file(kind: &str) -> String {
     }
 }
 
+/// Parse and validate the diagram a host-owned run printed on stdout.
+///
+/// The caller commits the result through the store; nothing is written here.
+pub fn validated_diagram_from_stdout(
+    stdout: &str,
+    stream_json: bool,
+    expected_kind: &str,
+    expected_diff_hash: &str,
+    custom_prompt: Option<&str>,
+) -> Result<ErDiagram> {
+    let mut diagram = parse_diagram_from_agent_stdout(stdout, stream_json)?;
+    validate_and_normalize_diagram(
+        &mut diagram,
+        expected_kind,
+        expected_diff_hash,
+        custom_prompt,
+    )?;
+    Ok(diagram)
+}
+
 /// Parse agent stdout into a validated [`ErDiagram`] and atomically write it
 /// to `output_path` (must already be a safe `…/diagrams/<id>.json`).
 ///
 /// The agent must not have Write/Edit tools; this is the only write path.
+#[cfg(any(test, feature = "test-support"))]
 pub fn persist_diagram_from_agent_stdout(
     stdout: &str,
     stream_json: bool,
@@ -172,9 +193,9 @@ pub fn persist_diagram_from_agent_stdout(
     custom_prompt: Option<&str>,
     output_path: &Path,
 ) -> Result<()> {
-    let mut diagram = parse_diagram_from_agent_stdout(stdout, stream_json)?;
-    validate_and_normalize_diagram(
-        &mut diagram,
+    let diagram = validated_diagram_from_stdout(
+        stdout,
+        stream_json,
         expected_kind,
         expected_diff_hash,
         custom_prompt,

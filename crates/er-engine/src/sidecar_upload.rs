@@ -140,14 +140,14 @@ fn build_prompt(kind: SidecarKind, er_dir: &str, base: &str, head: &str) -> Stri
 /// The ingest gate lives here, not in the store: the store deliberately loads a
 /// stale artifact so callers can mark it (`is_stale`, `expert_hash_accepted`).
 /// Only the point where agent output enters the bucket refuses it.
-fn check_diff_hash(label: &str, actual: &str, expected: &str) -> Result<()> {
+pub(crate) fn check_diff_hash(label: &str, actual: &str, expected: &str) -> Result<()> {
     if actual != expected {
         bail!("stale {label} (expected diff_hash {expected}, got {actual})");
     }
     Ok(())
 }
 
-fn check_version(label: &str, found: u32, expected: u32) -> Result<()> {
+pub(crate) fn check_version(label: &str, found: u32, expected: u32) -> Result<()> {
     if found != expected {
         bail!("{label} has version {found}; this build accepts {expected}");
     }

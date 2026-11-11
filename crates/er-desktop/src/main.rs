@@ -1525,9 +1525,9 @@ fn main() {
                 app_handle: &bg_handle,
             };
             for remote in failed {
-                commands::process_inbox_after_pr_refresh(handles, &prefs, Some(remote), None);
+                commands::process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
             }
-            commands::process_inbox_after_pr_refresh(handles, &prefs, None, None);
+            commands::process_inbox_after_pr_refresh(handles, &prefs, None);
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
             }
@@ -1561,7 +1561,6 @@ fn main() {
                 handles,
                 &prefs,
                 if success { None } else { Some(active_remote) },
-                None,
             );
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
@@ -2050,8 +2049,6 @@ fn main() {
             commands::unsave_pr,
             commands::list_available_prs,
             commands::set_active_project,
-            commands::set_project_auto_triage,
-            commands::set_project_auto_triage_own_prs,
             commands::patch_project_review_settings,
             commands::add_tracked_branch,
             commands::remove_tracked_branch,

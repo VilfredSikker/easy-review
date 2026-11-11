@@ -159,6 +159,10 @@ pub struct PendingBackgroundTask {
     /// the lens overlay. `None` for full runs, whose success clears the old
     /// overlay instead.
     pub scoped_stamp: Option<crate::ai::ScopedRunStamp>,
+    /// Where this job writes. The prompt and `--add-dir` are re-pointed at it;
+    /// the host validates and commits from it after the run. `None` for kinds
+    /// whose output is stdout only.
+    pub staging: Option<std::sync::Arc<crate::app::job_staging::JobStaging>>,
 }
 
 /// Host-owned diagram write target — agent emits JSON; Easy Review persists it.
