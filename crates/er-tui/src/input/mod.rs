@@ -2284,6 +2284,9 @@ mod tests {
             let output_dir = dir.path().join("er").to_string_lossy().into_owned();
             std::fs::create_dir_all(&output_dir).unwrap();
             let mut app = app_with_managed_dir(&output_dir);
+            // The job runs with the repo root as its working directory; the
+            // default may not exist outside a developer machine.
+            app.tab_mut().repo_root = dir.path().to_string_lossy().into_owned();
 
             let argv_file = dir.path().join("summary-argv.txt");
             let bin = dir.path().join("fake-agent");
@@ -2346,6 +2349,9 @@ mod tests {
             let output_dir = dir.path().join("er").to_string_lossy().into_owned();
             std::fs::create_dir_all(&output_dir).unwrap();
             let mut app = app_with_managed_dir(&output_dir);
+            // The job runs with the repo root as its working directory; the
+            // default may not exist outside a developer machine.
+            app.tab_mut().repo_root = dir.path().to_string_lossy().into_owned();
 
             // The fake writes into the staging directory and records where it
             // was told to write; nothing in the prompt names the bucket.
