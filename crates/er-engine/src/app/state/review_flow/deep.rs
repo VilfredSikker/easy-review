@@ -851,7 +851,8 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
                 .values()
                 .map(|handle| handle.recent_log.len())
                 .sum();
-            std::thread::sleep(Duration::from_millis(100));
+            // The completion is drained and its worker has exited, so no
+            // further entry can arrive; a second poll must see the same log.
             app.poll_background_tasks();
             assert_eq!(
                 app.background_tasks
@@ -870,9 +871,18 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
             let slow = SlowArenaEnv::install();
             app.confirm_review_flow(&bucket_key).unwrap();
             let _ = wait_for_pids(&pids_path, before + 4);
-            // A pid is visible just before its parent registers the child; give
-            // every spawn that final step before the cancel can race it.
-            std::thread::sleep(Duration::from_millis(100));
+            let run_id = app
+                .review_flow_for(&bucket_key)
+                .and_then(|flow| flow.arena_run_id.clone())
+                .expect("the Deep arena started");
+            // A cancel reaches only children the supervisor has registered; a
+            // pid is visible just before that. Wait for the registration, not
+            // for a fixed delay.
+            wait_until(
+                "the arena to register its round-1 reviewers",
+                Duration::from_secs(10),
+                || app.arena_registry.registered_child_count(&run_id) >= 4,
+            );
             let all = read_pids(&pids_path);
             let arena_pids = all[before..].to_vec();
             let _arena_guard = PidGuard(arena_pids.clone());
@@ -885,10 +895,6 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
                 first_command.contains("sleep 30"),
                 "the arena child is not sleeping: {first_command}"
             );
-            let run_id = app
-                .review_flow_for(&bucket_key)
-                .and_then(|flow| flow.arena_run_id.clone())
-                .expect("the Deep arena started");
             assert!(app.arena_registry.is_active(&run_id));
 
             assert!(app.cancel_review_flow(&bucket_key));
@@ -912,7 +918,10 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
             let run = crate::arena::load_run(&paths).unwrap();
             assert_eq!(run.status, crate::arena::RunStatus::Cancelled);
             let progress = std::fs::read_to_string(paths.progress_jsonl()).unwrap_or_default();
-            std::thread::sleep(Duration::from_millis(200));
+            // Join the supervisor before comparing: it has already released
+            // the run, so a final write can only be one it made before this
+            // read, and nothing can append after the join.
+            app.arena_registry.join_supervisor(&run_id).unwrap();
             assert_eq!(
                 std::fs::read_to_string(paths.progress_jsonl()).unwrap_or_default(),
                 progress,
