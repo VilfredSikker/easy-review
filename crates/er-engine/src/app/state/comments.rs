@@ -3297,7 +3297,8 @@ impl App {
         }
         crate::config::inject_claude_startup_trim(family, &mut config_args);
         // File-producing tab jobs write to staging; the host commits from it.
-        let staging = match crate::app::job_commit::tab_job_contract(name) {
+        let contract = crate::app::job_commit::tab_job_contract(name)?;
+        let staging = match contract {
             crate::agent_runtime::ArtifactContract::None => None,
             _ => Some(std::sync::Arc::new(
                 crate::app::job_staging::JobStaging::create()?,
@@ -3471,7 +3472,6 @@ impl App {
 
                 // Stage the inputs the prompt reads, and record which output
                 // files were absent so the commit can require them.
-                let contract = crate::app::job_commit::tab_job_contract(name_owned.as_ref());
                 let baseline = match staging.as_deref() {
                     Some(staging) => {
                         staging

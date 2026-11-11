@@ -29,12 +29,28 @@ pub fn job_contract(task_kind: &str) -> ArtifactContract {
 }
 
 /// The contract a tab-local prompt job must satisfy.
-pub fn tab_job_contract(command_name: &str) -> ArtifactContract {
-    match command_name {
+///
+/// Every tab command name is listed here on purpose: an unmapped name is an
+/// error, so a new sidecar-writing job cannot silently keep writing the
+/// bucket. `None` marks the kinds that write nothing the host commits.
+pub fn tab_job_contract(command_name: &str) -> Result<ArtifactContract> {
+    Ok(match command_name {
+        "review" => ArtifactContract::Review,
+        "professor" => ArtifactContract::Professor,
+        "triage" => ArtifactContract::Triage,
         "summary" => ArtifactContract::Summary,
         "validate" => ArtifactContract::ValidateReview,
-        _ => ArtifactContract::None,
-    }
+        // User-edited kinds keep the old path until their by-id patch contract
+        // lands; they write a file the host does not commit yet.
+        "questions" | "notes" | "validate-comments" => ArtifactContract::None,
+        // Stdout-only tab jobs: the startup-trim probe and send-to-agent.
+        "send-to-agent" => ArtifactContract::None,
+        other if other.starts_with("trim-") => ArtifactContract::None,
+        other => match other.strip_prefix("expert-") {
+            Some(id) => ArtifactContract::Expert { id: id.to_string() },
+            None => anyhow::bail!("tab job `{other}` has no artifact contract"),
+        },
+    })
 }
 
 /// Capture the pre-run state a contract's files must change from.
