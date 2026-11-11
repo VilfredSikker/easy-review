@@ -775,6 +775,40 @@ mod tests {
             .unwrap();
         store.write(&key, &TestEnveloped { value: 1 }).unwrap();
         assert!(store.path(&key).is_file());
+        // Sidecar writers use `update`, which takes the write lock; it must not
+        // wait on the lease the flow holds. A zero timeout makes a shared lock
+        // fail here instead of sleeping for the default.
+        let (updated, _) = store
+            .update(&key, Duration::ZERO, |current| {
+                let mut value = current.expect("the record was just written");
+                value.value += 1;
+                Ok::<_, ()>(value)
+            })
+            .expect("update under the lease");
+        assert_eq!(updated.value, 2);
+        drop(lease);
+    }
+
+    #[test]
+    fn zero_timeout_lease_try_does_not_wait() {
+        let (directory, store) = temp_store();
+        let scope = scope(&directory);
+        let holder = hold_lock_in_thread(&store, &scope, LockKind::Lease, "holder");
+        holder.ready.recv().unwrap();
+        let start = Instant::now();
+        let error = match store.lease(&scope, Duration::ZERO, "probe") {
+            Ok(_lease) => panic!("expected a lease conflict"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, StoreError::LeaseHeld { .. }), "{error:?}");
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "a zero-timeout lease try waited {:?}",
+            start.elapsed()
+        );
+        holder.release.send(()).unwrap();
+        holder.handle.join().unwrap();
+        let lease = store.lease(&scope, Duration::ZERO, "probe").unwrap();
         drop(lease);
     }
 

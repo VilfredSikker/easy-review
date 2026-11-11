@@ -13876,37 +13876,39 @@ mod tests {
     #[test]
     fn reply_to_thread_refuses_a_parent_on_github() {
         let dir = ReviewFlowTestDir::new();
-        let state = review_flow_test_state(&dir);
-        {
-            let mut app = state.app.lock().unwrap();
-            app.tab_mut().ai.github_comments = Some(
-                serde_json::from_value(serde_json::json!({
-                    "version": 1,
-                    "diff_hash": "hash",
-                    "comments": [{
-                        "id": "gh-11",
-                        "file": "src/lib.rs",
-                        "hunk_index": 0,
-                        "line_start": 1,
-                        "comment": "already on GitHub",
-                        "source": "github",
-                        "github_id": 11,
-                        "author": "octo"
-                    }]
-                }))
-                .unwrap(),
-            );
-        }
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            let state = review_flow_test_state(&dir);
+            {
+                let mut app = state.app.lock().unwrap();
+                app.tab_mut().ai.github_comments = Some(
+                    serde_json::from_value(serde_json::json!({
+                        "version": 1,
+                        "diff_hash": "hash",
+                        "comments": [{
+                            "id": "gh-11",
+                            "file": "src/lib.rs",
+                            "hunk_index": 0,
+                            "line_start": 1,
+                            "comment": "already on GitHub",
+                            "source": "github",
+                            "github_id": 11,
+                            "author": "octo"
+                        }]
+                    }))
+                    .unwrap(),
+                );
+            }
 
-        let error = reply_to_thread_impl(
-            "gh-11".to_string(),
-            "a local reply".to_string(),
-            None,
-            &state,
-        )
-        .unwrap_err();
+            let error = reply_to_thread_impl(
+                "gh-11".to_string(),
+                "a local reply".to_string(),
+                None,
+                &state,
+            )
+            .unwrap_err();
 
-        assert!(error.contains("reply_to_github_thread"), "{error}");
+            assert!(error.contains("reply_to_github_thread"), "{error}");
+        });
     }
 
     struct PostingCommentPoster;

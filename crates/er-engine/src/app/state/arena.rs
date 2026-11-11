@@ -152,8 +152,9 @@ impl App {
             raw_diff,
             reviewed_ref_note: None,
         };
+        let workflow = self.standalone_workflow(&inputs.er_dir, &inputs.raw_diff)?;
         let config = self.config.clone();
-        let run_id = self.arena_start_with_inputs(inputs, config, params)?;
+        let run_id = self.arena_start_with_inputs(inputs, config, params, Some(workflow))?;
         self.notify(&format!("Arena run started ({run_id})"));
         Ok(run_id)
     }
@@ -189,9 +190,16 @@ impl App {
         inputs: ArenaRunInputs,
         config: crate::config::ErConfig,
         params: ArenaStartParams,
+        workflow: Option<crate::ai::workflow_record::ArenaWorkflow>,
     ) -> Result<String> {
         let er_key = inputs.er_dir.clone();
-        let run_id = start_arena_run(Arc::clone(&self.arena_registry), config, inputs, params)?;
+        let run_id = start_arena_run(
+            Arc::clone(&self.arena_registry),
+            config,
+            inputs,
+            params,
+            workflow,
+        )?;
         self.active_arena_runs
             .entry(er_key.clone())
             .or_default()
@@ -243,8 +251,10 @@ impl App {
             lens_providers: std::collections::BTreeMap::new(),
             reviewed_ref_note: None,
         };
+        let workflow = self.standalone_workflow(&params.er_dir, &params.raw_diff)?;
         let config = self.config.clone();
-        let run_id = self.arena_start_seeded_with_inputs(repo_root, config, params)?;
+        let run_id =
+            self.arena_start_seeded_with_inputs(repo_root, config, params, Some(workflow))?;
 
         let Some(run_id) = run_id else {
             return Ok(None);
@@ -264,7 +274,7 @@ impl App {
     ) -> Result<Option<String>> {
         self.check_review_flow_arena_lease(&params.er_dir, lease)?;
         let config = self.arena_config_with_live_limits(config);
-        self.arena_start_seeded_with_inputs(repo_root, config, params)
+        self.arena_start_seeded_with_inputs(repo_root, config, params, None)
     }
 
     fn arena_start_seeded_with_inputs(
@@ -272,9 +282,16 @@ impl App {
         repo_root: String,
         config: crate::config::ErConfig,
         params: SeededStartParams,
+        workflow: Option<crate::ai::workflow_record::ArenaWorkflow>,
     ) -> Result<Option<String>> {
         let er_key = params.er_dir.clone();
-        let run_id = start_seeded_run(Arc::clone(&self.arena_registry), config, repo_root, params)?;
+        let run_id = start_seeded_run(
+            Arc::clone(&self.arena_registry),
+            config,
+            repo_root,
+            params,
+            workflow,
+        )?;
         if let Some(run_id) = &run_id {
             self.active_arena_runs
                 .entry(er_key.clone())
@@ -292,6 +309,28 @@ impl App {
             anyhow::bail!("Review flow lease does not own this arena bucket");
         }
         Ok(())
+    }
+
+    /// The lease and record identity for a standalone arena action. The guard
+    /// travels with the runs, not `workflow_leases`: the supervisors release it
+    /// when the last one drains.
+    fn standalone_workflow(
+        &mut self,
+        er_dir: &str,
+        raw_diff: &str,
+    ) -> Result<crate::ai::workflow_record::ArenaWorkflow> {
+        let guard = self.acquire_detached_workflow_lease(er_dir)?;
+        let holder = guard.holder();
+        Ok(crate::ai::workflow_record::ArenaWorkflow {
+            scope: er_store::Scope::dir(er_dir)?,
+            diff_hash: crate::ai::compute_diff_hash(raw_diff),
+            started_at: crate::app::chrono_now(),
+            holder: crate::ai::WorkflowHolder {
+                pid: holder.pid,
+                label: holder.label.clone(),
+            },
+            guard: std::sync::Arc::new(guard),
+        })
     }
 
     fn arena_config_with_live_limits(
@@ -323,21 +362,18 @@ impl App {
             .clone()
             .unwrap_or_else(|| tab.current_branch.clone());
         let base_branch = tab.base_branch.clone();
+        let inputs = ArenaRunInputs {
+            repo_root,
+            er_dir,
+            branch_ref,
+            base_branch,
+            raw_diff,
+            reviewed_ref_note: None,
+        };
+        let workflow = self.standalone_workflow(&inputs.er_dir, &inputs.raw_diff)?;
         let config = self.config.clone();
         let registry = Arc::clone(&self.arena_registry);
-        let run_ids = start_arena_batch(
-            registry,
-            config,
-            ArenaRunInputs {
-                repo_root,
-                er_dir,
-                branch_ref,
-                base_branch,
-                raw_diff,
-                reviewed_ref_note: None,
-            },
-            batch,
-        )?;
+        let run_ids = start_arena_batch(registry, config, inputs, batch, Some(workflow))?;
         self.active_arena_runs
             .entry(er_key)
             .or_default()
@@ -689,69 +725,77 @@ mod review_flow_arena_inputs_tests {
     #[test]
     fn review_flow_arena_inputs_reject_mismatched_bucket_before_write() {
         let tmp = tempdir().unwrap();
-        let owned = tmp.path().join("owned");
-        let wrong = tmp.path().join("wrong");
-        let mut app = configured_app();
-        let lease = app
-            .acquire_review_flow_lease(owned.to_str().unwrap())
-            .unwrap();
-        let result = app.arena_start_for(
-            inputs(wrong.to_str().unwrap()),
-            prepared_config(),
-            params(),
-            &lease,
-        );
-        assert!(result.is_err());
-        assert!(!wrong.exists(), "rejection must happen before arena writes");
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let owned = tmp.path().join("owned");
+            let wrong = tmp.path().join("wrong");
+            let mut app = configured_app();
+            let lease = app
+                .acquire_review_flow_lease(owned.to_str().unwrap())
+                .unwrap();
+            let result = app.arena_start_for(
+                inputs(wrong.to_str().unwrap()),
+                prepared_config(),
+                params(),
+                &lease,
+            );
+            assert!(result.is_err());
+            assert!(!wrong.exists(), "rejection must happen before arena writes");
+        });
     }
 
     #[test]
     fn review_flow_arena_inputs_reject_stale_lease_before_write() {
         let tmp = tempdir().unwrap();
-        let bucket = tmp.path().join("bucket");
-        let mut app = configured_app();
-        let lease = app
-            .acquire_review_flow_lease(bucket.to_str().unwrap())
-            .unwrap();
-        app.release_review_flow_lease(&lease).unwrap();
-        let result = app.arena_start_for(
-            inputs(bucket.to_str().unwrap()),
-            prepared_config(),
-            params(),
-            &lease,
-        );
-        assert!(result.is_err());
-        assert!(
-            !bucket.exists(),
-            "rejection must happen before arena writes"
-        );
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let bucket = tmp.path().join("bucket");
+            let mut app = configured_app();
+            let lease = app
+                .acquire_review_flow_lease(bucket.to_str().unwrap())
+                .unwrap();
+            app.release_review_flow_lease(&lease).unwrap();
+            let result = app.arena_start_for(
+                inputs(bucket.to_str().unwrap()),
+                prepared_config(),
+                params(),
+                &lease,
+            );
+            assert!(result.is_err());
+            // Taking the lease creates the bucket directory and its `.lease`
+            // file; the run's own storage only appears once the arena starts.
+            assert!(
+                !bucket.join("arena").exists(),
+                "rejection must happen before arena writes"
+            );
+        });
     }
 
     #[test]
     fn review_flow_arena_inputs_keep_captured_values_after_tab_switch() {
-        let mut app = configured_app();
         let tmp = tempdir().unwrap();
-        let _env = fake_arena(&app);
-        let bucket = tmp.path().join("captured-bucket");
-        let lease = app
-            .acquire_review_flow_lease(bucket.to_str().unwrap())
-            .unwrap();
-        let captured = inputs(bucket.to_str().unwrap());
-        let run_config = prepared_config();
-        app.tabs.push(TabState::new_for_test(Vec::new()));
-        app.active_tab = 1;
-        let run_id = app
-            .arena_start_for(captured, run_config, params(), &lease)
-            .unwrap();
-        let run = load_run(&ArenaPaths::for_run(&bucket, &run_id)).unwrap();
-        assert_eq!(run.branch_ref, "captured/head");
-        assert_eq!(run.base_branch, "captured/base");
-        assert_eq!(
-            run.diff_hash,
-            crate::ai::compute_diff_hash("captured raw diff")
-        );
-        assert_eq!(run.config.effort.as_deref(), Some("high"));
-        assert_eq!(run.title.as_deref(), Some("captured flow"));
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = configured_app();
+            let _env = fake_arena(&app);
+            let bucket = tmp.path().join("captured-bucket");
+            let lease = app
+                .acquire_review_flow_lease(bucket.to_str().unwrap())
+                .unwrap();
+            let captured = inputs(bucket.to_str().unwrap());
+            let run_config = prepared_config();
+            app.tabs.push(TabState::new_for_test(Vec::new()));
+            app.active_tab = 1;
+            let run_id = app
+                .arena_start_for(captured, run_config, params(), &lease)
+                .unwrap();
+            let run = load_run(&ArenaPaths::for_run(&bucket, &run_id)).unwrap();
+            assert_eq!(run.branch_ref, "captured/head");
+            assert_eq!(run.base_branch, "captured/base");
+            assert_eq!(
+                run.diff_hash,
+                crate::ai::compute_diff_hash("captured raw diff")
+            );
+            assert_eq!(run.config.effort.as_deref(), Some("high"));
+            assert_eq!(run.title.as_deref(), Some("captured flow"));
+        });
     }
 
     #[test]
@@ -871,6 +915,83 @@ mod review_flow_arena_inputs_tests {
             )
             .unwrap();
             assert!(app.arena_start_seeded().unwrap().is_none());
+        });
+    }
+
+    fn wait_for_terminal_stage(
+        store: &er_store::ArtifactStore,
+        scope: &er_store::Scope,
+        run_id: &str,
+    ) -> crate::ai::WorkflowRecord {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let record = crate::ai::workflow_record::load(store, scope).unwrap();
+            let status = record
+                .as_ref()
+                .and_then(|record| record.stage(&format!("arena:{run_id}")))
+                .map(|stage| stage.status);
+            if matches!(
+                status,
+                Some(
+                    crate::ai::StageStatus::Complete
+                        | crate::ai::StageStatus::Failed
+                        | crate::ai::StageStatus::Interrupted
+                )
+            ) {
+                return record.unwrap();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the launcher record never closed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_admission(app: &App, bucket: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.check_review_bucket_admission(bucket).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the launcher lease never released"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_launcher_run_records_an_arena_stage_and_closes_it_when_terminal() {
+        let tmp = tempdir().unwrap();
+        crate::storage::with_process_test_storage_root(tmp.path(), || {
+            let bucket = tmp.path().join("launcher-bucket");
+            std::fs::create_dir_all(&bucket).unwrap();
+            let mut app = configured_app();
+            app.tab_mut().er_root = crate::paths::ErRoot::Managed {
+                agent_dir: bucket.to_string_lossy().into_owned(),
+                session_dir: bucket.to_string_lossy().into_owned(),
+            };
+            app.tab_mut().set_raw_diff_for_test("diff --git a/x b/x\n");
+            let _env = fake_arena(&app);
+            let run_id = app.arena_start(params()).unwrap();
+
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(bucket.to_str().unwrap()).unwrap();
+            // The record is written before the supervisor spawns, so it is
+            // already on disk here whatever the run later does.
+            let record = crate::ai::workflow_record::load(&store, &scope)
+                .unwrap()
+                .expect("the launcher wrote a workflow record");
+            let stage = record
+                .stage(&format!("arena:{run_id}"))
+                .expect("the record names the run");
+            assert_eq!(stage.status, crate::ai::StageStatus::Running);
+
+            let record = wait_for_terminal_stage(&store, &scope, &run_id);
+            assert!(record.outcome.is_some());
+            assert!(record.holder.is_none());
+            // The run's lease releases with its last supervisor, which drops
+            // its share just after closing the record.
+            wait_for_admission(&app, bucket.to_str().unwrap());
         });
     }
 
@@ -1287,33 +1408,39 @@ mod tests {
     fn arena_delete_resolves_nonactive_tab() {
         let ta = tempfile::tempdir().unwrap();
         let tb = tempfile::tempdir().unwrap();
-        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
-        let er_b = app.tabs[1].er_dir();
-        let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-del");
-        crate::arena::save_run(&paths, &sample_run("arena-del")).unwrap();
-        assert!(paths.root.is_dir());
+        crate::storage::with_test_storage_root(tb.path(), || {
+            let mut app =
+                app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+            let er_b = app.tabs[1].er_dir();
+            let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-del");
+            crate::arena::save_run(&paths, &sample_run("arena-del")).unwrap();
+            assert!(paths.root.is_dir());
 
-        // Active tab is A; delete must remove the run dir under B.
-        app.arena_delete("arena-del").unwrap();
-        assert!(
-            !paths.root.is_dir(),
-            "delete must target the run's own er_dir, not the active tab's"
-        );
+            // Active tab is A; delete must remove the run dir under B.
+            app.arena_delete("arena-del").unwrap();
+            assert!(
+                !paths.root.is_dir(),
+                "delete must target the run's own er_dir, not the active tab's"
+            );
+        });
     }
 
     #[test]
     fn arena_delete_refuses_a_bucket_owned_by_review_flow() {
         let ta = tempfile::tempdir().unwrap();
         let tb = tempfile::tempdir().unwrap();
-        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
-        let er_b = app.tabs[1].er_dir();
-        let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-flow-owned");
-        crate::arena::save_run(&paths, &sample_run("arena-flow-owned")).unwrap();
-        let lease = app.acquire_review_flow_lease(&er_b).unwrap();
+        crate::storage::with_test_storage_root(tb.path(), || {
+            let mut app =
+                app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+            let er_b = app.tabs[1].er_dir();
+            let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-flow-owned");
+            crate::arena::save_run(&paths, &sample_run("arena-flow-owned")).unwrap();
+            let lease = app.acquire_review_flow_lease(&er_b).unwrap();
 
-        assert!(app.arena_delete("arena-flow-owned").is_err());
-        assert!(paths.root.is_dir(), "the owned run must remain on disk");
-        app.release_review_flow_lease(&lease).unwrap();
+            assert!(app.arena_delete("arena-flow-owned").is_err());
+            assert!(paths.root.is_dir(), "the owned run must remain on disk");
+            app.release_review_flow_lease(&lease).unwrap();
+        });
     }
 
     #[test]

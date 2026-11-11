@@ -24,6 +24,7 @@ pub mod scoped_overlay;
 pub mod triage;
 pub mod ui_annotations;
 pub mod validation;
+pub mod workflow_record;
 
 pub mod accepted_provenance;
 pub mod arbiter;
@@ -47,3 +48,7 @@ pub use scoped_overlay::*;
 pub use triage::*;
 pub use ui_annotations::*;
 pub use validation::*;
+pub use workflow_record::{
+    StageKind, StageRecord, StageStatus, WorkflowHolder, WorkflowKind, WorkflowOutcome,
+    WorkflowRecord,
+};

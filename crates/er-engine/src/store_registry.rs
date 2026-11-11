@@ -48,6 +48,7 @@ fn register_ai_kinds(registry: &mut Registry) -> Result<(), er_store::StoreError
     registry.register::<crate::ai::ScopedReview>()?;
     registry.register::<crate::ai::ScopedProfessorReview>()?;
     registry.register::<crate::ai::ScopedExpertReview>()?;
+    registry.register::<crate::ai::WorkflowRecord>()?;
     registry.register_text("summary", "summary.md")?;
     Ok(())
 }
@@ -118,6 +119,7 @@ mod tests {
             ("scoped/general.json", "scoped-general"),
             ("scoped/professor.json", "scoped-professor"),
             ("scoped/experts/security.json", "scoped-expert"),
+            ("workflow.json", "workflow"),
             ("summary.md", "summary"),
             ("projects.json", "projects"),
             ("update-check.json", "update-check"),

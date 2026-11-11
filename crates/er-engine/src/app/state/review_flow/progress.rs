@@ -537,103 +537,105 @@ mod tests {
     #[test]
     fn failed_reviewer_is_not_requeued_or_failed_in_later_rounds() {
         let tmp = tempfile::tempdir().unwrap();
-        let bucket = tmp.path().to_string_lossy().into_owned();
-        let mut app = App::new_for_test(Vec::new());
-        let lease = app.acquire_review_flow_lease(&bucket).unwrap();
-        let context = ReviewFlowContext {
-            lease,
-            target: BackgroundTaskTarget {
-                repo_root: "/repo".into(),
-                er_dir: bucket,
-                branch_label: "main".into(),
-                base_branch: "main".into(),
-                scope: "branch".into(),
-                pr_number: None,
-                remote_repo: None,
-                managed_local: true,
-            },
-            scope: "branch".into(),
-            arena_scope: ArenaScope::Branch,
-            repo_root: "/repo".into(),
-            reviewed_ref_note: None,
-            branch_ref: "main".into(),
-            base_branch: "main".into(),
-            raw_diff: String::new(),
-            config: app.config.clone(),
-            model_pools: ResolvedReviewModels {
-                fast: Vec::new(),
-                standard: Vec::new(),
-                advanced: Vec::new(),
-            },
-            assignments: Vec::new(),
-            arbiter: None,
-            owned_tasks: HashMap::new(),
-            enqueued_lenses: HashSet::new(),
-            successful_lenses: HashSet::new(),
-            successful_finder_providers: Vec::new(),
-            successful_arbiter_provider: None,
-            backups: HashMap::new(),
-            next_archive: 1,
-            arena_run_id: Some("run".into()),
-            arena_progress_offset: 0,
-            arena_progress_round: 1,
-            professor_follow_up_suggested: false,
-            draining: false,
-        };
-        let reviewer_id = "general::provider-model";
-        let mut flow = ReviewFlow::new("hash");
-        for round in [1, 2] {
-            flow.tasks.push(FlowTaskProgress {
-                id: reviewer_task_id(reviewer_id, round),
-                stage: if round == 1 {
-                    FlowTaskStage::Finding
-                } else {
-                    FlowTaskStage::Verifying
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let bucket = tmp.path().to_string_lossy().into_owned();
+            let mut app = App::new_for_test(Vec::new());
+            let lease = app.acquire_review_flow_lease(&bucket).unwrap();
+            let context = ReviewFlowContext {
+                lease,
+                target: BackgroundTaskTarget {
+                    repo_root: "/repo".into(),
+                    er_dir: bucket,
+                    branch_label: "main".into(),
+                    base_branch: "main".into(),
+                    scope: "branch".into(),
+                    pr_number: None,
+                    remote_repo: None,
+                    managed_local: true,
                 },
-                lens: Some("general".into()),
-                label: "General".into(),
-                purpose: "Review".into(),
-                provider_id: "provider".into(),
-                provider_label: "Provider".into(),
-                model_id: "model".into(),
-                model_label: "Model".into(),
-                status: FlowTaskStatus::Waiting,
-                error: None,
-                background_task_id: None,
-                round: Some(round),
-                total_rounds: Some(3),
-            });
-        }
-        flow.tasks[0].status = FlowTaskStatus::Failed;
-        flow.tasks[0].error = Some("provider returned invalid output".into());
+                scope: "branch".into(),
+                arena_scope: ArenaScope::Branch,
+                repo_root: "/repo".into(),
+                reviewed_ref_note: None,
+                branch_ref: "main".into(),
+                base_branch: "main".into(),
+                raw_diff: String::new(),
+                config: app.config.clone(),
+                model_pools: ResolvedReviewModels {
+                    fast: Vec::new(),
+                    standard: Vec::new(),
+                    advanced: Vec::new(),
+                },
+                assignments: Vec::new(),
+                arbiter: None,
+                owned_tasks: HashMap::new(),
+                enqueued_lenses: HashSet::new(),
+                successful_lenses: HashSet::new(),
+                successful_finder_providers: Vec::new(),
+                successful_arbiter_provider: None,
+                backups: HashMap::new(),
+                next_archive: 1,
+                arena_run_id: Some("run".into()),
+                arena_progress_offset: 0,
+                arena_progress_round: 1,
+                professor_follow_up_suggested: false,
+                draining: false,
+            };
+            let reviewer_id = "general::provider-model";
+            let mut flow = ReviewFlow::new("hash");
+            for round in [1, 2] {
+                flow.tasks.push(FlowTaskProgress {
+                    id: reviewer_task_id(reviewer_id, round),
+                    stage: if round == 1 {
+                        FlowTaskStage::Finding
+                    } else {
+                        FlowTaskStage::Verifying
+                    },
+                    lens: Some("general".into()),
+                    label: "General".into(),
+                    purpose: "Review".into(),
+                    provider_id: "provider".into(),
+                    provider_label: "Provider".into(),
+                    model_id: "model".into(),
+                    model_label: "Model".into(),
+                    status: FlowTaskStatus::Waiting,
+                    error: None,
+                    background_task_id: None,
+                    round: Some(round),
+                    total_rounds: Some(3),
+                });
+            }
+            flow.tasks[0].status = FlowTaskStatus::Failed;
+            flow.tasks[0].error = Some("provider returned invalid output".into());
 
-        assert!(queue_round(&mut flow, 2, 3));
-        assert_eq!(flow.tasks[1].status, FlowTaskStatus::Skipped);
-        assert_eq!(flow.tasks[1].error, None);
+            assert!(queue_round(&mut flow, 2, 3));
+            assert_eq!(flow.tasks[1].status, FlowTaskStatus::Skipped);
+            assert_eq!(flow.tasks[1].error, None);
 
-        let run: ArenaRun = serde_json::from_value(serde_json::json!({
-            "id": "run",
-            "branch_ref": "main",
-            "base_branch": "main",
-            "scope": "branch",
-            "diff_hash": "hash",
-            "created_at": "now",
-            "status": "complete",
-            "config": {
-                "reviewers": [],
-                "rounds": 3,
-                "arbiter": {"provider_id": "provider", "model_id": "model"},
-                "auto_accept_threshold": 0.75,
+            let run: ArenaRun = serde_json::from_value(serde_json::json!({
+                "id": "run",
+                "branch_ref": "main",
+                "base_branch": "main",
                 "scope": "branch",
-                "run_kind": "models"
-            },
-            "reviewers": [],
-            "findings": [],
-            "cost_estimate": {"tokens_in": 0, "tokens_out": 0, "usd": 0.0},
-            "accepted_finding_ids": []
-        }))
-        .unwrap();
-        assert!(!finish_arena_tasks(&context, &mut flow, &run));
-        assert_eq!(flow.tasks[1].status, FlowTaskStatus::Skipped);
+                "diff_hash": "hash",
+                "created_at": "now",
+                "status": "complete",
+                "config": {
+                    "reviewers": [],
+                    "rounds": 3,
+                    "arbiter": {"provider_id": "provider", "model_id": "model"},
+                    "auto_accept_threshold": 0.75,
+                    "scope": "branch",
+                    "run_kind": "models"
+                },
+                "reviewers": [],
+                "findings": [],
+                "cost_estimate": {"tokens_in": 0, "tokens_out": 0, "usd": 0.0},
+                "accepted_finding_ids": []
+            }))
+            .unwrap();
+            assert!(!finish_arena_tasks(&context, &mut flow, &run));
+            assert_eq!(flow.tasks[1].status, FlowTaskStatus::Skipped);
+        });
     }
 }

@@ -14,6 +14,7 @@ mod review_flow_output;
 mod review_flow_progress;
 pub mod session_store;
 pub(super) mod tour_navigation;
+mod workflow;
 
 pub use session_store::SessionState;
 
@@ -5933,8 +5934,10 @@ pub struct App {
     /// Terminal records awaiting one-shot consumption by the owning flow.
     pub(crate) flow_task_completions: std::collections::HashMap<String, background::BackgroundTask>,
 
-    /// Exclusive review-flow ownership, keyed by the managed review bucket.
-    review_flow_leases: std::collections::HashMap<String, review_flow_admission::ReviewFlowLease>,
+    /// The OS leases this process holds, keyed by the managed review bucket.
+    /// Admission reads the `.lease` file, so these guards keep local ownership
+    /// alive rather than deciding it.
+    workflow_leases: std::collections::HashMap<String, er_store::LeaseGuard>,
     next_review_flow_lease_sequence: u64,
 
     /// Current review-flow projection and its captured execution context,
@@ -6135,7 +6138,7 @@ impl App {
             pending_background_tasks: std::collections::VecDeque::new(),
             owned_flow_task_ids: std::collections::HashSet::new(),
             flow_task_completions: std::collections::HashMap::new(),
-            review_flow_leases: std::collections::HashMap::new(),
+            workflow_leases: std::collections::HashMap::new(),
             next_review_flow_lease_sequence: 1,
             review_flows: std::collections::HashMap::new(),
             review_flow_contexts: std::collections::HashMap::new(),
@@ -6158,6 +6161,7 @@ impl App {
         app.drain_storage_notices();
         app.overlay_cached_discovered_models();
         app.reconcile_arena_runs();
+        app.reconcile_workflow_records();
         if let Some(error) = config_load_error {
             app.notify_long(&error.to_string());
             app.config_load_error = Some(crate::config::CONFIG_LOAD_BANNER.to_string());
@@ -6202,7 +6206,7 @@ impl App {
             pending_background_tasks: std::collections::VecDeque::new(),
             owned_flow_task_ids: std::collections::HashSet::new(),
             flow_task_completions: std::collections::HashMap::new(),
-            review_flow_leases: std::collections::HashMap::new(),
+            workflow_leases: std::collections::HashMap::new(),
             next_review_flow_lease_sequence: 1,
             review_flows: std::collections::HashMap::new(),
             review_flow_contexts: std::collections::HashMap::new(),
@@ -6265,7 +6269,7 @@ impl App {
             pending_background_tasks: std::collections::VecDeque::new(),
             owned_flow_task_ids: std::collections::HashSet::new(),
             flow_task_completions: std::collections::HashMap::new(),
-            review_flow_leases: std::collections::HashMap::new(),
+            workflow_leases: std::collections::HashMap::new(),
             next_review_flow_lease_sequence: 1,
             review_flows: std::collections::HashMap::new(),
             review_flow_contexts: std::collections::HashMap::new(),
@@ -6331,7 +6335,7 @@ impl App {
             pending_background_tasks: std::collections::VecDeque::new(),
             owned_flow_task_ids: std::collections::HashSet::new(),
             flow_task_completions: std::collections::HashMap::new(),
-            review_flow_leases: std::collections::HashMap::new(),
+            workflow_leases: std::collections::HashMap::new(),
             next_review_flow_lease_sequence: 1,
             review_flows: std::collections::HashMap::new(),
             review_flow_contexts: std::collections::HashMap::new(),
@@ -12936,7 +12940,7 @@ mod tests {
             pending_background_tasks: std::collections::VecDeque::new(),
             owned_flow_task_ids: std::collections::HashSet::new(),
             flow_task_completions: std::collections::HashMap::new(),
-            review_flow_leases: std::collections::HashMap::new(),
+            workflow_leases: std::collections::HashMap::new(),
             next_review_flow_lease_sequence: 1,
             review_flows: std::collections::HashMap::new(),
             review_flow_contexts: std::collections::HashMap::new(),

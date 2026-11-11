@@ -84,6 +84,9 @@ impl App {
         }
         self.review_flows.insert(er_dir.to_owned(), flow);
         self.review_flow_contexts.insert(er_dir.to_owned(), context);
+        if let Some(flow) = self.review_flows.get(er_dir) {
+            Self::sync_workflow_record(er_dir, flow);
+        }
         self.bump_review_flow_revision();
         result
     }

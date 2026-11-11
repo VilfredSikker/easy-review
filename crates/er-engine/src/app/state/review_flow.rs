@@ -204,6 +204,19 @@ impl App {
             }
         };
 
+        // The record exists before the first stage starts, so a crash at any
+        // point leaves its owner and plan on disk.
+        let Some(holder) = self.workflow_holder(&target.er_dir) else {
+            let _ = self.release_review_flow_lease(&lease);
+            bail!("review flow lease is missing its holder");
+        };
+        if let Err(error) =
+            Self::create_workflow_record(&target.er_dir, None, &diff_hash, &[], None, holder)
+        {
+            let _ = self.release_review_flow_lease(&lease);
+            return Err(error).context("write the workflow record");
+        }
+
         let producer = FlowProducer::Triage;
         let archive_key = make_archive_key(lease.sequence(), 1);
         let backup = match archive_flow_output(Path::new(&target.er_dir), &archive_key, &producer) {
@@ -268,7 +281,7 @@ impl App {
         let start_notice = flow_notification_message(&flow, &target, false);
         self.review_flows.insert(key.clone(), flow);
         self.review_flow_contexts.insert(
-            key,
+            key.clone(),
             ReviewFlowContext {
                 lease,
                 target,
@@ -297,6 +310,9 @@ impl App {
                 draining: false,
             },
         );
+        if let Some(flow) = self.review_flows.get(&key) {
+            Self::sync_workflow_record(&key, flow);
+        }
         self.notify(&start_notice);
         self.bump_review_flow_revision();
         Ok(())
@@ -700,10 +716,30 @@ impl App {
         if changed {
             self.bump_review_flow_revision();
         }
+        if let Some(flow) = self.review_flows.get(key) {
+            Self::sync_workflow_record(key, flow);
+        }
         let terminal = !self
             .review_flows
             .get(key)
             .is_some_and(ReviewFlow::is_running);
+        if terminal {
+            let outcome = match self.review_flows.get(key).map(|flow| &flow.state) {
+                Some(FlowState::Done { .. } | FlowState::Skipped) => {
+                    Some(crate::ai::workflow_record::WorkflowOutcome::Complete)
+                }
+                Some(FlowState::Failed { .. }) => {
+                    Some(crate::ai::workflow_record::WorkflowOutcome::Failed)
+                }
+                Some(FlowState::Cancelled) => {
+                    Some(crate::ai::workflow_record::WorkflowOutcome::Cancelled)
+                }
+                _ => None,
+            };
+            if let Some(outcome) = outcome {
+                Self::finish_workflow_record(key, outcome);
+            }
+        }
         let has_producers = self.flow_context_has_producers(&context);
         let was_draining = context.draining;
         context.draining = terminal && has_producers;
@@ -1038,6 +1074,9 @@ impl App {
         }
         if let Some(run_id) = run_id {
             let _ = self.arena_cancel(&run_id);
+        }
+        if let Some(flow) = self.review_flows.get(er_dir) {
+            Self::sync_workflow_record(er_dir, flow);
         }
         self.bump_review_flow_revision();
         true
@@ -2039,118 +2078,120 @@ esac
     fn verifying_waits_for_drained_supervisor_and_final_persisted_run() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("wait-final-save");
-        let mut app = fake_app(&dir, "general", &[]);
-        let bucket = app.tab().er_dir();
-        let tab = app.tab();
-        let repo_root = tab.repo_root.clone();
-        let branch_ref = tab.current_branch.clone();
-        let base_branch = tab.base_branch.clone();
-        let target = BackgroundTaskTarget {
-            repo_root: repo_root.clone(),
-            er_dir: bucket.clone(),
-            branch_label: branch_ref.clone(),
-            base_branch: base_branch.clone(),
-            scope: "branch".into(),
-            pr_number: None,
-            remote_repo: None,
-            managed_local: true,
-        };
-        let raw_diff = tab.raw_diff_for_review("branch").unwrap();
-        let lease = app.acquire_review_flow_lease(&bucket).unwrap();
-        let model_pools = resolve_review_models(&app.config.ai_hub).unwrap();
-        let flow_config = app.config.clone();
-        let run_id = "flow-drain-order".to_owned();
-        let diff_hash = "pinned-flow-hash".to_owned();
-        let mut flow = ReviewFlow::new(diff_hash.clone());
-        flow.apply(FlowEvent::TriageSucceeded {
-            plan: Some((FlowDepth::Quick, vec!["general".into()])),
-        });
-        flow.apply(FlowEvent::FinderSucceeded {
-            lens: "general".into(),
-        });
-        flow.apply(FlowEvent::VerifyStarted);
-        flow.arena_run_id = Some(run_id.clone());
-        flow.successful_finder_providers = vec!["finder-provider".into()];
-        let context = ReviewFlowContext {
-            lease,
-            target,
-            scope: "branch".into(),
-            arena_scope: ArenaScope::Branch,
-            repo_root,
-            reviewed_ref_note: None,
-            branch_ref,
-            base_branch,
-            raw_diff,
-            config: flow_config,
-            model_pools,
-            assignments: Vec::new(),
-            arbiter: Some(ReviewerRef {
-                provider_id: "arbiter-provider".into(),
-                model_id: "arbiter-model".into(),
-                agent_kind: None,
-            }),
-            owned_tasks: HashMap::new(),
-            enqueued_lenses: HashSet::new(),
-            successful_lenses: HashSet::from(["general".into()]),
-            successful_finder_providers: vec!["finder-provider".into()],
-            successful_arbiter_provider: None,
-            backups: HashMap::new(),
-            next_archive: 1,
-            arena_run_id: Some(run_id.clone()),
-            arena_progress_offset: 0,
-            arena_progress_round: 0,
-            professor_follow_up_suggested: false,
-            draining: false,
-        };
-        app.review_flows.insert(bucket.clone(), flow);
-        app.review_flow_contexts.insert(bucket.clone(), context);
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir, "general", &[]);
+            let bucket = app.tab().er_dir();
+            let tab = app.tab();
+            let repo_root = tab.repo_root.clone();
+            let branch_ref = tab.current_branch.clone();
+            let base_branch = tab.base_branch.clone();
+            let target = BackgroundTaskTarget {
+                repo_root: repo_root.clone(),
+                er_dir: bucket.clone(),
+                branch_label: branch_ref.clone(),
+                base_branch: base_branch.clone(),
+                scope: "branch".into(),
+                pr_number: None,
+                remote_repo: None,
+                managed_local: true,
+            };
+            let raw_diff = tab.raw_diff_for_review("branch").unwrap();
+            let lease = app.acquire_review_flow_lease(&bucket).unwrap();
+            let model_pools = resolve_review_models(&app.config.ai_hub).unwrap();
+            let flow_config = app.config.clone();
+            let run_id = "flow-drain-order".to_owned();
+            let diff_hash = "pinned-flow-hash".to_owned();
+            let mut flow = ReviewFlow::new(diff_hash.clone());
+            flow.apply(FlowEvent::TriageSucceeded {
+                plan: Some((FlowDepth::Quick, vec!["general".into()])),
+            });
+            flow.apply(FlowEvent::FinderSucceeded {
+                lens: "general".into(),
+            });
+            flow.apply(FlowEvent::VerifyStarted);
+            flow.arena_run_id = Some(run_id.clone());
+            flow.successful_finder_providers = vec!["finder-provider".into()];
+            let context = ReviewFlowContext {
+                lease,
+                target,
+                scope: "branch".into(),
+                arena_scope: ArenaScope::Branch,
+                repo_root,
+                reviewed_ref_note: None,
+                branch_ref,
+                base_branch,
+                raw_diff,
+                config: flow_config,
+                model_pools,
+                assignments: Vec::new(),
+                arbiter: Some(ReviewerRef {
+                    provider_id: "arbiter-provider".into(),
+                    model_id: "arbiter-model".into(),
+                    agent_kind: None,
+                }),
+                owned_tasks: HashMap::new(),
+                enqueued_lenses: HashSet::new(),
+                successful_lenses: HashSet::from(["general".into()]),
+                successful_finder_providers: vec!["finder-provider".into()],
+                successful_arbiter_provider: None,
+                backups: HashMap::new(),
+                next_archive: 1,
+                arena_run_id: Some(run_id.clone()),
+                arena_progress_offset: 0,
+                arena_progress_round: 0,
+                professor_follow_up_suggested: false,
+                draining: false,
+            };
+            app.review_flows.insert(bucket.clone(), flow);
+            app.review_flow_contexts.insert(bucket.clone(), context);
 
-        let paths = ArenaPaths::for_run(Path::new(&bucket), &run_id);
-        let mut run: crate::arena::ArenaRun = serde_json::from_value(serde_json::json!({
-            "id": run_id,
-            "branch_ref": "main",
-            "base_branch": "main",
-            "scope": "branch",
-            "diff_hash": diff_hash,
-            "created_at": "now",
-            "status": {"running": {"round": 1}},
-            "config": {
-                "reviewers": [],
-                "rounds": 2,
-                "arbiter": {"provider_id": "arbiter-provider", "model_id": "arbiter-model"},
-                "auto_accept_threshold": 0.75,
+            let paths = ArenaPaths::for_run(Path::new(&bucket), &run_id);
+            let mut run: crate::arena::ArenaRun = serde_json::from_value(serde_json::json!({
+                "id": run_id,
+                "branch_ref": "main",
+                "base_branch": "main",
                 "scope": "branch",
-                "run_kind": "seeded"
-            },
-            "reviewers": [],
-            "findings": [],
-            "cost_estimate": {"tokens_in": 0, "tokens_out": 0, "usd": 0.0},
-            "accepted_finding_ids": []
-        }))
-        .unwrap();
-        crate::arena::save_run(&paths, &run).unwrap();
-        app.arena_registry
-            .insert_active_for_test(&run_id, RunStatus::Complete);
+                "diff_hash": diff_hash,
+                "created_at": "now",
+                "status": {"running": {"round": 1}},
+                "config": {
+                    "reviewers": [],
+                    "rounds": 2,
+                    "arbiter": {"provider_id": "arbiter-provider", "model_id": "arbiter-model"},
+                    "auto_accept_threshold": 0.75,
+                    "scope": "branch",
+                    "run_kind": "seeded"
+                },
+                "reviewers": [],
+                "findings": [],
+                "cost_estimate": {"tokens_in": 0, "tokens_out": 0, "usd": 0.0},
+                "accepted_finding_ids": []
+            }))
+            .unwrap();
+            crate::arena::save_run(&paths, &run).unwrap();
+            app.arena_registry
+                .insert_active_for_test(&run_id, RunStatus::Complete);
 
-        app.advance_review_flow(&bucket);
-        assert_eq!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Verifying,
-            "live Complete plus persisted Running must remain Verifying until drain"
-        );
-        assert!(app.check_review_bucket_admission(&bucket).is_err());
+            app.advance_review_flow(&bucket);
+            assert_eq!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Verifying,
+                "live Complete plus persisted Running must remain Verifying until drain"
+            );
+            assert!(app.check_review_bucket_admission(&bucket).is_err());
 
-        run.status = RunStatus::Complete;
-        crate::arena::save_run(&paths, &run).unwrap();
-        let _drained_handle = app.arena_registry.take(&run_id).unwrap();
-        app.advance_review_flow(&bucket);
-        assert!(matches!(
-            app.review_flow_for(&bucket).unwrap().state,
-            FlowState::Done { .. }
-        ));
-        let flow = app.review_flow_for(&bucket).unwrap();
-        assert_eq!(flow.providers_used, ["arbiter-provider", "finder-provider"]);
-        assert!(app.check_review_bucket_admission(&bucket).is_ok());
+            run.status = RunStatus::Complete;
+            crate::arena::save_run(&paths, &run).unwrap();
+            let _drained_handle = app.arena_registry.take(&run_id).unwrap();
+            app.advance_review_flow(&bucket);
+            assert!(matches!(
+                app.review_flow_for(&bucket).unwrap().state,
+                FlowState::Done { .. }
+            ));
+            let flow = app.review_flow_for(&bucket).unwrap();
+            assert_eq!(flow.providers_used, ["arbiter-provider", "finder-provider"]);
+            assert!(app.check_review_bucket_admission(&bucket).is_ok());
+        });
     }
 
     #[test]
