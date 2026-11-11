@@ -3,8 +3,6 @@
   import SettingsSection from "./SettingsSection.svelte";
   import SettingsRow from "./SettingsRow.svelte";
   import SettingsButton from "./SettingsButton.svelte";
-  import Segmented from "./Segmented.svelte";
-  import Switch from "./Switch.svelte";
   import { INPUT_CLASS } from "./settingsModel";
   import { PROJECT_ROWS } from "./settingsSearch";
 
@@ -15,18 +13,10 @@
 
   const { project, onpatch }: Props = $props();
 
-  // The engine's AUTO_TRIAGE_WHEN_OPTIONS; the labels say what each one waits for.
-  const TRIAGE_WHEN: Record<string, string> = {
-    "new-and-push": "New PRs and pushes",
-    "new-only": "New PRs only",
-    "review-requested": "When I'm asked",
-  };
-
   let addGlob = $state("");
 
   const maxDiffKb = $derived(project.auto_triage_max_diff_kb ?? 0);
   const ignoreGlobs = $derived(project.review_ignore_globs ?? []);
-  const autoTriage = $derived(project.auto_triage ?? false);
 
   // Editable draft; resets whenever the saved value changes.
   let maxDiffInput = $derived(maxDiffKb === 0 ? "" : String(maxDiffKb));
@@ -53,27 +43,6 @@
   </SettingsRow>
 
   {#if project.remote}
-    <SettingsRow {...PROJECT_ROWS.autoTriage}>
-      <Switch label="Auto-triage" checked={autoTriage} onchange={(v) => void onpatch({ autoTriage: v })} />
-    </SettingsRow>
-    {#if autoTriage}
-      <SettingsRow {...PROJECT_ROWS.runTriage}>
-        <Segmented
-          options={Object.keys(TRIAGE_WHEN)}
-          value={project.auto_triage_when ?? "new-and-push"}
-          ariaLabel="Run triage"
-          display={(o) => TRIAGE_WHEN[o] ?? o}
-          onchange={(o) => void onpatch({ autoTriageWhen: o })}
-        />
-      </SettingsRow>
-      <SettingsRow {...PROJECT_ROWS.ownPrs}>
-        <Switch
-          label="Include my own PRs"
-          checked={project.auto_triage_own_prs ?? false}
-          onchange={(v) => void onpatch({ autoTriageOwnPrs: v })}
-        />
-      </SettingsRow>
-    {/if}
     <SettingsRow {...PROJECT_ROWS.sizeLimit}>
       <span class="inline-flex items-center gap-1.5">
         <input

@@ -235,6 +235,7 @@ mod tests {
                     ai_selection: None,
                     launch_config: None,
                     scoped_stamp: None,
+                    staging: None,
                 },
             );
             assert!(app.acquire_review_flow_lease(&bucket).is_err());
@@ -301,6 +302,7 @@ mod tests {
                     ai_selection: None,
                     launch_config: None,
                     scoped_stamp: None,
+                    staging: None,
                 },
             );
             assert!(app.release_review_flow_lease(&lease).is_err());

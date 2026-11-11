@@ -1096,15 +1096,7 @@ pub struct ProjectSnapshot {
     pub pr_cache_stale: bool,
     #[serde(default)]
     pub pr_cache_age_ms: Option<u64>,
-    /// When true, Desktop auto-runs triage on new/updated open PRs while the app is open.
-    #[serde(default)]
-    pub auto_triage: bool,
-    /// When true (and `auto_triage`), also triage your own open PRs.
-    #[serde(default)]
-    pub auto_triage_own_prs: bool,
-    /// When to auto-triage: `new-and-push`, `new-only`, or `review-requested`.
-    pub auto_triage_when: String,
-    /// Skip auto-triage when filtered diff exceeds this size (KB). `0` = no limit.
+    /// Skip triage when the filtered diff exceeds this size (KB). `0` = no limit.
     #[serde(default)]
     pub auto_triage_max_diff_kb: u32,
     /// Glob patterns excluded from AI review diffs.
@@ -4731,9 +4723,6 @@ fn build_projects_from_file(
                 recently_merged,
                 pr_cache_stale,
                 pr_cache_age_ms,
-                auto_triage: p.auto_triage,
-                auto_triage_own_prs: p.auto_triage_own_prs,
-                auto_triage_when: p.auto_triage_when.clone(),
                 auto_triage_max_diff_kb: p.auto_triage_max_diff_kb,
                 review_ignore_globs: p.review_ignore_globs.clone(),
                 dismissed_prs: p.dismissed_prs.clone(),
@@ -6808,9 +6797,6 @@ mod tests {
                     title: "Cached title fallback".to_string(),
                 }],
                 saved_prs: Vec::new(),
-                auto_triage: false,
-                auto_triage_own_prs: false,
-                auto_triage_when: "new-and-push".to_string(),
                 auto_triage_max_diff_kb: 0,
                 review_ignore_globs: Vec::new(),
                 extra: Default::default(),
@@ -6875,9 +6861,6 @@ mod tests {
             dismissed_branches: Vec::new(),
             recent_prs: Vec::new(),
             saved_prs: Vec::new(),
-            auto_triage: false,
-            auto_triage_own_prs: false,
-            auto_triage_when: "new-and-push".to_string(),
             auto_triage_max_diff_kb: 0,
             review_ignore_globs: Vec::new(),
             extra: Default::default(),
@@ -6906,9 +6889,6 @@ mod tests {
                 dismissed_branches: Vec::new(),
                 recent_prs: Vec::new(),
                 saved_prs: Vec::new(),
-                auto_triage: true,
-                auto_triage_own_prs: true,
-                auto_triage_when: "review-requested".to_string(),
                 auto_triage_max_diff_kb: 512,
                 review_ignore_globs: vec!["**/*.lock".to_string(), "dist/**".to_string()],
                 extra: Default::default(),
@@ -6920,9 +6900,6 @@ mod tests {
 
         assert_eq!(projects.len(), 1);
         let p = &projects[0];
-        assert!(p.auto_triage);
-        assert!(p.auto_triage_own_prs);
-        assert_eq!(p.auto_triage_when, "review-requested");
         assert_eq!(p.auto_triage_max_diff_kb, 512);
         assert_eq!(
             p.review_ignore_globs,

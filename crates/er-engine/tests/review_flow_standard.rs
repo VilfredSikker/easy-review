@@ -51,12 +51,17 @@ fn quick_flow_pins_filtered_hash_and_leaves_review_json_unchanged() {
         std::fs::create_dir_all(&bucket).unwrap();
         std::fs::create_dir_all(&fake_arena).unwrap();
 
+        // The provider writes into the job's staging directory; the host
+        // commits it. The pre-arbiter copy is the staged bytes, taken before
+        // the host has committed anything.
         let script = format!(
-        "case \"$1\" in\n\
-         *triage.json*) hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{{\"primary\":\"general\"}}}}' \"$hash\" > '{bucket}/triage.json' ;;\n\
-         *review.json*) hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{\"version\":1,\"diff_hash\":\"%s\",\"files\":{{\"src/lib.rs\":{{\"risk\":\"high\",\"findings\":[{{\"id\":\"fake-1\",\"severity\":\"high\",\"title\":\"unchecked input\",\"description\":\"The value reaches a command.\",\"line_start\":1,\"confidence\":\"confirmed\"}}]}}}}}}' \"$hash\" > '{bucket}/review.json'; cp '{bucket}/review.json' '{bucket}/review.before-arbiter' ;;\n\
+        "{preamble}\n\
+         case \"$1\" in\n\
+         *triage.json*) printf '{{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{{\"primary\":\"general\"}}}}' \"$h\" > \"$out/triage.json\" ;;\n\
+         *review.json*) printf '{{\"version\":1,\"diff_hash\":\"%s\",\"files\":{{\"src/lib.rs\":{{\"risk\":\"high\",\"findings\":[{{\"id\":\"fake-1\",\"severity\":\"high\",\"title\":\"unchecked input\",\"description\":\"The value reaches a command.\",\"line_start\":1,\"confidence\":\"confirmed\"}}]}}}}}}' \"$h\" > \"$out/review.json\"; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"order\":[],\"groups\":{{}}}}' \"$h\" > \"$out/order.json\"; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"items\":[]}}' \"$h\" > \"$out/checklist.json\"; printf 'summary\\n' > \"$out/summary.md\"; cp \"$out/review.json\" '{bucket}/review.before-arbiter' ;;\n\
          *) echo \"unexpected review-flow prompt\" >&2; exit 2 ;;\n\
          esac",
+        preamble = er_engine::test_support::STAGING_PREAMBLE,
         bucket = bucket.display(),
     );
         let provider = AiProviderConfig {
@@ -188,11 +193,19 @@ fn quick_flow_pins_filtered_hash_and_leaves_review_json_unchanged() {
             1,
             "the seeded flow makes one arbiter call"
         );
-        let review_bytes = std::fs::read(bucket.join("review.before-arbiter")).unwrap();
+        // The committed review went through the typed store, which fills the
+        // producer's omitted default fields, so parse both sides and compare
+        // their canonical form: the findings and hash must survive the
+        // verifier untouched.
+        let before: er_engine::ai::ErReview =
+            serde_json::from_slice(&std::fs::read(bucket.join("review.before-arbiter")).unwrap())
+                .unwrap();
+        let after: er_engine::ai::ErReview =
+            serde_json::from_slice(&std::fs::read(bucket.join("review.json")).unwrap()).unwrap();
         assert_eq!(
-            std::fs::read(bucket.join("review.json")).unwrap(),
-            review_bytes,
-            "the seeded verifier leaves producer review.json byte-identical"
+            serde_json::to_value(&after).unwrap(),
+            serde_json::to_value(&before).unwrap(),
+            "the seeded verifier leaves producer review.json unchanged"
         );
     });
 }

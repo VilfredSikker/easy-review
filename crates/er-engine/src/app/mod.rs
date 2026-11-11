@@ -1,6 +1,8 @@
 pub mod card_ai_context;
 pub mod card_job;
 pub mod filter;
+pub mod job_commit;
+pub mod job_staging;
 mod state;
 pub use state::preview::{
     image_mime, FilePreviewRequest, ImagePreviewRequest, MAX_IMAGE_PREVIEW_BYTES, MAX_PREVIEW_BYTES,
