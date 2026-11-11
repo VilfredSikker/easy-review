@@ -2284,7 +2284,7 @@ mod tests {
             er_engine::test_support::write_executable_script(
                 &bin,
                 &format!(
-                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{out}.tmp\" && mv \"{out}.tmp\" \"{out}\"\n"
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{out}.tmp\" && mv \"{out}.tmp\" \"{out}\"\nprintf 'summary\\n' > \"$ER_JOB_STAGING/summary.md\"\n"
                 ),
             )
             .unwrap();
