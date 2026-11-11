@@ -1,7 +1,7 @@
 //! Shared provider/model invocation and artifact contracts for app-launched AI.
 
 use crate::ai::{
-    ErChecklist, ErGithubComments, ErOrder, ErQuestions, ErReview, ErTour, ExpertReview,
+    ErChecklist, ErGithubComments, ErNotes, ErOrder, ErQuestions, ErReview, ErTour, ExpertReview,
     ProfessorReview, TriageReview, ValidationReview,
 };
 use crate::config::{inject_provider_effort, ErConfig};
@@ -440,6 +440,7 @@ pub enum ArtifactContract {
     Triage,
     Tour { filename: String },
     Questions,
+    Notes,
     Summary,
     ValidateReview,
     ValidateComments,
@@ -568,6 +569,20 @@ impl ArtifactBaseline {
                     |v| &v.diff_hash,
                 )?;
             }
+            ArtifactContract::Notes => {
+                validate_json_hash::<ErNotes>(
+                    output_dir,
+                    "notes.json",
+                    expected_hash.as_deref(),
+                    |v| &v.diff_hash,
+                )?;
+                validate_json_hash::<ErNotes>(
+                    output_dir,
+                    "notes.prev.json",
+                    expected_hash.as_deref(),
+                    |v| &v.diff_hash,
+                )?;
+            }
             ArtifactContract::Summary => validate_non_empty(output_dir.join("summary.md"))?,
             ArtifactContract::ValidateReview => {
                 validate_json_hash::<ValidationReview>(
@@ -621,6 +636,7 @@ impl ArtifactContract {
             Self::Triage => vec!["triage.json".into()],
             Self::Tour { filename } => vec![filename.clone()],
             Self::Questions => vec!["questions.json".into(), "questions.prev.json".into()],
+            Self::Notes => vec!["notes.json".into(), "notes.prev.json".into()],
             Self::Summary => vec!["summary.md".into()],
             Self::ValidateReview => vec!["validation.json".into(), "summary.md".into()],
             Self::ValidateComments => vec!["github-comments.json".into()],
