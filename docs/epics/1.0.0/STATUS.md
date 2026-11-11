@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-11 20:18 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-11 22:23 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,13 +9,13 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| D3 | – | reviewing [#500](https://github.com/VilfredSikker/easy-review/pull/500), [#501](https://github.com/VilfredSikker/easy-review/pull/501) | – |
-| D1 | D6 | [#478](https://github.com/VilfredSikker/easy-review/issues/478) P30a | E, C |
+| D3 | – | [#506](https://github.com/VilfredSikker/easy-review/issues/506) flaky tests under load | W |
+| D1 | D6 | [#481](https://github.com/VilfredSikker/easy-review/issues/481) P33a, step plan | W |
 | D4 | T6 store core | [#480](https://github.com/VilfredSikker/easy-review/issues/480) P32b | W |
-| T2 | T4 git port | idle | – |
+| T2 | T4 git port | idle (reviews) | – |
 | T1, D2, D5 | – | idle | – |
 
-**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35 and P26a–P29 are merged; P30a and P48 are in progress, and P32a is in review; 
+**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35, P26a–P30a, P48 and P32a.1 are merged; P32a.2 and P32b are in progress; 
 
 ## Progress
 
@@ -65,8 +65,8 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P28b | [#476](https://github.com/VilfredSikker/easy-review/issues/476) Review-flow launch and the Deep-run cancel/orphan test | W | opus | ✅ | [#498](https://github.com/VilfredSikker/easy-review/pull/498) | D1; three rounds, found and fixed an arena registry leak |
 | P29 | [#477](https://github.com/VilfredSikker/easy-review/issues/477) Tab-local prompts, the shell path and the summary job (D18) | E | opus | ✅ | [#499](https://github.com/VilfredSikker/easy-review/pull/499) | D3 |
 | P48 | [#502](https://github.com/VilfredSikker/easy-review/issues/502) Retire the legacy auto-triage flag (D22) | E/F | sonnet | ✅ | [#503](https://github.com/VilfredSikker/easy-review/pull/503) | T2 |
-| P30a | [#478](https://github.com/VilfredSikker/easy-review/issues/478) Host commits job outputs | E/C | opus | 🟡 | | D1; plan approved |
-| P32a | [#479](https://github.com/VilfredSikker/easy-review/issues/479) Workflow record and crash resume | W | opus | 🔧 | [#500](https://github.com/VilfredSikker/easy-review/pull/500), [#501](https://github.com/VilfredSikker/easy-review/pull/501) | D4; CI fix |
+| P30a | [#478](https://github.com/VilfredSikker/easy-review/issues/478) Host commits job outputs | E/C | opus | ✅ | [#504](https://github.com/VilfredSikker/easy-review/pull/504), [#505](https://github.com/VilfredSikker/easy-review/pull/505) | D1; T2 reviewed both |
+| P32a | [#479](https://github.com/VilfredSikker/easy-review/issues/479) Workflow record and crash resume | W | opus | 🔵 | [#500](https://github.com/VilfredSikker/easy-review/pull/500), [#501](https://github.com/VilfredSikker/easy-review/pull/501) | D4; #500 merged, #501 resolving a conflict |
 | P32b | [#480](https://github.com/VilfredSikker/easy-review/issues/480) Panel stage and the free round measurement (D17) | W | opus | 🟡 | | D4; plan approved, stacked on #501 |
 | P33a | [#481](https://github.com/VilfredSikker/easy-review/issues/481) Arena reviewers and arbiter onto the JobRunner | W | opus | ⬜ | | after #480 |
 | P33b | [#482](https://github.com/VilfredSikker/easy-review/issues/482) Delete the arena registry, pid kill, `progress.jsonl` and glue | W | opus | ⬜ | | after #477, #481 |
