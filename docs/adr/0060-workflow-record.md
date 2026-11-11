@@ -22,10 +22,10 @@ Each bucket gets one `workflow.json`, the Enveloped store kind `workflow`. It is
 host-written through `store.update_durable`, one record per bucket, because
 admission already allows one workflow per bucket. Its stages mirror the flow's
 planned task rows by the same stable ids (`triage`, `finding:<lens>`,
-`reviewer:<id>:round:<n>`, `verifying:cross`, `verifying:arbiter`), plus one
-`arena` stage for a run started from the arena launcher. Every stage stores a
-status (`pending`, `running`, `complete`, `failed`, `interrupted`), the artifact
-it wrote and the diff generation it ran against.
+`reviewer:<id>:round:<n>`, `verifying:cross`, `verifying:arbiter`), plus
+`panel` and `arbiter` stages for a run started from the arena launcher (ADR
+0061). Every stage stores a status (`pending`, `running`, `complete`, `failed`,
+`interrupted`), the artifact it wrote and the diff generation it ran against.
 
 The running workflow holds the bucket's `er-store` lease for its life; the
 record names the holder (pid and a per-process label). Admission asks the lease

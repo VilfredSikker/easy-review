@@ -10,6 +10,7 @@ mod import;
 mod merge;
 mod model;
 mod orchestrator;
+mod panel;
 mod projections;
 mod provenance;
 mod registry;
