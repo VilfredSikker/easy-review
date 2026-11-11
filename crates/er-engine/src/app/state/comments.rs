@@ -3014,7 +3014,7 @@ impl App {
                 // The shell path stays a job: it launches provider CLIs, so it
                 // keeps its slot and its stop control like any other run.
                 let spec = JobSpec {
-                    kind: er_agent::job::JobKind::Other(name_owned.to_string()),
+                    kind: er_agent::job::JobKind::Shell(name_owned.to_string()),
                     provider: ProviderSpec {
                         program: "sh".to_string(),
                         args: vec!["-c".to_string(), cmd],
@@ -7173,7 +7173,7 @@ mod github_handle_tests {
 
             let kinds = crate::app::take_submitted_tab_job_kinds();
             assert!(
-                kinds.contains(&er_agent::job::JobKind::Other("pkg/test".into())),
+                kinds.contains(&er_agent::job::JobKind::Shell("pkg/test".into())),
                 "{kinds:?}"
             );
         });
