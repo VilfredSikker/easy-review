@@ -667,6 +667,13 @@ impl ReviewFlowSnapshot {
             } => ("done", *kept, *dropped, *awaiting_accept, None),
             FlowState::Failed { reason } => ("failed", 0, 0, 0, Some(reason.clone())),
             FlowState::Cancelled => ("cancelled", 0, 0, 0, None),
+            FlowState::Interrupted { unfinished } => (
+                "interrupted",
+                0,
+                0,
+                0,
+                Some(format!("{unfinished} unfinished stage(s) can be re-run")),
+            ),
         };
 
         Self {

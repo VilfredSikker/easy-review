@@ -81,6 +81,41 @@ impl App {
     /// Start a flow against the active local view. `scope` must identify that
     /// exact view; branch, staged and unstaged diffs are supported.
     pub fn start_review_flow(&mut self, scope: &str) -> Result<()> {
+        self.start_review_flow_inner(scope, None)
+    }
+
+    /// Re-run an interrupted workflow. A Quick or Standard record at the same
+    /// diff generation resumes only its unfinished stages; anything else starts
+    /// a new flow, which re-confirms Deep and re-runs the panel rather than
+    /// trusting a partial one.
+    pub fn rerun_review_flow(&mut self, er_dir: &str) -> Result<()> {
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(er_dir)?;
+        let record = crate::ai::workflow_record::load(&store, &scope)?
+            .ok_or_else(|| anyhow::anyhow!("no workflow record exists for this bucket"))?;
+        if !record.offers_rerun() {
+            bail!("this review has no unfinished stages to re-run");
+        }
+        let current = crate::ai::prepared_diff::diff_tmp_hash(er_dir).unwrap_or_default();
+        let plan = record.plan_resume(&current);
+        let resumable = matches!(
+            record.kind,
+            Some(crate::ai::WorkflowKind::Quick | crate::ai::WorkflowKind::Standard)
+        );
+        if plan.restart || !resumable {
+            return self.start_review_flow("branch");
+        }
+        self.start_review_flow_inner("branch", Some((&record, &plan)))
+    }
+
+    fn start_review_flow_inner(
+        &mut self,
+        scope: &str,
+        resume: Option<(
+            &crate::ai::WorkflowRecord,
+            &crate::ai::workflow_record::ResumePlan,
+        )>,
+    ) -> Result<()> {
         let (
             target,
             arena_scope,
@@ -203,6 +238,82 @@ impl App {
                 bail!("failed to prepare review inputs: {error}");
             }
         };
+
+        if let Some((record, plan)) = resume {
+            if record.diff_hash != diff_hash {
+                let _ = self.release_review_flow_lease(&lease);
+                bail!("the prepared diff changed; start a new review flow");
+            }
+            let depth = match record.kind {
+                Some(crate::ai::WorkflowKind::Quick) => FlowDepth::Quick,
+                Some(crate::ai::WorkflowKind::Standard) => FlowDepth::Standard,
+                _ => {
+                    let _ = self.release_review_flow_lease(&lease);
+                    bail!("this workflow cannot be resumed");
+                }
+            };
+            let lenses = plan.lenses();
+            if lenses.is_empty() {
+                let _ = self.release_review_flow_lease(&lease);
+                bail!("this workflow has no unfinished finders to re-run");
+            }
+            let mut flow = super::workflow::flow_from_record(record);
+            // The projection is terminal; the resumed plan starts at finding.
+            flow.state = FlowState::Triaging;
+            flow.apply(FlowEvent::TriageSucceeded {
+                plan: Some((depth, lenses.clone())),
+            });
+            for task in &mut flow.tasks {
+                task.status = if plan.kept.iter().any(|stage| stage.id == task.id) {
+                    FlowTaskStatus::Done
+                } else {
+                    FlowTaskStatus::Waiting
+                };
+            }
+            let mut context = ReviewFlowContext {
+                lease,
+                target: target.clone(),
+                scope: scope.to_owned(),
+                arena_scope,
+                repo_root,
+                reviewed_ref_note,
+                branch_ref,
+                base_branch,
+                raw_diff,
+                config,
+                model_pools,
+                assignments: Vec::new(),
+                arbiter: None,
+                owned_tasks: HashMap::new(),
+                enqueued_lenses: HashSet::new(),
+                successful_lenses: HashSet::new(),
+                successful_finder_providers: Vec::new(),
+                successful_arbiter_provider: None,
+                backups: HashMap::new(),
+                next_archive: 2,
+                arena_run_id: None,
+                arena_progress_offset: 0,
+                arena_progress_round: 0,
+                professor_follow_up_suggested: false,
+                draining: false,
+            };
+            if let Err(error) = Self::plan_finders(&mut context, depth, &lenses) {
+                let _ = self.release_review_flow_lease(&context.lease);
+                return Err(error);
+            }
+            let key = target.er_dir.clone();
+            if let Err(error) = self.enqueue_finders(&mut context, &mut flow) {
+                let _ = self.release_review_flow_lease(&context.lease);
+                return Err(error);
+            }
+            self.review_flows.insert(key.clone(), flow);
+            self.review_flow_contexts.insert(key.clone(), context);
+            if let Some(flow) = self.review_flows.get(&key) {
+                Self::sync_workflow_record(&key, flow);
+            }
+            self.bump_review_flow_revision();
+            return Ok(());
+        }
 
         // The record exists before the first stage starts, so a crash at any
         // point leaves its owner and plan on disk.
@@ -1282,6 +1393,9 @@ fn flow_notification_message(
             format!("{subject} was cancelled; background work is draining.")
         }
         FlowState::Cancelled => format!("{subject} was cancelled."),
+        FlowState::Interrupted { unfinished } => format!(
+            "{subject} was interrupted; {unfinished} unfinished stage(s) can be re-run."
+        ),
     }
 }
 
@@ -2532,5 +2646,91 @@ esac
         let message = flow_notification_message(&flow, &target, false);
         assert!(message.contains("failed: verification failed"));
         assert!(!message.contains("Providers:"));
+    }
+
+    #[test]
+    fn a_rerun_skips_completed_triage_and_enqueues_only_the_unfinished_finder() {
+        use crate::ai::workflow_record::{self, WorkflowOutcome};
+        use crate::ai::{StageRecord, StageStatus, WorkflowKind, WorkflowRecord};
+
+        let _serial = crate::agent_slots::test_serial();
+        let dir = TestDir::new("rerun");
+        crate::storage::with_process_test_storage_root(dir.path(), || {
+            let mut app = fake_app(&dir, "general", &[]);
+            let bucket = app.tab().er_dir();
+            let raw = app.tab().raw_diff_for_review("branch").unwrap();
+            let filtered = crate::git::filter_raw_diff_exclude_globs(&raw, &[]);
+            let hash = crate::ai::prepared_diff::ensure_review_inputs_from_config(
+                &bucket, &filtered, "repo", None,
+            )
+            .unwrap();
+            let stage = |id: &str, kind: crate::ai::StageKind, status| StageRecord {
+                id: id.to_string(),
+                stage: kind,
+                label: id.to_string(),
+                status,
+                output: String::new(),
+                diff_hash: hash.clone(),
+            };
+            let record = WorkflowRecord {
+                version: 1,
+                kind: Some(WorkflowKind::Standard),
+                diff_hash: hash.clone(),
+                started_at: "t0".to_string(),
+                outcome: Some(WorkflowOutcome::Interrupted),
+                holder: None,
+                stages: vec![
+                    stage(
+                        "triage",
+                        crate::ai::StageKind::Triage,
+                        StageStatus::Complete,
+                    ),
+                    stage(
+                        "finding:general",
+                        crate::ai::StageKind::Finding,
+                        StageStatus::Interrupted,
+                    ),
+                    stage(
+                        "verifying:arbiter",
+                        crate::ai::StageKind::Verifying,
+                        StageStatus::Pending,
+                    ),
+                ],
+            };
+            let scope = er_store::Scope::dir(&bucket).unwrap();
+            workflow_record::save(&crate::store_registry::store(), &scope, &record).unwrap();
+
+            app.rerun_review_flow(&bucket).unwrap();
+
+            let flow = app
+                .review_flow_for(&bucket)
+                .expect("the resume projected a flow");
+            assert!(matches!(flow.state, FlowState::Finding), "{:?}", flow.state);
+            assert_eq!(
+                flow.tasks
+                    .iter()
+                    .find(|task| task.id == "triage")
+                    .unwrap()
+                    .status,
+                FlowTaskStatus::Done,
+                "the completed triage stage is not re-run"
+            );
+            assert!(
+                !app.pending_background_tasks
+                    .iter()
+                    .any(|task| task.command_name == "triage"),
+                "no triage task was enqueued"
+            );
+            assert!(
+                app.pending_background_tasks
+                    .iter()
+                    .any(|task| task.command_name == "review")
+                    || app
+                        .background_tasks
+                        .values()
+                        .any(|task| task.task.kind == "review"),
+                "the unfinished finder was enqueued"
+            );
+        });
     }
 }

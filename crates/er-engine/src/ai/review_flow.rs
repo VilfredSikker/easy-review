@@ -69,6 +69,11 @@ pub enum FlowState {
         reason: String,
     },
     Cancelled,
+    /// A durable record whose owner died before the run finished. Nothing is
+    /// running; the stages below `unfinished` did not complete.
+    Interrupted {
+        unfinished: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

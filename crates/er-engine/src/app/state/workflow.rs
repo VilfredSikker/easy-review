@@ -90,9 +90,11 @@ impl App {
         });
     }
 
-    /// On load, mark a dead owner's running stages `Interrupted`. The lease
-    /// probe does not wait, and nothing is enqueued or spawned here.
-    pub fn reconcile_workflow_records(&self) {
+    /// On load, mark a dead owner's running stages `Interrupted` and project
+    /// the record into the flow view so the user can re-run it. The lease probe
+    /// does not wait, and nothing is enqueued or spawned here.
+    pub fn reconcile_workflow_records(&mut self) {
+        let mut projections = Vec::new();
         for tab in &self.tabs {
             let er_dir = tab.er_dir();
             if self.workflow_leases.contains_key(&er_dir) {
@@ -102,16 +104,14 @@ impl App {
             let Ok(scope) = Scope::dir(&er_dir) else {
                 continue;
             };
-            let Ok(Some(record)) = workflow_record::load(&store, &scope) else {
+            let Ok(Some(mut record)) = workflow_record::load(&store, &scope) else {
                 continue;
             };
-            if !record.has_running_stage() {
-                continue;
-            }
-            let Ok(Some(guard)) = workflow_record::try_lease(&store, &scope, "reconcile") else {
-                continue;
-            };
-            let _ = workflow_record::update(&store, &scope, |record| {
+            if record.has_running_stage() {
+                let Ok(Some(guard)) = workflow_record::try_lease(&store, &scope, "reconcile")
+                else {
+                    continue;
+                };
                 for stage in &mut record.stages {
                     if stage.status == StageStatus::Running {
                         stage.status = StageStatus::Interrupted;
@@ -119,9 +119,75 @@ impl App {
                 }
                 record.outcome = Some(WorkflowOutcome::Interrupted);
                 record.holder = None;
-            });
-            drop(guard);
+                let stored = record.clone();
+                let _ = workflow_record::update(&store, &scope, |record| {
+                    *record = stored;
+                });
+                drop(guard);
+            }
+            if record.offers_rerun() {
+                projections.push((er_dir, flow_from_record(&record)));
+            }
         }
+        for (er_dir, flow) in projections {
+            self.review_flows.insert(er_dir, flow);
+        }
+    }
+}
+
+pub(super) fn flow_from_record(record: &WorkflowRecord) -> ReviewFlow {
+    let mut flow = ReviewFlow::new(record.diff_hash.clone());
+    flow.depth = match record.kind {
+        Some(WorkflowKind::Quick) => Some(FlowDepth::Quick),
+        Some(WorkflowKind::Standard) => Some(FlowDepth::Standard),
+        Some(WorkflowKind::Deep) => Some(FlowDepth::Deep),
+        _ => None,
+    };
+    flow.lenses = record
+        .stages
+        .iter()
+        .filter_map(|stage| stage.id.strip_prefix("finding:").map(str::to_string))
+        .collect();
+    flow.tasks = record.stages.iter().map(task_from_stage).collect();
+    let unfinished = record
+        .stages
+        .iter()
+        .filter(|stage| stage.status != StageStatus::Complete)
+        .count();
+    flow.state = crate::ai::review_flow::FlowState::Interrupted { unfinished };
+    flow
+}
+
+pub(super) fn task_from_stage(
+    stage: &crate::ai::StageRecord,
+) -> crate::ai::review_flow::FlowTaskProgress {
+    use crate::ai::review_flow::{FlowTaskProgress, FlowTaskStage, FlowTaskStatus};
+    use crate::ai::StageKind;
+    FlowTaskProgress {
+        id: stage.id.clone(),
+        stage: match stage.stage {
+            StageKind::Triage => FlowTaskStage::Triage,
+            StageKind::Finding | StageKind::Arena => FlowTaskStage::Finding,
+            StageKind::Verifying => FlowTaskStage::Verifying,
+        },
+        lens: stage.id.strip_prefix("finding:").map(str::to_string),
+        label: stage.label.clone(),
+        purpose: String::new(),
+        provider_id: String::new(),
+        provider_label: String::new(),
+        model_id: String::new(),
+        model_label: String::new(),
+        status: match stage.status {
+            StageStatus::Pending => FlowTaskStatus::Waiting,
+            StageStatus::Running => FlowTaskStatus::Running,
+            StageStatus::Complete => FlowTaskStatus::Done,
+            StageStatus::Failed => FlowTaskStatus::Failed,
+            StageStatus::Interrupted => FlowTaskStatus::Cancelled,
+        },
+        error: None,
+        background_task_id: None,
+        round: None,
+        total_rounds: None,
     }
 }
 
@@ -237,6 +303,11 @@ mod tests {
             assert_eq!(record.outcome, Some(WorkflowOutcome::Interrupted));
             assert!(app.pending_background_tasks.is_empty());
             assert!(app.background_tasks.is_empty());
+            // The record projects into the flow view so the user can re-run it.
+            assert!(matches!(
+                app.review_flow_for(&er_dir).map(|flow| &flow.state),
+                Some(crate::ai::review_flow::FlowState::Interrupted { .. })
+            ));
         });
     }
 
@@ -244,7 +315,7 @@ mod tests {
     fn load_leaves_a_record_whose_lease_is_held_alone() {
         let root = tempfile::tempdir().unwrap();
         crate::storage::with_process_test_storage_root(root.path(), || {
-            let app = test_app(&root.path().join("bucket"));
+            let mut app = test_app(&root.path().join("bucket"));
             let er_dir = app.tab().er_dir();
             let scope = Scope::dir(&er_dir).unwrap();
             let holder = crate::store_registry::store()
@@ -277,6 +348,8 @@ mod tests {
                 StageStatus::Running
             );
             assert_eq!(stored.outcome, None);
+            // A live owner's record is not offered for re-run.
+            assert!(app.review_flow_for(&er_dir).is_none());
             drop(holder);
         });
     }

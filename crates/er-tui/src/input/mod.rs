@@ -47,6 +47,13 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
             KeyCode::PageDown => scroll_review_flow_detail(app, 8),
             KeyCode::PageUp => scroll_review_flow_detail(app, -8),
+            KeyCode::Char('r') => {
+                if let Some(app::OverlayData::ReviewFlowProgress { er_dir, .. }) = &app.overlay {
+                    let er_dir = er_dir.clone();
+                    app.rerun_review_flow(&er_dir)?;
+                    app.overlay_close();
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
             _ => {}
         }

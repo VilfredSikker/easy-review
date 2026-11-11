@@ -311,6 +311,22 @@ pub async fn decline_review_flow(
 }
 
 #[tauri::command]
+pub async fn rerun_review_flow(
+    er_dir: String,
+    state: State<'_, AppState>,
+) -> Result<crate::snapshot::AppSnapshot, String> {
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        validate_review_flow_bucket(&app, &er_dir)?;
+        app.rerun_review_flow(&er_dir).map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(crate::commands::snap_from_command(&app, &state))
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn cancel_review_flow(
     er_dir: String,
     state: State<'_, AppState>,

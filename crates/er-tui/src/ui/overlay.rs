@@ -657,8 +657,16 @@ fn render_review_flow_progress(
         area,
     );
     f.render_widget(Clear, popup);
+    let title = if matches!(
+        flow.state,
+        er_engine::ai::review_flow::FlowState::Interrupted { .. }
+    ) {
+        " REVIEW TASKS · ↑↓ select · PgUp/PgDn detail · r re-run unfinished · Esc close "
+    } else {
+        " REVIEW TASKS · ↑↓ select · PgUp/PgDn detail · Esc close "
+    };
     let block = Block::default()
-        .title(" REVIEW TASKS · ↑↓ select · PgUp/PgDn detail · Esc close ")
+        .title(title)
         .borders(Borders::ALL)
         .style(ratatui::style::Style::default().bg(styles::PANEL()));
     let inner = block.inner(popup);

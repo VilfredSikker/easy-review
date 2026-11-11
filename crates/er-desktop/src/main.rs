@@ -1967,6 +1967,7 @@ fn main() {
             arena_commands::confirm_review_flow,
             arena_commands::decline_review_flow,
             arena_commands::cancel_review_flow,
+            arena_commands::rerun_review_flow,
             arena_commands::flow_accept_findings,
             arena_commands::flow_get_run,
             arena_commands::arena_validate_findings,
