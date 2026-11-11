@@ -881,14 +881,11 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
                 .review_flow_for(&bucket_key)
                 .and_then(|flow| flow.arena_run_id.clone())
                 .expect("the Deep arena started");
-            // A cancel reaches only children the supervisor has registered; a
-            // pid is visible just before that. Wait for the registration, not
-            // for a fixed delay.
-            wait_until(
-                "the arena to register its round-1 reviewers",
-                Duration::from_secs(10),
-                || app.arena_registry.registered_child_count(&run_id) >= 4,
-            );
+            // A panel reviewer's child belongs to the runner's handle, not to
+            // the arena registry, and the handle joins the panel's cancel
+            // bridge before the spawn. The four pids above are therefore the
+            // registration a cancel needs; there is no separate child list to
+            // wait for.
             let all = read_pids(&pids_path);
             let arena_pids = all[before..].to_vec();
             let _arena_guard = PidGuard(arena_pids.clone());
