@@ -143,7 +143,7 @@ function reviewFlowOverallStage(flow: ReviewFlowSnapshot): string {
     return `Review done · ${flow.kept} kept · ${flow.dropped} dropped${providerNote}`;
   }
   if (flow.state === "failed") return `Review failed · ${flow.reason ?? "Unknown error"}`;
-  return ({ triaging: "Review triaging", verifying: "Review verifying", skipped: "Review skipped", cancelled: "Review cancelled" } as const)[flow.state];
+  return ({ triaging: "Review triaging", verifying: "Review verifying", skipped: "Review skipped", cancelled: "Review cancelled", interrupted: "Review interrupted" } as const)[flow.state];
 }
 
 export function reviewFlowEstimate(flow: ReviewFlowSnapshot | null | undefined): string | null {

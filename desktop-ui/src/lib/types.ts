@@ -353,7 +353,7 @@ export interface ReviewFlowTaskProgress {
 }
 
 export interface ReviewFlowSnapshot {
-  state: "triaging" | "skipped" | "awaiting_confirmation" | "finding" | "verifying" | "done" | "failed" | "cancelled";
+  state: "triaging" | "skipped" | "awaiting_confirmation" | "finding" | "verifying" | "done" | "failed" | "cancelled" | "interrupted";
   tasks?: ReviewFlowTaskProgress[];
   depth: "quick" | "standard" | "deep" | null;
   diff_hash: string;

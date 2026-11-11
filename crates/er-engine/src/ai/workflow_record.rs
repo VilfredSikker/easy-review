@@ -156,6 +156,97 @@ impl WorkflowRecord {
                 .iter()
                 .any(|stage| matches!(stage.status, StageStatus::Interrupted | StageStatus::Failed))
     }
+
+    /// Whether the record's unfinished stages can actually be continued.
+    ///
+    /// A Deep record restarts from triage, so any unfinished stage resumes.
+    /// Quick and Standard resume at finding or verification: a plan whose
+    /// only unfinished stage is triage has nothing to continue, and starting
+    /// a new flow runs triage anyway. Offering `r` for such a record would
+    /// promise a re-run the resume then refuses.
+    pub fn resumable(&self) -> bool {
+        if !self.offers_rerun() {
+            return false;
+        }
+        match self.kind {
+            Some(WorkflowKind::Quick | WorkflowKind::Standard) => self.stages.iter().any(|stage| {
+                stage.status != StageStatus::Complete
+                    && matches!(stage.stage, StageKind::Finding | StageKind::Verifying)
+            }),
+            _ => true,
+        }
+    }
+
+    /// The stages a re-run must produce again, in plan order.
+    pub fn plan_resume(&self, current_diff_hash: &str) -> ResumePlan {
+        if self.diff_hash != current_diff_hash {
+            return ResumePlan {
+                restart: true,
+                rerun: self.stages.clone(),
+                kept: Vec::new(),
+            };
+        }
+        // A finished producing stage is reusable only while its consumers did
+        // not also finish: verification and cross-voting read the findings.
+        let finding_reruns = self.stages.iter().any(|stage| {
+            stage.stage == StageKind::Finding && stage.status != StageStatus::Complete
+        });
+        let cross_reruns = self.stages.iter().any(|stage| {
+            stage.stage == StageKind::Verifying
+                && !stage.id.ends_with(":arbiter")
+                && stage.status != StageStatus::Complete
+        });
+        let rerun = |stage: &StageRecord| {
+            if stage.status != StageStatus::Complete {
+                return true;
+            }
+            if stage.stage == StageKind::Verifying && finding_reruns {
+                return true;
+            }
+            cross_reruns && stage.id.starts_with("reviewer:")
+        };
+        ResumePlan {
+            restart: false,
+            rerun: self
+                .stages
+                .iter()
+                .filter(|stage| rerun(stage))
+                .cloned()
+                .collect(),
+            kept: self
+                .stages
+                .iter()
+                .filter(|stage| !rerun(stage))
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
+/// What a re-run of a workflow needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumePlan {
+    /// The diff generation changed, so nothing can be reused.
+    pub restart: bool,
+    /// Stages the re-run produces again, in plan order.
+    pub rerun: Vec<StageRecord>,
+    /// Stages whose output is reused.
+    pub kept: Vec<StageRecord>,
+}
+
+impl ResumePlan {
+    pub fn stage_ids(&self) -> Vec<&str> {
+        self.rerun.iter().map(|stage| stage.id.as_str()).collect()
+    }
+
+    /// Lenses whose finding stage must run again (`finding:<lens>` rows).
+    pub fn lenses(&self) -> Vec<String> {
+        self.rerun
+            .iter()
+            .filter(|stage| stage.stage == StageKind::Finding && !stage.id.starts_with("reviewer:"))
+            .filter_map(|stage| stage.id.strip_prefix("finding:").map(str::to_string))
+            .collect()
+    }
 }
 
 /// Map the flow's task rows onto durable stage rows. `Skipped` rows never ran,
@@ -561,6 +652,139 @@ mod tests {
                 newer
             );
         });
+    }
+
+    fn plan_record(stages: Vec<(&str, FlowTaskStage, StageStatus)>) -> WorkflowRecord {
+        WorkflowRecord {
+            version: WorkflowRecord::VERSION,
+            kind: Some(WorkflowKind::Deep),
+            diff_hash: "hash".to_string(),
+            started_at: "t0".to_string(),
+            outcome: None,
+            holder: None,
+            stages: stages
+                .into_iter()
+                .map(|(id, stage, status)| StageRecord {
+                    id: id.to_string(),
+                    stage: match stage {
+                        FlowTaskStage::Triage => StageKind::Triage,
+                        FlowTaskStage::Finding => StageKind::Finding,
+                        FlowTaskStage::Verifying => StageKind::Verifying,
+                    },
+                    label: id.to_string(),
+                    status,
+                    output: String::new(),
+                    diff_hash: "hash".to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn crash_after_finders_does_not_rerun_triage() {
+        let record = plan_record(vec![
+            ("triage", FlowTaskStage::Triage, StageStatus::Complete),
+            (
+                "finding:security",
+                FlowTaskStage::Finding,
+                StageStatus::Interrupted,
+            ),
+            (
+                "verifying:arbiter",
+                FlowTaskStage::Verifying,
+                StageStatus::Pending,
+            ),
+        ]);
+        let plan = record.plan_resume("hash");
+        assert!(!plan.restart);
+        assert_eq!(
+            plan.kept.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["triage"]
+        );
+        assert_eq!(plan.stage_ids(), ["finding:security", "verifying:arbiter"]);
+        assert_eq!(plan.lenses(), ["security"]);
+    }
+
+    #[test]
+    fn a_changed_generation_restarts_every_stage() {
+        let record = plan_record(vec![
+            ("triage", FlowTaskStage::Triage, StageStatus::Complete),
+            (
+                "finding:security",
+                FlowTaskStage::Finding,
+                StageStatus::Complete,
+            ),
+        ]);
+        let plan = record.plan_resume("other-generation");
+        assert!(plan.restart);
+        assert_eq!(plan.stage_ids(), ["triage", "finding:security"]);
+        assert!(plan.kept.is_empty());
+    }
+
+    #[test]
+    fn deep_cross_voting_reruns_round_one_as_a_unit() {
+        let record = plan_record(vec![
+            ("triage", FlowTaskStage::Triage, StageStatus::Complete),
+            (
+                "reviewer:a:round:1",
+                FlowTaskStage::Finding,
+                StageStatus::Complete,
+            ),
+            (
+                "reviewer:b:round:1",
+                FlowTaskStage::Finding,
+                StageStatus::Interrupted,
+            ),
+            (
+                "reviewer:a:round:2",
+                FlowTaskStage::Verifying,
+                StageStatus::Interrupted,
+            ),
+            (
+                "verifying:arbiter",
+                FlowTaskStage::Verifying,
+                StageStatus::Pending,
+            ),
+        ]);
+        let plan = record.plan_resume("hash");
+        assert_eq!(
+            plan.stage_ids(),
+            [
+                "reviewer:a:round:1",
+                "reviewer:b:round:1",
+                "reviewer:a:round:2",
+                "verifying:arbiter"
+            ],
+            "a completed reviewer cannot be reused while the cross round is unfinished"
+        );
+    }
+
+    #[test]
+    fn independent_finders_rerun_per_job_when_the_arbiter_is_unfinished() {
+        let record = plan_record(vec![
+            ("triage", FlowTaskStage::Triage, StageStatus::Complete),
+            (
+                "finding:security",
+                FlowTaskStage::Finding,
+                StageStatus::Complete,
+            ),
+            (
+                "finding:performance",
+                FlowTaskStage::Finding,
+                StageStatus::Interrupted,
+            ),
+            (
+                "verifying:arbiter",
+                FlowTaskStage::Verifying,
+                StageStatus::Complete,
+            ),
+        ]);
+        let plan = record.plan_resume("hash");
+        assert_eq!(
+            plan.stage_ids(),
+            ["finding:performance", "verifying:arbiter"],
+            "a completed independent job is reused, but the arbiter re-grades the changed set"
+        );
     }
 
     #[test]
