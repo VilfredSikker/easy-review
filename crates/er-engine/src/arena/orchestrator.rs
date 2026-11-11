@@ -595,62 +595,64 @@ fn start_arena_run_with_kind(
     let paths_clone = paths.clone();
     let patch_path = paths.diff_patch().display().to_string();
 
-    registry.start_supervised(
-        run_id.clone(),
-        cancel_handle,
-        children_handle,
-        status_handle,
-        move |registry_thread| {
-            let ctx = SupervisorCtx {
-                registry: registry_thread.as_ref(),
-                config: &config,
-                repo_root: &repo_root,
-                reviewed_ref_note: reviewed_ref_note.as_deref(),
-                paths: &paths_clone,
-                cancel: &cancel,
-                children: &children,
-                status: &status,
-            };
-            let result = run_supervisor(&ctx, &patch_path, run_id_thread.clone(), reviewers);
-            if let Err(e) = result {
-                if is_cancelled_error(&e) {
-                    if let Ok(mut st) = status.lock() {
-                        *st = RunStatus::Cancelled;
-                    }
-                    if let Ok(mut run) = load_run(&paths_clone) {
-                        run.status = RunStatus::Cancelled;
-                        run.completed_at = Some(crate::app::chrono_now());
-                        let _ = save_run(&paths_clone, &run);
-                    }
-                } else {
-                    crate::dev_log::arena_line(format!("run {} failed: {e:#}", run_id_thread));
-                    if let Ok(mut st) = status.lock() {
-                        *st = RunStatus::Failed;
-                    }
-                    if let Ok(mut run) = load_run(&paths_clone) {
-                        run.status = RunStatus::Failed;
-                        run.completed_at = Some(crate::app::chrono_now());
-                        let _ = save_run(&paths_clone, &run);
+    registry
+        .start_supervised(
+            run_id.clone(),
+            cancel_handle,
+            children_handle,
+            status_handle,
+            move |registry_thread| {
+                let ctx = SupervisorCtx {
+                    registry: registry_thread.as_ref(),
+                    config: &config,
+                    repo_root: &repo_root,
+                    reviewed_ref_note: reviewed_ref_note.as_deref(),
+                    paths: &paths_clone,
+                    cancel: &cancel,
+                    children: &children,
+                    status: &status,
+                };
+                let result = run_supervisor(&ctx, &patch_path, run_id_thread.clone(), reviewers);
+                if let Err(e) = result {
+                    if is_cancelled_error(&e) {
+                        if let Ok(mut st) = status.lock() {
+                            *st = RunStatus::Cancelled;
+                        }
+                        if let Ok(mut run) = load_run(&paths_clone) {
+                            run.status = RunStatus::Cancelled;
+                            run.completed_at = Some(crate::app::chrono_now());
+                            let _ = save_run(&paths_clone, &run);
+                        }
+                    } else {
+                        crate::dev_log::arena_line(format!("run {} failed: {e:#}", run_id_thread));
+                        if let Ok(mut st) = status.lock() {
+                            *st = RunStatus::Failed;
+                        }
+                        if let Ok(mut run) = load_run(&paths_clone) {
+                            run.status = RunStatus::Failed;
+                            run.completed_at = Some(crate::app::chrono_now());
+                            let _ = save_run(&paths_clone, &run);
+                        }
                     }
                 }
-            }
-            if let Some(workflow) = workflow.as_ref() {
-                let outcome = match load_run(&paths_clone).map(|run| run.status) {
-                    Ok(RunStatus::Complete) => crate::ai::WorkflowOutcome::Complete,
-                    Ok(RunStatus::Cancelled) => crate::ai::WorkflowOutcome::Cancelled,
-                    _ => crate::ai::WorkflowOutcome::Failed,
-                };
-                let _ = crate::ai::workflow_record::end_arena_run(
-                    &crate::store_registry::store(),
-                    workflow,
-                    &run_id_thread,
-                    outcome,
-                );
-            }
-            registry_thread.release_run(&run_id_thread);
-            registry_thread.notify_progress();
-        },
-    );
+                if let Some(workflow) = workflow.as_ref() {
+                    let outcome = match load_run(&paths_clone).map(|run| run.status) {
+                        Ok(RunStatus::Complete) => crate::ai::WorkflowOutcome::Complete,
+                        Ok(RunStatus::Cancelled) => crate::ai::WorkflowOutcome::Cancelled,
+                        _ => crate::ai::WorkflowOutcome::Failed,
+                    };
+                    let _ = crate::ai::workflow_record::end_arena_run(
+                        &crate::store_registry::store(),
+                        workflow,
+                        &run_id_thread,
+                        outcome,
+                    );
+                }
+                registry_thread.release_run(&run_id_thread);
+                registry_thread.notify_progress();
+            },
+        )
+        .context("start the arena supervisor")?;
 
     Ok(run_id)
 }
@@ -774,83 +776,85 @@ pub fn start_seeded_run(
     let diff_hash = params.diff_hash.clone();
     let reviewed_ref_note = params.reviewed_ref_note;
 
-    registry.start_supervised(
-        run_id.clone(),
-        cancel_handle,
-        children_handle,
-        status_handle,
-        move |registry_thread| {
-            let ctx = SupervisorCtx {
-                registry: registry_thread.as_ref(),
-                config: &config,
-                repo_root: &repo_root,
-                reviewed_ref_note: reviewed_ref_note.as_deref(),
-                paths: &paths_clone,
-                cancel: &cancel,
-                children: &children,
-                status: &status,
-            };
-            let mut run = match load_run(&paths_clone) {
-                Ok(run) => run,
-                Err(e) => {
-                    crate::dev_log::arena_line(format!(
-                        "seeded {run_id_thread}: load failed: {e:#}"
-                    ));
-                    registry_thread.release_run(&run_id_thread);
-                    registry_thread.notify_progress();
-                    return;
-                }
-            };
-            let effort = run.config.effort.clone();
-            let outcome = run_arbiter(&ctx, &mut run, effort.as_deref());
-            match outcome {
-                Ok(ArbiterOutcome::Cancelled) => {}
-                Ok(ArbiterOutcome::Judged) => {
-                    // The review's copy of the verdicts: the overlay the review
-                    // loads, so `review.json` keeps its three writers (ADR 0035).
-                    // Written before the run reads Complete, so anything that sees
-                    // Complete can also load the verdicts.
-                    let arbiter = arbiter_review_from_run(&run, &run_id_thread, &diff_hash);
-                    if let Err(e) = crate::ai::write_arbiter_review(&er_dir, &arbiter) {
-                        crate::dev_log::arena_line(format!("seeded {run_id_thread}: {e:#}"));
+    registry
+        .start_supervised(
+            run_id.clone(),
+            cancel_handle,
+            children_handle,
+            status_handle,
+            move |registry_thread| {
+                let ctx = SupervisorCtx {
+                    registry: registry_thread.as_ref(),
+                    config: &config,
+                    repo_root: &repo_root,
+                    reviewed_ref_note: reviewed_ref_note.as_deref(),
+                    paths: &paths_clone,
+                    cancel: &cancel,
+                    children: &children,
+                    status: &status,
+                };
+                let mut run = match load_run(&paths_clone) {
+                    Ok(run) => run,
+                    Err(e) => {
+                        crate::dev_log::arena_line(format!(
+                            "seeded {run_id_thread}: load failed: {e:#}"
+                        ));
+                        registry_thread.release_run(&run_id_thread);
+                        registry_thread.notify_progress();
+                        return;
                     }
-                    run.status = RunStatus::Complete;
-                    run.completed_at = Some(crate::app::chrono_now());
-                    *status.lock().expect("arena lock poisoned") = RunStatus::Complete;
-                    let _ = save_run(&paths_clone, &run);
-                    emit(
-                        registry_thread,
-                        &paths_clone,
-                        &ProgressEvent::RunComplete {
-                            run_id: run_id_thread.clone(),
-                        },
+                };
+                let effort = run.config.effort.clone();
+                let outcome = run_arbiter(&ctx, &mut run, effort.as_deref());
+                match outcome {
+                    Ok(ArbiterOutcome::Cancelled) => {}
+                    Ok(ArbiterOutcome::Judged) => {
+                        // The review's copy of the verdicts: the overlay the review
+                        // loads, so `review.json` keeps its three writers (ADR 0035).
+                        // Written before the run reads Complete, so anything that sees
+                        // Complete can also load the verdicts.
+                        let arbiter = arbiter_review_from_run(&run, &run_id_thread, &diff_hash);
+                        if let Err(e) = crate::ai::write_arbiter_review(&er_dir, &arbiter) {
+                            crate::dev_log::arena_line(format!("seeded {run_id_thread}: {e:#}"));
+                        }
+                        run.status = RunStatus::Complete;
+                        run.completed_at = Some(crate::app::chrono_now());
+                        *status.lock().expect("arena lock poisoned") = RunStatus::Complete;
+                        let _ = save_run(&paths_clone, &run);
+                        emit(
+                            registry_thread,
+                            &paths_clone,
+                            &ProgressEvent::RunComplete {
+                                run_id: run_id_thread.clone(),
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        crate::dev_log::arena_line(format!("seeded {run_id_thread} failed: {e:#}"));
+                        *status.lock().expect("arena lock poisoned") = RunStatus::Failed;
+                        run.status = RunStatus::Failed;
+                        run.completed_at = Some(crate::app::chrono_now());
+                        let _ = save_run(&paths_clone, &run);
+                    }
+                }
+                if let Some(workflow) = workflow.as_ref() {
+                    let outcome = match load_run(&paths_clone).map(|run| run.status) {
+                        Ok(RunStatus::Complete) => crate::ai::WorkflowOutcome::Complete,
+                        Ok(RunStatus::Cancelled) => crate::ai::WorkflowOutcome::Cancelled,
+                        _ => crate::ai::WorkflowOutcome::Failed,
+                    };
+                    let _ = crate::ai::workflow_record::end_arena_run(
+                        &crate::store_registry::store(),
+                        workflow,
+                        &run_id_thread,
+                        outcome,
                     );
                 }
-                Err(e) => {
-                    crate::dev_log::arena_line(format!("seeded {run_id_thread} failed: {e:#}"));
-                    *status.lock().expect("arena lock poisoned") = RunStatus::Failed;
-                    run.status = RunStatus::Failed;
-                    run.completed_at = Some(crate::app::chrono_now());
-                    let _ = save_run(&paths_clone, &run);
-                }
-            }
-            if let Some(workflow) = workflow.as_ref() {
-                let outcome = match load_run(&paths_clone).map(|run| run.status) {
-                    Ok(RunStatus::Complete) => crate::ai::WorkflowOutcome::Complete,
-                    Ok(RunStatus::Cancelled) => crate::ai::WorkflowOutcome::Cancelled,
-                    _ => crate::ai::WorkflowOutcome::Failed,
-                };
-                let _ = crate::ai::workflow_record::end_arena_run(
-                    &crate::store_registry::store(),
-                    workflow,
-                    &run_id_thread,
-                    outcome,
-                );
-            }
-            registry_thread.release_run(&run_id_thread);
-            registry_thread.notify_progress();
-        },
-    );
+                registry_thread.release_run(&run_id_thread);
+                registry_thread.notify_progress();
+            },
+        )
+        .context("start the seeded arena supervisor")?;
     Ok(Some(run_id))
 }
 
