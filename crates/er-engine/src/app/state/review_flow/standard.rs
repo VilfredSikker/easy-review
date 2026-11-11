@@ -106,11 +106,13 @@ mod tests {
         let bucket = dir.path().join("bucket");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::create_dir_all(&bucket).unwrap();
-        let script = "case \"$1\" in\n\
+        let script = crate::test_support::staged_script(
+            "case \"$1\" in\n\
              *triage.json*) hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{\"primary\":\"arena\",\"experts\":[]}}' \"$hash\" > '__BUCKET__/triage.json' ;;\n\
              *) echo \"finder not faked\" >&2; exit 2 ;;\n\
-             esac"
-            .replace("__BUCKET__", &bucket.to_string_lossy());
+             esac",
+            &bucket.to_string_lossy(),
+        );
         let provider = || AiProviderConfig {
             command: "/bin/sh".into(),
             args: vec![
