@@ -12,6 +12,9 @@ pub use card_job::{
     plan_card_ai_invocation, run_card_ai_subprocess, CardAiInvocation, CardReply, ProgressSink,
 };
 
+#[cfg(any(test, feature = "test-support"))]
+pub use state::comments::take_submitted_tab_job_kinds;
+
 pub use crate::git::Worktree;
 pub use state::background::{
     debug_bg_enabled, BackgroundTask, BackgroundTaskSnapshot, BackgroundTaskTarget,

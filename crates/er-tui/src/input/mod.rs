@@ -2273,4 +2273,68 @@ mod tests {
             .as_ref()
             .is_some_and(|n| n.message.contains("Comment not posted")));
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_summary_hub_action_submits_a_summary_job() {
+        let dir = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            // The recorder is process-wide; start from an empty slate.
+            er_engine::app::take_submitted_tab_job_kinds();
+            let output_dir = dir.path().join("er").to_string_lossy().into_owned();
+            std::fs::create_dir_all(&output_dir).unwrap();
+            let mut app = app_with_managed_dir(&output_dir);
+
+            let argv_file = dir.path().join("summary-argv.txt");
+            let bin = dir.path().join("fake-agent");
+            let out = argv_file.display();
+            er_engine::test_support::write_executable_script(
+                &bin,
+                &format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{out}.tmp\" && mv \"{out}.tmp\" \"{out}\"\n"
+                ),
+            )
+            .unwrap();
+            app.config.agent.command = bin.to_string_lossy().into_owned();
+            app.config.agent.args = vec!["{prompt}".into()];
+
+            dispatch_hub_action(&mut app, HubAction::RunAiAction(AiActionKind::Summary)).unwrap();
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                app.check_commands();
+                match app.tab().command_status.get("summary") {
+                    Some(er_engine::app::CommandStatus::Done) => break,
+                    Some(er_engine::app::CommandStatus::Failed(reason)) => {
+                        panic!("the summary job failed: {reason}")
+                    }
+                    _ => {}
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the summary job did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            // The prompt reaches the CLI through argv; a shell-routed summary
+            // would never run the provider at all.
+            let argv = std::fs::read_to_string(&argv_file).expect("the provider ran");
+            assert!(
+                argv.contains("summary.md"),
+                "the prompt should reach the CLI through argv: {argv}"
+            );
+            // Other tests in this binary submit jobs too; the summary must be
+            // among them, and not fall back to a catch-all kind.
+            let kinds = er_engine::app::take_submitted_tab_job_kinds();
+            assert!(
+                kinds.contains(&er_engine::job::JobKind::Summary),
+                "{kinds:?}"
+            );
+            assert!(
+                !kinds.contains(&er_engine::job::JobKind::Other("summary".into())),
+                "{kinds:?}"
+            );
+        });
+    }
 }

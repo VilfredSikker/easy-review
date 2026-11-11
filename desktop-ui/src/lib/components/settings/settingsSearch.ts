@@ -37,7 +37,6 @@ export const WATCHED_DESCRIPTIONS: DescriptionOverrides = {
 };
 
 export const COMMAND_KEYS = [
-  "commands.summary",
   "commands.test",
   "commands.lint",
   "commands.typecheck",

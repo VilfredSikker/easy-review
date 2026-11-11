@@ -21,7 +21,8 @@ use crate::decode::{decode_final_text, is_final_result_line, OutputProtocol};
 use crate::provider::{self, ProviderSpec};
 
 /// What the job is for. Mirrors the engine's `AgentTaskKind` so the two can be
-/// mapped one-to-one.
+/// mapped one-to-one; `Shell` covers the configured shell commands, which are
+/// jobs the runner caps and stops but which are not agent tasks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobKind {
     Review,
@@ -35,6 +36,7 @@ pub enum JobKind {
     ValidateComments,
     CardReply,
     ArenaRound,
+    Shell(String),
     Other(String),
 }
 

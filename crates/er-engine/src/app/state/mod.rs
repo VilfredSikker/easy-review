@@ -9601,99 +9601,51 @@ impl App {
 
 /// Parse a Claude Code `--output-format stream-json` line into a human-readable string.
 /// Returns `None` for events that should be suppressed (noise).
+///
+/// The JSON shape is decoded in `er_agent::decode`, the one place that knows
+/// a provider's event format; this only renders what it reports.
 fn parse_stream_json_line(line: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    let obj = v.as_object()?;
+    use er_agent::decode::{LogEvent, LogPart};
 
-    match obj.get("type")?.as_str()? {
-        "assistant" => {
-            // Assistant message — content is in message.content[] array
-            let message = obj.get("message")?.as_object()?;
-            let content = message.get("content")?.as_array()?;
-            let mut parts: Vec<String> = Vec::new();
-            for item in content {
-                let item_obj = match item.as_object() {
-                    Some(o) => o,
-                    None => continue,
-                };
-                let item_type = match item_obj.get("type").and_then(|t| t.as_str()) {
-                    Some(t) => t,
-                    None => continue,
-                };
-                match item_type {
-                    "text" => {
-                        let text = match item_obj.get("text").and_then(|t| t.as_str()) {
-                            Some(t) => t,
-                            None => continue,
-                        };
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            parts.push(trimmed.to_string());
-                        }
-                    }
-                    "tool_use" => {
-                        let tool = item_obj
-                            .get("name")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("tool");
-                        let input = item_obj.get("input").and_then(|i| i.as_object());
-                        let detail = match tool {
-                            "Read" => input
-                                .and_then(|i| i.get("file_path"))
-                                .and_then(|p| p.as_str())
-                                .map(shorten_path)
-                                .unwrap_or_default(),
-                            "Write" | "Edit" => input
-                                .and_then(|i| i.get("file_path"))
-                                .and_then(|p| p.as_str())
-                                .map(shorten_path)
-                                .unwrap_or_default(),
-                            "Bash" => input
-                                .and_then(|i| i.get("command"))
-                                .and_then(|c| c.as_str())
-                                .map(|c| c.to_string())
-                                .unwrap_or_default(),
-                            "Glob" | "Grep" => input
-                                .and_then(|i| i.get("pattern"))
-                                .and_then(|p| p.as_str())
-                                .map(|p| p.to_string())
-                                .unwrap_or_default(),
-                            _ => String::new(),
-                        };
-                        if detail.is_empty() {
-                            parts.push(format!("→ {}", tool));
-                        } else {
-                            parts.push(format!("→ {} {}", tool, detail));
-                        }
-                    }
-                    _ => {} // skip thinking, signatures, etc.
-                }
-            }
-            if parts.is_empty() {
-                None
-            } else {
-                Some(parts.join("  "))
-            }
+    match er_agent::decode::decode_log_line(line)? {
+        LogEvent::Assistant(parts) => {
+            let rendered: Vec<String> = parts
+                .into_iter()
+                .map(|part| match part {
+                    LogPart::Text(text) => text,
+                    LogPart::ToolUse { name, input } => render_tool_use(&name, input.as_ref()),
+                })
+                .collect();
+            (!rendered.is_empty()).then(|| rendered.join("  "))
         }
-        "tool_result" | "result" => {
-            // Tool results are verbose — skip them to reduce noise
-            None
-        }
-        "system" => {
-            // System events — show cost/usage subtypes, skip hooks and noise
-            let subtype = obj.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
-            if subtype.contains("cost") || subtype.contains("usage") || subtype.contains("result") {
-                // Try to extract a message field, fall back to subtype
-                let text = obj
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or(subtype);
-                Some(format!("⊘ {}", text))
-            } else {
-                None
-            }
-        }
-        _ => None,
+        LogEvent::SystemNote(text) => Some(format!("⊘ {}", text)),
+    }
+}
+
+fn render_tool_use(name: &str, input: Option<&serde_json::Value>) -> String {
+    let input = input.and_then(|input| input.as_object());
+    let detail = match name {
+        "Read" | "Write" | "Edit" => input
+            .and_then(|input| input.get("file_path"))
+            .and_then(|path| path.as_str())
+            .map(shorten_path)
+            .unwrap_or_default(),
+        "Bash" => input
+            .and_then(|input| input.get("command"))
+            .and_then(|command| command.as_str())
+            .map(str::to_string)
+            .unwrap_or_default(),
+        "Glob" | "Grep" => input
+            .and_then(|input| input.get("pattern"))
+            .and_then(|pattern| pattern.as_str())
+            .map(str::to_string)
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    if detail.is_empty() {
+        format!("→ {}", name)
+    } else {
+        format!("→ {} {}", name, detail)
     }
 }
 
