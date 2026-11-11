@@ -66,9 +66,6 @@ pub struct ErConfig {
 /// `{output}` (default output path, e.g. managed `{er_dir}/summary.md`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CommandsConfig {
-    /// Generate diff summary (AI hub)
-    #[serde(default)]
-    pub summary: Option<String>,
     /// Run tests (Verify hub)
     #[serde(default)]
     pub test: Option<String>,
@@ -1558,7 +1555,6 @@ impl ErConfig {
     /// disable the action and show a "not configured" hint.
     pub fn resolve_command(&self, name: &str) -> Option<String> {
         match name {
-            "summary" => self.commands.summary.clone(),
             "test" => self.commands.test.clone(),
             "lint" => self.commands.lint.clone(),
             "typecheck" => self.commands.typecheck.clone(),
@@ -1684,6 +1680,24 @@ pub fn managed_config_path() -> std::path::PathBuf {
         }
     }
     crate::storage::storage_root().join("config.toml")
+}
+
+/// Whether a config file still sets the retired `[commands].summary` key.
+///
+/// The typed config ignores unknown keys, so the file itself is the only
+/// place the key can still be seen. A file that cannot be read or parsed is
+/// not reported here; the load path already says so.
+pub(crate) fn retired_summary_command_set(path: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&text) else {
+        return false;
+    };
+    value
+        .get("commands")
+        .and_then(|commands| commands.get("summary"))
+        .is_some()
 }
 
 /// Shown persistently while a failed config load disables saving. The full
@@ -2065,13 +2079,6 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
 fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
     let mut items: Vec<ConfigItem> = vec![
         ConfigItem::SectionHeader("Commands".into()),
-        ConfigItem::StringEdit {
-            label: "Summary".into(),
-            description: "Generate diff summary".into(),
-            placeholder: "e.g. claude -p 'Summarize: {diff}'".into(),
-            get: |c| c.commands.summary.clone().unwrap_or_default(),
-            set: |c, v| c.commands.summary = if v.is_empty() { None } else { Some(v) },
-        },
         ConfigItem::StringEdit {
             label: "Test".into(),
             description: "Run tests".into(),
@@ -2711,7 +2718,7 @@ mod tests {
         // Concrete spot checks: specific known items must be present (not just a count).
         assert!(items.iter().any(|i| matches!(
             i,
-            ConfigItem::StringEdit { label, .. } if label == "Summary"
+            ConfigItem::StringEdit { label, .. } if label == "Test"
         )));
         assert!(items.iter().any(|i| matches!(
             i,
@@ -4395,6 +4402,25 @@ mod tests {
             assert!(error.to_string().contains("Refusing to save"), "{error}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "{");
         });
+    }
+
+    #[test]
+    fn the_retired_summary_key_is_seen_in_the_raw_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+
+        std::fs::write(&path, "[commands]\nsummary = \"claude -p\"\n").unwrap();
+        assert!(retired_summary_command_set(&path));
+
+        std::fs::write(&path, "[commands]\ntest = \"cargo test\"\n").unwrap();
+        assert!(!retired_summary_command_set(&path));
+
+        assert!(!retired_summary_command_set(
+            &dir.path().join("missing.toml")
+        ));
+
+        std::fs::write(&path, "{ not toml").unwrap();
+        assert!(!retired_summary_command_set(&path));
     }
 
     #[test]

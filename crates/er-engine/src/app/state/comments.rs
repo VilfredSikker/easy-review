@@ -725,6 +725,33 @@ fn log_job_progress(
     });
 }
 
+/// Test seam: the job kinds the tab-local spawn paths submitted, in order.
+#[cfg(any(test, feature = "test-support"))]
+static SUBMITTED_TAB_JOB_KINDS: std::sync::Mutex<Vec<er_agent::job::JobKind>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Take the job kinds the tab-local spawn paths submitted since the last call.
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_submitted_tab_job_kinds() -> Vec<er_agent::job::JobKind> {
+    SUBMITTED_TAB_JOB_KINDS
+        .lock()
+        .map(|mut kinds| std::mem::take(&mut *kinds))
+        .unwrap_or_default()
+}
+
+fn record_submitted_tab_job(kind: &er_agent::job::JobKind) {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if let Ok(mut kinds) = SUBMITTED_TAB_JOB_KINDS.lock() {
+            kinds.push(kind.clone());
+        }
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        let _ = kind;
+    }
+}
+
 /// A successful full run of a review lens clears the scoped overlay and
 /// validation its bucket holds. Best-effort: the run already succeeded, and a
 /// stale overlay cannot apply once the full run rewrote the base identity.
@@ -871,6 +898,22 @@ fn legacy_root_notice(
     };
     Some(format!(
         "Easy Review 1.0 starts with empty storage. Data from the previous version is untouched in {base_text}{settings}. It is not read any more; delete it when you no longer need it.{projects}"
+    ))
+}
+
+/// Marker under the storage root: the retired `[commands].summary` key was
+/// announced. Separate from the legacy-root marker, so a machine that already
+/// saw that notice still hears about the key.
+const RETIRED_SUMMARY_NOTICED: &str = ".retired-summary-noticed";
+
+/// The notice that `[commands].summary` is no longer read.
+fn retired_summary_notice(config_path: &std::path::Path) -> Option<String> {
+    if !crate::config::retired_summary_command_set(config_path) {
+        return None;
+    }
+    Some(format!(
+        "The [commands].summary setting is no longer read: Generate summary now runs a built-in job. You can remove it from {}.",
+        config_path.display()
     ))
 }
 
@@ -2809,19 +2852,32 @@ impl App {
         if base == root {
             return;
         }
-        let marker = root.join(".legacy-root-noticed");
-        if marker.exists() {
-            return;
+        let mut messages: Vec<String> = Vec::new();
+
+        let legacy_marker = root.join(".legacy-root-noticed");
+        if !legacy_marker.exists() {
+            let entries = crate::storage::legacy_root_entries_in(base, false);
+            let projects_imported = root.join(crate::legacy_projects::IMPORTED_MARKER).exists();
+            if let Some(message) = legacy_root_notice(base, &entries, projects_imported) {
+                let _ = std::fs::create_dir_all(root);
+                // A failed write means the notice shows again next launch.
+                let _ = std::fs::write(&legacy_marker, b"");
+                messages.push(message);
+            }
         }
-        let entries = crate::storage::legacy_root_entries_in(base, false);
-        let projects_imported = root.join(crate::legacy_projects::IMPORTED_MARKER).exists();
-        let Some(message) = legacy_root_notice(base, &entries, projects_imported) else {
-            return;
-        };
-        let _ = std::fs::create_dir_all(root);
-        // A failed write means the notice shows again next launch.
-        let _ = std::fs::write(&marker, b"");
-        self.notify_long(&message);
+
+        let retired_marker = root.join(RETIRED_SUMMARY_NOTICED);
+        if !retired_marker.exists() {
+            if let Some(message) = retired_summary_notice(&crate::config::managed_config_path()) {
+                let _ = std::fs::create_dir_all(root);
+                let _ = std::fs::write(&retired_marker, b"");
+                messages.push(message);
+            }
+        }
+
+        if !messages.is_empty() {
+            self.notify_long(&messages.join(" "));
+        }
     }
 
     // ── Background Commands ──
@@ -2934,7 +2990,6 @@ impl App {
 
         std::fs::create_dir_all(&er_dir)?;
 
-        let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
         let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
 
         // Send status log entry before spawning
@@ -2946,7 +3001,6 @@ impl App {
         });
 
         let log_tx = self.tab().log_tx.clone();
-        let github = self.ports.github.clone();
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
@@ -2957,100 +3011,62 @@ impl App {
         std::thread::spawn(move || {
             let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                // Sixth spawn path: a configured shell command. The summary
-                // agent runs through here. It waits for a slot like every
-                // other path -- a cap that covers some spawn sites is not a
-                // cap, and this one launches provider CLIs just like the rest.
-                let Some(_slot) = crate::agent_slots::acquire(
-                    crate::agent_slots::Workload::Background,
-                    slot_cap,
-                    ceiling,
-                    run.cancel_flag(),
-                ) else {
-                    return Err(crate::agent_run::cancelled());
+                // The shell path stays a job: it launches provider CLIs, so it
+                // keeps its slot and its stop control like any other run.
+                let spec = JobSpec {
+                    kind: er_agent::job::JobKind::Other(name_owned.to_string()),
+                    provider: ProviderSpec {
+                        program: "sh".to_string(),
+                        args: vec!["-c".to_string(), cmd],
+                        env: Vec::new(),
+                        protocol: crate::agent_runtime::OutputProtocol::Plain,
+                        timeout: agent_timeout,
+                    },
+                    prompt: String::new(),
+                    work_dir: repo_root,
+                    workload: crate::agent_slots::Workload::Background,
+                    output: OutputContract::Stdout,
                 };
-                timer.mark_slot_acquired();
-                let mut cmd_builder = std::process::Command::new("sh");
-                cmd_builder
-                    .args(["-c", &cmd])
-                    .current_dir(&repo_root)
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped());
-                let mut child = run
-                    .spawn(&mut cmd_builder)
-                    .with_context(|| format!("Failed to run {}", name_owned))?;
-                let child_id = child.id();
-                timer.mark_spawned();
+                record_submitted_tab_job(&spec.kind);
 
-                let stdout = child.stdout.take();
-                let stderr = child.stderr.take();
-                run.register(child);
-                run.arm_timeout(agent_timeout);
-
-                let log_tx_out = log_tx.clone();
-                let cmd_name_out = name_owned.clone();
-                let stdout_handle = std::thread::spawn(move || {
-                    use std::io::BufRead;
-                    let pipe_lines = stdout.into_iter().flat_map(|pipe| {
-                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
-                    });
-                    for line in pipe_lines {
-                        let _ = log_tx_out.send(AgentLogEntry {
-                            timestamp: std::time::Instant::now(),
-                            command_name: cmd_name_out.clone(),
-                            source: AgentLogSource::Stdout,
-                            text: line,
-                        });
+                // Log lines are drained off the job thread, so a slow UI
+                // cannot hold the runner's pipe readers.
+                let (progress_tx, progress_rx) =
+                    std::sync::mpsc::sync_channel::<JobProgress>(BACKGROUND_PROGRESS_CAPACITY);
+                let log_tx_drain = log_tx.clone();
+                let name_out = name_owned.clone();
+                let name_err = name_owned.clone();
+                let drain = std::thread::spawn(move || {
+                    while let Ok(event) = progress_rx.recv() {
+                        log_job_progress(event, false, &name_out, &name_err, &log_tx_drain);
                     }
                 });
 
-                let log_tx_err = log_tx.clone();
-                let cmd_name_err = name_owned.clone();
-                let mut stderr_lines: Vec<String> = Vec::new();
-                let stderr_handle = std::thread::spawn(move || -> Vec<String> {
-                    use std::io::BufRead;
-                    let pipe_lines = stderr.into_iter().flat_map(|pipe| {
-                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
-                    });
-                    for line in pipe_lines {
-                        let _ = log_tx_err.send(AgentLogEntry {
-                            timestamp: std::time::Instant::now(),
-                            command_name: cmd_name_err.clone(),
-                            source: AgentLogSource::Stderr,
-                            text: line.clone(),
-                        });
-                        stderr_lines.push(line);
+                let runner = JobRunner::new(slot_cap, ceiling);
+                let outcome = runner.run_controlled(
+                    &spec,
+                    JobRun {
+                        handle: std::sync::Arc::clone(&run),
+                        progress: Some(progress_tx),
+                        timer: Some(&mut timer),
+                    },
+                );
+                let _ = drain.join();
+                let output = match outcome {
+                    Ok(output) => output,
+                    Err(JobError::TimedOut(limit)) => {
+                        return Err(crate::agent_run::timed_out(limit));
                     }
-                    stderr_lines
-                });
+                    Err(JobError::Cancelled) => {
+                        return Err(crate::agent_run::cancelled());
+                    }
+                    Err(JobError::Spawn(error)) => {
+                        return Err(error).with_context(|| format!("Failed to run {}", name_owned));
+                    }
+                };
 
-                let child = run
-                    .take_child(child_id)
-                    .with_context(|| format!("Lost the handle for {}", name_owned))?;
-                let status = run
-                    .wait_for(child)
-                    .with_context(|| format!("Failed to wait for {}", name_owned))?;
-                let _ = stdout_handle.join();
-                let accumulated_stderr = stderr_handle.join().unwrap_or_default();
-                timer.mark_finished();
-
-                // Timeout before cancel: a run killed by its deadline has both
-                // flags set, and "you stopped this" would be the wrong story.
-                if run.is_timed_out() {
-                    return Err(crate::agent_run::timed_out(agent_timeout));
-                }
-                if run.is_cancelled() {
-                    return Err(crate::agent_run::cancelled());
-                }
-
-                if !status.success() {
-                    let stderr_text = accumulated_stderr.join("\n");
-                    anyhow::bail!("{} failed: {}", name_owned, stderr_text.trim());
-                }
-
-                // Summary-specific: optionally push to PR body
-                if push_to_pr {
-                    push_summary_to_pr(&*github, &er_dir, &repo_root)?;
+                if !output.status.success() {
+                    anyhow::bail!("{} failed: {}", name_owned, output.stderr.trim());
                 }
 
                 Ok(())
@@ -3295,6 +3311,7 @@ impl App {
 
         let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
         let prompt_owned = prompt.to_string();
+        let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
         let git_handle = self.ports.git.clone();
         let github_handle = self.ports.github.clone();
 
@@ -3317,25 +3334,12 @@ impl App {
         std::thread::spawn(move || {
             let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                // Waits for a slot like the background path. Admitting this
-                // immediately would make `queue_ms` read ~0 even with the cap
-                // saturated -- a measurement of the absent gate rather than of
-                // a queue.
-                let Some(_slot) = crate::agent_slots::acquire(
-                    crate::agent_slots::Workload::Background,
-                    slot_cap,
-                    ceiling,
-                    run.cancel_flag(),
-                ) else {
-                    return Err(crate::agent_run::cancelled());
-                };
-                timer.mark_slot_acquired();
                 let debug_path = std::path::Path::new(&er_dir_path).join("debug-agent.log");
 
-                let mut agent_args: Vec<String> = config_args
-                    .iter()
-                    .map(|a| a.replace("{prompt}", &prompt_owned))
-                    .collect();
+                // The argv still carries `{prompt}`; the runner substitutes the
+                // job prompt into it and waits for a slot, so `queue_ms` reads
+                // the real queue wait.
+                let mut agent_args: Vec<String> = config_args.clone();
 
                 // Auto-inject --output-format stream-json for claude commands so the
                 // agent log panel can show real-time tool calls and progress. This is
@@ -3386,6 +3390,21 @@ impl App {
                     agent_args.insert(0, "--disallowedTools".to_string());
                 }
 
+                // Captured before the args move into the spec. The debug
+                // transcript shows the argv the provider actually saw.
+                let debug_args = debug_agent_log_enabled().then(|| {
+                    let mut args: Vec<String> = agent_args
+                        .iter()
+                        .map(|arg| arg.replace("{prompt}", &prompt_owned))
+                        .collect();
+                    if !agent_args.iter().any(|arg| arg.contains("{prompt}"))
+                        && !prompt_owned.is_empty()
+                    {
+                        args.push(prompt_owned.clone());
+                    }
+                    args
+                });
+
                 // Remote mode has no repo around it, which is what sends the agent hunting
                 // the filesystem for a copy of the code. When the local checkout *is* the
                 // PR's repo, run there so verification reads hit real files; otherwise fall
@@ -3404,99 +3423,83 @@ impl App {
                 } else {
                     &repo_root
                 };
-                let mut cmd = std::process::Command::new(&agent_cmd);
-                cmd.args(&agent_args)
-                    .current_dir(work_dir)
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped());
-                if let Some((key, value)) = &opencode_env {
-                    cmd.env(key, value);
-                }
-                let mut child = run
-                    .spawn(&mut cmd)
-                    .with_context(|| format!("Failed to run {} ({})", name_owned, agent_cmd))?;
-                let child_id = child.id();
-                timer.mark_spawned();
+                let spec = JobSpec {
+                    kind: crate::agent_runtime::AgentTaskKind::from_command_name(
+                        name_owned.as_ref(),
+                    )
+                    .job_kind(),
+                    provider: ProviderSpec {
+                        program: agent_cmd.clone(),
+                        args: agent_args,
+                        env: opencode_env.iter().cloned().collect(),
+                        protocol: if is_stream_json {
+                            crate::agent_runtime::OutputProtocol::ClaudeStreamJson
+                        } else {
+                            crate::agent_runtime::OutputProtocol::Plain
+                        },
+                        timeout: agent_timeout,
+                    },
+                    prompt: prompt_owned,
+                    work_dir: work_dir.clone(),
+                    workload: crate::agent_slots::Workload::Background,
+                    output: OutputContract::Stdout,
+                };
+                record_submitted_tab_job(&spec.kind);
 
-                let stdout = child.stdout.take();
-                let stderr = child.stderr.take();
-                run.register(child);
-                run.arm_timeout(agent_timeout);
-
-                // Accumulate stdout for debug log while also streaming to agent log.
-                // When output is stream-json (default for claude), parse events into
-                // human-readable log entries. Falls back to raw lines for other formats.
-                let log_tx_out = log_tx.clone();
-                let cmd_name_out = name_owned.clone();
-                let stdout_handle = std::thread::spawn(move || -> Vec<String> {
-                    let mut lines: Vec<String> = Vec::new();
-                    use std::io::BufRead;
-                    let pipe_lines = stdout.into_iter().flat_map(|pipe| {
-                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
-                    });
-                    // Lines that parse to None (noise like empty results) are kept
-                    // in `lines` but not logged.
-                    let log_texts = pipe_lines
-                        .inspect(|line| lines.push(line.clone()))
-                        .filter_map(|line| stdout_log_text(&line, is_stream_json));
-                    for text in log_texts {
-                        let _ = log_tx_out.send(AgentLogEntry {
-                            timestamp: std::time::Instant::now(),
-                            command_name: cmd_name_out.clone(),
-                            source: AgentLogSource::Stdout,
-                            text,
-                        });
+                // Log lines are drained off the job thread, so a slow UI
+                // cannot hold the runner's pipe readers.
+                let (progress_tx, progress_rx) =
+                    std::sync::mpsc::sync_channel::<JobProgress>(BACKGROUND_PROGRESS_CAPACITY);
+                let log_tx_drain = log_tx.clone();
+                let name_out = name_owned.clone();
+                let name_err = name_owned.clone();
+                let drain = std::thread::spawn(move || {
+                    while let Ok(event) = progress_rx.recv() {
+                        log_job_progress(
+                            event,
+                            is_stream_json,
+                            &name_out,
+                            &name_err,
+                            &log_tx_drain,
+                        );
                     }
-                    lines
                 });
 
-                // Accumulate stderr for debug log while also streaming to agent log
-                let log_tx_err = log_tx.clone();
-                let cmd_name_err = name_owned.clone();
-                let stderr_handle = std::thread::spawn(move || -> Vec<String> {
-                    let mut lines: Vec<String> = Vec::new();
-                    use std::io::BufRead;
-                    let pipe_lines = stderr.into_iter().flat_map(|pipe| {
-                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
-                    });
-                    for line in pipe_lines {
-                        let _ = log_tx_err.send(AgentLogEntry {
-                            timestamp: std::time::Instant::now(),
-                            command_name: cmd_name_err.clone(),
-                            source: AgentLogSource::Stderr,
-                            text: line.clone(),
-                        });
-                        lines.push(line);
+                let runner = JobRunner::new(slot_cap, ceiling);
+                let outcome = runner.run_controlled(
+                    &spec,
+                    JobRun {
+                        handle: std::sync::Arc::clone(&run),
+                        progress: Some(progress_tx),
+                        timer: Some(&mut timer),
+                    },
+                );
+                let _ = drain.join();
+                let output = match outcome {
+                    Ok(output) => output,
+                    Err(JobError::TimedOut(limit)) => {
+                        return Err(crate::agent_run::timed_out(limit));
                     }
-                    lines
-                });
-
-                let child = run.take_child(child_id).with_context(|| {
-                    format!("Lost the handle for {} ({})", name_owned, agent_cmd)
-                })?;
-                let status = run.wait_for(child).with_context(|| {
-                    format!("Failed to wait for {} ({})", name_owned, agent_cmd)
-                })?;
-                let stdout_lines = stdout_handle.join().unwrap_or_default();
-                let stderr_lines = stderr_handle.join().unwrap_or_default();
-                timer.mark_finished();
-
-                // Timeout before cancel: a run killed by its deadline has both
-                // flags set, and "you stopped this" would be the wrong story.
-                if run.is_timed_out() {
-                    return Err(crate::agent_run::timed_out(agent_timeout));
-                }
-                if run.is_cancelled() {
-                    return Err(crate::agent_run::cancelled());
-                }
+                    Err(JobError::Cancelled) => {
+                        return Err(crate::agent_run::cancelled());
+                    }
+                    Err(JobError::Spawn(error)) => {
+                        return Err(error).with_context(|| {
+                            format!("Failed to run {} ({})", name_owned, agent_cmd)
+                        });
+                    }
+                };
+                let stdout_lines: Vec<String> = output.stdout.lines().map(str::to_string).collect();
+                let stderr_lines: Vec<String> = output.stderr.lines().map(str::to_string).collect();
+                let status = output.status;
 
                 // Full transcript with accumulated stdout + stderr, opt-in.
-                if debug_agent_log_enabled() {
+                if let Some(debug_args) = &debug_args {
                     let debug_content = format!(
                         "=== {} agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
                         name_owned,
                         agent_cmd,
-                        agent_args.join(" "),
+                        debug_args.join(" "),
                         status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
                         stdout_lines.join("\n"),
                         stderr_lines.join("\n"),
@@ -3512,6 +3515,12 @@ impl App {
                         " (set ER_DEBUG=1 for the full transcript)".to_string()
                     };
                     anyhow::bail!("{} failed{detail}", name_owned);
+                }
+
+                // The summary is a built-in job; a configured push still runs
+                // once it succeeds.
+                if push_to_pr {
+                    push_summary_to_pr(&*github_handle, &er_dir_path, &repo_root)?;
                 }
 
                 Ok(())
@@ -7016,53 +7025,158 @@ mod github_handle_tests {
         });
     }
 
-    #[test]
-    fn a_failed_pr_body_write_reaches_the_command_status() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (mut app, _) = app_with_github_comments(&tmp);
-        let er_dir = app.tab().er_dir();
-        std::fs::write(format!("{er_dir}/summary.md"), "# summary").unwrap();
-        app.config.summary.push_to_pr = true;
-        let github = Arc::new(
-            FakeGitHub::default().with_edit_body(Err(GhError::Forbidden {
-                message: "nope".into(),
-            })),
-        );
-        app.ports.github = github.clone();
-
-        app.spawn_command("summary", "true").unwrap();
+    /// Wait for `name` to finish, returning its final status.
+    fn wait_for_command(app: &mut App, name: &str) -> super::CommandStatus {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             app.check_commands();
-            match app.tab().command_status.get("summary") {
-                Some(super::CommandStatus::Failed(_)) => break,
-                Some(super::CommandStatus::Done) => {
-                    panic!("expected the body write to fail")
-                }
-                _ => {}
+            match app.tab().command_status.get(name) {
+                Some(super::CommandStatus::Running) | None => {}
+                Some(status) => return status.clone(),
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "summary command did not finish"
+                "{name} did not finish"
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let Some(super::CommandStatus::Failed(reason)) = app.tab().command_status.get("summary")
-        else {
-            unreachable!()
-        };
-        assert!(
-            reason.contains("Failed to update PR body: nope"),
-            "{reason}"
-        );
-        assert!(
-            github
-                .calls()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_retired_summary_key_does_not_stop_the_summary_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let (mut app, _) = app_with_github_comments(&tmp);
+
+            // A config written before the key was retired still loads, and the
+            // summary runs anyway.
+            let config_path = tmp.path().join("config.toml");
+            std::fs::write(&config_path, "[commands]\nsummary = \"false\"\n").unwrap();
+            app.config = crate::config::with_managed_config_path(&config_path, || {
+                crate::config::load_global_config()
+            });
+            // The catalog fills in a default provider, which would run the
+            // user's CLI instead of the recorder below.
+            app.config.ai_hub.providers.clear();
+            app.config.ai_hub.default_provider = None;
+
+            let marker = tmp.path().join("summary-went-through-sh");
+            let argv_file = tmp.path().join("summary-argv.txt");
+            let bin = tmp.path().join("fake-agent");
+            let out = argv_file.display();
+            crate::test_support::write_executable_script(
+                &bin,
+                &format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{out}.tmp\" && mv \"{out}.tmp\" \"{out}\"\n"
+                ),
+            )
+            .unwrap();
+            app.config.agent.command = bin.to_string_lossy().into_owned();
+            app.config.agent.args = vec!["{prompt}".into()];
+
+            // If the summary were routed through `sh -c`, the prompt would run
+            // as a shell command and leave the marker.
+            let prompt = format!("touch {}", marker.display());
+            app.spawn_agent_prompt("summary", &prompt).unwrap();
+
+            let status = wait_for_command(&mut app, "summary");
+            assert!(matches!(status, super::CommandStatus::Done), "{status:?}");
+            let argv = std::fs::read_to_string(&argv_file).expect("the provider ran");
+            assert!(argv.contains(&prompt), "{argv}");
+            assert!(!marker.exists(), "the summary prompt went through sh -c");
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_pr_body_write_reaches_the_command_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let (mut app, _) = app_with_github_comments(&tmp);
+            let er_dir = app.tab().er_dir();
+            std::fs::write(format!("{er_dir}/summary.md"), "# summary").unwrap();
+            app.config.summary.push_to_pr = true;
+            app.config.agent.command = "/usr/bin/true".into();
+            app.config.agent.args = Vec::new();
+            let github = Arc::new(
+                FakeGitHub::default().with_edit_body(Err(GhError::Forbidden {
+                    message: "nope".into(),
+                })),
+            );
+            app.ports.github = github.clone();
+
+            app.spawn_agent_prompt("summary", "p").unwrap();
+
+            let status = wait_for_command(&mut app, "summary");
+            let super::CommandStatus::Failed(reason) = status else {
+                panic!("expected the body write to fail, got {status:?}");
+            };
+            assert!(
+                reason.contains("Failed to update PR body: nope"),
+                "{reason}"
+            );
+            assert!(
+                github
+                    .calls()
+                    .iter()
+                    .any(|call| call.starts_with("edit_body(")),
+                "{:?}",
+                github.calls()
+            );
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_tab_command_logs_its_runner_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let (mut app, _) = app_with_github_comments(&tmp);
+
+            app.spawn_command("pkg/test", "printf 'line one\\n'")
+                .unwrap();
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                app.check_commands();
+                app.drain_agent_log();
+                if matches!(
+                    app.tab().command_status.get("pkg/test"),
+                    Some(super::CommandStatus::Done)
+                ) {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the command did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            let tab = app.tab();
+            let logged: Vec<&str> = tab
+                .agent_log
                 .iter()
-                .any(|call| call.starts_with("edit_body(")),
-            "{:?}",
-            github.calls()
-        );
+                .filter(|entry| entry.command_name.as_ref() == "pkg/test")
+                .map(|entry| entry.text.as_str())
+                .collect();
+            assert!(logged.contains(&"line one"), "{logged:?}");
+            assert!(
+                logged.iter().any(|text| text.contains("started")),
+                "{logged:?}"
+            );
+            assert!(
+                logged.iter().any(|text| text.contains("completed")),
+                "{logged:?}"
+            );
+
+            let kinds = crate::app::take_submitted_tab_job_kinds();
+            assert!(
+                kinds.contains(&er_agent::job::JobKind::Other("pkg/test".into())),
+                "{kinds:?}"
+            );
+        });
     }
 
     #[test]
@@ -7127,24 +7241,62 @@ mod legacy_root_notice_tests {
         let base = dir.path().join("base");
         let root = dir.path().join("root");
         std::fs::create_dir_all(base.join("repos")).unwrap();
-        let mut app = App::new_for_test(Vec::new());
 
-        app.announce_legacy_root_in(&base, &root);
+        crate::storage::with_test_storage_root(&root, || {
+            let mut app = App::new_for_test(Vec::new());
 
-        let notice = app.notification.as_ref().expect("the notice");
-        assert!(notice.long);
-        assert!(
-            notice
-                .message
-                .contains(&base.to_string_lossy().into_owned()),
-            "{}",
-            notice.message
-        );
-        assert!(root.join(".legacy-root-noticed").exists());
+            app.announce_legacy_root_in(&base, &root);
 
-        app.clear_notification();
-        app.announce_legacy_root_in(&base, &root);
-        assert!(app.notification.is_none());
+            let notice = app.notification.as_ref().expect("the notice");
+            assert!(notice.long);
+            assert!(
+                notice
+                    .message
+                    .contains(&base.to_string_lossy().into_owned()),
+                "{}",
+                notice.message
+            );
+            assert!(root.join(".legacy-root-noticed").exists());
+
+            app.clear_notification();
+            app.announce_legacy_root_in(&base, &root);
+            assert!(app.notification.is_none());
+        });
+    }
+
+    #[test]
+    fn a_retired_summary_key_joins_the_first_launch_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let root = dir.path().join("root");
+        let config_path = dir.path().join("config.toml");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(&config_path, "[commands]\nsummary = \"claude -p\"\n").unwrap();
+        // A machine that already saw the legacy-root notice still has to hear
+        // about the retired key: its marker is separate.
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".legacy-root-noticed"), b"").unwrap();
+
+        crate::config::with_managed_config_path(&config_path, || {
+            crate::storage::with_test_storage_root(&root, || {
+                let mut app = App::new_for_test(Vec::new());
+
+                app.announce_legacy_root_in(&base, &root);
+
+                let notice = app.notification.as_ref().expect("the retired-key notice");
+                assert!(
+                    notice.message.contains("[commands].summary"),
+                    "{}",
+                    notice.message
+                );
+                assert!(notice.message.contains("config.toml"), "{}", notice.message);
+                assert!(root.join(".retired-summary-noticed").exists());
+
+                app.clear_notification();
+                app.announce_legacy_root_in(&base, &root);
+                assert!(app.notification.is_none(), "second launch must be silent");
+            });
+        });
     }
 
     #[test]
