@@ -108,8 +108,10 @@ describe("settings search index", () => {
     expect(counts("ignore in ai reviews", { project: project({}) }).projects).toBe(0);
     expect(counts("size limit", { project: project({}) }).projects).toBe(0);
     expect(counts("size limit", { project: project({ remote: "o/r" }) }).projects).toBe(1);
+    // The retired auto-triage controls are no longer rows on any project.
+    expect(counts("auto-triage", { project: project({ remote: "o/r" }) }).projects).toBe(0);
     expect(counts("run triage", { project: project({ remote: "o/r" }) }).projects).toBe(0);
-    expect(counts("run triage", { project: project({ remote: "o/r", auto_triage: true }) }).projects).toBe(1);
+    expect(counts("include my own prs", { project: project({ remote: "o/r" }) }).projects).toBe(0);
     expect(counts("*.lock", { project: project({ review_ignore_globs: ["*.lock"] }) }).projects).toBe(1);
   });
 
