@@ -8,6 +8,29 @@ use er_agent::provider::ProviderSpec;
 /// timeout rather than blocking the job.
 const BACKGROUND_PROGRESS_CAPACITY: usize = 256;
 
+/// Say which user edits beat the agent in a by-id merge.
+///
+/// A same-id conflict leaves the agent's rewrite looking successful, so this
+/// log line is the only sign that part of it was not applied.
+fn log_dropped_edits(
+    log_tx: &std::sync::mpsc::Sender<AgentLogEntry>,
+    name: &str,
+    dropped: &[String],
+) {
+    if dropped.is_empty() {
+        return;
+    }
+    let _ = log_tx.send(AgentLogEntry {
+        timestamp: std::time::Instant::now(),
+        command_name: std::sync::Arc::from(name),
+        source: AgentLogSource::Status,
+        text: format!(
+            "{name}: kept your edits; the agent's changes to {} were dropped",
+            dropped.join(", ")
+        ),
+    });
+}
+
 /// How a background task kind maps to the runner's job kind. `general` is a
 /// review; `importance` and `diagram:<kind>` have no runner variant yet.
 fn background_job_kind(kind: &str) -> er_agent::job::JobKind {
@@ -3477,6 +3500,14 @@ impl App {
                         staging
                             .stage_inputs(&er_dir_path)
                             .with_context(|| format!("{name_owned}: failed to stage its inputs"))?;
+                        staging
+                            .stage_update_inputs(
+                                &er_dir_path,
+                                crate::app::job_commit::update_inputs(contract.clone()),
+                            )
+                            .with_context(|| {
+                                format!("{name_owned}: failed to stage its update inputs")
+                            })?;
                         crate::app::job_commit::capture_contract(contract.clone(), &staging.path())?
                     }
                     None => None,
@@ -3557,7 +3588,7 @@ impl App {
                 // reads the bucket's copy.
                 if let Some(staging) = staging.as_deref() {
                     if contract != crate::agent_runtime::ArtifactContract::None {
-                        crate::app::job_commit::commit_contract(
+                        let report = crate::app::job_commit::commit_contract(
                             contract,
                             &staging.path(),
                             &er_dir_path,
@@ -3565,6 +3596,9 @@ impl App {
                             &artifact_store,
                         )
                         .map_err(|error| commit_error(&name_owned, error))?;
+                        // A same-id conflict keeps the user's copy; say so,
+                        // since the agent's rewrite looked successful.
+                        log_dropped_edits(&log_tx, &name_owned, &report.dropped);
                     }
                 }
 
@@ -7881,6 +7915,422 @@ mod legacy_root_notice_tests {
                     assert!(app.notification.is_none(), "second launch must be silent");
                 },
             );
+        });
+    }
+}
+
+/// The update-kind tab jobs: staged, validated, and merged by id so a user's
+/// edit made while the agent ran survives its rewrite.
+#[cfg(test)]
+mod update_job_tests {
+    use crate::app::{App, CommandStatus};
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    const DIFF: &str =
+        "diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        root: std::path::PathBuf,
+        bucket: String,
+        hash: String,
+    }
+
+    impl Fixture {
+        /// A bucket holding the prepared diff and, when named, one update-kind
+        /// file whose entries carry `entries`.
+        fn new(file: Option<(&str, String)>) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            let bucket = root.join("bucket").to_string_lossy().into_owned();
+            std::fs::create_dir_all(&bucket).unwrap();
+            std::fs::write(Path::new(&bucket).join("diff-tmp"), DIFF).unwrap();
+            let hash = crate::ai::compute_diff_hash(DIFF);
+            std::fs::write(Path::new(&bucket).join(".diff-tmp.sha256"), &hash).unwrap();
+            if let Some((name, body)) = file {
+                std::fs::write(Path::new(&bucket).join(name), body).unwrap();
+            }
+            Self {
+                _dir: dir,
+                root,
+                bucket,
+                hash,
+            }
+        }
+
+        fn path(&self, name: &str) -> std::path::PathBuf {
+            Path::new(&self.bucket).join(name)
+        }
+
+        fn app(&self) -> App {
+            let mut app = App::new_for_test(vec![]);
+            app.tab_mut().er_root = crate::paths::ErRoot::Managed {
+                agent_dir: self.bucket.clone(),
+                session_dir: self.bucket.clone(),
+            };
+            app.config.agent.command = "/bin/sh".into();
+            app
+        }
+    }
+
+    fn wait_for_command(app: &mut App, name: &str) -> CommandStatus {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.check_commands();
+            match app.tab().command_status.get(name) {
+                Some(CommandStatus::Running) | None => {}
+                Some(status) => return status.clone(),
+            }
+            assert!(Instant::now() < deadline, "{name} did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_file(path: &Path, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !path.exists() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn questions_json(hash: &str, entries: &[(&str, &str)]) -> String {
+        let questions: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(id, text)| {
+                serde_json::json!({
+                    "id": id,
+                    "file": "src/a.rs",
+                    "hunk_index": 0,
+                    "line_start": 1,
+                    "line_content": "x",
+                    "text": text,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "version": 1,
+            "diff_hash": hash,
+            "questions": questions,
+        })
+        .to_string()
+    }
+
+    fn notes_json(hash: &str, entries: &[(&str, &str)]) -> String {
+        let notes: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(id, text)| {
+                serde_json::json!({
+                    "id": id,
+                    "file": "src/a.rs",
+                    "hunk_index": 0,
+                    "line_start": 1,
+                    "line_content": "x",
+                    "text": text,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "version": 1,
+            "diff_hash": hash,
+            "notes": notes,
+        })
+        .to_string()
+    }
+
+    fn comments_json(hash: &str, entries: &[(&str, &str)]) -> String {
+        let comments: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(id, text)| {
+                serde_json::json!({
+                    "id": id,
+                    "file": "src/a.rs",
+                    "hunk_index": 0,
+                    "line_start": 1,
+                    "line_end": 1,
+                    "comment": text,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "version": 1,
+            "diff_hash": hash,
+            "comments": comments,
+        })
+        .to_string()
+    }
+
+    /// The agent writes `body` to `$ER_JOB_STAGING/<file>`, records the staging
+    /// path, and (when `wait_for` is given) blocks until that file appears.
+    fn staged_writer(
+        record: &Path,
+        file: &str,
+        body: &str,
+        wait_for: Option<&Path>,
+        release: Option<&Path>,
+    ) -> String {
+        let mut script = format!(
+            "printf '%s' \"$ER_JOB_STAGING\" > '{}'\n{}\nprintf '%s' '{}' > \"$ER_JOB_STAGING/{file}\"",
+            record.display(),
+            crate::test_support::STAGING_PREAMBLE,
+            body.replace('\'', "'\\''"),
+        );
+        if let Some(wait_for) = wait_for {
+            script.push_str(&format!(
+                "\n: > '{}'\nwhile [ ! -f '{}' ]; do sleep 0.02; done",
+                wait_for.display(),
+                release.expect("a release path").display()
+            ));
+        }
+        script
+    }
+
+    fn read_questions(bucket: &str) -> Vec<(String, String)> {
+        let value: crate::ai::ErQuestions = serde_json::from_str(
+            &std::fs::read_to_string(Path::new(bucket).join("questions.json")).unwrap(),
+        )
+        .unwrap();
+        value
+            .questions
+            .iter()
+            .map(|q| (q.id.clone(), q.text.clone()))
+            .collect()
+    }
+
+    /// The user's concurrent edit lands through the store while the job runs.
+    fn add_question_while_running(
+        fixture: &Fixture,
+        ready: &Path,
+        release: &Path,
+        question: (&str, &str),
+    ) {
+        wait_for_file(ready, "the agent's staged output");
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(&fixture.bucket).unwrap();
+        let key = er_store::ArtifactKey::<crate::ai::ErQuestions>::new(scope, ()).unwrap();
+        let mut current: crate::ai::ErQuestions =
+            serde_json::from_str(&std::fs::read_to_string(fixture.path("questions.json")).unwrap())
+                .unwrap();
+        current.questions.push(
+            serde_json::from_value(serde_json::json!({
+                "id": question.0,
+                "file": "src/a.rs",
+                "hunk_index": 0,
+                "line_start": 1,
+                "line_content": "x",
+                "text": question.1,
+            }))
+            .unwrap(),
+        );
+        store.write(&key, &current).unwrap();
+        std::fs::write(release, "").unwrap();
+    }
+
+    #[test]
+    fn a_concurrent_questions_edit_survives_the_commit() {
+        let _serial = crate::agent_slots::test_serial();
+        let fixture = Fixture::new(None);
+        // The trailing newline makes the seeded bytes differ from the agent's
+        // compact rewrite, so the baseline sees a changed file; the entry
+        // values are what the merge compares.
+        let seeded = questions_json(&fixture.hash, &[("q1", "base")]);
+        std::fs::write(fixture.path("questions.json"), format!("{seeded}\n")).unwrap();
+
+        crate::storage::with_test_storage_root(&fixture.root, || {
+            let ready = fixture.root.join("ready");
+            let release = fixture.root.join("release");
+            let record = fixture.root.join("staging-path");
+            let mut app = fixture.app();
+            // The agent keeps q1 exactly as the base had it.
+            let body = questions_json(&fixture.hash, &[("q1", "base")]);
+            let script = format!(
+                "{}; cp \"$ER_JOB_STAGING/questions.json\" \"$ER_JOB_STAGING/questions.prev.json\"",
+                staged_writer(
+                    &record,
+                    "questions.json",
+                    &body,
+                    Some(&ready),
+                    Some(&release),
+                )
+            );
+            app.config.agent.args = vec!["-c".into(), script];
+            app.spawn_agent_prompt("questions", "p").unwrap();
+
+            add_question_while_running(&fixture, &ready, &release, ("q2", "user"));
+
+            let status = wait_for_command(&mut app, "questions");
+            assert_eq!(status, CommandStatus::Done);
+            assert_eq!(
+                read_questions(&fixture.bucket),
+                [("q1".into(), "base".into()), ("q2".into(), "user".into())]
+            );
+        });
+    }
+
+    #[test]
+    fn a_user_edit_wins_a_same_id_conflict() {
+        let _serial = crate::agent_slots::test_serial();
+        let fixture = Fixture::new(Some(("questions.json", String::new())));
+        // Seed after the fixture so the file carries the real hash.
+        std::fs::write(
+            fixture.path("questions.json"),
+            questions_json(&fixture.hash, &[("q1", "base")]),
+        )
+        .unwrap();
+        // Make the seeded bytes differ from the agent's rewrite below.
+        let seeded = std::fs::read_to_string(fixture.path("questions.json")).unwrap();
+        std::fs::write(fixture.path("questions.json"), format!("{seeded}\n")).unwrap();
+
+        crate::storage::with_test_storage_root(&fixture.root, || {
+            let ready = fixture.root.join("ready");
+            let release = fixture.root.join("release");
+            let record = fixture.root.join("staging-path");
+            let mut app = fixture.app();
+            let body = questions_json(&fixture.hash, &[("q1", "agent")]);
+            let script = format!(
+                "{}; cp \"$ER_JOB_STAGING/questions.json\" \"$ER_JOB_STAGING/questions.prev.json\"",
+                staged_writer(
+                    &record,
+                    "questions.json",
+                    &body,
+                    Some(&ready),
+                    Some(&release),
+                )
+            );
+            app.config.agent.args = vec!["-c".into(), script];
+            app.spawn_agent_prompt("questions", "p").unwrap();
+
+            wait_for_file(&ready, "the agent's staged output");
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(&fixture.bucket).unwrap();
+            let key = er_store::ArtifactKey::<crate::ai::ErQuestions>::new(scope, ()).unwrap();
+            let current: crate::ai::ErQuestions =
+                serde_json::from_str(&questions_json(&fixture.hash, &[("q1", "user")])).unwrap();
+            store.write(&key, &current).unwrap();
+            std::fs::write(&release, "").unwrap();
+
+            let status = wait_for_command(&mut app, "questions");
+            assert_eq!(status, CommandStatus::Done);
+            assert_eq!(
+                read_questions(&fixture.bucket),
+                [("q1".into(), "user".into())]
+            );
+            app.drain_agent_log();
+            let logged = app
+                .tab()
+                .agent_log
+                .iter()
+                .any(|entry| entry.text.contains("kept your edits"));
+            assert!(logged, "{:?}", app.tab().agent_log);
+        });
+    }
+
+    #[test]
+    fn a_questions_job_stages_and_commits() {
+        let _serial = crate::agent_slots::test_serial();
+        let fixture = Fixture::new(Some(("questions.json", String::new())));
+        std::fs::write(
+            fixture.path("questions.json"),
+            questions_json(&fixture.hash, &[("q1", "base")]),
+        )
+        .unwrap();
+        std::fs::write(fixture.path("questions.prev.json"), "{}\n").unwrap();
+
+        crate::storage::with_test_storage_root(&fixture.root, || {
+            let record = fixture.root.join("staging-path");
+            let mut app = fixture.app();
+            let body = questions_json(&fixture.hash, &[("q1", "agent")]);
+            let script = format!(
+                "{}; cp \"$ER_JOB_STAGING/questions.json\" \"$ER_JOB_STAGING/questions.prev.json\"",
+                staged_writer(&record, "questions.json", &body, None, None)
+            );
+            app.config.agent.args = vec!["-c".into(), script];
+            app.spawn_agent_prompt("questions", "p").unwrap();
+
+            let status = wait_for_command(&mut app, "questions");
+            assert_eq!(status, CommandStatus::Done);
+            assert_eq!(
+                read_questions(&fixture.bucket),
+                [("q1".into(), "agent".into())]
+            );
+            let staging = std::fs::read_to_string(&record).unwrap();
+            assert!(staging.contains("/staging/"), "{staging}");
+            assert!(!Path::new(&staging).exists(), "{staging}");
+        });
+    }
+
+    #[test]
+    fn a_notes_job_stages_and_commits() {
+        let _serial = crate::agent_slots::test_serial();
+        let fixture = Fixture::new(Some(("notes.json", String::new())));
+        std::fs::write(
+            fixture.path("notes.json"),
+            notes_json(&fixture.hash, &[("n1", "base")]),
+        )
+        .unwrap();
+        std::fs::write(fixture.path("notes.prev.json"), "{}\n").unwrap();
+
+        crate::storage::with_test_storage_root(&fixture.root, || {
+            let record = fixture.root.join("staging-path");
+            let mut app = fixture.app();
+            let body = notes_json(&fixture.hash, &[("n1", "agent")]);
+            let script = format!(
+                "{}; cp \"$ER_JOB_STAGING/notes.json\" \"$ER_JOB_STAGING/notes.prev.json\"",
+                staged_writer(&record, "notes.json", &body, None, None)
+            );
+            app.config.agent.args = vec!["-c".into(), script];
+            app.spawn_agent_prompt("notes", "p").unwrap();
+
+            let status = wait_for_command(&mut app, "notes");
+            assert_eq!(status, CommandStatus::Done);
+            let notes: crate::ai::ErNotes =
+                serde_json::from_str(&std::fs::read_to_string(fixture.path("notes.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                notes.notes[0].text, "agent",
+                "the agent's notes change did not commit"
+            );
+            let staging = std::fs::read_to_string(&record).unwrap();
+            assert!(staging.contains("/staging/"), "{staging}");
+            assert!(!Path::new(&staging).exists(), "{staging}");
+        });
+    }
+
+    #[test]
+    fn a_validate_comments_job_stages_and_commits() {
+        let _serial = crate::agent_slots::test_serial();
+        let fixture = Fixture::new(Some(("github-comments.json", String::new())));
+        std::fs::write(
+            fixture.path("github-comments.json"),
+            comments_json(&fixture.hash, &[("c1", "base")]),
+        )
+        .unwrap();
+        std::fs::write(fixture.path("summary.md"), "# summary\n").unwrap();
+
+        crate::storage::with_test_storage_root(&fixture.root, || {
+            let record = fixture.root.join("staging-path");
+            let mut app = fixture.app();
+            let body = comments_json(&fixture.hash, &[("c1", "agent")]);
+            let script = format!(
+                "{}; printf 'Comment refresh: 1 resolved\\n' >> \"$ER_JOB_STAGING/summary.md\"",
+                staged_writer(&record, "github-comments.json", &body, None, None)
+            );
+            app.config.agent.args = vec!["-c".into(), script];
+            app.spawn_agent_prompt("validate-comments", "p").unwrap();
+
+            let status = wait_for_command(&mut app, "validate-comments");
+            assert_eq!(status, CommandStatus::Done);
+            let comments: crate::ai::ErGithubComments = serde_json::from_str(
+                &std::fs::read_to_string(fixture.path("github-comments.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(comments.comments[0].comment, "agent");
+            let summary = std::fs::read_to_string(fixture.path("summary.md")).unwrap();
+            assert!(summary.contains("Comment refresh: 1 resolved"), "{summary}");
+            let staging = std::fs::read_to_string(&record).unwrap();
+            assert!(staging.contains("/staging/"), "{staging}");
+            assert!(!Path::new(&staging).exists(), "{staging}");
         });
     }
 }
