@@ -191,11 +191,9 @@ mod tests {
     }
 
     #[test]
-    fn review_flow_admission_same_bucket_tabs_share_lease() {
+    fn review_flow_admission_a_live_lease_makes_its_bucket_busy() {
         with_bucket(|bucket| {
             let mut app = app();
-            app.tabs
-                .push(crate::app::TabState::new_for_test(Vec::new()));
             let lease = app.acquire_review_flow_lease(bucket).unwrap();
             assert!(app.review_flow_lease_is_valid(&lease));
             assert!(app.check_review_bucket_admission(bucket).is_err());

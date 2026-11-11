@@ -117,7 +117,11 @@ impl App {
                         stage.status = StageStatus::Interrupted;
                     }
                 }
-                record.outcome = Some(WorkflowOutcome::Interrupted);
+                // A cancel writes `cancelled` while its finders are still
+                // draining, and a failure wrote `failed` before it stopped.
+                // Marking the stage interrupted must not rewrite either into
+                // an interrupted run the load then offers to finish.
+                record.outcome.get_or_insert(WorkflowOutcome::Interrupted);
                 record.holder = None;
                 let stored = record.clone();
                 let _ = workflow_record::update(&store, &scope, |record| {
@@ -308,6 +312,70 @@ mod tests {
                 app.review_flow_for(&er_dir).map(|flow| &flow.state),
                 Some(crate::ai::review_flow::FlowState::Interrupted { .. })
             ));
+        });
+    }
+
+    /// A user cancel writes `cancelled` while its finders are still draining,
+    /// and a failed run wrote `failed` before it stopped. Either outcome is
+    /// the truth about what happened; reconcile may interrupt the stage but
+    /// must not turn the run into an interrupted one the load offers to finish.
+    #[test]
+    fn reconcile_preserves_a_user_cancel_and_a_failure() {
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(root.path(), || {
+            for (outcome, offered) in [
+                (WorkflowOutcome::Cancelled, false),
+                (WorkflowOutcome::Failed, true),
+            ] {
+                let bucket = root.path().join(format!("bucket-{outcome:?}"));
+                let mut app = test_app(&bucket);
+                let er_dir = app.tab().er_dir();
+                let lease = app.acquire_review_flow_lease(&er_dir).unwrap();
+                let holder = app.workflow_leases[&er_dir].holder();
+                let holder = WorkflowHolder {
+                    pid: holder.pid,
+                    label: holder.label.clone(),
+                };
+                let flow = flow_with(vec![
+                    task("triage", FlowTaskStage::Triage, FlowTaskStatus::Done),
+                    task(
+                        "finding:security",
+                        FlowTaskStage::Finding,
+                        FlowTaskStatus::Running,
+                    ),
+                ]);
+                App::create_workflow_record(
+                    &er_dir,
+                    Some(WorkflowKind::Standard),
+                    "hash",
+                    &flow.tasks,
+                    None,
+                    holder,
+                )
+                .unwrap();
+                App::finish_workflow_record(&er_dir, outcome);
+                // The owner is gone: the finder is the stage that drained past
+                // the terminal write.
+                app.release_review_flow_lease(&lease).unwrap();
+
+                app.reconcile_workflow_records();
+
+                let scope = Scope::dir(&er_dir).unwrap();
+                let record = workflow_record::load(&crate::store_registry::store(), &scope)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    record.stage("finding:security").unwrap().status,
+                    StageStatus::Interrupted,
+                    "{outcome:?}"
+                );
+                assert_eq!(record.outcome, Some(outcome), "the outcome is kept");
+                assert_eq!(
+                    record.offers_rerun(),
+                    offered,
+                    "{outcome:?}: only a run worth finishing is offered"
+                );
+            }
         });
     }
 
