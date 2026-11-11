@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::app::job_commit::commit_error;
 use er_agent::job::{JobError, JobProgress, JobRun, JobRunner, JobSpec, OutputContract};
 use er_agent::provider::ProviderSpec;
 
@@ -914,6 +915,21 @@ fn retired_summary_notice(config_path: &std::path::Path) -> Option<String> {
     Some(format!(
         "The [commands].summary setting is no longer read: Generate summary now runs a built-in job. You can remove it from {}.",
         config_path.display()
+    ))
+}
+
+/// Marker under the storage root: the retired project `auto_triage` flag was
+/// announced. Separate from the legacy-root and retired-summary markers.
+const RETIRED_AUTO_TRIAGE_NOTICED: &str = ".retired-auto-triage-noticed";
+
+/// The notice that the per-project `auto_triage` flag is no longer read.
+fn retired_auto_triage_notice(projects_path: &std::path::Path) -> Option<String> {
+    if !crate::projects_pins::retired_auto_triage_set() {
+        return None;
+    }
+    Some(format!(
+        "The project auto-triage setting is no longer read: triage starts from the sidebar. You can remove it from {}.",
+        projects_path.display()
     ))
 }
 
@@ -2875,6 +2891,17 @@ impl App {
             }
         }
 
+        let retired_triage_marker = root.join(RETIRED_AUTO_TRIAGE_NOTICED);
+        if !retired_triage_marker.exists() {
+            if let Some(path) = crate::projects_pins::projects_artifact_path() {
+                if let Some(message) = retired_auto_triage_notice(&path) {
+                    let _ = std::fs::create_dir_all(root);
+                    let _ = std::fs::write(&retired_triage_marker, b"");
+                    messages.push(message);
+                }
+            }
+        }
+
         if !messages.is_empty() {
             self.notify_long(&messages.join(" "));
         }
@@ -3295,22 +3322,36 @@ impl App {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
         crate::config::inject_claude_startup_trim(family, &mut config_args);
+        // File-producing tab jobs write to staging; the host commits from it.
+        let contract = crate::app::job_commit::tab_job_contract(name)?;
+        let staging = match contract {
+            crate::agent_runtime::ArtifactContract::None => None,
+            _ => Some(std::sync::Arc::new(
+                crate::app::job_staging::JobStaging::create()?,
+            )),
+        };
+        let storage_dir = staging
+            .as_ref()
+            .map_or_else(|| er_dir_path.clone(), |staging| staging.path());
         crate::config::inject_agent_storage_access(
             family,
             &mut config_args,
-            Some(er_dir_path.as_str()),
+            Some(storage_dir.as_str()),
         );
         let opencode_env = crate::config::apply_opencode_spawn(
             family,
             &mut config_args,
-            Some(er_dir_path.as_str()),
+            Some(storage_dir.as_str()),
         );
 
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
 
         let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
-        let prompt_owned = prompt.to_string();
+        let prompt_owned = match &staging {
+            Some(staging) => staging.repoint_prompt(prompt, &er_dir_path),
+            None => prompt.to_string(),
+        };
         let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
         let git_handle = self.ports.git.clone();
         let github_handle = self.ports.github.clone();
@@ -3324,6 +3365,7 @@ impl App {
         });
 
         let log_tx = self.tab().log_tx.clone();
+        let artifact_store = crate::store_registry::store();
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
@@ -3431,7 +3473,15 @@ impl App {
                     provider: ProviderSpec {
                         program: agent_cmd.clone(),
                         args: agent_args,
-                        env: opencode_env.iter().cloned().collect(),
+                        env: opencode_env
+                            .iter()
+                            .cloned()
+                            .chain(
+                                staging
+                                    .as_ref()
+                                    .map(|staging| ("ER_JOB_STAGING".to_string(), staging.path())),
+                            )
+                            .collect(),
                         protocol: if is_stream_json {
                             crate::agent_runtime::OutputProtocol::ClaudeStreamJson
                         } else {
@@ -3445,6 +3495,18 @@ impl App {
                     output: OutputContract::Stdout,
                 };
                 record_submitted_tab_job(&spec.kind);
+
+                // Stage the inputs the prompt reads, and record which output
+                // files were absent so the commit can require them.
+                let baseline = match staging.as_deref() {
+                    Some(staging) => {
+                        staging
+                            .stage_inputs(&er_dir_path)
+                            .with_context(|| format!("{name_owned}: failed to stage its inputs"))?;
+                        crate::app::job_commit::capture_contract(contract.clone(), &staging.path())?
+                    }
+                    None => None,
+                };
 
                 // Log lines are drained off the job thread, so a slow UI
                 // cannot hold the runner's pipe readers.
@@ -3515,6 +3577,21 @@ impl App {
                         " (set ER_DEBUG=1 for the full transcript)".to_string()
                     };
                     anyhow::bail!("{} failed{detail}", name_owned);
+                }
+
+                // Commit the staged output through the store before anything
+                // reads the bucket's copy.
+                if let Some(staging) = staging.as_deref() {
+                    if contract != crate::agent_runtime::ArtifactContract::None {
+                        crate::app::job_commit::commit_contract(
+                            contract,
+                            &staging.path(),
+                            &er_dir_path,
+                            baseline.as_ref(),
+                            &artifact_store,
+                        )
+                        .map_err(|error| commit_error(&name_owned, error))?;
+                    }
                 }
 
                 // The summary is a built-in job; a configured push still runs
@@ -3920,6 +3997,19 @@ impl App {
             );
         }
 
+        // File-writing jobs stage their output; the prompt is re-pointed at the
+        // staging directory and the host commits from it after the run.
+        let staging = match crate::app::job_commit::job_contract(&kind) {
+            crate::agent_runtime::ArtifactContract::None => None,
+            _ => Some(std::sync::Arc::new(
+                crate::app::job_staging::JobStaging::create()?,
+            )),
+        };
+        let prompt = match &staging {
+            Some(staging) => staging.repoint_prompt(&prompt, &target.er_dir),
+            None => prompt,
+        };
+
         let mut task = BackgroundTask::new(kind, target);
         task.execution_root = execution_root;
         let pending =
@@ -3929,6 +4019,7 @@ impl App {
                 prompt,
                 prepared_diff,
                 host_write_diagram,
+                staging,
                 // Snapshot at enqueue so a mid-queue palette change cannot retarget
                 // an already-queued job.
                 ai_selection: Some(self.pending_ai_selection_override.clone().unwrap_or_else(
@@ -3980,6 +4071,7 @@ impl App {
             ai_selection,
             launch_config,
             scoped_stamp,
+            staging,
         } = pending;
         let command_name = command_name.as_str();
         let target = task.target.clone();
@@ -4094,11 +4186,17 @@ impl App {
         // sandbox, and `--add-dir` is documented as adding a *writable* directory
         // — so a read-only run withholds it and narrows the sandbox instead.
         let readonly_run = background_run_is_read_only(&task_kind, host_write_diagram.is_some());
+        // A staged job gets access to its staging directory; it no longer
+        // needs the review bucket. Jobs with no file output keep the bucket
+        // path they had.
+        let storage_dir = staging
+            .as_ref()
+            .map_or_else(|| target.er_dir.clone(), |staging| staging.path());
         let storage_access = match family {
             crate::config::CliFamily::Codex | crate::config::CliFamily::Cursor if readonly_run => {
                 None
             }
-            _ => Some(target.er_dir.as_str()),
+            _ => Some(storage_dir.as_str()),
         };
         crate::config::inject_agent_storage_access(family, &mut config_args, storage_access);
         if readonly_run {
@@ -4108,13 +4206,13 @@ impl App {
             crate::config::apply_opencode_readonly_storage_spawn(
                 family,
                 &mut config_args,
-                Some(target.er_dir.as_str()),
+                Some(storage_dir.as_str()),
             )
         } else {
             crate::config::apply_opencode_spawn(
                 family,
                 &mut config_args,
-                Some(target.er_dir.as_str()),
+                Some(storage_dir.as_str()),
             )
         };
         if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
@@ -4267,7 +4365,15 @@ impl App {
                     provider: ProviderSpec {
                         program: agent_cmd.clone(),
                         args: agent_args,
-                        env: opencode_env.iter().cloned().collect(),
+                        env: opencode_env
+                            .iter()
+                            .cloned()
+                            .chain(
+                                staging
+                                    .as_ref()
+                                    .map(|staging| ("ER_JOB_STAGING".to_string(), staging.path())),
+                            )
+                            .collect(),
                         protocol: if is_stream_json {
                             crate::agent_runtime::OutputProtocol::ClaudeStreamJson
                         } else {
@@ -4279,6 +4385,24 @@ impl App {
                     work_dir: work_dir.clone(),
                     workload: crate::agent_slots::Workload::Background,
                     output: OutputContract::Stdout,
+                };
+
+                // The prompt and `--add-dir` point at staging; the inputs the
+                // prompt reads are copied in just before the run. The baseline
+                // records which files were absent, so a successful run must
+                // have written them.
+                let baseline = match staging.as_deref() {
+                    Some(staging) => {
+                        staging.stage_inputs(&er_dir).with_context(|| {
+                            format!("{command_name_fail}: failed to stage its inputs")
+                        })?;
+                        crate::app::job_commit::capture_baseline(
+                            &task_kind,
+                            scoped_stamp.is_some(),
+                            &staging.path(),
+                        )?
+                    }
+                    None => None,
                 };
 
                 // Log lines are drained off the job thread, so a slow UI
@@ -4383,20 +4507,50 @@ impl App {
                         format!("{command_name_fail}: failed to merge the importance table")
                     })?;
                 }
-                // Host-owned diagram write: agent had no Write/Edit; persist
-                // only the validated diagrams/<id>.json from stdout.
+                // Host-owned diagram write: agent had no Write/Edit; validate
+                // only the diagrams/<id>.json payload from stdout, then commit
+                // it through the store.
                 if let Some(hw) = &host_write_diagram {
-                    crate::ai::persist_diagram_from_agent_stdout(
+                    let diagram = crate::ai::validated_diagram_from_stdout(
                         &output.stdout,
                         is_stream_json,
                         &hw.kind,
                         &hw.diff_hash,
                         hw.custom_prompt.as_deref(),
-                        &hw.output_path,
                     )
                     .with_context(|| {
-                        format!("{command_name_fail}: failed to persist diagram sidecar")
+                        format!("{command_name_fail}: failed to validate its diagram sidecar")
                     })?;
+                    let id = hw
+                        .output_path
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .context("diagram output file has no id")?;
+                    crate::app::job_commit::commit_diagram(&diagram, id, &er_dir, &artifact_store)
+                        .with_context(|| {
+                            format!("{command_name_fail}: failed to commit its diagram sidecar")
+                        })?;
+                }
+                // File outputs: validate the staged files, then commit them
+                // through the store. A malformed or stale output fails the
+                // job here, before anything in the bucket changes.
+                if let Some(staging) = staging.as_deref() {
+                    if scoped_stamp.is_some() {
+                        crate::app::job_commit::commit_staged_scoped(
+                            command_name_fail.as_ref(),
+                            &staging.path(),
+                            &er_dir,
+                            &artifact_store,
+                        )?;
+                    } else {
+                        crate::app::job_commit::commit_staged(
+                            &task_kind,
+                            &staging.path(),
+                            &er_dir,
+                            baseline.as_ref(),
+                            &artifact_store,
+                        )?;
+                    }
                 }
                 // A scoped run commits its own overlay; a successful full run
                 // clears its lens's old overlay and validation. A failed run
@@ -5165,7 +5319,15 @@ mod background_queue_tests {
                 return;
             };
             let fake_bin = tmp.join("codex");
-            crate::test_support::write_executable_script(&fake_bin, "#!/bin/sh\nexit 0\n").unwrap();
+            crate::test_support::write_executable_script(
+                &fake_bin,
+                &format!(
+                    "#!/bin/sh\n{}; {}\n",
+                    crate::test_support::STAGING_PREAMBLE,
+                    crate::test_support::WRITE_TRIAGE_SIDECAR
+                ),
+            )
+            .unwrap();
 
             app.config.ai_hub.providers.clear();
             app.config.ai_hub.default_provider = Some("codex".to_string());
@@ -5241,7 +5403,14 @@ mod background_queue_tests {
             };
             app.config.ai_hub = Default::default();
             app.config.agent.command = "sh".into();
-            app.config.agent.args = vec!["-c".into(), "sleep 0.05".into()];
+            app.config.agent.args = vec![
+                "-c".into(),
+                format!(
+                    "sleep 0.05; {}; {}",
+                    crate::test_support::STAGING_PREAMBLE,
+                    crate::test_support::WRITE_TRIAGE_SIDECAR
+                ),
+            ];
             let owned_target = target(tmp, "owned");
             let unowned_target = target(tmp, "unowned");
             let owned_id = app
@@ -5322,7 +5491,14 @@ mod background_queue_tests {
                 callback_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             })));
 
-            app.config.agent.args = vec!["-c".into(), "exit 0".into()];
+            app.config.agent.args = vec![
+                "-c".into(),
+                format!(
+                    "{}; {}",
+                    crate::test_support::STAGING_PREAMBLE,
+                    crate::test_support::WRITE_REVIEW_SIDECARS
+                ),
+            ];
             app.spawn_background_review(target(tmp, "callback-success"), "p".into(), false, None)
                 .unwrap();
             app.config.agent.args = vec!["-c".into(), "exit 1".into()];
@@ -5353,9 +5529,22 @@ mod background_queue_tests {
 
     /// A scoped run's overlay and validation survive a failed full run; a
     /// successful full run clears them. Both runs share the bucket.
-    fn run_full_review_to_completion(app: &mut App, target: BackgroundTaskTarget, exit: &str) {
+    fn run_full_review_to_completion(app: &mut App, target: BackgroundTaskTarget, succeed: bool) {
         app.config.agent.command = "sh".into();
-        app.config.agent.args = vec!["-c".into(), exit.into()];
+        // A successful review must leave a complete staged output; the seeded
+        // bucket holds no prepared diff, so the preamble makes one and hashes it.
+        app.config.agent.args = vec![
+            "-c".into(),
+            if succeed {
+                format!(
+                    "{}; {}",
+                    crate::test_support::STAGING_PREAMBLE,
+                    crate::test_support::WRITE_REVIEW_SIDECARS
+                )
+            } else {
+                "exit 1".to_string()
+            },
+        ];
         app.spawn_background_review(target, "p".into(), false, None)
             .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -5435,7 +5624,17 @@ mod background_queue_tests {
         crate::storage::with_test_storage_root(tmp.path(), || {
             let mut app = App::new_for_test(vec![]);
             app.config.agent.command = "sh".into();
-            app.config.agent.args = vec!["-c".into(), "exit 0".into()];
+            // A successful review now has to leave a complete staged output;
+            // the seeded bucket holds no prepared diff, so the preamble makes
+            // one and hashes it.
+            app.config.agent.args = vec![
+                "-c".into(),
+                format!(
+                    "{}; {}",
+                    crate::test_support::STAGING_PREAMBLE,
+                    crate::test_support::WRITE_REVIEW_SIDECARS
+                ),
+            ];
             app.enqueue_background_agent_task_in_checkout(
                 "review".into(),
                 "review",
@@ -5465,7 +5664,7 @@ mod background_queue_tests {
         crate::storage::with_test_storage_root(tmp.path(), || {
             let mut app = App::new_for_test(vec![]);
 
-            run_full_review_to_completion(&mut app, task_target, "exit 1");
+            run_full_review_to_completion(&mut app, task_target, false);
 
             assert!(bucket.join("scoped/general.json").exists());
             assert!(bucket.join("validation.json").exists());
@@ -5481,7 +5680,7 @@ mod background_queue_tests {
         crate::storage::with_test_storage_root(tmp.path(), || {
             let mut app = App::new_for_test(vec![]);
 
-            run_full_review_to_completion(&mut app, task_target, "exit 0");
+            run_full_review_to_completion(&mut app, task_target, true);
 
             assert!(!bucket.join("scoped/general.json").exists());
             assert!(!bucket.join("validation.json").exists());
@@ -5499,10 +5698,375 @@ mod background_queue_tests {
         crate::storage::with_test_storage_root(tmp.path(), || {
             let mut app = App::new_for_test(vec![]);
 
-            run_full_review_to_completion(&mut app, task_target, "exit 0");
+            run_full_review_to_completion(&mut app, task_target, true);
 
             assert!(!bucket.join("scoped/general.json").exists());
             assert!(!bucket.join("validation.json").exists());
+        });
+    }
+
+    const REVIEW_DIFF: &str =
+        "diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
+
+    /// A bucket holding the prepared diff a review job stages its inputs from.
+    fn review_bucket(tmp: &std::path::Path) -> (std::path::PathBuf, BackgroundTaskTarget) {
+        let bucket = tmp.join("bucket");
+        std::fs::create_dir_all(&bucket).unwrap();
+        std::fs::write(bucket.join("diff-tmp"), REVIEW_DIFF).unwrap();
+        std::fs::write(
+            bucket.join(".diff-tmp.sha256"),
+            crate::ai::compute_diff_hash(REVIEW_DIFF),
+        )
+        .unwrap();
+        let target = BackgroundTaskTarget {
+            repo_root: tmp.to_string_lossy().to_string(),
+            er_dir: bucket.to_string_lossy().to_string(),
+            branch_label: "feat".into(),
+            base_branch: "main".into(),
+            scope: "branch".into(),
+            pr_number: None,
+            remote_repo: None,
+            managed_local: false,
+        };
+        (bucket, target)
+    }
+
+    /// Write a complete review sidecar set into the job's staging directory.
+    fn staged_review_script(hash: &str) -> String {
+        format!(
+            "printf '{{\"version\":1,\"diff_hash\":\"{hash}\",\"files\":{{}}}}' > \"$ER_JOB_STAGING/review.json\"; \
+             printf '{{\"version\":1,\"diff_hash\":\"{hash}\",\"order\":[],\"groups\":{{}}}}' > \"$ER_JOB_STAGING/order.json\"; \
+             printf '{{\"version\":1,\"diff_hash\":\"{hash}\",\"items\":[]}}' > \"$ER_JOB_STAGING/checklist.json\"; \
+             printf 'summary\\n' > \"$ER_JOB_STAGING/summary.md\""
+        )
+    }
+
+    fn wait_for_task(
+        app: &mut App,
+        id: &str,
+        timeout: std::time::Duration,
+    ) -> crate::app::CommandStatus {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            app.poll_background_tasks();
+            if let Some(handle) = app.background_tasks.get(id) {
+                if !matches!(handle.task.status, crate::app::CommandStatus::Running) {
+                    return handle.task.status.clone();
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the job did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    fn run_review_job(app: &mut App, target: BackgroundTaskTarget, script: String) -> String {
+        app.config.agent.command = "sh".into();
+        app.config.agent.args = vec!["-c".into(), script];
+        app.enqueue_background_agent_task_in_checkout(
+            "review".into(),
+            "review",
+            target,
+            "p".into(),
+            true,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_review_job_commits_all_four_artifacts_through_the_store() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (bucket, task_target) = review_bucket(tmp.path());
+        let hash = crate::ai::compute_diff_hash(REVIEW_DIFF);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            let id = run_review_job(&mut app, task_target, staged_review_script(&hash));
+
+            let status = wait_for_task(&mut app, &id, std::time::Duration::from_secs(10));
+
+            assert_eq!(status, crate::app::CommandStatus::Done);
+            for name in ["review.json", "order.json", "checklist.json", "summary.md"] {
+                assert!(bucket.join(name).is_file(), "{name} was not committed");
+            }
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket).unwrap();
+            let key = er_store::ArtifactKey::<crate::ai::ErReview>::new(scope, ()).unwrap();
+            assert!(matches!(
+                store.read(&key).unwrap(),
+                er_store::Loaded::Found(_)
+            ));
+        });
+    }
+
+    #[test]
+    fn a_tampered_staged_diff_hash_fails_the_job() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_bucket, task_target) = review_bucket(tmp.path());
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            let id = run_review_job(&mut app, task_target, staged_review_script("deadbeef"));
+
+            let status = wait_for_task(&mut app, &id, std::time::Duration::from_secs(10));
+
+            match status {
+                crate::app::CommandStatus::Failed(reason) => {
+                    assert!(reason.contains("stale review.json"), "{reason}");
+                }
+                other => panic!("the stale output was accepted: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn a_malformed_staged_output_fails_the_job_with_a_reason() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_bucket, task_target) = review_bucket(tmp.path());
+        let hash = crate::ai::compute_diff_hash(REVIEW_DIFF);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            let script = format!(
+                "printf 'not json' > \"$ER_JOB_STAGING/review.json\"; \
+                 printf '{{\"version\":1,\"diff_hash\":\"{hash}\",\"order\":[],\"groups\":{{}}}}' > \"$ER_JOB_STAGING/order.json\"; \
+                 printf '{{\"version\":1,\"diff_hash\":\"{hash}\",\"items\":[]}}' > \"$ER_JOB_STAGING/checklist.json\"; \
+                 printf 'summary\\n' > \"$ER_JOB_STAGING/summary.md\""
+            );
+            let id = run_review_job(&mut app, task_target, script);
+
+            let status = wait_for_task(&mut app, &id, std::time::Duration::from_secs(10));
+
+            match status {
+                crate::app::CommandStatus::Failed(reason) => {
+                    assert!(reason.contains("invalid JSON"), "{reason}");
+                }
+                other => panic!("the malformed output was accepted: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn a_failed_commit_leaves_the_old_artifacts() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (bucket, task_target) = review_bucket(tmp.path());
+        let hash = crate::ai::compute_diff_hash(REVIEW_DIFF);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket).unwrap();
+            let key = er_store::ArtifactKey::<crate::ai::ErReview>::new(scope.clone(), ()).unwrap();
+            let old = crate::ai::ErReview {
+                version: 1,
+                diff_hash: hash.clone(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files: std::collections::HashMap::new(),
+                file_hashes: std::collections::HashMap::new(),
+            };
+            store.write(&key, &old).unwrap();
+            // Hold the scope past the commit's lock timeout, so the commit
+            // fails instead of writing a new generation.
+            let guard = store
+                .lock_scope(&scope, std::time::Duration::from_millis(100))
+                .unwrap();
+            let id = run_review_job(&mut app, task_target, staged_review_script(&hash));
+
+            let status = wait_for_task(&mut app, &id, std::time::Duration::from_secs(15));
+            drop(guard);
+
+            match status {
+                crate::app::CommandStatus::Failed(reason) => {
+                    assert!(reason.contains("is locked"), "{reason}");
+                }
+                other => panic!("the blocked commit did not fail: {other:?}"),
+            }
+            match store.read(&key).unwrap() {
+                er_store::Loaded::Found(stored) => assert!(stored.value.files.is_empty()),
+                other => panic!("the old review was replaced: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn the_job_argv_and_prompt_point_at_staging() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (bucket, task_target) = review_bucket(tmp.path());
+        let hash = crate::ai::compute_diff_hash(REVIEW_DIFF);
+        let log = tmp.path().join("argv.log");
+        let script = tmp.path().join("bin/claude");
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let staged = crate::test_support::write_executable_script(
+                &script,
+                &format!(
+                    "#!/bin/sh\n{{ printf '%s\\n' \"$@\"; printf 'ER_JOB_STAGING=%s\\n' \"$ER_JOB_STAGING\"; }} > '{log}'\n{}",
+                    staged_review_script(&hash),
+                    log = log.display()
+                ),
+            );
+            assert!(staged.is_ok(), "{staged:?}");
+            let mut app = App::new_for_test(vec![]);
+            app.config.agent.command = script.to_string_lossy().into_owned();
+            app.config.agent.args = vec!["--print".into(), "{prompt}".into()];
+            let bucket_path = bucket.to_string_lossy().into_owned();
+            let id = app
+                .enqueue_background_agent_task_in_checkout(
+                    "review".into(),
+                    "review",
+                    task_target,
+                    format!("Write the review into '{bucket_path}'"),
+                    true,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+
+            let status = wait_for_task(&mut app, &id, std::time::Duration::from_secs(10));
+
+            assert_eq!(status, crate::app::CommandStatus::Done);
+            let recorded = std::fs::read_to_string(&log).unwrap();
+            let staging = recorded
+                .lines()
+                .find_map(|line| line.strip_prefix("ER_JOB_STAGING="))
+                .expect("the agent saw no staging env");
+            assert!(
+                staging.starts_with(&format!(
+                    "{}/staging/",
+                    crate::storage::storage_root().display()
+                )),
+                "{staging}"
+            );
+            assert!(
+                recorded.contains(&format!("--add-dir={staging}")),
+                "--add-dir did not name staging: {recorded}"
+            );
+            assert!(
+                recorded.contains(&format!("Write the review into '{staging}'")),
+                "the prompt did not name staging: {recorded}"
+            );
+            assert!(
+                !recorded.contains(&bucket_path),
+                "the bucket leaked into the agent's world: {recorded}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_direct_bucket_write_is_not_committed() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (bucket, task_target) = review_bucket(tmp.path());
+        let hash = crate::ai::compute_diff_hash(REVIEW_DIFF);
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            // The fake writes a complete set straight into the bucket and exits
+            // successfully; only the staging directory is read by the host.
+            let script = format!(
+                "ER_JOB_STAGING='{}'; {}",
+                bucket.display(),
+                staged_review_script(&hash)
+            );
+            let id = run_review_job(&mut app, task_target, script);
+
+            let status = wait_for_task(&mut app, &id, std::time::Duration::from_secs(10));
+
+            match status {
+                crate::app::CommandStatus::Failed(reason) => {
+                    assert!(reason.contains("did not write"), "{reason}");
+                    assert!(reason.contains("/staging/"), "{reason}");
+                }
+                other => panic!("the direct bucket write was accepted: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn a_cancelled_or_failed_job_removes_its_staging() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_bucket, task_target) = review_bucket(tmp.path());
+        let record = tmp.path().join("staging-path");
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            let script = format!(
+                "printf '%s' \"$ER_JOB_STAGING\" > '{}'; exit 1",
+                record.display()
+            );
+            let id = run_review_job(&mut app, task_target, script);
+
+            let status = wait_for_task(&mut app, &id, std::time::Duration::from_secs(10));
+
+            assert!(matches!(status, crate::app::CommandStatus::Failed(_)));
+            let staging = std::fs::read_to_string(&record).unwrap();
+            assert!(!staging.is_empty());
+            assert!(
+                !std::path::Path::new(&staging).exists(),
+                "the failed job left its staging behind: {staging}"
+            );
+        });
+
+        // A task still queued when it is cancelled drops its staging too.
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            app.config.ai_hub.max_concurrent_reviews = 1;
+            app.config.agent.command = "sleep".into();
+            app.config.agent.args = vec!["5".into()];
+            let first = crate::app::BackgroundTaskTarget {
+                er_dir: tmp.path().join(".er-a").to_string_lossy().into_owned(),
+                ..target(tmp.path(), "feat-a")
+            };
+            let second = crate::app::BackgroundTaskTarget {
+                er_dir: tmp.path().join(".er-b").to_string_lossy().into_owned(),
+                ..target(tmp.path(), "feat-b")
+            };
+            app.enqueue_background_agent_task_in_checkout(
+                "review".into(),
+                "review",
+                first,
+                "p".into(),
+                true,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let queued_id = app
+                .enqueue_background_agent_task_in_checkout(
+                    "review".into(),
+                    "review",
+                    second,
+                    "p".into(),
+                    true,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(app.pending_background_tasks.len(), 1, "second task queued");
+            let staging = app.pending_background_tasks[0]
+                .staging
+                .as_ref()
+                .expect("a queued review stages its output")
+                .path();
+            assert!(std::path::Path::new(&staging).is_dir());
+            assert!(app.cancel_queued_background_task(&queued_id));
+            assert!(
+                !std::path::Path::new(&staging).exists(),
+                "the cancelled queue entry left its staging behind: {staging}"
+            );
         });
     }
 
@@ -6664,7 +7228,7 @@ mod background_queue_tests {
                 error("importance")
             );
             assert!(
-                error("diagram:").contains("failed to persist diagram sidecar"),
+                error("diagram:").contains("failed to validate its diagram sidecar"),
                 "{}",
                 error("diagram:")
             );
@@ -7076,7 +7640,7 @@ mod github_handle_tests {
             crate::test_support::write_executable_script(
                 &bin,
                 &format!(
-                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{out}.tmp\" && mv \"{out}.tmp\" \"{out}\"\n"
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{out}.tmp\" && mv \"{out}.tmp\" \"{out}\"\nprintf 'summary\\n' > \"$ER_JOB_STAGING/summary.md\"\n"
                 ),
             )
             .unwrap();
@@ -7105,8 +7669,13 @@ mod github_handle_tests {
             let er_dir = app.tab().er_dir();
             std::fs::write(format!("{er_dir}/summary.md"), "# summary").unwrap();
             app.config.summary.push_to_pr = true;
-            app.config.agent.command = "/usr/bin/true".into();
-            app.config.agent.args = Vec::new();
+            // The job writes its summary into staging; the host commits it
+            // before the push reads the bucket.
+            app.config.agent.command = "/bin/sh".into();
+            app.config.agent.args = vec![
+                "-c".into(),
+                "printf '# summary\\n' > \"$ER_JOB_STAGING/summary.md\"".into(),
+            ];
             let github = Arc::new(
                 FakeGitHub::default().with_edit_body(Err(GhError::Forbidden {
                     message: "nope".into(),
@@ -7304,6 +7873,105 @@ mod legacy_root_notice_tests {
                 app.announce_legacy_root_in(&base, &root);
                 assert!(app.notification.is_none(), "second launch must be silent");
             });
+        });
+    }
+
+    /// Write a projects record shaped the way a pre-1.0 build wrote it.
+    fn write_old_projects_record(auto_triage: bool) {
+        let old = format!(
+            r#"{{"active_id":"p1","projects":[{{"id":"p1","name":"One","root_path":"/repos/one","auto_triage":{auto_triage}}}]}}"#
+        );
+        let parsed: crate::projects_pins::ProjectsFile =
+            serde_json::from_str(&old).expect("an old record parses");
+        crate::projects_pins::update(|file| {
+            file.projects = parsed.projects;
+            Ok(true)
+        })
+        .expect("write the projects record");
+    }
+
+    #[test]
+    fn a_retired_auto_triage_flag_joins_the_first_launch_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let root = dir.path().join("root");
+        let config_path = dir.path().join("config.toml");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        // The legacy-root marker is unrelated and already set.
+        std::fs::write(root.join(".legacy-root-noticed"), b"").unwrap();
+        // The summary key retires in the same release; one launch tells both.
+        std::fs::write(&config_path, "[commands]\nsummary = \"claude -p\"\n").unwrap();
+
+        crate::config::with_managed_config_path(&config_path, || {
+            crate::storage::with_test_storage_root(&root, || {
+                write_old_projects_record(true);
+                let mut app = App::new_for_test(Vec::new());
+
+                app.announce_legacy_root_in(&base, &root);
+
+                let notice = app.notification.as_ref().expect("the retired-key notice");
+                assert!(notice.long);
+                assert!(
+                    notice.message.contains("[commands].summary"),
+                    "{}",
+                    notice.message
+                );
+                assert!(notice.message.contains("auto-triage"), "{}", notice.message);
+                assert!(
+                    notice.message.contains("projects.json"),
+                    "{}",
+                    notice.message
+                );
+                assert!(root.join(".retired-auto-triage-noticed").exists());
+
+                app.clear_notification();
+                app.announce_legacy_root_in(&base, &root);
+                assert!(app.notification.is_none(), "second launch must be silent");
+            });
+        });
+    }
+
+    #[test]
+    fn a_summary_marker_does_not_hide_the_auto_triage_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".legacy-root-noticed"), b"").unwrap();
+        std::fs::write(root.join(".retired-summary-noticed"), b"").unwrap();
+
+        crate::storage::with_test_storage_root(&root, || {
+            write_old_projects_record(true);
+            let mut app = App::new_for_test(Vec::new());
+
+            app.announce_legacy_root_in(&base, &root);
+
+            let notice = app.notification.as_ref().expect("the retired-flag notice");
+            assert!(notice.message.contains("auto-triage"), "{}", notice.message);
+            assert!(root.join(".retired-auto-triage-noticed").exists());
+        });
+    }
+
+    #[test]
+    fn a_false_auto_triage_flag_is_left_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".legacy-root-noticed"), b"").unwrap();
+        std::fs::write(root.join(".retired-summary-noticed"), b"").unwrap();
+
+        crate::storage::with_test_storage_root(&root, || {
+            write_old_projects_record(false);
+            let mut app = App::new_for_test(Vec::new());
+
+            app.announce_legacy_root_in(&base, &root);
+
+            assert!(app.notification.is_none(), "a disabled flag says nothing");
+            assert!(!root.join(".retired-auto-triage-noticed").exists());
         });
     }
 

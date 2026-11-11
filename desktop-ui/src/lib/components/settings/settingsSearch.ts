@@ -175,9 +175,6 @@ export function riskKeywords(rules: RiskRuleRow[], files: RiskFileRow[]): string
 
 export const PROJECT_ROWS = {
   location: { label: "Location" },
-  autoTriage: { label: "Auto-triage", description: "Triage new and updated open PRs while the app is open." },
-  runTriage: { label: "Run triage", description: "Which PRs start a triage run." },
-  ownPrs: { label: "Include my own PRs", description: "Also triage PRs you opened." },
   sizeLimit: {
     label: "Size limit",
     description: "Skip triage when the filtered diff is larger than this. Empty means no limit.",
@@ -192,8 +189,6 @@ export const PROJECT_ROWS = {
 export function projectRows(project: ProjectSnapshot): RowCopy[] {
   const rows: RowCopy[] = [PROJECT_ROWS.location];
   if (project.remote) {
-    rows.push(PROJECT_ROWS.autoTriage);
-    if (project.auto_triage) rows.push(PROJECT_ROWS.runTriage, PROJECT_ROWS.ownPrs);
     rows.push(PROJECT_ROWS.sizeLimit);
   }
   rows.push({ ...PROJECT_ROWS.ignore, keywords: project.review_ignore_globs ?? [] });

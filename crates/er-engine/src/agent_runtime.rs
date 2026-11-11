@@ -627,7 +627,7 @@ impl ArtifactContract {
         }
     }
 
-    const fn requires_diff_hash(&self) -> bool {
+    pub(crate) const fn requires_diff_hash(&self) -> bool {
         !matches!(self, Self::None | Self::Summary)
     }
 }

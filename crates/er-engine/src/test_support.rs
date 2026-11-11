@@ -92,6 +92,49 @@ pub fn explicit_var(name: &str) -> Option<Option<String>> {
 /// child writer owns every write descriptor and is reaped before this returns,
 /// so a later exec cannot race a concurrent fork.
 #[cfg(unix)]
+/// Rewrite a fake provider's script so its output follows the job's staging
+/// directory: `'__BUCKET__/x'` becomes `"${ER_JOB_STAGING:-__BUCKET__}/x"`,
+/// with the fallback replaced by `bucket`.
+///
+/// Jobs stage their output, and the fake provider runs as a child that is told
+/// the directory through `ER_JOB_STAGING`. A script that writes the bucket
+/// path directly is exactly what the host no longer commits, so tests must
+/// follow the env var.
+#[expect(
+    clippy::string_slice,
+    reason = "every index comes from an ASCII needle match, so each is a char boundary"
+)]
+pub fn staged_script(script: &str, bucket: &str) -> String {
+    let token = "__BUCKET__";
+    let mut out = String::new();
+    let mut rest = script;
+    while let Some(start) = rest.find("'__BUCKET__") {
+        let (before, tail) = rest.split_at(start);
+        out.push_str(before);
+        let Some(relative_end) = tail[1..].find('\'') else {
+            break;
+        };
+        let end = 1 + relative_end;
+        let word = &tail[1..end];
+        let suffix = &word[token.len()..];
+        out.push_str(&format!("\"${{ER_JOB_STAGING:-{token}}}{suffix}\""));
+        rest = &tail[end + 1..];
+    }
+    out.push_str(rest);
+    out.replace(token, bucket)
+}
+
+/// Shell snippet: make `$out` the job's staging dir and `$h` the diff hash,
+/// creating a diff when the job was not given a prepared one. Every fake
+/// provider that writes a sidecar starts with this.
+pub const STAGING_PREAMBLE: &str = r#"out="${ER_JOB_STAGING:?}"; [ -f "$out/diff-tmp" ] || printf 'test diff\n' > "$out/diff-tmp"; h=$(sha256sum "$out/diff-tmp" 2>/dev/null || shasum -a 256 "$out/diff-tmp"); h=${h%% *}"#;
+
+/// Shell snippet: write a complete, hash-matching review sidecar set.
+pub const WRITE_REVIEW_SIDECARS: &str = r#"printf '{"version":1,"diff_hash":"%s","files":{}}' "$h" > "$out/review.json"; printf '{"version":1,"diff_hash":"%s","order":[],"groups":{}}' "$h" > "$out/order.json"; printf '{"version":1,"diff_hash":"%s","items":[]}' "$h" > "$out/checklist.json"; printf 'summary\n' > "$out/summary.md""#;
+
+/// Shell snippet: write a complete, hash-matching triage sidecar.
+pub const WRITE_TRIAGE_SIDECAR: &str = r#"printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}}' "$h" > "$out/triage.json""#;
+
 pub fn write_executable_script(path: &Path, body: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
