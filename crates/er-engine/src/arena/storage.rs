@@ -399,6 +399,42 @@ mod tests {
         assert_eq!(reviewers.len(), 800);
     }
 
+    /// Two writers saving one artifact at once must both finish: a cancel and
+    /// the supervisor write `run.json` concurrently.
+    #[test]
+    fn concurrent_atomic_writes_to_one_artifact_both_succeed() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("run.json");
+        for _ in 0..64 {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let handles: Vec<_> = (0..2)
+                .map(|writer| {
+                    let path = path.clone();
+                    let barrier = std::sync::Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        write_atomic(&path, format!("writer-{writer}").as_bytes())
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+            let contents = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                contents == "writer-0" || contents == "writer-1",
+                "{contents}"
+            );
+        }
+        let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
     fn sample_run(id: &str) -> ArenaRun {
         ArenaRun {
             id: id.to_string(),
