@@ -3,12 +3,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use er_engine::projects_pins::{ProjectRecord, ProjectsFile, RecentPrEntry, SavedPrEntry};
 
-fn default_auto_triage_when() -> String {
-    ProjectRecord::default().auto_triage_when
-}
-
-pub const AUTO_TRIAGE_WHEN_OPTIONS: &[&str] = &["new-and-push", "new-only", "review-requested"];
-
 const MAX_PR_HISTORY: usize = 50;
 
 fn now_epoch_ms() -> u64 {
@@ -108,9 +102,6 @@ fn ensure_remote_project_in_file(file: &mut ProjectsFile, remote: &str) -> anyho
         dismissed_branches: Vec::new(),
         recent_prs: Vec::new(),
         saved_prs: Vec::new(),
-        auto_triage: false,
-        auto_triage_own_prs: false,
-        auto_triage_when: default_auto_triage_when(),
         auto_triage_max_diff_kb: 0,
         review_ignore_globs: Vec::new(),
         extra: Default::default(),
@@ -442,9 +433,6 @@ fn register_local_root_in_file(file: &mut ProjectsFile, root_path: &str) -> bool
         dismissed_branches: Vec::new(),
         recent_prs: Vec::new(),
         saved_prs: Vec::new(),
-        auto_triage: false,
-        auto_triage_own_prs: false,
-        auto_triage_when: default_auto_triage_when(),
         auto_triage_max_diff_kb: 0,
         review_ignore_globs: Vec::new(),
         extra: Default::default(),
@@ -587,7 +575,6 @@ pub fn auto_register(
             root_path: root_path.to_string(),
             remote: remote.clone(),
             tracked_branches: tracked_branches.clone(),
-            auto_triage_when: default_auto_triage_when(),
             ..Default::default()
         };
         file.projects.push(created.clone());
@@ -724,32 +711,9 @@ pub fn set_active(id: &str) {
     });
 }
 
-pub fn set_auto_triage(project_id: &str, enabled: bool) -> anyhow::Result<()> {
-    patch_project_review_settings(
-        project_id,
-        ProjectReviewSettingsPatch {
-            auto_triage: Some(enabled),
-            ..Default::default()
-        },
-    )
-}
-
-pub fn set_auto_triage_own_prs(project_id: &str, enabled: bool) -> anyhow::Result<()> {
-    patch_project_review_settings(
-        project_id,
-        ProjectReviewSettingsPatch {
-            auto_triage_own_prs: Some(enabled),
-            ..Default::default()
-        },
-    )
-}
-
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectReviewSettingsPatch {
-    pub auto_triage: Option<bool>,
-    pub auto_triage_own_prs: Option<bool>,
-    pub auto_triage_when: Option<String>,
     pub auto_triage_max_diff_kb: Option<u32>,
     pub review_ignore_glob_add: Option<String>,
     pub review_ignore_glob_remove: Option<usize>,
@@ -767,34 +731,6 @@ pub fn patch_project_review_settings(
             .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
         let mut changed = false;
 
-        if let Some(enabled) = patch.auto_triage {
-            if proj.auto_triage != enabled {
-                proj.auto_triage = enabled;
-                changed = true;
-            }
-            if !enabled && proj.auto_triage_own_prs {
-                proj.auto_triage_own_prs = false;
-                changed = true;
-            }
-        }
-        if let Some(enabled) = patch.auto_triage_own_prs {
-            if enabled && !proj.auto_triage {
-                anyhow::bail!("Enable auto-triage before including your own PRs");
-            }
-            if proj.auto_triage_own_prs != enabled {
-                proj.auto_triage_own_prs = enabled;
-                changed = true;
-            }
-        }
-        if let Some(when) = patch.auto_triage_when {
-            if !AUTO_TRIAGE_WHEN_OPTIONS.contains(&when.as_str()) {
-                anyhow::bail!("Invalid auto_triage_when: {when}");
-            }
-            if proj.auto_triage_when != when {
-                proj.auto_triage_when = when;
-                changed = true;
-            }
-        }
         if let Some(max_kb) = patch.auto_triage_max_diff_kb {
             if proj.auto_triage_max_diff_kb != max_kb {
                 proj.auto_triage_max_diff_kb = max_kb;
@@ -880,9 +816,6 @@ mod tests {
             dismissed_branches: Vec::new(),
             recent_prs: Vec::new(),
             saved_prs: Vec::new(),
-            auto_triage: false,
-            auto_triage_own_prs: false,
-            auto_triage_when: default_auto_triage_when(),
             auto_triage_max_diff_kb: 0,
             review_ignore_globs: Vec::new(),
             extra: Default::default(),
