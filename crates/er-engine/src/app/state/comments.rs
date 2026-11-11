@@ -5874,7 +5874,7 @@ mod background_queue_tests {
             let staged = crate::test_support::write_executable_script(
                 &script,
                 &format!(
-                    "{{ printf '%s\\n' \"$@\"; printf 'ER_JOB_STAGING=%s\\n' \"$ER_JOB_STAGING\"; }} > '{log}'\n{}",
+                    "#!/bin/sh\n{{ printf '%s\\n' \"$@\"; printf 'ER_JOB_STAGING=%s\\n' \"$ER_JOB_STAGING\"; }} > '{log}'\n{}",
                     staged_review_script(&hash),
                     log = log.display()
                 ),
