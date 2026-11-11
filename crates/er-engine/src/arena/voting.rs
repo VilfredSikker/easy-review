@@ -1,6 +1,54 @@
 use super::model::{ArenaFinding, Ballot, Verdict, Vote};
+use crate::ai::panel_run::Agreement;
 use crate::ai::RiskLevel;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The agreement signal over one round's ballots.
+///
+/// `propose`, `keep`, `escalate` and `lower` all say the claim is real;
+/// `drop`, `merge`, `flag` and `abstain` do not back it. A reviewer counts
+/// once however many ballots it casts for the same claim.
+pub fn quorum<'a>(votes: impl IntoIterator<Item = (&'a str, &'a Ballot)>) -> Agreement {
+    let mut backers: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (finding, ballot) in votes {
+        if !backs(&ballot.vote) {
+            continue;
+        }
+        backers
+            .entry(finding)
+            .or_default()
+            .insert(ballot.reviewer.as_str());
+    }
+    Agreement {
+        confirmed: backers
+            .into_iter()
+            .filter(|(_, reviewers)| reviewers.len() >= 2)
+            .map(|(finding, _)| finding.to_string())
+            .collect(),
+    }
+}
+
+/// `quorum` over the ballots a finding set already records for `round`.
+pub fn quorum_from_findings(findings: &[ArenaFinding], round: u8) -> Agreement {
+    let votes = findings
+        .iter()
+        .flat_map(|finding| {
+            finding
+                .rounds
+                .iter()
+                .filter(|log| log.n == round)
+                .flat_map(|log| log.log.iter().map(|ballot| (finding.id.as_str(), ballot)))
+        })
+        .collect::<Vec<_>>();
+    quorum(votes)
+}
+
+const fn backs(vote: &Vote) -> bool {
+    matches!(
+        vote,
+        Vote::Propose | Vote::Keep | Vote::Escalate | Vote::Lower
+    )
+}
 
 /// Majority severity from cross-check votes in round `round`; ties break toward higher severity.
 pub fn severity_from_cross_check(
@@ -307,6 +355,102 @@ mod tests {
         assert_eq!(findings[0].rounds.len(), 1);
         assert_eq!(findings[0].rounds[0].n, crate::arena::ARENA_ARBITER_ROUND);
         assert_eq!(findings[0].rounds[0].log[0].reviewer, "arbiter-1");
+    }
+
+    fn ballot(reviewer: &str, vote: Vote) -> Ballot {
+        Ballot {
+            reviewer: reviewer.into(),
+            vote,
+            note: String::new(),
+            merge_target: None,
+        }
+    }
+
+    /// The signal ADR 0024 names: a claim two reviewers reached independently.
+    /// One reviewer's opinion, however many ballots it casts, is not a quorum.
+    #[test]
+    fn a_quorum_needs_two_distinct_backers() {
+        let alone = [ballot("a", Vote::Propose)];
+        assert_eq!(quorum([("f", &alone[0])]).confirmed, Vec::<String>::new());
+
+        let second = ballot("b", Vote::Keep);
+        assert_eq!(
+            quorum([("f", &alone[0]), ("f", &second)]).confirmed,
+            ["f"],
+            "a proposal kept by another reviewer reaches a quorum"
+        );
+
+        let twice = ballot("a", Vote::Keep);
+        assert_eq!(
+            quorum([("f", &alone[0]), ("f", &twice)]).confirmed,
+            Vec::<String>::new(),
+            "the same reviewer voting twice is still one backer"
+        );
+    }
+
+    #[test]
+    fn only_votes_that_back_the_claim_count() {
+        for vote in [Vote::Propose, Vote::Keep, Vote::Escalate, Vote::Lower] {
+            let first = ballot("a", vote.clone());
+            let second = ballot("b", vote.clone());
+            assert_eq!(
+                quorum([("f", &first), ("f", &second)]).confirmed,
+                ["f"],
+                "{vote:?} backs the claim"
+            );
+        }
+        for vote in [Vote::Drop, Vote::Merge, Vote::Flag, Vote::Abstain] {
+            let first = ballot("a", vote.clone());
+            let second = ballot("b", vote.clone());
+            assert!(
+                quorum([("f", &first), ("f", &second)]).confirmed.is_empty(),
+                "{vote:?} does not back the claim"
+            );
+        }
+    }
+
+    /// Round two is read from the ballots the cross round recorded, not from
+    /// the proposals that opened the finding.
+    #[test]
+    fn quorum_from_findings_reads_one_round_at_a_time() {
+        use super::super::model::{ArenaFinding, RoundLog};
+
+        let finding = ArenaFinding {
+            id: "f".into(),
+            file: "a.rs".into(),
+            line: None,
+            title: "t".into(),
+            body: "b".into(),
+            severity_by_round: BTreeMap::from([(1, RiskLevel::High)]),
+            raised_by: vec!["a".into()],
+            verdict: Verdict::Pending,
+            confidence: 0.5,
+            rationale: String::new(),
+            rounds: vec![
+                RoundLog {
+                    n: 1,
+                    log: vec![ballot("a", Vote::Propose)],
+                },
+                RoundLog {
+                    n: 2,
+                    log: vec![ballot("a", Vote::Keep), ballot("b", Vote::Keep)],
+                },
+            ],
+            merge_candidates: vec![],
+            merged_children: vec![],
+            evidence: vec![],
+            override_: None,
+            accepted_at: None,
+        };
+
+        assert!(quorum_from_findings(std::slice::from_ref(&finding), 1)
+            .confirmed
+            .is_empty());
+        assert_eq!(
+            quorum_from_findings(&[finding], 2).confirmed,
+            ["f"],
+            "the cross round's keep votes are the round-two quorum"
+        );
     }
 
     // NOTE: a previous `confidence_monotonic_with_agreement` test exercised a
