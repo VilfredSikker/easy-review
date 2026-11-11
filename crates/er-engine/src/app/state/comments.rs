@@ -8090,6 +8090,9 @@ mod update_job_tests {
 
         fn app(&self) -> App {
             let mut app = App::new_for_test(vec![]);
+            // The job runs with the repo root as its working directory; the
+            // default `/tmp/test` may not exist outside a developer machine.
+            app.tab_mut().repo_root = self.root.to_string_lossy().into_owned();
             app.tab_mut().er_root = crate::paths::ErRoot::Managed {
                 agent_dir: self.bucket.clone(),
                 session_dir: self.bucket.clone(),
