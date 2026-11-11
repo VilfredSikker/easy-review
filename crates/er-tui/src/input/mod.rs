@@ -2284,7 +2284,7 @@ mod tests {
             er_engine::test_support::write_executable_script(
                 &bin,
                 &format!(
-                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{out}.tmp\" && mv \"{out}.tmp\" \"{out}\"\n"
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{out}.tmp\" && mv \"{out}.tmp\" \"{out}\"\nprintf 'summary\\n' > \"$ER_JOB_STAGING/summary.md\"\n"
                 ),
             )
             .unwrap();
@@ -2327,6 +2327,69 @@ mod tests {
             assert!(
                 !kinds.contains(&er_engine::job::JobKind::Other("summary".into())),
                 "{kinds:?}"
+            );
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_review_tab_job_stages_and_commits_its_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(dir.path(), || {
+            let output_dir = dir.path().join("er").to_string_lossy().into_owned();
+            std::fs::create_dir_all(&output_dir).unwrap();
+            let mut app = app_with_managed_dir(&output_dir);
+
+            // The fake writes into the staging directory and records where it
+            // was told to write; nothing in the prompt names the bucket.
+            let record = dir.path().join("staging-path.txt");
+            let script = format!(
+                "printf '%s' \"$ER_JOB_STAGING\" > '{}'\n{}; {}",
+                record.display(),
+                er_engine::test_support::STAGING_PREAMBLE,
+                er_engine::test_support::WRITE_REVIEW_SIDECARS
+            );
+            app.config.agent.command = "/bin/sh".into();
+            app.config.agent.args = vec!["-c".into(), script];
+
+            app.spawn_agent_prompt("review", "p").unwrap();
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                app.check_commands();
+                match app.tab().command_status.get("review") {
+                    Some(er_engine::app::CommandStatus::Done) => break,
+                    Some(er_engine::app::CommandStatus::Failed(reason)) => {
+                        panic!("the review job failed: {reason}")
+                    }
+                    _ => {}
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the review job did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            // The host validated and committed the staged set into the bucket.
+            let review: er_engine::ai::ErReview = serde_json::from_str(
+                &std::fs::read_to_string(format!("{output_dir}/review.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(review.version, 1);
+            assert!(std::path::Path::new(&format!("{output_dir}/order.json")).is_file());
+
+            let staging = std::fs::read_to_string(&record).expect("the agent saw staging");
+            assert!(
+                staging.starts_with(&format!(
+                    "{}/staging/",
+                    er_engine::storage::storage_root().display()
+                )),
+                "{staging}"
+            );
+            assert!(
+                !std::path::Path::new(&staging).exists(),
+                "the finished job left its staging behind: {staging}"
             );
         });
     }

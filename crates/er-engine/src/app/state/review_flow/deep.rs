@@ -350,11 +350,13 @@ mod tests {
 
     fn fake_app(dir: &TestDir) -> App {
         let bucket = dir.path().join("bucket");
-        let script = "case \"$1\" in\n\
+        let script = crate::test_support::staged_script(
+            "case \"$1\" in\n\
              *triage.json*) hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{\"primary\":\"arena\",\"experts\":[]}}' \"$hash\" > '__BUCKET__/triage.json' ;;\n\
              *) echo \"unexpected review-flow prompt\" >&2; exit 2 ;;\n\
-             esac"
-            .replace("__BUCKET__", &bucket.to_string_lossy());
+             esac",
+            &bucket.to_string_lossy(),
+        );
         fake_app_with_script(dir, &script)
     }
 
@@ -647,6 +649,8 @@ mod tests {
     /// Whether the pid names a live process. A zombie is dead: the arena
     /// registry clears its child list without reaping, so its killed children
     /// stay visible to `kill -0` until the process exits (P33b closes that).
+    ///
+    /// This needs `ps`, which a sandbox may deny; run the suite outside one.
     fn pid_running(pid: &str) -> bool {
         let Ok(output) = std::process::Command::new("ps")
             .args(["-o", "stat=", "-p", pid])
@@ -769,14 +773,16 @@ mod tests {
             // Every child writes its pid. With the slow-arena flag set it
             // sleeps; otherwise it is the triage run, which writes the plan and
             // exits. Prompt matching cannot tell the two apart reliably.
-            let script = r#"echo $$ >> '__PIDS__'
+            let script = crate::test_support::staged_script(
+                &r#"echo $$ >> '__PIDS__'
 if [ -n "${ER_TEST_SLOW_ARENA-}" ]; then exec sleep 30; fi
 sleep 1
 hash=$(cat '__BUCKET__/.diff-tmp.sha256')
 printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}}' "$hash" > '__BUCKET__/triage.json'
 "#
-                .replace("__BUCKET__", &bucket.to_string_lossy())
-                .replace("__PIDS__", &pids_path.to_string_lossy());
+                .replace("__PIDS__", &pids_path.to_string_lossy()),
+                &bucket.to_string_lossy(),
+            );
             let mut app = fake_app_with_script(&dir, &script);
             // Round 1's reviewers must all be live before the cancel, so the
             // test sees every child the arena starts.

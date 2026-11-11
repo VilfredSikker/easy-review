@@ -11744,14 +11744,16 @@ mod tests {
         let bucket = dir.path().join("bucket");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::create_dir_all(&bucket).unwrap();
-        let bucket_for_script = bucket.to_string_lossy();
+        // The provider writes into the job's staging directory; the host
+        // commits it after the run.
         let script = format!(
-            "case \"$1\" in\n\
-             *triage.json*) hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{{\"primary\":\"general\",\"experts\":[]}}}}' \"$hash\" > '{bucket}/triage.json' ;;\n\
-             *review.json*) hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{\"version\":1,\"diff_hash\":\"%s\",\"files\":{{}}}}' \"$hash\" > '{bucket}/review.json' ;;\n\
+            "{preamble}\n\
+             case \"$1\" in\n\
+             *triage.json*) printf '{{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{{\"primary\":\"general\",\"experts\":[]}}}}' \"$h\" > \"$out/triage.json\" ;;\n\
+             *review.json*) printf '{{\"version\":1,\"diff_hash\":\"%s\",\"files\":{{}}}}' \"$h\" > \"$out/review.json\"; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"order\":[],\"groups\":{{}}}}' \"$h\" > \"$out/order.json\"; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"items\":[]}}' \"$h\" > \"$out/checklist.json\"; printf 'summary\\n' > \"$out/summary.md\" ;;\n\
              *) echo \"unexpected review-flow prompt\" >&2; exit 2 ;;\n\
              esac",
-            bucket = bucket_for_script
+            preamble = er_engine::test_support::STAGING_PREAMBLE
         );
         let provider = AiProviderConfig {
             command: "/bin/sh".into(),

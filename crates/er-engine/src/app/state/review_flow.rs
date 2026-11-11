@@ -1296,7 +1296,7 @@ mod tests {
             triage_primary,
             experts,
             "{\"reasons\":[]}",
-            "hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{\"version\":1,\"diff_hash\":\"%s\",\"files\":{}}' \"$hash\" > '__BUCKET__/review.json'",
+            crate::test_support::WRITE_REVIEW_SIDECARS,
         )
     }
 
@@ -1313,7 +1313,7 @@ mod tests {
             experts,
             sensitive,
             review_behavior,
-            "$hash",
+            "$h",
         )
     }
 
@@ -1330,20 +1330,21 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::create_dir_all(&bucket).unwrap();
         let expert_json = serde_json::to_string(experts).unwrap();
-        let script = "case \"$1\" in\n\
-             *triage.json*) hash=$(cat '__BUCKET__/.diff-tmp.sha256'); triage_hash=__TRIAGE_HASH__; printf '{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{\"primary\":\"__PRIMARY__\",\"experts\":__EXPERTS__},\"sensitive\":__SENSITIVE__}' \"$triage_hash\" > '__BUCKET__/triage.json' ;;\n\
-             *experts/security.json*) hash=$(cat '__BUCKET__/.diff-tmp.sha256'); mkdir -p '__BUCKET__/experts'; printf '{\"version\":1,\"expert_id\":\"security\",\"diff_hash\":\"%s\",\"files\":{}}' \"$hash\" > '__BUCKET__/experts/security.json' ;;\n\
-             *review.json*) __REVIEW_BEHAVIOR__ ;;\n\
+        let script = crate::test_support::staged_script(
+            &"case \"$1\" in\n\
+             *triage.json*) __PREAMBLE__; triage_hash=__TRIAGE_HASH__; printf '{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{\"primary\":\"__PRIMARY__\",\"experts\":__EXPERTS__},\"sensitive\":__SENSITIVE__}' \"$triage_hash\" > \"$out/triage.json\" ;;\n\
+             *experts/security.json*) __PREAMBLE__; mkdir -p \"$out/experts\"; printf '{\"version\":1,\"expert_id\":\"security\",\"diff_hash\":\"%s\",\"files\":{}}' \"$h\" > \"$out/experts/security.json\" ;;\n\
+             *review.json*) __PREAMBLE__; __REVIEW_BEHAVIOR__ ;;\n\
              *) echo \"unexpected review-flow prompt\" >&2; exit 2 ;;\n\
              esac"
-            .replace("__BUCKET__", &bucket.to_string_lossy())
-            .replace("__PRIMARY__", triage_primary)
-            .replace("__EXPERTS__", &expert_json)
-            .replace("__SENSITIVE__", sensitive)
-            .replace("__TRIAGE_HASH__", triage_hash_expr)
-            .replace("__REVIEW_BEHAVIOR__", review_behavior)
-            // Review behaviors are inserted after the first path replacement.
-            .replace("__BUCKET__", &bucket.to_string_lossy());
+                .replace("__PREAMBLE__", crate::test_support::STAGING_PREAMBLE)
+                .replace("__PRIMARY__", triage_primary)
+                .replace("__EXPERTS__", &expert_json)
+                .replace("__SENSITIVE__", sensitive)
+                .replace("__TRIAGE_HASH__", triage_hash_expr)
+                .replace("__REVIEW_BEHAVIOR__", review_behavior),
+            &bucket.to_string_lossy(),
+        );
         let provider = AiProviderConfig {
             command: "/bin/sh".into(),
             args: vec!["-c".into(), script, "fake-flow".into(), "{prompt}".into()],
@@ -1443,15 +1444,16 @@ mod tests {
                         r#"
 record() {{ printf '%s|%s\n%s\n' "$1" "$(pwd -P)" "$(cat src/lib.rs)" >> '{log}'; }}
 case "$1" in
-  *triage.json*) record triage; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","verdict":{{"primary":"{primary}","experts":["security"]}}}}' "$hash" > '{bucket}/triage.json' ;;
-  *experts/security.json*) record expert; hash=$(cat '{bucket}/.diff-tmp.sha256'); mkdir -p '{bucket}/experts'; printf '{{"version":1,"expert_id":"security","diff_hash":"%s","files":{{}}}}' "$hash" > '{bucket}/experts/security.json' ;;
-  *review.json*) record general; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","files":{{"src/lib.rs":{{"risk":"high","findings":[{{"id":"general:1","severity":"high","title":"Check the feature source"}}]}}}}}}' "$hash" > '{bucket}/review.json' ;;
+  *triage.json*) record triage; hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","verdict":{{"primary":"{primary}","experts":["security"]}}}}' "$hash" > '__BUCKET__/triage.json' ;;
+  *experts/security.json*) record expert; hash=$(cat '__BUCKET__/.diff-tmp.sha256'); mkdir -p '__BUCKET__/experts'; printf '{{"version":1,"expert_id":"security","diff_hash":"%s","files":{{}}}}' "$hash" > '__BUCKET__/experts/security.json' ;;
+  *review.json*) record general; hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","files":{{"src/lib.rs":{{"risk":"high","findings":[{{"id":"general:1","severity":"high","title":"Check the feature source"}}]}}}}}}' "$hash" > '__BUCKET__/review.json'; printf '{{"version":1,"diff_hash":"%s","order":[],"groups":{{}}}}' "$hash" > '__BUCKET__/order.json'; printf '{{"version":1,"diff_hash":"%s","items":[]}}' "$hash" > '__BUCKET__/checklist.json'; printf 'summary\n' > '__BUCKET__/summary.md' ;;
   *) record arena; printf '{{"findings":[],"ballots":[],"verdicts":[]}}' ;;
 esac
 "#,
                         log = log.display(),
                         primary = if deep { "arena" } else { "expert" }
                     );
+                    let script = crate::test_support::staged_script(&script, &bucket);
                     provider.args[1] = script;
                     if deep {
                         let second = provider.clone();
@@ -1577,14 +1579,15 @@ esac
                     r#"
 record() {{ case "$2" in *refs/er/pr/7/head*pull/7/head*|*pull/7/head*refs/er/pr/7/head*) r=ref ;; *) r=noref ;; esac; printf '%s|%s|%s\n' "$1" "$(pwd -P)" "$r" >> '{log}'; }}
 case "$1" in
-  *triage.json*) record triage "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","verdict":{{"primary":"{primary}","experts":["security"]}}}}' "$hash" > '{bucket}/triage.json' ;;
-  *experts/security.json*) record expert "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); mkdir -p '{bucket}/experts'; printf '{{"version":1,"expert_id":"security","diff_hash":"%s","files":{{}}}}' "$hash" > '{bucket}/experts/security.json' ;;
-  *review.json*) record general "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","files":{{"src/lib.rs":{{"risk":"high","findings":[{{"id":"general:1","severity":"high","title":"Check the PR source"}}]}}}}}}' "$hash" > '{bucket}/review.json' ;;
+  *triage.json*) record triage "$1"; hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","verdict":{{"primary":"{primary}","experts":["security"]}}}}' "$hash" > '__BUCKET__/triage.json' ;;
+  *experts/security.json*) record expert "$1"; hash=$(cat '__BUCKET__/.diff-tmp.sha256'); mkdir -p '__BUCKET__/experts'; printf '{{"version":1,"expert_id":"security","diff_hash":"%s","files":{{}}}}' "$hash" > '__BUCKET__/experts/security.json' ;;
+  *review.json*) record general "$1"; hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","files":{{"src/lib.rs":{{"risk":"high","findings":[{{"id":"general:1","severity":"high","title":"Check the PR source"}}]}}}}}}' "$hash" > '__BUCKET__/review.json'; printf '{{"version":1,"diff_hash":"%s","order":[],"groups":{{}}}}' "$hash" > '__BUCKET__/order.json'; printf '{{"version":1,"diff_hash":"%s","items":[]}}' "$hash" > '__BUCKET__/checklist.json'; printf 'summary\n' > '__BUCKET__/summary.md' ;;
   *) record arena "$1"; printf '{{"findings":[],"ballots":[],"verdicts":[]}}' ;;
 esac
 "#,
                     log = log.display(),
                 );
+                let script = crate::test_support::staged_script(&script, &bucket);
                 let provider = app.config.ai_hub.providers.get_mut("fake").unwrap();
                 provider.args[1] = script;
                 if deep {
@@ -1915,12 +1918,12 @@ esac
         let dir = TestDir::new("security-only");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app_with_script(
-            &dir,
-            "skip",
-            &[],
-            "{\"reasons\":[{\"kind\":\"secret\",\"evidence\":\"credential literal\"}]}",
-            "hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{\"version\":1,\"diff_hash\":\"%s\",\"files\":{}}' \"$hash\" > '__BUCKET__/review.json'",
-        );
+                &dir,
+                "skip",
+                &[],
+                "{\"reasons\":[{\"kind\":\"secret\",\"evidence\":\"credential literal\"}]}",
+                crate::test_support::WRITE_REVIEW_SIDECARS,
+            );
             let bucket = app.tab().er_dir();
             app.start_review_flow("branch").unwrap();
             run_until_terminal(&mut app, &bucket);
@@ -1943,12 +1946,12 @@ esac
         let dir = TestDir::new("quick-security");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app_with_script(
-            &dir,
-            "general",
-            &[],
-            "{\"reasons\":[{\"kind\":\"secret\",\"evidence\":\"credential literal\"}]}",
-            "sleep 1; hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{\"version\":1,\"diff_hash\":\"%s\",\"files\":{}}' \"$hash\" > '__BUCKET__/review.json'",
-        );
+                &dir,
+                "general",
+                &[],
+                "{\"reasons\":[{\"kind\":\"secret\",\"evidence\":\"credential literal\"}]}",
+                &format!("sleep 1; {}", crate::test_support::WRITE_REVIEW_SIDECARS),
+            );
             let bucket = app.tab().er_dir();
             app.start_review_flow("branch").unwrap();
             run_until_terminal(&mut app, &bucket);
@@ -2005,12 +2008,12 @@ esac
         let dir = TestDir::new("cancel-running");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app_with_script(
-            &dir,
-            "general",
-            &[],
-            "{\"reasons\":[]}",
-            "sleep 1; hash=$(cat '__BUCKET__/.diff-tmp.sha256'); printf '{\"version\":1,\"diff_hash\":\"%s\",\"files\":{}}' \"$hash\" > '__BUCKET__/review.json'",
-        );
+                &dir,
+                "general",
+                &[],
+                "{\"reasons\":[]}",
+                &format!("sleep 1; {}", crate::test_support::WRITE_REVIEW_SIDECARS),
+            );
             let bucket = app.tab().er_dir();
             app.start_review_flow("branch").unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
