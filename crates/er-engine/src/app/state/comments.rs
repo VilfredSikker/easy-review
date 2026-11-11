@@ -4919,6 +4919,14 @@ mod background_queue_tests {
         app.config.ai_hub.max_concurrent_reviews = cap;
         app.config.agent.command = "sleep".to_string();
         app.config.agent.args = vec!["5".to_string()];
+        // Review spawns resolve their provider from `ai_hub`, not the agent
+        // command above. Make every provider a long-running no-op so a queued
+        // test observes a task that is still running, whatever it spawned.
+        for provider in app.config.ai_hub.providers.values_mut() {
+            provider.family = None;
+            provider.command = "sh".to_string();
+            provider.args = vec!["-c".to_string(), "sleep 5".to_string()];
+        }
         Some(app)
     }
 
