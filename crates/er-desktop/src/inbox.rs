@@ -124,9 +124,6 @@ pub struct ObservedPrState {
     /// Last seen head commit SHA (for push detection).
     #[serde(default)]
     pub head_oid: String,
-    /// Head SHA we already queued auto-triage for (opt-in projects only).
-    #[serde(default)]
-    pub triaged_head_oid: Option<String>,
     /// Latest review state per reviewer login.
     /// `None` means this field was missing on disk (pre-upgrade). Do not treat
     /// that as "no reviews".
@@ -738,7 +735,6 @@ mod tests {
             check_state: None,
             failing_checks: vec![],
             head_oid: String::new(),
-            triaged_head_oid: None,
             latest_reviewer_states: Some(vec![]),
         }
     }

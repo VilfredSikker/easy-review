@@ -1836,7 +1836,6 @@ pub fn process_inbox_after_pr_refresh(
     handles: InboxRefreshHandles<'_>,
     prefs: &InboxConfig,
     refresh_failed_remote: Option<String>,
-    auto_triage: Option<&crate::auto_triage::AutoTriageContext>,
 ) {
     let InboxRefreshHandles {
         pr_cache,
@@ -1898,7 +1897,6 @@ pub fn process_inbox_after_pr_refresh(
     let cache = pr_cache.lock().ok().map(|g| g.clone()).unwrap_or_default();
 
     let mut new_items: Vec<InboxItem> = Vec::new();
-    let mut auto_triage_requests: Vec<crate::auto_triage::AutoTriageRequest> = Vec::new();
     let mut ci_work: Vec<(String, String, u64, String, String, String)> = Vec::new();
     let mut inbox = match inbox_handle.lock() {
         Ok(g) => g,
@@ -1935,7 +1933,6 @@ pub fn process_inbox_after_pr_refresh(
     for (remote, prs) in cache {
         for pr in prs {
             let key = format!("{remote}#{}", pr.number);
-            let requested_me = pr.reviewers.iter().any(|r| r == &gh_user);
             let requested_reviewers = pr.reviewers.clone();
             let is_my_pr = pr.author == gh_user;
             let prev = inbox.observed_pr.get(&key).cloned();
@@ -1983,32 +1980,6 @@ pub fn process_inbox_after_pr_refresh(
                 }
             }
 
-            let triaged_head_oid = prev.as_ref().and_then(|p| p.triaged_head_oid.clone());
-            let queue_ctx = crate::auto_triage::AutoTriageQueueContext {
-                is_my_pr,
-                requested_me,
-                is_new_pr: prev.is_none(),
-                triaged_head_oid: triaged_head_oid.as_deref(),
-            };
-            let queue_auto_triage = auto_triage.is_some()
-                && project_by_remote.get(&remote).is_some_and(|project| {
-                    crate::auto_triage::should_queue_auto_triage(project, &pr, queue_ctx)
-                });
-            if queue_auto_triage {
-                if let Some(project) = project_by_remote.get(&remote) {
-                    auto_triage_requests.push(crate::auto_triage::AutoTriageRequest {
-                        project_id: project.id.clone(),
-                        remote: remote.clone(),
-                        repo_root: project.root_path.clone(),
-                        pr_number: pr.number,
-                        head_oid: pr.head_oid.clone(),
-                        base_ref: pr.base_ref.clone(),
-                        review_ignore_globs: project.review_ignore_globs.clone(),
-                        auto_triage_max_diff_kb: project.auto_triage_max_diff_kb,
-                    });
-                }
-            }
-
             inbox.observed_pr.insert(
                 key,
                 crate::inbox::ObservedPrState {
@@ -2022,11 +1993,6 @@ pub fn process_inbox_after_pr_refresh(
                         .map(|p| p.failing_checks.clone())
                         .unwrap_or_default(),
                     head_oid: pr.head_oid.clone(),
-                    triaged_head_oid: if queue_auto_triage {
-                        Some(pr.head_oid.clone())
-                    } else {
-                        triaged_head_oid
-                    },
                     latest_reviewer_states: crate::inbox::merge_reviewer_states(
                         prev.as_ref(),
                         pr.latest_reviewer_states.clone(),
@@ -2128,11 +2094,6 @@ pub fn process_inbox_after_pr_refresh(
             prefs,
         );
     }
-    if let Some(ctx) = auto_triage {
-        if !auto_triage_requests.is_empty() {
-            crate::auto_triage::dispatch_auto_triage(ctx, auto_triage_requests);
-        }
-    }
 }
 
 fn ingest_github_notifications(
@@ -2215,30 +2176,6 @@ fn ingest_github_notifications(
     }
 }
 
-#[tauri::command]
-pub fn set_project_auto_triage(
-    project_id: String,
-    enabled: bool,
-    state: State<AppState>,
-) -> Result<AppSnapshot, String> {
-    projects::set_auto_triage(&project_id, enabled).map_err(|e| e.to_string())?;
-    crate::profile_log::bump_desktop_revision(&state.desktop_revision, "project_auto_triage");
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
-}
-
-#[tauri::command]
-pub fn set_project_auto_triage_own_prs(
-    project_id: String,
-    enabled: bool,
-    state: State<AppState>,
-) -> Result<AppSnapshot, String> {
-    projects::set_auto_triage_own_prs(&project_id, enabled).map_err(|e| e.to_string())?;
-    crate::profile_log::bump_desktop_revision(&state.desktop_revision, "project_auto_triage_own");
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
-}
-
 fn auto_triage_ctx(state: &AppState) -> crate::auto_triage::AutoTriageContext {
     crate::auto_triage::AutoTriageContext {
         app: Arc::clone(&state.app),
@@ -2273,17 +2210,6 @@ fn open_pr_for_branch(
     })
 }
 
-fn mark_pr_triaged(inbox_handle: &InboxHandle, remote: &str, pr_number: u64, head_oid: &str) {
-    let key = format!("{remote}#{pr_number}");
-    if let Ok(mut inbox) = inbox_handle.lock() {
-        if let Some(state) = inbox.observed_pr.get_mut(&key) {
-            state.triaged_head_oid = Some(head_oid.to_string());
-        }
-        drop(inbox);
-        crate::inbox::save_inbox_state(inbox_handle);
-    }
-}
-
 /// Start triage for a single PR from the sidebar (does not open the review tab).
 #[tauri::command]
 pub fn run_pr_triage(
@@ -2316,9 +2242,6 @@ pub fn run_pr_triage(
     };
     let ctx = auto_triage_ctx(&state);
     crate::auto_triage::dispatch_auto_triage(&ctx, vec![req]);
-    if !pr.head_oid.is_empty() {
-        mark_pr_triaged(&state.inbox, &remote, pr_number, &pr.head_oid);
-    }
     let app = state.app.lock().map_err(|e| e.to_string())?;
     Ok(snap_from(&app, &state))
 }
@@ -8375,9 +8298,9 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                 app_handle: &app_handle_state,
             };
             for remote in failed {
-                process_inbox_after_pr_refresh(handles, &prefs, Some(remote), None);
+                process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
             }
-            process_inbox_after_pr_refresh(handles, &prefs, None, None);
+            process_inbox_after_pr_refresh(handles, &prefs, None);
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
             }
@@ -8456,9 +8379,9 @@ pub fn refresh_project_pr_list(
                 app_handle: &app_handle_state,
             };
             if !success {
-                process_inbox_after_pr_refresh(handles, &prefs, Some(remote), None);
+                process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
             }
-            process_inbox_after_pr_refresh(handles, &prefs, None, None);
+            process_inbox_after_pr_refresh(handles, &prefs, None);
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
             }
@@ -13828,9 +13751,6 @@ mod tests {
             dismissed_branches: Vec::new(),
             recent_prs: Vec::new(),
             saved_prs: Vec::new(),
-            auto_triage: false,
-            auto_triage_own_prs: false,
-            auto_triage_when: "new-and-push".to_string(),
             auto_triage_max_diff_kb: 0,
             review_ignore_globs: Vec::new(),
             extra: Default::default(),
