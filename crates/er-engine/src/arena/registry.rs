@@ -238,6 +238,21 @@ impl ArenaRegistry {
             .unwrap_or(true)
     }
 
+    /// How many children the run's supervisor has registered with the
+    /// registry. A cancel only reaches registered children, so a test that
+    /// cancels a live round waits on this rather than on the clock.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn registered_child_count(&self, run_id: &str) -> usize {
+        self.runs
+            .lock()
+            .ok()
+            .and_then(|map| {
+                map.get(run_id)
+                    .and_then(|handle| handle.children.lock().ok().map(|kids| kids.len()))
+            })
+            .unwrap_or(0)
+    }
+
     pub fn set_status(&self, run_id: &str, status: RunStatus) {
         if let Ok(map) = self.runs.lock() {
             if let Some(h) = map.get(run_id) {
