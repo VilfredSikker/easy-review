@@ -597,7 +597,12 @@ mod review_flow_arena_inputs_tests {
     impl Drop for FakeArenaEnv {
         fn drop(&mut self) {
             for run_id in self.registry.active_run_ids() {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
                 while self.registry.is_active(&run_id) {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "arena run {run_id} never released its registry entry"
+                    );
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
             }

@@ -183,6 +183,7 @@ impl JobRunner {
         handle.register(child);
 
         let Some(stdout) = stdout else {
+            Self::stop_and_reap(&handle, id);
             return Err(JobError::Spawn(anyhow::anyhow!(
                 "provider stdout was not piped"
             )));
@@ -198,6 +199,9 @@ impl JobRunner {
         });
 
         let Some(child) = handle.take_child(id) else {
+            // Nothing is left under the id to wait on; signal whatever the
+            // handle still holds so the run cannot outlive this call.
+            handle.kill();
             return Err(JobError::Spawn(anyhow::anyhow!(
                 "provider: lost its own child"
             )));
@@ -316,6 +320,15 @@ impl JobRunner {
         }))
     }
 
+    /// Stop a run whose caller is returning early and reap its child, so the
+    /// pid cannot outlive the call.
+    fn stop_and_reap(handle: &AgentRunHandle, id: u32) {
+        handle.kill();
+        if let Some(child) = handle.take_child(id) {
+            let _ = handle.wait_for(child);
+        }
+    }
+
     fn provider_for(spec: &JobSpec) -> ProviderSpec {
         ProviderSpec {
             program: spec.provider.program.clone(),
@@ -343,7 +356,9 @@ fn send_progress(
         match tx.try_send(event) {
             Ok(()) | Err(TrySendError::Disconnected(_)) => return true,
             Err(TrySendError::Full(returned)) => {
-                if run.is_timed_out() {
+                // A stopped run stops reading too: a stalled sink must not
+                // keep a cancelled job alive until its deadline.
+                if run.is_timed_out() || run.is_cancelled() {
                     return false;
                 }
                 event = returned;
@@ -699,11 +714,66 @@ mod tests {
         assert!(matches!(result, Err(JobError::Cancelled)), "{result:?}");
         let pid = std::fs::read_to_string(&pid_file).unwrap();
         let pid = pid.trim();
+        let mut guard = GrandchildGuard(pid.parse().ok());
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while pid_alive(pid) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!pid_alive(pid), "the child survived its stop");
+        guard.disarm();
+    }
+
+    /// A stalled progress sink must not keep a cancelled run alive until its
+    /// deadline.
+    #[test]
+    fn a_cancelled_run_stops_a_stalled_progress_sink() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                "i=0; while [ $i -lt 1000 ]; do echo line; i=$((i+1)); done; sleep 5".into(),
+            ],
+            dir.path(),
+        );
+        spec.provider.timeout = Duration::from_secs(2);
+        let runner = JobRunner::new(1, 1);
+        let run = AgentRunHandle::new();
+        let stop = Arc::clone(&run);
+        // Capacity one and nobody draining: the reader parks on the second
+        // line until the run is stopped.
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let result = runner.run_controlled(
+                &spec,
+                JobRun {
+                    handle: run,
+                    progress: Some(tx),
+                    timer: None,
+                },
+            );
+            let _ = done_tx.send(result);
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        let stopped = std::time::Instant::now();
+        stop.kill();
+        // Bounded receive, not a join: without the cancel check the reader
+        // retries forever once the killed child has been reaped, because the
+        // timeout watchdog stands down at that point.
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("a cancelled run with a stalled sink stayed alive");
+        assert!(matches!(result, Err(JobError::Cancelled)), "{result:?}");
+        assert!(
+            stopped.elapsed() < Duration::from_secs(1),
+            "the stop waited for the provider timeout: {:?}",
+            stopped.elapsed()
+        );
+        // The run returned, so the worker thread is done. Leave the handle out
+        // of the plant's failure path: a join there would hang the suite.
+        drop(handle);
     }
 
     /// Both pipes reach the progress sink while the job runs, and the returned
@@ -743,6 +813,31 @@ mod tests {
         assert_eq!(out.stdout, "out\n");
         assert_eq!(out.stderr, "err\n");
         assert_eq!(out.text, "out\n");
+    }
+
+    /// Kills the child on drop unless disarmed, so a failing assertion leaves
+    /// no sleeper behind.
+    #[cfg(unix)]
+    struct GrandchildGuard(Option<i32>);
+
+    #[cfg(unix)]
+    impl GrandchildGuard {
+        fn disarm(&mut self) {
+            self.0 = None;
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for GrandchildGuard {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                let _ = Command::new("/bin/kill")
+                    .args(["-KILL", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
     }
 
     #[cfg(unix)]
