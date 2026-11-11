@@ -49,32 +49,40 @@ fn an_open_writer_makes_exec_fail_with_etxtbsy() {
     const ETXTBSY: i32 = 26;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("held.sh");
+    let opened = dir.path().join("holder-opened");
     er_engine::test_support::write_executable_script(&path, "#!/bin/sh\nexit 0\n").unwrap();
     assert!(Command::new(&path).status().unwrap().success());
 
     // `exec` makes the shell become the sleeping holder, so killing it closes
-    // the descriptor in every process that held it.
+    // the descriptor in every process that held it. The marker is written only
+    // after fd 3 is open, so the test can wait for that event instead of
+    // polling the deadline.
     let mut holder = Command::new("sh")
         .arg("-c")
-        .arg("exec 3>>\"$1\"; exec sleep 30")
+        .arg("exec 3>>\"$1\"; : > \"$2\"; exec sleep 30")
         .arg("sh")
         .arg(&path)
+        .arg(&opened)
         .spawn()
         .expect("start the writing holder");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match Command::new(&path).status() {
-            Err(err) if err.raw_os_error() == Some(ETXTBSY) => break,
-            other => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the holder never opened the script for writing: {other:?}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
+    // A hang guard only: the pass path returns as soon as the holder opens the
+    // file, and a loaded runner can take longer than a few seconds to start a
+    // process.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !opened.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the holder never opened the script for writing"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
+
+    // The descriptor is open, so this exec must fail at once.
+    let error = Command::new(&path)
+        .status()
+        .expect_err("exec must fail while the script is open for writing");
+    assert_eq!(error.raw_os_error(), Some(ETXTBSY), "{error:?}");
 
     holder.kill().expect("kill the writer");
     holder.wait().expect("reap the writer");

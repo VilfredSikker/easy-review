@@ -1156,6 +1156,31 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"original");
     }
 
+    /// Make the run's own save fail: its directory becomes read-only, so
+    /// `save_run` cannot create its temporary file. The bucket stays writable
+    /// for the review and arbiter sidecars the rollback restores.
+    fn fail_run_save(paths: &ArenaPaths) -> RestoreRunDirPermissions {
+        let permissions = std::fs::metadata(&paths.root).unwrap().permissions();
+        let mut read_only = permissions.clone();
+        read_only.set_readonly(true);
+        std::fs::set_permissions(&paths.root, read_only).unwrap();
+        RestoreRunDirPermissions {
+            path: paths.root.clone(),
+            permissions,
+        }
+    }
+
+    struct RestoreRunDirPermissions {
+        path: std::path::PathBuf,
+        permissions: std::fs::Permissions,
+    }
+
+    impl Drop for RestoreRunDirPermissions {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.path, self.permissions.clone());
+        }
+    }
+
     #[test]
     fn run_save_failure_restores_superseded_overlay_byte_for_byte() {
         let mut fixture = fixture();
@@ -1163,7 +1188,7 @@ mod tests {
         crate::storage::with_test_storage_root(&storage, || {
             let original = seed_old_overlay(&fixture);
             let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
-            std::fs::create_dir(paths.run_json().with_extension("tmp")).unwrap();
+            let _fail_save = fail_run_save(&paths);
             assert!(fixture
                 .app
                 .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
@@ -1320,7 +1345,7 @@ mod tests {
         let storage = fixture.repo.path().to_path_buf();
         crate::storage::with_test_storage_root(&storage, || {
             let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
-            std::fs::create_dir(paths.run_json().with_extension("tmp")).unwrap();
+            let _fail_save = fail_run_save(&paths);
 
             let error = fixture
                 .app
@@ -1360,7 +1385,7 @@ mod tests {
             "files": {"legacy.rs": {"risk":"medium","findings":[{"id":"legacy","severity":"medium","title":"Existing finding"}]}}
         })).unwrap();
             std::fs::write(&review_path, &original).unwrap();
-            std::fs::create_dir(paths.run_json().with_extension("tmp")).unwrap();
+            let _fail_save = fail_run_save(&paths);
 
             let error = fixture
                 .app

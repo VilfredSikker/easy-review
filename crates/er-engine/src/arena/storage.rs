@@ -60,14 +60,34 @@ impl ArenaPaths {
     }
 }
 
+/// Write `bytes` to `path` by renaming a fully written temporary file.
+///
+/// The temporary name carries the pid and a per-process counter. A cancel and
+/// the run's supervisor can save the same `run.json` at once, and a shared
+/// temporary name lets one rename consume the file the other still means to
+/// rename.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("tmp");
+    let tmp = unique_tmp_path(path);
     fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error)
+            .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()));
+    }
+    Ok(())
+}
+
+fn unique_tmp_path(path: &Path) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    path.with_file_name(format!("{name}.tmp.{}.{nth}", std::process::id()))
 }
 
 pub fn save_run(paths: &ArenaPaths, run: &ArenaRun) -> Result<()> {
@@ -377,6 +397,42 @@ mod tests {
             }
         }
         assert_eq!(reviewers.len(), 800);
+    }
+
+    /// Two writers saving one artifact at once must both finish: a cancel and
+    /// the supervisor write `run.json` concurrently.
+    #[test]
+    fn concurrent_atomic_writes_to_one_artifact_both_succeed() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("run.json");
+        for _ in 0..64 {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let handles: Vec<_> = (0..2)
+                .map(|writer| {
+                    let path = path.clone();
+                    let barrier = std::sync::Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        write_atomic(&path, format!("writer-{writer}").as_bytes())
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+            let contents = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                contents == "writer-0" || contents == "writer-1",
+                "{contents}"
+            );
+        }
+        let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     fn sample_run(id: &str) -> ArenaRun {
