@@ -2,6 +2,7 @@ pub mod card_ai_context;
 pub mod card_job;
 pub mod filter;
 pub mod job_commit;
+mod job_merge;
 pub mod job_staging;
 mod state;
 pub use state::preview::{

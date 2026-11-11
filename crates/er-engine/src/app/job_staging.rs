@@ -84,6 +84,26 @@ impl JobStaging {
         Ok(())
     }
 
+    /// Copy the files an update-kind job reads and rewrites into staging twice:
+    /// the visible path the prompt reads, and `.base/` for the merge's
+    /// launch-time copy. A missing source is not an error: the job may be
+    /// creating the file for the first time.
+    pub fn stage_update_inputs(&self, er_dir: &str, files: &[&str]) -> std::io::Result<()> {
+        for name in files {
+            let source = Path::new(er_dir).join(name);
+            if !source.is_file() {
+                continue;
+            }
+            std::fs::copy(&source, self.root.join(name))?;
+            let base = self.root.join(".base").join(name);
+            if let Some(parent) = base.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&source, base)?;
+        }
+        Ok(())
+    }
+
     /// Remove stale staging directories left by a crash. Runs off the UI
     /// thread; a failure to read one entry must not stop the sweep.
     pub fn sweep_stale() {

@@ -40,9 +40,10 @@ pub fn tab_job_contract(command_name: &str) -> Result<ArtifactContract> {
         "triage" => ArtifactContract::Triage,
         "summary" => ArtifactContract::Summary,
         "validate" => ArtifactContract::ValidateReview,
-        // User-edited kinds keep the old path until their by-id patch contract
-        // lands; they write a file the host does not commit yet.
-        "questions" | "notes" | "validate-comments" => ArtifactContract::None,
+        // User-edited kinds: the host merges their rewrite by id.
+        "questions" => ArtifactContract::Questions,
+        "notes" => ArtifactContract::Notes,
+        "validate-comments" => ArtifactContract::ValidateComments,
         // Stdout-only tab jobs: the startup-trim probe and send-to-agent.
         "send-to-agent" => ArtifactContract::None,
         other if other.starts_with("trim-") => ArtifactContract::None,
@@ -51,6 +52,24 @@ pub fn tab_job_contract(command_name: &str) -> Result<ArtifactContract> {
             None => anyhow::bail!("tab job `{other}` has no artifact contract"),
         },
     })
+}
+
+/// Files a staged job reads and rewrites in place, whose launch-time copy the
+/// update-kind merge needs as its base.
+pub fn update_inputs(contract: ArtifactContract) -> &'static [&'static str] {
+    match contract {
+        ArtifactContract::Questions => &["questions.json"],
+        ArtifactContract::Notes => &["notes.json"],
+        ArtifactContract::ValidateComments => &["github-comments.json", "summary.md"],
+        ArtifactContract::None
+        | ArtifactContract::Review
+        | ArtifactContract::Expert { .. }
+        | ArtifactContract::Professor
+        | ArtifactContract::Triage
+        | ArtifactContract::Tour { .. }
+        | ArtifactContract::Summary
+        | ArtifactContract::ValidateReview => &[],
+    }
 }
 
 /// Capture the pre-run state a contract's files must change from.
@@ -78,6 +97,13 @@ pub fn capture_baseline(
     capture_contract(job_contract(task_kind), staging)
 }
 
+/// What one commit wrote, and which agent changes lost to user edits.
+#[derive(Debug, Default)]
+pub struct CommitReport {
+    pub written: Vec<String>,
+    pub dropped: Vec<String>,
+}
+
 /// Validate the staged files against a background task kind's contract and
 /// commit them.
 pub fn commit_staged(
@@ -86,7 +112,7 @@ pub fn commit_staged(
     er_dir: &str,
     baseline: Option<&ArtifactBaseline>,
     store: &ArtifactStore,
-) -> Result<Vec<String>> {
+) -> Result<CommitReport> {
     commit_contract(job_contract(task_kind), staging, er_dir, baseline, store)
         .map_err(|error| commit_error(task_kind, error))
 }
@@ -106,9 +132,9 @@ pub fn commit_contract(
     er_dir: &str,
     baseline: Option<&ArtifactBaseline>,
     store: &ArtifactStore,
-) -> Result<Vec<String>> {
+) -> Result<CommitReport> {
     if contract == ArtifactContract::None {
-        return Ok(Vec::new());
+        return Ok(CommitReport::default());
     }
     if let Some(baseline) = baseline {
         baseline
@@ -125,6 +151,7 @@ pub fn commit_contract(
         .lock_scope(&scope, DEFAULT_LOCK_TIMEOUT)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let mut written = Vec::new();
+    let mut dropped = Vec::new();
     match contract {
         ArtifactContract::None => {}
         ArtifactContract::Review => {
@@ -232,11 +259,101 @@ pub fn commit_contract(
         }
         // Update kinds are user-edited while the job runs, so they merge by id
         // instead of replacing the whole file.
-        ArtifactContract::Questions | ArtifactContract::ValidateComments => {
-            anyhow::bail!("this kind uses the update-kind patch contract")
+        ArtifactContract::Questions => {
+            let (path, lost) = commit_merged::<crate::ai::ErQuestions>(
+                staging,
+                "questions.json",
+                expected_hash.as_deref(),
+                scope.clone(),
+                store,
+                &guard,
+            )?;
+            written.push(path);
+            dropped.extend(lost);
+        }
+        ArtifactContract::Notes => {
+            let (path, lost) = commit_merged::<crate::ai::ErNotes>(
+                staging,
+                "notes.json",
+                expected_hash.as_deref(),
+                scope.clone(),
+                store,
+                &guard,
+            )?;
+            written.push(path);
+            dropped.extend(lost);
+        }
+        ArtifactContract::ValidateComments => {
+            let (path, lost) = commit_merged::<crate::ai::ErGithubComments>(
+                staging,
+                "github-comments.json",
+                expected_hash.as_deref(),
+                scope.clone(),
+                store,
+                &guard,
+            )?;
+            written.push(path);
+            dropped.extend(lost);
+            // The validate pass appends its counts to the summary when one was
+            // staged; the summary is regenerated output, not a patch target.
+            if std::path::Path::new(staging).join("summary.md").is_file() {
+                let summary = read_text(staging, "summary.md")?;
+                written.push(write_summary(store, &guard, &summary)?);
+            }
         }
     }
-    Ok(written)
+    Ok(CommitReport { written, dropped })
+}
+
+/// Commit a user-edited kind by merging the agent's rewrite into the stored
+/// copy, one id at a time. The base is the launch-time copy kept in staging.
+fn commit_merged<T: crate::app::job_merge::MergeById<Slot = ()>>(
+    staging: &str,
+    name: &str,
+    expected_hash: Option<&str>,
+    scope: Scope,
+    store: &ArtifactStore,
+    guard: &er_store::ScopeGuard,
+) -> Result<(String, Vec<String>)> {
+    let theirs = read_checked::<T>(
+        staging,
+        name,
+        expected_hash,
+        |v| v.schema_version(),
+        |v| v.diff_hash().unwrap_or_default(),
+    )?;
+    let base = read_optional::<T>(&base_path(staging, name))?;
+    let key = ArtifactKey::<T>::new(scope, ()).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let current = match store
+        .read(&key)
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+    {
+        er_store::Loaded::Found(stored) => Some(stored.value),
+        er_store::Loaded::Absent => None,
+        er_store::Loaded::Unreadable(reason) => {
+            anyhow::bail!("the stored {name} is unreadable ({reason:?}); refusing to replace it")
+        }
+    };
+    let (merged, dropped) =
+        crate::app::job_merge::merge_by_id(base.as_ref(), &theirs, current.as_ref());
+    store
+        .write_locked(guard, &key, &merged)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok((store.path(&key).to_string_lossy().into_owned(), dropped))
+}
+
+/// Where the launch-time copy of an update-kind file lives in staging.
+fn base_path(staging: &str, name: &str) -> std::path::PathBuf {
+    std::path::Path::new(staging).join(".base").join(name)
+}
+
+fn read_optional<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<Option<T>> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    serde_json::from_str(&text)
+        .with_context(|| format!("parse the launch copy {}", path.display()))
+        .map(Some)
 }
 
 /// Validate and commit a scoped run's overlay. The caller stamps it afterwards.
