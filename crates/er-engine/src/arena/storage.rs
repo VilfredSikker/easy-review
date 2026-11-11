@@ -60,14 +60,34 @@ impl ArenaPaths {
     }
 }
 
+/// Write `bytes` to `path` by renaming a fully written temporary file.
+///
+/// The temporary name carries the pid and a per-process counter. A cancel and
+/// the run's supervisor can save the same `run.json` at once, and a shared
+/// temporary name lets one rename consume the file the other still means to
+/// rename.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("tmp");
+    let tmp = unique_tmp_path(path);
     fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error)
+            .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()));
+    }
+    Ok(())
+}
+
+fn unique_tmp_path(path: &Path) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    path.with_file_name(format!("{name}.tmp.{}.{nth}", std::process::id()))
 }
 
 pub fn save_run(paths: &ArenaPaths, run: &ArenaRun) -> Result<()> {
