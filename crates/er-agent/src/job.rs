@@ -436,6 +436,8 @@ impl JobRunner {
     /// Wait between attempts in short slices, so a cancel ends the wait at
     /// once instead of after the whole backoff.
     fn wait_backoff(retry: RetryPolicy, handle: &AgentRunHandle, attempt: u32) -> bool {
+        #[cfg(any(test, feature = "test-support"))]
+        retry_probe::entered();
         let wait = retry.wait_after(attempt);
         let step = Duration::from_millis(25);
         let started = std::time::Instant::now();
@@ -456,6 +458,37 @@ fn stderr_looks_transient(stderr: &str) -> bool {
     ["rate limit", "429", "timed out", "temporar"]
         .iter()
         .any(|marker| text.contains(marker))
+}
+
+/// Test hook: a latch that fires when a retry enters its backoff.
+///
+/// The backoff is otherwise invisible to a test, which would have to guess with
+/// a sleep whether the runner got there; a cancel before it does kills the
+/// finishing attempt and never exercises the wait.
+#[cfg(any(test, feature = "test-support"))]
+pub mod retry_probe {
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::Mutex;
+
+    static ENTERED: Mutex<Option<Sender<()>>> = Mutex::new(None);
+
+    /// Watch for the next backoff entry. The retry tests run serial, so one
+    /// watcher at a time is enough.
+    pub fn watch() -> Receiver<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        *ENTERED.lock().unwrap_or_else(|error| error.into_inner()) = Some(tx);
+        rx
+    }
+
+    pub(crate) fn entered() {
+        if let Some(tx) = ENTERED
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = tx.send(());
+        }
+    }
 }
 
 /// Maps the caller's stop flag onto one attempt's fresh handle.
@@ -719,16 +752,14 @@ mod tests {
         let _serial = agent_slots::test_serial();
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("attempts");
-        let exited = dir.path().join("attempt-exited");
         let spec = prompt_spec(
             "sh",
             vec![
                 "-c".into(),
                 format!(
                     "n=$(cat '{counter}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{counter}'; \
-                     echo 'rate limit' >&2; : > '{exited}'; exit 1",
-                    counter = counter.display(),
-                    exited = exited.display()
+                     echo 'rate limit' >&2; exit 1",
+                    counter = counter.display()
                 ),
             ],
             dir.path(),
@@ -741,6 +772,8 @@ mod tests {
                 backoff: Duration::from_secs(2),
             },
         );
+        // Armed before the run starts, so the test cannot miss the entry.
+        let entered = retry_probe::watch();
         let run = AgentRunHandle::new();
         let cancel = Arc::clone(&run);
         let handle = std::thread::spawn(move || {
@@ -754,19 +787,12 @@ mod tests {
                 },
             )
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        // Wait for the first attempt to have exited *on its own*. The marker is
-        // its last line, and the settle gives the runner time to reap it and
-        // enter the backoff; cancelling earlier would kill the attempt and pass
-        // without testing the backoff at all.
-        while !exited.exists() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "first attempt never ran"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        std::thread::sleep(Duration::from_millis(100));
+        // Wait until the runner is actually in the backoff, with no sleep to
+        // guess at: a cancel before this kills the finishing attempt and never
+        // exercises the wait.
+        entered
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the runner never entered the backoff");
 
         let cancelling = std::time::Instant::now();
         cancel
