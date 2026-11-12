@@ -173,10 +173,8 @@ fn finding_to_item(file: &str, f: &Finding) -> PrFindingItem {
 
 #[cfg(test)]
 fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(value)?;
-    std::fs::write(&tmp, json).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
+    er_store::atomic::write_atomic(path, json.as_bytes())?;
     Ok(())
 }
 

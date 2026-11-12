@@ -227,18 +227,24 @@ docs-check:
 comments-check:
     ./scripts/comments-check.sh
 
-# All static checks: rustfmt, clippy, the frontend type-check and lint gate,
-# and the two citation checks (docs, and inline comments).
+# Fail when an atomic write builds a fixed temporary name instead of the shared
+# helper (scripts/atomic-tmp-check.sh).
 [group('lint')]
-lint: fmt-check clippy check-ui lint-ui docs-check comments-check
+atomic-tmp-check:
+    ./scripts/atomic-tmp-check.sh
+
+# All static checks: rustfmt, clippy, the frontend type-check and lint gate,
+# and the citation checks (docs, inline comments, atomic temp names).
+[group('lint')]
+lint: fmt-check clippy check-ui lint-ui docs-check comments-check atomic-tmp-check
 
 # ───────────────────────────────── aggregates ────────────────────────────────────
 
-# Mirror the GitHub CI gate, plus the two citation checks CI does not run:
-# format, the clippy and frontend lint gates, tests, docs and inline comments,
-# headless engine builds.
+# Mirror the GitHub CI gate, plus the checks CI does not run: format, the
+# clippy and frontend lint gates, tests, docs, inline comments, atomic temp
+# names, headless engine builds.
 [group('ci')]
-ci: fmt-check clippy lint-ui docs-check comments-check test build-engine-headless
+ci: fmt-check clippy lint-ui docs-check comments-check atomic-tmp-check test build-engine-headless
 
 # Build the headless engine the way CI does (no UI features, then +highlight).
 [group('ci')]

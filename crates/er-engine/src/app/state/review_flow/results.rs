@@ -862,7 +862,7 @@ mod tests {
                 let before = std::fs::read(paths.run_json()).unwrap();
                 std::fs::write(&external, &before).unwrap();
                 let destination = if temporary {
-                    paths.run_json().with_extension("tmp")
+                    crate::arena::legacy_tmp_path(&paths.run_json())
                 } else {
                     std::fs::remove_file(paths.run_json()).unwrap();
                     paths.run_json()

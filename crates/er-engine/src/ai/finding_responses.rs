@@ -9,10 +9,8 @@ use std::path::Path;
 
 #[cfg(test)]
 fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(value)?;
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)
+    er_store::atomic::write_atomic(path, json.as_bytes())
 }
 
 fn iso_now() -> String {

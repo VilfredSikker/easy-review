@@ -360,6 +360,16 @@ cd desktop-ui && bun run lint:raw                    # every violation, baseline
 `cargo clippy -- -D warnings` fails on the budgeted lints, which are
 warnings by design; use `just clippy`.
 
+Writes that must be atomic go through `er_store::atomic::write_atomic`, whose
+temporary name carries the pid and a process-wide counter. A fixed
+`<file>.tmp` name lets two writers of one path consume each other's file:
+
+```bash
+just atomic-tmp-check   # fails on a fixed temporary name; comments and unique names are ignored
+```
+
+CI runs it in the Clippy job.
+
 Disable one site, with the reason, rather than growing a baseline:
 
 - Rust: `#[expect(clippy::lint, reason = "…")]`. It fails once the lint stops
@@ -427,6 +437,7 @@ Run from a **git repo** (or repo root for path-relative tools):
 | [`scripts/er-freshness-check.sh`](../scripts/er-freshness-check.sh) | Validate base branch + diff hash (used by skills) |
 | [`scripts/er-cleanup-reviews.sh`](../scripts/er-cleanup-reviews.sh) | Remove `.er/review.json`, checklist, summary, etc. |
 | [`scripts/er-cleanup-questions.sh`](../scripts/er-cleanup-questions.sh) | Remove `.er/questions.json` |
+| [`scripts/atomic-tmp-check.sh`](../scripts/atomic-tmp-check.sh) | Fail on a fixed atomic-write temporary name |
 
 Example:
 

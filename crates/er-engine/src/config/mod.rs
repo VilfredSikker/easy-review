@@ -1969,18 +1969,8 @@ pub fn save_config_to(path: &std::path::Path, config: &ErConfig) -> Result<()> {
         }
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("config.toml");
-    let tmp_path = path.with_file_name(format!("{name}.tmp.{}", std::process::id()));
-
     let content = toml::to_string_pretty(&persisted_config(config))?;
-    std::fs::write(&tmp_path, content)?;
-    std::fs::rename(&tmp_path, path)?;
+    er_store::atomic::write_atomic(path, content.as_bytes())?;
     Ok(())
 }
 

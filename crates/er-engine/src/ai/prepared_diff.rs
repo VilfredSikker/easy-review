@@ -127,15 +127,11 @@ fn marker_matches(dir: &Path, marker: &str, hash: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// tmp+rename write (same pattern as the durable sidecar writers).
+/// Write a prepared-diff file through the shared atomic writer.
 pub(crate) fn atomic_write(dir: &Path, name: &str, content: &str) -> Result<(), String> {
     let path = dir.join(name);
-    let tmp = dir.join(format!("{name}.tmp"));
-    std::fs::write(&tmp, content).map_err(|e| format!("Failed to write {name}: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("Failed to finalize {name}: {e}")
-    })
+    er_store::atomic::write_atomic(&path, content.as_bytes())
+        .map_err(|e| format!("Failed to write {name}: {e}"))
 }
 
 /// Read the recorded `diff-tmp` hash without touching the diff (used by the

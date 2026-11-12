@@ -1201,11 +1201,26 @@ pub fn save_snapshot(repo_root: &str, rel_path: &str, snapshots_dir: &str) -> Re
         std::fs::create_dir_all(parent)?;
     }
     // Copy via tmp + rename so a crash mid-copy can't leave a truncated
-    // snapshot that would later produce a misleading diff.
-    let tmp = dst.with_extension("tmp-snapshot");
+    // snapshot that would later produce a misleading diff. The temporary
+    // carries the pid and a counter: two saves of one file must not share it.
+    let tmp = snapshot_tmp_path(&dst);
     std::fs::copy(src, &tmp)?;
-    std::fs::rename(&tmp, dst)?;
+    if let Err(error) = std::fs::rename(&tmp, dst) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error.into());
+    }
     Ok(())
+}
+
+/// `<file>.tmp-snapshot.<pid>.<counter>` beside the destination.
+fn snapshot_tmp_path(dst: &std::path::Path) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = dst
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("snapshot");
+    dst.with_file_name(format!("{name}.tmp-snapshot.{}.{nth}", std::process::id()))
 }
 
 /// Read the content of a watched file, returning None if binary

@@ -126,6 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: ./scripts/atomic-tmp-check.sh
       - uses: ./.github/actions/tauri-linux-deps
         timeout-minutes: 5
       - uses: dtolnay/rust-toolchain@1.98.0

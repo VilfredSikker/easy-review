@@ -24,9 +24,7 @@ fn empty_review(run: &ArenaRun) -> ErReview {
 
 fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     let json = serde_json::to_string_pretty(value).context("serialize review")?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json.as_bytes()).context("write review tmp")?;
-    std::fs::rename(&tmp, path).context("rename review")?;
+    er_store::atomic::write_atomic(path, json.as_bytes()).context("write review")?;
     Ok(())
 }
 

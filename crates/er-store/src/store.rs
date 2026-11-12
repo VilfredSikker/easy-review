@@ -1,6 +1,5 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::artifact::{Artifact, Mode};
@@ -12,16 +11,6 @@ use crate::time::format_rfc3339_utc;
 
 /// The largest artifact or text file a read accepts and a write produces.
 pub const MAX_ARTIFACT_BYTES: u64 = 10_000_000;
-
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-fn next_sequence() -> u64 {
-    TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-}
-
-fn temp_name(file_name: &str, pid: u32, sequence: u64) -> String {
-    format!(".{file_name}.{pid}.{sequence}.tmp")
-}
 
 pub(crate) fn now_epoch_secs() -> u64 {
     std::time::SystemTime::now()
@@ -325,13 +314,12 @@ impl ArtifactStore {
             value: path.display().to_string(),
         })?;
         std::fs::create_dir_all(parent)?;
-        let file_name = path
-            .file_name()
+        path.file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| StoreError::InvalidPath {
                 value: path.display().to_string(),
             })?;
-        let tmp = parent.join(temp_name(file_name, std::process::id(), next_sequence()));
+        let tmp = crate::atomic::unique_tmp_path(path);
         let result = write_tmp(&tmp, path, bytes, parent, durable);
         if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
@@ -774,19 +762,18 @@ mod tests {
         let leftovers: Vec<String> = std::fs::read_dir(&parent)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with(".tmp"))
+            .filter(|name| name.contains(".tmp."))
             .collect();
         assert!(leftovers.is_empty(), "left {leftovers:?}");
     }
 
     #[test]
     fn two_writes_in_one_process_use_different_tmp_names() {
-        assert_ne!(temp_name("a.json", 1, 0), temp_name("a.json", 1, 1));
-    }
-
-    #[test]
-    fn the_process_sequence_advances_between_writes() {
-        assert_ne!(next_sequence(), next_sequence());
+        let path = Path::new("/tmp/a.json");
+        assert_ne!(
+            crate::atomic::unique_tmp_path(path),
+            crate::atomic::unique_tmp_path(path)
+        );
     }
 
     #[test]
@@ -852,7 +839,7 @@ mod tests {
             ".x.json",
             "x.prev.json",
             "x.txt",
-            ".x.json.123.0.tmp",
+            ".x.json.tmp.123.0",
         ] {
             std::fs::write(experts.join(name), "{}").unwrap();
         }
