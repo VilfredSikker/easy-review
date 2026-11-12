@@ -16,7 +16,6 @@ pub mod professor;
 pub mod projection;
 pub mod promote;
 pub mod prompts;
-pub mod raw_sidecar;
 mod relocate;
 mod review;
 pub mod review_flow;
@@ -42,8 +41,6 @@ pub use mtime::{latest_er_mtime, latest_er_mtime_skipping};
 pub use panel_run::PanelRun;
 pub use professor::*;
 pub use projection::*;
-#[cfg(feature = "ui")]
-pub(crate) use raw_sidecar::read_sidecar;
 pub use relocate::*;
 pub use review::*;
 pub use scoped_overlay::*;

@@ -126,11 +126,7 @@ fn read_general_findings(
     current_diff_hash: &str,
     review_hash: &str,
 ) -> Vec<ArenaFinding> {
-    let path = std::path::Path::new(er_dir).join("review.json");
-    let Ok(content) = crate::ai::read_sidecar(&path) else {
-        return Vec::new();
-    };
-    let Ok(review) = serde_json::from_str::<ErReview>(&content) else {
+    let Some(review) = crate::store_registry::read_found::<ErReview>(er_dir, ()) else {
         return Vec::new();
     };
     if review.diff_hash != current_diff_hash

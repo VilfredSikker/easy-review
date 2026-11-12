@@ -2949,13 +2949,7 @@ impl OtherBucketFacts {
 /// sidecars matching the hash it is given, so an empty one drops a review built
 /// from experts or professor alone.
 fn bucket_generation_hash(dir: &str) -> String {
-    #[derive(serde::Deserialize)]
-    struct HashOnly {
-        diff_hash: String,
-    }
-    let review_hash = std::fs::read_to_string(std::path::Path::new(dir).join("review.json"))
-        .ok()
-        .and_then(|content| serde_json::from_str::<HashOnly>(&content).ok())
+    let review_hash = er_engine::ai::load_review(dir)
         .map(|review| review.diff_hash)
         .filter(|hash| !hash.is_empty());
     if let Some(hash) = review_hash {
@@ -5194,7 +5188,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         ai.review.as_ref().map(build_file_risks).unwrap_or_default();
 
     let er_dir = tab.er_dir();
-    let has_review_json = std::path::Path::new(&er_dir).join("review.json").exists();
+    let has_review_json = er_engine::ai::review_file_exists(&er_dir);
     let eligible_comment_count = ai
         .github_comments
         .as_ref()

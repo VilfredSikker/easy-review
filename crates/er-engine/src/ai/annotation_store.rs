@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use er_store::{
-    Artifact, ArtifactKey, ArtifactStore, Loaded, Registry, Scope, StoreError, UpdateError,
-    DEFAULT_LOCK_TIMEOUT,
+    Artifact, ArtifactKey, ArtifactStore, Loaded, Registry, RelPath, Scope, StoreError,
+    UpdateError, DEFAULT_LOCK_TIMEOUT,
 };
 
 use crate::ai::{ErGithubComments, ErNotes, ErQuestions};
@@ -42,6 +42,12 @@ pub fn load_questions(
     scope: &Scope,
 ) -> Result<Loaded<ErQuestions>, StoreError> {
     store.read(&key(scope)?)
+}
+
+/// The raw text `questions.json` holds, for a caller that copies the file
+/// verbatim. The store still owns the read, the size cap and the path.
+pub fn questions_text(store: &ArtifactStore, scope: &Scope) -> Result<Loaded<String>, StoreError> {
+    store.read_text(scope, &RelPath::new(ErQuestions::FILE)?)
 }
 
 pub fn load_notes(store: &ArtifactStore, scope: &Scope) -> Result<Loaded<ErNotes>, StoreError> {
