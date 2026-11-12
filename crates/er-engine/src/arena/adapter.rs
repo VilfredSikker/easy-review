@@ -238,7 +238,7 @@ fn extract_json_from_stdout(stdout: &str, stream_json: bool) -> Result<Value> {
     extract_json_from_text(&text)
 }
 
-fn extract_json_from_text(text: &str) -> Result<Value> {
+pub(super) fn extract_json_from_text(text: &str) -> Result<Value> {
     let trimmed = text.trim();
     if let Ok(v) = serde_json::from_str(trimmed) {
         return Ok(v);

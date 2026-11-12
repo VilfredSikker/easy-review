@@ -128,7 +128,14 @@ _Avoid_: section, chapter, group
 A review run in which several reviewers work the same diff independently and
 their findings are then judged against each other. Chosen when a single pass is
 not trusted enough to act on.
-_Avoid_: panel, tribunal, multi-review
+_Avoid_: tribunal, multi-review
+
+**Panel**:
+The reviewer stage of an arena run: each reviewer is one agent job working the
+same diff, and its rounds cross-check the findings before the arbiter rules.
+The panel is a stage of the workflow, not another name for the whole arena. See
+[`docs/adr/0061`](./docs/adr/0061-panel-runs-reviewers-as-jobs.md).
+_Avoid_: review board, jury, tribunal
 
 **Triage**:
 A cheap first pass that classifies a diff and recommends where to look, without

@@ -171,8 +171,8 @@ pub(super) fn task_from_stage(
         id: stage.id.clone(),
         stage: match stage.stage {
             StageKind::Triage => FlowTaskStage::Triage,
-            StageKind::Finding | StageKind::Arena => FlowTaskStage::Finding,
-            StageKind::Verifying => FlowTaskStage::Verifying,
+            StageKind::Finding | StageKind::Panel => FlowTaskStage::Finding,
+            StageKind::Verifying | StageKind::Arbiter => FlowTaskStage::Verifying,
         },
         lens: stage.id.strip_prefix("finding:").map(str::to_string),
         label: stage.label.clone(),

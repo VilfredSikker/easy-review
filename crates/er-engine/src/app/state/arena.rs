@@ -918,7 +918,7 @@ mod review_flow_arena_inputs_tests {
         });
     }
 
-    fn wait_for_terminal_stage(
+    fn wait_for_terminal_record(
         store: &er_store::ArtifactStore,
         scope: &er_store::Scope,
         run_id: &str,
@@ -926,18 +926,21 @@ mod review_flow_arena_inputs_tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             let record = crate::ai::workflow_record::load(store, scope).unwrap();
-            let status = record
-                .as_ref()
-                .and_then(|record| record.stage(&format!("arena:{run_id}")))
-                .map(|stage| stage.status);
-            if matches!(
-                status,
-                Some(
-                    crate::ai::StageStatus::Complete
-                        | crate::ai::StageStatus::Failed
-                        | crate::ai::StageStatus::Interrupted
-                )
-            ) {
+            let terminal = record.as_ref().is_some_and(|record| {
+                ["panel", "arbiter"].iter().all(|stage| {
+                    record
+                        .stage(&format!("{stage}:{run_id}"))
+                        .is_some_and(|stage| {
+                            matches!(
+                                stage.status,
+                                crate::ai::StageStatus::Complete
+                                    | crate::ai::StageStatus::Failed
+                                    | crate::ai::StageStatus::Interrupted
+                            )
+                        })
+                })
+            });
+            if terminal {
                 return record.unwrap();
             }
             assert!(
@@ -960,7 +963,7 @@ mod review_flow_arena_inputs_tests {
     }
 
     #[test]
-    fn a_launcher_run_records_an_arena_stage_and_closes_it_when_terminal() {
+    fn a_launcher_record_names_panel_and_arbiter() {
         let tmp = tempdir().unwrap();
         crate::storage::with_process_test_storage_root(tmp.path(), || {
             let bucket = tmp.path().join("launcher-bucket");
@@ -972,7 +975,29 @@ mod review_flow_arena_inputs_tests {
             };
             app.tab_mut().set_raw_diff_for_test("diff --git a/x b/x\n");
             let _env = fake_arena(&app);
-            let run_id = app.arena_start(params()).unwrap();
+            // Concurrent reviewers consume the round fixtures in any order, so
+            // every response must satisfy every round's schema.
+            let fixture = std::env::var_os("ER_FAKE_ARENA_DIR").unwrap();
+            for name in ["round1.json", "round2.json", "round3.json"] {
+                std::fs::write(
+                    std::path::Path::new(&fixture).join(name),
+                    br#"{"findings":[],"ballots":[],"verdicts":[]}"#,
+                )
+                .unwrap();
+            }
+            // Two reviewers and two rounds: the only shape that reaches the
+            // arbiter, so both stages of the run are in the record.
+            let mut params = params();
+            params.rounds = Some(2);
+            params.reviewers = vec![
+                reviewer(),
+                ReviewerRef {
+                    provider_id: "codex".into(),
+                    model_id: "gpt-6-astra".into(),
+                    agent_kind: Some("general".into()),
+                },
+            ];
+            let run_id = app.arena_start(params).unwrap();
 
             let store = crate::store_registry::store();
             let scope = er_store::Scope::dir(bucket.to_str().unwrap()).unwrap();
@@ -981,14 +1006,41 @@ mod review_flow_arena_inputs_tests {
             let record = crate::ai::workflow_record::load(&store, &scope)
                 .unwrap()
                 .expect("the launcher wrote a workflow record");
-            let stage = record
-                .stage(&format!("arena:{run_id}"))
-                .expect("the record names the run");
-            assert_eq!(stage.status, crate::ai::StageStatus::Running);
+            let panel_id = format!("panel:{run_id}");
+            let arbiter_id = format!("arbiter:{run_id}");
+            let panel_pos = record
+                .stages
+                .iter()
+                .position(|stage| stage.id == panel_id)
+                .expect("the record names the run's panel");
+            let arbiter_pos = record
+                .stages
+                .iter()
+                .position(|stage| stage.id == arbiter_id)
+                .expect("the record names the run's arbiter");
+            assert!(
+                panel_pos < arbiter_pos,
+                "the panel is closed before the arbiter"
+            );
+            let panel = &record.stages[panel_pos];
+            let arbiter = &record.stages[arbiter_pos];
+            assert_eq!(panel.stage, crate::ai::StageKind::Panel);
+            assert_eq!(panel.status, crate::ai::StageStatus::Running);
+            assert_eq!(arbiter.stage, crate::ai::StageKind::Arbiter);
+            assert_eq!(arbiter.status, crate::ai::StageStatus::Pending);
 
-            let record = wait_for_terminal_stage(&store, &scope, &run_id);
+            let record = wait_for_terminal_record(&store, &scope, &run_id);
             assert!(record.outcome.is_some());
             assert!(record.holder.is_none());
+            assert_eq!(
+                record.stage(&panel_id).unwrap().status,
+                crate::ai::StageStatus::Complete
+            );
+            assert_eq!(
+                record.stage(&arbiter_id).unwrap().status,
+                crate::ai::StageStatus::Complete,
+                "a completed run closes its arbiter too"
+            );
             // The run's lease releases with its last supervisor, which drops
             // its share just after closing the record.
             wait_for_admission(&app, bucket.to_str().unwrap());

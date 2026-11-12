@@ -44,7 +44,11 @@ pub enum StageKind {
     Triage,
     Finding,
     Verifying,
-    Arena,
+    /// The reviewer half of an arena run: every reviewer's jobs, round by
+    /// round. A Deep flow names the same work as its `reviewer:` rows.
+    Panel,
+    /// The caller that rules on the panel's findings.
+    Arbiter,
 }
 
 /// One durable stage row.
@@ -389,23 +393,38 @@ pub struct ArenaWorkflow {
     pub guard: std::sync::Arc<LeaseGuard>,
 }
 
-fn arena_stage(run_id: &str, diff_hash: &str) -> StageRecord {
-    StageRecord {
-        id: format!("arena:{run_id}"),
-        stage: StageKind::Arena,
-        label: format!("Arena run {run_id}"),
+/// One run's stages: the reviewer panel first, the arbiter after it. A run
+/// that never reaches a cross round never calls the arbiter, so it gets no
+/// arbiter stage.
+fn arena_stages(run_id: &str, diff_hash: &str, rounds: u8) -> Vec<StageRecord> {
+    let mut stages = vec![StageRecord {
+        id: format!("panel:{run_id}"),
+        stage: StageKind::Panel,
+        label: format!("Reviewer panel {run_id}"),
         status: StageStatus::Running,
-        output: format!("arena:{run_id}"),
+        output: format!("panel:{run_id}"),
         diff_hash: diff_hash.to_string(),
+    }];
+    if rounds >= 2 {
+        stages.push(StageRecord {
+            id: format!("arbiter:{run_id}"),
+            stage: StageKind::Arbiter,
+            label: format!("Arbiter {run_id}"),
+            status: StageStatus::Pending,
+            output: format!("arbiter:{run_id}"),
+            diff_hash: diff_hash.to_string(),
+        });
     }
+    stages
 }
 
-/// Append one run's stage to the bucket's arena record, replacing a record
+/// Append one run's stages to the bucket's arena record, replacing a record
 /// from a different diff generation.
 pub fn begin_arena_run(
     store: &ArtifactStore,
     workflow: &ArenaWorkflow,
     run_id: &str,
+    rounds: u8,
 ) -> anyhow::Result<()> {
     let key = ArtifactKey::<WorkflowRecord>::new(workflow.scope.clone(), ())?;
     let fresh = WorkflowRecord {
@@ -415,7 +434,7 @@ pub fn begin_arena_run(
         started_at: workflow.started_at.clone(),
         outcome: None,
         holder: Some(workflow.holder.clone()),
-        stages: vec![arena_stage(run_id, &workflow.diff_hash)],
+        stages: arena_stages(run_id, &workflow.diff_hash, rounds),
     };
     match store.update_durable(
         &key,
@@ -429,10 +448,11 @@ pub fn begin_arena_run(
             }
             record.holder = Some(workflow.holder.clone());
             record.outcome = None;
-            let stage = arena_stage(run_id, &workflow.diff_hash);
-            match record.stages.iter_mut().find(|row| row.id == stage.id) {
-                Some(row) => *row = stage,
-                None => record.stages.push(stage),
+            for stage in arena_stages(run_id, &workflow.diff_hash, rounds) {
+                match record.stages.iter_mut().find(|row| row.id == stage.id) {
+                    Some(row) => *row = stage,
+                    None => record.stages.push(stage),
+                }
             }
             Ok(record)
         },
@@ -446,8 +466,8 @@ pub fn begin_arena_run(
     }
 }
 
-/// Close one run's stage; when every stage is terminal, set the record's
-/// outcome and clear the holder.
+/// Close one run's stages, panel then arbiter; when every stage is terminal,
+/// set the record's outcome and clear the holder.
 pub fn end_arena_run(
     store: &ArtifactStore,
     workflow: &ArenaWorkflow,
@@ -458,15 +478,16 @@ pub fn end_arena_run(
         if record.diff_hash != workflow.diff_hash {
             return;
         }
-        let id = format!("arena:{run_id}");
-        let Some(stage) = record.stages.iter_mut().find(|row| row.id == id) else {
-            return;
-        };
-        stage.status = match outcome {
+        let status = match outcome {
             WorkflowOutcome::Complete => StageStatus::Complete,
             WorkflowOutcome::Failed => StageStatus::Failed,
             WorkflowOutcome::Cancelled | WorkflowOutcome::Interrupted => StageStatus::Interrupted,
         };
+        for id in [format!("panel:{run_id}"), format!("arbiter:{run_id}")] {
+            if let Some(stage) = record.stages.iter_mut().find(|row| row.id == id) {
+                stage.status = status;
+            }
+        }
         let all_done = record.stages.iter().all(|row| {
             matches!(
                 row.status,

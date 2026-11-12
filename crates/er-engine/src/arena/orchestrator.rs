@@ -582,6 +582,7 @@ fn start_arena_run_with_kind(
             &crate::store_registry::store(),
             workflow,
             &run_id,
+            rounds,
         )?;
     }
 
@@ -602,6 +603,14 @@ fn start_arena_run_with_kind(
             children_handle,
             status_handle,
             move |registry_thread| {
+                // The record must be closed by any way out of this thread,
+                // including a panic: a stage left `Running` by a dead
+                // supervisor is what a crash-resume record exists to prevent.
+                let _close_workflow = CloseWorkflowOnExit::new(
+                    workflow.clone(),
+                    run_id_thread.clone(),
+                    paths_clone.clone(),
+                );
                 let ctx = SupervisorCtx {
                     registry: registry_thread.as_ref(),
                     config: &config,
@@ -634,19 +643,6 @@ fn start_arena_run_with_kind(
                             let _ = save_run(&paths_clone, &run);
                         }
                     }
-                }
-                if let Some(workflow) = workflow.as_ref() {
-                    let outcome = match load_run(&paths_clone).map(|run| run.status) {
-                        Ok(RunStatus::Complete) => crate::ai::WorkflowOutcome::Complete,
-                        Ok(RunStatus::Cancelled) => crate::ai::WorkflowOutcome::Cancelled,
-                        _ => crate::ai::WorkflowOutcome::Failed,
-                    };
-                    let _ = crate::ai::workflow_record::end_arena_run(
-                        &crate::store_registry::store(),
-                        workflow,
-                        &run_id_thread,
-                        outcome,
-                    );
                 }
                 registry_thread.release_run(&run_id_thread);
                 registry_thread.notify_progress();
@@ -761,6 +757,7 @@ pub fn start_seeded_run(
             &crate::store_registry::store(),
             workflow,
             &run_id,
+            run.config.rounds,
         )?;
     }
 
@@ -783,6 +780,11 @@ pub fn start_seeded_run(
             children_handle,
             status_handle,
             move |registry_thread| {
+                let _close_workflow = CloseWorkflowOnExit::new(
+                    workflow.clone(),
+                    run_id_thread.clone(),
+                    paths_clone.clone(),
+                );
                 let ctx = SupervisorCtx {
                     registry: registry_thread.as_ref(),
                     config: &config,
@@ -836,19 +838,6 @@ pub fn start_seeded_run(
                         run.completed_at = Some(crate::app::chrono_now());
                         let _ = save_run(&paths_clone, &run);
                     }
-                }
-                if let Some(workflow) = workflow.as_ref() {
-                    let outcome = match load_run(&paths_clone).map(|run| run.status) {
-                        Ok(RunStatus::Complete) => crate::ai::WorkflowOutcome::Complete,
-                        Ok(RunStatus::Cancelled) => crate::ai::WorkflowOutcome::Cancelled,
-                        _ => crate::ai::WorkflowOutcome::Failed,
-                    };
-                    let _ = crate::ai::workflow_record::end_arena_run(
-                        &crate::store_registry::store(),
-                        workflow,
-                        &run_id_thread,
-                        outcome,
-                    );
                 }
                 registry_thread.release_run(&run_id_thread);
                 registry_thread.notify_progress();
@@ -1040,12 +1029,12 @@ pub fn estimate_batch_cost_usd(
     total
 }
 
-fn emit(registry: &ArenaRegistry, paths: &ArenaPaths, event: &ProgressEvent) {
+pub(super) fn emit(registry: &ArenaRegistry, paths: &ArenaPaths, event: &ProgressEvent) {
     let _ = append_progress_event(paths, event);
     registry.notify_progress();
 }
 
-fn record_reviewer_failure(
+pub(super) fn record_reviewer_failure(
     paths: &ArenaPaths,
     failed: &Mutex<Vec<(String, String)>>,
     notify_progress: &(dyn Fn() + Send + Sync),
@@ -1068,10 +1057,10 @@ fn record_reviewer_failure(
     notify_progress();
 }
 
-struct Round1ParallelOutcome {
-    ok: Vec<(String, super::schema::Round1Output)>,
-    failed: Vec<(String, String)>,
-    cancelled: bool,
+pub(super) struct Round1ParallelOutcome {
+    pub(super) ok: Vec<(String, super::schema::Round1Output)>,
+    pub(super) failed: Vec<(String, String)>,
+    pub(super) cancelled: bool,
 }
 
 #[expect(
@@ -1274,10 +1263,10 @@ fn run_round1_parallel(
     })
 }
 
-struct Round2ParallelOutcome {
-    ok: Vec<(String, super::schema::Round2Output)>,
-    failed: Vec<(String, String)>,
-    cancelled: bool,
+pub(super) struct Round2ParallelOutcome {
+    pub(super) ok: Vec<(String, super::schema::Round2Output)>,
+    pub(super) failed: Vec<(String, String)>,
+    pub(super) cancelled: bool,
 }
 
 #[expect(
@@ -1477,6 +1466,13 @@ fn run_supervisor(
     run_id: String,
     reviewers: Vec<Reviewer>,
 ) -> Result<()> {
+    // Test seam for the record's close-on-panic path: the supervisor thread
+    // is the only place a panic can strand the run's stages.
+    #[cfg(test)]
+    assert!(
+        std::env::var_os("ER_TEST_PANIC_ARENA_SUPERVISOR").is_none(),
+        "simulated arena supervisor panic"
+    );
     let SupervisorCtx {
         registry,
         paths,
@@ -1529,7 +1525,15 @@ fn run_supervisor(
 
     let round1_started = std::time::Instant::now();
     cancelled!();
-    let round1 = run_round1_parallel(ctx, patch_path, &reviewers, run_effort.as_deref())?;
+    // A review flow's reviewers run as panel jobs; the launcher's and the
+    // seeded path's reviewers spawn through the arena adapter. One branch
+    // picks the round runner, so both share this supervisor.
+    let panel = (run.config.run_kind == ArenaRunKind::ReviewFlow)
+        .then(|| super::panel::Panel::new(ctx, patch_path, run_effort.as_deref()));
+    let round1 = match &panel {
+        Some(panel) => panel.round1(&reviewers)?,
+        None => run_round1_parallel(ctx, patch_path, &reviewers, run_effort.as_deref())?,
+    };
     crate::agent_timing::emit(
         "arena_round",
         &[
@@ -1610,14 +1614,17 @@ fn run_supervisor(
             .collect();
         let round_started = std::time::Instant::now();
         cancelled!();
-        let cross_out = run_round2_parallel(
-            ctx,
-            patch_path,
-            round,
-            &findings_json,
-            &active,
-            run_effort.as_deref(),
-        )?;
+        let cross_out = match &panel {
+            Some(panel) => panel.cross_round(round, &findings_json, &active)?,
+            None => run_round2_parallel(
+                ctx,
+                patch_path,
+                round,
+                &findings_json,
+                &active,
+                run_effort.as_deref(),
+            )?,
+        };
         crate::agent_timing::emit(
             "arena_round",
             &[
@@ -1657,19 +1664,64 @@ fn run_supervisor(
     Ok(())
 }
 
+/// Closes a run's record on any way out of its supervisor, a panic included.
+///
+/// A close placed after `run_supervisor` returns is skipped by a panic, and
+/// the run's stages then stay `Running`, so the bucket looks busy until a
+/// manual reconcile. `Drop` reads the status the run last wrote: only a clean
+/// completion or a user stop counts as itself, because a supervisor that
+/// unwound never decided how the run ended.
+struct CloseWorkflowOnExit {
+    workflow: Option<crate::ai::workflow_record::ArenaWorkflow>,
+    run_id: String,
+    paths: ArenaPaths,
+}
+
+impl CloseWorkflowOnExit {
+    fn new(
+        workflow: Option<crate::ai::workflow_record::ArenaWorkflow>,
+        run_id: String,
+        paths: ArenaPaths,
+    ) -> Self {
+        Self {
+            workflow,
+            run_id,
+            paths,
+        }
+    }
+}
+
+impl Drop for CloseWorkflowOnExit {
+    fn drop(&mut self) {
+        let Some(workflow) = self.workflow.as_ref() else {
+            return;
+        };
+        let outcome = match load_run(&self.paths) {
+            Ok(run) => super::panel::outcome_for(&run),
+            Err(_) => crate::ai::WorkflowOutcome::Failed,
+        };
+        let _ = crate::ai::workflow_record::end_arena_run(
+            &crate::store_registry::store(),
+            workflow,
+            &self.run_id,
+            outcome,
+        );
+    }
+}
+
 /// The supervisor's ambient scope, bundled so the supervisor, its reviewer
 /// rounds, and the arbiter call (shared by the normal path and the seeded one)
 /// take it whole instead of as a ten-argument signature.
-struct SupervisorCtx<'a> {
-    registry: &'a ArenaRegistry,
-    config: &'a ErConfig,
-    repo_root: &'a str,
+pub(super) struct SupervisorCtx<'a> {
+    pub(super) registry: &'a ArenaRegistry,
+    pub(super) config: &'a ErConfig,
+    pub(super) repo_root: &'a str,
     /// See [`ArenaRunInputs::reviewed_ref_note`].
-    reviewed_ref_note: Option<&'a str>,
-    paths: &'a ArenaPaths,
-    cancel: &'a Arc<AtomicBool>,
-    children: &'a Arc<Mutex<Vec<Child>>>,
-    status: &'a Mutex<RunStatus>,
+    pub(super) reviewed_ref_note: Option<&'a str>,
+    pub(super) paths: &'a ArenaPaths,
+    pub(super) cancel: &'a Arc<AtomicBool>,
+    pub(super) children: &'a Arc<Mutex<Vec<Child>>>,
+    pub(super) status: &'a Mutex<RunStatus>,
 }
 
 /// Whether the arbiter pass ruled, or the run was cancelled under it.
@@ -1704,6 +1756,7 @@ fn run_arbiter(
         children,
         reviewed_ref_note,
         status,
+        ..
     } = *ctx;
     let round = run.config.rounds;
     let run_id = run.id.clone();
