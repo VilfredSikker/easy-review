@@ -1479,6 +1479,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "er-agent",
  "er-engine",
  "er-git",
  "ratatui",

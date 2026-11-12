@@ -269,11 +269,11 @@ pub fn run_card_ai_subprocess(
         )),
         Err(JobError::TimedOut(limit)) => CardReply(format!(
             "Pending — invoke via CLI ({})",
-            crate::agent_run::timed_out(limit)
+            er_agent::agent_run::timed_out(limit)
         )),
         Err(JobError::Cancelled) => CardReply(format!(
             "Pending — invoke via CLI ({})",
-            crate::agent_run::cancelled()
+            er_agent::agent_run::cancelled()
         )),
         Err(JobError::Spawn(error)) => CardReply(format!(
             "Pending — invoke via CLI (failed to spawn {}: {error})",

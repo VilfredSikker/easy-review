@@ -2,7 +2,7 @@
 //!
 //! Flow: [`prepare_review_kit`] writes shared `diff-tmp` + prompts; the client
 //! agent produces artifacts; [`upload_pr_artifacts`] validates and stores them.
-//! No agent CLI spawn — avoids competing for [`crate::agent_slots`].
+//! No agent CLI spawn — avoids competing for [`er_agent::agent_slots`].
 
 use crate::ai::compute_diff_hash;
 use crate::ai::prompts::{

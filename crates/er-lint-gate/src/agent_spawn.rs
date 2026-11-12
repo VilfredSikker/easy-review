@@ -2,11 +2,10 @@
 //! OS-launch module.
 //!
 //! `crates/er-agent` owns the process runtime. Every other spawn is an OS
-//! handoff (clipboard, editor, file manager, tar) or an agent call site that
-//! has not moved yet. The OS handoffs are whole files, listed under
-//! `agent-spawn-os-launch`; the remaining agent call sites are listed under
-//! `agent-spawn-allow`, which only shrinks. A literal `git` or `gh` spawn is
-//! left to `er::git_spawn` / `er::gh_spawn`. Test code (`#[cfg(test)]` and
+//! handoff (clipboard, editor, file manager, tar), and those are whole files,
+//! listed under `agent-spawn-os-launch`. There is no allow list: an agent call
+//! site outside `er-agent` is an error. A literal `git` or `gh` spawn is left
+//! to `er::git_spawn` / `er::gh_spawn`. Test code (`#[cfg(test)]` and
 //! `#[test]`) is exempt, and so is the reviewed test-support module, which
 //! compiles only under `test` or a `test-support` feature.
 
@@ -271,25 +270,21 @@ fn first_macro_token_is_owned_spawn(tokens: &TokenStream) -> bool {
 }
 
 /// Turn findings into gate diagnostics. A file under the home crate, on the
-/// OS-launch list, on the allow list, or in a tool crate passes; anything else
-/// fails. An allow entry with no findings fails as stale, which is what makes
-/// the list shrink.
+/// OS-launch list, or in a tool crate passes; anything else fails.
 pub fn evaluate(
     findings_by_file: &BTreeMap<String, Vec<Finding>>,
     os_launch: &[String],
-    allow: &[String],
     code: &str,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for (file, findings) in findings_by_file {
         let home = file == HOME || file.starts_with(&format!("{HOME}/"));
         let os_launch_file = os_launch.iter().any(|entry| entry == file);
-        let allowed = allow.iter().any(|entry| entry == file);
         let tool = TOOL_CRATES
             .iter()
             .any(|krate| file == *krate || file.starts_with(&format!("{krate}/")));
         let test_support = TEST_SUPPORT_FILES.contains(&file.as_str());
-        if home || os_launch_file || allowed || tool || test_support {
+        if home || os_launch_file || tool || test_support {
             continue;
         }
         for finding in findings {
@@ -298,19 +293,6 @@ pub fn evaluate(
                 finding.message
             );
             out.push(error(file, finding.line, code, &message));
-        }
-    }
-    for entry in allow {
-        let found = findings_by_file
-            .get(entry)
-            .is_some_and(|findings| !findings.is_empty());
-        if !found {
-            out.push(error(
-                entry,
-                1,
-                code,
-                &format!("stale allow-list entry: remove {entry}"),
-            ));
         }
     }
     out
@@ -579,7 +561,7 @@ mod tests {
 
     #[test]
     fn a_spawn_outside_the_lists_fails() {
-        let diags = evaluate(&by_file("crates/x/src/a.rs"), &[], &[], CODE);
+        let diags = evaluate(&by_file("crates/x/src/a.rs"), &[], CODE);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].level, "error");
         assert_eq!(diags[0].code.as_deref(), Some(CODE));
@@ -592,21 +574,14 @@ mod tests {
     #[test]
     fn a_spawn_in_the_home_crate_passes() {
         let map = by_file("crates/er-agent/src/agent_run.rs");
-        assert!(evaluate(&map, &[], &[], CODE).is_empty());
+        assert!(evaluate(&map, &[], CODE).is_empty());
     }
 
     #[test]
     fn a_spawn_in_an_os_launch_file_passes() {
         let os_launch = ["crates/er-engine/src/os_launch.rs".to_string()];
         let map = by_file("crates/er-engine/src/os_launch.rs");
-        assert!(evaluate(&map, &os_launch, &[], CODE).is_empty());
-    }
-
-    #[test]
-    fn a_spawn_in_an_allow_listed_file_passes() {
-        let allow = ["crates/er-engine/src/app/card_ai_spawn.rs".to_string()];
-        let map = by_file("crates/er-engine/src/app/card_ai_spawn.rs");
-        assert!(evaluate(&map, &[], &allow, CODE).is_empty());
+        assert!(evaluate(&map, &os_launch, CODE).is_empty());
     }
 
     #[test]
@@ -615,32 +590,16 @@ mod tests {
             "crates/er-lint-gate/src/main.rs",
             "crates/er-crap/src/main.rs",
         ] {
-            assert!(
-                evaluate(&by_file(file), &[], &[], CODE).is_empty(),
-                "{file}"
-            );
+            assert!(evaluate(&by_file(file), &[], CODE).is_empty(), "{file}");
         }
     }
 
     #[test]
     fn only_the_reviewed_test_support_file_is_exempt() {
         let reviewed = by_file("crates/er-engine/src/test_support.rs");
-        assert!(evaluate(&reviewed, &[], &[], CODE).is_empty());
+        assert!(evaluate(&reviewed, &[], CODE).is_empty());
         let same_name_elsewhere = by_file("crates/x/src/test_support.rs");
-        assert_eq!(evaluate(&same_name_elsewhere, &[], &[], CODE).len(), 1);
-    }
-
-    #[test]
-    fn an_allow_entry_without_findings_is_stale() {
-        let allow = ["crates/x/src/a.rs".to_string()];
-        let diags = evaluate(&BTreeMap::new(), &[], &allow, CODE);
-        assert_eq!(diags.len(), 1);
-        assert!(
-            diags[0]
-                .rendered
-                .contains("stale allow-list entry: remove crates/x/src/a.rs"),
-            "{diags:?}"
-        );
+        assert_eq!(evaluate(&same_name_elsewhere, &[], CODE).len(), 1);
     }
 
     #[test]

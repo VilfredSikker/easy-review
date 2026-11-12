@@ -2331,11 +2331,11 @@ mod tests {
             // among them, and not fall back to a catch-all kind.
             let kinds = er_engine::app::take_submitted_tab_job_kinds();
             assert!(
-                kinds.contains(&er_engine::job::JobKind::Summary),
+                kinds.contains(&er_agent::job::JobKind::Summary),
                 "{kinds:?}"
             );
             assert!(
-                !kinds.contains(&er_engine::job::JobKind::Other("summary".into())),
+                !kinds.contains(&er_agent::job::JobKind::Other("summary".into())),
                 "{kinds:?}"
             );
         });

@@ -4,6 +4,7 @@
 //! and projection helpers consumed by desktop `arena_get` / the Svelte overlay.
 
 mod agents;
+mod control;
 mod identity;
 mod import;
 pub(crate) mod jobs;
@@ -11,9 +12,9 @@ mod merge;
 mod model;
 mod orchestrator;
 mod panel;
+mod progress;
 mod projections;
 mod provenance;
-mod registry;
 mod schema;
 mod seeded;
 mod storage;
@@ -23,6 +24,7 @@ mod voting;
 pub(crate) use jobs::ARENA_TEST_ENV_LOCK;
 
 pub use agents::{agent_meta, list_arena_agent_kinds, AgentMeta};
+pub use control::{ArenaRunControl, ArenaRunControls};
 pub use identity::finding_id;
 pub use import::import_arena_findings_to_review;
 pub use jobs::fake_arena_call_count;
@@ -36,12 +38,12 @@ pub use orchestrator::{
     ARBITER_REVIEWER_ID, ARENA_ROUNDS_V1, DEFAULT_COST_LIMIT_USD, MIN_QUORUM,
 };
 pub(crate) use orchestrator::{reconcile_stale_runs_excluding, start_review_flow_run};
+pub use progress::{ArenaNotify, ArenaProgress, ArenaProgressState, ProgressEvent};
 pub use projections::{
     build_arbiter_view, build_funnel, build_matrix, build_snapshot, build_snapshot_with_config,
     ArenaRunSnapshot,
 };
 pub use provenance::{normalized_raisers_for, providers_for};
-pub use registry::{new_run_id, ArenaNotify, ArenaRegistry};
 pub use schema::{
     validate_round1_output, validate_round2_output, validate_round3_output, Round1Output,
     Round2Output, Round3Output,
@@ -50,6 +52,5 @@ pub use schema::{
 // outside the arena uses it, so it stays unexported rather than widening the
 // public surface with no caller.
 pub use storage::{
-    append_progress_event, delete_run_dir, latest_arena_mtime, list_run_ids, load_run,
-    parse_progress_state, save_run, ArenaPaths, ArenaProgressState, ProgressEvent,
+    delete_run_dir, latest_arena_mtime, list_run_ids, load_run, save_run, ArenaPaths,
 };

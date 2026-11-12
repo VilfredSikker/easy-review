@@ -1,13 +1,10 @@
 //! Deep review confirmation and explicit-input arena start.
 //!
-//! A Deep run spans two progress channels until P33b: its triage stage reports
-//! through the runner's `JobProgress` stream, and its verifying stage reports
-//! through the arena's durable `progress.jsonl` events (`ProgressEvent`), which
-//! the reviewer rows read. Both stop once their owner is cancelled. P33b
-//! deletes `progress.jsonl` and moves the verifying stage onto job progress.
-//!
-//! The panel's reviewer jobs write those same `progress.jsonl` events, so the
-//! rows are current, not stale.
+//! A Deep run's triage stage reports through the runner's `JobProgress`
+//! stream; its verifying stage reports through the live run control's
+//! in-memory `ProgressEvent` state, which the reviewer rows read. Both stop
+//! once their owner is cancelled, and the control carries the arena's cancel
+//! flag so the job bridge can see it.
 
 use super::progress;
 use super::{App, ReviewFlowContext};
@@ -204,7 +201,6 @@ impl App {
             .get_mut(er_dir)
             .context("Deep review execution context disappeared")?;
         context.arena_run_id = Some(run_id.clone());
-        context.arena_progress_offset = 0;
         context.arena_progress_round = 0;
         self.review_flow_run_targets
             .insert((er_dir.to_owned(), run_id.clone()), target);
@@ -290,8 +286,8 @@ mod tests {
     use std::path::Path;
     use std::time::{Duration, Instant};
 
-    fn serial() -> crate::agent_slots::TestSerialGuard {
-        crate::agent_slots::test_serial()
+    fn serial() -> er_agent::agent_slots::TestSerialGuard {
+        er_agent::agent_slots::test_serial()
     }
 
     struct TestDir(tempfile::TempDir);
@@ -310,7 +306,7 @@ mod tests {
         _guard: std::sync::MutexGuard<'static, ()>,
         previous: Option<std::ffi::OsString>,
         _fixture: tempfile::TempDir,
-        registry: std::sync::Arc<crate::arena::ArenaRegistry>,
+        controls: crate::arena::ArenaRunControls,
     }
 
     impl FakeArenaEnv {
@@ -334,22 +330,19 @@ mod tests {
                 _guard: guard,
                 previous,
                 _fixture: fixture,
-                registry: std::sync::Arc::clone(&app.arena_registry),
+                controls: app.arena_runs.clone(),
             }
         }
     }
 
     impl Drop for FakeArenaEnv {
         fn drop(&mut self) {
-            for run_id in self.registry.active_run_ids() {
-                let deadline = Instant::now() + Duration::from_secs(30);
-                while self.registry.is_active(&run_id) {
-                    assert!(
-                        Instant::now() < deadline,
-                        "arena run {run_id} never released its registry entry"
-                    );
-                    std::thread::sleep(Duration::from_millis(10));
-                }
+            for control in self.controls.all() {
+                assert!(
+                    control.wait_finished(Duration::from_secs(30)),
+                    "arena run {} never finished",
+                    control.run_id
+                );
             }
             match self.previous.take() {
                 Some(value) => std::env::set_var("ER_FAKE_ARENA_DIR", value),
@@ -468,7 +461,7 @@ mod tests {
                 .iter()
                 .filter(|task| task.round.is_some() || task.id == "verifying:arbiter")
                 .all(|task| task.status == crate::ai::review_flow::FlowTaskStatus::Waiting));
-            assert!(app.arena_registry.active_run_ids().is_empty());
+            assert!(app.arena_runs.active_ids().is_empty());
             assert!(!Path::new(&bucket).join("arena").exists());
 
             app.decline_review_flow(&bucket).unwrap();
@@ -506,7 +499,7 @@ mod tests {
                 app.review_flow_for(&bucket).unwrap().state,
                 FlowState::Failed { .. }
             ));
-            assert!(app.arena_registry.active_run_ids().is_empty());
+            assert!(app.arena_runs.active_ids().is_empty());
             app.advance_review_flows();
 
             let dir = TestDir::new();
@@ -520,7 +513,7 @@ mod tests {
                 app.review_flow_for(&bucket).unwrap().state,
                 FlowState::Failed { .. }
             ));
-            assert!(app.arena_registry.active_run_ids().is_empty());
+            assert!(app.arena_runs.active_ids().is_empty());
             app.advance_review_flows();
 
             let dir = TestDir::new();
@@ -533,7 +526,7 @@ mod tests {
                 app.review_flow_for(&bucket).unwrap().state,
                 FlowState::Cancelled
             );
-            assert!(app.arena_registry.active_run_ids().is_empty());
+            assert!(app.arena_runs.active_ids().is_empty());
         });
     }
 
@@ -607,7 +600,7 @@ mod tests {
             assert!(app.review_flow_run_target(&bucket, &run_id).is_some());
             assert!(app.confirm_review_flow(&bucket).is_err());
             let deadline = Instant::now() + Duration::from_secs(10);
-            while app.arena_registry.is_active(&run_id) {
+            while app.arena_runs.is_active(&run_id) {
                 assert!(Instant::now() < deadline, "Deep arena did not finish");
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -771,8 +764,8 @@ mod tests {
     }
 
     /// A Deep run spans both owners: the runner owns its triage stage, the
-    /// arena registry owns its verifying stage. Cancelling either must end its
-    /// children, and the lease must outlive the runner child it is draining.
+    /// live run control owns its verifying stage. Cancelling either must end
+    /// its children, and the lease must outlive the runner child it drains.
     #[test]
     fn a_deep_cancel_kills_every_child_across_the_runner_and_the_arena() {
         let _serial = serial();
@@ -785,7 +778,11 @@ mod tests {
             // exits. Prompt matching cannot tell the two apart reliably.
             let script = crate::test_support::staged_script(
                 &r#"echo $$ >> '__PIDS__'
-if [ -n "${ER_TEST_SLOW_ARENA-}" ]; then exec sleep 30; fi
+if [ -n "${ER_TEST_SLOW_ARENA-}" ]; then
+  sleep 30 &
+  echo $! >> '__PIDS__'
+  wait
+fi
 sleep 1
 hash=$(cat '__BUCKET__/.diff-tmp.sha256')
 printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}}' "$hash" > '__BUCKET__/triage.json'
@@ -836,7 +833,7 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
                 "the draining triage agent should still be a running task"
             );
             assert!(
-                crate::agent_slots::active_count() >= 1,
+                er_agent::agent_slots::active_count() >= 1,
                 "the draining triage agent should still hold a slot"
             );
 
@@ -853,7 +850,7 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
                 "the lease was released before the triage agent died"
             );
             assert!(app.check_review_bucket_admission(&bucket_key).is_ok());
-            assert_eq!(crate::agent_slots::active_count(), 0);
+            assert_eq!(er_agent::agent_slots::active_count(), 0);
 
             app.poll_background_tasks();
             let log_tail: usize = app
@@ -880,7 +877,9 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
             let before = read_pids(&pids_path).len();
             let slow = SlowArenaEnv::install();
             app.confirm_review_flow(&bucket_key).unwrap();
-            let _ = wait_for_pids(&pids_path, before + 4);
+            // Each reviewer job writes its shell's pid and its sleep
+            // grandchild's, so the four round-1 jobs add eight pids.
+            let _ = wait_for_pids(&pids_path, before + 8);
             let run_id = app
                 .review_flow_for(&bucket_key)
                 .and_then(|flow| flow.arena_run_id.clone())
@@ -902,7 +901,7 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
                 first_command.contains("sleep 30"),
                 "the arena child is not sleeping: {first_command}"
             );
-            assert!(app.arena_registry.is_active(&run_id));
+            assert!(app.arena_runs.is_active(&run_id));
 
             assert!(app.cancel_review_flow(&bucket_key));
             wait_until(
@@ -910,7 +909,7 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
                 Duration::from_secs(10),
                 || {
                     app.poll_background_tasks();
-                    !app.arena_registry.is_active(&run_id)
+                    !app.arena_runs.is_active(&run_id)
                 },
             );
             drop(slow);
@@ -924,15 +923,9 @@ printf '{"version":1,"diff_hash":"%s","verdict":{"primary":"arena","experts":[]}
             let paths = crate::arena::ArenaPaths::for_run(Path::new(&bucket_key), &run_id);
             let run = crate::arena::load_run(&paths).unwrap();
             assert_eq!(run.status, crate::arena::RunStatus::Cancelled);
-            let progress = std::fs::read_to_string(paths.progress_jsonl()).unwrap_or_default();
-            // Join the supervisor before comparing: it has already released
-            // the run, so a final write can only be one it made before this
-            // read, and nothing can append after the join.
-            app.arena_registry.join_supervisor(&run_id).unwrap();
-            assert_eq!(
-                std::fs::read_to_string(paths.progress_jsonl()).unwrap_or_default(),
-                progress,
-                "the arena progress channel moved after the cancel"
+            assert!(
+                !app.arena_runs.is_active(&run_id),
+                "the run is still live after its supervisor returned"
             );
         });
     }

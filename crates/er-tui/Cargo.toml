@@ -11,6 +11,7 @@ name = "er"
 path = "src/main.rs"
 
 [dependencies]
+er-agent = { path = "../er-agent" }
 er-engine = { path = "../er-engine" }
 er-git = { path = "../er-git" }
 

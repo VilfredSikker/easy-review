@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn discovery_takes_no_slot() {
         let _serial = er_agent::agent_slots::test_serial();
-        let held = er_agent::agent_slots::acquire_blocking(
+        let held = er_agent::agent_slots::acquire_blocking_for_test(
             er_agent::agent_slots::Workload::Background,
             1,
             1,

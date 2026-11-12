@@ -7,11 +7,11 @@
 //! handle, and the test hook that answers a round from a fixture directory.
 
 use crate::agent_runtime::provider_spec;
-use crate::agent_slots::Workload;
-use crate::agent_timing::AgentRunTimer;
 use crate::config::ErConfig;
 use anyhow::{Context, Result};
 use er_agent::agent_run::AgentRunHandle;
+use er_agent::agent_slots::Workload;
+use er_agent::agent_timing::AgentRunTimer;
 use er_agent::job::{JobError, JobKind, JobRun, JobRunner, JobSpec, OutputContract, RetryPolicy};
 use er_agent::provider::ProviderSpec;
 use serde_json::Value;

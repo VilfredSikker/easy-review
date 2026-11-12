@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn standard_instead_queues_the_triaged_lenses_without_an_arena() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir);
@@ -204,7 +204,7 @@ mod tests {
                 assert!(row.background_task_id.is_some());
                 assert_ne!(row.status, FlowTaskStatus::Waiting);
             }
-            assert!(app.arena_registry.active_run_ids().is_empty());
+            assert!(app.arena_runs.active_ids().is_empty());
             assert!(app.run_review_flow_standard(&bucket).is_err());
             assert!(app.confirm_review_flow(&bucket).is_err());
             assert!(app.decline_review_flow(&bucket).is_err());
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn standard_instead_requires_a_pending_deep_confirmation() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir);

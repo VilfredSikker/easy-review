@@ -71,7 +71,6 @@ pub(super) struct ReviewFlowContext {
     backups: HashMap<String, FlowOutputBackup>,
     next_archive: u64,
     arena_run_id: Option<String>,
-    arena_progress_offset: u64,
     arena_progress_round: u32,
     professor_follow_up_suggested: bool,
     draining: bool,
@@ -311,7 +310,6 @@ impl App {
                 backups: HashMap::new(),
                 next_archive: 2,
                 arena_run_id: None,
-                arena_progress_offset: 0,
                 arena_progress_round: 0,
                 professor_follow_up_suggested: false,
                 draining: false,
@@ -454,7 +452,6 @@ impl App {
                 backups,
                 next_archive: 2,
                 arena_run_id: None,
-                arena_progress_offset: 0,
                 arena_progress_round: 0,
                 professor_follow_up_suggested: false,
                 draining: false,
@@ -751,20 +748,26 @@ impl App {
         }
 
         if let Some(run_id) = context.arena_run_id.clone() {
-            changed |= progress::refresh_arena_tasks(&mut context, &mut flow, &run_id);
+            let control = self.arena_runs.get(&run_id);
+            if let Some(control) = control.as_ref() {
+                changed |= progress::refresh_arena_tasks(&mut context, &mut flow, control);
+            }
+            let live = self.arena_runs.is_active(&run_id);
             if flow.state == FlowState::Verifying {
-                // The registry status can become Complete before the supervisor
-                // saves its final record and releases its registry entry. Only
-                // the persisted terminal record after release is authoritative.
-                if !self.arena_registry.is_active(&run_id) {
+                // The control's status can become Complete before the
+                // supervisor returns and saves its final record. Only the
+                // persisted terminal record after it returns is authoritative.
+                if !live {
                     let disk_run = load_run(&ArenaPaths::for_run(
                         Path::new(&context.target.er_dir),
                         &run_id,
                     ))
                     .ok();
-                    // Progress can advance between the first read and supervisor
-                    // release. Consume its final events before closing task rows.
-                    progress::refresh_arena_tasks(&mut context, &mut flow, &run_id);
+                    // The control's final progress is still in memory; apply it
+                    // before closing the task rows.
+                    if let Some(control) = control.as_ref() {
+                        progress::refresh_arena_tasks(&mut context, &mut flow, control);
+                    }
                     match disk_run {
                         Some(run) if run.status == RunStatus::Complete => {
                             progress::finish_arena_tasks(&context, &mut flow, &run);
@@ -833,13 +836,14 @@ impl App {
                         }
                     }
                 }
-            } else if flow.state == FlowState::Cancelled && !self.arena_registry.is_active(&run_id)
-            {
+            } else if flow.state == FlowState::Cancelled && !live {
                 if let Ok(run) = load_run(&ArenaPaths::for_run(
                     Path::new(&context.target.er_dir),
                     &run_id,
                 )) {
-                    changed |= progress::refresh_arena_tasks(&mut context, &mut flow, &run_id);
+                    if let Some(control) = control.as_ref() {
+                        changed |= progress::refresh_arena_tasks(&mut context, &mut flow, control);
+                    }
                     changed |= progress::finish_arena_tasks(&context, &mut flow, &run);
                 }
             }
@@ -1125,7 +1129,6 @@ impl App {
             Some(run_id) => {
                 flow.arena_run_id = Some(run_id.clone());
                 context.arena_run_id = Some(run_id.clone());
-                context.arena_progress_offset = 0;
                 context.arena_progress_round = 0;
                 self.remember_review_flow_run_target(&context.target, &run_id);
                 self.apply_flow_event_notifying(
@@ -1155,7 +1158,7 @@ impl App {
             || context
                 .arena_run_id
                 .as_ref()
-                .is_some_and(|id| self.arena_registry.is_active(id))
+                .is_some_and(|id| self.arena_runs.is_active(id))
     }
 
     fn restore_backup_for(context: &mut ReviewFlowContext, archive_key: &str) {
@@ -1585,7 +1588,7 @@ mod tests {
         reason = "the process-wide storage scope adds a level to the polling loop"
     )]
     fn linked_checkout_review_flow_keeps_execution_separate_from_target_identity() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         for remote in [None, Some("example/linked-checkout")] {
             for deep in [false, true] {
                 let dir = TestDir::new("linked-checkout");
@@ -1685,7 +1688,7 @@ esac
                         blocker_id.clone(),
                         super::super::background::BackgroundTaskHandle {
                             task: blocker,
-                            run: crate::agent_run::AgentRunHandle::new(),
+                            run: er_agent::agent_run::AgentRunHandle::new(),
                             result_rx,
                             log_rx,
                             recent_log: Default::default(),
@@ -1755,7 +1758,7 @@ esac
 
     #[test]
     fn pr_view_without_checkout_reviews_from_the_head_ref() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         for deep in [false, true] {
             let dir = TestDir::new("pr-no-checkout");
             crate::storage::with_process_test_storage_root(dir.path(), || {
@@ -1854,7 +1857,7 @@ esac
 
     #[test]
     fn flow_depths_use_their_model_tiers_and_advanced_arbiter_pool() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("model-tiers");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir, "general", &[]);
@@ -1975,7 +1978,7 @@ esac
 
     #[test]
     fn fake_cli_runs_triage_and_quick_general_before_empty_seeded_completion() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("quick");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir, "general", &[]);
@@ -2019,7 +2022,7 @@ esac
 
     #[test]
     fn professor_route_keeps_follow_up_suggestion_after_completion() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("professor");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir, "professor", &[]);
@@ -2043,7 +2046,7 @@ esac
 
     #[test]
     fn successful_finder_output_replaces_same_hash_archived_output_only_after_validation() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("restore-old-output");
         crate::storage::with_test_storage_root(dir.path(), || {
             let no_review = "exit 0";
@@ -2078,7 +2081,7 @@ esac
 
     #[test]
     fn stale_triage_hash_fails_closed() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("stale-triage");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app_with_triage_hash(
@@ -2106,7 +2109,7 @@ esac
 
     #[test]
     fn sensitive_skip_routes_to_security_only_quick_finder() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("security-only");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app_with_script(
@@ -2134,7 +2137,7 @@ esac
 
     #[test]
     fn quick_general_and_security_both_finish_before_verification() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("quick-security");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app_with_script(
@@ -2165,7 +2168,7 @@ esac
 
     #[test]
     fn partial_finder_failure_ignores_unplanned_same_hash_expert_output() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("partial-finder");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app =
@@ -2196,7 +2199,7 @@ esac
 
     #[test]
     fn running_cancellation_keeps_lease_until_writer_drains() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("cancel-running");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app_with_script(
@@ -2229,7 +2232,7 @@ esac
 
     #[test]
     fn verifying_waits_for_drained_supervisor_and_final_persisted_run() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("wait-final-save");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir, "general", &[]);
@@ -2290,7 +2293,6 @@ esac
                 backups: HashMap::new(),
                 next_archive: 1,
                 arena_run_id: Some(run_id.clone()),
-                arena_progress_offset: 0,
                 arena_progress_round: 0,
                 professor_follow_up_suggested: false,
                 draining: false,
@@ -2322,8 +2324,8 @@ esac
             }))
             .unwrap();
             crate::arena::save_run(&paths, &run).unwrap();
-            app.arena_registry
-                .insert_active_for_test(&run_id, RunStatus::Complete);
+            app.arena_runs
+                .insert_for_test(&run_id, &bucket, RunStatus::Complete);
 
             app.advance_review_flow(&bucket);
             assert_eq!(
@@ -2335,7 +2337,7 @@ esac
 
             run.status = RunStatus::Complete;
             crate::arena::save_run(&paths, &run).unwrap();
-            let _drained_handle = app.arena_registry.take(&run_id).unwrap();
+            app.arena_runs.finish_for_test(&run_id);
             app.advance_review_flow(&bucket);
             assert!(matches!(
                 app.review_flow_for(&bucket).unwrap().state,
@@ -2349,7 +2351,7 @@ esac
 
     #[test]
     fn fake_cli_runs_both_standard_producer_outputs_before_seeded_completion() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("standard");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir, "expert", &["security"]);
@@ -2379,7 +2381,7 @@ esac
 
     #[test]
     fn fake_cli_skip_does_not_launch_finder() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("skip");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir, "skip", &[]);
@@ -2418,7 +2420,7 @@ esac
                     blocker.id.clone(),
                     super::super::background::BackgroundTaskHandle {
                         task: blocker,
-                        run: crate::agent_run::AgentRunHandle::new(),
+                        run: er_agent::agent_run::AgentRunHandle::new(),
                         result_rx,
                         log_rx,
                         recent_log: Default::default(),
@@ -2481,7 +2483,7 @@ esac
                 blocker_id.clone(),
                 super::super::background::BackgroundTaskHandle {
                     task: blocker,
-                    run: crate::agent_run::AgentRunHandle::new(),
+                    run: er_agent::agent_run::AgentRunHandle::new(),
                     result_rx,
                     log_rx,
                     recent_log: Default::default(),
@@ -2522,7 +2524,7 @@ esac
 
     #[test]
     fn cancelled_queued_finder_stays_cancelled_after_completion_is_drained() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("cancel-queued-finder");
         crate::storage::with_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir, "general", &[]);
@@ -2548,7 +2550,7 @@ esac
                 (
                     super::super::background::BackgroundTaskHandle {
                         task: blocker.clone(),
-                        run: crate::agent_run::AgentRunHandle::new(),
+                        run: er_agent::agent_run::AgentRunHandle::new(),
                         result_rx,
                         log_rx,
                         recent_log: Default::default(),
@@ -2695,7 +2697,7 @@ esac
         use crate::ai::workflow_record::{self, WorkflowOutcome};
         use crate::ai::{StageRecord, StageStatus, WorkflowKind, WorkflowRecord};
 
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let dir = TestDir::new("rerun");
         crate::storage::with_process_test_storage_root(dir.path(), || {
             let mut app = fake_app(&dir, "general", &[]);
@@ -2779,7 +2781,7 @@ esac
     /// A round of reviewer jobs answers from fixtures, so a seeded verification
     /// started by a resumed flow makes no real provider call.
     struct FakeArena {
-        _serial: crate::agent_slots::TestSerialGuard,
+        _serial: er_agent::agent_slots::TestSerialGuard,
         _lock: std::sync::MutexGuard<'static, ()>,
         previous: Option<std::ffi::OsString>,
         _fixture: tempfile::TempDir,
@@ -2787,7 +2789,7 @@ esac
 
     impl FakeArena {
         fn install() -> Self {
-            let serial = crate::agent_slots::test_serial();
+            let serial = er_agent::agent_slots::test_serial();
             let lock = crate::arena::ARENA_TEST_ENV_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
