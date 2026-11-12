@@ -10,6 +10,7 @@ pub mod flow_providers;
 mod loader;
 pub mod mtime;
 mod overlay_files;
+pub mod panel_run;
 pub mod prepared_diff;
 pub mod professor;
 pub mod projection;
@@ -38,6 +39,7 @@ pub use finding_responses::*;
 pub use identity::*;
 pub use loader::*;
 pub use mtime::{latest_er_mtime, latest_er_mtime_skipping};
+pub use panel_run::PanelRun;
 pub use professor::*;
 pub use projection::*;
 #[cfg(feature = "ui")]

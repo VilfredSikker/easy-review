@@ -615,6 +615,7 @@ fn start_arena_run_with_kind(
                     registry: registry_thread.as_ref(),
                     config: &config,
                     repo_root: &repo_root,
+                    er_dir: &er_dir,
                     reviewed_ref_note: reviewed_ref_note.as_deref(),
                     paths: &paths_clone,
                     cancel: &cancel,
@@ -789,6 +790,7 @@ pub fn start_seeded_run(
                     registry: registry_thread.as_ref(),
                     config: &config,
                     repo_root: &repo_root,
+                    er_dir: &er_dir,
                     reviewed_ref_note: reviewed_ref_note.as_deref(),
                     paths: &paths_clone,
                     cancel: &cancel,
@@ -1585,6 +1587,9 @@ fn run_supervisor(
 
     if total_rounds < 2 {
         finalize_single_round_verdicts(&mut run.findings);
+        if let Some(panel) = &panel {
+            panel.record(&run)?;
+        }
         run.status = RunStatus::Complete;
         run.completed_at = Some(crate::app::chrono_now());
         *status.lock().expect("arena lock poisoned") = RunStatus::Complete;
@@ -1646,6 +1651,13 @@ fn run_supervisor(
         let cross_ok = cross_out.ok;
         severity_from_cross_check(&mut run.findings, &cross_ok, round);
         save_run(paths, &run)?;
+    }
+
+    // The panel's durable trace, written from the same findings the arbiter
+    // is about to judge. It costs no extra call: the votes it reads were
+    // already parsed for grading.
+    if let Some(panel) = &panel {
+        panel.record(&run)?;
     }
 
     // Arbiter phase (after all reviewer cross-check rounds)
@@ -1716,6 +1728,9 @@ pub(super) struct SupervisorCtx<'a> {
     pub(super) registry: &'a ArenaRegistry,
     pub(super) config: &'a ErConfig,
     pub(super) repo_root: &'a str,
+    /// The bucket the run's sidecars belong to, for records stored at bucket
+    /// scope rather than in the run directory.
+    pub(super) er_dir: &'a str,
     /// See [`ArenaRunInputs::reviewed_ref_note`].
     pub(super) reviewed_ref_note: Option<&'a str>,
     pub(super) paths: &'a ArenaPaths,

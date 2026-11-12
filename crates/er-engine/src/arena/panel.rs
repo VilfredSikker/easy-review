@@ -13,15 +13,17 @@
 //! round has returned.
 
 use super::adapter::{extract_json_from_text, fake_arena_json_from_dir, resolve_provider_command};
-use super::model::{Reviewer, RunStatus};
+use super::model::{Reviewer, ReviewerRunStatus, RunStatus, Vote};
 use super::orchestrator::{
     emit, record_reviewer_failure, Round1ParallelOutcome, Round2ParallelOutcome, SupervisorCtx,
 };
 use super::schema::{validate_round1_output, validate_round2_output, Round1Output, Round2Output};
 use super::storage::{save_round_output, ArenaPaths, ProgressEvent};
+use super::voting::quorum_from_findings;
 use crate::agent_runtime::OutputProtocol;
 use crate::agent_slots::Workload;
 use crate::agent_timing::AgentRunTimer;
+use crate::ai::panel_run::{self, PanelReviewer, PanelRun};
 use crate::ai::prompts::{
     build_arena_round1_prompt_agent, build_arena_round2_prompt, with_reviewed_ref_note,
 };
@@ -30,7 +32,9 @@ use anyhow::Result;
 use er_agent::agent_run::AgentRunHandle;
 use er_agent::job::{JobError, JobKind, JobRun, JobRunner, JobSpec, OutputContract};
 use er_agent::provider::ProviderSpec;
+use er_store::Artifact;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -54,6 +58,7 @@ struct JobCtx {
     reviewed_ref_note: Option<String>,
     patch_path: String,
     effort: Option<String>,
+    er_dir: String,
 }
 
 /// The panel's view of one arena run.
@@ -74,6 +79,7 @@ impl Panel {
                 reviewed_ref_note: ctx.reviewed_ref_note.map(str::to_owned),
                 patch_path: patch_path.to_string(),
                 effort: effort.map(str::to_owned),
+                er_dir: ctx.er_dir.to_string(),
             }),
         }
     }
@@ -109,6 +115,14 @@ impl Panel {
             failed: outcome.failed,
             cancelled: outcome.cancelled,
         })
+    }
+
+    /// Write the panel's durable record once every reviewer round has returned.
+    pub(super) fn record(&self, run: &super::model::ArenaRun) -> Result<()> {
+        let scope = er_store::Scope::dir(&self.ctx.er_dir)?;
+        let record = panel_run_record(run);
+        panel_run::save(&crate::store_registry::store(), &scope, &record)?;
+        Ok(())
     }
 
     fn run_round(&self, round: Round, reviewers: &[Reviewer]) -> RoundOutcome {
@@ -478,6 +492,63 @@ impl Drop for BridgeInner {
     }
 }
 
+/// Build the durable record from the run's final findings and reviewer states.
+///
+/// The round-1 votes are the proposals already recorded on each finding; the
+/// round-2 votes are the first cross round's ballots. Both are read from the
+/// same finding set the arbiter will judge, so the measurement cannot
+/// disagree with what was graded.
+pub(super) fn panel_run_record(run: &super::model::ArenaRun) -> PanelRun {
+    let round1 = quorum_from_findings(&run.findings, 1);
+    let round2 = (run.config.rounds >= 2).then(|| quorum_from_findings(&run.findings, 2));
+    let changed = round2.as_ref().is_some_and(|round2| *round2 != round1);
+
+    let mut proposed: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut voted: BTreeMap<&str, usize> = BTreeMap::new();
+    for finding in &run.findings {
+        for log in &finding.rounds {
+            for ballot in &log.log {
+                match log.n {
+                    1 if ballot.vote == Vote::Propose => {
+                        *proposed.entry(ballot.reviewer.as_str()).or_default() += 1;
+                    }
+                    2 => {
+                        *voted.entry(ballot.reviewer.as_str()).or_default() += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let reviewers = run
+        .reviewers
+        .iter()
+        .map(|reviewer| PanelReviewer {
+            id: reviewer.id.clone(),
+            provider_id: reviewer.provider_id.clone(),
+            model_id: reviewer.model_id.clone(),
+            round1_findings: proposed.get(reviewer.id.as_str()).copied().unwrap_or(0),
+            round1_error: match &reviewer.status {
+                ReviewerRunStatus::Failed { reason } => Some(reason.clone()),
+                ReviewerRunStatus::Ok => None,
+            },
+            round2_votes: voted.get(reviewer.id.as_str()).copied().unwrap_or(0),
+        })
+        .collect();
+
+    PanelRun {
+        version: PanelRun::VERSION,
+        run_id: run.id.clone(),
+        diff_hash: run.diff_hash.clone(),
+        started_at: run.created_at.clone(),
+        rounds: run.config.rounds,
+        reviewers,
+        round1_quorum: round1,
+        round2_quorum: round2,
+        quorum_changed: changed,
+    }
+}
+
 /// The run's status as one of the record's outcomes.
 ///
 /// Anything that is not a clean completion or a user stop is a failure: a
@@ -495,7 +566,9 @@ pub(super) fn outcome_for(run: &super::model::ArenaRun) -> crate::ai::WorkflowOu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::model::{ReviewerKind, ReviewerRef, ReviewerRunStatus};
+    use crate::arena::model::{
+        ArenaConfig, ArenaRun, CostEstimate, ReviewerKind, ReviewerRef, ReviewerRunStatus,
+    };
     use crate::arena::orchestrator::start_review_flow_run;
     use crate::arena::registry::ArenaRegistry;
     use crate::arena::storage::{load_run, ProgressEvent};
@@ -531,6 +604,22 @@ mod tests {
                 _lock: lock,
                 previous,
             }
+        }
+
+        fn with_fixtures(mut self) -> (Self, tempfile::TempDir) {
+            let fixture = tempfile::tempdir().unwrap();
+            for name in ["round1.json", "round2.json", "round3.json"] {
+                // Every response satisfies every round schema, so concurrent
+                // reviewers can consume the fixtures in any order.
+                std::fs::write(
+                    fixture.path().join(name),
+                    br#"{"findings":[],"ballots":[],"verdicts":[]}"#,
+                )
+                .unwrap();
+            }
+            std::env::set_var("ER_FAKE_ARENA_DIR", fixture.path());
+            self.previous = None;
+            (self, fixture)
         }
     }
 
@@ -600,6 +689,7 @@ mod tests {
         let paths = ArenaPaths::for_run(bucket, run_id);
         paths.ensure_dirs().unwrap();
         let repo_root = bucket.to_string_lossy().into_owned();
+        let er_dir = bucket.to_string_lossy().into_owned();
         let cancel = Arc::new(AtomicBool::new(false));
         let children = Arc::new(Mutex::new(Vec::new()));
         let status = Mutex::new(RunStatus::Running { round: 1 });
@@ -608,6 +698,7 @@ mod tests {
             registry: &registry,
             config,
             repo_root: &repo_root,
+            er_dir: &er_dir,
             reviewed_ref_note: None,
             paths: &paths,
             cancel: &cancel,
@@ -686,6 +777,168 @@ mod tests {
             reviewers.len(),
             "each reviewer must be its own job"
         );
+    }
+
+    /// The panel reports; it never writes the review. `review.json` has its
+    /// own writers, and a reviewer stage that rewrote it would be the arena
+    /// import defect again.
+    #[test]
+    fn panel_never_writes_review_json() {
+        let _env = ArenaEnv::take();
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = bucket(dir.path());
+        let seeded: &[u8] = br#"{"version":1,"diff_hash":"hash","files":{}}"#;
+        std::fs::write(bucket.join("review.json"), seeded).unwrap();
+        let config = config(
+            "/bin/sh",
+            vec!["-c".into(), r#"printf '{"findings":[]}'"#.into()],
+            &["m1"],
+        );
+        let harness = harness(&bucket, &config, "run-readonly");
+        let outcome = harness.panel.round1(&[reviewer("fake-a")]).unwrap();
+        assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+        assert_eq!(
+            std::fs::read(bucket.join("review.json")).unwrap(),
+            seeded,
+            "the panel must not touch the review"
+        );
+    }
+
+    /// The D17 proxy reads votes the panel already parsed: a two-round panel
+    /// makes exactly one arbiter call, and round two itself adds none.
+    #[test]
+    fn round_two_adds_no_arbiter_call() {
+        let env = ArenaEnv::take();
+        let (_env, _fixture) = env.with_fixtures();
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = bucket(dir.path());
+        let config = config("/bin/true", Vec::new(), &["m1", "m2"]);
+        let registry = Arc::new(ArenaRegistry::new(Arc::new(|| {})));
+        let before = crate::arena::fake_arena_call_count();
+        crate::storage::with_process_test_storage_root(dir.path(), || {
+            let run_id =
+                start_review_flow_run(Arc::clone(&registry), config, inputs(&bucket), params(2))
+                    .unwrap();
+            wait_released(&registry, &run_id);
+            let calls = crate::arena::fake_arena_call_count().wrapping_sub(before);
+            assert_eq!(
+                calls, 5,
+                "2 round-1 jobs + 2 cross-round jobs + exactly one arbiter call"
+            );
+        });
+    }
+
+    fn finding(
+        id: &str,
+        round_logs: Vec<(u8, Vec<(&str, Vote)>)>,
+    ) -> super::super::model::ArenaFinding {
+        super::super::model::ArenaFinding {
+            id: id.into(),
+            file: "a.rs".into(),
+            line: None,
+            title: id.into(),
+            body: "b".into(),
+            severity_by_round: BTreeMap::new(),
+            raised_by: vec![],
+            verdict: super::super::model::Verdict::Pending,
+            confidence: 0.5,
+            rationale: String::new(),
+            rounds: round_logs
+                .into_iter()
+                .map(|(n, ballots)| super::super::model::RoundLog {
+                    n,
+                    log: ballots
+                        .into_iter()
+                        .map(|(reviewer, vote)| super::super::model::Ballot {
+                            reviewer: reviewer.into(),
+                            vote,
+                            note: String::new(),
+                            merge_target: None,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            merge_candidates: vec![],
+            merged_children: vec![],
+            evidence: vec![],
+            override_: None,
+            accepted_at: None,
+        }
+    }
+
+    fn run_with(findings: Vec<super::super::model::ArenaFinding>, rounds: u8) -> ArenaRun {
+        ArenaRun {
+            id: "run-proxy".into(),
+            title: None,
+            branch_ref: "feature".into(),
+            base_branch: "main".into(),
+            scope: ArenaScope::Branch,
+            diff_hash: "hash".into(),
+            created_at: "t0".into(),
+            completed_at: None,
+            status: RunStatus::Complete,
+            config: ArenaConfig {
+                reviewers: vec![reviewer_ref("m1")],
+                rounds,
+                arbiter: reviewer_ref("m1"),
+                auto_accept_threshold: 0.75,
+                scope: ArenaScope::Branch,
+                files: None,
+                run_kind: super::super::model::ArenaRunKind::ReviewFlow,
+                agent_kind: None,
+                effort: None,
+            },
+            reviewers: vec![reviewer("fake-a"), reviewer("fake-b")],
+            findings,
+            cost_estimate: CostEstimate {
+                tokens_in: 0,
+                tokens_out: 0,
+                usd: 0.0,
+            },
+            accepted_finding_ids: vec![],
+        }
+    }
+
+    /// The free proxy: did the cross round change which claims carry a
+    /// quorum? A stable round says the round bought nothing.
+    #[test]
+    fn panel_run_records_the_free_proxy() {
+        let stable = run_with(
+            vec![
+                finding(
+                    "f",
+                    vec![
+                        (1, vec![("a", Vote::Propose), ("b", Vote::Propose)]),
+                        (2, vec![("a", Vote::Keep), ("b", Vote::Keep)]),
+                    ],
+                ),
+                finding("g", vec![(1, vec![("a", Vote::Propose)])]),
+            ],
+            2,
+        );
+        let record = panel_run_record(&stable);
+        assert_eq!(record.round1_quorum.confirmed, ["f"]);
+        assert_eq!(record.round2_quorum.as_ref().unwrap().confirmed, ["f"]);
+        assert!(!record.quorum_changed, "an unchanged quorum is the finding");
+
+        let changed = run_with(
+            vec![finding(
+                "f",
+                vec![
+                    (1, vec![("a", Vote::Propose)]),
+                    (2, vec![("a", Vote::Keep), ("b", Vote::Keep)]),
+                ],
+            )],
+            2,
+        );
+        let record = panel_run_record(&changed);
+        assert!(record.round1_quorum.confirmed.is_empty());
+        assert_eq!(record.round2_quorum.as_ref().unwrap().confirmed, ["f"]);
+        assert!(record.quorum_changed, "round two changed the outcome");
+
+        let one_round = panel_run_record(&run_with(Vec::new(), 1));
+        assert!(one_round.round2_quorum.is_none());
+        assert!(!one_round.quorum_changed);
     }
 
     fn running_pids(path: &Path) -> Vec<String> {
