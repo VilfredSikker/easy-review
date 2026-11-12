@@ -1820,6 +1820,33 @@ mod tests {
     use crate::git::LineType;
     use std::collections::HashMap;
 
+    /// The two desktop loaders disagree on a malformed file by design: the
+    /// batch validate target exists, but there is no review to load. This test
+    /// deliberately runs with no storage-root override, so the store guard
+    /// proves neither helper resolves the managed root on its own.
+    #[test]
+    fn load_review_and_review_file_exists_treat_a_malformed_file_differently() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("review.json"), b"not json").unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        assert!(
+            review_file_exists(er_dir),
+            "the batch validate target still exists"
+        );
+        assert!(load_review(er_dir).is_none(), "there is no review to load");
+
+        let store = er_store::ArtifactStore::new(dir.path());
+        let scope = er_store::Scope::dir(dir.path()).unwrap();
+        let key = er_store::ArtifactKey::<ErReview>::new(scope, ()).unwrap();
+        let review: ErReview = serde_json::from_value(
+            serde_json::json!({"version": 1, "diff_hash": "hash", "files": {}}),
+        )
+        .unwrap();
+        store.write(&key, &review).unwrap();
+        assert!(load_review(er_dir).is_some());
+        assert!(review_file_exists(er_dir));
+    }
+
     // ── Helpers ──
 
     /// `score` and `from_score` have to be inverses: a grade written by one and

@@ -936,11 +936,6 @@ fn legacy_root_notice(
     ))
 }
 
-/// Marker under the storage root: the retired `[commands].summary` key was
-/// announced. Separate from the legacy-root marker, so a machine that already
-/// saw that notice still hears about the key.
-const RETIRED_SUMMARY_NOTICED: &str = ".retired-summary-noticed";
-
 /// The notice that `[commands].summary` is no longer read.
 fn retired_summary_notice(config_path: &std::path::Path) -> Option<String> {
     if !crate::config::retired_summary_command_set(config_path) {
@@ -951,10 +946,6 @@ fn retired_summary_notice(config_path: &std::path::Path) -> Option<String> {
         config_path.display()
     ))
 }
-
-/// Marker under the storage root: the retired project `auto_triage` flag was
-/// announced. Separate from the legacy-root and retired-summary markers.
-const RETIRED_AUTO_TRIAGE_NOTICED: &str = ".retired-auto-triage-noticed";
 
 /// The notice that the per-project `auto_triage` flag is no longer read.
 fn retired_auto_triage_notice(projects_path: &std::path::Path) -> Option<String> {
@@ -2913,27 +2904,42 @@ impl App {
         }
         let mut messages: Vec<String> = Vec::new();
 
-        if !root.join(".legacy-root-noticed").exists() {
+        if !root.join(super::local_files::LEGACY_ROOT_MARKER).exists() {
             let entries = crate::storage::legacy_root_entries_in(base, false);
             let projects_imported = root.join(crate::legacy_projects::IMPORTED_MARKER).exists();
             if let Some(message) = legacy_root_notice(base, &entries, projects_imported) {
                 // A failed write means the notice shows again next launch.
-                super::local_files::mark_notice_once(root, ".legacy-root-noticed");
+                super::local_files::mark_notice_once(
+                    root,
+                    super::local_files::LEGACY_ROOT_MARKER,
+                );
                 messages.push(message);
             }
         }
 
-        if !root.join(RETIRED_SUMMARY_NOTICED).exists() {
+        if !root
+            .join(super::local_files::RETIRED_SUMMARY_MARKER)
+            .exists()
+        {
             if let Some(message) = retired_summary_notice(&crate::config::managed_config_path()) {
-                super::local_files::mark_notice_once(root, RETIRED_SUMMARY_NOTICED);
+                super::local_files::mark_notice_once(
+                    root,
+                    super::local_files::RETIRED_SUMMARY_MARKER,
+                );
                 messages.push(message);
             }
         }
 
-        if !root.join(RETIRED_AUTO_TRIAGE_NOTICED).exists() {
+        if !root
+            .join(super::local_files::RETIRED_AUTO_TRIAGE_MARKER)
+            .exists()
+        {
             if let Some(path) = crate::projects_pins::projects_artifact_path() {
                 if let Some(message) = retired_auto_triage_notice(&path) {
-                    super::local_files::mark_notice_once(root, RETIRED_AUTO_TRIAGE_NOTICED);
+                    super::local_files::mark_notice_once(
+                        root,
+                        super::local_files::RETIRED_AUTO_TRIAGE_MARKER,
+                    );
                     messages.push(message);
                 }
             }
@@ -3422,7 +3428,8 @@ impl App {
         std::thread::spawn(move || {
             let mut timer = er_agent::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                let debug_path = std::path::Path::new(&er_dir_path).join("debug-agent.log");
+                let debug_path = std::path::Path::new(&er_dir_path)
+                    .join(super::local_files::DEBUG_LOG_FILE);
 
                 // The argv still carries `{prompt}`; the runner substitutes the
                 // job prompt into it and waits for a slot, so `queue_ms` reads
@@ -3626,7 +3633,10 @@ impl App {
                 if !status.success() {
                     // Only point at the transcript when there is one to read.
                     let detail = if debug_agent_log_enabled() {
-                        format!(" (full transcript in {er_dir_path}/debug-agent.log)")
+                        format!(
+                            " (full transcript in {er_dir_path}/{})",
+                            super::local_files::DEBUG_LOG_FILE
+                        )
                     } else {
                         " (set ER_DEBUG=1 for the full transcript)".to_string()
                     };
@@ -4342,7 +4352,8 @@ impl App {
             };
             let mut timer = er_agent::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                let debug_path = std::path::Path::new(&er_dir).join("debug-agent.log");
+                let debug_path =
+                    std::path::Path::new(&er_dir).join(super::local_files::DEBUG_LOG_FILE);
 
                 // The argv still carries `{prompt}`; the runner substitutes the
                 // job prompt into it. The slot, the spawn and the stop verdicts

@@ -2,10 +2,23 @@
 //!
 //! These carry no envelope and no version, so they are not kinds. The module is
 //! deliberately tiny: a registered sidecar read or written here would skip the
-//! store's rules, so the test below fails if the production part names one.
+//! store's rules, so the test below fails if a name here resolves to one.
 //! Sidecars stay in the module that owns their kind.
 
 use std::path::Path;
+
+/// The marker a first-launch notice leaves behind, so it shows once.
+pub(super) const LEGACY_ROOT_MARKER: &str = ".legacy-root-noticed";
+/// The retired `[commands].summary` key was announced. Separate from the
+/// legacy-root marker, so a machine that already saw that notice still hears
+/// about the key.
+pub(super) const RETIRED_SUMMARY_MARKER: &str = ".retired-summary-noticed";
+/// The retired per-project `auto_triage` flag was announced. Separate from the
+/// other two markers for the same reason.
+pub(super) const RETIRED_AUTO_TRIAGE_MARKER: &str = ".retired-auto-triage-noticed";
+
+/// The opt-in full agent transcript.
+pub(super) const DEBUG_LOG_FILE: &str = "debug-agent.log";
 
 /// Create the bucket before a command writes into it.
 pub(super) fn ensure_dir(dir: &Path) -> std::io::Result<()> {
@@ -26,24 +39,22 @@ pub(super) fn write_debug_log(path: &Path, text: &str) {
 
 #[cfg(test)]
 mod tests {
-    /// A kind's file must never be read or written through this module.
+    /// No quoted name in the production part may resolve to a registered kind.
+    /// The registry is the source of truth, so a new kind needs no edit here.
     #[test]
     fn the_helper_never_names_a_registered_kind() {
         let production = include_str!("local_files.rs")
             .split("#[cfg(test)]")
             .next()
             .unwrap_or_default();
-        for file in [
-            "review.json",
-            "triage.json",
-            "arbiter.json",
-            "questions.json",
-            "notes.json",
-            "summary.md",
-        ] {
+        let registry = crate::store_registry::registry();
+        for literal in production.split('"').skip(1).step_by(2) {
+            if literal.is_empty() {
+                continue;
+            }
             assert!(
-                !production.contains(&format!("\"{file}\"")),
-                "local_files.rs names the registered file {file}"
+                registry.kind_for(std::path::Path::new(literal)).is_none(),
+                "local_files.rs names the registered kind for {literal}"
             );
         }
     }
