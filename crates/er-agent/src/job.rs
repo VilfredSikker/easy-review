@@ -121,10 +121,35 @@ pub enum JobReply {
     Exited(JobOutput),
 }
 
+/// How a job that may be retried waits between attempts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    /// Extra attempts after the first.
+    pub retries: u32,
+    /// The step: attempt `n` waits `backoff * (n + 1)`.
+    pub backoff: Duration,
+}
+
+impl RetryPolicy {
+    /// One attempt, no retry.
+    pub const fn none() -> Self {
+        Self {
+            retries: 0,
+            backoff: Duration::ZERO,
+        }
+    }
+
+    /// The wait after the attempt numbered `attempt` (zero-based).
+    pub fn wait_after(self, attempt: u32) -> Duration {
+        self.backoff * (attempt.saturating_add(1))
+    }
+}
+
 /// Runs one job at a time, drawing from the process-wide slot pool.
 pub struct JobRunner {
     slot_cap: usize,
     ceiling: usize,
+    retry: RetryPolicy,
 }
 
 impl JobRunner {
@@ -132,7 +157,22 @@ impl JobRunner {
     /// this runner will start. They configure each acquisition from the one
     /// global pool; the runner never creates a pool of its own.
     pub fn new(slot_cap: usize, ceiling: usize) -> Self {
-        Self { slot_cap, ceiling }
+        Self {
+            slot_cap,
+            ceiling,
+            retry: RetryPolicy::none(),
+        }
+    }
+
+    /// A runner that retries a transient failure. The slot is released after
+    /// each attempt, so a backoff sleep never holds capacity another run is
+    /// waiting for.
+    pub fn with_retry(slot_cap: usize, ceiling: usize, retry: RetryPolicy) -> Self {
+        Self {
+            slot_cap,
+            ceiling,
+            retry,
+        }
     }
 
     /// Run to completion and decode the final text.
@@ -158,6 +198,36 @@ impl JobRunner {
     /// has its cancel flag set, and reporting that as a user stop would tell
     /// the wrong story.
     pub fn run_controlled(&self, spec: &JobSpec, run: JobRun<'_>) -> Result<JobOutput, JobError> {
+        let JobRun {
+            handle,
+            progress,
+            mut timer,
+        } = run;
+        let mut attempt = 0;
+        loop {
+            if handle.is_cancelled() {
+                return Err(JobError::Cancelled);
+            }
+            let result = self.run_controlled_once(
+                spec,
+                JobRun {
+                    handle: Arc::clone(&handle),
+                    progress: progress.clone(),
+                    timer: timer.as_deref_mut(),
+                },
+            );
+            if attempt >= self.retry.retries || !Self::retryable(&result) {
+                return result;
+            }
+            if !Self::wait_backoff(self.retry, &handle, attempt) {
+                return Err(JobError::Cancelled);
+            }
+            attempt += 1;
+        }
+    }
+
+    /// One attempt, holding its slot from acquisition to the child's reap.
+    fn run_controlled_once(&self, spec: &JobSpec, run: JobRun<'_>) -> Result<JobOutput, JobError> {
         let JobRun {
             handle,
             progress,
@@ -340,6 +410,40 @@ impl JobRunner {
             timeout: spec.provider.timeout,
         }
     }
+
+    /// Whether an attempt is worth repeating. A timeout or a transient exit is
+    /// retried; a cancel, a spawn failure or a fatal exit is not.
+    fn retryable(result: &Result<JobOutput, JobError>) -> bool {
+        match result {
+            Err(JobError::TimedOut(_)) => true,
+            Err(JobError::Cancelled | JobError::Spawn(_)) => false,
+            Ok(output) => !output.status.success() && stderr_looks_transient(&output.stderr),
+        }
+    }
+
+    /// Wait between attempts in short slices, so a cancel ends the wait at
+    /// once instead of after the whole backoff.
+    fn wait_backoff(retry: RetryPolicy, handle: &AgentRunHandle, attempt: u32) -> bool {
+        let wait = retry.wait_after(attempt);
+        let step = Duration::from_millis(25);
+        let started = std::time::Instant::now();
+        while started.elapsed() < wait {
+            if handle.is_cancelled() {
+                return false;
+            }
+            let left = wait.saturating_sub(started.elapsed());
+            std::thread::sleep(step.min(left));
+        }
+        !handle.is_cancelled()
+    }
+}
+
+/// Stderr markers the arena adapter treated as transient.
+fn stderr_looks_transient(stderr: &str) -> bool {
+    let text = stderr.to_lowercase();
+    ["rate limit", "429", "timed out", "temporar"]
+        .iter()
+        .any(|marker| text.contains(marker))
 }
 
 /// Offer one event to the progress sink without blocking past the run's
@@ -477,6 +581,149 @@ mod tests {
         let out = handle.join().unwrap().expect("job runs");
         assert!(marker.exists(), "the job did not run after the slot freed");
         assert_eq!(out.text, "done");
+    }
+
+    /// A retried job releases its slot during the backoff: a second job on a
+    /// one-slot pool runs between the first job's attempts.
+    #[cfg(unix)]
+    #[test]
+    fn a_retry_waits_without_holding_the_slot() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("order.log");
+        let counter = dir.path().join("attempts");
+        let retrying = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!(
+                    "n=$(cat '{counter}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{counter}'; \
+                     echo a$n >> '{log}'; \
+                     if [ $n -eq 1 ]; then echo 'rate limit' >&2; exit 1; fi; echo ok",
+                    counter = counter.display(),
+                    log = log.display()
+                ),
+            ],
+            dir.path(),
+        );
+        let other = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!("echo b >> '{}'; echo ok", log.display()),
+            ],
+            dir.path(),
+        );
+        let runner = JobRunner::with_retry(
+            1,
+            1,
+            RetryPolicy {
+                retries: 1,
+                backoff: Duration::from_millis(400),
+            },
+        );
+        let other_runner = JobRunner::new(1, 1);
+
+        let handle = std::thread::spawn(move || {
+            let mut timer = AgentRunTimer::start();
+            runner.run_controlled(
+                &retrying,
+                JobRun {
+                    handle: AgentRunHandle::new(),
+                    progress: None,
+                    timer: Some(&mut timer),
+                },
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !log.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "first attempt never ran"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The first attempt has failed and the first job is backing off; a
+        // one-slot pool must be free for the second job now.
+        other_runner.run(&other).expect("the second job runs");
+        handle.join().unwrap().expect("the retry succeeds");
+
+        let order = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = order.lines().collect();
+        assert_eq!(
+            lines,
+            ["a1", "b", "a2"],
+            "the backoff held the slot: {order}"
+        );
+    }
+
+    /// A cancel during the backoff ends the retry at once, and no further
+    /// attempt runs.
+    #[cfg(unix)]
+    #[test]
+    fn a_cancel_ends_a_retry_backoff_at_once() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("attempts");
+        let spec = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!(
+                    "n=$(cat '{counter}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{counter}'; \
+                     echo 'rate limit' >&2; exit 1",
+                    counter = counter.display()
+                ),
+            ],
+            dir.path(),
+        );
+        let runner = JobRunner::with_retry(
+            1,
+            1,
+            RetryPolicy {
+                retries: 3,
+                backoff: Duration::from_secs(2),
+            },
+        );
+        let run = AgentRunHandle::new();
+        let cancel = Arc::clone(&run);
+        let handle = std::thread::spawn(move || {
+            let mut timer = AgentRunTimer::start();
+            runner.run_controlled(
+                &spec,
+                JobRun {
+                    handle: run,
+                    progress: None,
+                    timer: Some(&mut timer),
+                },
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !counter.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "first attempt never ran"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let cancelling = std::time::Instant::now();
+        cancel
+            .cancel_flag()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = handle.join().unwrap();
+        let elapsed = cancelling.elapsed();
+
+        assert!(matches!(result, Err(JobError::Cancelled)), "{result:?}");
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "the backoff ignored the cancel: {elapsed:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&counter).unwrap().trim(),
+            "1",
+            "a cancelled backoff ran another attempt"
+        );
     }
 
     /// The point of the early reply: hand it back on the result line, then keep
