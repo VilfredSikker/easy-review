@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-12 00:38 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-12 12:21 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -10,12 +10,12 @@
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
 | D3 | – | [#483](https://github.com/VilfredSikker/easy-review/issues/483) P30b.1 plan | – |
-| D1 | D6 | [#481](https://github.com/VilfredSikker/easy-review/issues/481) P33a | W |
-| D4 | T6 store core | [#482](https://github.com/VilfredSikker/easy-review/issues/482) P33b plan | – |
-| T2 | T4 git port | [#511](https://github.com/VilfredSikker/easy-review/pull/511) atomic-write fix round | E, F |
+| D1 | D6 | idle | – |
+| D4 | T6 store core | [#482](https://github.com/VilfredSikker/easy-review/issues/482) P33b | W, E |
+| T2 | T4 git port | idle (reviews) | – |
 | T1, D2, D5 | – | idle | – |
 
-**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35, P26a–P32b and P48 are merged; P33a is in progress, and P33b and P30b.1 are being planned; 
+**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35, P26a–P33a and P48 are merged; P33b is in progress, and P30b.1 has an approved plan; 
 
 ## Progress
 
@@ -68,8 +68,8 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P30a | [#478](https://github.com/VilfredSikker/easy-review/issues/478) Host commits job outputs | E/C | opus | ✅ | [#504](https://github.com/VilfredSikker/easy-review/pull/504), [#505](https://github.com/VilfredSikker/easy-review/pull/505) | D1; T2 reviewed both |
 | P32a | [#479](https://github.com/VilfredSikker/easy-review/issues/479) Workflow record and crash resume | W | opus | ✅ | [#500](https://github.com/VilfredSikker/easy-review/pull/500), [#501](https://github.com/VilfredSikker/easy-review/pull/501) | D4; D3 reviewed |
 | P32b | [#480](https://github.com/VilfredSikker/easy-review/issues/480) Panel stage and the free round measurement (D17) | W | opus | ✅ | [#508](https://github.com/VilfredSikker/easy-review/pull/508), [#509](https://github.com/VilfredSikker/easy-review/pull/509) | D4; D3 reviewed |
-| P33a | [#481](https://github.com/VilfredSikker/easy-review/issues/481) Arena reviewers and arbiter onto the JobRunner | W | opus | 🟡 | | D1 |
-| P33b | [#482](https://github.com/VilfredSikker/easy-review/issues/482) Delete the arena registry, pid kill, `progress.jsonl` and glue | W | opus | ⬜ | | after #477, #481 |
+| P33a | [#481](https://github.com/VilfredSikker/easy-review/issues/481) Arena reviewers and arbiter onto the JobRunner | W | opus | ✅ | [#512](https://github.com/VilfredSikker/easy-review/pull/512) | D1; D4 and T2 reviewed |
+| P33b | [#482](https://github.com/VilfredSikker/easy-review/issues/482) Delete the arena registry, pid kill, `progress.jsonl` and glue | W | opus | 🟡 | | D4; plan approved |
 | P30b.1 | [#483](https://github.com/VilfredSikker/easy-review/issues/483) Port the remaining raw readers/writers onto the store | E/W/C | opus | ⬜ | | after #478, #482 |
 | P30b.2 | [#484](https://github.com/VilfredSikker/easy-review/issues/484) Envelope every agent kind; delete `Mode::Bare` | E/C | opus | ⬜ | | after #483 |
 | P31 | [#485](https://github.com/VilfredSikker/easy-review/issues/485) Importance as a RiskRules artifact | C/E | opus | ⬜ | | after #484 |
