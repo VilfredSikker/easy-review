@@ -6104,6 +6104,95 @@ mod background_queue_tests {
         });
     }
 
+    /// The arena job's provider argv is the background worker's: one builder,
+    /// so a provider flag cannot be added on one side only.
+    #[test]
+    #[cfg(unix)]
+    fn the_arena_and_background_provider_specs_agree() {
+        let _serial = serial();
+        let tmp = tempfile::tempdir().unwrap();
+        let (bucket, task_target) = review_bucket(tmp.path());
+        let hash = crate::ai::compute_diff_hash(REVIEW_DIFF);
+        let bin = tmp.path().join("codex");
+        let log = tmp.path().join("argv.log");
+        let staging_file = tmp.path().join("staging.txt");
+        crate::test_support::write_executable_script(
+            &bin,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{log}'\nprintf '%s' \"$ER_JOB_STAGING\" > '{staging}'\n{}",
+                staged_review_script(&hash),
+                log = log.display(),
+                staging = staging_file.display()
+            ),
+        )
+        .unwrap();
+
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = App::new_for_test(vec![]);
+            app.tab_mut().repo_root = tmp.path().to_string_lossy().into_owned();
+            app.config.ai_hub.providers.clear();
+            app.config.ai_hub.default_provider = Some("codex".into());
+            app.config.ai_hub.providers.insert(
+                "codex".into(),
+                crate::config::AiProviderConfig {
+                    command: bin.to_string_lossy().into_owned(),
+                    args: vec!["exec".into(), "{prompt}".into()],
+                    models: vec![crate::config::AiModelConfig {
+                        id: "gpt-5.5".into(),
+                        args: vec!["--model".into(), "gpt-5.5".into()],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            );
+            app.current_ai_provider = Some("codex".into());
+            app.current_ai_model = Some("gpt-5.5".into());
+            let id = app
+                .enqueue_background_agent_task_in_checkout(
+                    "review".into(),
+                    "review",
+                    task_target,
+                    "p".into(),
+                    true,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let status = wait_for_task(&mut app, &id, std::time::Duration::from_secs(10));
+            assert_eq!(status, crate::app::CommandStatus::Done);
+
+            let recorded: Vec<String> = std::fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect();
+            let staging = std::fs::read_to_string(&staging_file).unwrap();
+            let spec = crate::arena::jobs::arena_job(
+                &app.config,
+                "codex",
+                "gpt-5.5",
+                None,
+                &staging,
+                "p",
+                &app.tab().repo_root,
+            )
+            .unwrap();
+            let expected: Vec<String> = spec
+                .provider
+                .args
+                .iter()
+                .map(|arg| arg.replace("{prompt}", "p"))
+                .collect();
+            assert_eq!(
+                recorded, expected,
+                "the arena and background provider argv diverged"
+            );
+            let _ = bucket;
+        });
+    }
+
     /// A2: the shell path clears the bucket the run was spawned into, even when
     /// the tab has since moved to another bucket.
     #[test]

@@ -121,10 +121,35 @@ pub enum JobReply {
     Exited(JobOutput),
 }
 
+/// How a job that may be retried waits between attempts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    /// Extra attempts after the first.
+    pub retries: u32,
+    /// The step: attempt `n` waits `backoff * (n + 1)`.
+    pub backoff: Duration,
+}
+
+impl RetryPolicy {
+    /// One attempt, no retry.
+    pub const fn none() -> Self {
+        Self {
+            retries: 0,
+            backoff: Duration::ZERO,
+        }
+    }
+
+    /// The wait after the attempt numbered `attempt` (zero-based).
+    pub fn wait_after(self, attempt: u32) -> Duration {
+        self.backoff * (attempt.saturating_add(1))
+    }
+}
+
 /// Runs one job at a time, drawing from the process-wide slot pool.
 pub struct JobRunner {
     slot_cap: usize,
     ceiling: usize,
+    retry: RetryPolicy,
 }
 
 impl JobRunner {
@@ -132,7 +157,22 @@ impl JobRunner {
     /// this runner will start. They configure each acquisition from the one
     /// global pool; the runner never creates a pool of its own.
     pub fn new(slot_cap: usize, ceiling: usize) -> Self {
-        Self { slot_cap, ceiling }
+        Self {
+            slot_cap,
+            ceiling,
+            retry: RetryPolicy::none(),
+        }
+    }
+
+    /// A runner that retries a transient failure. The slot is released after
+    /// each attempt, so a backoff sleep never holds capacity another run is
+    /// waiting for.
+    pub fn with_retry(slot_cap: usize, ceiling: usize, retry: RetryPolicy) -> Self {
+        Self {
+            slot_cap,
+            ceiling,
+            retry,
+        }
     }
 
     /// Run to completion and decode the final text.
@@ -154,6 +194,12 @@ impl JobRunner {
     /// Run to completion while streaming both pipes as progress, on a handle
     /// the caller owns. The slot wait is cancellable through `run.handle`.
     ///
+    /// Each attempt runs on a fresh handle bridged to the caller's cancel
+    /// flag. The caller's handle is the stop control; the attempt's handle owns
+    /// the finished, timed-out and pid state its watchdog and kill consult, so
+    /// a watchdog from an earlier attempt cannot fire into the next one and a
+    /// retried attempt still has its own deadline.
+    ///
     /// The verdict order is timeout first: a run killed by its deadline also
     /// has its cancel flag set, and reporting that as a user stop would tell
     /// the wrong story.
@@ -163,13 +209,49 @@ impl JobRunner {
             progress,
             mut timer,
         } = run;
-        let _slot = agent_slots::acquire(
-            spec.workload,
-            self.slot_cap,
-            self.ceiling,
-            handle.cancel_flag(),
-        )
-        .ok_or(JobError::Cancelled)?;
+        let mut attempt = 0;
+        loop {
+            if handle.is_cancelled() {
+                return Err(JobError::Cancelled);
+            }
+            let attempt_handle = AgentRunHandle::new();
+            let watch = CancelWatch::start(&handle, &attempt_handle);
+            let result = self.run_controlled_once(
+                spec,
+                JobRun {
+                    handle: Arc::clone(&attempt_handle),
+                    progress: progress.clone(),
+                    timer: timer.as_deref_mut(),
+                },
+                handle.cancel_flag(),
+            );
+            drop(watch);
+            if attempt >= self.retry.retries || !Self::retryable(&result) {
+                return result;
+            }
+            if !Self::wait_backoff(self.retry, &handle, attempt) {
+                return Err(JobError::Cancelled);
+            }
+            attempt += 1;
+        }
+    }
+
+    /// One attempt, holding its slot from acquisition to the child's reap.
+    fn run_controlled_once(
+        &self,
+        spec: &JobSpec,
+        run: JobRun<'_>,
+        abort: &std::sync::atomic::AtomicBool,
+    ) -> Result<JobOutput, JobError> {
+        let JobRun {
+            handle,
+            progress,
+            mut timer,
+        } = run;
+        // The caller's flag aborts the wait for a slot directly; the attempt
+        // handle only starts mattering once the child exists.
+        let _slot = agent_slots::acquire(spec.workload, self.slot_cap, self.ceiling, abort)
+            .ok_or(JobError::Cancelled)?;
         if let Some(timer) = timer.as_mut() {
             timer.mark_slot_acquired();
         }
@@ -340,6 +422,115 @@ impl JobRunner {
             timeout: spec.provider.timeout,
         }
     }
+
+    /// Whether an attempt is worth repeating. A timeout or a transient exit is
+    /// retried; a cancel, a spawn failure or a fatal exit is not.
+    fn retryable(result: &Result<JobOutput, JobError>) -> bool {
+        match result {
+            Err(JobError::TimedOut(_)) => true,
+            Err(JobError::Cancelled | JobError::Spawn(_)) => false,
+            Ok(output) => !output.status.success() && stderr_looks_transient(&output.stderr),
+        }
+    }
+
+    /// Wait between attempts in short slices, so a cancel ends the wait at
+    /// once instead of after the whole backoff.
+    fn wait_backoff(retry: RetryPolicy, handle: &AgentRunHandle, attempt: u32) -> bool {
+        #[cfg(any(test, feature = "test-support"))]
+        retry_probe::entered();
+        let wait = retry.wait_after(attempt);
+        let step = Duration::from_millis(25);
+        let started = std::time::Instant::now();
+        while started.elapsed() < wait {
+            if handle.is_cancelled() {
+                return false;
+            }
+            let left = wait.saturating_sub(started.elapsed());
+            std::thread::sleep(step.min(left));
+        }
+        !handle.is_cancelled()
+    }
+}
+
+/// Stderr markers the arena adapter treated as transient.
+fn stderr_looks_transient(stderr: &str) -> bool {
+    let text = stderr.to_lowercase();
+    ["rate limit", "429", "timed out", "temporar"]
+        .iter()
+        .any(|marker| text.contains(marker))
+}
+
+/// Test hook: a latch that fires when a retry enters its backoff.
+///
+/// The backoff is otherwise invisible to a test, which would have to guess with
+/// a sleep whether the runner got there; a cancel before it does kills the
+/// finishing attempt and never exercises the wait.
+#[cfg(any(test, feature = "test-support"))]
+pub mod retry_probe {
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::Mutex;
+
+    static ENTERED: Mutex<Option<Sender<()>>> = Mutex::new(None);
+
+    /// Watch for the next backoff entry. The retry tests run serial, so one
+    /// watcher at a time is enough.
+    pub fn watch() -> Receiver<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        *ENTERED.lock().unwrap_or_else(|error| error.into_inner()) = Some(tx);
+        rx
+    }
+
+    pub(crate) fn entered() {
+        if let Some(tx) = ENTERED
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = tx.send(());
+        }
+    }
+}
+
+/// Maps the caller's stop flag onto one attempt's fresh handle.
+///
+/// The caller kills its own handle; that handle has no child in a retried
+/// attempt, so the attempt's handle has to be told separately. Polling keeps
+/// the attempt's own finished/pid state authoritative for its watchdog.
+struct CancelWatch {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl CancelWatch {
+    fn start(control: &Arc<AgentRunHandle>, attempt: &Arc<AgentRunHandle>) -> Self {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
+        let control = Arc::clone(control);
+        let attempt = Arc::clone(attempt);
+        let join = std::thread::spawn(move || {
+            while !stopped.load(Ordering::SeqCst) {
+                if control.is_cancelled() {
+                    attempt.kill();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        Self {
+            stop,
+            join: Some(join),
+        }
+    }
+}
+
+impl Drop for CancelWatch {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
 }
 
 /// Offer one event to the progress sink without blocking past the run's
@@ -477,6 +668,320 @@ mod tests {
         let out = handle.join().unwrap().expect("job runs");
         assert!(marker.exists(), "the job did not run after the slot freed");
         assert_eq!(out.text, "done");
+    }
+
+    /// A retried job releases its slot during the backoff: a second job on a
+    /// one-slot pool runs between the first job's attempts.
+    #[cfg(unix)]
+    #[test]
+    fn a_retry_waits_without_holding_the_slot() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("order.log");
+        let counter = dir.path().join("attempts");
+        let retrying = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!(
+                    "n=$(cat '{counter}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{counter}'; \
+                     echo a$n >> '{log}'; \
+                     if [ $n -eq 1 ]; then echo 'rate limit' >&2; exit 1; fi; echo ok",
+                    counter = counter.display(),
+                    log = log.display()
+                ),
+            ],
+            dir.path(),
+        );
+        let other = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!("echo b >> '{}'; echo ok", log.display()),
+            ],
+            dir.path(),
+        );
+        let runner = JobRunner::with_retry(
+            1,
+            1,
+            RetryPolicy {
+                retries: 1,
+                backoff: Duration::from_millis(400),
+            },
+        );
+        let other_runner = JobRunner::new(1, 1);
+
+        let handle = std::thread::spawn(move || {
+            let mut timer = AgentRunTimer::start();
+            runner.run_controlled(
+                &retrying,
+                JobRun {
+                    handle: AgentRunHandle::new(),
+                    progress: None,
+                    timer: Some(&mut timer),
+                },
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !log.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "first attempt never ran"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The first attempt has failed and the first job is backing off; a
+        // one-slot pool must be free for the second job now.
+        other_runner.run(&other).expect("the second job runs");
+        handle.join().unwrap().expect("the retry succeeds");
+
+        let order = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = order.lines().collect();
+        assert_eq!(
+            lines,
+            ["a1", "b", "a2"],
+            "the backoff held the slot: {order}"
+        );
+    }
+
+    /// A cancel during the backoff ends the retry at once, and no further
+    /// attempt runs.
+    #[cfg(unix)]
+    #[test]
+    fn a_cancel_ends_a_retry_backoff_at_once() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("attempts");
+        let spec = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!(
+                    "n=$(cat '{counter}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{counter}'; \
+                     echo 'rate limit' >&2; exit 1",
+                    counter = counter.display()
+                ),
+            ],
+            dir.path(),
+        );
+        let runner = JobRunner::with_retry(
+            1,
+            1,
+            RetryPolicy {
+                retries: 3,
+                backoff: Duration::from_secs(2),
+            },
+        );
+        // Armed before the run starts, so the test cannot miss the entry.
+        let entered = retry_probe::watch();
+        let run = AgentRunHandle::new();
+        let cancel = Arc::clone(&run);
+        let handle = std::thread::spawn(move || {
+            let mut timer = AgentRunTimer::start();
+            runner.run_controlled(
+                &spec,
+                JobRun {
+                    handle: run,
+                    progress: None,
+                    timer: Some(&mut timer),
+                },
+            )
+        });
+        // Wait until the runner is actually in the backoff, with no sleep to
+        // guess at: a cancel before this kills the finishing attempt and never
+        // exercises the wait.
+        entered
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the runner never entered the backoff");
+
+        let cancelling = std::time::Instant::now();
+        cancel
+            .cancel_flag()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = handle.join().unwrap();
+        let elapsed = cancelling.elapsed();
+
+        assert!(matches!(result, Err(JobError::Cancelled)), "{result:?}");
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "the backoff ignored the cancel: {elapsed:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&counter).unwrap().trim(),
+            "1",
+            "a cancelled backoff ran another attempt"
+        );
+    }
+
+    /// Each attempt carries its own deadline: a retry that overruns its
+    /// timeout is killed by it, not left running.
+    #[cfg(unix)]
+    #[test]
+    fn a_retried_attempt_has_its_own_timeout() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("attempts");
+        let mut spec = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!(
+                    "n=$(cat '{counter}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{counter}'; \
+                     if [ $n -eq 1 ]; then echo 'rate limit' >&2; exit 1; fi; sleep 5; echo ok",
+                    counter = counter.display()
+                ),
+            ],
+            dir.path(),
+        );
+        spec.provider.timeout = Duration::from_millis(300);
+        let runner = JobRunner::with_retry(
+            1,
+            1,
+            RetryPolicy {
+                retries: 1,
+                backoff: Duration::from_millis(50),
+            },
+        );
+
+        let started = std::time::Instant::now();
+        let result = runner.run_controlled(
+            &spec,
+            JobRun {
+                handle: AgentRunHandle::new(),
+                progress: None,
+                timer: None,
+            },
+        );
+
+        assert!(matches!(result, Err(JobError::TimedOut(_))), "{result:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the retried attempt had no deadline: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A cancel during a retried attempt reaches that attempt's process group.
+    #[cfg(unix)]
+    #[test]
+    fn a_cancel_during_a_retried_attempt_kills_it_at_once() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("attempts");
+        let pid_file = dir.path().join("pid");
+        let mut spec = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!(
+                    "n=$(cat '{counter}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{counter}'; \
+                     if [ $n -eq 1 ]; then echo 'rate limit' >&2; exit 1; fi; \
+                     echo $$ > '{pid}'; sleep 5; echo ok",
+                    counter = counter.display(),
+                    pid = pid_file.display()
+                ),
+            ],
+            dir.path(),
+        );
+        spec.provider.timeout = Duration::from_secs(30);
+        let runner = JobRunner::with_retry(
+            1,
+            1,
+            RetryPolicy {
+                retries: 1,
+                backoff: Duration::from_millis(50),
+            },
+        );
+        let control = AgentRunHandle::new();
+        let cancel = Arc::clone(&control);
+        let handle = std::thread::spawn(move || {
+            runner.run_controlled(
+                &spec,
+                JobRun {
+                    handle: control,
+                    progress: None,
+                    timer: None,
+                },
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !pid_file.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the retried attempt never started"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let pid = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let cancelling = std::time::Instant::now();
+        cancel
+            .cancel_flag()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = handle.join().unwrap();
+        let elapsed = cancelling.elapsed();
+
+        assert!(matches!(result, Err(JobError::Cancelled)), "{result:?}");
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "the cancel did not reach the retried attempt: {elapsed:?}"
+        );
+        assert!(
+            !pid_alive(&pid),
+            "the retried attempt's child survived the cancel"
+        );
+    }
+
+    /// A retry that succeeds is a success: the timed-out first attempt's verdict
+    /// does not follow it forward.
+    #[cfg(unix)]
+    #[test]
+    fn a_retry_that_succeeds_is_not_reported_timed_out() {
+        let _serial = agent_slots::test_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("attempts");
+        let mut spec = prompt_spec(
+            "sh",
+            vec![
+                "-c".into(),
+                format!(
+                    "n=$(cat '{counter}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{counter}'; \
+                     if [ $n -eq 1 ]; then sleep 5; exit 0; fi; echo ok",
+                    counter = counter.display()
+                ),
+            ],
+            dir.path(),
+        );
+        spec.provider.timeout = Duration::from_millis(300);
+        let runner = JobRunner::with_retry(
+            1,
+            1,
+            RetryPolicy {
+                retries: 1,
+                backoff: Duration::from_millis(50),
+            },
+        );
+
+        let started = std::time::Instant::now();
+        let result = runner.run_controlled(
+            &spec,
+            JobRun {
+                handle: AgentRunHandle::new(),
+                progress: None,
+                timer: None,
+            },
+        );
+
+        let output = result.expect("the retry succeeds");
+        assert_eq!(output.text.trim(), "ok");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the retry did not settle promptly: {:?}",
+            started.elapsed()
+        );
     }
 
     /// The point of the early reply: hand it back on the result line, then keep

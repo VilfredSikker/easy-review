@@ -12,7 +12,7 @@
 //! one snapshot of the findings, and the votes are applied once the whole
 //! round has returned.
 
-use super::adapter::{extract_json_from_text, fake_arena_json_from_dir, resolve_provider_command};
+use super::jobs::{arena_job, arena_runner, run_arena_job, CancelBridge, JobFailure};
 use super::model::{Reviewer, ReviewerRunStatus, RunStatus, Vote};
 use super::orchestrator::{
     emit, record_reviewer_failure, Round1ParallelOutcome, Round2ParallelOutcome, SupervisorCtx,
@@ -20,31 +20,18 @@ use super::orchestrator::{
 use super::schema::{validate_round1_output, validate_round2_output, Round1Output, Round2Output};
 use super::storage::{save_round_output, ArenaPaths, ProgressEvent};
 use super::voting::quorum_from_findings;
-use crate::agent_runtime::OutputProtocol;
-use crate::agent_slots::Workload;
-use crate::agent_timing::AgentRunTimer;
 use crate::ai::panel_run::{self, PanelReviewer, PanelRun};
 use crate::ai::prompts::{
     build_arena_round1_prompt_agent, build_arena_round2_prompt, with_reviewed_ref_note,
 };
 use crate::config::ErConfig;
 use anyhow::Result;
-use er_agent::agent_run::AgentRunHandle;
-use er_agent::job::{JobError, JobKind, JobRun, JobRunner, JobSpec, OutputContract};
-use er_agent::provider::ProviderSpec;
 use er_store::Artifact;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
-
-/// How often the cancel bridge checks the run flag.
-///
-/// Short enough that a user stop reaches every job in a round within a poll
-/// interval, long enough not to spin while a round of reviewers thinks.
-const CANCEL_POLL: Duration = Duration::from_millis(20);
 
 /// What a worker thread needs: owned copies, so the jobs outlive the borrow
 /// of the supervisor's context.
@@ -293,65 +280,25 @@ impl Panel {
         prompt: &str,
         bridge: &CancelBridge,
     ) -> std::result::Result<Value, JobFailure> {
-        // The arena's existing test hook: when a fixture directory is set, the
-        // reviewer "answers" from it without spawning anything.
-        if let Some(dir) = crate::env_var::var("ER_FAKE_ARENA_DIR") {
-            return fake_arena_json_from_dir(&dir)
-                .map_err(|error| JobFailure::Failed(error.to_string()));
-        }
         let storage_dir = self.ctx.paths.root.to_string_lossy().into_owned();
-        let command = resolve_provider_command(
-            &self.ctx.config.ai_hub,
+        let spec = arena_job(
+            &self.ctx.config,
             &reviewer.provider_id,
             &reviewer.model_id,
             self.ctx.effort.as_deref(),
-            Some(storage_dir.as_str()),
+            &storage_dir,
+            prompt,
+            &self.ctx.repo_root,
         )
         .map_err(|error| JobFailure::Failed(error.to_string()))?;
-        let spec = JobSpec {
-            kind: JobKind::ArenaRound,
-            provider: ProviderSpec {
-                program: command.command,
-                args: command.args,
-                env: command.env,
-                protocol: if command.stream_json {
-                    OutputProtocol::ClaudeStreamJson
-                } else {
-                    OutputProtocol::Plain
-                },
-                timeout: self.ctx.config.ai_hub.effective_agent_timeout(),
-            },
-            prompt: prompt.to_string(),
-            work_dir: self.ctx.repo_root.clone(),
-            workload: Workload::Arena,
-            output: OutputContract::Stdout,
-        };
         // The shared pool, charged as arena work: a panel reviewer must not
         // take a background review's slot.
-        let runner = JobRunner::new(
-            self.ctx
-                .config
-                .ai_hub
-                .effective_max_concurrent_arena_reviews(),
-            self.ctx.config.ai_hub.effective_max_concurrent_agents(),
-        );
-        let handle = AgentRunHandle::new();
-        bridge.register(&handle);
-        let mut timer = AgentRunTimer::start();
-        let output = runner.run_controlled(
+        run_arena_job(
+            &arena_runner(&self.ctx.config),
             &spec,
-            JobRun {
-                handle,
-                progress: None,
-                timer: Some(&mut timer),
-            },
-        );
-        match output {
-            Ok(output) => extract_json_from_text(&output.text)
-                .map_err(|error| JobFailure::Failed(error.to_string())),
-            Err(JobError::Cancelled) => Err(JobFailure::Cancelled),
-            Err(error) => Err(JobFailure::Failed(error.to_string())),
-        }
+            bridge,
+            "arena_child",
+        )
     }
 }
 
@@ -419,77 +366,11 @@ impl Round {
     }
 }
 
-/// A worker's job failure. Cancellation is kept apart from a failure so a
-/// stopped round does not mark its reviewers failed.
-enum JobFailure {
-    Cancelled,
-    Failed(String),
-}
-
 struct RoundOutcome {
     proposals: Vec<(String, Round1Output)>,
     ballots: Vec<(String, Round2Output)>,
     failed: Vec<(String, String)>,
     cancelled: bool,
-}
-
-/// Makes the run's stop flag reach the runner's handles.
-///
-/// `JobRunner` cancels a job when its `AgentRunHandle` is killed, and the
-/// handle is the only thing that can signal the process group. The arena's
-/// cancel arrives as the run's shared flag, so one watcher carries it across
-/// for the whole round. It keeps polling until the round ends rather than
-/// exiting after the first kill: a job that registers just after a kill still
-/// has to see a cancelled run on the watcher's next pass.
-#[derive(Clone)]
-struct CancelBridge(Arc<BridgeInner>);
-
-struct BridgeInner {
-    handles: Arc<Mutex<Vec<Arc<AgentRunHandle>>>>,
-    stop: Arc<AtomicBool>,
-    join: Mutex<Option<thread::JoinHandle<()>>>,
-}
-
-impl CancelBridge {
-    fn start(cancel: Arc<AtomicBool>) -> Self {
-        let handles: Arc<Mutex<Vec<Arc<AgentRunHandle>>>> = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let watched = Arc::clone(&handles);
-        let stopped = Arc::clone(&stop);
-        let join = thread::spawn(move || {
-            while !stopped.load(Ordering::SeqCst) {
-                if cancel.load(Ordering::SeqCst) {
-                    let handles = watched.lock().unwrap_or_else(|e| e.into_inner());
-                    for handle in handles.iter() {
-                        handle.kill();
-                    }
-                }
-                thread::sleep(CANCEL_POLL);
-            }
-        });
-        Self(Arc::new(BridgeInner {
-            handles,
-            stop,
-            join: Mutex::new(Some(join)),
-        }))
-    }
-
-    fn register(&self, handle: &Arc<AgentRunHandle>) {
-        self.0
-            .handles
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(Arc::clone(handle));
-    }
-}
-
-impl Drop for BridgeInner {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(join) = self.join.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            let _ = join.join();
-        }
-    }
 }
 
 /// Build the durable record from the run's final findings and reviewer states.
@@ -576,6 +457,7 @@ mod tests {
     use crate::config::{AiHubConfig, AiModelConfig, AiProviderConfig};
     use std::ffi::OsString;
     use std::path::Path;
+    use std::time::Duration;
     use std::time::Instant;
 
     struct Harness {
@@ -691,7 +573,6 @@ mod tests {
         let repo_root = bucket.to_string_lossy().into_owned();
         let er_dir = bucket.to_string_lossy().into_owned();
         let cancel = Arc::new(AtomicBool::new(false));
-        let children = Arc::new(Mutex::new(Vec::new()));
         let status = Mutex::new(RunStatus::Running { round: 1 });
         let patch = paths.diff_patch().to_string_lossy().into_owned();
         let ctx = SupervisorCtx {
@@ -702,7 +583,6 @@ mod tests {
             reviewed_ref_note: None,
             paths: &paths,
             cancel: &cancel,
-            children: &children,
             status: &status,
         };
         Harness {

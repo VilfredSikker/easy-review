@@ -15,6 +15,65 @@ use std::time::SystemTime;
 pub use crate::config::CliFamily;
 pub use er_agent::decode::OutputProtocol;
 
+/// One provider's runnable command, resolved the same way at every job site.
+#[derive(Debug, Clone)]
+pub struct ResolvedProvider {
+    pub program: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub protocol: OutputProtocol,
+    pub timeout: std::time::Duration,
+    pub family: CliFamily,
+    pub stream_json: bool,
+}
+
+/// Resolve a provider and model into the argv, environment and protocol a job
+/// runs with.
+///
+/// This is the one place provider flags are injected, so the arena, the
+/// background worker and the tab jobs cannot disagree about them.
+pub fn provider_spec(
+    hub: &crate::config::AiHubConfig,
+    provider_id: &str,
+    model_id: &str,
+    effort: Option<&str>,
+    storage_dir: Option<&str>,
+) -> Result<ResolvedProvider> {
+    let provider = hub
+        .providers
+        .get(provider_id)
+        .with_context(|| format!("unknown provider: {provider_id}"))?;
+    let family = provider.cli_family();
+    let mut args = provider.args.clone();
+    if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
+        crate::config::extend_provider_model_args(family, &mut args, &model.args);
+    }
+    let effort = crate::config::normalize_effort(hub, Some(provider_id), Some(model_id), effort);
+    inject_provider_effort(family, &mut args, Some(model_id), effort.as_deref());
+    if crate::config::agent_command_is_codex(&provider.command) {
+        crate::config::inject_codex_ignore_user_config(&mut args);
+    }
+    crate::config::inject_claude_startup_trim(family, &mut args);
+    crate::config::inject_agent_storage_access(family, &mut args, storage_dir);
+    let mut env = Vec::new();
+    if let Some(pair) = crate::config::apply_opencode_spawn(family, &mut args, storage_dir) {
+        env.push(pair);
+    }
+    Ok(ResolvedProvider {
+        program: provider.command.clone(),
+        args,
+        env,
+        protocol: if provider.uses_stream_json_log() {
+            OutputProtocol::ClaudeStreamJson
+        } else {
+            OutputProtocol::Plain
+        },
+        timeout: hub.effective_agent_timeout(),
+        family,
+        stream_json: provider.uses_stream_json_log(),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentTaskKind {
     Review,
