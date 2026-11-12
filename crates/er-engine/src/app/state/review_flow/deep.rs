@@ -2,8 +2,12 @@
 //!
 //! A Deep run spans two progress channels until P33b: its triage stage reports
 //! through the runner's `JobProgress` stream, and its verifying stage reports
-//! through the arena's `ProgressEvent` state. Both stop once their owner is
-//! cancelled.
+//! through the arena's durable `progress.jsonl` events (`ProgressEvent`), which
+//! the reviewer rows read. Both stop once their owner is cancelled. P33b
+//! deletes `progress.jsonl` and moves the verifying stage onto job progress.
+//!
+//! The panel's reviewer jobs write those same `progress.jsonl` events, so the
+//! rows are current, not stale.
 
 use super::progress;
 use super::{App, ReviewFlowContext};

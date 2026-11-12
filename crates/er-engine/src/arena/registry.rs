@@ -1,6 +1,5 @@
 use super::model::RunStatus;
 use std::collections::HashMap;
-use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -8,28 +7,18 @@ use std::thread::JoinHandle;
 /// Bumped by the desktop host on every durable arena progress write.
 pub type ArenaNotify = Arc<dyn Fn() + Send + Sync>;
 
+/// One live run. The cancel flag is the run's stop path: each in-flight job
+/// registers its handle with a bridge that watches this flag and kills the
+/// job's process group.
 pub struct ArenaRunHandle {
     pub cancel: Arc<AtomicBool>,
-    pub children: Arc<Mutex<Vec<Child>>>,
     pub status: Arc<Mutex<RunStatus>>,
     pub(crate) join: Option<JoinHandle<()>>,
 }
 
-impl ArenaRunHandle {
-    pub fn kill_children(&self) {
-        self.cancel.store(true, Ordering::SeqCst);
-        if let Ok(mut kids) = self.children.lock() {
-            for child in kids.iter_mut() {
-                let _ = child.kill();
-            }
-            kids.clear();
-        }
-    }
-}
-
 impl Drop for ArenaRunHandle {
     fn drop(&mut self) {
-        self.kill_children();
+        self.cancel.store(true, Ordering::SeqCst);
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -55,6 +44,9 @@ impl<'a> ReleaseOnExit<'a> {
 impl Drop for ReleaseOnExit<'_> {
     fn drop(&mut self) {
         self.registry.release_run(&self.run_id);
+        // A supervisor that unwinds skips its own notify; without this the
+        // desktop waits for its safety-net timer.
+        self.registry.notify_progress();
     }
 }
 
@@ -66,6 +58,10 @@ pub struct ArenaRegistry {
     /// gone.
     #[cfg(any(test, feature = "test-support"))]
     finished_joins: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    /// Forces the next start to fail. Test support only: the thread spawn is
+    /// the one start failure a test cannot provoke otherwise.
+    #[cfg(any(test, feature = "test-support"))]
+    fail_start: Arc<AtomicBool>,
     pub notify: ArenaNotify,
 }
 
@@ -75,8 +71,16 @@ impl ArenaRegistry {
             runs: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(any(test, feature = "test-support"))]
             finished_joins: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(any(test, feature = "test-support"))]
+            fail_start: Arc::new(AtomicBool::new(false)),
             notify,
         }
+    }
+
+    /// Make the next `start_supervised` return an error.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_next_start_for_test(&self) {
+        self.fail_start.store(true, Ordering::SeqCst);
     }
 
     pub fn notify_progress(&self) {
@@ -94,15 +98,17 @@ impl ArenaRegistry {
         self: &Arc<Self>,
         run_id: String,
         cancel: Arc<AtomicBool>,
-        children: Arc<Mutex<Vec<Child>>>,
         status: Arc<Mutex<RunStatus>>,
         supervisor: impl FnOnce(&Arc<ArenaRegistry>) + Send + 'static,
     ) -> std::io::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.fail_start.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other("forced supervisor start failure"));
+        }
         self.insert(
             run_id.clone(),
             ArenaRunHandle {
                 cancel,
-                children,
                 status,
                 join: None,
             },
@@ -169,7 +175,10 @@ impl ArenaRegistry {
     }
 
     pub fn take(&self, run_id: &str) -> Option<ArenaRunHandle> {
-        self.runs.lock().ok()?.remove(run_id)
+        self.runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(run_id)
     }
 
     /// Remove an active run from the registry without joining its supervisor thread.
@@ -179,13 +188,13 @@ impl ArenaRegistry {
     /// Test-support builds keep the join in `finished_joins` so `join_supervisor`
     /// can still wait on it; other builds drop it.
     pub fn release_run(&self, run_id: &str) {
-        let Ok(mut map) = self.runs.lock() else {
-            return;
-        };
+        // A panic while another thread held this lock must not leak the run:
+        // take the poisoned guard and remove the entry anyway.
+        let mut map = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         let Some(mut handle) = map.remove(run_id) else {
             return;
         };
-        handle.kill_children();
+        handle.cancel.store(true, Ordering::SeqCst);
         if let Some(join) = handle.join.take() {
             #[cfg(any(test, feature = "test-support"))]
             self.finished_joins
@@ -204,12 +213,11 @@ impl ArenaRegistry {
     }
 
     pub fn cancel(&self, run_id: &str) -> bool {
-        let map = match self.runs.lock() {
-            Ok(m) => m,
-            Err(_) => return false,
-        };
+        let map = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(handle) = map.get(run_id) {
-            handle.kill_children();
+            // The job bridges watch this flag and kill their process groups; a
+            // cancel does not need to hold the registry lock while they do.
+            handle.cancel.store(true, Ordering::SeqCst);
             if let Ok(mut st) = handle.status.lock() {
                 *st = RunStatus::Cancelled;
             }
@@ -220,37 +228,12 @@ impl ArenaRegistry {
         false
     }
 
-    pub fn register_child(&self, run_id: &str, child: Child) {
-        if let Ok(map) = self.runs.lock() {
-            if let Some(h) = map.get(run_id) {
-                if let Ok(mut kids) = h.children.lock() {
-                    kids.push(child);
-                }
-            }
-        }
-    }
-
     pub fn is_cancelled(&self, run_id: &str) -> bool {
         self.runs
             .lock()
             .ok()
             .and_then(|m| m.get(run_id).map(|h| h.cancel.load(Ordering::SeqCst)))
             .unwrap_or(true)
-    }
-
-    /// How many children the run's supervisor has registered with the
-    /// registry. A cancel only reaches registered children, so a test that
-    /// cancels a live round waits on this rather than on the clock.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn registered_child_count(&self, run_id: &str) -> usize {
-        self.runs
-            .lock()
-            .ok()
-            .and_then(|map| {
-                map.get(run_id)
-                    .and_then(|handle| handle.children.lock().ok().map(|kids| kids.len()))
-            })
-            .unwrap_or(0)
     }
 
     pub fn set_status(&self, run_id: &str, status: RunStatus) {
@@ -279,7 +262,10 @@ impl ArenaRegistry {
     }
 
     pub fn is_active(&self, run_id: &str) -> bool {
-        self.runs.lock().is_ok_and(|m| m.contains_key(run_id))
+        self.runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(run_id)
     }
 
     /// Register a run as active with a given status, without spawning a
@@ -291,7 +277,6 @@ impl ArenaRegistry {
             run_id.to_string(),
             ArenaRunHandle {
                 cancel: Arc::new(AtomicBool::new(false)),
-                children: Arc::new(Mutex::new(Vec::new())),
                 status: Arc::new(Mutex::new(status)),
                 join: None,
             },
@@ -337,7 +322,6 @@ mod tests {
             .start_supervised(
                 run_id.to_string(),
                 Arc::new(AtomicBool::new(false)),
-                Arc::new(Mutex::new(Vec::new())),
                 Arc::new(Mutex::new(RunStatus::Running { round: 1 })),
                 supervisor,
             )
@@ -359,7 +343,6 @@ mod tests {
                     .start_supervised(
                         "ordered".into(),
                         Arc::new(AtomicBool::new(false)),
-                        Arc::new(Mutex::new(Vec::new())),
                         Arc::new(Mutex::new(RunStatus::Running { round: 1 })),
                         move |_| {
                             let _ = tx.send(());
@@ -411,5 +394,57 @@ mod tests {
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_default();
         assert!(message.contains("supervisor boom"), "{message}");
+    }
+
+    /// A supervisor that unwinds skips its own notify; the drop guard has to
+    /// wake the host instead, or the desktop waits for its safety-net timer.
+    #[test]
+    fn a_panicking_supervisor_notifies_the_host() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let registry = Arc::new(ArenaRegistry::new(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })));
+        let (tx, rx) = std::sync::mpsc::channel();
+        start(&registry, "panics-notify", move |_| {
+            let _ = tx.send(());
+            panic!("simulated supervisor panic");
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the supervisor ran");
+        wait_released(&registry, "panics-notify");
+        assert!(
+            calls.load(Ordering::SeqCst) >= 1,
+            "a panicking supervisor never notified the host"
+        );
+    }
+
+    /// A panic while another thread held the registry lock poisons it; the
+    /// release must still remove the entry instead of leaking the run.
+    #[test]
+    fn a_poisoned_runs_lock_does_not_leak_the_run() {
+        let registry = registry();
+        registry.insert(
+            "poisoned".into(),
+            ArenaRunHandle {
+                cancel: Arc::new(AtomicBool::new(false)),
+                status: Arc::new(Mutex::new(RunStatus::Running { round: 1 })),
+                join: None,
+            },
+        );
+        let map = Arc::clone(&registry.runs);
+        let _ = std::thread::spawn(move || {
+            let _guard = map.lock().unwrap();
+            panic!("poison the registry map");
+        })
+        .join();
+
+        registry.release_run("poisoned");
+
+        let map = registry.runs.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !map.contains_key("poisoned"),
+            "the run leaked under a poisoned lock"
+        );
     }
 }

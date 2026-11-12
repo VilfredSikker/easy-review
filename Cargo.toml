@@ -160,9 +160,7 @@ agent-spawn-os-launch = [
   "crates/er-desktop/src/os_launch.rs",
   "crates/er-tui/src/os_launch.rs",
 ]
-agent-spawn-allow = [
-  "crates/er-engine/src/arena/adapter.rs",
-]
+agent-spawn-allow = []
 
 # `Command::new("git")` outside the crate that owns git: call the Git trait.
 # There is no allow-list; every spawn outside the home crate is an error.

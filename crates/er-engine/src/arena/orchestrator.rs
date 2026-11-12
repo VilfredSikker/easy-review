@@ -1,4 +1,3 @@
-use super::adapter::{is_cancelled_error, resolve_provider_command, run_provider_json};
 use super::agents::agent_meta;
 use super::merge::findings_from_round1;
 use super::model::*;
@@ -8,7 +7,6 @@ use super::storage::{
     save_run, ArenaPaths, ProgressEvent,
 };
 use super::voting::{apply_round3_verdicts, record_arbiter_ballots, severity_from_cross_check};
-use crate::agent_slots::Workload;
 use crate::ai::compute_diff_hash;
 use crate::ai::flow_providers::FlowProvider;
 use crate::ai::prompts::{
@@ -20,7 +18,6 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::json;
 use std::path::Path;
-use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -588,68 +585,72 @@ fn start_arena_run_with_kind(
 
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_handle = Arc::clone(&cancel);
-    let children = Arc::new(Mutex::new(Vec::new()));
-    let children_handle = Arc::clone(&children);
     let status = Arc::new(Mutex::new(RunStatus::Running { round: 1 }));
     let status_handle = Arc::clone(&status);
     let run_id_thread = run_id.clone();
     let paths_clone = paths.clone();
     let patch_path = paths.diff_patch().display().to_string();
 
-    registry
-        .start_supervised(
-            run_id.clone(),
-            cancel_handle,
-            children_handle,
-            status_handle,
-            move |registry_thread| {
-                // The record must be closed by any way out of this thread,
-                // including a panic: a stage left `Running` by a dead
-                // supervisor is what a crash-resume record exists to prevent.
-                let _close_workflow = CloseWorkflowOnExit::new(
-                    workflow.clone(),
-                    run_id_thread.clone(),
-                    paths_clone.clone(),
-                );
-                let ctx = SupervisorCtx {
-                    registry: registry_thread.as_ref(),
-                    config: &config,
-                    repo_root: &repo_root,
-                    er_dir: &er_dir,
-                    reviewed_ref_note: reviewed_ref_note.as_deref(),
-                    paths: &paths_clone,
-                    cancel: &cancel,
-                    children: &children,
-                    status: &status,
-                };
-                let result = run_supervisor(&ctx, &patch_path, run_id_thread.clone(), reviewers);
-                if let Err(e) = result {
-                    if is_cancelled_error(&e) {
-                        if let Ok(mut st) = status.lock() {
-                            *st = RunStatus::Cancelled;
-                        }
-                        if let Ok(mut run) = load_run(&paths_clone) {
-                            run.status = RunStatus::Cancelled;
-                            run.completed_at = Some(crate::app::chrono_now());
-                            let _ = save_run(&paths_clone, &run);
-                        }
-                    } else {
-                        crate::dev_log::arena_line(format!("run {} failed: {e:#}", run_id_thread));
-                        if let Ok(mut st) = status.lock() {
-                            *st = RunStatus::Failed;
-                        }
-                        if let Ok(mut run) = load_run(&paths_clone) {
-                            run.status = RunStatus::Failed;
-                            run.completed_at = Some(crate::app::chrono_now());
-                            let _ = save_run(&paths_clone, &run);
-                        }
+    let started = registry.start_supervised(
+        run_id.clone(),
+        cancel_handle,
+        status_handle,
+        move |registry_thread| {
+            // The record must be closed by any way out of this thread,
+            // including a panic: a stage left `Running` by a dead
+            // supervisor is what a crash-resume record exists to prevent.
+            let _close_workflow = CloseWorkflowOnExit::new(
+                workflow.clone(),
+                run_id_thread.clone(),
+                paths_clone.clone(),
+            );
+            let ctx = SupervisorCtx {
+                registry: registry_thread.as_ref(),
+                config: &config,
+                repo_root: &repo_root,
+                er_dir: &er_dir,
+                reviewed_ref_note: reviewed_ref_note.as_deref(),
+                paths: &paths_clone,
+                cancel: &cancel,
+                status: &status,
+            };
+            let result = run_supervisor(&ctx, &patch_path, run_id_thread.clone(), reviewers);
+            if let Err(e) = result {
+                if cancel.load(Ordering::SeqCst) || registry_thread.is_cancelled(&run_id_thread) {
+                    if let Ok(mut st) = status.lock() {
+                        *st = RunStatus::Cancelled;
+                    }
+                    if let Ok(mut run) = load_run(&paths_clone) {
+                        run.status = RunStatus::Cancelled;
+                        run.completed_at = Some(crate::app::chrono_now());
+                        let _ = save_run(&paths_clone, &run);
+                    }
+                } else {
+                    crate::dev_log::arena_line(format!("run {} failed: {e:#}", run_id_thread));
+                    if let Ok(mut st) = status.lock() {
+                        *st = RunStatus::Failed;
+                    }
+                    if let Ok(mut run) = load_run(&paths_clone) {
+                        run.status = RunStatus::Failed;
+                        run.completed_at = Some(crate::app::chrono_now());
+                        let _ = save_run(&paths_clone, &run);
                     }
                 }
-                registry_thread.release_run(&run_id_thread);
-                registry_thread.notify_progress();
-            },
-        )
-        .context("start the arena supervisor")?;
+            }
+            registry_thread.release_run(&run_id_thread);
+            registry_thread.notify_progress();
+        },
+    );
+    if let Err(error) = started {
+        // The run record is already saved as Queued. A supervisor that never
+        // started must not leave it that way: nothing else will move it.
+        if let Ok(mut run) = load_run(&paths) {
+            run.status = RunStatus::Failed;
+            run.completed_at = Some(crate::app::chrono_now());
+            let _ = save_run(&paths, &run);
+        }
+        return Err(error).context("start the arena supervisor");
+    }
 
     Ok(run_id)
 }
@@ -764,8 +765,6 @@ pub fn start_seeded_run(
 
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_handle = Arc::clone(&cancel);
-    let children = Arc::new(Mutex::new(Vec::new()));
-    let children_handle = Arc::clone(&children);
     let status = Arc::new(Mutex::new(RunStatus::Running { round: 1 }));
     let status_handle = Arc::clone(&status);
     let run_id_thread = run_id.clone();
@@ -774,78 +773,82 @@ pub fn start_seeded_run(
     let diff_hash = params.diff_hash.clone();
     let reviewed_ref_note = params.reviewed_ref_note;
 
-    registry
-        .start_supervised(
-            run_id.clone(),
-            cancel_handle,
-            children_handle,
-            status_handle,
-            move |registry_thread| {
-                let _close_workflow = CloseWorkflowOnExit::new(
-                    workflow.clone(),
-                    run_id_thread.clone(),
-                    paths_clone.clone(),
-                );
-                let ctx = SupervisorCtx {
-                    registry: registry_thread.as_ref(),
-                    config: &config,
-                    repo_root: &repo_root,
-                    er_dir: &er_dir,
-                    reviewed_ref_note: reviewed_ref_note.as_deref(),
-                    paths: &paths_clone,
-                    cancel: &cancel,
-                    children: &children,
-                    status: &status,
-                };
-                let mut run = match load_run(&paths_clone) {
-                    Ok(run) => run,
-                    Err(e) => {
-                        crate::dev_log::arena_line(format!(
-                            "seeded {run_id_thread}: load failed: {e:#}"
-                        ));
-                        registry_thread.release_run(&run_id_thread);
-                        registry_thread.notify_progress();
-                        return;
-                    }
-                };
-                let effort = run.config.effort.clone();
-                let outcome = run_arbiter(&ctx, &mut run, effort.as_deref());
-                match outcome {
-                    Ok(ArbiterOutcome::Cancelled) => {}
-                    Ok(ArbiterOutcome::Judged) => {
-                        // The review's copy of the verdicts: the overlay the review
-                        // loads, so `review.json` keeps its three writers (ADR 0035).
-                        // Written before the run reads Complete, so anything that sees
-                        // Complete can also load the verdicts.
-                        let arbiter = arbiter_review_from_run(&run, &run_id_thread, &diff_hash);
-                        if let Err(e) = crate::ai::write_arbiter_review(&er_dir, &arbiter) {
-                            crate::dev_log::arena_line(format!("seeded {run_id_thread}: {e:#}"));
-                        }
-                        run.status = RunStatus::Complete;
-                        run.completed_at = Some(crate::app::chrono_now());
-                        *status.lock().expect("arena lock poisoned") = RunStatus::Complete;
-                        let _ = save_run(&paths_clone, &run);
-                        emit(
-                            registry_thread,
-                            &paths_clone,
-                            &ProgressEvent::RunComplete {
-                                run_id: run_id_thread.clone(),
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        crate::dev_log::arena_line(format!("seeded {run_id_thread} failed: {e:#}"));
-                        *status.lock().expect("arena lock poisoned") = RunStatus::Failed;
-                        run.status = RunStatus::Failed;
-                        run.completed_at = Some(crate::app::chrono_now());
-                        let _ = save_run(&paths_clone, &run);
-                    }
+    let started = registry.start_supervised(
+        run_id.clone(),
+        cancel_handle,
+        status_handle,
+        move |registry_thread| {
+            let _close_workflow = CloseWorkflowOnExit::new(
+                workflow.clone(),
+                run_id_thread.clone(),
+                paths_clone.clone(),
+            );
+            let ctx = SupervisorCtx {
+                registry: registry_thread.as_ref(),
+                config: &config,
+                repo_root: &repo_root,
+                er_dir: &er_dir,
+                reviewed_ref_note: reviewed_ref_note.as_deref(),
+                paths: &paths_clone,
+                cancel: &cancel,
+                status: &status,
+            };
+            let mut run = match load_run(&paths_clone) {
+                Ok(run) => run,
+                Err(e) => {
+                    crate::dev_log::arena_line(format!(
+                        "seeded {run_id_thread}: load failed: {e:#}"
+                    ));
+                    registry_thread.release_run(&run_id_thread);
+                    registry_thread.notify_progress();
+                    return;
                 }
-                registry_thread.release_run(&run_id_thread);
-                registry_thread.notify_progress();
-            },
-        )
-        .context("start the seeded arena supervisor")?;
+            };
+            let effort = run.config.effort.clone();
+            let outcome = run_arbiter(&ctx, &mut run, effort.as_deref());
+            match outcome {
+                Ok(ArbiterOutcome::Cancelled) => {}
+                Ok(ArbiterOutcome::Judged) => {
+                    // The review's copy of the verdicts: the overlay the review
+                    // loads, so `review.json` keeps its three writers (ADR 0035).
+                    // Written before the run reads Complete, so anything that sees
+                    // Complete can also load the verdicts.
+                    let arbiter = arbiter_review_from_run(&run, &run_id_thread, &diff_hash);
+                    if let Err(e) = crate::ai::write_arbiter_review(&er_dir, &arbiter) {
+                        crate::dev_log::arena_line(format!("seeded {run_id_thread}: {e:#}"));
+                    }
+                    run.status = RunStatus::Complete;
+                    run.completed_at = Some(crate::app::chrono_now());
+                    *status.lock().expect("arena lock poisoned") = RunStatus::Complete;
+                    let _ = save_run(&paths_clone, &run);
+                    emit(
+                        registry_thread,
+                        &paths_clone,
+                        &ProgressEvent::RunComplete {
+                            run_id: run_id_thread.clone(),
+                        },
+                    );
+                }
+                Err(e) => {
+                    crate::dev_log::arena_line(format!("seeded {run_id_thread} failed: {e:#}"));
+                    *status.lock().expect("arena lock poisoned") = RunStatus::Failed;
+                    run.status = RunStatus::Failed;
+                    run.completed_at = Some(crate::app::chrono_now());
+                    let _ = save_run(&paths_clone, &run);
+                }
+            }
+            registry_thread.release_run(&run_id_thread);
+            registry_thread.notify_progress();
+        },
+    );
+    if let Err(error) = started {
+        if let Ok(mut run) = load_run(&paths) {
+            run.status = RunStatus::Failed;
+            run.completed_at = Some(crate::app::chrono_now());
+            let _ = save_run(&paths, &run);
+        }
+        return Err(error).context("start the seeded arena supervisor");
+    }
     Ok(Some(run_id))
 }
 
@@ -1081,7 +1084,6 @@ fn run_round1_parallel(
         repo_root,
         paths,
         cancel,
-        children,
         reviewed_ref_note,
         ..
     } = *ctx;
@@ -1092,7 +1094,8 @@ fn run_round1_parallel(
     let patch_path = patch_path.to_string();
     let review_md = std::fs::read_to_string(paths.review_md()).ok();
     let cancel = Arc::clone(cancel);
-    let children = Arc::clone(children);
+    let runner = Arc::new(super::jobs::arena_runner(&config));
+    let bridge = super::jobs::CancelBridge::start(Arc::clone(&cancel));
     let ok: Arc<Mutex<Vec<(String, super::schema::Round1Output)>>> =
         Arc::new(Mutex::new(Vec::new()));
     let failed: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1124,7 +1127,8 @@ fn run_round1_parallel(
         let paths = paths.clone();
         let storage_dir = storage_dir.clone();
         let cancel = Arc::clone(&cancel);
-        let children = Arc::clone(&children);
+        let runner = Arc::clone(&runner);
+        let bridge = bridge.clone();
         let ok = Arc::clone(&ok);
         let failed = Arc::clone(&failed);
         let cancelled = Arc::clone(&cancelled);
@@ -1144,27 +1148,25 @@ fn run_round1_parallel(
                 else {
                     return;
                 };
-                // Wait for an arena slot so several runs (or runs with many
-                // reviewers) can't spawn unbounded agent processes at once. The
-                // arena's own cap, charged against the shared ceiling, so a
-                // background review and an arena round do not take each
-                // other's slot.
-                let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
-                let ceiling = config.ai_hub.effective_max_concurrent_agents();
-                let Some(_slot) =
-                    crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, &cancel)
-                else {
-                    cancelled.store(true, Ordering::SeqCst);
-                    return;
-                };
-                let cmd = match resolve_provider_command(
-                    &config.ai_hub,
+                // The runner owns the arena slot, and releases it between
+                // retries so one reviewer's backoff never parks the pool.
+                let prompt = build_arena_round1_prompt_agent(
+                    &patch_path,
+                    &reviewer.name,
+                    reviewer.agent_kind.as_deref(),
+                    review_md.as_deref(),
+                );
+                let prompt = with_reviewed_ref_note(prompt, reviewed_ref_note.as_deref());
+                let spec = match super::jobs::arena_job(
+                    &config,
                     &reviewer.provider_id,
                     &reviewer.model_id,
                     effort.as_deref(),
-                    Some(storage_dir.as_str()),
+                    &storage_dir,
+                    &prompt,
+                    &repo_root,
                 ) {
-                    Ok(c) => c,
+                    Ok(spec) => spec,
                     Err(e) => {
                         record_reviewer_failure(
                             &paths,
@@ -1180,13 +1182,6 @@ fn run_round1_parallel(
                         continue;
                     }
                 };
-                let prompt = build_arena_round1_prompt_agent(
-                    &patch_path,
-                    &reviewer.name,
-                    reviewer.agent_kind.as_deref(),
-                    review_md.as_deref(),
-                );
-                let prompt = with_reviewed_ref_note(prompt, reviewed_ref_note.as_deref());
                 let _ = append_progress_event(
                     &paths,
                     &ProgressEvent::ReviewerThinking {
@@ -1195,7 +1190,7 @@ fn run_round1_parallel(
                     },
                 );
                 notify_progress();
-                match run_provider_json(&cmd, &prompt, &repo_root, &cancel, &children) {
+                match super::jobs::run_arena_job(&runner, &spec, &bridge, "arena_child") {
                     Ok(v) => match super::schema::validate_round1_output(&v) {
                         Ok(out) => {
                             let _ = save_round_output(&paths, 1, &reviewer.id, &v);
@@ -1227,19 +1222,18 @@ fn run_round1_parallel(
                             );
                         }
                     },
-                    Err(e) => {
-                        if is_cancelled_error(&e) {
-                            cancelled.store(true, Ordering::SeqCst);
-                        } else {
-                            record_reviewer_failure(
-                                &paths,
-                                &failed,
-                                notify_progress.as_ref(),
-                                &reviewer.id,
-                                1,
-                                e.to_string(),
-                            );
-                        }
+                    Err(super::jobs::JobFailure::Cancelled) => {
+                        cancelled.store(true, Ordering::SeqCst);
+                    }
+                    Err(super::jobs::JobFailure::Failed(reason)) => {
+                        record_reviewer_failure(
+                            &paths,
+                            &failed,
+                            notify_progress.as_ref(),
+                            &reviewer.id,
+                            1,
+                            reason,
+                        );
                     }
                 }
             }
@@ -1289,7 +1283,6 @@ fn run_round2_parallel(
         repo_root,
         paths,
         cancel,
-        children,
         reviewed_ref_note,
         ..
     } = *ctx;
@@ -1302,7 +1295,8 @@ fn run_round2_parallel(
     // threads.
     let findings_json = Arc::new(findings_json.to_string());
     let cancel = Arc::clone(cancel);
-    let children = Arc::clone(children);
+    let runner = Arc::new(super::jobs::arena_runner(&config));
+    let bridge = super::jobs::CancelBridge::start(Arc::clone(&cancel));
     let ok: Arc<Mutex<Vec<(String, super::schema::Round2Output)>>> =
         Arc::new(Mutex::new(Vec::new()));
     let failed: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1332,7 +1326,8 @@ fn run_round2_parallel(
         let paths = paths.clone();
         let storage_dir = storage_dir.clone();
         let cancel = Arc::clone(&cancel);
-        let children = Arc::clone(&children);
+        let runner = Arc::clone(&runner);
+        let bridge = bridge.clone();
         let ok = Arc::clone(&ok);
         let failed = Arc::clone(&failed);
         let cancelled = Arc::clone(&cancelled);
@@ -1346,22 +1341,23 @@ fn run_round2_parallel(
                 else {
                     return;
                 };
-                let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
-                let ceiling = config.ai_hub.effective_max_concurrent_agents();
-                let Some(_slot) =
-                    crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, &cancel)
-                else {
-                    cancelled.store(true, Ordering::SeqCst);
-                    return;
-                };
-                let cmd = match resolve_provider_command(
-                    &config.ai_hub,
+                let prompt = build_arena_round2_prompt(
+                    &patch_path,
+                    &reviewer.id,
+                    round,
+                    findings_json.as_str(),
+                );
+                let prompt = with_reviewed_ref_note(prompt, reviewed_ref_note.as_deref());
+                let spec = match super::jobs::arena_job(
+                    &config,
                     &reviewer.provider_id,
                     &reviewer.model_id,
                     effort.as_deref(),
-                    Some(storage_dir.as_str()),
+                    &storage_dir,
+                    &prompt,
+                    &repo_root,
                 ) {
-                    Ok(c) => c,
+                    Ok(spec) => spec,
                     Err(e) => {
                         record_reviewer_failure(
                             &paths,
@@ -1376,13 +1372,6 @@ fn run_round2_parallel(
                         continue;
                     }
                 };
-                let prompt = build_arena_round2_prompt(
-                    &patch_path,
-                    &reviewer.id,
-                    round,
-                    findings_json.as_str(),
-                );
-                let prompt = with_reviewed_ref_note(prompt, reviewed_ref_note.as_deref());
                 let _ = append_progress_event(
                     &paths,
                     &ProgressEvent::ReviewerThinking {
@@ -1391,7 +1380,7 @@ fn run_round2_parallel(
                     },
                 );
                 notify_progress();
-                match run_provider_json(&cmd, &prompt, &repo_root, &cancel, &children) {
+                match super::jobs::run_arena_job(&runner, &spec, &bridge, "arena_child") {
                     Ok(v) => match super::schema::validate_round2_output(&v) {
                         Ok(out) => {
                             let _ = save_round_output(&paths, round, &reviewer.id, &v);
@@ -1420,19 +1409,18 @@ fn run_round2_parallel(
                             );
                         }
                     },
-                    Err(e) => {
-                        if is_cancelled_error(&e) {
-                            cancelled.store(true, Ordering::SeqCst);
-                        } else {
-                            record_reviewer_failure(
-                                &paths,
-                                &failed,
-                                notify_progress.as_ref(),
-                                &reviewer.id,
-                                round,
-                                e.to_string(),
-                            );
-                        }
+                    Err(super::jobs::JobFailure::Cancelled) => {
+                        cancelled.store(true, Ordering::SeqCst);
+                    }
+                    Err(super::jobs::JobFailure::Failed(reason)) => {
+                        record_reviewer_failure(
+                            &paths,
+                            &failed,
+                            notify_progress.as_ref(),
+                            &reviewer.id,
+                            round,
+                            reason,
+                        );
                     }
                 }
             }
@@ -1735,7 +1723,6 @@ pub(super) struct SupervisorCtx<'a> {
     pub(super) reviewed_ref_note: Option<&'a str>,
     pub(super) paths: &'a ArenaPaths,
     pub(super) cancel: &'a Arc<AtomicBool>,
-    pub(super) children: &'a Arc<Mutex<Vec<Child>>>,
     pub(super) status: &'a Mutex<RunStatus>,
 }
 
@@ -1768,7 +1755,6 @@ fn run_arbiter(
         repo_root,
         paths,
         cancel,
-        children,
         reviewed_ref_note,
         status,
         ..
@@ -1811,14 +1797,17 @@ fn run_arbiter(
         build_arena_round3_prompt(&summary.to_string(), &anchored, review_md.as_deref()),
         reviewed_ref_note,
     );
-    let cmd = match resolve_provider_command(
-        &config.ai_hub,
+    let storage_dir = paths.root.to_string_lossy().into_owned();
+    let spec = match super::jobs::arena_job(
+        config,
         &arbiter_ref.provider_id,
         &arbiter_ref.model_id,
         run_effort,
-        Some(paths.root.to_string_lossy().as_ref()),
+        &storage_dir,
+        &prompt,
+        repo_root,
     ) {
-        Ok(cmd) => cmd,
+        Ok(spec) => spec,
         Err(e) => {
             emit(
                 registry,
@@ -1832,21 +1821,10 @@ fn run_arbiter(
             return Err(e);
         }
     };
-    // The arbiter is an agent process like any reviewer, so it waits for a
-    // global slot too. Without this an arena could fork one more provider CLI
-    // than the cap allows — worst at the moment the cap is saturated — and N
-    // seeded runs would start N arbiters at once, since the seeded path has no
-    // reviewer loop to hold a slot on its behalf.
-    //
-    // Reviewers have released theirs by now (their round joined), so this
-    // normally does not wait. It can, if another arena run holds the slots.
-    let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
-    let ceiling = config.ai_hub.effective_max_concurrent_agents();
-    let Some(_arbiter_slot) =
-        crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, cancel)
-    else {
-        return cancel_run(ctx, run);
-    };
+    // The arbiter is an agent process like any reviewer: the runner charges it
+    // to the same arena cap, so N seeded runs cannot start N arbiters past it.
+    let runner = super::jobs::arena_runner(config);
+    let bridge = super::jobs::CancelBridge::start(Arc::clone(cancel));
     emit(
         registry,
         paths,
@@ -1856,20 +1834,20 @@ fn run_arbiter(
         },
     );
     let arbiter_started = std::time::Instant::now();
-    let v = match run_provider_json(&cmd, &prompt, repo_root, cancel, children) {
+    let v = match super::jobs::run_arena_job(&runner, &spec, &bridge, "arena_child") {
         Ok(v) => v,
-        Err(e) if is_cancelled_error(&e) => return cancel_run(ctx, run),
-        Err(e) => {
+        Err(super::jobs::JobFailure::Cancelled) => return cancel_run(ctx, run),
+        Err(super::jobs::JobFailure::Failed(reason)) => {
             emit(
                 registry,
                 paths,
                 &ProgressEvent::ReviewerFailed {
                     reviewer_id: ARBITER_REVIEWER_ID.to_string(),
                     round,
-                    reason: e.to_string(),
+                    reason: reason.clone(),
                 },
             );
-            return Err(e);
+            return Err(anyhow::anyhow!("{reason}"));
         }
     };
     // The arbiter cannot be overlapped: its wall time adds straight onto the
