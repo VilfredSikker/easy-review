@@ -228,7 +228,10 @@ impl Default for SlotPool {
 }
 
 /// Block until a slot in the process-wide pool is free or `cancel` is set.
-pub fn acquire(
+///
+/// Private to `er-agent`: every spawn goes through a `JobRunner`, which takes
+/// the slot, so nothing outside can hold one without a job that releases it.
+pub(crate) fn acquire(
     workload: Workload,
     cap: usize,
     ceiling: usize,
@@ -239,7 +242,21 @@ pub fn acquire(
 
 /// Acquire from the process-wide pool without a cancel path (background
 /// review queue — the App-level queue already bounds how many workers wait).
-pub fn acquire_blocking(workload: Workload, cap: usize, ceiling: usize) -> AgentSlotGuard<'static> {
+pub(crate) fn acquire_blocking(
+    workload: Workload,
+    cap: usize,
+    ceiling: usize,
+) -> AgentSlotGuard<'static> {
+    GLOBAL.acquire_blocking(workload, cap, ceiling)
+}
+
+/// Hold a slot directly, for tests that need the pool saturated.
+#[cfg(any(test, feature = "test-support"))]
+pub fn acquire_blocking_for_test(
+    workload: Workload,
+    cap: usize,
+    ceiling: usize,
+) -> AgentSlotGuard<'static> {
     GLOBAL.acquire_blocking(workload, cap, ceiling)
 }
 

@@ -66,7 +66,7 @@ fn ensure_diff_artifacts_locked(er_dir: &str, raw: &str) -> Result<String, Strin
     }
 
     #[cfg(test)]
-    crate::agent_timing::record_annotate_pass();
+    er_agent::agent_timing::record_annotate_pass();
     let annotated = annotate_diff_raw(raw);
     if content_changed(dir, ".diff-annotated.sha256", &hash, "diff-annotated") {
         atomic_write(dir, "diff-annotated", &annotated)?;
@@ -475,12 +475,12 @@ mod tests {
         let er_dir = dir.path().to_str().unwrap();
 
         ensure_diff_artifacts(er_dir, FIXTURE_DIFF).unwrap();
-        let after_first = crate::agent_timing::annotate_passes();
+        let after_first = er_agent::agent_timing::annotate_passes();
 
         ensure_diff_artifacts(er_dir, FIXTURE_DIFF).unwrap();
         ensure_diff_artifacts(er_dir, FIXTURE_DIFF).unwrap();
         assert_eq!(
-            crate::agent_timing::annotate_passes(),
+            er_agent::agent_timing::annotate_passes(),
             after_first,
             "repeat calls on an unchanged diff must not rebuild the annotation"
         );
@@ -488,7 +488,7 @@ mod tests {
         let changed = FIXTURE_DIFF.replace("fn bar() {}", "fn bar2() {}");
         ensure_diff_artifacts(er_dir, &changed).unwrap();
         assert_eq!(
-            crate::agent_timing::annotate_passes(),
+            er_agent::agent_timing::annotate_passes(),
             after_first + 1,
             "a changed diff must be re-annotated"
         );

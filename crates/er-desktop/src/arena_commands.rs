@@ -382,8 +382,8 @@ pub async fn flow_get_run(
             .map_err(|e| e.to_string())?;
         let paths = er_engine::arena::ArenaPaths::for_run(std::path::Path::new(&er_dir), &run_id);
         let mut run = er_engine::arena::load_run(&paths).map_err(|e| e.to_string())?;
-        if let Some(status) = app.arena_registry.get_status(&run_id) {
-            run.status = status;
+        if let Some(control) = app.arena_runs.get(&run_id) {
+            run.status = control.status();
         }
         Ok(er_engine::arena::build_snapshot_with_config(
             &app.config,
@@ -537,10 +537,10 @@ pub fn dev_log_filter() -> Option<Vec<String>> {
     crate::dev_log::filter_groups()
 }
 
-/// Re-wire arena registry notify to desktop revision (call once at startup).
+/// Re-wire the arena's live-progress notify to desktop revision (once at startup).
 pub fn attach_arena_notify(app: &mut App, desktop_revision: Arc<std::sync::atomic::AtomicU64>) {
     let arena_revision = Arc::clone(&desktop_revision);
-    app.arena_registry = App::init_arena_registry(Arc::new(move || {
+    app.set_arena_notify(Arc::new(move || {
         arena_revision.fetch_add(1, Ordering::Relaxed);
     }));
     app.set_background_progress_notify(Some(Arc::new(move || {

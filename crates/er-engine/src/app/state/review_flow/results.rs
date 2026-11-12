@@ -754,9 +754,9 @@ mod tests {
                 let before = std::fs::read(paths.run_json()).unwrap();
                 fixture
                     .app
-                    .arena_registry
-                    .insert_active_for_test("owned", status);
-                // No active_arena_runs index entry. The registry is authoritative.
+                    .arena_runs
+                    .insert_for_test("owned", &fixture.er_dir, status);
+                // The control map is authoritative for live writers.
                 fixture.app.reconcile_arena_runs();
                 fixture.app.arena_list_summaries(None).unwrap();
                 assert_eq!(std::fs::read(paths.run_json()).unwrap(), before);
@@ -779,7 +779,7 @@ mod tests {
                     "{error:#}"
                 );
                 fixture.app.release_review_flow_lease(&lease).unwrap();
-                fixture.app.arena_registry.take("owned");
+                fixture.app.arena_runs.remove("owned");
             });
         }
     }

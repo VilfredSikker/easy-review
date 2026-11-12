@@ -1,15 +1,14 @@
 use crate::arena::{
     build_arena_diff_preview, build_snapshot_with_config, delete_run_dir,
-    import_arena_findings_to_review, load_run, parse_progress_state,
-    reconcile_stale_runs_excluding, save_run, scope_git_mode, start_arena_batch, start_arena_run,
-    start_seeded_run, ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState,
-    ArenaRegistry, ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams,
-    HumanOverride, ReviewerRef, SeededStartParams, Verdict,
+    import_arena_findings_to_review, load_run, reconcile_stale_runs_excluding, save_run,
+    scope_git_mode, start_arena_batch, start_arena_run, start_seeded_run, ArenaBatchStartParams,
+    ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRunInputs, ArenaRunKind,
+    ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride, ReviewerRef, SeededStartParams,
+    Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
 use anyhow::Result;
 use std::path::Path;
-use std::sync::Arc;
 
 use super::review_flow_admission::ReviewFlowLease;
 use super::App;
@@ -92,10 +91,6 @@ impl TabState {
 }
 
 impl App {
-    pub fn init_arena_registry(notify: crate::arena::ArenaNotify) -> Arc<ArenaRegistry> {
-        Arc::new(ArenaRegistry::new(notify))
-    }
-
     pub fn reconcile_arena_runs(&self) {
         for tab in &self.tabs {
             let er_path = tab.er_dir();
@@ -104,11 +99,9 @@ impl App {
     }
 
     /// The one-instance-per-worktree contract makes unregistered historical
-    /// writers interrupted. Registry ownership is process-local, per ADR 0044.
+    /// writers interrupted. Live ownership is this process's control map.
     pub(super) fn recover_arena_bucket(&self, er_dir: &str) -> Result<()> {
-        reconcile_stale_runs_excluding(Path::new(er_dir), |run_id| {
-            self.arena_registry.is_active(run_id)
-        })
+        reconcile_stale_runs_excluding(Path::new(er_dir), |run_id| self.arena_runs.contains(run_id))
     }
 
     pub fn arena_preview(
@@ -170,17 +163,7 @@ impl App {
     ) -> Result<String> {
         self.check_review_flow_arena_lease(&inputs.er_dir, lease)?;
         let config = self.arena_config_with_live_limits(config);
-        let er_key = inputs.er_dir.clone();
-        let run_id = crate::arena::start_review_flow_run(
-            Arc::clone(&self.arena_registry),
-            config,
-            inputs,
-            params,
-        )?;
-        self.active_arena_runs
-            .entry(er_key)
-            .or_default()
-            .push(run_id.clone());
+        let run_id = crate::arena::start_review_flow_run(&self.arena_runs, config, inputs, params)?;
         self.notify(&format!("Arena run started ({run_id})"));
         Ok(run_id)
     }
@@ -192,21 +175,8 @@ impl App {
         params: ArenaStartParams,
         workflow: Option<crate::ai::workflow_record::ArenaWorkflow>,
     ) -> Result<String> {
-        let er_key = inputs.er_dir.clone();
-        let run_id = start_arena_run(
-            Arc::clone(&self.arena_registry),
-            config,
-            inputs,
-            params,
-            workflow,
-        )?;
-        self.active_arena_runs
-            .entry(er_key.clone())
-            .or_default()
-            .push(run_id.clone());
-        crate::dev_log::arena_line(format!(
-            "App::arena_start ok run_id={run_id} er_dir={er_key}"
-        ));
+        let run_id = start_arena_run(&self.arena_runs, config, inputs, params, workflow)?;
+        crate::dev_log::arena_line(format!("App::arena_start ok run_id={run_id}"));
         Ok(run_id)
     }
 
@@ -284,22 +254,9 @@ impl App {
         params: SeededStartParams,
         workflow: Option<crate::ai::workflow_record::ArenaWorkflow>,
     ) -> Result<Option<String>> {
-        let er_key = params.er_dir.clone();
-        let run_id = start_seeded_run(
-            Arc::clone(&self.arena_registry),
-            config,
-            repo_root,
-            params,
-            workflow,
-        )?;
+        let run_id = start_seeded_run(&self.arena_runs, config, repo_root, params, workflow)?;
         if let Some(run_id) = &run_id {
-            self.active_arena_runs
-                .entry(er_key.clone())
-                .or_default()
-                .push(run_id.clone());
-            crate::dev_log::arena_line(format!(
-                "App::arena_start_seeded ok run_id={run_id} er_dir={er_key}"
-            ));
+            crate::dev_log::arena_line(format!("App::arena_start_seeded ok run_id={run_id}"));
         }
         Ok(run_id)
     }
@@ -356,7 +313,6 @@ impl App {
         let raw_diff = tab.raw_diff_for_arena(batch.scope, batch.files.as_deref())?;
         let repo_root = tab.repo_root.clone();
         let er_dir = tab.er_dir();
-        let er_key = er_dir.clone();
         let branch_ref = tab
             .local_branch_view
             .clone()
@@ -372,12 +328,7 @@ impl App {
         };
         let workflow = self.standalone_workflow(&inputs.er_dir, &inputs.raw_diff)?;
         let config = self.config.clone();
-        let registry = Arc::clone(&self.arena_registry);
-        let run_ids = start_arena_batch(registry, config, inputs, batch, Some(workflow))?;
-        self.active_arena_runs
-            .entry(er_key)
-            .or_default()
-            .extend(run_ids.iter().cloned());
+        let run_ids = start_arena_batch(&self.arena_runs, config, inputs, batch, Some(workflow))?;
         self.notify(&format!("Started {} review run(s)", run_ids.len()));
         Ok(run_ids)
     }
@@ -387,14 +338,13 @@ impl App {
     /// Arena supervisor threads run in the background regardless of which tab is
     /// in view, so per-run operations must address a run by its own `er_dir`,
     /// not `self.tab().er_dir()`. Resolution order:
-    /// (a) invert `active_arena_runs` (run_id → er_dir);
-    /// (b) scan each tab's `er_dir` for an on-disk `arena/<run_id>` dir;
-    /// (c) fall back to the active tab (covers a brand-new run before lookup).
+    /// (a) the run's live control, which carries its bucket;
+    /// (b) scan each tab's `er_dir` for an on-disk `arena/<run_id>` dir
+    ///     (history runs with no live control);
+    /// (c) fall back to the active tab.
     fn arena_er_dir_for_run(&self, run_id: &str) -> std::path::PathBuf {
-        for (er, ids) in &self.active_arena_runs {
-            if ids.iter().any(|id| id == run_id) {
-                return std::path::PathBuf::from(er);
-            }
+        if let Some(control) = self.arena_runs.get(run_id) {
+            return std::path::PathBuf::from(&control.er_dir);
         }
         for tab in &self.tabs {
             let er = tab.er_dir();
@@ -405,23 +355,21 @@ impl App {
         std::path::PathBuf::from(self.tab().er_dir())
     }
 
-    /// Active arena runs across ALL tabs (tab-independent background runs).
+    /// Live arena runs across ALL tabs (tab-independent background runs).
     ///
-    /// Driven by the registry's globally-tracked active run ids, so it surfaces
-    /// in-flight runs regardless of which tab is in view. Newest first.
+    /// Driven by this process's run controls, so it surfaces in-flight runs
+    /// regardless of which tab is in view. Newest first.
     pub fn background_arena_runs(&self) -> Vec<crate::arena::ArenaRunSummary> {
+        self.arena_runs.prune_finished();
         let mut out = Vec::new();
-        for run_id in self.arena_registry.active_run_ids() {
-            let er_dir = self.arena_er_dir_for_run(&run_id);
-            let paths = ArenaPaths::for_run(&er_dir, &run_id);
+        for control in self.arena_runs.all() {
+            let paths = ArenaPaths::for_run(Path::new(&control.er_dir), &control.run_id);
             // `build_snapshot` calls this every poll; memoize the disk read by
             // run.json mtime so we don't re-parse each active run every tick.
             if let Some(mut summary) = load_run_summary_cached(&paths) {
-                // Status is the registry's live value, not the (possibly older)
-                // on-disk one — overlay it after the cached disk read.
-                if let Some(live) = self.arena_registry.get_status(&run_id) {
-                    summary.status = live;
-                }
+                // Status is the live value, not the (possibly older) on-disk
+                // one — overlay it after the cached disk read.
+                summary.status = control.status();
                 out.push(summary);
             }
         }
@@ -465,44 +413,45 @@ impl App {
     }
 
     pub fn arena_cancel(&mut self, run_id: &str) -> Result<()> {
-        if !self.arena_registry.cancel(run_id) {
+        let Some(control) = self.arena_runs.get(run_id) else {
             anyhow::bail!("no active arena run {run_id}");
-        }
-        let er_dir = self.arena_er_dir_for_run(run_id);
-        let er_key = er_dir.to_string_lossy().into_owned();
-        let paths = ArenaPaths::for_run(&er_dir, run_id);
+        };
+        control.cancel();
+        let paths = ArenaPaths::for_run(Path::new(&control.er_dir), run_id);
         if let Ok(mut run) = load_run(&paths) {
             run.status = crate::arena::RunStatus::Cancelled;
             run.completed_at = Some(super::chrono_now());
             let _ = crate::arena::save_run(&paths, &run);
         }
-        if let Some(ids) = self.active_arena_runs.get_mut(&er_key) {
-            ids.retain(|id| id != run_id);
-            if ids.is_empty() {
-                self.active_arena_runs.remove(&er_key);
-            }
-        }
-        self.arena_registry.notify_progress();
         self.notify("Arena run cancelled");
         Ok(())
     }
 
     pub fn active_arena_run(&self) -> Option<String> {
-        let er = self.tab().er_dir();
-        self.active_arena_runs
-            .get(&er)
-            .and_then(|v| v.last().cloned())
+        self.active_arena_run_ids().pop()
     }
 
+    /// This tab's live runs, oldest first.
     pub fn active_arena_run_ids(&self) -> Vec<String> {
         let er = self.tab().er_dir();
-        self.active_arena_runs.get(&er).cloned().unwrap_or_default()
+        let mut runs: Vec<_> = self
+            .arena_runs
+            .all()
+            .into_iter()
+            .filter(|control| control.er_dir == er)
+            .collect();
+        runs.sort_by_key(|control| control.started);
+        runs.into_iter()
+            .map(|control| control.run_id.clone())
+            .collect()
     }
 
     pub fn arena_progress(&self, run_id: &str) -> Result<ArenaProgressState> {
-        let er_dir = self.arena_er_dir_for_run(run_id);
-        let paths = ArenaPaths::for_run(&er_dir, run_id);
-        Ok(parse_progress_state(&paths))
+        Ok(self
+            .arena_runs
+            .get(run_id)
+            .map(|control| control.progress_state())
+            .unwrap_or_default())
     }
 
     fn is_review_flow_arena_run(&self, er_dir: &str, run: &crate::arena::ArenaRun) -> bool {
@@ -525,8 +474,8 @@ impl App {
         if self.is_review_flow_arena_run(&er_dir.to_string_lossy(), &run) {
             run.config.run_kind = ArenaRunKind::ReviewFlow;
         }
-        if let Some(live) = self.arena_registry.get_status(run_id) {
-            run.status = live;
+        if let Some(control) = self.arena_runs.get(run_id) {
+            run.status = control.status();
         }
         Ok(build_snapshot_with_config(&self.config, run))
     }
@@ -559,20 +508,16 @@ impl App {
     }
 
     pub fn arena_delete(&mut self, run_id: &str) -> Result<()> {
-        if self.arena_registry.is_active(run_id) {
-            anyhow::bail!("cannot delete active arena run {run_id}; cancel it first");
+        if let Some(control) = self.arena_runs.get(run_id) {
+            if !control.is_finished() {
+                anyhow::bail!("cannot delete active arena run {run_id}; cancel it first");
+            }
+            self.arena_runs.remove(run_id);
         }
         let er_dir = self.arena_er_dir_for_run(run_id);
         let er_key = er_dir.to_string_lossy().into_owned();
         self.check_review_bucket_admission(&er_key)?;
         delete_run_dir(&er_dir, run_id)?;
-        if let Some(ids) = self.active_arena_runs.get_mut(&er_key) {
-            ids.retain(|id| id != run_id);
-            if ids.is_empty() {
-                self.active_arena_runs.remove(&er_key);
-            }
-        }
-        self.arena_registry.notify_progress();
         self.notify("Arena run deleted");
         Ok(())
     }
@@ -600,7 +545,7 @@ impl App {
         f.verdict = verdict;
         let updated = f.clone();
         crate::arena::save_run(&paths, &run)?;
-        self.arena_registry.notify_progress();
+        self.arena_runs.notify_progress();
         Ok(updated)
     }
 
@@ -619,28 +564,25 @@ mod review_flow_arena_inputs_tests {
     use crate::arena::{ArenaPaths, ReviewerRef};
     use crate::config::{supplement_ai_hub, ErConfig};
     use serde_json::json;
-    use std::sync::{Arc, MutexGuard};
+    use std::sync::MutexGuard;
     use tempfile::tempdir;
 
     struct FakeArenaEnv {
         _guard: MutexGuard<'static, ()>,
-        _pool_guard: crate::agent_slots::TestSerialGuard,
+        _pool_guard: er_agent::agent_slots::TestSerialGuard,
         previous: Option<std::ffi::OsString>,
         _fixture: tempfile::TempDir,
-        registry: Arc<ArenaRegistry>,
+        controls: crate::arena::ArenaRunControls,
     }
 
     impl Drop for FakeArenaEnv {
         fn drop(&mut self) {
-            for run_id in self.registry.active_run_ids() {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-                while self.registry.is_active(&run_id) {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "arena run {run_id} never released its registry entry"
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
+            for control in self.controls.all() {
+                assert!(
+                    control.wait_finished(std::time::Duration::from_secs(30)),
+                    "arena run {} never finished",
+                    control.run_id
+                );
             }
             if let Some(previous) = self.previous.take() {
                 std::env::set_var("ER_FAKE_ARENA_DIR", previous);
@@ -651,7 +593,7 @@ mod review_flow_arena_inputs_tests {
     }
 
     fn fake_arena(app: &App) -> FakeArenaEnv {
-        let pool_guard = crate::agent_slots::test_serial();
+        let pool_guard = er_agent::agent_slots::test_serial();
         let guard = crate::arena::ARENA_TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -670,7 +612,7 @@ mod review_flow_arena_inputs_tests {
             _guard: guard,
             previous,
             _fixture: fixture,
-            registry: Arc::clone(&app.arena_registry),
+            controls: app.arena_runs.clone(),
         }
     }
 
@@ -1079,7 +1021,7 @@ mod review_flow_arena_inputs_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::ArenaScope;
+    use crate::arena::{ArenaScope, ProgressEvent};
     use std::process::Command;
 
     /// The recorded hash wins over a recomputed one. This is the review-ignore
@@ -1283,12 +1225,13 @@ mod tests {
     fn arena_er_dir_for_run_resolves_via_active_map() {
         let ta = tempfile::tempdir().unwrap();
         let tb = tempfile::tempdir().unwrap();
-        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
         let er_b = app.tabs[1].er_dir();
-        app.active_arena_runs
-            .entry(er_b.clone())
-            .or_default()
-            .push("arena-x".to_string());
+        app.arena_runs.insert_for_test(
+            "arena-x",
+            &er_b,
+            crate::arena::RunStatus::Running { round: 1 },
+        );
         assert_eq!(
             app.arena_er_dir_for_run("arena-x"),
             std::path::PathBuf::from(&er_b)
@@ -1335,6 +1278,38 @@ mod tests {
     }
 
     #[test]
+    fn live_progress_comes_from_the_control_and_writes_no_file() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        let paths = ArenaPaths::for_run(Path::new(&er_b), "live-progress");
+        crate::arena::save_run(&paths, &sample_run("live-progress")).unwrap();
+        let control = app.arena_runs.insert_for_test(
+            "live-progress",
+            &er_b,
+            crate::arena::RunStatus::Running { round: 1 },
+        );
+        control.emit(&ProgressEvent::ReviewerThinking {
+            reviewer_id: "general::provider-model".into(),
+            round: 1,
+        });
+        control.emit(&ProgressEvent::ReviewerDone {
+            reviewer_id: "general::provider-model".into(),
+            round: 1,
+            findings_count: 1,
+        });
+
+        let progress = app.arena_progress("live-progress").unwrap();
+        assert_eq!(progress.round, 1);
+        assert_eq!(progress.done, ["general::provider-model"]);
+        assert!(
+            !paths.root.join("progress.jsonl").exists(),
+            "progress is live state, not a file"
+        );
+    }
+
+    #[test]
     fn arena_override_finding_resolves_nonactive_tab() {
         let ta = tempfile::tempdir().unwrap();
         let tb = tempfile::tempdir().unwrap();
@@ -1367,8 +1342,11 @@ mod tests {
         // On disk the run is Complete; the registry says it is mid-flight.
         let paths = ArenaPaths::for_run(Path::new(&er_b), "bg-run");
         crate::arena::save_run(&paths, &sample_run("bg-run")).unwrap();
-        app.arena_registry
-            .insert_active_for_test("bg-run", crate::arena::RunStatus::Running { round: 2 });
+        app.arena_runs.insert_for_test(
+            "bg-run",
+            &er_b,
+            crate::arena::RunStatus::Running { round: 2 },
+        );
 
         // Active tab is A, but the run lives under tab B.
         let runs = app.background_arena_runs();
@@ -1394,10 +1372,10 @@ mod tests {
         newer.created_at = "2026-06-17T12:00:00Z".into();
         crate::arena::save_run(&ArenaPaths::for_run(Path::new(&er_b), "old"), &older).unwrap();
         crate::arena::save_run(&ArenaPaths::for_run(Path::new(&er_b), "new"), &newer).unwrap();
-        app.arena_registry
-            .insert_active_for_test("old", crate::arena::RunStatus::Running { round: 1 });
-        app.arena_registry
-            .insert_active_for_test("new", crate::arena::RunStatus::Running { round: 1 });
+        app.arena_runs
+            .insert_for_test("old", &er_b, crate::arena::RunStatus::Running { round: 1 });
+        app.arena_runs
+            .insert_for_test("new", &er_b, crate::arena::RunStatus::Running { round: 1 });
 
         let ids: Vec<String> = app
             .background_arena_runs()
@@ -1414,8 +1392,11 @@ mod tests {
         let app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
         let er_b = app.tabs[1].er_dir();
         let paths = ArenaPaths::for_run(Path::new(&er_b), "cache-run");
-        app.arena_registry
-            .insert_active_for_test("cache-run", crate::arena::RunStatus::Running { round: 1 });
+        app.arena_runs.insert_for_test(
+            "cache-run",
+            &er_b,
+            crate::arena::RunStatus::Running { round: 1 },
+        );
 
         // First read: one finding, populates the mtime cache.
         crate::arena::save_run(&paths, &sample_run("cache-run")).unwrap();
@@ -1445,8 +1426,9 @@ mod tests {
         let er_b = app.tabs[1].er_dir();
         let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-cancel");
         crate::arena::save_run(&paths, &sample_run("arena-cancel")).unwrap();
-        app.arena_registry.insert_active_for_test(
+        app.arena_runs.insert_for_test(
             "arena-cancel",
+            &er_b,
             crate::arena::RunStatus::Running { round: 1 },
         );
 

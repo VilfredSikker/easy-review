@@ -3054,12 +3054,12 @@ impl App {
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
-        let run = crate::agent_run::AgentRunHandle::new();
+        let run = er_agent::agent_run::AgentRunHandle::new();
         let run_for_tab = std::sync::Arc::clone(&run);
         let run_name = name.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut timer = crate::agent_timing::AgentRunTimer::start();
+            let mut timer = er_agent::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
                 // The shell path stays a job: it launches provider CLIs, so it
                 // keeps its slot and its stop control like any other run.
@@ -3074,7 +3074,7 @@ impl App {
                     },
                     prompt: String::new(),
                     work_dir: repo_root,
-                    workload: crate::agent_slots::Workload::Background,
+                    workload: er_agent::agent_slots::Workload::Background,
                     output: OutputContract::Stdout,
                 };
                 record_submitted_tab_job(&spec.kind);
@@ -3105,10 +3105,10 @@ impl App {
                 let output = match outcome {
                     Ok(output) => output,
                     Err(JobError::TimedOut(limit)) => {
-                        return Err(crate::agent_run::timed_out(limit));
+                        return Err(er_agent::agent_run::timed_out(limit));
                     }
                     Err(JobError::Cancelled) => {
-                        return Err(crate::agent_run::cancelled());
+                        return Err(er_agent::agent_run::cancelled());
                     }
                     Err(JobError::Spawn(error)) => {
                         return Err(error).with_context(|| format!("Failed to run {}", name_owned));
@@ -3392,12 +3392,12 @@ impl App {
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
-        let run = crate::agent_run::AgentRunHandle::new();
+        let run = er_agent::agent_run::AgentRunHandle::new();
         let run_for_tab = std::sync::Arc::clone(&run);
         let run_name = name.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut timer = crate::agent_timing::AgentRunTimer::start();
+            let mut timer = er_agent::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
                 let debug_path = std::path::Path::new(&er_dir_path).join("debug-agent.log");
 
@@ -3514,7 +3514,7 @@ impl App {
                     },
                     prompt: prompt_owned,
                     work_dir: work_dir.clone(),
-                    workload: crate::agent_slots::Workload::Background,
+                    workload: er_agent::agent_slots::Workload::Background,
                     output: OutputContract::Stdout,
                 };
                 record_submitted_tab_job(&spec.kind);
@@ -3571,10 +3571,10 @@ impl App {
                 let output = match outcome {
                     Ok(output) => output,
                     Err(JobError::TimedOut(limit)) => {
-                        return Err(crate::agent_run::timed_out(limit));
+                        return Err(er_agent::agent_run::timed_out(limit));
                     }
                     Err(JobError::Cancelled) => {
-                        return Err(crate::agent_run::cancelled());
+                        return Err(er_agent::agent_run::cancelled());
                     }
                     Err(JobError::Spawn(error)) => {
                         return Err(error).with_context(|| {
@@ -4305,7 +4305,7 @@ impl App {
         // The worker owns one clone; the App keeps the other so a stop control
         // can reach the process. Built here, outside the thread, so the handle
         // exists before anything can try to stop it.
-        let run = crate::agent_run::AgentRunHandle::new();
+        let run = er_agent::agent_run::AgentRunHandle::new();
         let run_for_task = std::sync::Arc::clone(&run);
         let progress_notify = self.background_progress_notify.clone();
         let git_handle = self.ports.git.clone();
@@ -4318,7 +4318,7 @@ impl App {
                 result_tx: Some(result_tx),
                 notify: progress_notify,
             };
-            let mut timer = crate::agent_timing::AgentRunTimer::start();
+            let mut timer = er_agent::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
                 let debug_path = std::path::Path::new(&er_dir).join("debug-agent.log");
 
@@ -4417,7 +4417,7 @@ impl App {
                     },
                     prompt,
                     work_dir: work_dir.clone(),
-                    workload: crate::agent_slots::Workload::Background,
+                    workload: er_agent::agent_slots::Workload::Background,
                     output: OutputContract::Stdout,
                 };
 
@@ -4472,10 +4472,10 @@ impl App {
                 let output = match outcome {
                     Ok(output) => output,
                     Err(JobError::TimedOut(limit)) => {
-                        return Err(crate::agent_run::timed_out(limit));
+                        return Err(er_agent::agent_run::timed_out(limit));
                     }
                     Err(JobError::Cancelled) => {
-                        return Err(crate::agent_run::cancelled());
+                        return Err(er_agent::agent_run::cancelled());
                     }
                     Err(JobError::Spawn(error)) => {
                         return Err(error)
@@ -4853,7 +4853,7 @@ impl App {
     /// only the second would race — the slot is taken on another thread, so a
     /// second task could dispatch in the window before the first acquires.
     fn can_dispatch_task(&self, cap: usize) -> bool {
-        self.running_background_task_count() < cap && crate::agent_slots::active_count() < cap
+        self.running_background_task_count() < cap && er_agent::agent_slots::active_count() < cap
     }
 
     /// Remove a queued (not yet started) review task. Returns true when a
@@ -4887,7 +4887,7 @@ impl App {
     /// Returns the handle rather than stopping the run, because stopping it
     /// forks a process and `AGENTS.md` forbids that under the app mutex. A
     /// caller holding the lock clones this, releases, and *then* calls
-    /// [`crate::agent_run::AgentRunHandle::kill`]. A caller holding no lock
+    /// [`er_agent::agent_run::AgentRunHandle::kill`]. A caller holding no lock
     /// may kill straight away.
     ///
     /// Signalling is all a stop does. The worker owns the verdict and reaches
@@ -4897,7 +4897,7 @@ impl App {
     pub fn running_background_review(
         &self,
         id: &str,
-    ) -> Option<std::sync::Arc<crate::agent_run::AgentRunHandle>> {
+    ) -> Option<std::sync::Arc<er_agent::agent_run::AgentRunHandle>> {
         self.background_tasks
             .get(id)
             .map(|h| std::sync::Arc::clone(&h.run))
@@ -4912,7 +4912,7 @@ impl App {
     pub fn running_command(
         &self,
         name: &str,
-    ) -> Option<std::sync::Arc<crate::agent_run::AgentRunHandle>> {
+    ) -> Option<std::sync::Arc<er_agent::agent_run::AgentRunHandle>> {
         self.tab().command_runs.get(name).map(std::sync::Arc::clone)
     }
 
@@ -4922,7 +4922,7 @@ impl App {
     /// and, in the desktop, the lock — before signalling any of them.
     pub fn running_commands(
         &self,
-    ) -> Vec<(String, std::sync::Arc<crate::agent_run::AgentRunHandle>)> {
+    ) -> Vec<(String, std::sync::Arc<er_agent::agent_run::AgentRunHandle>)> {
         self.tab()
             .command_runs
             .iter()
@@ -5077,8 +5077,8 @@ mod background_queue_tests {
     /// tasks. So a slot held by one test changes another's dispatch decision,
     /// and these run in parallel by default. Holding this for the duration
     /// keeps each test's view of the pool its own.
-    fn serial() -> crate::agent_slots::TestSerialGuard {
-        crate::agent_slots::test_serial()
+    fn serial() -> er_agent::agent_slots::TestSerialGuard {
+        er_agent::agent_slots::test_serial()
     }
 
     fn test_app(root: &std::path::Path, cap: usize) -> Option<App> {
@@ -5206,8 +5206,8 @@ mod background_queue_tests {
             assert_eq!(app.running_background_task_count(), 0, "nothing dispatched");
             let held: Vec<_> = (0..cap)
                 .map(|_| {
-                    crate::agent_slots::acquire_blocking(
-                        crate::agent_slots::Workload::Background,
+                    er_agent::agent_slots::acquire_blocking_for_test(
+                        er_agent::agent_slots::Workload::Background,
                         cap,
                         ceiling,
                     )
@@ -5330,7 +5330,7 @@ mod background_queue_tests {
                     std::time::Instant::now() < deadline,
                     "queued task was never dispatched: running={} slots_in_use={}",
                     app.running_background_task_count(),
-                    crate::agent_slots::active_count()
+                    er_agent::agent_slots::active_count()
                 );
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
@@ -6297,7 +6297,7 @@ mod background_queue_tests {
                 blocker_id.clone(),
                 super::super::background::BackgroundTaskHandle {
                     task: blocker_task,
-                    run: crate::agent_run::AgentRunHandle::new(),
+                    run: er_agent::agent_run::AgentRunHandle::new(),
                     result_rx,
                     log_rx,
                     recent_log: Default::default(),
@@ -6387,7 +6387,7 @@ mod background_queue_tests {
                 blocker_id,
                 super::super::background::BackgroundTaskHandle {
                     task: blocker_task,
-                    run: crate::agent_run::AgentRunHandle::new(),
+                    run: er_agent::agent_run::AgentRunHandle::new(),
                     result_rx,
                     log_rx,
                     recent_log: Default::default(),
@@ -8354,7 +8354,7 @@ mod update_job_tests {
 
     #[test]
     fn a_concurrent_questions_edit_survives_the_commit() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(None);
         // The trailing newline makes the seeded bytes differ from the agent's
         // compact rewrite, so the baseline sees a changed file; the entry
@@ -8395,7 +8395,7 @@ mod update_job_tests {
 
     #[test]
     fn a_user_edit_wins_a_same_id_conflict() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(Some(("questions.json", String::new())));
         // Seed after the fixture so the file carries the real hash.
         std::fs::write(
@@ -8453,7 +8453,7 @@ mod update_job_tests {
 
     #[test]
     fn a_questions_job_stages_and_commits() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(Some(("questions.json", String::new())));
         std::fs::write(
             fixture.path("questions.json"),
@@ -8487,7 +8487,7 @@ mod update_job_tests {
 
     #[test]
     fn a_notes_job_stages_and_commits() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(Some(("notes.json", String::new())));
         std::fs::write(
             fixture.path("notes.json"),
@@ -8524,7 +8524,7 @@ mod update_job_tests {
 
     #[test]
     fn a_validate_comments_job_stages_and_commits() {
-        let _serial = crate::agent_slots::test_serial();
+        let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(Some(("github-comments.json", String::new())));
         std::fs::write(
             fixture.path("github-comments.json"),

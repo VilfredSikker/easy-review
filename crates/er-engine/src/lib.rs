@@ -2,9 +2,6 @@
 // so a print to stdout paints over the TUI. Report through dev_log or a Result.
 #![deny(clippy::print_stdout)]
 
-// The runtime lives in `er-agent`; these re-exports keep the engine's existing
-// paths working until the shim is removed.
-pub use er_agent::{agent_run, agent_slots, agent_timing, job};
 pub mod ai;
 #[cfg(feature = "ui")]
 pub mod app;

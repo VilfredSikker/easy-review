@@ -12,13 +12,15 @@
 //! one snapshot of the findings, and the votes are applied once the whole
 //! round has returned.
 
+use super::control::ArenaRunControl;
 use super::jobs::{arena_job, arena_runner, run_arena_job, CancelBridge, JobFailure};
 use super::model::{Reviewer, ReviewerRunStatus, RunStatus, Vote};
 use super::orchestrator::{
-    emit, record_reviewer_failure, Round1ParallelOutcome, Round2ParallelOutcome, SupervisorCtx,
+    record_reviewer_failure, Round1ParallelOutcome, Round2ParallelOutcome, SupervisorCtx,
 };
+use super::progress::ProgressEvent;
 use super::schema::{validate_round1_output, validate_round2_output, Round1Output, Round2Output};
-use super::storage::{save_round_output, ArenaPaths, ProgressEvent};
+use super::storage::{save_round_output, ArenaPaths};
 use super::voting::quorum_from_findings;
 use crate::ai::panel_run::{self, PanelReviewer, PanelRun};
 use crate::ai::prompts::{
@@ -40,7 +42,7 @@ struct JobCtx {
     config: ErConfig,
     repo_root: String,
     paths: ArenaPaths,
-    registry: super::registry::ArenaRegistry,
+    control: Arc<ArenaRunControl>,
     cancel: Arc<AtomicBool>,
     reviewed_ref_note: Option<String>,
     patch_path: String,
@@ -56,13 +58,15 @@ pub(super) struct Panel {
 
 impl Panel {
     pub(super) fn new(ctx: &SupervisorCtx<'_>, patch_path: &str, effort: Option<&str>) -> Self {
+        let control = Arc::clone(ctx.control);
+        let cancel = control.cancel_flag();
         Self {
             ctx: Arc::new(JobCtx {
                 config: ctx.config.clone(),
                 repo_root: ctx.repo_root.to_string(),
                 paths: ctx.paths.clone(),
-                registry: ctx.registry.clone(),
-                cancel: Arc::clone(ctx.cancel),
+                control,
+                cancel,
                 reviewed_ref_note: ctx.reviewed_ref_note.map(str::to_owned),
                 patch_path: patch_path.to_string(),
                 effort: effort.map(str::to_owned),
@@ -163,9 +167,8 @@ impl Panel {
                         return;
                     }
                     Err(JobFailure::Failed(reason)) => record_reviewer_failure(
-                        &panel.ctx.paths,
+                        &panel.ctx.control,
                         &sink.failed,
-                        panel.ctx.registry.notify.as_ref(),
                         &reviewer.id,
                         round_number,
                         reason,
@@ -230,9 +233,8 @@ impl Panel {
                 }
                 Err(error) => {
                     record_reviewer_failure(
-                        &self.ctx.paths,
+                        &self.ctx.control,
                         &sink.failed,
-                        self.ctx.registry.notify.as_ref(),
                         &reviewer.id,
                         round_number,
                         error.to_string(),
@@ -251,9 +253,8 @@ impl Panel {
                 }
                 Err(error) => {
                     record_reviewer_failure(
-                        &self.ctx.paths,
+                        &self.ctx.control,
                         &sink.failed,
-                        self.ctx.registry.notify.as_ref(),
                         &reviewer.id,
                         round_number,
                         error.to_string(),
@@ -271,7 +272,7 @@ impl Panel {
     }
 
     fn emit(&self, event: ProgressEvent) {
-        emit(&self.ctx.registry, &self.ctx.paths, &event);
+        self.ctx.control.emit(&event);
     }
 
     fn run_job(
@@ -451,8 +452,8 @@ mod tests {
         ArenaConfig, ArenaRun, CostEstimate, ReviewerKind, ReviewerRef, ReviewerRunStatus,
     };
     use crate::arena::orchestrator::start_review_flow_run;
-    use crate::arena::registry::ArenaRegistry;
-    use crate::arena::storage::{load_run, ProgressEvent};
+    use crate::arena::storage::load_run;
+    use crate::arena::ArenaRunControls;
     use crate::arena::{ArenaRunInputs, ArenaScope, ArenaStartParams};
     use crate::config::{AiHubConfig, AiModelConfig, AiProviderConfig};
     use std::ffi::OsString;
@@ -468,14 +469,14 @@ mod tests {
     /// Serializes every test that reads the arena's global test hook or starts
     /// a supervisor, so one test's fake fixtures cannot answer another's jobs.
     struct ArenaEnv {
-        _serial: crate::agent_slots::TestSerialGuard,
+        _serial: er_agent::agent_slots::TestSerialGuard,
         _lock: std::sync::MutexGuard<'static, ()>,
         previous: Option<OsString>,
     }
 
     impl ArenaEnv {
         fn take() -> Self {
-            let serial = crate::agent_slots::test_serial();
+            let serial = er_agent::agent_slots::test_serial();
             let lock = crate::arena::ARENA_TEST_ENV_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
@@ -567,27 +568,24 @@ mod tests {
     }
 
     fn harness(bucket: &Path, config: &ErConfig, run_id: &str) -> Harness {
-        let registry = ArenaRegistry::new(Arc::new(|| {}));
+        let controls = ArenaRunControls::default();
+        let er_dir = bucket.to_string_lossy().into_owned();
+        let control = controls.new_control(run_id, &er_dir);
         let paths = ArenaPaths::for_run(bucket, run_id);
         paths.ensure_dirs().unwrap();
-        let repo_root = bucket.to_string_lossy().into_owned();
-        let er_dir = bucket.to_string_lossy().into_owned();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let status = Mutex::new(RunStatus::Running { round: 1 });
+        let repo_root = er_dir.clone();
         let patch = paths.diff_patch().to_string_lossy().into_owned();
         let ctx = SupervisorCtx {
-            registry: &registry,
+            control: &control,
             config,
             repo_root: &repo_root,
             er_dir: &er_dir,
             reviewed_ref_note: None,
             paths: &paths,
-            cancel: &cancel,
-            status: &status,
         };
         Harness {
+            cancel: control.cancel_flag(),
             panel: Panel::new(&ctx, &patch, None),
-            cancel,
         }
     }
 
@@ -622,15 +620,12 @@ mod tests {
         }
     }
 
-    fn wait_released(registry: &ArenaRegistry, run_id: &str) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while registry.is_active(run_id) {
-            assert!(
-                Instant::now() < deadline,
-                "run {run_id} never released its registry entry"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
+    fn wait_released(controls: &ArenaRunControls, run_id: &str) {
+        let control = controls.get(run_id).expect("the run has a control");
+        assert!(
+            control.wait_finished(Duration::from_secs(10)),
+            "run {run_id} never finished"
+        );
     }
 
     /// The panel's worker is one job per reviewer. A worker that took two
@@ -693,13 +688,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bucket = bucket(dir.path());
         let config = config("/bin/true", Vec::new(), &["m1", "m2"]);
-        let registry = Arc::new(ArenaRegistry::new(Arc::new(|| {})));
+        let controls = ArenaRunControls::default();
         let before = crate::arena::fake_arena_call_count();
         crate::storage::with_process_test_storage_root(dir.path(), || {
             let run_id =
-                start_review_flow_run(Arc::clone(&registry), config, inputs(&bucket), params(2))
-                    .unwrap();
-            wait_released(&registry, &run_id);
+                start_review_flow_run(&controls, config, inputs(&bucket), params(2)).unwrap();
+            wait_released(&controls, &run_id);
             let calls = crate::arena::fake_arena_call_count().wrapping_sub(before);
             assert_eq!(
                 calls, 5,
@@ -916,11 +910,10 @@ mod tests {
         crate::storage::with_process_test_storage_root(dir.path(), || {
             let bucket = bucket(dir.path());
             let config = config("/nonexistent/er-panel-reviewer", Vec::new(), &["m1", "m2"]);
-            let registry = Arc::new(ArenaRegistry::new(Arc::new(|| {})));
+            let controls = ArenaRunControls::default();
             let run_id =
-                start_review_flow_run(Arc::clone(&registry), config, inputs(&bucket), params(2))
-                    .unwrap();
-            wait_released(&registry, &run_id);
+                start_review_flow_run(&controls, config, inputs(&bucket), params(2)).unwrap();
+            wait_released(&controls, &run_id);
 
             let paths = ArenaPaths::for_run(&bucket, &run_id);
             let run = load_run(&paths).unwrap();
@@ -933,13 +926,24 @@ mod tests {
                 "{:?}",
                 run.reviewers
             );
-            let progress = std::fs::read_to_string(paths.progress_jsonl()).unwrap_or_default();
-            let failures = progress
-                .lines()
-                .filter_map(|line| serde_json::from_str::<ProgressEvent>(line).ok())
-                .filter(|event| matches!(event, ProgressEvent::ReviewerFailed { .. }))
-                .count();
-            assert_eq!(failures, 2, "each reviewer reports why it failed");
+            let control = controls
+                .get(&run_id)
+                .expect("a started run has a live control");
+            let progress = control.progress();
+            assert_eq!(
+                progress.failed.len(),
+                2,
+                "each reviewer reports why it failed: {:?}",
+                progress.failed
+            );
+            assert!(
+                progress
+                    .failed
+                    .values()
+                    .all(|reason| reason.to_lowercase().contains("spawn")),
+                "{:?}",
+                progress.failed
+            );
         });
     }
 
@@ -967,11 +971,11 @@ mod tests {
                 },
                 guard: Arc::new(guard),
             };
-            let registry = Arc::new(ArenaRegistry::new(Arc::new(|| {})));
+            let controls = ArenaRunControls::default();
             let config = config("/bin/true", Vec::new(), &["m1", "m2"]);
             std::env::set_var("ER_TEST_PANIC_ARENA_SUPERVISOR", "1");
             let run_id = crate::arena::start_arena_run(
-                Arc::clone(&registry),
+                &controls,
                 config,
                 inputs(&bucket),
                 params(2),
@@ -984,10 +988,13 @@ mod tests {
                     panic!("the run did not start: {error:#}");
                 }
             };
-            wait_released(&registry, &run_id);
-            let panic = registry.join_supervisor(&run_id);
+            wait_released(&controls, &run_id);
+            let panic = controls
+                .get(&run_id)
+                .expect("a started run has a live control")
+                .panic_message();
             std::env::remove_var("ER_TEST_PANIC_ARENA_SUPERVISOR");
-            assert!(panic.is_err(), "the supervisor panic must surface");
+            assert!(panic.is_some(), "the supervisor panic must surface");
 
             let record = crate::ai::workflow_record::load(&store, &scope)
                 .unwrap()

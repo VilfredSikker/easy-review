@@ -1,9 +1,6 @@
 use super::model::ArenaRun;
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
@@ -28,10 +25,6 @@ impl ArenaPaths {
 
     pub fn review_md(&self) -> PathBuf {
         self.root.join(crate::ai::review_md::REVIEW_MD_FILE)
-    }
-
-    pub fn progress_jsonl(&self) -> PathBuf {
-        self.root.join("progress.jsonl")
     }
 
     pub fn round_dir(&self, round: u8) -> PathBuf {
@@ -150,128 +143,6 @@ pub fn save_arbiter_output(paths: &ArenaPaths, value: &serde_json::Value) -> Res
     write_atomic(&paths.arbiter_output_json(), json.as_bytes())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ProgressEvent {
-    RoundStarted {
-        round: u8,
-        total_rounds: u8,
-    },
-    ReviewerThinking {
-        reviewer_id: String,
-        round: u8,
-    },
-    ReviewerDone {
-        reviewer_id: String,
-        round: u8,
-        findings_count: usize,
-    },
-    ReviewerFailed {
-        reviewer_id: String,
-        round: u8,
-        reason: String,
-    },
-    FindingVerdict {
-        finding_id: String,
-        verdict: String,
-        confidence: f32,
-    },
-    ArbiterStarted {
-        arbiter_label: String,
-    },
-    RunComplete {
-        run_id: String,
-    },
-}
-
-/// Latest reviewer activity derived from `progress.jsonl` (for running UI).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ArenaProgressState {
-    pub round: u8,
-    pub total_rounds: u8,
-    /// Empty during reviewer rounds; `"arbiter"` during final arbiter phase.
-    #[serde(default)]
-    pub phase: String,
-    #[serde(default)]
-    pub thinking: Vec<String>,
-    #[serde(default)]
-    pub done: Vec<String>,
-}
-
-pub fn parse_progress_state(paths: &ArenaPaths) -> ArenaProgressState {
-    let path = paths.progress_jsonl();
-    let Ok(file) = fs::File::open(&path) else {
-        return ArenaProgressState::default();
-    };
-    let mut state = ArenaProgressState::default();
-    let mut thinking: HashSet<String> = HashSet::new();
-    let mut done: HashSet<String> = HashSet::new();
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(event) = serde_json::from_str::<ProgressEvent>(line) else {
-            continue;
-        };
-        match event {
-            ProgressEvent::RoundStarted {
-                round,
-                total_rounds,
-            } => {
-                thinking.clear();
-                done.clear();
-                state.round = round;
-                state.total_rounds = total_rounds;
-                state.phase.clear();
-            }
-            ProgressEvent::ArbiterStarted { .. } => {
-                thinking.clear();
-                done.clear();
-                state.phase = "arbiter".into();
-            }
-            ProgressEvent::ReviewerThinking { reviewer_id, round } => {
-                state.round = round;
-                thinking.insert(reviewer_id);
-            }
-            ProgressEvent::ReviewerDone {
-                reviewer_id, round, ..
-            } => {
-                state.round = round;
-                thinking.remove(&reviewer_id);
-                done.insert(reviewer_id);
-            }
-            ProgressEvent::ReviewerFailed {
-                reviewer_id, round, ..
-            } => {
-                state.round = round;
-                thinking.remove(&reviewer_id);
-            }
-            ProgressEvent::RunComplete { .. } => {
-                thinking.clear();
-            }
-            ProgressEvent::FindingVerdict { .. } => {}
-        }
-    }
-    state.thinking = thinking.into_iter().collect();
-    state.done = done.into_iter().collect();
-    state
-}
-
-pub fn append_progress_event(paths: &ArenaPaths, event: &ProgressEvent) -> Result<()> {
-    paths.ensure_dirs()?;
-    let mut record = serde_json::to_vec(event)?;
-    record.push(b'\n');
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.progress_jsonl())?;
-    // Formatting the record and newline separately lets concurrent appenders
-    // place another record between them.
-    file.write_all(&record)?;
-    Ok(())
-}
-
 pub fn delete_run_dir(er_dir: &Path, run_id: &str) -> Result<()> {
     let paths = ArenaPaths::for_run(er_dir, run_id);
     if paths.root.is_dir() {
@@ -345,46 +216,6 @@ mod tests {
     use crate::arena::model::*;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
-
-    #[test]
-    fn concurrent_progress_events_remain_complete_json_lines() {
-        let dir = tempdir().unwrap();
-        let paths = ArenaPaths::for_run(dir.path(), "parallel-events");
-        paths.ensure_dirs().unwrap();
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
-        let handles: Vec<_> = (0..8)
-            .map(|worker| {
-                let paths = paths.clone();
-                let barrier = std::sync::Arc::clone(&barrier);
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    for event in 0..100 {
-                        append_progress_event(
-                            &paths,
-                            &ProgressEvent::ReviewerThinking {
-                                reviewer_id: format!("reviewer-{worker}-{event}"),
-                                round: 1,
-                            },
-                        )
-                        .unwrap();
-                    }
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().unwrap();
-        }
-        let contents = fs::read_to_string(paths.progress_jsonl()).unwrap();
-        let mut reviewers = std::collections::HashSet::new();
-        for line in contents.lines() {
-            let event: ProgressEvent = serde_json::from_str(line)
-                .unwrap_or_else(|error| panic!("incomplete progress record: {error}: {line}"));
-            if let ProgressEvent::ReviewerThinking { reviewer_id, .. } = event {
-                reviewers.insert(reviewer_id);
-            }
-        }
-        assert_eq!(reviewers.len(), 800);
-    }
 
     /// Two writers saving one artifact at once must both finish: a cancel and
     /// the supervisor write `run.json` concurrently.
@@ -489,59 +320,14 @@ mod tests {
         let run = sample_run("run-fixture-001");
         save_run(&paths, &run).unwrap();
         save_diff_patch(&paths, "diff --git a/foo\n").unwrap();
-        append_progress_event(
-            &paths,
-            &ProgressEvent::RoundStarted {
-                round: 1,
-                total_rounds: 3,
-            },
-        )
-        .unwrap();
 
         let loaded = load_run(&paths).unwrap();
         assert_eq!(loaded.id, run.id);
         assert_eq!(loaded.findings.len(), 1);
         assert!(paths.diff_patch().is_file());
-        assert!(paths.progress_jsonl().is_file());
         assert_eq!(
             list_run_ids(&er).unwrap(),
             vec!["run-fixture-001".to_string()]
         );
-    }
-
-    #[test]
-    fn failed_reviewer_stops_thinking_and_keeps_reason_in_event_log() {
-        let dir = tempdir().unwrap();
-        let paths = ArenaPaths::for_run(&dir.path().join(".er"), "run-failure-001");
-        append_progress_event(
-            &paths,
-            &ProgressEvent::RoundStarted {
-                round: 1,
-                total_rounds: 3,
-            },
-        )
-        .unwrap();
-        append_progress_event(
-            &paths,
-            &ProgressEvent::ReviewerThinking {
-                reviewer_id: "reviewer-a".into(),
-                round: 1,
-            },
-        )
-        .unwrap();
-        append_progress_event(
-            &paths,
-            &ProgressEvent::ReviewerFailed {
-                reviewer_id: "reviewer-a".into(),
-                round: 1,
-                reason: "provider exited".into(),
-            },
-        )
-        .unwrap();
-
-        let state = parse_progress_state(&paths);
-        assert!(state.thinking.is_empty());
-        let log = fs::read_to_string(paths.progress_jsonl()).unwrap();
-        assert!(log.contains("provider exited"));
     }
 }

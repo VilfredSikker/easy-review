@@ -183,7 +183,7 @@ pub struct BackgroundTaskHandle {
     /// Held here rather than inside the runner so the App can reach it: a stop
     /// clones this, releases the app lock, then calls `kill`. The runner gets
     /// the same handle for the slot wait, spawn and timeout.
-    pub run: std::sync::Arc<crate::agent_run::AgentRunHandle>,
+    pub run: std::sync::Arc<er_agent::agent_run::AgentRunHandle>,
     /// One-shot result channel; produces `Ok(())` on success or an `Err`
     /// describing the failure when the subprocess finishes.
     pub result_rx: std::sync::mpsc::Receiver<anyhow::Result<()>>,

@@ -23,11 +23,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use er_engine::arena::{
-    load_run, start_arena_run, ArenaPaths, ArenaRegistry, ArenaRunInputs, ArenaScope,
+    load_run, start_arena_run, ArenaPaths, ArenaRunControls, ArenaRunInputs, ArenaScope,
     ArenaStartParams, ReviewerRef, RunStatus,
 };
 use er_engine::config::{AiModelConfig, AiProviderConfig, ErConfig};
@@ -117,7 +116,7 @@ fn run_arena(label: &str, reviewers: usize, rounds: Option<u8>, tmp: &Path) -> D
 
     let script = write_fake_provider(tmp);
     let config = config_with_provider(&script);
-    let registry = Arc::new(ArenaRegistry::new(Arc::new(|| {})));
+    let controls = ArenaRunControls::default();
     let er_dir_str = er_dir.to_string_lossy().to_string();
 
     let params = ArenaStartParams {
@@ -135,7 +134,7 @@ fn run_arena(label: &str, reviewers: usize, rounds: Option<u8>, tmp: &Path) -> D
     eprintln!("--- arena {label}: {reviewers} reviewers, rounds={rounds:?} ---");
     let started = Instant::now();
     let run_id = start_arena_run(
-        Arc::clone(&registry),
+        &controls,
         config,
         ArenaRunInputs {
             repo_root: repo_root.to_string_lossy().to_string(),
@@ -191,7 +190,7 @@ fn arena_wall_clock_tracks_round_count_not_the_cap() {
     // slot, so this round costs two reviewer latencies instead of one.
     let above_cap = run_arena("above-cap", REVIEWERS + 2, Some(1), tmp.path());
 
-    er_engine::agent_timing::emit_slot_summary("arena_harness");
+    er_agent::agent_timing::emit_slot_summary("arena_harness");
 
     let per_round = Duration::from_secs(REVIEWER_SECS);
     println!(

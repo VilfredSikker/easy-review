@@ -75,7 +75,6 @@ struct GateConfig {
     sidecar_fs_deny: Vec<String>,
     comment_boundary_allow: Vec<String>,
     agent_spawn_os_launch: Vec<String>,
-    agent_spawn_allow: Vec<String>,
 }
 
 /// `[workspace.metadata.lint-gate]` in the root manifest.
@@ -119,7 +118,6 @@ fn gate_config(root: &Path) -> anyhow::Result<GateConfig> {
             table.get("agent-spawn-os-launch"),
             "agent-spawn-os-launch",
         )?,
-        agent_spawn_allow: string_list(table.get("agent-spawn-allow"), "agent-spawn-allow")?,
     })
 }
 
@@ -244,11 +242,7 @@ fn sidecar_fs_diagnostics(root: &Path, deny: &[String]) -> anyhow::Result<Vec<Di
     Ok(sidecar_fs::evaluate(&by_file, deny, sidecar_fs::CODE))
 }
 
-fn agent_spawn_diagnostics(
-    root: &Path,
-    os_launch: &[String],
-    allow: &[String],
-) -> anyhow::Result<Vec<Diagnostic>> {
+fn agent_spawn_diagnostics(root: &Path, os_launch: &[String]) -> anyhow::Result<Vec<Diagnostic>> {
     let mut by_file = BTreeMap::new();
     for rel in crate_sources(root)? {
         let source = std::fs::read_to_string(root.join(&rel))?;
@@ -258,7 +252,7 @@ fn agent_spawn_diagnostics(
             by_file.insert(file, findings);
         }
     }
-    let mut out = agent_spawn::evaluate(&by_file, os_launch, allow, agent_spawn::CODE);
+    let mut out = agent_spawn::evaluate(&by_file, os_launch, agent_spawn::CODE);
     out.extend(agent_spawn::validate_os_launch(
         os_launch,
         agent_spawn::CODE,
@@ -326,11 +320,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     let spawn_gh = spawn_diagnostics(&root, &config.spawn_gh, "gh", "GitHub")?;
     let sidecar = sidecar_fs_diagnostics(&root, &config.sidecar_fs_deny)?;
     let boundary = comment_boundary_diagnostics(&root, &config.comment_boundary_allow)?;
-    let agent = agent_spawn_diagnostics(
-        &root,
-        &config.agent_spawn_os_launch,
-        &config.agent_spawn_allow,
-    )?;
+    let agent = agent_spawn_diagnostics(&root, &config.agent_spawn_os_launch)?;
     if flags.cohesion_only {
         for d in &cohesion {
             print!("{}", d.rendered);
@@ -450,7 +440,6 @@ budgeted = []
 sidecar-fs-deny = ["crates/er-engine/src/ai/annotation_store.rs"]
 comment-boundary = { allow = ["crates/er-engine/src/github_post.rs"] }
 agent-spawn-os-launch = ["crates/er-engine/src/os_launch.rs"]
-agent-spawn-allow = ["crates/x/src/agent.rs"]
 
 [workspace.metadata.lint-gate.impl-cohesion]
 max-groups = 1
@@ -482,6 +471,26 @@ allow = ["crates/x/src/a.rs"]
             config.agent_spawn_os_launch,
             ["crates/er-engine/src/os_launch.rs"]
         );
-        assert_eq!(config.agent_spawn_allow, ["crates/x/src/agent.rs"]);
+    }
+
+    /// The allow list is gone: every agent spawn is inside `er-agent` or an
+    /// OS-launch module. The key returning would make the gate quietly
+    /// permissive again, so its absence is a test.
+    #[test]
+    fn the_agent_spawn_allow_key_is_gone() {
+        let root = workspace_root().expect("the workspace root");
+        let manifest: toml::Table = std::fs::read_to_string(root.join("Cargo.toml"))
+            .expect("the root manifest")
+            .parse()
+            .expect("the root manifest parses");
+        let lint = manifest
+            .get("workspace")
+            .and_then(|workspace| workspace.get("metadata"))
+            .and_then(|metadata| metadata.get("lint-gate"))
+            .expect("the lint-gate table");
+        assert!(
+            lint.get("agent-spawn-allow").is_none(),
+            "agent-spawn-allow is deleted; a spawn outside er-agent must fail"
+        );
     }
 }

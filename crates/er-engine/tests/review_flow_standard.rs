@@ -20,7 +20,7 @@ struct SlotGuard {
 impl Drop for SlotGuard {
     fn drop(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(15);
-        while er_engine::agent_slots::active_count() > 0 && Instant::now() < deadline {
+        while er_agent::agent_slots::active_count() > 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(25));
         }
     }

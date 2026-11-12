@@ -30,7 +30,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
 use tui_textarea::TextArea;
 
@@ -1076,7 +1075,7 @@ pub struct TabState {
     /// an entry here with no `Running` status, or the reverse, means one of
     /// the two maps was updated without the other.
     pub command_runs:
-        std::collections::HashMap<String, std::sync::Arc<crate::agent_run::AgentRunHandle>>,
+        std::collections::HashMap<String, std::sync::Arc<er_agent::agent_run::AgentRunHandle>>,
 
     /// The review bucket each shell agent command was spawned into, captured at
     /// spawn. Completion clears that bucket's full-run leftovers, not the tab's
@@ -5954,11 +5953,9 @@ pub struct App {
     /// It must only signal the host; it is called from the worker thread.
     pub(crate) background_progress_notify: Option<crate::arena::ArenaNotify>,
 
-    /// Multi-round AI review arena runs (desktop orchestration).
-    pub arena_registry: std::sync::Arc<crate::arena::ArenaRegistry>,
-
-    /// Last started arena run id per tab `.er` directory.
-    pub active_arena_runs: std::collections::HashMap<String, Vec<String>>,
+    /// Live arena runs this process started: their stop flag, status and
+    /// progress. Durable state stays in `run.json`.
+    pub arena_runs: crate::arena::ArenaRunControls,
 
     /// Provider ids with an in-flight model discovery refresh (dedupe).
     pub model_discovery_inflight: std::collections::HashSet<String>,
@@ -5984,8 +5981,10 @@ impl App {
         self.background_progress_notify = notify;
     }
 
-    fn default_arena_registry() -> Arc<crate::arena::ArenaRegistry> {
-        Self::init_arena_registry(Arc::new(|| {}))
+    /// Install the host callback that wakes polling after a live arena
+    /// progress write. Called once by the desktop after the App is built.
+    pub fn set_arena_notify(&self, notify: crate::arena::ArenaNotify) {
+        self.arena_runs.set_notify(notify);
     }
 
     fn initial_ai_selection(config: &ErConfig) -> (Option<String>, Option<String>) {
@@ -6111,7 +6110,7 @@ impl App {
         let (er_config, config_load_error) = config::load_global_config_checked();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
-        let arena_registry = Self::init_arena_registry(Arc::new(|| {}));
+        let arena_runs = Default::default();
 
         let mut app = Self {
             ports: ports.clone(),
@@ -6145,8 +6144,7 @@ impl App {
             review_flow_revision: 0,
             review_flow_run_targets: std::collections::HashMap::new(),
             background_progress_notify: None,
-            arena_registry,
-            active_arena_runs: std::collections::HashMap::new(),
+            arena_runs,
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
@@ -6213,8 +6211,7 @@ impl App {
             review_flow_revision: 0,
             review_flow_run_targets: std::collections::HashMap::new(),
             background_progress_notify: None,
-            arena_registry: Self::default_arena_registry(),
-            active_arena_runs: std::collections::HashMap::new(),
+            arena_runs: Default::default(),
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
@@ -6276,8 +6273,7 @@ impl App {
             review_flow_revision: 0,
             review_flow_run_targets: std::collections::HashMap::new(),
             background_progress_notify: None,
-            arena_registry: Self::default_arena_registry(),
-            active_arena_runs: std::collections::HashMap::new(),
+            arena_runs: Default::default(),
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
@@ -6342,8 +6338,7 @@ impl App {
             review_flow_revision: 0,
             review_flow_run_targets: std::collections::HashMap::new(),
             background_progress_notify: None,
-            arena_registry: Self::default_arena_registry(),
-            active_arena_runs: std::collections::HashMap::new(),
+            arena_runs: Default::default(),
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
@@ -12947,8 +12942,7 @@ mod tests {
             review_flow_revision: 0,
             review_flow_run_targets: std::collections::HashMap::new(),
             background_progress_notify: None,
-            arena_registry: App::default_arena_registry(),
-            active_arena_runs: std::collections::HashMap::new(),
+            arena_runs: Default::default(),
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,

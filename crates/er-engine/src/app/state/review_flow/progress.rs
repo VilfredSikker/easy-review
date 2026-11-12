@@ -5,12 +5,9 @@ use crate::ai::flow_providers::FlowProvider;
 use crate::ai::review_flow::{
     FlowDepth, FlowTaskProgress, FlowTaskStage, FlowTaskStatus, ReviewFlow,
 };
-use crate::arena::{
-    ArenaPaths, ArenaRun, ProgressEvent, ReviewerRunStatus, RunStatus, ARBITER_REVIEWER_ID,
-};
+use crate::arena::ArenaRunControl;
+use crate::arena::{ArenaRun, ReviewerRunStatus, RunStatus, ARBITER_REVIEWER_ID};
 use crate::config::{AiHubConfig, ErConfig};
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::path::Path;
 
 fn provider_label(hub: &AiHubConfig, provider_id: &str) -> String {
     hub.providers
@@ -254,101 +251,63 @@ pub(super) fn set_arbiter_skipped(flow: &mut ReviewFlow) -> bool {
     false
 }
 
+/// Apply the run's live progress to the flow's task rows.
+///
+/// The control's state is a snapshot, so this re-applies it every poll; every
+/// step is idempotent, and a round start is the only transition that clears
+/// the previous round's sets.
 pub(super) fn refresh_arena_tasks(
     context: &mut ReviewFlowContext,
     flow: &mut ReviewFlow,
-    run_id: &str,
+    control: &ArenaRunControl,
 ) -> bool {
-    let path = ArenaPaths::for_run(Path::new(&context.target.er_dir), run_id).progress_jsonl();
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return false;
-    };
-    if metadata.len() <= context.arena_progress_offset {
-        return false;
-    }
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut reader = BufReader::new(file);
-    if reader
-        .seek(SeekFrom::Start(context.arena_progress_offset))
-        .is_err()
-    {
-        return false;
-    }
-
+    let progress = control.progress();
     let mut changed = false;
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        let Ok(read) = reader.read_until(b'\n', &mut line) else {
-            break;
-        };
-        if read == 0 || !line.ends_with(b"\n") {
-            break;
-        }
-        context.arena_progress_offset = context.arena_progress_offset.saturating_add(read as u64);
-        let Ok(event) = serde_json::from_slice::<ProgressEvent>(&line) else {
-            continue;
-        };
-        changed |= apply_arena_progress_event(context, flow, event);
+    if progress.round != 0 && u32::from(progress.round) != context.arena_progress_round {
+        context.arena_progress_round = u32::from(progress.round);
+        changed |= queue_round(
+            flow,
+            u32::from(progress.round),
+            u32::from(progress.total_rounds),
+        );
     }
-    changed
-}
-
-fn apply_arena_progress_event(
-    context: &mut ReviewFlowContext,
-    flow: &mut ReviewFlow,
-    event: ProgressEvent,
-) -> bool {
-    match event {
-        ProgressEvent::RoundStarted {
-            round,
-            total_rounds,
-        } => {
-            context.arena_progress_round = u32::from(round);
-            queue_round(flow, u32::from(round), u32::from(total_rounds))
+    if progress.phase == "arbiter" {
+        changed |= mark_arbiter_queued(flow);
+    }
+    for reviewer_id in &progress.thinking {
+        if reviewer_id == ARBITER_REVIEWER_ID {
+            changed |= mark_arbiter_running(flow);
+        } else {
+            let id = reviewer_task_id(reviewer_id, context.arena_progress_round);
+            changed |= set_task_status(flow, &id, FlowTaskStatus::Running, None);
         }
-        ProgressEvent::ReviewerThinking { reviewer_id, round } => {
-            context.arena_progress_round = u32::from(round);
+    }
+    for (round, reviewers) in &progress.done_by_round {
+        for reviewer_id in reviewers {
             if reviewer_id == ARBITER_REVIEWER_ID {
-                mark_arbiter_running(flow)
+                changed |= set_task_status(flow, "verifying:arbiter", FlowTaskStatus::Done, None);
             } else {
-                let id = reviewer_task_id(&reviewer_id, u32::from(round));
-                set_task_status(flow, &id, FlowTaskStatus::Running, None)
+                let id = reviewer_task_id(reviewer_id, u32::from(*round));
+                changed |= set_task_status(flow, &id, FlowTaskStatus::Done, None);
             }
         }
-        ProgressEvent::ReviewerDone { reviewer_id, .. } if reviewer_id == ARBITER_REVIEWER_ID => {
-            false
-        }
-        ProgressEvent::ReviewerDone {
-            reviewer_id, round, ..
-        } => {
-            context.arena_progress_round = u32::from(round);
-            let id = reviewer_task_id(&reviewer_id, u32::from(round));
-            set_task_status(flow, &id, FlowTaskStatus::Done, None)
-        }
-        ProgressEvent::ReviewerFailed {
-            reviewer_id,
-            round,
-            reason,
-        } => {
-            context.arena_progress_round = u32::from(round);
+    }
+    for (round, failures) in &progress.failed_by_round {
+        for (reviewer_id, reason) in failures {
             if reviewer_id == ARBITER_REVIEWER_ID {
-                set_task_status(
+                changed |= set_task_status(
                     flow,
                     "verifying:arbiter",
                     FlowTaskStatus::Failed,
-                    Some(reason),
-                )
+                    Some(reason.clone()),
+                );
             } else {
-                let id = reviewer_task_id(&reviewer_id, u32::from(round));
-                set_task_status(flow, &id, FlowTaskStatus::Failed, Some(reason))
+                let id = reviewer_task_id(reviewer_id, u32::from(*round));
+                changed |= set_task_status(flow, &id, FlowTaskStatus::Failed, Some(reason.clone()));
             }
         }
-        ProgressEvent::ArbiterStarted { .. } => mark_arbiter_queued(flow),
-        ProgressEvent::FindingVerdict { .. } | ProgressEvent::RunComplete { .. } => false,
     }
+    changed
 }
 
 fn queue_round(flow: &mut ReviewFlow, round: u32, total_rounds: u32) -> bool {
@@ -505,7 +464,7 @@ mod tests {
     use super::*;
     use crate::ai::flow_providers::ResolvedReviewModels;
     use crate::app::state::background::BackgroundTaskTarget;
-    use crate::arena::ArenaScope;
+    use crate::arena::{ArenaScope, ProgressEvent};
     use std::collections::{HashMap, HashSet};
 
     #[test]
@@ -532,6 +491,116 @@ mod tests {
         assert_eq!(flow.tasks[0].status, FlowTaskStatus::Queued);
         mark_arbiter_running(&mut flow);
         assert_eq!(flow.tasks[0].status, FlowTaskStatus::Running);
+    }
+
+    #[test]
+    fn reviewer_rows_follow_the_live_control_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let bucket = tmp.path().to_string_lossy().into_owned();
+            let mut app = App::new_for_test(Vec::new());
+            let lease = app.acquire_review_flow_lease(&bucket).unwrap();
+            let mut context = ReviewFlowContext {
+                lease,
+                target: BackgroundTaskTarget {
+                    repo_root: "/repo".into(),
+                    er_dir: bucket.clone(),
+                    branch_label: "main".into(),
+                    base_branch: "main".into(),
+                    scope: "branch".into(),
+                    pr_number: None,
+                    remote_repo: None,
+                    managed_local: true,
+                },
+                scope: "branch".into(),
+                arena_scope: ArenaScope::Branch,
+                repo_root: "/repo".into(),
+                reviewed_ref_note: None,
+                branch_ref: "main".into(),
+                base_branch: "main".into(),
+                raw_diff: String::new(),
+                config: app.config.clone(),
+                model_pools: ResolvedReviewModels {
+                    fast: Vec::new(),
+                    standard: Vec::new(),
+                    advanced: Vec::new(),
+                },
+                assignments: Vec::new(),
+                arbiter: None,
+                owned_tasks: HashMap::new(),
+                enqueued_lenses: HashSet::new(),
+                successful_lenses: HashSet::new(),
+                successful_finder_providers: Vec::new(),
+                successful_arbiter_provider: None,
+                backups: HashMap::new(),
+                next_archive: 1,
+                arena_run_id: Some("run".into()),
+                arena_progress_round: 0,
+                professor_follow_up_suggested: false,
+                draining: false,
+            };
+            let controls = crate::arena::ArenaRunControls::default();
+            let control = controls.new_control("run", &bucket);
+            let reviewer_id = "general::provider-model";
+            let mut flow = ReviewFlow::new("hash");
+            for round in [1, 2] {
+                flow.tasks.push(FlowTaskProgress {
+                    id: reviewer_task_id(reviewer_id, round),
+                    stage: if round == 1 {
+                        FlowTaskStage::Finding
+                    } else {
+                        FlowTaskStage::Verifying
+                    },
+                    lens: Some("general".into()),
+                    label: "General".into(),
+                    purpose: "Review".into(),
+                    provider_id: "provider".into(),
+                    provider_label: "Provider".into(),
+                    model_id: "model".into(),
+                    model_label: "Model".into(),
+                    status: FlowTaskStatus::Waiting,
+                    error: None,
+                    background_task_id: None,
+                    round: Some(round),
+                    total_rounds: Some(2),
+                });
+            }
+
+            control.emit(&ProgressEvent::RoundStarted {
+                round: 1,
+                total_rounds: 2,
+            });
+            assert!(refresh_arena_tasks(&mut context, &mut flow, &control));
+            assert_eq!(flow.tasks[0].status, FlowTaskStatus::Queued);
+            assert_eq!(flow.tasks[1].status, FlowTaskStatus::Waiting);
+
+            control.emit(&ProgressEvent::ReviewerThinking {
+                reviewer_id: reviewer_id.into(),
+                round: 1,
+            });
+            assert!(refresh_arena_tasks(&mut context, &mut flow, &control));
+            assert_eq!(flow.tasks[0].status, FlowTaskStatus::Running);
+
+            control.emit(&ProgressEvent::ReviewerDone {
+                reviewer_id: reviewer_id.into(),
+                round: 1,
+                findings_count: 1,
+            });
+            assert!(refresh_arena_tasks(&mut context, &mut flow, &control));
+            assert_eq!(flow.tasks[0].status, FlowTaskStatus::Done);
+
+            control.emit(&ProgressEvent::RoundStarted {
+                round: 2,
+                total_rounds: 2,
+            });
+            assert!(refresh_arena_tasks(&mut context, &mut flow, &control));
+            assert_eq!(flow.tasks[1].status, FlowTaskStatus::Queued);
+            assert_eq!(
+                flow.tasks[0].status,
+                FlowTaskStatus::Done,
+                "a finished round keeps its row state"
+            );
+        });
     }
 
     #[test]
@@ -576,7 +645,6 @@ mod tests {
                 backups: HashMap::new(),
                 next_archive: 1,
                 arena_run_id: Some("run".into()),
-                arena_progress_offset: 0,
                 arena_progress_round: 1,
                 professor_follow_up_suggested: false,
                 draining: false,

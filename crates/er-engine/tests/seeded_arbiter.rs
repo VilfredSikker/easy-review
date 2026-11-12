@@ -11,11 +11,10 @@
 
 use er_engine::ai::finding_key;
 use er_engine::arena::{
-    load_run, start_seeded_run, ArenaPaths, ArenaRegistry, ArenaRunKind, RunStatus,
+    load_run, start_seeded_run, ArenaPaths, ArenaRunControls, ArenaRunKind, RunStatus,
     SeededStartParams, Verdict,
 };
 use serde_json::json;
-use std::sync::Arc;
 
 const HASH: &str = "diff-hash";
 
@@ -116,10 +115,10 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
 
         let mut config = er_engine::config::ErConfig::default();
         er_engine::config::supplement_ai_hub(&mut config.ai_hub);
-        let registry = Arc::new(ArenaRegistry::new(Arc::new(|| {})));
+        let controls = ArenaRunControls::default();
 
         let started = start_seeded_run(
-            Arc::clone(&registry),
+            &controls,
             config,
             tmp.path().to_string_lossy().to_string(),
             SeededStartParams {
@@ -164,8 +163,15 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
         // Surface a supervisor panic on this thread. Without this, a worker that
         // hits the storage guard leaves the run Running and the poll below
         // fails 30 s later without the guard's message.
-        if let Err(payload) = registry.join_supervisor(&run_id) {
-            std::panic::resume_unwind(payload);
+        let control = controls
+            .get(&run_id)
+            .expect("a started seeded run has a control");
+        assert!(
+            control.wait_finished(std::time::Duration::from_secs(30)),
+            "the seeded run never finished"
+        );
+        if let Some(message) = control.panic_message() {
+            panic!("the arena supervisor panicked: {message}");
         }
 
         let paths = ArenaPaths::for_run(&er_dir, &run_id);
