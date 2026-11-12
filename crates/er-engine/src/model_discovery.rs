@@ -6,7 +6,6 @@ use anyhow::{bail, Context, Result};
 use er_agent::decode::OutputProtocol;
 use er_agent::provider::{self, ProviderError, ProviderSpec};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -212,23 +211,9 @@ pub fn cache_is_fresh(cache: &ModelCache) -> bool {
 }
 
 pub fn save_cache(provider_id: &str, cache: &ModelCache) -> Result<()> {
-    let dir = cache_dir();
-    std::fs::create_dir_all(&dir)?;
     let path = cache_path(provider_id);
-    let tmp = dir.join(format!(
-        "{}.tmp.{}",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("cache.json"),
-        std::process::id()
-    ));
     let json = serde_json::to_string_pretty(cache)?;
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(json.as_bytes())?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, &path)?;
+    er_store::atomic::write_atomic(&path, json.as_bytes())?;
     Ok(())
 }
 

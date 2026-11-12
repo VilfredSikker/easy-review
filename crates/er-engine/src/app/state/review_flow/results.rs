@@ -862,7 +862,9 @@ mod tests {
                 let before = std::fs::read(paths.run_json()).unwrap();
                 std::fs::write(&external, &before).unwrap();
                 let destination = if temporary {
-                    paths.run_json().with_extension("tmp")
+                    // The historical fixed name: `run.json` with its extension
+                    // replaced, as `with_extension("tmp")` produced.
+                    paths.run_json().with_file_name("run.tmp")
                 } else {
                     std::fs::remove_file(paths.run_json()).unwrap();
                     paths.run_json()

@@ -5082,12 +5082,9 @@ fn save_finding_promotions(
     er_dir: &str,
     map: &std::collections::HashMap<String, String>,
 ) -> std::io::Result<()> {
-    std::fs::create_dir_all(er_dir)?;
     let path = finding_promotions_path(er_dir);
-    let tmp = format!("{path}.tmp");
     let json = serde_json::to_string_pretty(map).unwrap_or_else(|_| "{}".to_string());
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, &path)
+    er_store::atomic::write_atomic(std::path::Path::new(&path), json.as_bytes())
 }
 
 // ── Ask AI ──────────────────────────────────────────────────────────────────
@@ -10708,11 +10705,8 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, &'static str> {
 /// the absolute path written. Atomic: tmp file → rename.
 fn save_screenshot_bytes(comments_dir: &str, id: &str, bytes: &[u8]) -> std::io::Result<String> {
     let screenshots_dir = format!("{comments_dir}/screenshots");
-    std::fs::create_dir_all(&screenshots_dir)?;
     let final_path = format!("{screenshots_dir}/{id}.png");
-    let tmp_path = format!("{final_path}.tmp");
-    std::fs::write(&tmp_path, bytes)?;
-    std::fs::rename(&tmp_path, &final_path)?;
+    er_store::atomic::write_atomic(std::path::Path::new(&final_path), bytes)?;
     // Best-effort canonicalize for absolute path; fall back to the raw join.
     let abs = std::fs::canonicalize(&final_path)
         .map(|p| p.to_string_lossy().into_owned())
@@ -12755,12 +12749,15 @@ mod tests {
         let read_back = std::fs::read(&path).unwrap();
         assert_eq!(read_back, png_bytes, "saved bytes must match input");
 
-        // Ensure tmp file was cleaned up by the rename.
-        let tmp_path = format!("{path}.tmp");
-        assert!(
-            !std::path::Path::new(&tmp_path).exists(),
-            "tmp file must be gone after rename"
-        );
+        // No temporary file may survive the rename.
+        let leftovers: Vec<String> =
+            std::fs::read_dir(std::path::Path::new(&path).parent().unwrap())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.contains(".tmp."))
+                .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]

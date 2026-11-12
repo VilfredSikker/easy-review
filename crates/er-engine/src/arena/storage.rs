@@ -60,34 +60,21 @@ impl ArenaPaths {
     }
 }
 
-/// Write `bytes` to `path` by renaming a fully written temporary file.
-///
-/// The temporary name carries the pid and a per-process counter. A cancel and
-/// the run's supervisor can save the same `run.json` at once, and a shared
-/// temporary name lets one rename consume the file the other still means to
-/// rename.
+/// Write `bytes` to `path` through the shared atomic writer.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = unique_tmp_path(path);
-    fs::write(&tmp, bytes)?;
-    if let Err(error) = fs::rename(&tmp, path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(error)
-            .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()));
-    }
-    Ok(())
+    er_store::atomic::write_atomic(path, bytes).with_context(|| format!("write {}", path.display()))
 }
 
-fn unique_tmp_path(path: &Path) -> std::path::PathBuf {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nth = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("artifact");
-    path.with_file_name(format!("{name}.tmp.{}.{nth}", std::process::id()))
+/// The fixed temporary path builds before the shared writer existed:
+/// `with_extension("tmp")` turned `run.json` into `run.tmp`. Recovery refuses
+/// to write through a symlink placed where one could be.
+pub(crate) fn legacy_tmp_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path
+        .file_stem()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    name.push(".tmp");
+    path.with_file_name(name)
 }
 
 pub fn save_run(paths: &ArenaPaths, run: &ArenaRun) -> Result<()> {
@@ -109,7 +96,7 @@ pub(crate) fn load_historical_run(paths: &ArenaPaths) -> Result<Option<ArenaRun>
     for path in [
         &paths.root,
         &paths.run_json(),
-        &paths.run_json().with_extension("tmp"),
+        &legacy_tmp_path(&paths.run_json()),
     ] {
         match fs::symlink_metadata(path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {

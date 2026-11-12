@@ -73,16 +73,13 @@ pub fn save_ui_annotations(
     comments_dir: &str,
     annotations: &[UiAnnotation],
 ) -> std::io::Result<()> {
-    std::fs::create_dir_all(comments_dir)?;
     let path = format!("{comments_dir}/ui-annotations.json");
-    let tmp = format!("{path}.tmp");
     let file = ErUiAnnotations {
         version: 1,
         annotations: annotations.to_vec(),
     };
     let json = serde_json::to_string_pretty(&file).map_err(std::io::Error::other)?;
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, &path)
+    er_store::atomic::write_atomic(std::path::Path::new(&path), json.as_bytes())
 }
 
 #[cfg(test)]

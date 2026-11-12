@@ -5,6 +5,7 @@
 //! and never builds a store path by hand.
 
 pub mod artifact;
+pub mod atomic;
 pub mod envelope;
 pub mod error;
 pub mod event;
@@ -307,6 +308,7 @@ pub(crate) mod test_support {
     pub fn ignore_patterns() -> Vec<crate::registry::Pattern> {
         [
             "*.tmp",
+            "*.tmp.*",
             "*.prev.json",
             ".diff-tmp.sha256",
             ".diff-annotated.sha256",

@@ -1969,18 +1969,8 @@ pub fn save_config_to(path: &std::path::Path, config: &ErConfig) -> Result<()> {
         }
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("config.toml");
-    let tmp_path = path.with_file_name(format!("{name}.tmp.{}", std::process::id()));
-
     let content = toml::to_string_pretty(&persisted_config(config))?;
-    std::fs::write(&tmp_path, content)?;
-    std::fs::rename(&tmp_path, path)?;
+    er_store::atomic::write_atomic_durable(path, content.as_bytes())?;
     Ok(())
 }
 
@@ -2420,6 +2410,22 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_saves_through_the_durable_atomic_write() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub fn save_config_to")
+            .nth(1)
+            .expect("save_config_to is in this file")
+            .split("\n}\n")
+            .next()
+            .expect("save_config_to has a body");
+        assert!(
+            body.contains("write_atomic_durable"),
+            "a config save must fsync the file and its directory"
+        );
+    }
 
     // ── agent timeout ──
 
