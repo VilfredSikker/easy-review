@@ -683,10 +683,6 @@ pub struct SeededStartParams {
 ///
 /// Returns `None` when there are no expert findings to validate, so a caller
 /// offers the action only when it would do something.
-#[expect(
-    clippy::expect_used,
-    reason = "a poisoned arena lock means a reviewer or supervisor thread already panicked; re-panicking keeps that loud"
-)]
 pub fn start_seeded_run(
     controls: &ArenaRunControls,
     config: ErConfig,
@@ -1377,10 +1373,6 @@ fn run_round2_parallel(
     })
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "a poisoned arena lock means a reviewer or supervisor thread already panicked; re-panicking keeps that loud"
-)]
 fn run_supervisor(
     ctx: &SupervisorCtx<'_>,
     patch_path: &str,
@@ -1667,10 +1659,6 @@ enum ArbiterOutcome {
 /// Shared by the normal path (after every cross-check round) and the seeded path
 /// (straight from the expert dedupe). The caller owns what follows — marking the
 /// run complete, or returning early on cancellation.
-#[expect(
-    clippy::expect_used,
-    reason = "a poisoned arena lock means a reviewer or supervisor thread already panicked; re-panicking keeps that loud"
-)]
 fn run_arbiter(
     ctx: &SupervisorCtx<'_>,
     run: &mut ArenaRun,
