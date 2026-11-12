@@ -450,6 +450,31 @@ mod tests {
     }
 
     #[test]
+    fn a_poisoned_control_map_still_serves_its_runs() {
+        let controls = ArenaRunControls::default();
+        controls.insert_for_test("run-live", "/tmp/bucket", RunStatus::Running { round: 1 });
+        let poisoned = controls.clone();
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(move || {
+            let _guard = poisoned.runs.lock().unwrap();
+            panic!("poison the control map");
+        }));
+
+        let live = controls
+            .get("run-live")
+            .expect("a poisoned map still serves a registered run");
+        live.cancel();
+        assert!(live.is_cancelled(), "the run could not be cancelled");
+
+        let fresh = controls.new_control("run-new", "/tmp/bucket");
+        controls.insert(&fresh);
+        assert!(
+            controls.get("run-new").is_some(),
+            "a new run could not register"
+        );
+        assert_eq!(controls.active_ids().len(), 2);
+    }
+
+    #[test]
     fn a_registered_control_is_visible_before_its_supervisor_runs() {
         let controls = ArenaRunControls::default();
         let control = controls.new_control("run-order", "/tmp/bucket");
