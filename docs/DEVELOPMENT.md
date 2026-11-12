@@ -368,7 +368,11 @@ temporary name carries the pid and a process-wide counter. A fixed
 just atomic-tmp-check   # fails on a fixed temporary name; comments and unique names are ignored
 ```
 
-CI runs it in the Clippy job.
+It matches `with_extension("…tmp")` and one-line `format!("…tmp")`. Comment lines
+and plain string literals — test expectations, fake scripts — do not match, but a
+test that builds a fixed name with `format!` is flagged like production code:
+build such an expectation from plain parts, or go through the helper. CI runs it
+in the Clippy job.
 
 Disable one site, with the reason, rather than growing a baseline:
 

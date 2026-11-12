@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -62,33 +61,6 @@ fn serialize<T: Artifact>(value: &T, written_at: &str) -> Result<String, StoreEr
         })?),
         Mode::Bare => Ok(serde_json::to_string_pretty(value)?),
     }
-}
-
-fn write_tmp(
-    tmp: &Path,
-    path: &Path,
-    bytes: &[u8],
-    parent: &Path,
-    durable: bool,
-) -> Result<(), StoreError> {
-    if durable {
-        let mut file = std::fs::File::create(tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(tmp, path)?;
-        #[cfg(unix)]
-        {
-            let directory = std::fs::File::open(parent)?;
-            directory.sync_all()?;
-        }
-        #[cfg(not(unix))]
-        let _ = parent;
-    } else {
-        std::fs::write(tmp, bytes)?;
-        std::fs::rename(tmp, path)?;
-    }
-    Ok(())
 }
 
 /// A typed view over one store root.
@@ -310,21 +282,20 @@ impl ArtifactStore {
     }
 
     fn write_bytes(path: &Path, bytes: &[u8], durable: bool) -> Result<(), StoreError> {
-        let parent = path.parent().ok_or_else(|| StoreError::InvalidPath {
+        path.parent().ok_or_else(|| StoreError::InvalidPath {
             value: path.display().to_string(),
         })?;
-        std::fs::create_dir_all(parent)?;
         path.file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| StoreError::InvalidPath {
                 value: path.display().to_string(),
             })?;
-        let tmp = crate::atomic::unique_tmp_path(path);
-        let result = write_tmp(&tmp, path, bytes, parent, durable);
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
+        if durable {
+            crate::atomic::write_atomic_durable(path, bytes)?;
+        } else {
+            crate::atomic::write_atomic(path, bytes)?;
         }
-        result
+        Ok(())
     }
 
     pub fn delete<T: Artifact>(&self, key: &ArtifactKey<T>) -> Result<(), StoreError> {

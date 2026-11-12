@@ -20,8 +20,6 @@ mod voting;
 
 #[cfg(test)]
 pub(crate) use adapter::ARENA_TEST_ENV_LOCK;
-#[cfg(test)]
-pub(crate) use storage::legacy_tmp_path;
 
 pub use adapter::{fake_arena_call_count, is_cancelled_error};
 pub use agents::{agent_meta, list_arena_agent_kinds, AgentMeta};

@@ -65,12 +65,16 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     er_store::atomic::write_atomic(path, bytes).with_context(|| format!("write {}", path.display()))
 }
 
-/// The fixed temporary path builds before the shared writer existed. Recovery
-/// refuses to write through a symlink placed where one could be.
+/// The fixed temporary path builds before the shared writer existed:
+/// `with_extension("tmp")` turned `run.json` into `run.tmp`. Recovery refuses
+/// to write through a symlink placed where one could be.
 pub(crate) fn legacy_tmp_path(path: &Path) -> std::path::PathBuf {
-    let mut name = path.as_os_str().to_os_string();
+    let mut name = path
+        .file_stem()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
     name.push(".tmp");
-    std::path::PathBuf::from(name)
+    path.with_file_name(name)
 }
 
 pub fn save_run(paths: &ArenaPaths, run: &ArenaRun) -> Result<()> {
