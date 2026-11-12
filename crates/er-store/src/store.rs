@@ -17,14 +17,14 @@ pub(crate) fn now_epoch_secs() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-enum FileState {
+pub(crate) enum FileState {
     Missing,
     NotFile,
     TooLarge(u64),
     Readable,
 }
 
-fn file_state(path: &Path) -> Result<FileState, StoreError> {
+pub(crate) fn file_state(path: &Path) -> Result<FileState, StoreError> {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -49,7 +49,7 @@ fn remove_file(path: &Path) -> Result<(), StoreError> {
     }
 }
 
-fn serialize<T: Artifact>(value: &T, written_at: &str) -> Result<String, StoreError> {
+pub(crate) fn serialize<T: Artifact>(value: &T, written_at: &str) -> Result<String, StoreError> {
     match T::MODE {
         Mode::Enveloped => Ok(serde_json::to_string_pretty(&Envelope {
             kind: T::KIND,
