@@ -294,9 +294,19 @@ fn validate_run_key(run_key: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::Serialize;
 
-    fn output<T: Serialize>(path: &Path, value: &T) {
+    /// A producer output written the way the host stores it.
+    fn output<T: er_store::Artifact<Slot = ()>>(dir: &Path, value: &T) {
+        crate::test_support::write_sidecar(dir, value);
+    }
+
+    /// A producer output for a kind that has a slot.
+    fn output_slot<T: er_store::Artifact>(dir: &Path, slot: T::Slot, value: &T) {
+        crate::test_support::write_sidecar_slot(dir, slot, value);
+    }
+
+    /// A file outside the bucket, which the symlink tests point at.
+    fn raw_output(path: &Path, value: &impl serde::Serialize) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
     }
@@ -327,13 +337,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         crate::storage::with_test_storage_root(root, || {
-            output(&root.join("triage.json"), &triage("same"));
-            output(
-                &root.join("experts/security.json"),
+            output(root, &triage("same"));
+            output_slot(
+                root,
+                er_store::ExpertId::new("security").unwrap(),
                 &expert("security", "same"),
             );
-            output(
-                &root.join("experts/testing.json"),
+            output_slot(
+                root,
+                er_store::ExpertId::new("testing").unwrap(),
                 &expert("testing", "other"),
             );
 
@@ -355,13 +367,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         crate::storage::with_test_storage_root(root, || {
-            output(&root.join("review.json"), &general("old"));
+            output(root, &general("old"));
             assert!(validate_flow_output(root, &FlowProducer::General, "new").is_err());
-            output(&root.join("review.json"), &general("new"));
+            output(root, &general("new"));
             assert!(validate_flow_output(root, &FlowProducer::General, "new").is_ok());
 
-            output(
-                &root.join("experts/security.json"),
+            output_slot(
+                root,
+                er_store::ExpertId::new("security").unwrap(),
                 &expert("testing", "new"),
             );
             assert!(
@@ -393,15 +406,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         crate::storage::with_test_storage_root(root, || {
-            output(&root.join("review.json"), &general("old"));
+            output(root, &general("old"));
             let backup = archive_flow_output(root, "run-restore", &FlowProducer::General).unwrap();
             backup.restore().unwrap();
             assert_eq!(
-                serde_json::from_slice::<ErReview>(
-                    &std::fs::read(root.join("review.json")).unwrap()
-                )
-                .unwrap()
-                .diff_hash,
+                crate::test_support::read_sidecar::<ErReview>(root).diff_hash,
                 "old"
             );
 
@@ -409,11 +418,7 @@ mod tests {
             std::fs::write(root.join("review.json"), b"not json").unwrap();
             backup.restore().unwrap();
             assert_eq!(
-                serde_json::from_slice::<ErReview>(
-                    &std::fs::read(root.join("review.json")).unwrap()
-                )
-                .unwrap()
-                .diff_hash,
+                crate::test_support::read_sidecar::<ErReview>(root).diff_hash,
                 "old"
             );
             assert_eq!(
@@ -432,14 +437,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         crate::storage::with_test_storage_root(root, || {
-            output(&root.join("review.json"), &general("old"));
+            output(root, &general("old"));
             let backup = archive_flow_output(root, "run-valid", &FlowProducer::General).unwrap();
-            output(&root.join("review.json"), &general("new"));
+            output(root, &general("new"));
 
             backup.restore().unwrap();
 
-            let current: ErReview =
-                serde_json::from_slice(&std::fs::read(root.join("review.json")).unwrap()).unwrap();
+            let current: ErReview = crate::test_support::read_sidecar(root);
             let archived: ErReview =
                 serde_json::from_slice(&std::fs::read(backup.archive_path().unwrap()).unwrap())
                     .unwrap();
@@ -472,7 +476,7 @@ mod tests {
             crate::storage::with_test_storage_root(&root, || {
                 std::fs::create_dir_all(&root).unwrap();
                 std::fs::create_dir_all(&outside).unwrap();
-                output(
+                raw_output(
                     &outside.join("security.json"),
                     &expert("security", "outside"),
                 );
@@ -505,7 +509,7 @@ mod tests {
             let outside = temp.path().join("outside.json");
             crate::storage::with_test_storage_root(&root, || {
                 std::fs::create_dir_all(&root).unwrap();
-                output(&outside, &general("expected"));
+                raw_output(&outside, &general("expected"));
                 symlink(&outside, root.join("review.json")).unwrap();
 
                 assert!(validate_flow_output(&root, &FlowProducer::General, "expected").is_err());
@@ -526,8 +530,9 @@ mod tests {
             crate::storage::with_test_storage_root(&root, || {
                 std::fs::create_dir_all(&root).unwrap();
                 std::fs::create_dir_all(&outside).unwrap();
-                output(
-                    &root.join("experts/security.json"),
+                output_slot(
+                    &root,
+                    er_store::ExpertId::new("security").unwrap(),
                     &expert("security", "old"),
                 );
                 let backup = archive_flow_output(
@@ -538,7 +543,7 @@ mod tests {
                 .unwrap();
 
                 std::fs::remove_dir(root.join("experts")).unwrap();
-                output(
+                raw_output(
                     &outside.join("security.json"),
                     &expert("security", "outside"),
                 );
@@ -578,8 +583,8 @@ mod tests {
             crate::storage::with_test_storage_root(&root, || {
                 std::fs::create_dir_all(&root).unwrap();
                 std::fs::create_dir_all(&outside).unwrap();
-                output(&root.join("review.json"), &general("old"));
-                output(&outside.join("review.json"), &general("outside"));
+                output(&root, &general("old"));
+                raw_output(&outside.join("review.json"), &general("outside"));
                 let backup =
                     archive_flow_output(&root, "replacement-link", &FlowProducer::General).unwrap();
                 std::fs::write(root.join("review.json"), b"malformed").unwrap();

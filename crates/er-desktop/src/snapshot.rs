@@ -7481,21 +7481,27 @@ mod tests {
         er_engine::storage::with_test_storage_root(storage.path(), || {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path();
-            std::fs::write(path.join("review.json"), serde_json::to_vec(&serde_json::json!({
-            "version": 1, "diff_hash": "hash",
-            "files": { "a.rs": { "risk": "medium", "findings": [
-                { "id": "open", "severity": "high", "title": "Open", "confidence": "dropped" },
-                { "id": "z-open", "severity": "high", "title": "Open", "confidence": "dropped" },
-                { "id": "resolved", "severity": "medium", "title": "Resolved", "confidence": "dropped", "resolved": true },
-                { "id": "dropped", "severity": "low", "title": "Dropped", "confidence": "dropped" }
-            ] } }
-        })).unwrap()).unwrap();
-            std::fs::write(path.join("arbiter.json"), serde_json::to_vec(&serde_json::json!({
-            "version": 1, "diff_hash": "hash", "verdicts": [
-                { "id": er_engine::ai::finding_key("a.rs", None, "Open"), "verdict": "escalated" },
-                { "id": er_engine::ai::finding_key("a.rs", None, "Resolved"), "verdict": "escalated" }
-            ]
-        })).unwrap()).unwrap();
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+                path,
+                serde_json::json!({
+                    "version": 1, "diff_hash": "hash",
+                    "files": { "a.rs": { "risk": "medium", "findings": [
+                        { "id": "open", "severity": "high", "title": "Open", "confidence": "dropped" },
+                        { "id": "z-open", "severity": "high", "title": "Open", "confidence": "dropped" },
+                        { "id": "resolved", "severity": "medium", "title": "Resolved", "confidence": "dropped", "resolved": true },
+                        { "id": "dropped", "severity": "low", "title": "Dropped", "confidence": "dropped" }
+                    ] } }
+                }),
+            );
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ArbiterReview>(
+                path,
+                serde_json::json!({
+                    "version": 1, "diff_hash": "hash", "verdicts": [
+                        { "id": er_engine::ai::finding_key("a.rs", None, "Open"), "verdict": "escalated" },
+                        { "id": er_engine::ai::finding_key("a.rs", None, "Resolved"), "verdict": "escalated" }
+                    ]
+                }),
+            );
             let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
             let mut tab = TabState::new_for_test(er_engine::git::parse_diff(raw));
             tab.ai = er_engine::ai::load_ai_state(path.to_str().unwrap(), "hash", None);
@@ -7549,11 +7555,10 @@ mod tests {
             );
             let arbiter = path.join("arbiter.json");
             let original = std::fs::read(&arbiter).unwrap();
-            std::fs::write(
-                &arbiter,
-                r#"{"version":1,"diff_hash":"older","verdicts":[]}"#,
-            )
-            .unwrap();
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ArbiterReview>(
+                path,
+                serde_json::json!({"version": 1, "diff_hash": "older", "verdicts": []}),
+            );
             std::fs::OpenOptions::new()
                 .write(true)
                 .open(&arbiter)
@@ -7601,18 +7606,24 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path();
             let key = er_engine::ai::finding_key("a.rs", None, "Needs review");
-            std::fs::write(path.join("review.json"), serde_json::to_vec(&serde_json::json!({
-            "version": 1, "diff_hash": "hash",
-            "files": { "a.rs": { "risk": "medium", "findings": [
-                { "id": "f-1", "severity": "medium", "title": "Needs review", "line_start": null, "confidence": "informational" },
-                { "id": "f-2", "severity": "medium", "title": "Other", "line_start": null }
-            ] } }
-        })).unwrap()).unwrap();
-            std::fs::write(path.join("arbiter.json"), serde_json::to_vec(&serde_json::json!({
-            "version": 1, "diff_hash": "hash", "verdicts": [
-                { "id": key, "verdict": "escalated", "confidence": "informational", "rationale": "Evidence conflicts" }
-            ]
-        })).unwrap()).unwrap();
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+                path,
+                serde_json::json!({
+                    "version": 1, "diff_hash": "hash",
+                    "files": { "a.rs": { "risk": "medium", "findings": [
+                        { "id": "f-1", "severity": "medium", "title": "Needs review", "line_start": null, "confidence": "informational" },
+                        { "id": "f-2", "severity": "medium", "title": "Other", "line_start": null }
+                    ] } }
+                }),
+            );
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ArbiterReview>(
+                path,
+                serde_json::json!({
+                    "version": 1, "diff_hash": "hash", "verdicts": [
+                        { "id": key, "verdict": "escalated", "confidence": "informational", "rationale": "Evidence conflicts" }
+                    ]
+                }),
+            );
             let mut tab = TabState::new_for_test(vec![]);
             tab.ai = er_engine::ai::load_ai_state(path.to_str().unwrap(), "hash", None);
             let snapshot = build_ai_snapshot(&tab, None);
@@ -8018,27 +8029,23 @@ mod tests {
                     "hunk_index": 0, "line_start": line, "line_end": line
                 })
             };
-            std::fs::create_dir_all(dir.join("experts")).unwrap();
-            std::fs::write(
-                dir.join("experts/security.json"),
+            er_engine::test_support::write_sidecar_json_slot::<er_engine::ai::ExpertReview>(
+                dir,
+                er_store::ExpertId::new("security").unwrap(),
                 serde_json::json!({
                     "version": 1, "expert_id": "security", "diff_hash": "pr-hash",
                     "created_at": "2026-10-30T10:00:00Z",
                     "files": {"src/a.rs": {"findings": [finding("s1", 3), finding("s2", 9)]}}
-                })
-                .to_string(),
-            )
-            .unwrap();
-            std::fs::write(
-                dir.join("professor.json"),
+                }),
+            );
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ProfessorReview>(
+                dir,
                 serde_json::json!({
                     "version": 1, "diff_hash": "pr-hash",
                     "created_at": "2026-10-30T10:05:00Z",
                     "files": {"src/b.rs": {"findings": [finding("p1", 5)]}}
-                })
-                .to_string(),
-            )
-            .unwrap();
+                }),
+            );
 
             let facts = OtherBucketFacts::read(dir.to_str().unwrap());
             assert_eq!(facts.review_hash.as_deref(), Some("pr-hash"));

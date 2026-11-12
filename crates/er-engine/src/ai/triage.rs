@@ -406,11 +406,10 @@ mod tests {
     fn triage_file_written_by_an_agent_loads() {
         let dir = tempfile::TempDir::new().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
-            std::fs::write(
-                dir.path().join("triage.json"),
-                r#"{"version":1,"diff_hash":"hash","first_impression":"small change","verdict":{"primary":"general"}}"#,
-            )
-            .unwrap();
+            crate::test_support::write_sidecar_json::<TriageReview>(
+                dir.path(),
+                serde_json::json!({"version":1,"diff_hash":"hash","first_impression":"small change","verdict":{"primary":"general"}}),
+            );
 
             let triage =
                 load_triage_review(dir.path().to_str().unwrap()).expect("the agent's triage");

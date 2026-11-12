@@ -1647,8 +1647,10 @@ mod tests {
             let bucket = tmp.path().join("bucket");
             std::fs::create_dir_all(&repo).unwrap();
             std::fs::create_dir_all(&bucket).unwrap();
-            let old_review = br#"{"version":1,"diff_hash":"previous-generation","files":{}}"#;
-            std::fs::write(bucket.join("review.json"), old_review).unwrap();
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+                &bucket,
+                serde_json::json!({"version":1,"diff_hash":"previous-generation","files":{}}),
+            );
 
             let mut app = app_with_managed_dir(bucket.to_str().unwrap());
             app.tab_mut().repo_root = repo.to_string_lossy().into_owned();

@@ -166,3 +166,82 @@ pub fn write_executable_script(path: &Path, body: &str) -> std::io::Result<()> {
 pub fn write_executable_script(path: &Path, body: &str) -> std::io::Result<()> {
     std::fs::write(path, body)
 }
+
+// ── Store fixtures ──
+
+/// Write one bucket artifact the way the host does, for a test fixture.
+///
+/// The write goes through `er_store` with the bucket as its scope, so a
+/// fixture follows the kind's storage mode now and its envelope when P30b.2
+/// deletes the bare mode. A fixture that must stay unreadable (a malformed
+/// file, a bare payload proving rejection) keeps its raw write in the test.
+pub fn write_sidecar<T: er_store::Artifact<Slot = ()>>(dir: &Path, value: &T) {
+    write_sidecar_slot(dir, (), value);
+}
+
+/// [`write_sidecar`] for a kind with a slot, such as `experts/<id>.json`.
+pub fn write_sidecar_slot<T: er_store::Artifact>(dir: &Path, slot: T::Slot, value: &T) {
+    let store = er_store::ArtifactStore::new(dir);
+    let scope = match er_store::Scope::dir(dir) {
+        Ok(scope) => scope,
+        Err(error) => panic!("test fixture bucket: {error}"),
+    };
+    let key = match er_store::ArtifactKey::<T>::new(scope, slot) {
+        Ok(key) => key,
+        Err(error) => panic!("test fixture key: {error}"),
+    };
+    store
+        .write(&key, value)
+        .unwrap_or_else(|error| panic!("test fixture write: {error}"));
+}
+
+/// [`write_sidecar`] for a fixture still held as `json!`. It is parsed into the
+/// kind first, so a fixture that drifts from the type fails here.
+pub fn write_sidecar_json<T: er_store::Artifact<Slot = ()>>(
+    dir: &Path,
+    payload: serde_json::Value,
+) {
+    write_sidecar(dir, &typed_fixture::<T>(payload));
+}
+
+/// [`write_sidecar_slot`] for a fixture still held as `json!`.
+pub fn write_sidecar_json_slot<T: er_store::Artifact>(
+    dir: &Path,
+    slot: T::Slot,
+    payload: serde_json::Value,
+) {
+    write_sidecar_slot(dir, slot, &typed_fixture::<T>(payload));
+}
+
+fn typed_fixture<T: er_store::Artifact>(payload: serde_json::Value) -> T {
+    serde_json::from_value(payload).unwrap_or_else(|error| panic!("test fixture payload: {error}"))
+}
+
+/// Read one bucket artifact the way the host does, for a test assertion.
+///
+/// Use this where a test raw-parsed a fixture it wrote; the bytes are the
+/// kind's stored form, which is a payload today and an envelope after P30b.2.
+pub fn read_sidecar<T: er_store::Artifact<Slot = ()>>(dir: &Path) -> T {
+    read_sidecar_slot(dir, ())
+}
+
+/// [`read_sidecar`] for a kind with a slot.
+pub fn read_sidecar_slot<T: er_store::Artifact>(dir: &Path, slot: T::Slot) -> T {
+    let store = er_store::ArtifactStore::new(dir);
+    let scope = match er_store::Scope::dir(dir) {
+        Ok(scope) => scope,
+        Err(error) => panic!("test fixture bucket: {error}"),
+    };
+    let key = match er_store::ArtifactKey::<T>::new(scope, slot) {
+        Ok(key) => key,
+        Err(error) => panic!("test fixture key: {error}"),
+    };
+    match store.read(&key) {
+        Ok(er_store::Loaded::Found(stored)) => stored.value,
+        Ok(er_store::Loaded::Absent) => panic!("expected a stored fixture, found none"),
+        Ok(er_store::Loaded::Unreadable(reason)) => {
+            panic!("expected a stored fixture, read as unreadable: {reason:?}")
+        }
+        Err(error) => panic!("test fixture read: {error}"),
+    }
+}

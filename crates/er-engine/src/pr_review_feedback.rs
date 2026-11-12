@@ -171,13 +171,6 @@ fn finding_to_item(file: &str, f: &Finding) -> PrFindingItem {
     }
 }
 
-#[cfg(test)]
-fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    let json = serde_json::to_string_pretty(value)?;
-    er_store::atomic::write_atomic(path, json.as_bytes())?;
-    Ok(())
-}
-
 /// The store and bucket scope for one review bucket.
 fn store_for(er_dir: &str) -> Result<(er_store::ArtifactStore, er_store::Scope)> {
     Ok((
@@ -571,6 +564,7 @@ pub fn resolve_note_in_dir(er_dir: &str, note_id: &str) -> Result<PrFeedbackReso
 mod tests {
     use super::*;
     use crate::ai::{Confidence, ErFileReview, ErReview, Finding};
+    use crate::test_support::write_sidecar;
     use std::collections::HashMap;
 
     /// The source label comes from `lens`, which holds the flat producer
@@ -630,7 +624,7 @@ mod tests {
                 diff_hash: "hash".into(),
                 questions: vec![sample_question("q-root")],
             };
-            write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+            write_sidecar(Path::new(&er_dir), &qs);
 
             let feedback = get_pr_review_feedback("acme", "widgets", 5, true).unwrap();
             assert_eq!(feedback.questions.len(), 1);
@@ -696,7 +690,7 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
                 file_hashes: HashMap::new(),
             };
-            write_json_atomic(&Path::new(&er_dir).join("review.json"), &review).unwrap();
+            write_sidecar(Path::new(&er_dir), &review);
 
             reply_to_pr_finding("acme", "widgets", 6, "f1", "Confirmed.").unwrap();
             let feedback = get_pr_review_feedback("acme", "widgets", 6, true).unwrap();
@@ -717,7 +711,7 @@ mod tests {
                 diff_hash: "hash".into(),
                 notes: vec![sample_question("n-root"), reply, sample_question("n-other")],
             };
-            write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
+            write_sidecar(Path::new(&er_dir), &notes);
 
             let resolved = resolve_note_in_dir(&er_dir, "n-root").unwrap();
             assert!(!resolved.already_resolved);
@@ -756,7 +750,7 @@ mod tests {
                 diff_hash: "hash".into(),
                 questions: vec![sample_question("q-root")],
             };
-            write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+            write_sidecar(Path::new(&er_dir), &qs);
 
             resolve_question_in_dir(&er_dir, "q-root").unwrap();
             assert!(load_questions(&er_dir).unwrap().questions[0].resolved);
@@ -775,7 +769,7 @@ mod tests {
                 diff_hash: "hash".into(),
                 notes: vec![sample_question("n-root"), reply],
             };
-            write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
+            write_sidecar(Path::new(&er_dir), &notes);
 
             assert!(resolve_note_in_dir(&er_dir, "n-reply").is_err());
             assert!(resolve_note_in_dir(&er_dir, "n-missing").is_err());
@@ -797,7 +791,7 @@ mod tests {
                 diff_hash: "hash".into(),
                 questions: vec![sample_question("q-local")],
             };
-            write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+            write_sidecar(Path::new(&er_dir), &qs);
 
             let feedback = get_review_feedback_in_dir(
                 "acme",
@@ -835,7 +829,7 @@ mod tests {
                 diff_hash: "hash".into(),
                 questions: vec![sample_question("q-root")],
             };
-            write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+            write_sidecar(Path::new(&er_dir), &qs);
 
             reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
 
@@ -857,13 +851,13 @@ mod tests {
                 diff_hash: "hash".into(),
                 questions: vec![sample_question("q-root")],
             };
-            write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+            write_sidecar(Path::new(&er_dir), &qs);
             let notes = ErNotes {
                 version: 1,
                 diff_hash: "hash".into(),
                 notes: vec![sample_question("n-root")],
             };
-            write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
+            write_sidecar(Path::new(&er_dir), &notes);
 
             let question = reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
             let note = reply_to_note_in_dir(&er_dir, "n-root", "Because.", None).unwrap();

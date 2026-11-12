@@ -349,11 +349,7 @@ mod tests {
                 reach: Default::default(),
                 sensitive: Default::default(),
             };
-            std::fs::write(
-                bucket.join("triage.json"),
-                serde_json::to_string(&triage).unwrap(),
-            )
-            .unwrap();
+            crate::test_support::write_sidecar(bucket, &triage);
 
             let mut files = HashMap::new();
             files.insert(
@@ -374,11 +370,7 @@ mod tests {
                 files,
                 file_hashes: HashMap::new(),
             };
-            std::fs::write(
-                bucket.join("review.json"),
-                serde_json::to_string(&review).unwrap(),
-            )
-            .unwrap();
+            crate::test_support::write_sidecar(bucket, &review);
 
             let tour = ErTour {
                 version: 1,
@@ -402,11 +394,7 @@ mod tests {
                     }],
                 }],
             };
-            std::fs::write(
-                bucket.join("tour.json"),
-                serde_json::to_string(&tour).unwrap(),
-            )
-            .unwrap();
+            crate::test_support::write_sidecar(bucket, &tour);
 
             let summary = summarize_pr_bucket("acme", "widgets", 3, bucket);
             assert_eq!(
@@ -459,11 +447,7 @@ mod tests {
                 reach: Default::default(),
                 sensitive: Default::default(),
             };
-            std::fs::write(
-                with_triage.join("triage.json"),
-                serde_json::to_string(&triage).unwrap(),
-            )
-            .unwrap();
+            crate::test_support::write_sidecar(&with_triage, &triage);
 
             let with_tour = prs.join("pr-20");
             std::fs::create_dir_all(&with_tour).unwrap();
@@ -475,11 +459,7 @@ mod tests {
                 overview: "o".into(),
                 pillars: vec![],
             };
-            std::fs::write(
-                with_tour.join("tour.json"),
-                serde_json::to_string(&tour).unwrap(),
-            )
-            .unwrap();
+            crate::test_support::write_sidecar(&with_tour, &tour);
 
             // Questions-only bucket should not appear.
             let questions_only = prs.join("pr-30");

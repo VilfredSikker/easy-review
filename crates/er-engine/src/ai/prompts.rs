@@ -2455,9 +2455,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             let path = dir.path();
-            std::fs::write(
-                path.join("review.json"),
-                serde_json::to_vec(&serde_json::json!({
+            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+                path,
+                serde_json::json!({
                     "version": 1, "diff_hash": HASH, "created_at": "t0",
                     "files": {
                         "src/a.rs": { "risk": "medium", "findings": [
@@ -2468,14 +2468,11 @@ mod tests {
                               "line_start": 2, "confidence": "dropped" }
                         ] }
                     }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            std::fs::create_dir_all(path.join("scoped/experts")).unwrap();
-            std::fs::write(
-                path.join("scoped/general.json"),
-                serde_json::to_vec(&serde_json::json!({
+                }),
+            );
+            crate::test_support::write_sidecar_json::<crate::ai::ScopedReview>(
+                path,
+                serde_json::json!({
                     "version": 1, "diff_hash": HASH, "created_at": "t1",
                     "files": { "src/a.rs": { "risk": "medium", "findings": [
                         { "id": "n1", "severity": "medium", "title": "New A", "line_start": 5 }
@@ -2484,24 +2481,20 @@ mod tests {
                     "base_diff_hash": HASH,
                     "base_created_at": "t0",
                     "host_stamped": true
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
             let old_key = crate::ai::identity::finding_key("src/a.rs", Some(1), "Old A");
             let new_key = crate::ai::identity::finding_key("src/a.rs", Some(5), "New A");
             // An earlier pass moved the row; the next table keeps the key from
             // before any validation and shows the row's post-validation anchor.
-            std::fs::write(
-                path.join("validation.json"),
-                serde_json::to_vec(&serde_json::json!({
+            crate::test_support::write_sidecar_json::<crate::ai::ValidationReview>(
+                path,
+                serde_json::json!({
                     "version": 1, "diff_hash": HASH, "review_created_at": "t0",
                     "created_at": "t1",
                     "outcomes": [{ "key": new_key, "file": "src/a.rs", "result": "persists" }]
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
 
             let prompt =
                 build_validate_prompt_prepared_diff("branch", path.to_str().unwrap(), HASH);
@@ -2523,17 +2516,15 @@ mod tests {
     fn prepared_validate_prompt_lists_finding_keys() {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::to_vec(&serde_json::json!({
+            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+                dir.path(),
+                serde_json::json!({
                     "version": 1, "diff_hash": HASH, "created_at": "t0",
                     "files": { "src/a.rs": { "risk": "medium", "findings": [
                         { "id": "a1", "severity": "medium", "title": "Bug", "line_start": 3 }
                     ] } }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
             let prompt =
                 build_validate_prompt_prepared_diff("branch", dir.path().to_str().unwrap(), HASH);
             let key = crate::ai::identity::finding_key("src/a.rs", Some(3), "Bug");
@@ -2547,9 +2538,9 @@ mod tests {
     fn prepared_validate_prompt_lists_unresolved_findings() {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::to_vec(&serde_json::json!({
+            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+                dir.path(),
+                serde_json::json!({
                     "version": 1, "diff_hash": HASH, "created_at": "t0",
                     "files": { "src/a.rs": { "risk": "medium", "findings": [
                         { "id": "a1", "severity": "medium", "title": "Active", "line_start": 1 },
@@ -2558,10 +2549,8 @@ mod tests {
                         { "id": "a3", "severity": "medium", "title": "Resolved",
                           "line_start": 3, "resolved": true }
                     ] } }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
             let prompt =
                 build_validate_prompt_prepared_diff("branch", dir.path().to_str().unwrap(), HASH);
             assert!(prompt.contains("Active"));

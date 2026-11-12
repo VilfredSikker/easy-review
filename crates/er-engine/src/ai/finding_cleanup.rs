@@ -69,12 +69,6 @@ fn retain_findings(findings: &mut Vec<Finding>, target_id: &str, id_prefix: Opti
     findings.len() < before
 }
 
-#[cfg(test)]
-fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let json = serde_json::to_string_pretty(value)?;
-    er_store::atomic::write_atomic(path, json.as_bytes())
-}
-
 /// What an update closure decided about one sidecar.
 enum SidecarStop {
     /// The file is absent or unreadable; leave it alone.
@@ -365,6 +359,7 @@ pub fn delete_threads_linked_to_finding(
 mod tests {
     use super::*;
     use crate::ai::review::{Confidence, Finding, RiskLevel};
+    use crate::test_support::{read_sidecar, read_sidecar_slot, write_sidecar, write_sidecar_slot};
     use tempfile::tempdir;
 
     fn sample_finding(id: &str) -> Finding {
@@ -498,7 +493,7 @@ mod tests {
                 .collect(),
                 file_hashes: Default::default(),
             };
-            write_json_atomic(&Path::new(er).join("review.json"), &review).unwrap();
+            write_sidecar(Path::new(er), &review);
 
             let expert = ExpertReview {
                 version: 1,
@@ -515,21 +510,20 @@ mod tests {
                 ))
                 .collect(),
             };
-            write_json_atomic(&Path::new(er).join("experts/security.json"), &expert).unwrap();
+            write_sidecar_slot(
+                Path::new(er),
+                er_store::ExpertId::new("security").unwrap(),
+                &expert,
+            );
 
             assert!(remove_finding_from_sidecars(er, "sec-f-1").unwrap());
 
-            let review2: ErReview = serde_json::from_str(
-                &std::fs::read_to_string(format!("{er}/review.json")).unwrap(),
-            )
-            .unwrap();
+            let review2: ErReview = read_sidecar(Path::new(er));
             assert_eq!(review2.files["a.rs"].findings.len(), 1);
             assert_eq!(review2.files["a.rs"].findings[0].id, "f-2");
 
-            let expert2: ExpertReview = serde_json::from_str(
-                &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
-            )
-            .unwrap();
+            let expert2: ExpertReview =
+                read_sidecar_slot(Path::new(er), er_store::ExpertId::new("security").unwrap());
             assert!(expert2.files["a.rs"].findings.is_empty());
         });
     }
@@ -550,10 +544,8 @@ mod tests {
                 before,
                 "a malformed sidecar is skipped, never rewritten"
             );
-            let expert: ExpertReview = serde_json::from_str(
-                &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
-            )
-            .unwrap();
+            let expert: ExpertReview =
+                read_sidecar_slot(Path::new(er), er_store::ExpertId::new("security").unwrap());
             assert!(expert.files["a.rs"].findings.is_empty());
         });
     }
@@ -574,10 +566,8 @@ mod tests {
                 newer,
                 "a newer file is left alone"
             );
-            let expert: ExpertReview = serde_json::from_str(
-                &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
-            )
-            .unwrap();
+            let expert: ExpertReview =
+                read_sidecar_slot(Path::new(er), er_store::ExpertId::new("security").unwrap());
             assert!(expert.files["a.rs"].findings.is_empty());
         });
     }
@@ -605,7 +595,7 @@ mod tests {
                 .collect(),
                 file_hashes: Default::default(),
             };
-            write_json_atomic(&Path::new(er).join("review.json"), &review).unwrap();
+            write_sidecar(Path::new(er), &review);
             let before = std::fs::read_to_string(Path::new(er).join("review.json")).unwrap();
 
             let store = crate::store_registry::store();
@@ -641,14 +631,16 @@ mod tests {
             ))
             .collect(),
         };
-        write_json_atomic(&Path::new(er).join("experts/security.json"), &expert).unwrap();
+        write_sidecar_slot(
+            Path::new(er),
+            er_store::ExpertId::new("security").unwrap(),
+            &expert,
+        );
     }
 
     fn read_expert_finding(er: &str) -> Finding {
-        let expert: ExpertReview = serde_json::from_str(
-            &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
-        )
-        .unwrap();
+        let expert: ExpertReview =
+            read_sidecar_slot(Path::new(er), er_store::ExpertId::new("security").unwrap());
         expert.files["a.rs"].findings[0].clone()
     }
 

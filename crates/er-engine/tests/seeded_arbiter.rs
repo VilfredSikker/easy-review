@@ -19,8 +19,6 @@ use serde_json::json;
 const HASH: &str = "diff-hash";
 
 fn write_expert(er_dir: &std::path::Path, expert_id: &str, path: &str, title: &str, line: usize) {
-    let dir = er_dir.join("experts");
-    std::fs::create_dir_all(&dir).unwrap();
     let sidecar = json!({
         "version": 1,
         "expert_id": expert_id,
@@ -38,11 +36,11 @@ fn write_expert(er_dir: &std::path::Path, expert_id: &str, path: &str, title: &s
             }
         }
     });
-    std::fs::write(
-        dir.join(format!("{expert_id}.json")),
-        serde_json::to_string(&sidecar).unwrap(),
-    )
-    .unwrap();
+    er_engine::test_support::write_sidecar_json_slot::<er_engine::ai::experts::ExpertReview>(
+        er_dir,
+        er_store::ExpertId::new(expert_id).unwrap(),
+        sidecar,
+    );
 }
 
 #[test]
@@ -83,8 +81,8 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
                 }
             }
         });
-        let before = serde_json::to_string_pretty(&review).unwrap();
-        std::fs::write(&review_path, &before).unwrap();
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(&er_dir, review);
+        let before = std::fs::read_to_string(&review_path).unwrap();
 
         // The arbiter's answer, keyed by the id the dedupe will compute. The fake
         // harness reads `round<N>.json` off a process-wide counter, so every round

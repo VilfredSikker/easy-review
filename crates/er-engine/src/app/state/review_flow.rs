@@ -2098,10 +2098,11 @@ esac
                 None,
             )
             .unwrap();
-            let old = format!(
-            "{{\"version\":1,\"diff_hash\":\"{hash}\",\"files\":{{\"old.rs\":{{\"risk\":\"low\"}}}}}}"
-        );
-            std::fs::write(Path::new(&bucket).join("review.json"), &old).unwrap();
+            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+                Path::new(&bucket),
+                serde_json::json!({"version":1,"diff_hash":hash,"files":{"old.rs":{"risk":"low"}}}),
+            );
+            let old = std::fs::read_to_string(Path::new(&bucket).join("review.json")).unwrap();
 
             app.start_review_flow("branch").unwrap();
             run_until_terminal(&mut app, &bucket);
@@ -2213,15 +2214,11 @@ esac
             let bucket = app.tab().er_dir();
             app.start_review_flow("branch").unwrap();
             let hash = app.review_flow_for(&bucket).unwrap().diff_hash.clone();
-            let experts_dir = Path::new(&bucket).join("experts");
-            std::fs::create_dir_all(&experts_dir).unwrap();
-            std::fs::write(
-            experts_dir.join("architecture.json"),
-            format!(
-                "{{\"version\":1,\"expert_id\":\"architecture\",\"diff_hash\":\"{hash}\",\"files\":{{}}}}"
-            ),
-        )
-        .unwrap();
+            crate::test_support::write_sidecar_json_slot::<crate::ai::experts::ExpertReview>(
+                Path::new(&bucket),
+                er_store::ExpertId::new("architecture").unwrap(),
+                serde_json::json!({"version":1,"expert_id":"architecture","diff_hash":hash,"files":{}}),
+            );
             run_until_terminal(&mut app, &bucket);
             let flow = app.review_flow_for(&bucket).unwrap();
             assert!(flow
@@ -2878,9 +2875,9 @@ esac
             )
             .unwrap();
             // The kept finder's output, which verification reads.
-            std::fs::write(
-                std::path::Path::new(&bucket).join("review.json"),
-                serde_json::to_vec(&serde_json::json!({
+            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+                std::path::Path::new(&bucket),
+                serde_json::json!({
                     "version": 1,
                     "diff_hash": hash,
                     "files": {"src/lib.rs": {
@@ -2893,10 +2890,8 @@ esac
                             "line_start": 1
                         }]
                     }}
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
             let stage = |id: &str, kind: crate::ai::StageKind, status| StageRecord {
                 id: id.to_string(),
                 stage: kind,
