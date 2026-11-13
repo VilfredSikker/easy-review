@@ -1159,6 +1159,53 @@ mod tests {
         });
     }
 
+    #[test]
+    fn an_overlay_replacement_refuses_a_file_changed_behind_it() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let store = crate::store_registry::store();
+            let key =
+                ArtifactKey::<crate::ai::ArbiterReview>::new(Scope::dir(dir.path()).unwrap(), ())
+                    .unwrap();
+            let original: crate::ai::ArbiterReview = serde_json::from_value(json!({
+                "version": 1, "diff_hash": "hash",
+                "verdicts": [{"id": "kept", "verdict": "dropped"}]
+            }))
+            .unwrap();
+            store.write(&key, &original).unwrap();
+            let snapshot = match store.snapshot(&key).unwrap() {
+                Loaded::Found(stored) => stored.value,
+                _ => panic!("expected a readable snapshot"),
+            };
+            let replacement: crate::ai::ArbiterReview = serde_json::from_value(json!({
+                "version": 1, "diff_hash": "hash",
+                "verdicts": [{"id": "kept", "verdict": "kept"}]
+            }))
+            .unwrap();
+            let overlay = AcceptedOverlay {
+                original: snapshot,
+                replacement,
+            };
+
+            // Another writer replaces the file after the snapshot was taken.
+            let external: crate::ai::ArbiterReview = serde_json::from_value(json!({
+                "version": 1, "diff_hash": "hash", "verdicts": []
+            }))
+            .unwrap();
+            store.write(&key, &external).unwrap();
+
+            let error = overlay.write_replacement(&store).unwrap_err();
+            assert!(
+                error.to_string().contains("changed during acceptance"),
+                "{error}"
+            );
+            match store.read(&key).unwrap() {
+                Loaded::Found(stored) => assert!(stored.value.verdicts.is_empty()),
+                _ => panic!("the external write survives"),
+            }
+        });
+    }
+
     #[cfg(unix)]
     #[test]
     fn overlay_replacement_refuses_symlinks() {
