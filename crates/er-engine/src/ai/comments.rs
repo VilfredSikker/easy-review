@@ -397,8 +397,10 @@ fn default_author() -> String {
 
 // ── Artifact kinds ──
 //
-// These three files stay Bare in 1.0: agents rewrite them in place, so the
-// store writes today's payload JSON with no envelope.
+// Agents still author these three files, but they cannot write them into the
+// store directly: a payload without an envelope reads as unreadable. The agent
+// uploads its output through er-mcp instead, and that upload commits the
+// envelope, so the store only ever sees its own shape.
 
 impl er_store::Artifact for ErQuestions {
     const KIND: &'static str = "questions";

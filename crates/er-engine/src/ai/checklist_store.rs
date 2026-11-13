@@ -1,8 +1,10 @@
 //! The single reader for `order.json` and the reader/writer for
 //! `checklist.json`, on top of [`er_store::ArtifactStore`].
 //!
-//! Both stay `Bare` in 1.0: the agent writes them in place, so the bytes on
-//! disk do not change. The host only rewrites the `checked` flags.
+//! The agent authors both files, but it hands them over as upload or staged
+//! output rather than writing the store path: an unenveloped payload reads as
+//! unreadable, and only the store's own write adds the envelope. The host
+//! rewrites the `checked` flags through that same write.
 
 use std::path::PathBuf;
 

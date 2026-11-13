@@ -754,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_file_with_another_diff_hash_is_found() {
+    fn a_file_with_another_diff_hash_is_found() {
         let (directory, store) = temp_store();
         let scope = scope(&directory);
         let key = key::<TestPayload>(&scope, ());
