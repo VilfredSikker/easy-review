@@ -62,7 +62,7 @@ fn parse_agents_from_path(path: &Path) -> Result<AgentsConfig, ConfigReadError> 
 }
 
 enum AgentsState {
-    Present(AgentsConfig),
+    Present(Box<AgentsConfig>),
     Absent,
     Failed(ConfigLoadError),
 }
@@ -73,7 +73,7 @@ fn read_agents_state(path: &Path, adopt: bool) -> AgentsState {
             if adopt {
                 clear_agents_load_failure(path);
             }
-            AgentsState::Present(agents)
+            AgentsState::Present(Box::new(agents))
         }
         Err(ConfigReadError::Read(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             AgentsState::Absent
@@ -94,7 +94,7 @@ fn read_agents_state(path: &Path, adopt: bool) -> AgentsState {
 /// Load `agents.toml`, defaulting on absence and reporting a bad file.
 pub fn load_agents_from(path: &Path) -> (AgentsConfig, Option<ConfigLoadError>) {
     match read_agents_state(path, true) {
-        AgentsState::Present(agents) => (agents, None),
+        AgentsState::Present(agents) => (*agents, None),
         AgentsState::Absent => (AgentsConfig::default(), None),
         AgentsState::Failed(error) => (AgentsConfig::default(), Some(error)),
     }
@@ -147,7 +147,7 @@ pub(super) fn reconcile_on_load(
     if !has_leftovers {
         return match state {
             AgentsState::Present(agents) => {
-                overlay(config, agents);
+                overlay(config, *agents);
                 None
             }
             AgentsState::Absent => None,
@@ -181,7 +181,7 @@ pub(super) fn reconcile_on_load(
     let has_leftovers = has_agent_sections(&table);
     match state {
         AgentsState::Present(agents) => {
-            overlay(config, agents);
+            overlay(config, *agents);
             if has_leftovers {
                 let _ = strip_leftovers(config_path, table);
             }
