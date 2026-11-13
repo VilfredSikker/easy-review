@@ -2,10 +2,15 @@
 //!
 //! One rule system covers both the declared ranking and the review's per-file
 //! risk: a rule either fixes a path's tier, or says `ai` and leaves the tier to
-//! the review. `docs/adr/0048-risk-rules-merge-importance.md`.
+//! the review. The importance job commits its table as a repo-scoped artifact;
+//! the user's `[risk.<repo>]` entries layer on top of it. See
+//! `docs/adr/0048-risk-rules-merge-importance.md` and
+//! `docs/adr/0064-importance-is-a-risk-rules-artifact.md`.
 
 use super::path_rules;
+use er_store::{Artifact, ArtifactKey, ArtifactStore, Loaded, Scope, Slug};
 use glob::Pattern;
+use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 
@@ -56,7 +61,7 @@ impl RiskTier {
 /// (`"db/**" = { tier = "high", label = "Migrations" }`). The tier stays text
 /// until resolution so an unreadable one can be dropped at its level instead of
 /// failing the load.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
 pub struct RiskRule {
     pub tier: String,
     pub label: Option<String>,
@@ -144,7 +149,7 @@ impl Serialize for RiskRule {
 }
 
 /// One source's rule table: keys are paths, globs or file types.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, JsonSchema)]
 #[serde(default)]
 pub struct RiskRuleTable {
     /// Tier for a path no rule in either source claims.
@@ -325,7 +330,66 @@ fn validated(key: &str, rule: RiskRule) -> Option<RiskRule> {
     })
 }
 
-/// A rule table an agent proposed, before the host merges it into the config.
+/// The importance job's committed rule table for one repo.
+///
+/// Scoped to `repos/<repo>`, so a repository holds one generated table across
+/// its branches and views. The user's `[risk.<repo>]` entries stay in
+/// `config.toml` and win over this table for any key they name.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RiskRulesArtifact {
+    /// The repo key this table is for; a load whose key differs treats the
+    /// artifact as absent rather than applying it to the wrong repo.
+    pub repo: String,
+    pub table: RiskRuleTable,
+}
+
+impl Artifact for RiskRulesArtifact {
+    const KIND: &'static str = "risk-rules";
+    const VERSION: u32 = 1;
+    const FILE: &'static str = "risk-rules.json";
+    type Slot = ();
+}
+
+impl RiskRulesArtifact {
+    /// The artifact committed for `repo`, when it exists and names that repo.
+    pub fn load(repo: &str, store: &ArtifactStore) -> Option<Self> {
+        let scope = Scope::Repo {
+            repo: Slug::new(repo).ok()?,
+        };
+        let key = ArtifactKey::<Self>::new(scope, ()).ok()?;
+        match store.read(&key).ok()? {
+            Loaded::Found(stored) if stored.value.repo == repo => Some(stored.value),
+            _ => None,
+        }
+    }
+}
+
+/// The importance table committed for `repo`, when the artifact belongs to it.
+pub fn load_risk_rules_table(repo: &str) -> Option<RiskRuleTable> {
+    RiskRulesArtifact::load(repo, &crate::store_registry::store()).map(|artifact| artifact.table)
+}
+
+/// The project table a repo resolves against: the committed artifact's rules,
+/// with the user's `[risk.<repo>]` entries layered on top.
+///
+/// The user's rule wins for a key it names, and its default wins when set; the
+/// artifact fills the gaps. `[user_risk]` is a separate table, still consulted
+/// after this one by [`RiskRules`].
+pub fn merged_table(
+    artifact: Option<RiskRuleTable>,
+    config: Option<RiskRuleTable>,
+) -> RiskRuleTable {
+    let mut merged = artifact.unwrap_or_default();
+    if let Some(config) = config {
+        if config.default.is_some() {
+            merged.default = config.default;
+        }
+        merged.rules.extend(config.rules);
+    }
+    merged
+}
+
+/// A rule table an agent proposed, before the host commits it as an artifact.
 ///
 /// The agent prints this; the host validates and writes it. Rules whose tier
 /// does not read, or whose pattern does not compile, are dropped and counted
@@ -351,20 +415,30 @@ impl RiskRuleProposal {
         serde_json::from_str(body.trim()).ok()
     }
 
-    /// Merge a proposal into the on-disk global config and save it.
+    /// Commit a proposal as `repo`'s risk-rules artifact.
     ///
-    /// The background worker that ran the agent holds no `App`, so this is the
-    /// file path: read the config, replace one repo's project table, write it
-    /// back with every other section as it was found.
-    pub fn merge_into_global_config(repo: &str, proposal: Self) -> anyhow::Result<(usize, usize)> {
-        if proposal.repo != repo {
-            anyhow::bail!("risk rule proposal names `{}`, not `{repo}`", proposal.repo);
+    /// The background worker that ran the agent holds no `App`; it writes the
+    /// table through the store under the repo's scope. The user's config is
+    /// never written here, so a job cannot reach `config.toml`.
+    pub fn commit_to_store(
+        self,
+        repo: &str,
+        store: &ArtifactStore,
+    ) -> anyhow::Result<(usize, usize)> {
+        if self.repo != repo {
+            anyhow::bail!("risk rule proposal names `{}`, not `{repo}`", self.repo);
         }
-        let mut config = super::load_global_config();
-        let (table, dropped) = proposal.into_table();
+        let (table, dropped) = self.into_table();
         let kept = table.rules.len();
-        config.risk.items.insert(repo.to_string(), table);
-        super::save_config(&config)?;
+        let artifact = RiskRulesArtifact {
+            repo: repo.to_string(),
+            table,
+        };
+        let scope = Scope::Repo {
+            repo: Slug::new(repo)?,
+        };
+        let key = ArtifactKey::<RiskRulesArtifact>::new(scope, ())?;
+        store.write_durable(&key, &artifact)?;
         Ok((kept, dropped))
     }
 
@@ -793,58 +867,90 @@ mod tests {
 
     #[test]
     fn a_proposal_naming_another_repo_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new(tmp.path());
         let proposal = RiskRuleProposal {
             repo: "someone-elses".into(),
             ..Default::default()
         };
-        let err = RiskRuleProposal::merge_into_global_config("er", proposal).unwrap_err();
+        let err = proposal.commit_to_store("er", &store).unwrap_err();
         assert!(err.to_string().contains("someone-elses"), "{err}");
     }
 
-    /// The config also holds the reviewer's provider and display settings, so a
-    /// generated table must replace one repo's rules and nothing else.
+    /// The job's only write is the artifact: a config path that does not exist
+    /// before the run must not exist after it.
     #[test]
-    fn merging_a_proposal_replaces_only_that_repos_table() {
-        let tmp = tempfile::TempDir::new().unwrap();
+    fn committing_a_proposal_writes_the_artifact_and_never_the_config() {
+        let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("config.toml");
+        let store = ArtifactStore::new(tmp.path().join("store"));
 
-        crate::storage::with_test_storage_root(tmp.path(), || {
-            crate::test_support::with_var(
-                "ER_CONFIG_PATH",
-                config_path.to_string_lossy().into_owned(),
-                || {
-                    let mut config = ErConfig::default();
-                    config.features.view_branch = false;
-                    config
-                        .risk
-                        .items
-                        .insert("another-repo".into(), table(&[("keep/**", "low")], None));
-                    config.user_risk = table(&[("*.lock", "low")], None);
-                    crate::config::save_config(&config).unwrap();
-
-                    let proposal = RiskRuleProposal {
-                        repo: "er".into(),
-                        default: None,
-                        rules: BTreeMap::from([("src/**".to_string(), RiskRule::from("high"))]),
-                        report: "1 rule".into(),
-                    };
-                    let (kept, dropped) =
-                        RiskRuleProposal::merge_into_global_config("er", proposal).unwrap();
-
-                    let loaded = crate::config::load_global_config();
-                    assert_eq!((kept, dropped), (1, 0));
-                    assert!(!loaded.features.view_branch, "other sections survive");
-                    assert!(loaded.risk.items.contains_key("another-repo"));
-                    assert_eq!(
-                        loaded.user_risk, config.user_risk,
-                        "the user's rules are untouched"
-                    );
-                    let rules = loaded.risk_rules("er");
-                    assert_eq!(rules.tier_of("src/lib.rs"), RiskTier::High);
-                    assert_eq!(rules.tier_of("old/x.rs"), RiskTier::Ai);
-                },
+        crate::config::with_managed_config_path(&config_path, || {
+            let proposal = RiskRuleProposal {
+                repo: "er".into(),
+                default: None,
+                rules: BTreeMap::from([("src/**".to_string(), RiskRule::from("high"))]),
+                report: "1 rule".into(),
+            };
+            let (kept, dropped) = proposal.commit_to_store("er", &store).unwrap();
+            assert_eq!((kept, dropped), (1, 0));
+            assert!(
+                !config_path.exists(),
+                "the job must not write the config file"
             );
+
+            let key = ArtifactKey::<RiskRulesArtifact>::new(
+                Scope::Repo {
+                    repo: Slug::new("er").unwrap(),
+                },
+                (),
+            )
+            .unwrap();
+            assert!(store.path(&key).is_file(), "the artifact was not committed");
+            let loaded = RiskRulesArtifact::load("er", &store).expect("the artifact reads back");
+            assert_eq!(loaded.repo, "er");
+            assert_eq!(loaded.table.rules["src/**"].tier, "high");
         });
+    }
+
+    /// A table stored under one repo but naming another is not applied to the
+    /// repo its key points at.
+    #[test]
+    fn a_mismatched_artifact_reads_as_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new(tmp.path());
+        let artifact = RiskRulesArtifact {
+            repo: "other".into(),
+            table: table(&[("src/**", "high")], None),
+        };
+        let key = ArtifactKey::<RiskRulesArtifact>::new(
+            Scope::Repo {
+                repo: Slug::new("er").unwrap(),
+            },
+            (),
+        )
+        .unwrap();
+        store.write_durable(&key, &artifact).unwrap();
+        assert!(RiskRulesArtifact::load("er", &store).is_none());
+    }
+
+    /// The user's config wins for a key it names, and its default wins when it
+    /// set one; the artifact fills the gaps.
+    #[test]
+    fn the_users_config_wins_over_the_artifact() {
+        let artifact = table(&[("src/**", "high"), ("db/**", "med")], Some("low"));
+        let config = table(&[("src/**", "low")], Some("high"));
+        let merged = merged_table(Some(artifact), Some(config));
+        assert_eq!(merged.rules["src/**"].tier, "low");
+        assert_eq!(merged.rules["db/**"].tier, "med");
+        assert_eq!(merged.default.as_deref(), Some("high"));
+
+        let merged = merged_table(Some(table(&[], Some("ai"))), Some(RiskRuleTable::default()));
+        assert_eq!(
+            merged.default.as_deref(),
+            Some("ai"),
+            "an unset config default keeps the artifact's"
+        );
     }
 
     // ── edits ──

@@ -131,6 +131,8 @@ pub enum Scope {
     },
     /// `repos/<repo>/prs/pr-<number>`.
     Pr { repo: Slug, number: u64 },
+    /// `repos/<repo>`: artifacts that belong to one repo rather than a view.
+    Repo { repo: Slug },
     /// `app`.
     App,
     /// A bucket directory the caller already holds.

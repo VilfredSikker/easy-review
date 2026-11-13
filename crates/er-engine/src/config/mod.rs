@@ -16,8 +16,9 @@ pub use file_kinds::{FileKindRepoConfig, FileKindsConfig};
 pub use flow_models::{ReviewModelGroups, ReviewModelRef, ReviewModelTier};
 pub use inbox::{InboxConfig, InboxKindToggles};
 pub use risk_rules::{
-    apply_risk_rule_edit, MatchedRiskRule, ResolvedRisk, RiskConfig, RiskRule, RiskRuleEdit,
-    RiskRuleProposal, RiskRuleSource, RiskRuleTable, RiskRules, RiskTier,
+    apply_risk_rule_edit, load_risk_rules_table, merged_table, MatchedRiskRule, ResolvedRisk,
+    RiskConfig, RiskRule, RiskRuleEdit, RiskRuleProposal, RiskRuleSource, RiskRuleTable, RiskRules,
+    RiskRulesArtifact, RiskTier,
 };
 use serde::{Deserialize, Serialize};
 pub use settings::{
@@ -50,7 +51,8 @@ pub struct ErConfig {
     #[serde(default)]
     pub risk: RiskConfig,
     /// `[user_risk]`: the user's risk rules, consulted in every repo after its
-    /// own. `docs/adr/0048-risk-rules-merge-importance.md`.
+    /// own. `docs/adr/0048-risk-rules-merge-importance.md` and
+    /// `docs/adr/0064-importance-is-a-risk-rules-artifact.md`.
     #[serde(default, skip_serializing_if = "RiskRuleTable::is_empty")]
     pub user_risk: RiskRuleTable,
     #[serde(default)]
@@ -116,6 +118,15 @@ impl ErConfig {
     pub fn risk_rules(&self, repo: &str) -> RiskRules {
         RiskRules {
             project: self.risk.items.get(repo).cloned().unwrap_or_default(),
+            user: self.user_risk.clone(),
+        }
+    }
+
+    /// Like [`Self::risk_rules`], with the repo's committed importance artifact
+    /// filling any rule the user's `[risk.<repo>]` table does not name.
+    pub fn risk_rules_merged(&self, repo: &str, artifact: Option<RiskRuleTable>) -> RiskRules {
+        RiskRules {
+            project: merged_table(artifact, self.risk.items.get(repo).cloned()),
             user: self.user_risk.clone(),
         }
     }

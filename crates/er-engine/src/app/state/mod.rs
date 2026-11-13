@@ -6789,14 +6789,16 @@ impl App {
         self.tabs.push(tab);
     }
 
-    /// Copy the per-repo tables `tab`'s repo declares (`[risk]`,
-    /// `[file_kinds]`), or empty ones.
+    /// Copy the per-repo tables `tab`'s repo resolves with (`[risk]` merged
+    /// over the committed `risk-rules` artifact, and `[file_kinds]`).
     ///
     /// Takes the config rather than `&self` so a caller holding `self.tabs`
-    /// mutably can still resolve a tab's rules.
+    /// mutably can still resolve a tab's rules. The artifact read goes through
+    /// the process store, which is why this needs no `&self`.
     fn copy_repo_rules(config: &ErConfig, tab: &mut TabState) {
         let repo = tab.rules_key();
-        tab.risk_rules = config.risk_rules(&repo);
+        tab.risk_rules =
+            config.risk_rules_merged(&repo, crate::config::load_risk_rules_table(&repo));
         tab.file_kinds = config.file_kinds.repo(&repo).cloned().unwrap_or_default();
     }
 
@@ -11417,24 +11419,71 @@ mod tests {
     /// and no other repo's.
     #[test]
     fn copy_repo_rules_hands_a_tab_only_its_repos_file_kinds() {
-        let mut config = ErConfig::default();
-        let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
-            "e2e/**".to_string(),
-            "test".to_string(),
-        )]));
-        config
-            .file_kinds
-            .items
-            .insert("my-service".to_string(), table.clone());
+        with_storage_root(|| {
+            let mut config = ErConfig::default();
+            let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+                "e2e/**".to_string(),
+                "test".to_string(),
+            )]));
+            config
+                .file_kinds
+                .items
+                .insert("my-service".to_string(), table.clone());
 
-        let mut tab = make_test_tab(vec![]);
-        tab.repo_root = "/nonexistent-er-test/my-service".to_string();
-        App::copy_repo_rules(&config, &mut tab);
-        assert_eq!(tab.file_kinds, table);
+            let mut tab = make_test_tab(vec![]);
+            tab.repo_root = "/nonexistent-er-test/my-service".to_string();
+            App::copy_repo_rules(&config, &mut tab);
+            assert_eq!(tab.file_kinds, table);
 
-        tab.repo_root = "/nonexistent-er-test/other".to_string();
-        App::copy_repo_rules(&config, &mut tab);
-        assert_eq!(tab.file_kinds, FileKindRepoConfig::default());
+            tab.repo_root = "/nonexistent-er-test/other".to_string();
+            App::copy_repo_rules(&config, &mut tab);
+            assert_eq!(tab.file_kinds, FileKindRepoConfig::default());
+        });
+    }
+
+    /// A tab's rules are the config's table with the committed importance
+    /// artifact filling the rules the config does not name.
+    #[test]
+    fn copy_repo_rules_merges_the_committed_importance_artifact() {
+        with_storage_root(|| {
+            let config = ErConfig::default();
+            let artifact = crate::config::RiskRulesArtifact {
+                repo: "my-service".into(),
+                table: crate::config::RiskRuleTable {
+                    default: None,
+                    rules: std::collections::BTreeMap::from([(
+                        "src/**".to_string(),
+                        crate::config::RiskRule {
+                            tier: "high".into(),
+                            label: None,
+                        },
+                    )]),
+                },
+            };
+            let key = er_store::ArtifactKey::<crate::config::RiskRulesArtifact>::new(
+                er_store::Scope::Repo {
+                    repo: er_store::Slug::new("my-service").unwrap(),
+                },
+                (),
+            )
+            .unwrap();
+            crate::store_registry::store()
+                .write_durable(&key, &artifact)
+                .unwrap();
+
+            let mut tab = make_test_tab(vec![]);
+            tab.repo_root = "/nonexistent-er-test/my-service".to_string();
+            App::copy_repo_rules(&config, &mut tab);
+            assert_eq!(
+                tab.risk_rules.tier_of("src/lib.rs"),
+                crate::config::RiskTier::High,
+                "the artifact rule must reach the tab's filter"
+            );
+            assert_eq!(
+                tab.risk_rules.tier_of("docs/readme.md"),
+                crate::config::RiskTier::Ai
+            );
+        });
     }
 
     /// A local PR tab carries the PR's `remote_repo` but has a clone; it must
@@ -11508,21 +11557,23 @@ mod tests {
     /// its tables must come from the PR's repo name instead.
     #[test]
     fn copy_repo_rules_keys_a_remote_tab_by_its_repo_name() {
-        let mut config = ErConfig::default();
-        let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
-            "e2e/**".to_string(),
-            "test".to_string(),
-        )]));
-        config
-            .file_kinds
-            .items
-            .insert("my-service".to_string(), table.clone());
+        with_storage_root(|| {
+            let mut config = ErConfig::default();
+            let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+                "e2e/**".to_string(),
+                "test".to_string(),
+            )]));
+            config
+                .file_kinds
+                .items
+                .insert("my-service".to_string(), table.clone());
 
-        let mut tab = make_test_tab(vec![]);
-        tab.repo_root = "/".to_string();
-        tab.remote_repo = Some("acme/my-service".to_string());
-        App::copy_repo_rules(&config, &mut tab);
-        assert_eq!(tab.file_kinds, table);
+            let mut tab = make_test_tab(vec![]);
+            tab.repo_root = "/".to_string();
+            tab.remote_repo = Some("acme/my-service".to_string());
+            App::copy_repo_rules(&config, &mut tab);
+            assert_eq!(tab.file_kinds, table);
+        });
     }
 
     #[test]

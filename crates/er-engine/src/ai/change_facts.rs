@@ -50,11 +50,16 @@ pub struct OwnedRepoRules {
 }
 
 impl OwnedRepoRules {
-    /// The tables `config` declares under `key` (see `storage::rules_key`).
-    pub fn from_config(config: &crate::config::ErConfig, key: &str) -> Self {
+    /// The tables `config` resolves under `key` (see `storage::rules_key`),
+    /// with the repo's committed importance artifact filling any gap.
+    pub fn from_config(
+        config: &crate::config::ErConfig,
+        key: &str,
+        artifact: Option<crate::config::RiskRuleTable>,
+    ) -> Self {
         Self {
             file_kinds: config.file_kinds.repo(key).cloned().unwrap_or_default(),
-            risk: config.risk_rules(key),
+            risk: config.risk_rules_merged(key, artifact),
         }
     }
 
@@ -394,11 +399,11 @@ mod tests {
             .risk
             .items
             .insert("svc".to_string(), crate::config::RiskRuleTable::default());
-        let owned = OwnedRepoRules::from_config(&config, "svc");
+        let owned = OwnedRepoRules::from_config(&config, "svc", None);
         assert!(owned.as_rules().risk.is_none());
 
         config.user_risk.default = Some("low".to_string());
-        let owned = OwnedRepoRules::from_config(&config, "svc");
+        let owned = OwnedRepoRules::from_config(&config, "svc", None);
         assert!(owned.as_rules().risk.is_some());
     }
 

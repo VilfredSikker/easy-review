@@ -1032,18 +1032,20 @@ pub const IMPORTANCE_JSON_BEGIN: &str = "===IMPORTANCE_JSON_BEGIN===";
 pub const IMPORTANCE_JSON_END: &str = "===IMPORTANCE_JSON_END===";
 
 /// Background task kind for the risk-rules agent. The worker recognises its
-/// own reply by this kind and merges the table itself. Spelled `importance`
-/// because tasks already in logs and queues carry that kind (ADR 0048).
+/// own reply by this kind and commits the table as the repo's `risk-rules`
+/// artifact. Spelled `importance` because tasks already in logs and queues
+/// carry that kind (ADR 0048, ADR 0064).
 pub const IMPORTANCE_TASK_KIND: &str = "importance";
 
 /// Prompt for the agent that proposes a repo's risk rules.
 ///
 /// The agent reads the codebase and prints a rule table; the host validates it
-/// and merges it into `[risk.<repo>]`. Asking for a *rule table* rather than a
-/// ranking is what keeps the result inspectable: a number nobody can argue with
-/// is worse than no number at all
+/// and commits it as the repo's `risk-rules` artifact. Asking for a *rule
+/// table* rather than a ranking is what keeps the result inspectable: a number
+/// nobody can argue with is worse than no number at all
 /// (`docs/adr/0036-importance-as-declared-config.md`,
-/// `docs/adr/0048-risk-rules-merge-importance.md`).
+/// `docs/adr/0048-risk-rules-merge-importance.md`,
+/// `docs/adr/0064-importance-is-a-risk-rules-artifact.md`).
 pub fn build_importance_prompt(repo: &str, repo_root: &str) -> String {
     let mut prompt = String::new();
     prompt.push_str(

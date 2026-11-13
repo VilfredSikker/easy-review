@@ -3752,9 +3752,9 @@ impl App {
     /// (`kind` = `importance`).
     ///
     /// The prompt carries the repo, not a diff, and the agent has no write path:
-    /// it prints a rule table, and the worker validates and merges that into the
-    /// global config (`RiskRuleProposal::merge_into_global_config`). A table
-    /// nobody can read back before it lands is worse than no table.
+    /// it prints a rule table, and the worker validates and commits it as the
+    /// repo's `risk-rules` artifact (`RiskRuleProposal::commit_to_store`). A
+    /// table nobody can read back before it lands is worse than no table.
     pub fn spawn_background_importance(&mut self) -> Result<()> {
         let scope = "branch".to_string();
         // Ranking reads the tree. A remote-only tab has none: its `repo_root`
@@ -4552,8 +4552,8 @@ impl App {
                     anyhow::bail!("{command_name_fail} failed: {stderr_snip}");
                 }
                 // Host-owned importance write: the agent printed a rule table
-                // and had no Write/Edit. Validate it and merge it into the
-                // global config, replacing only this repo's table.
+                // and had no Write/Edit. Validate it and commit it as this
+                // repo's `risk-rules` artifact.
                 if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
                     // The shared decoder's final text, not the raw stdout: a
                     // stream-json run carries the table inside its result event.
@@ -4563,13 +4563,11 @@ impl App {
                                 "{command_name_fail}: the agent printed no importance table"
                             )
                         })?;
-                    crate::config::RiskRuleProposal::merge_into_global_config(
-                        &repo_for_worker,
-                        proposal,
-                    )
-                    .with_context(|| {
-                        format!("{command_name_fail}: failed to merge the importance table")
-                    })?;
+                    proposal
+                        .commit_to_store(&repo_for_worker, &artifact_store)
+                        .with_context(|| {
+                            format!("{command_name_fail}: failed to commit the importance table")
+                        })?;
                 }
                 // Host-owned diagram write: agent had no Write/Edit; validate
                 // only the diagrams/<id>.json payload from stdout, then commit
@@ -4791,22 +4789,16 @@ impl App {
                 }
             }
 
-            // The risk-rules worker writes the config *file*; the app's copy is
-            // now behind it, so re-read it and re-hand the rules to the tabs
-            // that filter with them.
+            // The risk-rules worker committed the repo's artifact through the
+            // store; re-hand the merged rules to the tabs that filter with them.
             if wrote_importance && matches!(status, CommandStatus::Done) {
-                // Only the table this task wrote: `[risk]`. A wholesale reload
-                // is what silently reverted in-flight settings before — see the
-                // note on `sync_config_from_active_tab`, and `docs/adr/0005`.
-                let written = crate::config::load_global_config();
-                self.config.risk = written.risk;
                 self.sync_repo_rules_to_tabs();
                 // The agent's own one-line distribution — the share each tier
                 // covers — is what tells a reader whether the table is
                 // over-broad, and it is in this task's log. Point at it rather
                 // than repeating it here, where it would be a number without
                 // the reasoning beside it.
-                self.notify_long("Risk rules written — see the task log for its report");
+                self.notify_long("Risk rules committed — see the task log for its report");
             }
 
             self.notify_long(&status_msg);
@@ -7374,7 +7366,7 @@ mod background_queue_tests {
                     .unwrap_or_default()
             };
             assert!(
-                error("importance").contains("failed to merge the importance table"),
+                error("importance").contains("failed to commit the importance table"),
                 "{}",
                 error("importance")
             );
@@ -7388,7 +7380,7 @@ mod background_queue_tests {
 
     /// The importance table is read from the shared decoder's final text, so a
     /// stream-json run's `result` event is what gets parsed. A table for
-    /// another repo is parsed and then refused by the merge; unparsed input
+    /// another repo is parsed and then refused by the commit; unparsed input
     /// fails earlier, with "no importance table".
     #[test]
     fn importance_parses_the_decoded_reply_of_a_stream_json_run() {
@@ -7470,7 +7462,7 @@ mod background_queue_tests {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             };
             assert!(
-                error.contains("failed to merge the importance table"),
+                error.contains("failed to commit the importance table"),
                 "the stream-json table was not parsed: {error}"
             );
             assert!(
