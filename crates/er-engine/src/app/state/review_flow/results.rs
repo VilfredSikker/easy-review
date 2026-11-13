@@ -1309,7 +1309,7 @@ mod tests {
                 .unwrap();
             assert_eq!(accepted, 1);
             let review: crate::ai::ErReview =
-                serde_json::from_slice(&std::fs::read(&review_path).unwrap()).unwrap();
+                crate::test_support::read_sidecar(Path::new(&fixture.er_dir));
             assert_eq!(
                 review.diff_hash,
                 load_run(&ArenaPaths::for_run(

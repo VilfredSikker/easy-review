@@ -627,12 +627,14 @@ mod tests {
             probe.local_branch_view = Some("feat-ai-stub".to_string());
             probe.sync_managed_storage_light();
             let er = probe.er_dir();
-            std::fs::create_dir_all(&er).expect("er dir");
-            std::fs::write(
-                std::path::Path::new(&er).join("questions.json"),
-                r#"{"version":1,"diff_hash":"","questions":[{"id":"q-1","file":"a.rs","hunk_index":0,"line_start":1,"line_content":"c","text":"why","resolved":false}]}"#,
-            )
-            .expect("write questions");
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ErQuestions>(
+                std::path::Path::new(&er),
+                serde_json::json!({
+                    "version": 1, "diff_hash": "", "questions": [
+                        {"id":"q-1","file":"a.rs","hunk_index":0,"line_start":1,"line_content":"c","text":"why","resolved":false}
+                    ]
+                }),
+            );
 
             let d = TabDescriptor {
                 kind: TabKind::LocalPr,

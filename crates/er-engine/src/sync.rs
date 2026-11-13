@@ -1153,11 +1153,7 @@ mod tests {
                 github: None,
                 comments: Vec::new(),
             };
-            std::fs::write(
-                &comments_path,
-                serde_json::to_string_pretty(&seeded).unwrap(),
-            )
-            .unwrap();
+            crate::test_support::write_sidecar(dir.path(), &seeded);
 
             let listed: crate::github::GitHubComment = serde_json::from_value(serde_json::json!({
                 "id": 42,
@@ -1213,11 +1209,9 @@ mod tests {
                 github: None,
                 comments: vec![stored_comment("c-local", "local", None)],
             };
-            std::fs::write(
-                &comments_path,
-                serde_json::to_string_pretty(&with_reply).unwrap(),
-            )
-            .unwrap();
+            // The guard is already held, so write under it instead of taking it again.
+            let key = er_store::ArtifactKey::<ai::ErGithubComments>::new(scope, ()).unwrap();
+            store.write_locked(&guard, &key, &with_reply).unwrap();
             drop(guard);
 
             let result = pull.join().expect("the pull thread").expect("sync");
@@ -1227,8 +1221,7 @@ mod tests {
                 "the pull keeps the local reply: {:?}",
                 result.gc.comments
             );
-            let on_disk: ai::ErGithubComments =
-                serde_json::from_str(&std::fs::read_to_string(&comments_path).unwrap()).unwrap();
+            let on_disk: ai::ErGithubComments = crate::test_support::read_sidecar(dir.path());
             assert!(
                 on_disk.comments.iter().any(|c| c.id == "c-local"),
                 "the written file keeps the local reply: {:?}",

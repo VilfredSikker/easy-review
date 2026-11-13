@@ -403,9 +403,14 @@ mod tests {
         crate::storage::with_test_storage_root(dir.path(), || {
             let experts = dir.path().join("experts");
             std::fs::create_dir_all(&experts).unwrap();
+            for (slot, hash) in [("security", "hash-security"), ("api", "hash-api")] {
+                crate::test_support::write_sidecar_json_slot::<ExpertReview>(
+                    dir.path(),
+                    er_store::ExpertId::new(slot).unwrap(),
+                    serde_json::json!({"version":1,"expert_id":"x","diff_hash":hash,"files":{}}),
+                );
+            }
             for (name, hash) in [
-                ("security.json", "hash-security"),
-                ("api.json", "hash-api"),
                 (".hidden.json", "hash-hidden"),
                 ("security.prev.json", "hash-prev"),
                 ("notes.txt", "hash-text"),
@@ -436,13 +441,11 @@ mod tests {
     fn expert_file_written_by_an_agent_loads() {
         let dir = tempfile::TempDir::new().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
-            let experts = dir.path().join("experts");
-            std::fs::create_dir_all(&experts).unwrap();
-            std::fs::write(
-                experts.join("security.json"),
-                r#"{"version":1,"expert_id":"security","diff_hash":"hash","summary":"lens view","files":{"a.rs":{"findings":[{"id":"1","title":"t","severity":"medium","hunk_index":0}]}}}"#,
-            )
-            .unwrap();
+            crate::test_support::write_sidecar_json_slot::<ExpertReview>(
+                dir.path(),
+                er_store::ExpertId::new("security").unwrap(),
+                serde_json::json!({"version":1,"expert_id":"security","diff_hash":"hash","summary":"lens view","files":{"a.rs":{"findings":[{"id":"1","title":"t","severity":"medium","hunk_index":0}]}}}),
+            );
 
             let loaded = load_expert_reviews(dir.path().to_str().unwrap());
 

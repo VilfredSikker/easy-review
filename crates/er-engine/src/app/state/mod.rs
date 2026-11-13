@@ -11071,13 +11071,8 @@ mod tests {
 
             app.tab_mut().reload_ai_state();
 
-            let merged: ai::ErGithubComments = serde_json::from_str(
-                &std::fs::read_to_string(
-                    std::path::Path::new(&gh_dir).join("github-comments.json"),
-                )
-                .unwrap(),
-            )
-            .unwrap();
+            let merged: ai::ErGithubComments =
+                crate::test_support::read_sidecar(std::path::Path::new(&gh_dir));
             let ids: Vec<&str> = merged.comments.iter().map(|c| c.id.as_str()).collect();
             assert!(ids.contains(&"c-orphan"), "orphan migrated: {ids:?}");
             assert!(
