@@ -17,7 +17,7 @@ use super::identity::finding_key;
 use super::professor::{ProfessorFileReview, ProfessorReview, PROFESSOR_ID_PREFIX};
 use super::review::{ErFileReview, ErReview, Finding};
 use super::validation::ValidationReview;
-use er_store::{Artifact, ArtifactKey, ArtifactStore, ExpertId, Mode, Scope};
+use er_store::{Artifact, ArtifactKey, ArtifactStore, ExpertId, Scope};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -112,7 +112,6 @@ pub struct ScopedRunStamp {
 impl Artifact for ScopedReview {
     const KIND: &'static str = "scoped-general";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "scoped/general.json";
     type Slot = ();
 
@@ -124,7 +123,6 @@ impl Artifact for ScopedReview {
 impl Artifact for ScopedProfessorReview {
     const KIND: &'static str = "scoped-professor";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "scoped/professor.json";
     type Slot = ();
 
@@ -136,7 +134,6 @@ impl Artifact for ScopedProfessorReview {
 impl Artifact for ScopedExpertReview {
     const KIND: &'static str = "scoped-expert";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "scoped/experts/{slot}.json";
     type Slot = ExpertId;
 

@@ -427,7 +427,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::test_support::{TestBare, TestEnveloped};
+    use crate::test_support::{TestPayload, TestEnveloped};
 
     trait ParsedValue<T> {
         fn parsed_value(self) -> Option<T>;
@@ -456,9 +456,9 @@ mod tests {
         ArtifactKey::new(scope.clone(), slot).unwrap()
     }
 
-    fn bare(value: u32) -> TestBare {
-        TestBare {
-            version: TestBare::VERSION,
+    fn bare(value: u32) -> TestPayload {
+        TestPayload {
+            version: TestPayload::VERSION,
             diff_hash: "hash".to_string(),
             value,
         }
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn a_snapshot_holds_the_file_bytes_and_parses_them_like_a_read() {
         let (_directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         assert!(matches!(store.snapshot(&key).unwrap(), Loaded::Absent));
         store.write(&key, &bare(7)).unwrap();
 
@@ -476,15 +476,15 @@ mod tests {
                 let snapshot = stored.value;
                 assert_eq!(
                     snapshot.bytes(),
-                    serde_json::to_string_pretty(&bare(7)).unwrap().as_bytes()
+                    std::fs::read(store.path(&key)).unwrap().as_slice()
                 );
-                assert_eq!(
-                    snapshot.parse(),
-                    Loaded::Found(Stored {
-                        value: bare(7),
-                        meta: None
-                    })
-                );
+                match snapshot.parse() {
+                    Loaded::Found(parsed) => {
+                        assert_eq!(parsed.value, bare(7));
+                        assert!(parsed.meta.is_some(), "an enveloped file carries metadata");
+                    }
+                    other => panic!("expected a parsed payload, got {other:?}"),
+                }
             }
             other => panic!("expected Found, got {other:?}"),
         }
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn a_snapshot_of_an_oversized_file_is_too_large() {
         let (_directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
         let file = std::fs::File::create(store.path(&key)).unwrap();
         file.set_len(MAX_ARTIFACT_BYTES + 1).unwrap();
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn a_typed_write_only_lands_when_the_bytes_match() {
         let (_directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         store.write(&key, &bare(1)).unwrap();
         let expected = match store.snapshot(&key).unwrap() {
             Loaded::Found(stored) => stored.value,
@@ -526,20 +526,23 @@ mod tests {
         );
 
         store.write(&key, &bare(1)).unwrap();
+        // Each write stamps its own `written_at`, so the expectation to compare
+        // against is this write's bytes, not the earlier snapshot's.
+        let current = match store.snapshot(&key).unwrap() {
+            Loaded::Found(stored) => stored.value,
+            other => panic!("expected Found, got {other:?}"),
+        };
         let written = store
-            .write_typed_if_unchanged(&expected, &bare(3))
+            .write_typed_if_unchanged(&current, &bare(3))
             .unwrap()
             .expect("the file still held the expected bytes");
-        assert_eq!(
-            written.parse(),
-            Loaded::Found(Stored {
-                value: bare(3),
-                meta: None
-            })
-        );
+        match written.parse() {
+            Loaded::Found(parsed) => assert_eq!(parsed.value, bare(3)),
+            other => panic!("expected a parsed payload, got {other:?}"),
+        }
         assert!(
             store
-                .write_typed_if_unchanged(&expected, &bare(4))
+                .write_typed_if_unchanged(&current, &bare(4))
                 .unwrap()
                 .is_none(),
             "the written bytes no longer match the old snapshot"
@@ -549,7 +552,7 @@ mod tests {
     #[test]
     fn a_restore_only_lands_when_the_expected_bytes_match() {
         let (_directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         store.write(&key, &bare(1)).unwrap();
         let original = match store.snapshot(&key).unwrap() {
             Loaded::Found(stored) => stored.value,
@@ -561,14 +564,25 @@ mod tests {
             other => panic!("expected Found, got {other:?}"),
         };
         store.write(&key, &bare(3)).unwrap();
+        let third = match store.snapshot(&key).unwrap() {
+            Loaded::Found(stored) => stored.value,
+            other => panic!("expected Found, got {other:?}"),
+        };
 
         assert!(!store.restore_if_unchanged(&original, &changed).unwrap());
         assert_eq!(
-            std::fs::read_to_string(store.path(&key)).unwrap(),
-            serde_json::to_string_pretty(&bare(3)).unwrap()
+            std::fs::read(store.path(&key)).unwrap().as_slice(),
+            third.bytes()
         );
         store.write(&key, &bare(2)).unwrap();
-        assert!(store.restore_if_unchanged(&original, &changed).unwrap());
+        // The rewrite stamps a new `written_at`, so capture what it wrote.
+        let changed_now = match store.snapshot(&key).unwrap() {
+            Loaded::Found(stored) => stored.value,
+            other => panic!("expected Found, got {other:?}"),
+        };
+        assert!(store
+            .restore_if_unchanged(&original, &changed_now)
+            .unwrap());
         assert_eq!(
             std::fs::read(store.path(&key)).unwrap().as_slice(),
             original.bytes()
@@ -578,20 +592,21 @@ mod tests {
     #[test]
     fn only_one_of_two_competing_restores_wins() {
         let (_directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         store.write(&key, &bare(1)).unwrap();
         let original = match store.snapshot(&key).unwrap() {
-            Loaded::Found(stored) => stored.value,
-            other => panic!("expected Found, got {other:?}"),
-        };
-        store.write(&key, &bare(2)).unwrap();
-        let changed = match store.snapshot(&key).unwrap() {
             Loaded::Found(stored) => stored.value,
             other => panic!("expected Found, got {other:?}"),
         };
         let store = std::sync::Arc::new(store);
         for _ in 0..32 {
             store.write(&key, &bare(2)).unwrap();
+            // Each write stamps its own `written_at`, so the bytes to compare
+            // against are the ones this round wrote, not an earlier snapshot's.
+            let changed = match store.snapshot(&key).unwrap() {
+                Loaded::Found(stored) => stored.value,
+                other => panic!("expected Found, got {other:?}"),
+            };
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
             let outcomes = std::thread::scope(|threads| {
                 let handles: Vec<_> = (0..2)
@@ -629,8 +644,8 @@ mod tests {
         let outside = TempDir::new().unwrap();
         let target = outside.path().join("outside.json");
         std::fs::write(&target, "outside").unwrap();
-        let key = key::<TestBare>(&scope, ());
-        std::os::unix::fs::symlink(&target, directory.path().join("test-bare.json")).unwrap();
+        let key = key::<TestPayload>(&scope, ());
+        std::os::unix::fs::symlink(&target, directory.path().join("test-payload.json")).unwrap();
         assert!(matches!(
             store.snapshot(&key),
             Err(StoreError::SymlinkedPath { .. })
@@ -641,8 +656,9 @@ mod tests {
     #[test]
     fn archiving_moves_the_file_and_refuses_a_second_archive() {
         let (directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         store.write(&key, &bare(1)).unwrap();
+        let original = std::fs::read(store.path(&key)).unwrap();
         let backup_dir = RelPath::new("flow-backups/run-1").unwrap();
         store.create_backup_dir(&scope, &backup_dir).unwrap();
 
@@ -655,12 +671,9 @@ mod tests {
             archived.backup_path(),
             std::fs::canonicalize(directory.path())
                 .unwrap()
-                .join("flow-backups/run-1/test-bare.json")
+                .join("flow-backups/run-1/test-payload.json")
         );
-        assert_eq!(
-            std::fs::read(archived.backup_path()).unwrap(),
-            serde_json::to_string_pretty(&bare(1)).unwrap().as_bytes()
-        );
+        assert_eq!(std::fs::read(archived.backup_path()).unwrap(), original);
         assert!(store.archive_to_dir(&key, &backup_dir).unwrap().is_none());
 
         store.write(&key, &bare(2)).unwrap();
@@ -686,7 +699,7 @@ mod tests {
     #[test]
     fn a_backup_restore_never_clobbers_a_destination() {
         let (_directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         store.write(&key, &bare(1)).unwrap();
         let dir = RelPath::new("flow-backups/run-1").unwrap();
         store.create_backup_dir(&scope, &dir).unwrap();
@@ -704,7 +717,7 @@ mod tests {
         );
         assert!(archived.backup_path().is_file(), "the backup is retained");
 
-        store.delete::<TestBare>(&key).unwrap();
+        store.delete::<TestPayload>(&key).unwrap();
         store.restore_backup(&archived).unwrap();
         assert_eq!(store.snapshot(&key).unwrap().parsed_value(), Some(bare(1)));
     }
@@ -712,7 +725,7 @@ mod tests {
     #[test]
     fn a_backup_restore_refuses_a_symlinked_archive() {
         let (directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         store.write(&key, &bare(1)).unwrap();
         let dir = RelPath::new("flow-backups/run-1").unwrap();
         store.create_backup_dir(&scope, &dir).unwrap();
@@ -731,13 +744,13 @@ mod tests {
             Err(StoreError::SymlinkedPath { .. })
         ));
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "outside");
-        assert!(!directory.path().join("test-bare.json").exists());
+        assert!(!directory.path().join("test-payload.json").exists());
     }
 
     #[test]
     fn a_backup_write_refuses_an_existing_file_and_reads_back() {
         let (_directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         store.write(&key, &bare(1)).unwrap();
         let snapshot = match store.snapshot(&key).unwrap() {
             Loaded::Found(stored) => stored.value,
@@ -759,7 +772,7 @@ mod tests {
         assert_eq!(
             store.read_backup(&archived).unwrap(),
             Loaded::Found(Stored {
-                value: serde_json::to_string_pretty(&bare(1)).unwrap().into_bytes(),
+                value: snapshot.bytes().to_vec(),
                 meta: None,
             })
         );
@@ -768,7 +781,7 @@ mod tests {
     #[test]
     fn archive_refuses_a_symlinked_backup_component() {
         let (directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         store.write(&key, &bare(1)).unwrap();
         let outside = TempDir::new().unwrap();
         std::fs::create_dir_all(directory.path().join("flow-backups")).unwrap();
@@ -781,13 +794,13 @@ mod tests {
             Err(StoreError::SymlinkedPath { .. })
         ));
         assert!(store.path(&key).is_file());
-        assert!(!outside.path().join("test-bare.json").exists());
+        assert!(!outside.path().join("test-payload.json").exists());
     }
 
     #[test]
     fn archive_refuses_a_directory_at_the_artifact_path() {
         let (_directory, store, scope) = temp_store();
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         std::fs::create_dir_all(store.path(&key)).unwrap();
         let dir = RelPath::new("flow-backups/run-1").unwrap();
         assert!(matches!(

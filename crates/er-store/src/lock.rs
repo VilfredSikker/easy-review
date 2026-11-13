@@ -244,7 +244,7 @@ mod tests {
     use crate::key::{ArtifactKey, RelPath};
     use crate::registry::Registry;
     use crate::test_support::{
-        ignore_patterns, TestBare, TestCounter, TestEnveloped, TestEnvelopedHash, TestGeneral,
+        ignore_patterns, TestPayload, TestCounter, TestEnveloped, TestEnvelopedHash, TestGeneral,
     };
 
     const INCREMENT_ROUNDS: u32 = 25;
@@ -269,9 +269,9 @@ mod tests {
         ArtifactKey::new(scope.clone(), slot).unwrap()
     }
 
-    fn bare_value() -> TestBare {
-        TestBare {
-            version: TestBare::VERSION,
+    fn bare_value() -> TestPayload {
+        TestPayload {
+            version: TestPayload::VERSION,
             diff_hash: "h".to_string(),
             value: 2,
         }
@@ -398,7 +398,7 @@ mod tests {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                let key = ArtifactKey::<TestBare>::new(scope, ()).unwrap();
+                let key = ArtifactKey::<TestPayload>::new(scope, ()).unwrap();
                 let started = Instant::now();
                 store.write(&key, &bare_value()).unwrap();
                 done_tx.send(started.elapsed()).unwrap();
@@ -418,7 +418,7 @@ mod tests {
             "waited only {waited:?}"
         );
 
-        let second = key::<TestBare>(&scope, ());
+        let second = key::<TestPayload>(&scope, ());
         assert!(matches!(store.read(&first).unwrap(), Loaded::Found(_)));
         assert!(matches!(store.read(&second).unwrap(), Loaded::Found(_)));
     }
@@ -527,7 +527,7 @@ mod tests {
         let (directory, store) = temp_store();
         let scope = scope(&directory);
         let envelope = key::<TestEnveloped>(&scope, ());
-        let bare = key::<TestBare>(&scope, ());
+        let bare = key::<TestPayload>(&scope, ());
         let hash = key::<TestEnvelopedHash>(&scope, ());
         let summary = RelPath::new("summary.md").unwrap();
         let guard = store.lock_scope(&scope, Duration::from_secs(5)).unwrap();
@@ -598,7 +598,7 @@ mod tests {
         let (directory, store) = temp_store();
         let scope = scope(&directory);
         let envelope = key::<TestEnveloped>(&scope, ());
-        let bare = key::<TestBare>(&scope, ());
+        let bare = key::<TestPayload>(&scope, ());
         let general = key::<TestGeneral>(&scope, ());
         let summary = RelPath::new("summary.md").unwrap();
         store.write(&envelope, &TestEnveloped { value: 1 }).unwrap();

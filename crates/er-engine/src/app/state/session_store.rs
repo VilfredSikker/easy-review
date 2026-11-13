@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use er_store::{
-    Artifact, ArtifactKey, ArtifactStore, Loaded, Mode, Registry, Scope, StoreError, Unreadable,
+    Artifact, ArtifactKey, ArtifactStore, Loaded, Registry, Scope, StoreError, Unreadable,
     DEFAULT_LOCK_TIMEOUT,
 };
 use serde::{Deserialize, Serialize};
@@ -112,7 +112,6 @@ pub struct SessionState {
 impl Artifact for SessionState {
     const KIND: &'static str = "session";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "session.json";
     type Slot = ();
 }
@@ -127,7 +126,6 @@ pub struct ReviewedFiles {
 impl Artifact for ReviewedFiles {
     const KIND: &'static str = "reviewed";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "reviewed.json";
     type Slot = ();
 }

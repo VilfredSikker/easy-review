@@ -8,7 +8,7 @@
 
 use super::review_flow::{FlowTaskProgress, FlowTaskStage, FlowTaskStatus};
 use er_store::{
-    Artifact, ArtifactKey, ArtifactStore, LeaseGuard, Loaded, Mode, Scope, StoreError, UpdateError,
+    Artifact, ArtifactKey, ArtifactStore, LeaseGuard, Loaded, Scope, StoreError, UpdateError,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -111,7 +111,6 @@ pub struct WorkflowRecord {
 impl Artifact for WorkflowRecord {
     const KIND: &'static str = "workflow";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "workflow.json";
     type Slot = ();
 

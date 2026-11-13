@@ -7,7 +7,7 @@
 
 use super::identity::finding_key;
 use super::review::{Confidence, ErReview, EvidenceItem};
-use er_store::{Artifact, Mode};
+use er_store::Artifact;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -77,7 +77,6 @@ pub struct ValidationEffect {
 impl Artifact for ValidationReview {
     const KIND: &'static str = "validation";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "validation.json";
     type Slot = ();
 

@@ -16,7 +16,7 @@ pub mod registry;
 pub mod store;
 pub mod time;
 
-pub use artifact::{Artifact, Mode};
+pub use artifact::Artifact;
 pub use envelope::{EnvelopeMeta, Loaded, Stored, Unreadable};
 pub use error::{StoreError, UpdateError};
 pub use event::{event_for_path, StoreEvent};
@@ -36,7 +36,7 @@ pub(crate) mod test_support {
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
 
-    use super::{Artifact, Mode, StoreError};
+    use super::{Artifact, StoreError};
     use crate::key::{ExpertId, SlotName};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -47,23 +47,21 @@ pub(crate) mod test_support {
     impl Artifact for TestEnveloped {
         const KIND: &'static str = "test-enveloped";
         const VERSION: u32 = 2;
-        const MODE: Mode = Mode::Enveloped;
-        const FILE: &'static str = "test-enveloped.json";
+            const FILE: &'static str = "test-enveloped.json";
         type Slot = ();
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-    pub struct TestBare {
+    pub struct TestPayload {
         pub version: u32,
         pub diff_hash: String,
         pub value: u32,
     }
 
-    impl Artifact for TestBare {
-        const KIND: &'static str = "test-bare";
+    impl Artifact for TestPayload {
+        const KIND: &'static str = "test-payload";
         const VERSION: u32 = 2;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "test-bare.json";
+            const FILE: &'static str = "test-payload.json";
         type Slot = ();
     }
 
@@ -77,8 +75,7 @@ pub(crate) mod test_support {
     impl Artifact for TestExpert {
         const KIND: &'static str = "test-expert";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "experts/{slot}.json";
+            const FILE: &'static str = "experts/{slot}.json";
         type Slot = ExpertId;
     }
 
@@ -92,8 +89,7 @@ pub(crate) mod test_support {
     impl Artifact for TestCounter {
         const KIND: &'static str = "test-counter";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "counter.json";
+            const FILE: &'static str = "counter.json";
         type Slot = ();
     }
 
@@ -105,32 +101,8 @@ pub(crate) mod test_support {
     impl Artifact for TestExpertSingleton {
         const KIND: &'static str = "test-expert-singleton";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "experts/security.json";
+            const FILE: &'static str = "experts/security.json";
         type Slot = ();
-    }
-
-    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-    pub struct TestLegacy {
-        pub version: u32,
-        pub value: u32,
-    }
-
-    impl Artifact for TestLegacy {
-        const KIND: &'static str = "test-legacy";
-        const VERSION: u32 = 2;
-        const MODE: Mode = Mode::Enveloped;
-        const WAS_BARE_BEFORE: Option<u32> = Some(1);
-        const FILE: &'static str = "test-legacy.json";
-        type Slot = ();
-
-        fn migrate(from: u32, mut raw: serde_json::Value) -> Result<serde_json::Value, StoreError> {
-            if from != 1 {
-                return Err(StoreError::UnsupportedVersion { found: from });
-            }
-            raw["version"] = serde_json::json!(Self::VERSION);
-            Ok(raw)
-        }
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -142,8 +114,7 @@ pub(crate) mod test_support {
     impl Artifact for TestMigrateErr {
         const KIND: &'static str = "test-migrate-err";
         const VERSION: u32 = 2;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "test-migrate-err.json";
+            const FILE: &'static str = "test-migrate-err.json";
         type Slot = ();
 
         fn migrate(from: u32, _raw: serde_json::Value) -> Result<serde_json::Value, StoreError> {
@@ -164,8 +135,7 @@ pub(crate) mod test_support {
     impl Artifact for TestBig {
         const KIND: &'static str = "test-big";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "test-big.json";
+            const FILE: &'static str = "test-big.json";
         type Slot = ();
     }
 
@@ -177,8 +147,7 @@ pub(crate) mod test_support {
     impl Artifact for TestBigEnveloped {
         const KIND: &'static str = "test-big-enveloped";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Enveloped;
-        const FILE: &'static str = "test-big-enveloped.json";
+            const FILE: &'static str = "test-big-enveloped.json";
         type Slot = ();
     }
 
@@ -191,8 +160,7 @@ pub(crate) mod test_support {
     impl Artifact for TestEnvelopedHash {
         const KIND: &'static str = "test-enveloped-hash";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Enveloped;
-        const FILE: &'static str = "test-enveloped-hash.json";
+            const FILE: &'static str = "test-enveloped-hash.json";
         type Slot = ();
 
         fn diff_hash(&self) -> Option<&str> {
@@ -208,8 +176,7 @@ pub(crate) mod test_support {
     impl Artifact for TestBadSingleton {
         const KIND: &'static str = "test-bad-singleton";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "bad/{slot}.json";
+            const FILE: &'static str = "bad/{slot}.json";
         type Slot = ();
     }
 
@@ -221,8 +188,7 @@ pub(crate) mod test_support {
     impl Artifact for TestBadMulti {
         const KIND: &'static str = "test-bad-multi";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "bad.json";
+            const FILE: &'static str = "bad.json";
         type Slot = ExpertId;
     }
 
@@ -234,8 +200,7 @@ pub(crate) mod test_support {
     impl Artifact for TestAbsoluteTemplate {
         const KIND: &'static str = "test-absolute-template";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "/absolute.json";
+            const FILE: &'static str = "/absolute.json";
         type Slot = ();
     }
 
@@ -247,8 +212,7 @@ pub(crate) mod test_support {
     impl Artifact for TestDotDotTemplate {
         const KIND: &'static str = "test-dotdot-template";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "nested/../escape.json";
+            const FILE: &'static str = "nested/../escape.json";
         type Slot = ();
     }
 
@@ -260,8 +224,7 @@ pub(crate) mod test_support {
     impl Artifact for TestGeneral {
         const KIND: &'static str = "test-general";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "general.json";
+            const FILE: &'static str = "general.json";
         type Slot = ();
     }
 
@@ -275,8 +238,7 @@ pub(crate) mod test_support {
     impl Artifact for TestExpertAlt {
         const KIND: &'static str = "test-expert";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "experts-alt/{slot}.json";
+            const FILE: &'static str = "experts-alt/{slot}.json";
         type Slot = ExpertId;
     }
 
@@ -301,8 +263,7 @@ pub(crate) mod test_support {
     impl Artifact for TestBadSlotKind {
         const KIND: &'static str = "test-bad-slot";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
-        const FILE: &'static str = "bad-slot/{slot}.json";
+            const FILE: &'static str = "bad-slot/{slot}.json";
         type Slot = BadSlot;
     }
 

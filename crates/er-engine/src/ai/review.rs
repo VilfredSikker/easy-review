@@ -86,7 +86,6 @@ pub struct ErReview {
 impl er_store::Artifact for ErReview {
     const KIND: &'static str = "review";
     const VERSION: u32 = 1;
-    const MODE: er_store::Mode = er_store::Mode::Bare;
     const FILE: &'static str = "review.json";
     type Slot = ();
 
@@ -624,7 +623,6 @@ pub struct ErTour {
 impl er_store::Artifact for ErTour {
     const KIND: &'static str = "tour";
     const VERSION: u32 = 1;
-    const MODE: er_store::Mode = er_store::Mode::Bare;
     const FILE: &'static str = "tour.json";
     type Slot = ();
 

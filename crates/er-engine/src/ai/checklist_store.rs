@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use er_store::{
-    Artifact, ArtifactKey, ArtifactStore, Loaded, Mode, Registry, Scope, StoreError, UpdateError,
+    Artifact, ArtifactKey, ArtifactStore, Loaded, Registry, Scope, StoreError, UpdateError,
     DEFAULT_LOCK_TIMEOUT,
 };
 
@@ -16,7 +16,6 @@ use crate::ai::{ErChecklist, ErOrder};
 impl Artifact for ErOrder {
     const KIND: &'static str = "order";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "order.json";
     type Slot = ();
 
@@ -28,7 +27,6 @@ impl Artifact for ErOrder {
 impl Artifact for ErChecklist {
     const KIND: &'static str = "checklist";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "checklist.json";
     type Slot = ();
 

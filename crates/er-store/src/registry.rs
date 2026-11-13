@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::artifact::{Artifact, Mode};
+use crate::artifact::Artifact;
 use crate::error::StoreError;
 use crate::key::{validated_template, RelPath};
 
@@ -95,18 +95,6 @@ pub struct Registry {
 struct Entry {
     kind: &'static str,
     pattern: Pattern,
-    #[expect(
-        dead_code,
-        reason = "the mode is read when a caller builds a kind map; the unaccounted check only needs the pattern"
-    )]
-    mode: EntryMode,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EntryMode {
-    Enveloped,
-    Bare,
-    Text,
 }
 
 impl Registry {
@@ -116,14 +104,9 @@ impl Registry {
 
     pub fn register<T: Artifact>(&mut self) -> Result<(), StoreError> {
         let pattern = pattern_of(&validated_template::<T>("*")?);
-        let mode = match T::MODE {
-            Mode::Enveloped => EntryMode::Enveloped,
-            Mode::Bare => EntryMode::Bare,
-        };
         self.push(Entry {
             kind: T::KIND,
             pattern,
-            mode,
         })
     }
 
@@ -135,7 +118,6 @@ impl Registry {
         self.push(Entry {
             kind,
             pattern: pattern_of(&RelPath::new(file)?),
-            mode: EntryMode::Text,
         })
     }
 

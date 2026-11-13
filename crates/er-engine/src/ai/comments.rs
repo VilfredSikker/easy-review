@@ -403,7 +403,6 @@ fn default_author() -> String {
 impl er_store::Artifact for ErQuestions {
     const KIND: &'static str = "questions";
     const VERSION: u32 = 1;
-    const MODE: er_store::Mode = er_store::Mode::Bare;
     const FILE: &'static str = "questions.json";
     type Slot = ();
 
@@ -415,7 +414,6 @@ impl er_store::Artifact for ErQuestions {
 impl er_store::Artifact for ErNotes {
     const KIND: &'static str = "notes";
     const VERSION: u32 = 1;
-    const MODE: er_store::Mode = er_store::Mode::Bare;
     const FILE: &'static str = "notes.json";
     type Slot = ();
 
@@ -427,7 +425,6 @@ impl er_store::Artifact for ErNotes {
 impl er_store::Artifact for ErGithubComments {
     const KIND: &'static str = "github-comments";
     const VERSION: u32 = 1;
-    const MODE: er_store::Mode = er_store::Mode::Bare;
     const FILE: &'static str = "github-comments.json";
     type Slot = ();
 

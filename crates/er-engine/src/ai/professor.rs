@@ -34,7 +34,6 @@ pub struct ProfessorFileReview {
 impl er_store::Artifact for ProfessorReview {
     const KIND: &'static str = "professor";
     const VERSION: u32 = 1;
-    const MODE: er_store::Mode = er_store::Mode::Bare;
     const FILE: &'static str = "professor.json";
     type Slot = ();
 

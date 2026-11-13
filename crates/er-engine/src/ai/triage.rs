@@ -49,7 +49,6 @@ pub struct TriageReview {
 impl er_store::Artifact for TriageReview {
     const KIND: &'static str = "triage";
     const VERSION: u32 = 1;
-    const MODE: er_store::Mode = er_store::Mode::Bare;
     const FILE: &'static str = "triage.json";
     type Slot = ();
 

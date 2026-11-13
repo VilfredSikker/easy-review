@@ -65,7 +65,6 @@ pub struct ArbiterVerdict {
 impl er_store::Artifact for ArbiterReview {
     const KIND: &'static str = "arbiter";
     const VERSION: u32 = 1;
-    const MODE: er_store::Mode = er_store::Mode::Bare;
     const FILE: &'static str = "arbiter.json";
     type Slot = ();
 

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::artifact::{Artifact, Mode};
+use crate::artifact::Artifact;
 use crate::envelope::{self, Envelope, Loaded, Stored, Unreadable};
 use crate::error::{StoreError, UpdateError};
 use crate::key::{ArtifactKey, RelPath, Scope, SlotName};
@@ -50,17 +50,14 @@ fn remove_file(path: &Path) -> Result<(), StoreError> {
 }
 
 pub(crate) fn serialize<T: Artifact>(value: &T, written_at: &str) -> Result<String, StoreError> {
-    match T::MODE {
-        Mode::Enveloped => Ok(serde_json::to_string_pretty(&Envelope {
-            kind: T::KIND,
-            version: T::VERSION,
-            diff_hash: value.diff_hash(),
-            producer: Some("host"),
-            written_at: written_at.to_string(),
-            payload: value,
-        })?),
-        Mode::Bare => Ok(serde_json::to_string_pretty(value)?),
-    }
+    Ok(serde_json::to_string_pretty(&Envelope {
+        kind: T::KIND,
+        version: T::VERSION,
+        diff_hash: value.diff_hash(),
+        producer: Some("host"),
+        written_at: written_at.to_string(),
+        payload: value,
+    })?)
 }
 
 /// A typed view over one store root.
@@ -431,9 +428,9 @@ mod tests {
     use super::*;
     use crate::key::{ArtifactKey, BranchView, ExpertId, RelPath, Scope, Slug};
     use crate::test_support::{
-        TestAbsoluteTemplate, TestBadMulti, TestBadSingleton, TestBare, TestBig, TestBigEnveloped,
+        TestAbsoluteTemplate, TestBadMulti, TestBadSingleton, TestPayload, TestBig, TestBigEnveloped,
         TestDotDotTemplate, TestEnveloped, TestEnvelopedHash, TestExpert, TestExpertAlt,
-        TestExpertSingleton, TestGeneral, TestLegacy, TestMigrateErr,
+        TestExpertSingleton, TestGeneral, TestMigrateErr,
     };
 
     fn temp_store() -> (TempDir, ArtifactStore) {
@@ -450,9 +447,9 @@ mod tests {
         ArtifactKey::new(scope.clone(), slot).unwrap()
     }
 
-    fn bare_value() -> TestBare {
-        TestBare {
-            version: TestBare::VERSION,
+    fn bare_value() -> TestPayload {
+        TestPayload {
+            version: TestPayload::VERSION,
             diff_hash: "abc".to_string(),
             value: 9,
         }
@@ -575,25 +572,10 @@ mod tests {
     }
 
     #[test]
-    fn bare_write_stores_the_payload_bytes_with_no_wrapper() {
+    fn a_bare_payload_is_unreadable_and_names_the_missing_envelope() {
         let (directory, store) = temp_store();
         let scope = scope(&directory);
-        let key = key::<TestBare>(&scope, ());
-        let value = bare_value();
-        store.write(&key, &value).unwrap();
-
-        let raw = std::fs::read_to_string(store.path(&key)).unwrap();
-        assert_eq!(raw, serde_json::to_string_pretty(&value).unwrap());
-        let document: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert!(document.get("kind").is_none());
-        assert!(document.get("payload").is_none());
-    }
-
-    #[test]
-    fn bare_read_accepts_a_file_an_agent_wrote() {
-        let (directory, store) = temp_store();
-        let scope = scope(&directory);
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
         std::fs::write(
             store.path(&key),
@@ -602,12 +584,10 @@ mod tests {
         .unwrap();
 
         match store.read(&key).unwrap() {
-            Loaded::Found(stored) => {
-                assert!(stored.meta.is_none());
-                assert_eq!(stored.value.value, 5);
-                assert_eq!(stored.value.diff_hash, "agent");
+            Loaded::Unreadable(Unreadable::Malformed(reason)) => {
+                assert!(reason.contains("missing envelope"), "{reason}");
             }
-            other => panic!("expected Found, got {other:?}"),
+            other => panic!("expected a missing-envelope error, got {other:?}"),
         }
     }
 
@@ -627,23 +607,23 @@ mod tests {
             Loaded::Unreadable(Unreadable::UnknownVersion { found: 1 })
         );
 
-        let bare = key::<TestBare>(&scope, ());
+        let payload = key::<TestPayload>(&scope, ());
         std::fs::write(
-            store.path(&bare),
-            r#"{"version":1,"diff_hash":"h","value":1}"#,
+            store.path(&payload),
+            r#"{"kind":"test-payload","version":1,"payload":{"version":1,"diff_hash":"h","value":1}}"#,
         )
         .unwrap();
         assert_eq!(
-            store.read(&bare).unwrap(),
+            store.read(&payload).unwrap(),
             Loaded::Unreadable(Unreadable::UnknownVersion { found: 1 })
         );
     }
 
     #[test]
-    fn bare_payload_without_a_version_field_is_unreadable() {
+    fn a_payload_without_an_envelope_is_unreadable() {
         let (directory, store) = temp_store();
         let scope = scope(&directory);
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
         std::fs::write(store.path(&key), r#"{"diff_hash":"h","value":1}"#).unwrap();
         assert!(matches!(
@@ -675,7 +655,7 @@ mod tests {
     fn malformed_json_is_unreadable_and_the_file_is_left_untouched() {
         let (directory, store) = temp_store();
         let scope = scope(&directory);
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
         std::fs::write(store.path(&key), "{not json").unwrap();
         let before = std::fs::read(store.path(&key)).unwrap();
@@ -690,7 +670,7 @@ mod tests {
     fn a_file_over_the_size_limit_is_too_large_and_is_not_read() {
         let (directory, store) = temp_store();
         let scope = scope(&directory);
-        let key = key::<TestBare>(&scope, ());
+        let key = key::<TestPayload>(&scope, ());
         std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
         let file = std::fs::File::create(store.path(&key)).unwrap();
         file.set_len(MAX_ARTIFACT_BYTES + 1).unwrap();
@@ -785,9 +765,9 @@ mod tests {
     fn a_bare_file_with_another_diff_hash_is_found() {
         let (directory, store) = temp_store();
         let scope = scope(&directory);
-        let key = key::<TestBare>(&scope, ());
-        let value = TestBare {
-            version: TestBare::VERSION,
+        let key = key::<TestPayload>(&scope, ());
+        let value = TestPayload {
+            version: TestPayload::VERSION,
             diff_hash: "old".to_string(),
             value: 3,
         };
@@ -913,27 +893,6 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_bare_version_is_unreadable_and_write_refuses_it() {
-        let (directory, store) = temp_store();
-        let scope = scope(&directory);
-        let key = key::<TestBare>(&scope, ());
-        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
-        let newer = r#"{"version":3,"diff_hash":"h","value":1}"#;
-        std::fs::write(store.path(&key), newer).unwrap();
-
-        assert_eq!(
-            store.read(&key).unwrap(),
-            Loaded::Unreadable(Unreadable::NewerVersion { found: 3 })
-        );
-        let error = store.write(&key, &bare_value()).unwrap_err();
-        assert!(matches!(
-            error,
-            StoreError::NewerVersion { found, .. } if found == 3
-        ));
-        assert_eq!(std::fs::read_to_string(store.path(&key)).unwrap(), newer);
-    }
-
-    #[test]
     fn write_refuses_an_envelope_over_the_size_limit() {
         let (directory, store) = temp_store();
         let scope = scope(&directory);
@@ -970,63 +929,10 @@ mod tests {
     }
 
     #[test]
-    fn enveloped_kind_reads_a_legacy_bare_file() {
-        let (directory, store) = temp_store();
-        let scope = scope(&directory);
-        let key = key::<TestLegacy>(&scope, ());
-        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
-        std::fs::write(store.path(&key), r#"{"version":1,"value":7}"#).unwrap();
-        match store.read(&key).unwrap() {
-            Loaded::Found(stored) => {
-                assert_eq!(stored.value.value, 7);
-                assert!(stored.meta.is_none());
-            }
-            other => panic!("expected Found, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn app_scope_path_is_root_app_file() {
         let store = ArtifactStore::new("/root");
         let key = key::<TestEnveloped>(&Scope::App, ());
         assert_eq!(store.path(&key), Path::new("/root/app/test-enveloped.json"));
-    }
-
-    #[test]
-    fn bare_file_wrapped_in_an_envelope_is_unreadable() {
-        let (directory, store) = temp_store();
-        let scope = scope(&directory);
-        let key = key::<TestBare>(&scope, ());
-        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
-        std::fs::write(
-            store.path(&key),
-            json!({
-                "kind": "test-bare",
-                "version": TestBare::VERSION,
-                "diff_hash": "h",
-                "producer": "host",
-                "written_at": "2026-11-06T09:30:00Z",
-                "payload": {"version": TestBare::VERSION, "diff_hash": "h", "value": 1}
-            })
-            .to_string(),
-        )
-        .unwrap();
-        assert_eq!(
-            store.read(&key).unwrap(),
-            Loaded::Unreadable(Unreadable::WrongKind {
-                found: "test-bare".to_string()
-            })
-        );
-
-        std::fs::write(
-            store.path(&key),
-            r#"{"payload":{"version":2,"diff_hash":"h","value":1}}"#,
-        )
-        .unwrap();
-        assert!(matches!(
-            store.read(&key).unwrap(),
-            Loaded::Unreadable(Unreadable::Malformed(_))
-        ));
     }
 
     #[test]
@@ -1069,39 +975,8 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_kind_refuses_to_overwrite_a_newer_enveloped_file() {
-        let (directory, store) = temp_store();
-        let scope = scope(&directory);
-        let key = key::<TestBare>(&scope, ());
-        std::fs::create_dir_all(store.path(&key).parent().unwrap()).unwrap();
-        let newer = json!({
-            "kind": "test-bare",
-            "version": TestBare::VERSION + 1,
-            "diff_hash": "h",
-            "producer": "host",
-            "written_at": "2026-11-06T09:30:00Z",
-            "payload": {"version": TestBare::VERSION + 1, "diff_hash": "h", "value": 1}
-        })
-        .to_string();
-        std::fs::write(store.path(&key), &newer).unwrap();
-
-        assert_eq!(
-            store.read(&key).unwrap(),
-            Loaded::Unreadable(Unreadable::NewerVersion {
-                found: TestBare::VERSION + 1
-            })
-        );
-        let error = store.write(&key, &bare_value()).unwrap_err();
-        assert!(matches!(
-            error,
-            StoreError::NewerVersion { found, .. } if found == TestBare::VERSION + 1
-        ));
-        assert_eq!(std::fs::read_to_string(store.path(&key)).unwrap(), newer);
-    }
-
-    #[test]
     fn default_migrate_rejects_every_version() {
-        assert!(TestBare::migrate(0, json!({})).is_err());
+        assert!(TestPayload::migrate(0, json!({})).is_err());
     }
 
     #[test]
