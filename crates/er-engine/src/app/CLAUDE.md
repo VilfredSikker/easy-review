@@ -30,10 +30,10 @@ separately at `<storage_root>/repos/<repo>/prs/pr-<N>/`. `storage_root` is
 
 | Sidecar | Resolves to |
 |---|---|
-| `reviewed`, `questions.json`, `notes.json`, `checklist.json`, `snapshots/` | the active view bucket |
+| `reviewed.json`, `questions.json`, `notes.json`, `checklist.json`, `snapshots/` | the active view bucket |
 | `github-comments.json` | the PR bucket, whatever view is active |
 
-Never build one of these paths by hand. `reviewed` is deleted rather than emptied
+Never build one of these paths by hand. `reviewed.json` is deleted rather than emptied
 when nothing is reviewed. Scoping exceptions and why they exist:
 `docs/adr/0003-managed-review-storage.md`,
 `docs/adr/0004-per-view-artifact-scoping.md`,

@@ -4,7 +4,9 @@ Pointer index for coding agents other than Claude Code. Codex, Cursor, and Gemin
 discover this filename and read nothing else, so it holds only what has no other
 home.
 
-- [`CLAUDE.md`](CLAUDE.md) — architecture, module and layer boundaries, conventions, traps.
+- [`CLAUDE.md`](CLAUDE.md) — what the project is, build, branching, traps, design principles.
+  Module and layer boundaries live in the `CLAUDE.md` beside the code under `crates/`;
+  read the one for the directory you change.
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — build, test, lint, dev, and release mechanics.
 - [`docs/adr/`](docs/adr/) — numbered decisions and why they were made. Read the ones covering your area, and cite the number rather than restating the decision.
 - [`crates/er-desktop/agent.md`](crates/er-desktop/agent.md), [`desktop-ui/agent.md`](desktop-ui/agent.md) — desktop backend and frontend notes.

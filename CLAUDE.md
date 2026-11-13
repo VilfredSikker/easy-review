@@ -31,10 +31,12 @@ and type listings — not in the reasoning, which held up. So do not add those
 shapes back: the tree shows the files, and a hand-maintained list of them is
 wrong within a release.
 
-Run `just docs-check` after editing docs. It verifies every file, link and ADR
-reference still resolves, and fails if an inventory table or heading reappears in
-an instruction doc. Add an ADR when a decision is hard to reverse, would surprise
-a reader, or came from a real trade-off — `docs/adr/` is where the why goes, and
+Run `just docs-check` after editing docs. It checks that backticked source paths,
+relative links and ADR numbers still resolve, and fails if an inventory table or
+heading reappears in an instruction doc. It does not check symbol names or
+`.md`/`.json` citations, so re-read those against the code yourself. Add an ADR
+when a decision is hard to reverse, would surprise a reader, or came from a real
+trade-off — `docs/adr/` is where the why goes, and
 citing one by number beats restating it.
 
 ## Build & run
@@ -42,7 +44,7 @@ citing one by number beats restating it.
 ```bash
 just install     # cargo install --path crates/er-tui → ~/.cargo/bin/er
 just run         # dev build, run from the current git repo
-just test        # er-engine + er-tui
+just test        # er-engine, er-tui, er-git, er-github, er-store
 ```
 
 Prefer `just` — it is a thin front-end over `scripts/`, which own the split
