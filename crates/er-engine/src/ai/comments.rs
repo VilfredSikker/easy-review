@@ -399,8 +399,9 @@ fn default_author() -> String {
 //
 // Agents still author these three files, but they cannot write them into the
 // store directly: a payload without an envelope reads as unreadable. The agent
-// uploads its output through er-mcp instead, and that upload commits the
-// envelope, so the store only ever sees its own shape.
+// writes its output into the job's staging directory, and the host commits that
+// output through the store, which adds the envelope, so the store only ever
+// sees its own shape.
 
 impl er_store::Artifact for ErQuestions {
     const KIND: &'static str = "questions";

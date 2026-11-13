@@ -1,11 +1,11 @@
 //! `validation.json`: the validate pass's outcomes, applied to the projection
 //! between provenance and the arbiter.
 //!
-//! The agent uploads this file rather than writing the store path, since a
-//! payload without an envelope reads as unreadable and the upload is what adds
-//! one. Its freshness lives in the projection, not in the store: a file is
-//! applied only when it names the same diff hash and the same review
-//! generation it read.
+//! The agent writes this file into the job's staging directory; the host
+//! commits it through the store, which adds the envelope. A direct write into
+//! the bucket would leave the payload unenveloped and unreadable. Its freshness
+//! lives in the projection, not in the store: a file is applied only when it
+//! names the same diff hash and the same review generation it read.
 
 use super::identity::finding_key;
 use super::review::{Confidence, ErReview, EvidenceItem};

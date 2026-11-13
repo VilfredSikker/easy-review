@@ -1,8 +1,8 @@
 //! The single reader for `order.json` and the reader/writer for
 //! `checklist.json`, on top of [`er_store::ArtifactStore`].
 //!
-//! The agent authors both files, but it hands them over as upload or staged
-//! output rather than writing the store path: an unenveloped payload reads as
+//! The agent authors both files, but it hands them over as staged output
+//! rather than writing the store path: an unenveloped payload reads as
 //! unreadable, and only the store's own write adds the envelope. The host
 //! rewrites the `checked` flags through that same write.
 
