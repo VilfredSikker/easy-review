@@ -10,53 +10,50 @@ use crate::arena::{
     RunStatus, Verdict,
 };
 use anyhow::{bail, Context, Result};
+use er_store::{
+    ArtifactKey, ArtifactSnapshot, ArtifactStore, BackupSnapshot, Loaded, RelPath, Scope,
+};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static ACCEPT_ARCHIVE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-fn atomic_write_sidecar(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("sidecar has no parent directory")?;
-    std::fs::create_dir_all(parent).context("create review bucket")?;
-    let sequence = ACCEPT_ARCHIVE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(
-        "{}.rollback-{}-{sequence}.tmp",
-        path.file_name()
-            .context("sidecar has no file name")?
-            .to_string_lossy(),
-        std::process::id()
-    ));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .context("create sidecar rollback file")?;
-    use std::io::Write;
-    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
-        drop(file);
-        let _ = std::fs::remove_file(&temp);
-        return Err(error).context("write sidecar rollback file");
+fn review_key(er_dir: &Path) -> Result<ArtifactKey<crate::ai::ErReview>> {
+    Ok(ArtifactKey::new(Scope::dir(er_dir)?, ())?)
+}
+
+fn review_snapshot(
+    store: &ArtifactStore,
+    key: &ArtifactKey<crate::ai::ErReview>,
+) -> Result<ArtifactSnapshot<crate::ai::ErReview>> {
+    match store.snapshot(key)? {
+        Loaded::Found(stored) => Ok(stored.value),
+        Loaded::Absent => bail!("review.json is missing"),
+        Loaded::Unreadable(reason) => bail!("review.json is unreadable: {reason:?}"),
     }
-    std::fs::rename(&temp, path).with_context(|| {
-        let _ = std::fs::remove_file(&temp);
-        "atomically replace sidecar"
-    })
 }
 
 fn rollback_review_acceptance(
-    review_path: &Path,
-    expected_post_import: &[u8],
-    original: Option<&[u8]>,
+    store: &ArtifactStore,
+    review_key: &ArtifactKey<crate::ai::ErReview>,
+    expected_post_import: &ArtifactSnapshot<crate::ai::ErReview>,
+    original: Option<&BackupSnapshot>,
 ) -> Result<()> {
-    let current = std::fs::read(review_path).context("read review.json before rollback")?;
-    if current != expected_post_import {
+    let current = review_snapshot(store, review_key).context("read review.json before rollback")?;
+    if current.bytes() != expected_post_import.bytes() {
         bail!("review.json changed after import; refusing to overwrite the newer file");
     }
-    if let Some(original) = original {
-        atomic_write_sidecar(review_path, original)
-    } else {
-        std::fs::remove_file(review_path).context("remove uncommitted review.json")
+    match original {
+        Some(backup) => {
+            if !store.restore_backup_if_unchanged(backup, expected_post_import.bytes())? {
+                bail!("review.json changed after import; refusing to overwrite the newer file");
+            }
+            Ok(())
+        }
+        None => store
+            .delete::<crate::ai::ErReview>(review_key)
+            .context("remove uncommitted review.json"),
     }
 }
 
@@ -64,36 +61,32 @@ fn rollback_review_acceptance(
 /// Keep a byte snapshot so failure can restore both sidecars without clobbering
 /// an external writer that replaced either one during acceptance.
 struct AcceptedOverlay {
-    original: Vec<u8>,
-    replacement: Vec<u8>,
+    original: ArtifactSnapshot<crate::ai::ArbiterReview>,
+    replacement: crate::ai::ArbiterReview,
 }
 
 impl AcceptedOverlay {
-    fn prepare(er_dir: &Path, run: &ArenaRun, selected: &[String]) -> Result<Option<Self>> {
-        let path = er_dir.join("arbiter.json");
-        let metadata = match std::fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error).context("inspect arbiter overlay before acceptance"),
+    fn prepare(
+        store: &ArtifactStore,
+        er_dir: &Path,
+        run: &ArenaRun,
+        selected: &[String],
+    ) -> Result<Option<Self>> {
+        let key = ArtifactKey::<crate::ai::ArbiterReview>::new(Scope::dir(er_dir)?, ())?;
+        let snapshot = match store
+            .snapshot(&key)
+            .context("inspect arbiter overlay before acceptance")?
+        {
+            Loaded::Absent => return Ok(None),
+            Loaded::Found(stored) => stored.value,
+            Loaded::Unreadable(reason) => {
+                bail!("arbiter.json must be a regular readable file for acceptance: {reason:?}")
+            }
         };
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            bail!("arbiter.json must be a regular file for acceptance");
-        }
-        const LIMIT: u64 = 10_000_000;
-        if metadata.len() > LIMIT {
-            bail!("arbiter.json is too large for recoverable acceptance");
-        }
-        use std::io::Read;
-        let mut original = Vec::new();
-        std::fs::File::open(&path)?
-            .take(LIMIT + 1)
-            .read_to_end(&mut original)?;
-        if original.len() as u64 > LIMIT {
-            bail!("arbiter.json grew beyond the acceptance size limit");
-        }
-        let Ok(mut overlay) = serde_json::from_slice::<crate::ai::ArbiterReview>(&original) else {
+        let Loaded::Found(stored) = snapshot.parse() else {
             return Ok(None);
         };
+        let mut overlay = stored.value;
         if overlay.diff_hash != run.diff_hash {
             return Ok(None);
         }
@@ -141,53 +134,60 @@ impl AcceptedOverlay {
         overlay.run_id.clear();
         overlay.created_at.clear();
         Ok(Some(Self {
-            original,
-            replacement: serde_json::to_vec_pretty(&overlay)?,
+            original: snapshot,
+            replacement: overlay,
         }))
     }
 
-    fn replace_if_unchanged(path: &Path, expected: &[u8], replacement: &[u8]) -> Result<()> {
-        let metadata =
-            std::fs::symlink_metadata(path).context("inspect arbiter.json before replacement")?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            bail!("arbiter.json is no longer a regular file");
+    fn write_replacement(
+        &self,
+        store: &ArtifactStore,
+    ) -> Result<ArtifactSnapshot<crate::ai::ArbiterReview>> {
+        match store.write_typed_if_unchanged(&self.original, &self.replacement)? {
+            Some(written) => Ok(written),
+            None => bail!(
+                "arbiter.json changed during acceptance; refusing to overwrite the newer file"
+            ),
         }
-        if metadata.len() != expected.len() as u64 {
-            bail!("arbiter.json changed during acceptance; refusing to overwrite the newer file");
-        }
-        use std::io::Read;
-        let mut current = Vec::new();
-        std::fs::File::open(path)?
-            .take(expected.len() as u64 + 1)
-            .read_to_end(&mut current)?;
-        if current != expected {
-            bail!("arbiter.json changed during acceptance; refusing to overwrite the newer file");
-        }
-        atomic_write_sidecar(path, replacement)
     }
 
-    fn archive(&self, archive_dir: &Path) -> Result<()> {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(archive_dir.join("arbiter.json"))
-            .context("archive superseded arbiter verdicts")?;
-        file.write_all(&self.original)?;
-        file.sync_all().context("persist archived arbiter verdicts")
+    fn restore_original(
+        &self,
+        store: &ArtifactStore,
+        written: &ArtifactSnapshot<crate::ai::ArbiterReview>,
+    ) -> Result<()> {
+        if store.restore_if_unchanged(&self.original, written)? {
+            Ok(())
+        } else {
+            bail!("arbiter.json changed during acceptance; refusing to overwrite the newer file")
+        }
+    }
+
+    fn archive(&self, store: &ArtifactStore, archive_dir: &RelPath) -> Result<()> {
+        store
+            .write_backup_to_dir(&self.original, archive_dir)
+            .context("archive superseded arbiter verdicts")
     }
 }
 
 fn restore_after_import_error(
-    review_path: &Path,
+    store: &ArtifactStore,
+    review_key: &ArtifactKey<crate::ai::ErReview>,
     archive: &crate::app::state::review_flow_output::FlowOutputBackup,
     same_generation: bool,
     original: Option<&[u8]>,
 ) -> Result<()> {
-    match std::fs::read(review_path) {
-        Ok(current) if same_generation && original == Some(current.as_slice()) => Ok(()),
-        Ok(_) => bail!("review.json changed during failed import; leaving it in place"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => archive.restore(),
+    match store.snapshot(review_key) {
+        Ok(Loaded::Found(stored)) if same_generation && original == Some(stored.value.bytes()) => {
+            Ok(())
+        }
+        Ok(Loaded::Found(_)) => {
+            bail!("review.json changed during failed import; leaving it in place")
+        }
+        Ok(Loaded::Absent) => archive.restore(),
+        Ok(Loaded::Unreadable(reason)) => {
+            bail!("inspect review.json after import failure: {reason:?}")
+        }
         Err(error) => Err(error).context("inspect review.json after import failure"),
     }
 }
@@ -343,28 +343,39 @@ impl App {
             bail!("Selection contains a missing, dropped, or already accepted finding");
         }
 
-        let overlay = AcceptedOverlay::prepare(Path::new(er_dir), &run, &finding_ids)?;
-        let overlay_path = Path::new(er_dir).join("arbiter.json");
-        let review_path = Path::new(er_dir).join("review.json");
-        let prior_hash = std::fs::read(&review_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<crate::ai::ErReview>(&bytes).ok())
-            .map(|review| review.diff_hash);
+        let store = crate::store_registry::store();
+        let review_key = review_key(Path::new(er_dir))?;
+        let overlay = AcceptedOverlay::prepare(&store, Path::new(er_dir), &run, &finding_ids)?;
+        let prior_hash = match store.snapshot(&review_key) {
+            Ok(Loaded::Found(stored)) => match stored.value.parse() {
+                Loaded::Found(parsed) => Some(parsed.value.diff_hash),
+                _ => None,
+            },
+            _ => None,
+        };
         let same_generation = prior_hash.as_deref() == Some(run.diff_hash.as_str());
         let sequence = ACCEPT_ARCHIVE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let archive_key = format!("accept-{}-{sequence}", std::process::id());
-        let archive_dir = Path::new(er_dir).join("flow-backups").join(&archive_key);
+        let archive_dir = RelPath::new(Path::new("flow-backups").join(&archive_key))?;
         // Archive every prior state. Same-generation reviews are copied back so
         // the importer can merge them; another generation stays out of the new
         // review until the selected flow findings are written.
         let archive = archive_flow_output(Path::new(er_dir), &archive_key, &FlowProducer::General)?;
-        let original = archive
-            .archive_path()
-            .map(std::fs::read)
-            .transpose()
-            .context("read the archived review for recoverable acceptance")?;
+        let original = match archive.archived() {
+            Some(backup) => match store
+                .read_backup(backup)
+                .context("read the archived review for recoverable acceptance")?
+            {
+                Loaded::Found(stored) => Some(stored.value),
+                Loaded::Absent => None,
+                Loaded::Unreadable(reason) => {
+                    bail!("read the archived review for recoverable acceptance: {reason:?}")
+                }
+            },
+            None => None,
+        };
         if let Some(overlay) = &overlay {
-            if let Err(error) = overlay.archive(&archive_dir) {
+            if let Err(error) = overlay.archive(&store, &archive_dir) {
                 archive
                     .restore()
                     .context("restore review after arbiter archive failed")?;
@@ -381,44 +392,35 @@ impl App {
             Ok(imported) => imported,
             Err(error) => {
                 if let Err(restore_error) = restore_after_import_error(
-                    &review_path,
+                    &store,
+                    &review_key,
                     &archive,
                     same_generation,
                     original.as_deref(),
                 ) {
                     return Err(error).context(format!(
                         "import failed and prior review restoration failed: {restore_error}; recovery archive is {}",
-                        archive_dir.display()
+                        archive_dir.as_path().display()
                     ));
                 }
                 return Err(error.context("import selected review-flow findings"));
             }
         };
-        let post_import = std::fs::read(&review_path)
+        let post_import = review_snapshot(&store, &review_key)
             .context("read review.json after importing selected findings")?;
         let mut written_overlay = None;
         let committed = (|| {
             if let Some(overlay) = &overlay {
-                AcceptedOverlay::replace_if_unchanged(
-                    &overlay_path,
-                    &overlay.original,
-                    &overlay.replacement,
-                )?;
-                written_overlay = Some(overlay);
+                written_overlay = Some(overlay.write_replacement(&store)?);
             }
             save_run(&paths, &run)
         })();
         if let Err(error) = committed {
             let review_rollback =
-                rollback_review_acceptance(&review_path, &post_import, original.as_deref());
-            let overlay_rollback = if let Some(overlay) = written_overlay {
-                AcceptedOverlay::replace_if_unchanged(
-                    &overlay_path,
-                    &overlay.replacement,
-                    &overlay.original,
-                )
-            } else {
-                Ok(())
+                rollback_review_acceptance(&store, &review_key, &post_import, archive.archived());
+            let overlay_rollback = match (&overlay, &written_overlay) {
+                (Some(overlay), Some(written)) => overlay.restore_original(&store, written),
+                _ => Ok(()),
             };
             return match (review_rollback, overlay_rollback) {
                 (Ok(()), Ok(())) => Err(error).context(
@@ -426,7 +428,7 @@ impl App {
                 ),
                 (review, arbiter) => Err(error).context(format!(
                     "accepted IDs could not be saved to the run; rollback failed for review.json {:?} or arbiter.json {:?}; recovery archive is {}",
-                    review.err(), arbiter.err(), archive_dir.display()
+                    review.err(), arbiter.err(), archive_dir.as_path().display()
                 )),
             };
         }
@@ -1134,28 +1136,92 @@ mod tests {
     #[test]
     fn overlay_rollback_preserves_intervening_external_edits() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("arbiter.json");
-        std::fs::write(&path, b"external replacement").unwrap();
-        let error = AcceptedOverlay::replace_if_unchanged(
-            &path,
-            b"our committed overlay",
-            b"original overlay",
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("refusing to overwrite"));
-        assert_eq!(std::fs::read(&path).unwrap(), b"external replacement");
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let store = crate::store_registry::store();
+            let key =
+                ArtifactKey::<crate::ai::ArbiterReview>::new(Scope::dir(dir.path()).unwrap(), ())
+                    .unwrap();
+            let path = store.path(&key);
+            std::fs::write(&path, b"original overlay").unwrap();
+            let original = match store.snapshot(&key).unwrap() {
+                Loaded::Found(stored) => stored.value,
+                _ => panic!("expected a readable snapshot"),
+            };
+            std::fs::write(&path, b"our committed overlay").unwrap();
+            let committed = match store.snapshot(&key).unwrap() {
+                Loaded::Found(stored) => stored.value,
+                _ => panic!("expected a readable snapshot"),
+            };
+
+            std::fs::write(&path, b"external replacement").unwrap();
+            assert!(!store.restore_if_unchanged(&original, &committed).unwrap());
+            assert_eq!(std::fs::read(&path).unwrap(), b"external replacement");
+        });
+    }
+
+    #[test]
+    fn an_overlay_replacement_refuses_a_file_changed_behind_it() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let store = crate::store_registry::store();
+            let key =
+                ArtifactKey::<crate::ai::ArbiterReview>::new(Scope::dir(dir.path()).unwrap(), ())
+                    .unwrap();
+            let original: crate::ai::ArbiterReview = serde_json::from_value(json!({
+                "version": 1, "diff_hash": "hash",
+                "verdicts": [{"id": "kept", "verdict": "dropped"}]
+            }))
+            .unwrap();
+            store.write(&key, &original).unwrap();
+            let snapshot = match store.snapshot(&key).unwrap() {
+                Loaded::Found(stored) => stored.value,
+                _ => panic!("expected a readable snapshot"),
+            };
+            let replacement: crate::ai::ArbiterReview = serde_json::from_value(json!({
+                "version": 1, "diff_hash": "hash",
+                "verdicts": [{"id": "kept", "verdict": "kept"}]
+            }))
+            .unwrap();
+            let overlay = AcceptedOverlay {
+                original: snapshot,
+                replacement,
+            };
+
+            // Another writer replaces the file after the snapshot was taken.
+            let external: crate::ai::ArbiterReview = serde_json::from_value(json!({
+                "version": 1, "diff_hash": "hash", "verdicts": []
+            }))
+            .unwrap();
+            store.write(&key, &external).unwrap();
+
+            let error = overlay.write_replacement(&store).unwrap_err();
+            assert!(
+                error.to_string().contains("changed during acceptance"),
+                "{error}"
+            );
+            match store.read(&key).unwrap() {
+                Loaded::Found(stored) => assert!(stored.value.verdicts.is_empty()),
+                _ => panic!("the external write survives"),
+            }
+        });
     }
 
     #[cfg(unix)]
     #[test]
     fn overlay_replacement_refuses_symlinks() {
         let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("external.json");
-        std::fs::write(&target, b"original").unwrap();
-        let path = dir.path().join("arbiter.json");
-        std::os::unix::fs::symlink(&target, &path).unwrap();
-        assert!(AcceptedOverlay::replace_if_unchanged(&path, b"original", b"replacement").is_err());
-        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let target = dir.path().join("external.json");
+            std::fs::write(&target, b"original").unwrap();
+            let path = dir.path().join("arbiter.json");
+            std::os::unix::fs::symlink(&target, &path).unwrap();
+            let store = crate::store_registry::store();
+            let key =
+                ArtifactKey::<crate::ai::ArbiterReview>::new(Scope::dir(dir.path()).unwrap(), ())
+                    .unwrap();
+            assert!(store.snapshot(&key).is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        });
     }
 
     /// Make the run's own save fail: its directory becomes read-only, so

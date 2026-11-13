@@ -11,6 +11,7 @@ pub mod error;
 pub mod event;
 pub mod key;
 pub mod lock;
+pub mod recovery;
 pub mod registry;
 pub mod store;
 pub mod time;
@@ -25,6 +26,7 @@ pub use key::{
 pub use lock::{
     HolderInfo, LeaseGuard, LockKind, ScopeGuard, DEFAULT_LOCK_TIMEOUT, LOCK_POLL_INTERVAL,
 };
+pub use recovery::{ArtifactSnapshot, BackupSnapshot};
 pub use registry::{Pattern, Registry};
 pub use store::{ArtifactStore, MAX_ARTIFACT_BYTES};
 pub use time::format_rfc3339_utc;

@@ -26,6 +26,12 @@ pub enum StoreError {
     },
     /// A payload or text file is over the store's size limit.
     TooLarge { bytes: u64 },
+    /// A recovery path expected one regular file and found something else.
+    NotARegularFile { path: PathBuf },
+    /// A recovery path runs through a symlink; the store never follows one.
+    SymlinkedPath { path: PathBuf },
+    /// A recovery operation would overwrite bytes it did not create.
+    BackupExists { path: PathBuf },
     /// Another process or thread holds the bucket's write lock.
     Locked {
         path: PathBuf,
@@ -68,6 +74,13 @@ impl std::fmt::Display for StoreError {
                 f,
                 "artifact is {bytes} bytes, over the {MAX_ARTIFACT_BYTES} limit"
             ),
+            Self::NotARegularFile { path } => {
+                write!(f, "{} is not a regular file", path.display())
+            }
+            Self::SymlinkedPath { path } => write!(f, "{} contains a symlink", path.display()),
+            Self::BackupExists { path } => {
+                write!(f, "backup already exists at {}", path.display())
+            }
             Self::Locked { path, holder } => {
                 write!(f, "{} is locked", path.display())?;
                 write_holder(f, holder.as_ref())

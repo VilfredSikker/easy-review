@@ -1,11 +1,13 @@
 //! Archive and validate the producer sidecars owned by one review flow.
 
 use anyhow::{bail, Context, Result};
-use std::fs;
-use std::io::{self, Write};
-use std::path::{Component, Path, PathBuf};
+use er_store::{
+    Artifact, ArtifactKey, ArtifactStore, BackupSnapshot, ExpertId, Loaded, RelPath, Scope,
+    Unreadable,
+};
+use std::path::{Path, PathBuf};
 
-use crate::ai::{expert_by_id, read_sidecar, ErReview, ExpertReview, TriageReview};
+use crate::ai::{expert_by_id, ErReview, ExpertReview, TriageReview};
 
 const BACKUP_DIR: &str = "flow-backups";
 
@@ -29,6 +31,34 @@ impl FlowProducer {
             }
         }
     }
+
+    fn output_key(&self, scope: &Scope) -> Result<OutputKey> {
+        Ok(match self {
+            Self::Triage => OutputKey::Triage(ArtifactKey::new(scope.clone(), ())?),
+            Self::General => OutputKey::General(ArtifactKey::new(scope.clone(), ())?),
+            Self::Expert(id) => {
+                if expert_by_id(id).is_none() {
+                    bail!("unknown review-flow expert id: {id}");
+                }
+                let slot = ExpertId::new(id)?;
+                OutputKey::Expert(ArtifactKey::new(scope.clone(), slot)?)
+            }
+        })
+    }
+}
+
+/// The typed key a producer writes, so each archive and validate call reaches
+/// the store through the kind's own path.
+enum OutputKey {
+    Triage(ArtifactKey<TriageReview>),
+    General(ArtifactKey<ErReview>),
+    Expert(ArtifactKey<ExpertReview>),
+}
+
+/// Whether the destination holds output, and whether that output is usable.
+struct OutputState {
+    present: bool,
+    well_formed: bool,
 }
 
 /// A recoverable copy of the output that existed before a flow stage started.
@@ -37,16 +67,21 @@ impl FlowProducer {
 /// are recovery material, not temporary files.
 #[derive(Debug, Clone)]
 pub(super) struct FlowOutputBackup {
-    bucket_root: PathBuf,
-    destination: PathBuf,
-    archived: Option<PathBuf>,
-    backup_dir: PathBuf,
+    scope: Scope,
     producer: FlowProducer,
+    archived: Option<BackupSnapshot>,
+    backup_dir: RelPath,
 }
 
 impl FlowOutputBackup {
+    #[cfg(test)]
     pub(super) fn archive_path(&self) -> Option<&Path> {
-        self.archived.as_deref()
+        self.archived.as_ref().map(BackupSnapshot::backup_path)
+    }
+
+    /// The archived file, for a caller that must compare it or read it back.
+    pub(super) fn archived(&self) -> Option<&BackupSnapshot> {
+        self.archived.as_ref()
     }
 
     /// Restore the previous file only when the stage left no usable output.
@@ -58,109 +93,31 @@ impl FlowOutputBackup {
     ///
     /// The caller must ensure the owned writer has stopped before restoring.
     pub(super) fn restore(&self) -> Result<()> {
-        let destination_relative = self
-            .destination
-            .strip_prefix(&self.bucket_root)
-            .context("flow output destination escaped its bucket")?;
-        reject_symlink_components(&self.bucket_root, destination_relative)?;
-
+        let store = crate::store_registry::store();
+        let key = self.producer.output_key(&self.scope)?;
+        let state = output_state(&store, &key)?;
         let Some(archived) = &self.archived else {
-            if self.destination.exists()
-                && !producer_output_is_well_formed(&self.destination, &self.producer)
-            {
-                self.preserve_replacement()?;
+            if state.present && !state.well_formed {
+                self.preserve_replacement(&store, &key)?;
             }
             return Ok(());
         };
-        let archived_relative = archived
-            .strip_prefix(&self.bucket_root)
-            .context("flow archive escaped its bucket")?;
-        reject_symlink_components(&self.bucket_root, archived_relative)?;
-
-        if self.destination.exists() {
-            if producer_output_is_well_formed(&self.destination, &self.producer) {
+        if state.present {
+            if state.well_formed {
                 return Ok(());
             }
-            self.preserve_replacement()?;
+            self.preserve_replacement(&store, &key)?;
         }
-
-        let parent = self
-            .destination
-            .parent()
-            .context("flow output destination has no parent")?;
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        reject_symlink_components(&self.bucket_root, destination_relative)?;
-        restore_copy_without_clobber(archived, &self.destination)
+        store
+            .restore_backup(archived)
+            .context("restore flow output")
     }
 
-    fn preserve_replacement(&self) -> Result<()> {
-        let destination_relative = self
-            .destination
-            .strip_prefix(&self.bucket_root)
-            .context("flow output destination escaped its bucket")?;
-        reject_symlink_components(&self.bucket_root, destination_relative)?;
-        if !self.destination.exists() {
-            return Ok(());
-        }
-        let replacement = self
-            .backup_dir
-            .join("replacements")
-            .join(self.producer.relative_output()?);
-        let replacement_relative = replacement
-            .strip_prefix(&self.bucket_root)
-            .context("replacement archive escaped its bucket")?;
-        reject_symlink_components(&self.bucket_root, replacement_relative)?;
-        if replacement.exists() {
-            bail!(
-                "replacement archive already exists at {}",
-                replacement.display()
-            );
-        }
-        let parent = replacement
-            .parent()
-            .context("replacement archive has no parent")?;
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        reject_symlink_components(&self.bucket_root, replacement_relative)?;
-        fs::rename(&self.destination, &replacement).with_context(|| {
-            format!(
-                "preserve invalid flow output at {}",
-                self.destination.display()
-            )
-        })?;
+    fn preserve_replacement(&self, store: &ArtifactStore, key: &OutputKey) -> Result<()> {
+        let replacements = RelPath::new(self.backup_dir.as_path().join("replacements"))?;
+        archive_output(store, key, &replacements).context("preserve invalid flow output")?;
         Ok(())
     }
-}
-
-fn restore_copy_without_clobber(archived: &Path, destination: &Path) -> Result<()> {
-    let mut source = fs::File::open(archived)
-        .with_context(|| format!("open archived flow output {}", archived.display()))?;
-    let mut target = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)
-    {
-        Ok(target) => target,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("restore flow output to {}", destination.display()));
-        }
-    };
-    if let Err(error) = io::copy(&mut source, &mut target).and_then(|_| target.flush()) {
-        drop(target);
-        let _ = fs::remove_file(destination);
-        return Err(error)
-            .with_context(|| format!("copy archived output to {}", destination.display()));
-    }
-    target
-        .sync_all()
-        .with_context(|| format!("sync restored flow output {}", destination.display()))?;
-    let permissions = fs::metadata(archived)
-        .with_context(|| format!("inspect archived output {}", archived.display()))?
-        .permissions();
-    fs::set_permissions(destination, permissions)
-        .with_context(|| format!("restore permissions on {}", destination.display()))?;
-    Ok(())
 }
 
 /// Move an existing producer output into a fresh bucket-local run archive.
@@ -172,63 +129,58 @@ pub(super) fn archive_flow_output(
     producer: &FlowProducer,
 ) -> Result<FlowOutputBackup> {
     validate_run_key(run_key)?;
-    let bucket_root = canonical_bucket_root(er_dir)?;
-    let relative = producer.relative_output()?;
-    reject_symlink_components(&bucket_root, &relative)?;
-    let destination = bucket_root.join(&relative);
-    let backup_relative = Path::new(BACKUP_DIR).join(run_key);
-    reject_symlink_components(&bucket_root, &backup_relative)?;
-    let backup_dir = bucket_root.join(&backup_relative);
+    let store = crate::store_registry::store();
+    let scope = Scope::dir(er_dir)?;
+    let key = producer.output_key(&scope)?;
+    let destination = er_dir.join(producer.relative_output()?);
+    // Reject an unsafe destination before a backup directory exists; the
+    // archive checks again under the lock.
+    check_output_path(&store, &key)
+        .with_context(|| format!("archive flow output {}", destination.display()))?;
+    let backup_dir = RelPath::new(Path::new(BACKUP_DIR).join(run_key))?;
+    store
+        .create_backup_dir(&scope, &backup_dir)
+        .with_context(|| {
+            format!(
+                "create unique flow backup {}",
+                backup_dir.as_path().display()
+            )
+        })?;
 
-    let had_output = match fs::symlink_metadata(&destination) {
-        Ok(metadata) => {
-            if !metadata.file_type().is_file() {
-                bail!(
-                    "flow output is not a regular file: {}",
-                    destination.display()
-                );
-            }
-            true
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+    let archived = match archive_output(&store, &key, &backup_dir) {
+        Ok(archived) => archived,
         Err(error) => {
-            return Err(error).with_context(|| format!("inspect {}", destination.display()));
-        }
-    };
-
-    fs::create_dir_all(bucket_root.join(BACKUP_DIR))
-        .with_context(|| format!("create flow backup root in {}", bucket_root.display()))?;
-    reject_symlink_components(&bucket_root, &backup_relative)?;
-    fs::create_dir(&backup_dir)
-        .with_context(|| format!("create unique flow backup {}", backup_dir.display()))?;
-
-    let archived = if had_output {
-        let archived = backup_dir.join(&relative);
-        let archived_relative = archived
-            .strip_prefix(&bucket_root)
-            .context("flow archive escaped its bucket")?;
-        reject_symlink_components(&bucket_root, archived_relative)?;
-        let parent = archived
-            .parent()
-            .context("flow archive path has no parent")?;
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        reject_symlink_components(&bucket_root, archived_relative)?;
-        if let Err(error) = fs::rename(&destination, &archived) {
-            let _ = fs::remove_dir_all(&backup_dir);
+            let _ = store.remove_backup_dir(&scope, &backup_dir);
             return Err(error)
                 .with_context(|| format!("archive flow output {}", destination.display()));
         }
-        Some(archived)
-    } else {
-        None
     };
 
     Ok(FlowOutputBackup {
-        bucket_root,
-        destination,
+        scope,
+        producer: producer.clone(),
         archived,
         backup_dir,
-        producer: producer.clone(),
+    })
+}
+
+fn check_output_path(store: &ArtifactStore, key: &OutputKey) -> Result<()> {
+    match key {
+        OutputKey::Triage(key) => Ok(store.check_artifact_path(key)?),
+        OutputKey::General(key) => Ok(store.check_artifact_path(key)?),
+        OutputKey::Expert(key) => Ok(store.check_artifact_path(key)?),
+    }
+}
+
+fn archive_output(
+    store: &ArtifactStore,
+    key: &OutputKey,
+    backup_dir: &RelPath,
+) -> Result<Option<BackupSnapshot>> {
+    Ok(match key {
+        OutputKey::Triage(key) => store.archive_to_dir(key, backup_dir)?,
+        OutputKey::General(key) => store.archive_to_dir(key, backup_dir)?,
+        OutputKey::Expert(key) => store.archive_to_dir(key, backup_dir)?,
     })
 }
 
@@ -239,29 +191,28 @@ pub(super) fn validate_flow_output(
     producer: &FlowProducer,
     diff_hash: &str,
 ) -> Result<()> {
-    let bucket_root = canonical_bucket_root(er_dir)?;
-    let relative = producer.relative_output()?;
-    reject_symlink_components(&bucket_root, &relative)?;
-    let path = bucket_root.join(relative);
-    let contents =
-        read_sidecar(&path).with_context(|| format!("read flow output {}", path.display()))?;
-    let actual_hash = match producer {
-        FlowProducer::Triage => {
-            serde_json::from_str::<TriageReview>(&contents)
-                .context("parse triage flow output")?
+    let store = crate::store_registry::store();
+    let scope = Scope::dir(er_dir)?;
+    let key = producer.output_key(&scope)?;
+    let destination = er_dir.join(producer.relative_output()?);
+    let actual_hash = match &key {
+        OutputKey::Triage(key) => {
+            read_output::<TriageReview>(&store, key)
+                .with_context(|| format!("read flow output {}", destination.display()))?
                 .diff_hash
         }
-        FlowProducer::General => {
-            serde_json::from_str::<ErReview>(&contents)
-                .context("parse general flow output")?
+        OutputKey::General(key) => {
+            read_output::<ErReview>(&store, key)
+                .with_context(|| format!("read flow output {}", destination.display()))?
                 .diff_hash
         }
-        FlowProducer::Expert(expected_id) => {
-            let output = serde_json::from_str::<ExpertReview>(&contents)
-                .context("parse expert flow output")?;
-            if output.expert_id != *expected_id {
+        OutputKey::Expert(key) => {
+            let output = read_output::<ExpertReview>(&store, key)
+                .with_context(|| format!("read flow output {}", destination.display()))?;
+            if output.expert_id != key.slot().as_str() {
                 bail!(
-                    "expert output identity mismatch: expected {expected_id}, got {}",
+                    "expert output identity mismatch: expected {}, got {}",
+                    key.slot().as_str(),
                     output.expert_id
                 );
             }
@@ -274,43 +225,57 @@ pub(super) fn validate_flow_output(
     Ok(())
 }
 
-fn canonical_bucket_root(er_dir: &Path) -> Result<PathBuf> {
-    let root = fs::canonicalize(er_dir)
-        .with_context(|| format!("resolve review bucket {}", er_dir.display()))?;
-    if !root.is_dir() {
-        bail!("review bucket is not a directory: {}", root.display());
+fn read_output<T: Artifact>(store: &ArtifactStore, key: &ArtifactKey<T>) -> Result<T> {
+    match store.snapshot(key)? {
+        Loaded::Found(stored) => match stored.value.parse() {
+            Loaded::Found(parsed) => Ok(parsed.value),
+            Loaded::Unreadable(reason) => bail!("parse flow output: {}", describe(&reason)),
+            Loaded::Absent => bail!("flow output is missing"),
+        },
+        Loaded::Absent => bail!("flow output is missing"),
+        Loaded::Unreadable(reason) => bail!("read flow output: {}", describe(&reason)),
     }
-    Ok(root)
 }
 
-/// Reject symlinks along a bucket-relative path. The bucket root is already
-/// canonicalized, so system-level aliases such as `/tmp` do not count as
-/// components below the managed bucket.
-fn reject_symlink_components(bucket_root: &Path, relative: &Path) -> Result<()> {
-    if relative.is_absolute() {
-        bail!("flow sidecar path must be bucket-relative");
+fn output_state(store: &ArtifactStore, key: &OutputKey) -> Result<OutputState> {
+    match key {
+        OutputKey::Triage(key) => inspect(store, key, |_| true),
+        OutputKey::General(key) => inspect(store, key, |_| true),
+        OutputKey::Expert(key) => inspect(store, key, |value: &ExpertReview| {
+            value.expert_id == key.slot().as_str()
+        }),
     }
-    let mut current = bucket_root.to_path_buf();
-    for component in relative.components() {
-        let Component::Normal(name) = component else {
-            bail!("unsafe component in flow sidecar path");
-        };
-        current.push(name);
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                bail!(
-                    "flow sidecar path contains a symlink: {}",
-                    current.display()
-                );
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
-            Err(error) => {
-                return Err(error).with_context(|| format!("inspect {}", current.display()));
-            }
-        }
+}
+
+fn inspect<T: Artifact>(
+    store: &ArtifactStore,
+    key: &ArtifactKey<T>,
+    acceptable: impl Fn(&T) -> bool,
+) -> Result<OutputState> {
+    Ok(match store.snapshot(key)? {
+        Loaded::Absent => OutputState {
+            present: false,
+            well_formed: false,
+        },
+        Loaded::Unreadable(_) => OutputState {
+            present: true,
+            well_formed: false,
+        },
+        Loaded::Found(stored) => OutputState {
+            present: true,
+            well_formed: matches!(stored.value.parse(), Loaded::Found(parsed) if acceptable(&parsed.value)),
+        },
+    })
+}
+
+fn describe(reason: &Unreadable) -> String {
+    match reason {
+        Unreadable::Malformed(reason) => reason.clone(),
+        Unreadable::UnknownVersion { found } => format!("unknown version {found}"),
+        Unreadable::NewerVersion { found } => format!("newer version {found}"),
+        Unreadable::WrongKind { found } => format!("wrong kind {found}"),
+        Unreadable::TooLarge { bytes } => format!("{bytes} bytes is over the store limit"),
     }
-    Ok(())
 }
 
 fn validate_run_key(run_key: &str) -> Result<()> {
@@ -326,26 +291,14 @@ fn validate_run_key(run_key: &str) -> Result<()> {
     Ok(())
 }
 
-fn producer_output_is_well_formed(path: &Path, producer: &FlowProducer) -> bool {
-    let Ok(contents) = read_sidecar(path) else {
-        return false;
-    };
-    match producer {
-        FlowProducer::Triage => serde_json::from_str::<TriageReview>(&contents).is_ok(),
-        FlowProducer::General => serde_json::from_str::<ErReview>(&contents).is_ok(),
-        FlowProducer::Expert(id) => serde_json::from_str::<ExpertReview>(&contents)
-            .is_ok_and(|output| output.expert_id == *id),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde::Serialize;
 
     fn output<T: Serialize>(path: &Path, value: &T) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
     }
 
     fn general(hash: &str) -> ErReview {
@@ -373,114 +326,137 @@ mod tests {
     fn archives_even_same_hash_output_and_leaves_other_experts_untouched() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        output(&root.join("triage.json"), &triage("same"));
-        output(
-            &root.join("experts/security.json"),
-            &expert("security", "same"),
-        );
-        output(
-            &root.join("experts/testing.json"),
-            &expert("testing", "other"),
-        );
+        crate::storage::with_test_storage_root(root, || {
+            output(&root.join("triage.json"), &triage("same"));
+            output(
+                &root.join("experts/security.json"),
+                &expert("security", "same"),
+            );
+            output(
+                &root.join("experts/testing.json"),
+                &expert("testing", "other"),
+            );
 
-        let backup = archive_flow_output(root, "run-1", &FlowProducer::Triage).unwrap();
-        assert!(!root.join("triage.json").exists());
-        assert_eq!(
-            backup.archive_path().unwrap(),
-            fs::canonicalize(root)
-                .unwrap()
-                .join("flow-backups/run-1/triage.json")
-        );
-        assert!(root.join("experts/security.json").exists());
-        assert!(root.join("experts/testing.json").exists());
+            let backup = archive_flow_output(root, "run-1", &FlowProducer::Triage).unwrap();
+            assert!(!root.join("triage.json").exists());
+            assert_eq!(
+                backup.archive_path().unwrap(),
+                std::fs::canonicalize(root)
+                    .unwrap()
+                    .join("flow-backups/run-1/triage.json")
+            );
+            assert!(root.join("experts/security.json").exists());
+            assert!(root.join("experts/testing.json").exists());
+        });
     }
 
     #[test]
     fn validates_hash_and_expert_identity() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        output(&root.join("review.json"), &general("old"));
-        assert!(validate_flow_output(root, &FlowProducer::General, "new").is_err());
-        output(&root.join("review.json"), &general("new"));
-        assert!(validate_flow_output(root, &FlowProducer::General, "new").is_ok());
+        crate::storage::with_test_storage_root(root, || {
+            output(&root.join("review.json"), &general("old"));
+            assert!(validate_flow_output(root, &FlowProducer::General, "new").is_err());
+            output(&root.join("review.json"), &general("new"));
+            assert!(validate_flow_output(root, &FlowProducer::General, "new").is_ok());
 
-        output(
-            &root.join("experts/security.json"),
-            &expert("testing", "new"),
-        );
-        assert!(
-            validate_flow_output(root, &FlowProducer::Expert("security".into()), "new").is_err()
-        );
-        assert!(
-            archive_flow_output(root, "run-2", &FlowProducer::Expert("unknown".into())).is_err()
-        );
+            output(
+                &root.join("experts/security.json"),
+                &expert("testing", "new"),
+            );
+            assert!(
+                validate_flow_output(root, &FlowProducer::Expert("security".into()), "new")
+                    .is_err()
+            );
+            assert!(
+                archive_flow_output(root, "run-2", &FlowProducer::Expert("unknown".into()))
+                    .is_err()
+            );
+        });
     }
 
     #[test]
     fn rejects_missing_malformed_and_oversized_outputs() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        assert!(validate_flow_output(root, &FlowProducer::General, "h").is_err());
-        fs::write(root.join("review.json"), b"{").unwrap();
-        assert!(validate_flow_output(root, &FlowProducer::General, "h").is_err());
-        fs::write(root.join("review.json"), vec![b'x'; 10_000_001]).unwrap();
-        assert!(validate_flow_output(root, &FlowProducer::General, "h").is_err());
+        crate::storage::with_test_storage_root(root, || {
+            assert!(validate_flow_output(root, &FlowProducer::General, "h").is_err());
+            std::fs::write(root.join("review.json"), b"{").unwrap();
+            assert!(validate_flow_output(root, &FlowProducer::General, "h").is_err());
+            std::fs::write(root.join("review.json"), vec![b'x'; 10_000_001]).unwrap();
+            assert!(validate_flow_output(root, &FlowProducer::General, "h").is_err());
+        });
     }
 
     #[test]
     fn restores_missing_and_preserves_invalid_replacement() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        output(&root.join("review.json"), &general("old"));
-        let backup = archive_flow_output(root, "run-restore", &FlowProducer::General).unwrap();
-        backup.restore().unwrap();
-        assert_eq!(
-            serde_json::from_slice::<ErReview>(&fs::read(root.join("review.json")).unwrap())
+        crate::storage::with_test_storage_root(root, || {
+            output(&root.join("review.json"), &general("old"));
+            let backup = archive_flow_output(root, "run-restore", &FlowProducer::General).unwrap();
+            backup.restore().unwrap();
+            assert_eq!(
+                serde_json::from_slice::<ErReview>(
+                    &std::fs::read(root.join("review.json")).unwrap()
+                )
                 .unwrap()
                 .diff_hash,
-            "old"
-        );
+                "old"
+            );
 
-        let backup = archive_flow_output(root, "run-invalid", &FlowProducer::General).unwrap();
-        fs::write(root.join("review.json"), b"not json").unwrap();
-        backup.restore().unwrap();
-        assert_eq!(
-            serde_json::from_slice::<ErReview>(&fs::read(root.join("review.json")).unwrap())
+            let backup = archive_flow_output(root, "run-invalid", &FlowProducer::General).unwrap();
+            std::fs::write(root.join("review.json"), b"not json").unwrap();
+            backup.restore().unwrap();
+            assert_eq!(
+                serde_json::from_slice::<ErReview>(
+                    &std::fs::read(root.join("review.json")).unwrap()
+                )
                 .unwrap()
                 .diff_hash,
-            "old"
-        );
-        assert_eq!(
-            fs::read(backup.backup_dir.join("replacements/review.json")).unwrap(),
-            b"not json"
-        );
+                "old"
+            );
+            assert_eq!(
+                std::fs::read(
+                    root.join(backup.backup_dir.as_path())
+                        .join("replacements/review.json")
+                )
+                .unwrap(),
+                b"not json"
+            );
+        });
     }
 
     #[test]
     fn leaves_valid_replacement_and_keeps_backup_as_a_separate_copy() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        output(&root.join("review.json"), &general("old"));
-        let backup = archive_flow_output(root, "run-valid", &FlowProducer::General).unwrap();
-        output(&root.join("review.json"), &general("new"));
+        crate::storage::with_test_storage_root(root, || {
+            output(&root.join("review.json"), &general("old"));
+            let backup = archive_flow_output(root, "run-valid", &FlowProducer::General).unwrap();
+            output(&root.join("review.json"), &general("new"));
 
-        backup.restore().unwrap();
+            backup.restore().unwrap();
 
-        let current: ErReview =
-            serde_json::from_slice(&fs::read(root.join("review.json")).unwrap()).unwrap();
-        let archived: ErReview =
-            serde_json::from_slice(&fs::read(backup.archive_path().unwrap()).unwrap()).unwrap();
-        assert_eq!(current.diff_hash, "new");
-        assert_eq!(archived.diff_hash, "old");
+            let current: ErReview =
+                serde_json::from_slice(&std::fs::read(root.join("review.json")).unwrap()).unwrap();
+            let archived: ErReview =
+                serde_json::from_slice(&std::fs::read(backup.archive_path().unwrap()).unwrap())
+                    .unwrap();
+            assert_eq!(current.diff_hash, "new");
+            assert_eq!(archived.diff_hash, "old");
+        });
     }
 
     #[test]
     fn refuses_archive_collision_and_unsafe_run_keys() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        archive_flow_output(root, "same", &FlowProducer::General).unwrap();
-        assert!(archive_flow_output(root, "same", &FlowProducer::General).is_err());
-        assert!(archive_flow_output(root, "../escape", &FlowProducer::General).is_err());
+        crate::storage::with_test_storage_root(root, || {
+            archive_flow_output(root, "same", &FlowProducer::General).unwrap();
+            assert!(archive_flow_output(root, "same", &FlowProducer::General).is_err());
+            assert!(archive_flow_output(root, "../escape", &FlowProducer::General).is_err());
+        });
     }
 
     #[cfg(unix)]
@@ -493,28 +469,33 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("bucket");
             let outside = temp.path().join("outside");
-            fs::create_dir_all(&root).unwrap();
-            fs::create_dir_all(&outside).unwrap();
-            output(
-                &outside.join("security.json"),
-                &expert("security", "outside"),
-            );
-            symlink(&outside, root.join("experts")).unwrap();
-            assert!(archive_flow_output(
-                &root,
-                "expert-link",
-                &FlowProducer::Expert("security".into())
-            )
-            .is_err());
-            assert!(outside.join("security.json").exists());
-            assert!(!root.join("flow-backups/expert-link").exists());
+            crate::storage::with_test_storage_root(&root, || {
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::create_dir_all(&outside).unwrap();
+                output(
+                    &outside.join("security.json"),
+                    &expert("security", "outside"),
+                );
+                symlink(&outside, root.join("experts")).unwrap();
+                assert!(archive_flow_output(
+                    &root,
+                    "expert-link",
+                    &FlowProducer::Expert("security".into())
+                )
+                .is_err());
+                assert!(outside.join("security.json").exists());
+                assert!(!root.join("flow-backups/expert-link").exists());
 
-            fs::remove_file(root.join("experts")).unwrap();
-            fs::write(root.join("triage.json"), b"original").unwrap();
-            symlink(&outside, root.join("flow-backups")).unwrap();
-            assert!(archive_flow_output(&root, "backup-link", &FlowProducer::Triage).is_err());
-            assert_eq!(fs::read(root.join("triage.json")).unwrap(), b"original");
-            assert!(outside.join("security.json").exists());
+                std::fs::remove_file(root.join("experts")).unwrap();
+                std::fs::write(root.join("triage.json"), b"original").unwrap();
+                symlink(&outside, root.join("flow-backups")).unwrap();
+                assert!(archive_flow_output(&root, "backup-link", &FlowProducer::Triage).is_err());
+                assert_eq!(
+                    std::fs::read(root.join("triage.json")).unwrap(),
+                    b"original"
+                );
+                assert!(outside.join("security.json").exists());
+            });
         }
 
         #[test]
@@ -522,17 +503,19 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("bucket");
             let outside = temp.path().join("outside.json");
-            fs::create_dir_all(&root).unwrap();
-            output(&outside, &general("expected"));
-            symlink(&outside, root.join("review.json")).unwrap();
+            crate::storage::with_test_storage_root(&root, || {
+                std::fs::create_dir_all(&root).unwrap();
+                output(&outside, &general("expected"));
+                symlink(&outside, root.join("review.json")).unwrap();
 
-            assert!(validate_flow_output(&root, &FlowProducer::General, "expected").is_err());
-            assert_eq!(
-                serde_json::from_slice::<ErReview>(&fs::read(outside).unwrap())
-                    .unwrap()
-                    .diff_hash,
-                "expected"
-            );
+                assert!(validate_flow_output(&root, &FlowProducer::General, "expected").is_err());
+                assert_eq!(
+                    serde_json::from_slice::<ErReview>(&std::fs::read(outside).unwrap())
+                        .unwrap()
+                        .diff_hash,
+                    "expected"
+                );
+            });
         }
 
         #[test]
@@ -540,49 +523,51 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("bucket");
             let outside = temp.path().join("outside");
-            fs::create_dir_all(&root).unwrap();
-            fs::create_dir_all(&outside).unwrap();
-            output(
-                &root.join("experts/security.json"),
-                &expert("security", "old"),
-            );
-            let backup = archive_flow_output(
-                &root,
-                "destination-link",
-                &FlowProducer::Expert("security".into()),
-            )
-            .unwrap();
-
-            fs::remove_dir(root.join("experts")).unwrap();
-            output(
-                &outside.join("security.json"),
-                &expert("security", "outside"),
-            );
-            symlink(&outside, root.join("experts")).unwrap();
-            assert!(backup.restore().is_err());
-            assert_eq!(
-                serde_json::from_slice::<ExpertReview>(
-                    &fs::read(outside.join("security.json")).unwrap()
+            crate::storage::with_test_storage_root(&root, || {
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::create_dir_all(&outside).unwrap();
+                output(
+                    &root.join("experts/security.json"),
+                    &expert("security", "old"),
+                );
+                let backup = archive_flow_output(
+                    &root,
+                    "destination-link",
+                    &FlowProducer::Expert("security".into()),
                 )
-                .unwrap()
-                .diff_hash,
-                "outside"
-            );
+                .unwrap();
 
-            fs::remove_file(root.join("experts")).unwrap();
-            fs::create_dir(root.join("experts")).unwrap();
-            let archived = backup.archive_path().unwrap();
-            fs::remove_file(archived).unwrap();
-            symlink(outside.join("security.json"), archived).unwrap();
-            assert!(backup.restore().is_err());
-            assert_eq!(
-                serde_json::from_slice::<ExpertReview>(
-                    &fs::read(outside.join("security.json")).unwrap()
-                )
-                .unwrap()
-                .diff_hash,
-                "outside"
-            );
+                std::fs::remove_dir(root.join("experts")).unwrap();
+                output(
+                    &outside.join("security.json"),
+                    &expert("security", "outside"),
+                );
+                symlink(&outside, root.join("experts")).unwrap();
+                assert!(backup.restore().is_err());
+                assert_eq!(
+                    serde_json::from_slice::<ExpertReview>(
+                        &std::fs::read(outside.join("security.json")).unwrap()
+                    )
+                    .unwrap()
+                    .diff_hash,
+                    "outside"
+                );
+
+                std::fs::remove_file(root.join("experts")).unwrap();
+                std::fs::create_dir(root.join("experts")).unwrap();
+                let archived = backup.archive_path().unwrap();
+                std::fs::remove_file(archived).unwrap();
+                symlink(outside.join("security.json"), archived).unwrap();
+                assert!(backup.restore().is_err());
+                assert_eq!(
+                    serde_json::from_slice::<ExpertReview>(
+                        &std::fs::read(outside.join("security.json")).unwrap()
+                    )
+                    .unwrap()
+                    .diff_hash,
+                    "outside"
+                );
+            });
         }
 
         #[test]
@@ -590,27 +575,34 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("bucket");
             let outside = temp.path().join("outside");
-            fs::create_dir_all(&root).unwrap();
-            fs::create_dir_all(&outside).unwrap();
-            output(&root.join("review.json"), &general("old"));
-            output(&outside.join("review.json"), &general("outside"));
-            let backup =
-                archive_flow_output(&root, "replacement-link", &FlowProducer::General).unwrap();
-            fs::write(root.join("review.json"), b"malformed").unwrap();
-            symlink(
-                &outside,
-                root.join("flow-backups/replacement-link/replacements"),
-            )
-            .unwrap();
+            crate::storage::with_test_storage_root(&root, || {
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::create_dir_all(&outside).unwrap();
+                output(&root.join("review.json"), &general("old"));
+                output(&outside.join("review.json"), &general("outside"));
+                let backup =
+                    archive_flow_output(&root, "replacement-link", &FlowProducer::General).unwrap();
+                std::fs::write(root.join("review.json"), b"malformed").unwrap();
+                symlink(
+                    &outside,
+                    root.join("flow-backups/replacement-link/replacements"),
+                )
+                .unwrap();
 
-            assert!(backup.restore().is_err());
-            assert_eq!(fs::read(root.join("review.json")).unwrap(), b"malformed");
-            assert_eq!(
-                serde_json::from_slice::<ErReview>(&fs::read(outside.join("review.json")).unwrap())
+                assert!(backup.restore().is_err());
+                assert_eq!(
+                    std::fs::read(root.join("review.json")).unwrap(),
+                    b"malformed"
+                );
+                assert_eq!(
+                    serde_json::from_slice::<ErReview>(
+                        &std::fs::read(outside.join("review.json")).unwrap()
+                    )
                     .unwrap()
                     .diff_hash,
-                "outside"
-            );
+                    "outside"
+                );
+            });
         }
     }
 }

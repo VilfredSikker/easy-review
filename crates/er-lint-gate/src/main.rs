@@ -19,7 +19,7 @@ use anyhow::{bail, Context};
 use er_lint_gate::diagnostics::Diagnostic;
 use er_lint_gate::ratchet::{Baseline, Entry};
 use er_lint_gate::{
-    agent_spawn, cohesion, comment_boundary, diagnostics, evaluate, sidecar_fs, spawn,
+    agent_spawn, cohesion, comment_boundary, diagnostics, evaluate, sidecar_fs, spawn, store_bytes,
 };
 
 const BUDGET_FILE: &str = "clippy-warning-budget.json";
@@ -268,6 +268,22 @@ fn agent_spawn_diagnostics(root: &Path, os_launch: &[String]) -> anyhow::Result<
     Ok(out)
 }
 
+fn store_bytes_diagnostics(root: &Path) -> anyhow::Result<Vec<Diagnostic>> {
+    let mut by_file = BTreeMap::new();
+    for rel in crate_sources(root)? {
+        let file = rel.to_string_lossy().replace('\\', "/");
+        if !file.starts_with(store_bytes::HOME) {
+            continue;
+        }
+        let source = std::fs::read_to_string(root.join(&rel))?;
+        let findings = store_bytes::findings(&source);
+        if !findings.is_empty() {
+            by_file.insert(file, findings);
+        }
+    }
+    Ok(store_bytes::evaluate(&by_file, store_bytes::CODE))
+}
+
 fn comment_boundary_diagnostics(root: &Path, allow: &[String]) -> anyhow::Result<Vec<Diagnostic>> {
     let mut by_file = BTreeMap::new();
     for rel in crate_sources(root)? {
@@ -319,6 +335,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     let spawn = spawn_diagnostics(&root, &config.spawn_git, "git", "Git")?;
     let spawn_gh = spawn_diagnostics(&root, &config.spawn_gh, "gh", "GitHub")?;
     let sidecar = sidecar_fs_diagnostics(&root, &config.sidecar_fs_deny)?;
+    let store_bytes = store_bytes_diagnostics(&root)?;
     let boundary = comment_boundary_diagnostics(&root, &config.comment_boundary_allow)?;
     let agent = agent_spawn_diagnostics(&root, &config.agent_spawn_os_launch)?;
     if flags.cohesion_only {
@@ -347,6 +364,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     diags.extend(spawn);
     diags.extend(spawn_gh);
     diags.extend(sidecar);
+    diags.extend(store_bytes);
     diags.extend(boundary);
     diags.extend(agent);
     let e = evaluate(diags, &config.budgeted, &budget, output.status.success());
