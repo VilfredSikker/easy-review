@@ -1510,11 +1510,13 @@ mod tests {
             );
 
             // A version this build does not understand is unreadable, not a
-            // parse the raw text would have accepted.
-            let newer: TriageReview =
-                serde_json::from_value(serde_json::json!({"version": 2, "diff_hash": "hash"}))
-                    .unwrap();
-            store.write(&key, &newer).unwrap();
+            // parse the raw text would have accepted. The envelope carries the
+            // kind's version, so a newer file is written directly.
+            std::fs::write(
+                store.path(&key),
+                r#"{"kind":"triage","version":2,"diff_hash":null,"producer":"host","written_at":"2026-11-13T00:00:00Z","payload":{"version":2,"diff_hash":"hash"}}"#,
+            )
+            .unwrap();
             assert!(read_triage(dir.path().to_str().unwrap()).is_err());
 
             store.delete::<TriageReview>(&key).unwrap();

@@ -20,12 +20,33 @@ use er_engine::ai::{
 };
 use serde_json::{json, Value};
 
+/// Write a fixture in the store's envelope shape, with the kind the registry
+/// maps the file to.
 fn write_sidecar(dir: &Path, rel: &str, content: &str) {
+    let kind = match rel {
+        "review.json" => "review",
+        "professor.json" => "professor",
+        "arbiter.json" => "arbiter",
+        other if other.starts_with("experts/") => "expert",
+        other => panic!("no registered kind for {other}"),
+    };
+    let payload: Value = serde_json::from_str(content).expect("the payload is JSON");
+    let enveloped = json!({
+        "kind": kind,
+        "version": 1,
+        "producer": "findings_projection test",
+        "written_at": "2026-01-01T00:00:00Z",
+        "payload": payload,
+    });
     let path = dir.join(rel);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("create sidecar dir");
     }
-    std::fs::write(&path, content).expect("write sidecar");
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&enveloped).expect("the envelope serialises"),
+    )
+    .expect("write sidecar");
 }
 
 fn load(dir: &Path) -> AiState {

@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn questions_are_stored_as_todays_bytes() {
+    fn questions_are_stored_in_an_envelope() {
         let tmp = TempDir::new().unwrap();
         let (store, scope) = store_and_scope(&tmp);
         let payload = questions();
@@ -247,12 +247,15 @@ mod tests {
         })
         .unwrap();
         let path = path_of::<ErQuestions>(&store, &scope).unwrap();
-        let raw = std::fs::read_to_string(path).unwrap();
-        assert_eq!(raw, serde_json::to_string_pretty(&payload).unwrap());
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(raw["kind"], "questions");
+        assert_eq!(raw["version"], ErQuestions::VERSION);
+        assert_eq!(raw["payload"], serde_json::to_value(&payload).unwrap());
     }
 
     #[test]
-    fn notes_are_stored_as_todays_bytes() {
+    fn notes_are_stored_in_an_envelope() {
         let tmp = TempDir::new().unwrap();
         let (store, scope) = store_and_scope(&tmp);
         let payload = notes();
@@ -261,12 +264,15 @@ mod tests {
         })
         .unwrap();
         let path = path_of::<ErNotes>(&store, &scope).unwrap();
-        let raw = std::fs::read_to_string(path).unwrap();
-        assert_eq!(raw, serde_json::to_string_pretty(&payload).unwrap());
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(raw["kind"], "notes");
+        assert_eq!(raw["version"], ErNotes::VERSION);
+        assert_eq!(raw["payload"], serde_json::to_value(&payload).unwrap());
     }
 
     #[test]
-    fn github_comments_are_stored_as_todays_bytes() {
+    fn github_comments_are_stored_in_an_envelope() {
         let tmp = TempDir::new().unwrap();
         let (store, scope) = store_and_scope(&tmp);
         let payload = github_comments();
@@ -275,12 +281,15 @@ mod tests {
         })
         .unwrap();
         let path = path_of::<ErGithubComments>(&store, &scope).unwrap();
-        let raw = std::fs::read_to_string(path).unwrap();
-        assert_eq!(raw, serde_json::to_string_pretty(&payload).unwrap());
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(raw["kind"], "github-comments");
+        assert_eq!(raw["version"], ErGithubComments::VERSION);
+        assert_eq!(raw["payload"], serde_json::to_value(&payload).unwrap());
     }
 
     #[test]
-    fn a_file_an_agent_rewrote_still_loads() {
+    fn a_bare_file_an_agent_wrote_is_unreadable() {
         let tmp = TempDir::new().unwrap();
         let (store, scope) = store_and_scope(&tmp);
         let path = path_of::<ErQuestions>(&store, &scope).unwrap();
@@ -290,12 +299,36 @@ mod tests {
         )
         .unwrap();
         match load_questions(&store, &scope).unwrap() {
-            Loaded::Found(stored) => {
-                assert_eq!(stored.value.questions.len(), 1);
-                assert_eq!(stored.value.questions[0].id, "q-1");
+            Loaded::Unreadable(er_store::Unreadable::Malformed(reason)) => {
+                assert!(reason.contains("missing envelope"), "{reason}");
             }
-            other => panic!("expected a payload, got {other:?}"),
+            other => panic!("expected a missing-envelope error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_update_over_a_bare_file_writes_an_enveloped_file_with_only_the_new_content() {
+        let tmp = TempDir::new().unwrap();
+        let (store, scope) = store_and_scope(&tmp);
+        let path = path_of::<ErQuestions>(&store, &scope).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"diff_hash":"old","version":1,"questions":[{"id":"old","file":"a.rs","text":"old"}]}"#,
+        )
+        .unwrap();
+        let updated = update_questions(&store, &scope, |current| {
+            assert!(current.is_none(), "a bare file is not a merge base");
+            Ok::<_, std::convert::Infallible>(questions())
+        })
+        .unwrap();
+        assert!(updated.was_unreadable);
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(raw["kind"], "questions");
+        assert_eq!(
+            raw["payload"]["questions"],
+            serde_json::to_value(&questions().questions).unwrap()
+        );
     }
 
     #[test]
@@ -303,7 +336,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let (store, scope) = store_and_scope(&tmp);
         let path = path_of::<ErQuestions>(&store, &scope).unwrap();
-        std::fs::write(&path, r#"{"version":99,"diff_hash":"hash","questions":[]}"#).unwrap();
+        let newer = r#"{"kind":"questions","version":99,"diff_hash":null,"producer":"host","written_at":"2026-11-13T00:00:00Z","payload":{"version":1,"diff_hash":"hash","questions":[]}}"#;
+        std::fs::write(&path, newer).unwrap();
         let error = update_questions(
             &store,
             &scope,
@@ -319,10 +353,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("questions.json"), "{message}");
         assert!(message.contains("99"), "{message}");
-        assert_eq!(
-            std::fs::read_to_string(path).unwrap(),
-            r#"{"version":99,"diff_hash":"hash","questions":[]}"#
-        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), newer);
     }
 
     #[test]

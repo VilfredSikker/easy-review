@@ -200,8 +200,13 @@ fn quick_flow_pins_filtered_hash_and_leaves_review_json_unchanged() {
         let before: er_engine::ai::ErReview =
             serde_json::from_slice(&std::fs::read(bucket.join("review.before-arbiter")).unwrap())
                 .unwrap();
-        let after: er_engine::ai::ErReview =
-            serde_json::from_slice(&std::fs::read(bucket.join("review.json")).unwrap()).unwrap();
+        let stored = er_store::envelope::parse::<er_engine::ai::ErReview>(
+            serde_json::from_slice(&std::fs::read(bucket.join("review.json")).unwrap()).unwrap(),
+        );
+        let after = match stored {
+            er_store::Loaded::Found(stored) => stored.value,
+            other => panic!("the committed review.json is a stored review, got {other:?}"),
+        };
         assert_eq!(
             serde_json::to_value(&after).unwrap(),
             serde_json::to_value(&before).unwrap(),

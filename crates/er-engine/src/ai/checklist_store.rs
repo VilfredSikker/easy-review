@@ -137,19 +137,20 @@ mod tests {
     }
 
     #[test]
-    fn toggle_writes_the_same_bytes_as_before() {
+    fn toggle_writes_an_envelope_with_the_toggled_item() {
         let tmp = TempDir::new().unwrap();
         let (store, scope) = store_and_scope(&tmp);
         let path = store.path(&key::<ErChecklist>(&scope).unwrap());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, serde_json::to_string_pretty(&checklist()).unwrap()).unwrap();
+        crate::test_support::write_sidecar(&tmp.path(), &checklist());
 
         set_checked(&store, &scope, "c1", true).unwrap();
 
         let mut expected = checklist();
         expected.items[0].checked = true;
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(raw, serde_json::to_string_pretty(&expected).unwrap());
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["kind"], "checklist");
+        assert_eq!(raw["payload"], serde_json::to_value(&expected).unwrap());
     }
 
     #[test]
@@ -215,7 +216,7 @@ mod tests {
         let (store, scope) = store_and_scope(&tmp);
         let path = store.path(&key::<ErChecklist>(&scope).unwrap());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let newer = r#"{"version":99,"diff_hash":"hash","items":[{"id":"c1","text":"first"}]}"#;
+        let newer = r#"{"kind":"checklist","version":99,"diff_hash":null,"producer":"host","written_at":"2026-11-13T00:00:00Z","payload":{"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"}]}}"#;
         std::fs::write(&path, newer).unwrap();
 
         let error = set_checked(&store, &scope, "c1", true).unwrap_err();

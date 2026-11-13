@@ -893,6 +893,31 @@ mod tests {
     }
 
     #[test]
+    fn an_uploaded_bare_tour_is_committed_with_an_envelope() {
+        with_storage_root(|| {
+            let er_dir = resolve_managed_root_for_pr_bucket(
+                &crate::storage::repo_storage_slug("acme", "widgets"),
+                9,
+            )
+            .er_dir();
+            let diff = "diff --git a/x b/x\n+hello\n";
+            write_diff_tmp(&er_dir, diff);
+            let hash = compute_diff_hash(diff);
+
+            upload_artifacts_to_dir(&er_dir, SidecarKind::Tour, &tour_files(&hash)).unwrap();
+
+            let raw: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(Path::new(&er_dir).join("tour.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(raw["kind"], "tour");
+            assert_eq!(raw["payload"]["diff_hash"], hash);
+            let tour: ErTour = found(&er_dir);
+            assert_eq!(tour.diff_hash, hash);
+        });
+    }
+
+    #[test]
     fn upload_rejects_stale_hash() {
         with_storage_root(|| {
             let er_dir = resolve_managed_root_for_pr_bucket(

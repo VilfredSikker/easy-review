@@ -365,15 +365,23 @@ mod tests {
     }
 
     #[test]
-    fn write_arbiter_review_writes_the_same_bytes_as_before() {
+    fn write_arbiter_review_writes_an_envelope() {
         let dir = tempfile::TempDir::new().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             let review = arbiter(HASH, vec![verdict(ArbiterRuling::Kept, None)]);
 
             write_arbiter_review(dir.path().to_str().unwrap(), &review).unwrap();
 
-            let raw = std::fs::read_to_string(dir.path().join("arbiter.json")).unwrap();
-            assert_eq!(raw, serde_json::to_string_pretty(&review).unwrap());
+            let raw: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(dir.path().join("arbiter.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(raw["kind"], "arbiter");
+            assert_eq!(
+                raw["version"],
+                <ArbiterReview as er_store::Artifact>::VERSION
+            );
+            assert_eq!(raw["payload"], serde_json::to_value(&review).unwrap());
             let loaded =
                 load_arbiter_review(dir.path().to_str().unwrap()).expect("the written file");
             assert_eq!(loaded.diff_hash, HASH);

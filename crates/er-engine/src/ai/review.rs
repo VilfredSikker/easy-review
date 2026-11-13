@@ -1845,6 +1845,37 @@ mod tests {
         assert!(review_file_exists(er_dir));
     }
 
+    /// A pre-1.0 payload or a direct agent write has no envelope. It stays on
+    /// disk (so it can be inspected or replaced) but never reads as a review.
+    #[test]
+    fn a_bare_review_on_disk_reads_as_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("review.json"),
+            br#"{"version":1,"diff_hash":"hash","files":{}}"#,
+        )
+        .unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        assert!(review_file_exists(er_dir));
+        assert!(load_review(er_dir).is_none());
+
+        let store = er_store::ArtifactStore::new(dir.path());
+        let key = er_store::ArtifactKey::<ErReview>::new(
+            er_store::Scope::dir(dir.path()).unwrap(),
+            (),
+        )
+        .unwrap();
+        match store.read(&key).unwrap() {
+            er_store::Loaded::Unreadable(er_store::Unreadable::Malformed(reason)) => {
+                assert!(
+                    reason.contains("missing envelope"),
+                    "the reason names the missing envelope: {reason}"
+                );
+            }
+            other => panic!("expected a malformed read, got {other:?}"),
+        }
+    }
+
     // ── Helpers ──
 
     /// `score` and `from_score` have to be inverses: a grade written by one and
