@@ -106,7 +106,11 @@ pub fn ensure_review_inputs_from_config(
     review_md: Option<&str>,
 ) -> Result<String, String> {
     let config = crate::config::load_global_config();
-    let rules = crate::ai::change_facts::OwnedRepoRules::from_config(&config, repo_key);
+    let rules = crate::ai::change_facts::OwnedRepoRules::from_config(
+        &config,
+        repo_key,
+        crate::config::load_risk_rules_table(repo_key),
+    );
     ensure_review_inputs(er_dir, raw, rules.as_rules(), review_md)
 }
 

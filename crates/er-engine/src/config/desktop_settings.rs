@@ -3,7 +3,7 @@
 use super::settings::settings_fields_grouped;
 use super::{
     apply_risk_rule_edit, split_shell_args, ErConfig, ResolvedRisk, RiskRuleEdit, RiskRuleSource,
-    RiskRules, RiskTier, MAX_CONCURRENT_REVIEWS_RANGE,
+    RiskRuleTable, RiskRules, RiskTier, MAX_CONCURRENT_REVIEWS_RANGE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -176,9 +176,10 @@ pub fn desktop_settings_snapshot(
     repo_root: &str,
     repo_key: &str,
     changed_paths: &[String],
+    artifact: Option<RiskRuleTable>,
 ) -> DesktopSettingsSnapshot {
     let grouped = settings_fields_grouped(config);
-    let rules = config.risk_rules(repo_key);
+    let rules = config.risk_rules_merged(repo_key, artifact);
     let risk_rules = risk_rule_rows(&rules, changed_paths);
     let risk_files = risk_file_rows(&rules, changed_paths);
     // The default as it resolves, not as it was written: the view has to say
@@ -593,10 +594,28 @@ mod tests {
             "my-service".to_string(),
             risk_rules(&[("src/**", "high")], None).project,
         );
-        let snap = desktop_settings_snapshot(&config, "/", "my-service", &[]);
+        let snap = desktop_settings_snapshot(&config, "/", "my-service", &[], None);
         assert_eq!(snap.risk_rules.len(), 1);
         assert_eq!(snap.risk_repo, "my-service");
         assert_eq!(snap.repo_root, "/");
+    }
+
+    /// Settings shows the committed artifact's rules, and a config entry for
+    /// the same pattern wins over the artifact's.
+    #[test]
+    fn settings_merge_the_artifact_under_the_users_config() {
+        let mut config = ErConfig::default();
+        config.risk.items.insert(
+            "er".to_string(),
+            risk_rules(&[("src/**", "low")], None).project,
+        );
+        let artifact = risk_rules(&[("src/**", "high"), ("db/**", "med")], None).project;
+        let snap = desktop_settings_snapshot(&config, "/repo", "er", &[], Some(artifact));
+
+        let row = |p: &str| snap.risk_rules.iter().find(|r| r.pattern == p).unwrap();
+        assert_eq!(row("src/**").tier, "low", "the user's config wins");
+        assert_eq!(row("db/**").tier, "med", "the artifact fills the gap");
+        assert_eq!(snap.risk_rules.len(), 2);
     }
 
     #[test]
@@ -646,7 +665,7 @@ mod tests {
         );
         config.user_risk = risk_rules(&[("*.lock", "low")], None).project;
         let changed = ["src/a.rs", "src/b.rs", "Cargo.lock"].map(str::to_string);
-        let snap = desktop_settings_snapshot(&config, "/repo", "er", &changed);
+        let snap = desktop_settings_snapshot(&config, "/repo", "er", &changed, None);
 
         let row = |p: &str| snap.risk_rules.iter().find(|r| r.pattern == p).unwrap();
         assert_eq!(
@@ -670,7 +689,7 @@ mod tests {
             risk_rules(&[("*.lock", "high"), ("src/**", "med")], None).project,
         );
         config.user_risk = risk_rules(&[("*.lock", "low"), ("*.md", "low")], None).project;
-        let snap = desktop_settings_snapshot(&config, "/repo", "er", &[]);
+        let snap = desktop_settings_snapshot(&config, "/repo", "er", &[], None);
 
         let matchers: Vec<&str> = snap
             .importance_rules

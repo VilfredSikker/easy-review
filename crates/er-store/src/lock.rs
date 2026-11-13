@@ -836,6 +836,16 @@ mod tests {
     }
 
     #[test]
+    fn a_repo_scope_lock_lives_at_the_repo_directory() {
+        let (directory, store) = temp_store();
+        let scope = Scope::Repo {
+            repo: crate::Slug::new("er").unwrap(),
+        };
+        let _guard = store.lock_scope(&scope, Duration::from_secs(5)).unwrap();
+        assert!(directory.path().join("repos/er/.lock").is_file());
+    }
+
+    #[test]
     fn lock_helper_child() {
         let Ok(root) = std::env::var("ER_STORE_LOCK_HELPER") else {
             return;

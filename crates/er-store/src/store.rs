@@ -91,6 +91,7 @@ impl ArtifactStore {
                 .join(repo.as_str())
                 .join("prs")
                 .join(format!("pr-{number}")),
+            Scope::Repo { repo } => self.root.join("repos").join(repo.as_str()),
             Scope::App => self.root.join("app"),
             Scope::Dir(dir) => dir.as_path().to_path_buf(),
         }
@@ -750,6 +751,10 @@ mod tests {
             store.scope_dir(&pr),
             Path::new("/root/repos/owner-repo/prs/pr-42")
         );
+        let repo = Scope::Repo {
+            repo: Slug::new("owner-repo").unwrap(),
+        };
+        assert_eq!(store.scope_dir(&repo), Path::new("/root/repos/owner-repo"));
         assert_eq!(store.scope_dir(&Scope::App), Path::new("/root/app"));
     }
 

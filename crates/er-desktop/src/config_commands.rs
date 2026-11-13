@@ -105,11 +105,13 @@ pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, St
     // Reopening Settings is the desktop's reload point: a file the user repaired
     // in place is adopted here, before the page reads `app.config`.
     app.reload_config_if_failed();
+    let repo_key = app.tab().rules_key();
     let settings = desktop_settings_snapshot(
         &app.config,
         &app.tab().repo_root,
-        &app.tab().rules_key(),
+        &repo_key,
         &changed_paths(&app),
+        er_engine::config::load_risk_rules_table(&repo_key),
     );
     let providers = list_providers_inner(&app);
     let default_selection = app
@@ -150,8 +152,13 @@ pub async fn apply_config_patch(
         state
             .desktop_revision
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let settings =
-            desktop_settings_snapshot(&app.config, &repo_root, &repo_key, &changed_paths(&app));
+        let settings = desktop_settings_snapshot(
+            &app.config,
+            &repo_root,
+            &repo_key,
+            &changed_paths(&app),
+            er_engine::config::load_risk_rules_table(&repo_key),
+        );
         let providers = list_providers_inner(&app);
         let default_selection = app
             .config
@@ -373,11 +380,13 @@ fn hub_response_with_warnings(
     app: &er_engine::app::App,
     warnings: Vec<String>,
 ) -> GetConfigHubResponse {
+    let repo_key = app.tab().rules_key();
     let settings = desktop_settings_snapshot(
         &app.config,
         &app.tab().repo_root,
-        &app.tab().rules_key(),
+        &repo_key,
         &changed_paths(app),
+        er_engine::config::load_risk_rules_table(&repo_key),
     );
     let providers = list_providers_inner(app);
     let default_selection = app
