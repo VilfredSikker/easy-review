@@ -1,13 +1,12 @@
 use crate::arena::{
-    build_arena_diff_preview, build_snapshot_with_config, delete_run_dir,
-    import_arena_findings_to_review, load_run, reconcile_stale_runs_excluding, save_run,
-    scope_git_mode, start_arena_batch, start_arena_run, start_seeded_run, ArenaBatchStartParams,
-    ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRunInputs, ArenaRunKind,
-    ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride, ReviewerRef, SeededStartParams,
-    Verdict,
+    accepted_finding_rows, build_arena_diff_preview, build_snapshot_with_config, delete_run_dir,
+    load_run, mark_accepted, reconcile_stale_runs_excluding, save_run, scope_git_mode,
+    start_arena_batch, start_arena_run, start_seeded_run, ArenaBatchStartParams, ArenaDiffPreview,
+    ArenaPaths, ArenaProgressState, ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaScope,
+    ArenaStartParams, HumanOverride, ReviewerRef, SeededStartParams, Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 use super::review_flow_admission::ReviewFlowLease;
@@ -388,14 +387,11 @@ impl App {
         let paths = ArenaPaths::for_run(&er_dir, run_id);
         let mut run = load_run(&paths)?;
         // A seeded run's verdicts reach the review through `arbiter.json`, which
-        // merges at load. Importing them as well would do the write ADR 0001
-        // routed around — `review.json` gains a fourth writer, and
-        // `import_arena_findings_to_review` re-stamps its `diff_hash` with this
-        // run's, marking a review that may be newer as matching a different diff.
+        // merges at load; accepting them as rows would show each ruling twice.
         if run.config.run_kind == ArenaRunKind::Seeded {
             anyhow::bail!(
                 "a seeded run's verdicts are applied from arbiter.json on load; \
-                 there is nothing to import into review.json"
+                 there is nothing to accept as a finding"
             );
         }
         if self.is_review_flow_arena_run(&er_path, &run) {
@@ -404,12 +400,37 @@ impl App {
                  Open the current flow result or start a new Review."
             );
         }
-        let ids = finding_ids.as_deref();
-        let n = import_arena_findings_to_review(&er_path, &mut run, ids)?;
-        save_run(&paths, &run)?;
+        let ids: Vec<String> = match finding_ids {
+            Some(ids) => ids,
+            None => run
+                .findings
+                .iter()
+                .map(|finding| finding.id.clone())
+                .collect(),
+        };
+        let now = crate::app::chrono_now();
+        let rows = accepted_finding_rows(&run, &ids, &now);
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let store = crate::store_registry::store();
+        let scope = er_store::Scope::dir(&er_path)?;
+        let accepted = crate::ai::accepted_findings::record_accepted(&store, &scope, &rows)
+            .context("record the accepted findings")?;
+        mark_accepted(&mut run, &rows, &now);
+        if let Err(error) = save_run(&paths, &run) {
+            return match accepted.rollback(&store) {
+                Ok(()) => Err(error).context(
+                    "accepted IDs could not be saved to the run; accepted-findings.json was rolled back",
+                ),
+                Err(rollback) => Err(error).context(format!(
+                    "accepted IDs could not be saved to the run; accepted-findings.json rollback failed: {rollback}"
+                )),
+            };
+        }
         self.tab_mut().reload_ai_state();
-        self.notify(&format!("Accepted {n} finding(s) into Review"));
-        Ok(n)
+        self.notify(&format!("Accepted {} finding(s) into Review", rows.len()));
+        Ok(rows.len())
     }
 
     pub fn arena_cancel(&mut self, run_id: &str) -> Result<()> {
@@ -1483,17 +1504,21 @@ mod tests {
             let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-acc");
             crate::arena::save_run(&paths, &sample_run("arena-acc")).unwrap();
 
-            // Active tab is A; the import must write review.json under B's er_dir.
+            // Active tab is A; acceptance must write the artifact under B.
             app.arena_accept_findings("arena-acc", None).unwrap();
             assert!(
-                Path::new(&er_b).join("review.json").is_file(),
-                "accept must import into the run's own er_dir, not the active tab's"
+                Path::new(&er_b).join("accepted-findings.json").is_file(),
+                "accept must record under the run's own er_dir, not the active tab's"
             );
             assert!(
                 !Path::new(&app.tabs[0].er_dir())
-                    .join("review.json")
+                    .join("accepted-findings.json")
                     .is_file(),
                 "active tab A must be untouched by accepting a run that lives on B"
+            );
+            assert!(
+                !Path::new(&er_b).join("review.json").is_file(),
+                "acceptance must not write the general review"
             );
         });
     }

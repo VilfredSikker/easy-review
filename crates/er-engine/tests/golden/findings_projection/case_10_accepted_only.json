@@ -1,0 +1,56 @@
+{
+  "arbiter_effect": {
+    "dropped": 0,
+    "kept": 0,
+    "merged": 0,
+    "regraded": 0,
+    "unmatched": 0
+  },
+  "arbiter_graded_keys": [],
+  "arbiter_verdicts": [],
+  "review": {
+    "base_branch": "",
+    "created_at": "2026-01-03T00:00:00Z",
+    "diff_hash": "H",
+    "file_hashes": {},
+    "files": {
+      "a.rs": {
+        "findings": [
+          {
+            "category": "",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": null,
+            "id": "arena-run-y-kept",
+            "lens": "general",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 4,
+            "outside_diff": false,
+            "providers": [
+              "p1"
+            ],
+            "raised_by": [
+              "general"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "medium",
+            "suggestion": "",
+            "title": "Only accepted",
+            "verification_plan": ""
+          }
+        ],
+        "risk": "medium",
+        "risk_reason": "",
+        "summary": ""
+      }
+    },
+    "head_branch": "",
+    "version": 1
+  }
+}

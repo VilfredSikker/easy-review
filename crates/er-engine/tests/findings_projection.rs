@@ -27,6 +27,7 @@ fn write_sidecar(dir: &Path, rel: &str, content: &str) {
         "review.json" => "review",
         "professor.json" => "professor",
         "arbiter.json" => "arbiter",
+        "accepted-findings.json" => "accepted-findings",
         other if other.starts_with("experts/") => "expert",
         other => panic!("no registered kind for {other}"),
     };
@@ -559,6 +560,7 @@ fn case_07_expert_order() -> Value {
 
     let projection = build_findings_projection(ProjectionInputs {
         general: Some(review),
+        accepted: &[],
         experts: &experts,
         professor: None,
         arbiter: None,
@@ -619,6 +621,7 @@ fn case_08_provenance_before_the_arbiter() -> Value {
 
     let projection = build_findings_projection(ProjectionInputs {
         general: Some(review),
+        accepted: &[],
         experts: &[],
         professor: None,
         arbiter: Some(&arbiter),
@@ -658,5 +661,113 @@ fn projection_provenance_runs_before_the_arbiter() {
         "projection_provenance_runs_before_the_arbiter",
         case_08_provenance_before_the_arbiter(),
         include_str!("golden/findings_projection/case_08_provenance_before_arbiter.json"),
+    );
+}
+
+/// Accepted rows keep the place the import left them: after the general
+/// review's own rows and before the expert rows, with the artifact's stored
+/// providers restored after the provenance clear.
+fn case_09_accepted_rows_keep_their_place() -> Value {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_sidecar(
+        dir.path(),
+        "review.json",
+        r#"{
+  "version": 1,
+  "diff_hash": "H",
+  "created_at": "2026-01-01T00:00:00Z",
+  "files": {
+    "a.rs": {"risk": "low", "findings": [{"id": "general-1", "title": "General", "severity": "low", "hunk_index": 0, "line_start": 1}]},
+    "c.rs": {"risk": "low", "findings": [{"id": "general-c", "title": "General C", "severity": "low", "hunk_index": 0, "line_start": 7}]}
+  }
+}"#,
+    );
+    write_sidecar(
+        dir.path(),
+        "experts/security.json",
+        r#"{
+  "version": 1,
+  "expert_id": "security",
+  "diff_hash": "H",
+  "files": {"a.rs": {"findings": [{"id": "1", "title": "Expert A", "severity": "medium", "hunk_index": 0, "line_start": 2}]}}
+}"#,
+    );
+    write_sidecar(
+        dir.path(),
+        "accepted-findings.json",
+        r#"{
+  "version": 1,
+  "findings": [
+    {"file": "a.rs", "run_finding_id": "kept-a", "run_id": "run-x", "run_diff_hash": "H",
+     "accepted_at": "2026-01-02T00:00:00Z", "providers": ["deep-provider"],
+     "finding": {"id": "arena-run-x-kept-a", "title": "Accepted A", "severity": "high", "hunk_index": 0, "line_start": 5, "raised_by": ["general"]}},
+    {"file": "b.rs", "run_finding_id": "kept-b", "run_id": "run-x", "run_diff_hash": "H",
+     "accepted_at": "2026-01-02T00:00:00Z", "providers": ["second-provider"],
+     "finding": {"id": "arena-run-x-kept-b", "title": "Accepted B", "severity": "medium", "line_start": 3, "raised_by": ["security"]}}
+  ]
+}"#,
+    );
+
+    let state = load(dir.path());
+    assert_eq!(
+        ids(&state, "a.rs"),
+        ["general-1", "arena-run-x-kept-a", "sec-1"]
+    );
+    assert_eq!(ids(&state, "b.rs"), ["arena-run-x-kept-b"]);
+    assert_eq!(ids(&state, "c.rs"), ["general-c"]);
+    let accepted = &state.review.as_ref().expect("a review").files["a.rs"].findings[1];
+    assert_eq!(accepted.providers, ["deep-provider"]);
+    assert_eq!(accepted.lens, "general");
+    canonical(
+        state.review.as_ref(),
+        &state.arbiter_effect,
+        &state.arbiter_graded_keys,
+        &state.arbiter_verdicts,
+    )
+}
+
+#[test]
+fn projection_keeps_accepted_rows_in_place() {
+    assert_golden(
+        "projection_keeps_accepted_rows_in_place",
+        case_09_accepted_rows_keep_their_place(),
+        include_str!("golden/findings_projection/case_09_accepted_rows.json"),
+    );
+}
+
+fn case_10_accepted_only() -> Value {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_sidecar(
+        dir.path(),
+        "accepted-findings.json",
+        r#"{
+  "version": 1,
+  "findings": [
+    {"file": "a.rs", "run_finding_id": "kept", "run_id": "run-y", "run_diff_hash": "H",
+     "accepted_at": "2026-01-03T00:00:00Z", "providers": ["p1"],
+     "finding": {"id": "arena-run-y-kept", "title": "Only accepted", "severity": "medium", "line_start": 4, "raised_by": ["general"]}}
+  ]
+}"#,
+    );
+
+    let state = load(dir.path());
+    assert_eq!(ids(&state, "a.rs"), ["arena-run-y-kept"]);
+    let review = state.review.as_ref().expect("a synthesized review");
+    assert_eq!(review.diff_hash, "H");
+    assert_eq!(review.files["a.rs"].findings[0].providers, ["p1"]);
+    canonical(
+        state.review.as_ref(),
+        &state.arbiter_effect,
+        &state.arbiter_graded_keys,
+        &state.arbiter_verdicts,
+    )
+}
+
+#[test]
+fn projection_synthesizes_a_review_for_accepted_rows_alone() {
+    assert_golden(
+        "projection_synthesizes_a_review_for_accepted_rows_alone",
+        case_10_accepted_only(),
+        include_str!("golden/findings_projection/case_10_accepted_only.json"),
     );
 }

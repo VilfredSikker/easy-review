@@ -2,60 +2,20 @@
 
 use super::super::background::BackgroundTaskTarget;
 use super::super::{App, DiffMode};
+use crate::ai::accepted_findings::record_accepted;
 use crate::ai::accepted_provenance::invalidate_accepted_provenance;
 use crate::ai::review_flow::FlowState;
-use crate::app::state::review_flow_output::{archive_flow_output, FlowProducer};
 use crate::arena::{
-    import_arena_findings_to_review, load_run, save_run, ArenaPaths, ArenaRun, ArenaRunKind,
+    accepted_finding_rows, load_run, mark_accepted, save_run, ArenaPaths, ArenaRun, ArenaRunKind,
     RunStatus, Verdict,
 };
 use anyhow::{bail, Context, Result};
-use er_store::{
-    ArtifactKey, ArtifactSnapshot, ArtifactStore, BackupSnapshot, Loaded, RelPath, Scope,
-};
+use er_store::{ArtifactKey, ArtifactSnapshot, ArtifactStore, Loaded, RelPath, Scope};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static ACCEPT_ARCHIVE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-
-fn review_key(er_dir: &Path) -> Result<ArtifactKey<crate::ai::ErReview>> {
-    Ok(ArtifactKey::new(Scope::dir(er_dir)?, ())?)
-}
-
-fn review_snapshot(
-    store: &ArtifactStore,
-    key: &ArtifactKey<crate::ai::ErReview>,
-) -> Result<ArtifactSnapshot<crate::ai::ErReview>> {
-    match store.snapshot(key)? {
-        Loaded::Found(stored) => Ok(stored.value),
-        Loaded::Absent => bail!("review.json is missing"),
-        Loaded::Unreadable(reason) => bail!("review.json is unreadable: {reason:?}"),
-    }
-}
-
-fn rollback_review_acceptance(
-    store: &ArtifactStore,
-    review_key: &ArtifactKey<crate::ai::ErReview>,
-    expected_post_import: &ArtifactSnapshot<crate::ai::ErReview>,
-    original: Option<&BackupSnapshot>,
-) -> Result<()> {
-    let current = review_snapshot(store, review_key).context("read review.json before rollback")?;
-    if current.bytes() != expected_post_import.bytes() {
-        bail!("review.json changed after import; refusing to overwrite the newer file");
-    }
-    match original {
-        Some(backup) => {
-            if !store.restore_backup_if_unchanged(backup, expected_post_import.bytes())? {
-                bail!("review.json changed after import; refusing to overwrite the newer file");
-            }
-            Ok(())
-        }
-        None => store
-            .delete::<crate::ai::ErReview>(review_key)
-            .context("remove uncommitted review.json"),
-    }
-}
 
 /// Accepted Deep rulings supersede older grades for exactly the accepted keys.
 /// Keep a byte snapshot so failure can restore both sidecars without clobbering
@@ -167,28 +127,6 @@ impl AcceptedOverlay {
         store
             .write_backup_to_dir(&self.original, archive_dir)
             .context("archive superseded arbiter verdicts")
-    }
-}
-
-fn restore_after_import_error(
-    store: &ArtifactStore,
-    review_key: &ArtifactKey<crate::ai::ErReview>,
-    archive: &crate::app::state::review_flow_output::FlowOutputBackup,
-    same_generation: bool,
-    original: Option<&[u8]>,
-) -> Result<()> {
-    match store.snapshot(review_key) {
-        Ok(Loaded::Found(stored)) if same_generation && original == Some(stored.value.bytes()) => {
-            Ok(())
-        }
-        Ok(Loaded::Found(_)) => {
-            bail!("review.json changed during failed import; leaving it in place")
-        }
-        Ok(Loaded::Absent) => archive.restore(),
-        Ok(Loaded::Unreadable(reason)) => {
-            bail!("inspect review.json after import failure: {reason:?}")
-        }
-        Err(error) => Err(error).context("inspect review.json after import failure"),
     }
 }
 
@@ -344,91 +282,56 @@ impl App {
         }
 
         let store = crate::store_registry::store();
-        let review_key = review_key(Path::new(er_dir))?;
+        let scope = Scope::dir(Path::new(er_dir))?;
         let overlay = AcceptedOverlay::prepare(&store, Path::new(er_dir), &run, &finding_ids)?;
-        let prior_hash = match store.snapshot(&review_key) {
-            Ok(Loaded::Found(stored)) => match stored.value.parse() {
-                Loaded::Found(parsed) => Some(parsed.value.diff_hash),
-                _ => None,
-            },
-            _ => None,
-        };
-        let same_generation = prior_hash.as_deref() == Some(run.diff_hash.as_str());
         let sequence = ACCEPT_ARCHIVE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let archive_key = format!("accept-{}-{sequence}", std::process::id());
         let archive_dir = RelPath::new(Path::new("flow-backups").join(&archive_key))?;
-        // Archive every prior state. Same-generation reviews are copied back so
-        // the importer can merge them; another generation stays out of the new
-        // review until the selected flow findings are written.
-        let archive = archive_flow_output(Path::new(er_dir), &archive_key, &FlowProducer::General)?;
-        let original = match archive.archived() {
-            Some(backup) => match store
-                .read_backup(backup)
-                .context("read the archived review for recoverable acceptance")?
-            {
-                Loaded::Found(stored) => Some(stored.value),
-                Loaded::Absent => None,
-                Loaded::Unreadable(reason) => {
-                    bail!("read the archived review for recoverable acceptance: {reason:?}")
+        if let Some(overlay) = &overlay {
+            overlay.archive(&store, &archive_dir)?;
+        }
+
+        // `review.json` stays untouched: the accepted rows are host output and
+        // live in their own artifact. The run's own record is saved after the
+        // artifact, and a failed save rolls the artifact back so the two never
+        // disagree.
+        let now = crate::app::chrono_now();
+        let rows = accepted_finding_rows(&run, &finding_ids, &now);
+        if rows.is_empty() {
+            bail!("Selection contains a missing, dropped, or already accepted finding");
+        }
+        let accepted =
+            record_accepted(&store, &scope, &rows).context("record the accepted findings")?;
+        mark_accepted(&mut run, &rows, &now);
+        let written_overlay = match &overlay {
+            Some(overlay) => match overlay.write_replacement(&store) {
+                Ok(written) => Some(written),
+                Err(error) => {
+                    return match accepted.rollback(&store) {
+                        Ok(()) => Err(error).context(
+                            "arbiter.json could not be written; accepted-findings.json was rolled back",
+                        ),
+                        Err(rollback) => Err(error).context(format!(
+                            "arbiter.json could not be written and the accepted-findings.json rollback failed: {rollback}"
+                        )),
+                    };
                 }
             },
             None => None,
         };
-        if let Some(overlay) = &overlay {
-            if let Err(error) = overlay.archive(&store, &archive_dir) {
-                archive
-                    .restore()
-                    .context("restore review after arbiter archive failed")?;
-                return Err(error);
-            }
-        }
-        if same_generation {
-            archive
-                .restore()
-                .context("restore the matching review before merging accepted findings")?;
-        }
-
-        let imported = match import_arena_findings_to_review(er_dir, &mut run, Some(&finding_ids)) {
-            Ok(imported) => imported,
-            Err(error) => {
-                if let Err(restore_error) = restore_after_import_error(
-                    &store,
-                    &review_key,
-                    &archive,
-                    same_generation,
-                    original.as_deref(),
-                ) {
-                    return Err(error).context(format!(
-                        "import failed and prior review restoration failed: {restore_error}; recovery archive is {}",
-                        archive_dir.as_path().display()
-                    ));
-                }
-                return Err(error.context("import selected review-flow findings"));
-            }
-        };
-        let post_import = review_snapshot(&store, &review_key)
-            .context("read review.json after importing selected findings")?;
-        let mut written_overlay = None;
-        let committed = (|| {
-            if let Some(overlay) = &overlay {
-                written_overlay = Some(overlay.write_replacement(&store)?);
-            }
-            save_run(&paths, &run)
-        })();
-        if let Err(error) = committed {
-            let review_rollback =
-                rollback_review_acceptance(&store, &review_key, &post_import, archive.archived());
+        if let Err(error) = save_run(&paths, &run) {
+            let artifact_rollback = accepted.rollback(&store);
             let overlay_rollback = match (&overlay, &written_overlay) {
                 (Some(overlay), Some(written)) => overlay.restore_original(&store, written),
                 _ => Ok(()),
             };
-            return match (review_rollback, overlay_rollback) {
+            return match (artifact_rollback, overlay_rollback) {
                 (Ok(()), Ok(())) => Err(error).context(
                     "accepted IDs could not be saved to the run; acceptance sidecars were rolled back",
                 ),
-                (review, arbiter) => Err(error).context(format!(
-                    "accepted IDs could not be saved to the run; rollback failed for review.json {:?} or arbiter.json {:?}; recovery archive is {}",
-                    review.err(), arbiter.err(), archive_dir.as_path().display()
+                (artifact, arbiter) => Err(error).context(format!(
+                    "accepted IDs could not be saved to the run; rollback failed for accepted-findings.json {:?} or arbiter.json {:?}; recovery archive is {}",
+                    artifact.err(), arbiter.err(), archive_dir.as_path().display()
                 )),
             };
         }
@@ -455,8 +358,8 @@ impl App {
             }
         }
         self.bump_review_flow_revision();
-        self.notify(&format!("Accepted {imported} finding(s) into Review"));
-        Ok(imported)
+        self.notify(&format!("Accepted {} finding(s) into Review", rows.len()));
+        Ok(rows.len())
     }
 
     fn require_review_flow_run_target(
@@ -1287,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_after_tab_switch_uses_captured_bucket_and_archives_old_review() {
+    fn acceptance_after_tab_switch_uses_captured_bucket_and_leaves_review_alone() {
         let mut fixture = fixture();
         let storage = fixture.repo.path().to_path_buf();
         crate::storage::with_test_storage_root(&storage, || {
@@ -1308,31 +1211,19 @@ mod tests {
                 .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
                 .unwrap();
             assert_eq!(accepted, 1);
-            let review: crate::ai::ErReview =
+            assert_eq!(
+                std::fs::read(&review_path).unwrap(),
+                old_review,
+                "acceptance writes the artifact, not review.json"
+            );
+            let artifact: crate::ai::accepted_findings::AcceptedFindings =
                 crate::test_support::read_sidecar(Path::new(&fixture.er_dir));
-            assert_eq!(
-                review.diff_hash,
-                load_run(&ArenaPaths::for_run(
-                    Path::new(&fixture.er_dir),
-                    &fixture.run_id
-                ))
-                .unwrap()
-                .diff_hash
-            );
-            assert_eq!(
-                review.files["file.txt"].findings[0].id,
-                format!("arena-{}-kept", fixture.run_id)
-            );
-            let backup_root = review_path.parent().unwrap().join("flow-backups");
-            let archived = std::fs::read_dir(backup_root)
-                .unwrap()
-                .filter_map(|entry| entry.ok())
-                .map(|entry| entry.path().join("review.json"))
-                .find(|path| path.is_file())
-                .expect("older review should remain in the recovery archive");
-            assert_eq!(std::fs::read(archived).unwrap(), old_review);
-            assert!(!review.files.contains_key("legacy.rs"));
-            assert_eq!(review.files["file.txt"].findings.len(), 1);
+            assert_eq!(artifact.findings.len(), 1);
+            let row = &artifact.findings[0];
+            assert_eq!(row.finding.id, format!("arena-{}-kept", fixture.run_id));
+            assert_eq!(row.run_finding_id, "kept");
+            assert_eq!(row.run_id, fixture.run_id);
+            assert_eq!(row.file, "file.txt");
             let run = load_run(&ArenaPaths::for_run(
                 Path::new(&fixture.er_dir),
                 &fixture.run_id,
@@ -1346,6 +1237,55 @@ mod tests {
                     ..
                 }
             ));
+        });
+    }
+
+    /// Acceptance used to re-stamp the general review's diff hash with the
+    /// run's, marking a review from another generation as matching this diff
+    /// (ADR 0035). The accepted row is visible and the review stays stale.
+    #[test]
+    fn acceptance_does_not_restamp_the_general_review() {
+        let mut fixture = fixture();
+        let storage = fixture.repo.path().to_path_buf();
+        crate::storage::with_test_storage_root(&storage, || {
+            let review_path = Path::new(&fixture.er_dir).join("review.json");
+            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+                Path::new(&fixture.er_dir),
+                json!({
+                    "version": 1,
+                    "diff_hash": "older-generation",
+                    "files": {"file.txt": {"risk":"low","findings":[{"id":"older","severity":"low","title":"Older generation finding"}]}}
+                }),
+            );
+            let before = std::fs::read(&review_path).unwrap();
+            fixture
+                .app
+                .accept_review_flow_findings(&fixture.er_dir, &fixture.run_id, vec!["kept".into()])
+                .unwrap();
+            assert_eq!(
+                std::fs::read(&review_path).unwrap(),
+                before,
+                "acceptance leaves review.json byte-identical"
+            );
+            let run = load_run(&ArenaPaths::for_run(
+                Path::new(&fixture.er_dir),
+                &fixture.run_id,
+            ))
+            .unwrap();
+            let state = crate::ai::load_ai_state(&fixture.er_dir, &run.diff_hash, None);
+            let review = state.review.expect("the general review still loads");
+            assert_eq!(
+                review.diff_hash, "older-generation",
+                "the general review keeps its generation"
+            );
+            assert!(state.is_stale, "another generation's review stays stale");
+            assert!(
+                review.files["file.txt"]
+                    .findings
+                    .iter()
+                    .any(|finding| finding.id == format!("arena-{}-kept", fixture.run_id)),
+                "the accepted row is projected alongside the older review"
+            );
         });
     }
 
@@ -1419,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn run_save_failure_rolls_back_a_new_review_when_none_existed() {
+    fn run_save_failure_rolls_back_a_new_accepted_findings_artifact() {
         let mut fixture = fixture();
         let storage = fixture.repo.path().to_path_buf();
         crate::storage::with_test_storage_root(&storage, || {
@@ -1436,36 +1376,40 @@ mod tests {
                     .contains("accepted IDs could not be saved to the run"),
                 "{error:#}"
             );
+            assert!(
+                !Path::new(&fixture.er_dir)
+                    .join("accepted-findings.json")
+                    .exists(),
+                "a failed run save removes the artifact it wrote"
+            );
             assert!(!Path::new(&fixture.er_dir).join("review.json").exists());
             assert!(load_run(&paths).unwrap().accepted_finding_ids.is_empty());
-            assert!(Path::new(&fixture.er_dir)
-                .join("flow-backups")
-                .read_dir()
-                .unwrap()
-                .next()
-                .is_some());
         });
     }
 
     #[test]
-    fn run_save_failure_restores_same_generation_review_byte_for_byte() {
+    fn run_save_failure_restores_a_previous_accepted_findings_artifact_byte_for_byte() {
         let mut fixture = fixture();
         let storage = fixture.repo.path().to_path_buf();
         crate::storage::with_test_storage_root(&storage, || {
             let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
-            let run = load_run(&paths).unwrap();
-            let review_path = Path::new(&fixture.er_dir).join("review.json");
-            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+            crate::test_support::write_sidecar_json::<crate::ai::accepted_findings::AcceptedFindings>(
                 Path::new(&fixture.er_dir),
                 json!({
                     "version": 1,
-                    "diff_hash": run.diff_hash,
-                    "base_branch": "main",
-                    "head_branch": "feature",
-                    "files": {"legacy.rs": {"risk":"medium","findings":[{"id":"legacy","severity":"medium","title":"Existing finding"}]}}
+                    "findings": [{
+                        "file": "legacy.rs",
+                        "run_finding_id": "legacy",
+                        "run_id": "older-run",
+                        "run_diff_hash": "older",
+                        "accepted_at": "t0",
+                        "providers": [],
+                        "finding": {"id": "arena-older-run-legacy", "severity": "medium", "title": "Older finding"}
+                    }]
                 }),
             );
-            let original = std::fs::read(&review_path).unwrap();
+            let artifact_path = Path::new(&fixture.er_dir).join("accepted-findings.json");
+            let original = std::fs::read(&artifact_path).unwrap();
             let _fail_save = fail_run_save(&paths);
 
             let error = fixture
@@ -1478,7 +1422,7 @@ mod tests {
                     .contains("accepted IDs could not be saved to the run"),
                 "{error:#}"
             );
-            assert_eq!(std::fs::read(review_path).unwrap(), original);
+            assert_eq!(std::fs::read(artifact_path).unwrap(), original);
             assert!(load_run(&paths).unwrap().accepted_finding_ids.is_empty());
         });
     }
