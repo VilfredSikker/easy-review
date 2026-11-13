@@ -154,6 +154,107 @@ mod tests {
     }
 
     #[test]
+    fn every_production_kind_is_written_with_its_kind_and_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        macro_rules! check {
+            ($ty:ty, $slot:expr, $payload:expr) => {{
+                let value: $ty = serde_json::from_value($payload).unwrap();
+                crate::test_support::write_sidecar_slot(dir.path(), $slot, &value);
+                let key = er_store::ArtifactKey::<$ty>::new(
+                    er_store::Scope::dir(dir.path()).unwrap(),
+                    $slot,
+                )
+                .unwrap();
+                let raw: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(er_store::ArtifactStore::new(dir.path()).path(&key)).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(raw["kind"], <$ty as er_store::Artifact>::KIND);
+                assert_eq!(
+                    raw["version"].as_u64(),
+                    Some(u64::from(<$ty as er_store::Artifact>::VERSION))
+                );
+                assert_eq!(raw["payload"], serde_json::to_value(&value).unwrap());
+            }};
+        }
+        check!(
+            crate::ai::ErReview,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h", "files": {}})
+        );
+        check!(
+            crate::ai::ExpertReview,
+            er_store::ExpertId::new("security").unwrap(),
+            serde_json::json!({"version": 1, "expert_id": "security", "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::ProfessorReview,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::TriageReview,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::ErTour,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::ErQuestions,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::ErNotes,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::ErGithubComments,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::ArbiterReview,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::ErOrder,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::ErChecklist,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::ValidationReview,
+            (),
+            serde_json::json!({"version": 1, "diff_hash": "h"})
+        );
+        check!(
+            crate::ai::ScopedReview,
+            (),
+            serde_json::json!({"version": 1})
+        );
+        check!(
+            crate::ai::ScopedProfessorReview,
+            (),
+            serde_json::json!({"version": 1})
+        );
+        check!(
+            crate::ai::ScopedExpertReview,
+            er_store::ExpertId::new("security").unwrap(),
+            serde_json::json!({"version": 1, "expert_id": "security"})
+        );
+    }
+
+    #[test]
     fn registering_a_kind_twice_fails() {
         let mut registry = registry();
         assert!(crate::ai::annotation_store::register(&mut registry).is_err());

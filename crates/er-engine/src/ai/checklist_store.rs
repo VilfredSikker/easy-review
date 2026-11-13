@@ -1,13 +1,15 @@
 //! The single reader for `order.json` and the reader/writer for
 //! `checklist.json`, on top of [`er_store::ArtifactStore`].
 //!
-//! Both stay `Bare` in 1.0: the agent writes them in place, so the bytes on
-//! disk do not change. The host only rewrites the `checked` flags.
+//! The agent authors both files, but it hands them over as staged output
+//! rather than writing the store path: an unenveloped payload reads as
+//! unreadable, and only the store's own write adds the envelope. The host
+//! rewrites the `checked` flags through that same write.
 
 use std::path::PathBuf;
 
 use er_store::{
-    Artifact, ArtifactKey, ArtifactStore, Loaded, Mode, Registry, Scope, StoreError, UpdateError,
+    Artifact, ArtifactKey, ArtifactStore, Loaded, Registry, Scope, StoreError, UpdateError,
     DEFAULT_LOCK_TIMEOUT,
 };
 
@@ -16,7 +18,6 @@ use crate::ai::{ErChecklist, ErOrder};
 impl Artifact for ErOrder {
     const KIND: &'static str = "order";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "order.json";
     type Slot = ();
 
@@ -28,7 +29,6 @@ impl Artifact for ErOrder {
 impl Artifact for ErChecklist {
     const KIND: &'static str = "checklist";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "checklist.json";
     type Slot = ();
 
@@ -139,19 +139,20 @@ mod tests {
     }
 
     #[test]
-    fn toggle_writes_the_same_bytes_as_before() {
+    fn toggle_writes_an_envelope_with_the_toggled_item() {
         let tmp = TempDir::new().unwrap();
         let (store, scope) = store_and_scope(&tmp);
         let path = store.path(&key::<ErChecklist>(&scope).unwrap());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, serde_json::to_string_pretty(&checklist()).unwrap()).unwrap();
+        crate::test_support::write_sidecar(tmp.path(), &checklist());
 
         set_checked(&store, &scope, "c1", true).unwrap();
 
         let mut expected = checklist();
         expected.items[0].checked = true;
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(raw, serde_json::to_string_pretty(&expected).unwrap());
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["kind"], "checklist");
+        assert_eq!(raw["payload"], serde_json::to_value(&expected).unwrap());
     }
 
     #[test]
@@ -217,7 +218,7 @@ mod tests {
         let (store, scope) = store_and_scope(&tmp);
         let path = store.path(&key::<ErChecklist>(&scope).unwrap());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let newer = r#"{"version":99,"diff_hash":"hash","items":[{"id":"c1","text":"first"}]}"#;
+        let newer = r#"{"kind":"checklist","version":99,"diff_hash":null,"producer":"host","written_at":"2026-11-13T00:00:00Z","payload":{"version":1,"diff_hash":"hash","items":[{"id":"c1","text":"first"}]}}"#;
         std::fs::write(&path, newer).unwrap();
 
         let error = set_checked(&store, &scope, "c1", true).unwrap_err();

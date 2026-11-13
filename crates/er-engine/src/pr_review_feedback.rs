@@ -820,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn an_mcp_reply_to_a_question_writes_todays_bytes() {
+    fn an_mcp_reply_to_a_question_is_written_in_an_envelope() {
         with_storage_root(|| {
             let dir = tempfile::tempdir().unwrap();
             let er_dir = dir.path().to_string_lossy().to_string();
@@ -833,9 +833,12 @@ mod tests {
 
             reply_to_question_in_dir(&er_dir, "q-root", "Because.", None).unwrap();
 
-            let raw = std::fs::read_to_string(Path::new(&er_dir).join("questions.json")).unwrap();
-            let stored: ErQuestions = serde_json::from_str(&raw).unwrap();
-            assert_eq!(raw, serde_json::to_string_pretty(&stored).unwrap());
+            let raw: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(Path::new(&er_dir).join("questions.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(raw["kind"], "questions");
+            let stored: ErQuestions = serde_json::from_value(raw["payload"].clone()).unwrap();
             assert_eq!(stored.questions.len(), 2);
             assert_eq!(stored.questions[1].in_reply_to.as_deref(), Some("q-root"));
         });

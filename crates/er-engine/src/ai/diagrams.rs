@@ -57,7 +57,6 @@ pub struct ErDiagram {
 impl er_store::Artifact for ErDiagram {
     const KIND: &'static str = "diagram";
     const VERSION: u32 = 1;
-    const MODE: er_store::Mode = er_store::Mode::Enveloped;
     const FILE: &'static str = "diagrams/{slot}.json";
     type Slot = er_store::DiagramId;
 

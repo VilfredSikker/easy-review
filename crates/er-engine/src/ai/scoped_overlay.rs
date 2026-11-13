@@ -17,7 +17,7 @@ use super::identity::finding_key;
 use super::professor::{ProfessorFileReview, ProfessorReview, PROFESSOR_ID_PREFIX};
 use super::review::{ErFileReview, ErReview, Finding};
 use super::validation::ValidationReview;
-use er_store::{Artifact, ArtifactKey, ArtifactStore, ExpertId, Mode, Scope};
+use er_store::{Artifact, ArtifactKey, ArtifactStore, ExpertId, Scope};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -112,7 +112,6 @@ pub struct ScopedRunStamp {
 impl Artifact for ScopedReview {
     const KIND: &'static str = "scoped-general";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "scoped/general.json";
     type Slot = ();
 
@@ -124,7 +123,6 @@ impl Artifact for ScopedReview {
 impl Artifact for ScopedProfessorReview {
     const KIND: &'static str = "scoped-professor";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "scoped/professor.json";
     type Slot = ();
 
@@ -136,7 +134,6 @@ impl Artifact for ScopedProfessorReview {
 impl Artifact for ScopedExpertReview {
     const KIND: &'static str = "scoped-expert";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "scoped/experts/{slot}.json";
     type Slot = ExpertId;
 
@@ -627,8 +624,13 @@ fn previous_identity_matches(
     base_diff_hash == stamp.base_diff_hash && base_created_at == stamp.base_created_at
 }
 
-fn read_previous<T: serde::de::DeserializeOwned>(stamp: &ScopedRunStamp) -> Option<T> {
-    serde_json::from_slice(stamp.previous_overlay.as_deref()?).ok()
+fn read_previous<T: Artifact>(stamp: &ScopedRunStamp) -> Option<T> {
+    let bytes = stamp.previous_overlay.as_deref()?;
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    match er_store::envelope::parse::<T>(value) {
+        er_store::Loaded::Found(stored) => Some(stored.value),
+        _ => None,
+    }
 }
 
 /// One stamp's read-merge-write, under the store lock.
@@ -2163,16 +2165,24 @@ mod tests {
                 ],
                 &["src/a.rs", "src/b.rs"],
             );
+            // The spawn-time capture holds the file's stored bytes, so build it
+            // by writing the previous overlay and reading what the store wrote.
+            write_sidecar(
+                &dir,
+                &scoped(
+                    vec![
+                        ("src/a.rs", vec![finding("scoped-a", "A old", 1)]),
+                        ("src/b.rs", vec![finding("scoped-b", "B old", 2)]),
+                        ("src/c.rs", vec![finding("scoped-c", "C", 3)]),
+                    ],
+                    &["src/a.rs", "src/b.rs", "src/c.rs"],
+                ),
+            );
+            let previous_key =
+                ArtifactKey::<ScopedReview>::new(Scope::dir(&dir).unwrap(), ()).unwrap();
+            let previous =
+                std::fs::read(crate::store_registry::store().path(&previous_key)).unwrap();
             write_sidecar(&dir, &agent);
-            let previous = serde_json::to_vec(&scoped(
-                vec![
-                    ("src/a.rs", vec![finding("scoped-a", "A old", 1)]),
-                    ("src/b.rs", vec![finding("scoped-b", "B old", 2)]),
-                    ("src/c.rs", vec![finding("scoped-c", "C", 3)]),
-                ],
-                &["src/a.rs", "src/b.rs", "src/c.rs"],
-            ))
-            .unwrap();
             let er_dir = dir.to_string_lossy().into_owned();
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
 

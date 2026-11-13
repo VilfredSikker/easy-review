@@ -909,7 +909,7 @@ mod tests {
 #[cfg(test)]
 mod store_scope_tests {
     use super::{pr_bucket_dir, storage_root, view_bucket_dir, with_test_storage_root};
-    use er_store::{Artifact, ArtifactKey, ArtifactStore, BranchView, Mode, Scope, Slug};
+    use er_store::{Artifact, ArtifactKey, ArtifactStore, BranchView, Scope, Slug};
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
 
@@ -922,7 +922,6 @@ mod store_scope_tests {
     impl Artifact for ScopeTestArtifact {
         const KIND: &'static str = "scope-test";
         const VERSION: u32 = 1;
-        const MODE: Mode = Mode::Bare;
         const FILE: &'static str = "scope-test.json";
         type Slot = ();
     }

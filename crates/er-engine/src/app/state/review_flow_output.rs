@@ -444,9 +444,13 @@ mod tests {
             backup.restore().unwrap();
 
             let current: ErReview = crate::test_support::read_sidecar(root);
-            let archived: ErReview =
+            let archived = match er_store::envelope::parse::<ErReview>(
                 serde_json::from_slice(&std::fs::read(backup.archive_path().unwrap()).unwrap())
-                    .unwrap();
+                    .unwrap(),
+            ) {
+                er_store::Loaded::Found(stored) => stored.value,
+                other => panic!("the backup holds a stored review, got {other:?}"),
+            };
             assert_eq!(current.diff_hash, "new");
             assert_eq!(archived.diff_hash, "old");
         });

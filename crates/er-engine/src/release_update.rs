@@ -4,7 +4,7 @@
 //! `gh` login. See `docs/adr/0043-in-app-updates.md`.
 
 use anyhow::{anyhow, bail, Context, Result};
-use er_store::{Artifact, Loaded, Mode};
+use er_store::{Artifact, Loaded};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -150,7 +150,6 @@ pub(crate) struct CheckCache {
 impl Artifact for CheckCache {
     const KIND: &'static str = "update-check";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "update-check.json";
     type Slot = ();
 }

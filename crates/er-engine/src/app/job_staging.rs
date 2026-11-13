@@ -91,15 +91,19 @@ impl JobStaging {
     pub fn stage_update_inputs(&self, er_dir: &str, files: &[&str]) -> std::io::Result<()> {
         for name in files {
             let source = Path::new(er_dir).join(name);
-            if !source.is_file() {
+            let Ok(bytes) = std::fs::read(&source) else {
                 continue;
-            }
-            std::fs::copy(&source, self.root.join(name))?;
+            };
+            // Staging is the agent's input and output format. Seeding the
+            // envelope would make the agent rewrite one and the commit path
+            // parse it as a payload, so only the payload crosses over.
+            let payload = payload_only(&bytes);
+            std::fs::write(self.root.join(name), &payload)?;
             let base = self.root.join(".base").join(name);
             if let Some(parent) = base.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(&source, base)?;
+            std::fs::write(base, &payload)?;
         }
         Ok(())
     }
@@ -148,6 +152,22 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The agent-facing payload of a stored file: the envelope's `payload` when
+/// there is one, the bytes themselves otherwise.
+fn payload_only(bytes: &[u8]) -> Vec<u8> {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return bytes.to_vec();
+    };
+    let payload = value
+        .as_object()
+        .and_then(|object| object.get("payload"))
+        .cloned();
+    match payload {
+        Some(payload) => serde_json::to_vec_pretty(&payload).unwrap_or_else(|_| bytes.to_vec()),
+        None => bytes.to_vec(),
+    }
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@
 //! newer build survives a read-modify-write by this one.
 
 use anyhow::{bail, Context, Result};
-use er_store::{Artifact, ArtifactKey, Loaded, Mode, UpdateError};
+use er_store::{Artifact, ArtifactKey, Loaded, UpdateError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -101,7 +101,6 @@ pub struct SavedPrEntry {
 impl Artifact for ProjectsFile {
     const KIND: &'static str = "projects";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "projects.json";
     type Slot = ();
 }

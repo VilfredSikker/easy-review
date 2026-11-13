@@ -281,7 +281,6 @@ pub struct ExpertFileReview {
 impl er_store::Artifact for ExpertReview {
     const KIND: &'static str = "expert";
     const VERSION: u32 = 1;
-    const MODE: er_store::Mode = er_store::Mode::Bare;
     const FILE: &'static str = "experts/{slot}.json";
     type Slot = ExpertId;
 

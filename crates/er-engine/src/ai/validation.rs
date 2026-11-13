@@ -1,13 +1,15 @@
 //! `validation.json`: the validate pass's outcomes, applied to the projection
 //! between provenance and the arbiter.
 //!
-//! The file is agent-written and bare (D5), so its freshness lives in the
-//! projection, not in the store: a file is applied only when it names the same
-//! diff hash and the same review generation it read.
+//! The agent writes this file into the job's staging directory; the host
+//! commits it through the store, which adds the envelope. A direct write into
+//! the bucket would leave the payload unenveloped and unreadable. Its freshness
+//! lives in the projection, not in the store: a file is applied only when it
+//! names the same diff hash and the same review generation it read.
 
 use super::identity::finding_key;
 use super::review::{Confidence, ErReview, EvidenceItem};
-use er_store::{Artifact, Mode};
+use er_store::Artifact;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -77,7 +79,6 @@ pub struct ValidationEffect {
 impl Artifact for ValidationReview {
     const KIND: &'static str = "validation";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Bare;
     const FILE: &'static str = "validation.json";
     type Slot = ();
 

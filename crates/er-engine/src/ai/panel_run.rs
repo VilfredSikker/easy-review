@@ -7,7 +7,7 @@
 //! measurement costs nothing extra because the votes it reads were already
 //! parsed to grade the findings; no second arbiter call is made.
 
-use er_store::{Artifact, ArtifactKey, ArtifactStore, Mode, Scope};
+use er_store::{Artifact, ArtifactKey, ArtifactStore, Scope};
 use serde::{Deserialize, Serialize};
 
 /// The claims a round backs with a quorum: two or more distinct reviewers
@@ -63,7 +63,6 @@ pub struct PanelRun {
 impl Artifact for PanelRun {
     const KIND: &'static str = "panel-run";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "panel-run.json";
     type Slot = ();
 
