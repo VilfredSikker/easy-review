@@ -13,8 +13,8 @@ a free function, so a test can answer with `FakeGitHub`.
 - A new `gh` command is a new `GitHub` trait method, its `CliGitHub` method, its
   `FakeGitHub` slot and a `ScriptedRunner` test, all in the PR that needs it.
   Never spawn `gh` from a caller: the `er::gh_spawn` gate fails the build.
-- The method goes in the concern module it serves — checkout, diff, commits,
-  comments, overview, repo or lookup — not in `cli.rs` and not in a new file per
+- The method goes in the concern module it serves, beside that module's other
+  `impl CliGitHub` methods. It does not go in `cli.rs` or in a new file per
   command. `cli.rs` keeps the runner, the caches and the trait forwarding; a
   module that outgrows its concern splits along the groups the cohesion lint
   names, in its own change.
