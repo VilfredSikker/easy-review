@@ -12630,7 +12630,6 @@ mod tests {
         let storage = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(storage.path(), || {
             let q_path = tmp.path().join("questions.json");
-            let gc_path = tmp.path().join("github-comments.json");
             let questions = ErQuestions {
                 version: 1,
                 diff_hash: "x".to_string(),
@@ -12659,8 +12658,11 @@ mod tests {
                     ai_action: None,
                 }],
             };
-            std::fs::write(&q_path, serde_json::to_string_pretty(&questions).unwrap()).unwrap();
-            std::fs::write(&gc_path, r#"{"version":1,"diff_hash":"x","comments":[]}"#).unwrap();
+            er_engine::test_support::write_sidecar(tmp.path(), &questions);
+            er_engine::test_support::write_sidecar_json::<ErGithubComments>(
+                tmp.path(),
+                serde_json::json!({"version": 1, "diff_hash": "x", "comments": []}),
+            );
 
             let changed = mark_thread_resolved_in_files(
                 "q-1",
@@ -12669,8 +12671,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(changed, Some(q_path.to_string_lossy().to_string()));
-            let updated: ErQuestions =
-                serde_json::from_str(&std::fs::read_to_string(&q_path).unwrap()).unwrap();
+            let updated: ErQuestions = er_engine::test_support::read_sidecar(tmp.path());
             assert!(updated.questions[0].resolved);
         });
     }
@@ -12680,9 +12681,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(storage.path(), || {
-            let q_path = tmp.path().join("questions.json");
             let gc_path = tmp.path().join("github-comments.json");
-            std::fs::write(&q_path, r#"{"version":1,"diff_hash":"x","questions":[]}"#).unwrap();
+            er_engine::test_support::write_sidecar_json::<ErQuestions>(
+                tmp.path(),
+                serde_json::json!({"version": 1, "diff_hash": "x", "questions": []}),
+            );
             let comments = ErGithubComments {
                 version: 1,
                 diff_hash: "x".to_string(),
@@ -12713,7 +12716,7 @@ mod tests {
                     side: "RIGHT".to_string(),
                 }],
             };
-            std::fs::write(&gc_path, serde_json::to_string_pretty(&comments).unwrap()).unwrap();
+            er_engine::test_support::write_sidecar(tmp.path(), &comments);
 
             let changed = mark_thread_resolved_in_files(
                 "c-1",
@@ -12722,8 +12725,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(changed, Some(gc_path.to_string_lossy().to_string()));
-            let updated: ErGithubComments =
-                serde_json::from_str(&std::fs::read_to_string(&gc_path).unwrap()).unwrap();
+            let updated: ErGithubComments = er_engine::test_support::read_sidecar(tmp.path());
             assert!(updated.comments[0].resolved);
         });
     }
@@ -13140,7 +13142,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(storage.path(), || {
-            std::fs::write(dir.path().join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim","confidence":"tentative"}]}}}"#).unwrap();
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+                dir.path(),
+                serde_json::json!({
+                    "version": 1, "diff_hash": "hash",
+                    "files": {"a.rs": {"risk": "medium", "findings": [
+                        {"id": "f", "severity": "medium", "title": "claim", "confidence": "tentative"}
+                    ]}}
+                }),
+            );
             let mut app = make_app_with_n_tabs(1);
             app.tab_mut().ai =
                 er_engine::ai::load_ai_state(dir.path().to_str().unwrap(), "hash", None);
@@ -13165,13 +13175,21 @@ mod tests {
         let storage = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(storage.path(), || {
             let er_dir = dir.path().join(".er");
-            std::fs::create_dir_all(&er_dir).unwrap();
-            std::fs::write(er_dir.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim","confidence":"tentative"}]}}}"#).unwrap();
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+                &er_dir,
+                serde_json::json!({
+                    "version": 1, "diff_hash": "hash",
+                    "files": {"a.rs": {"risk": "medium", "findings": [
+                        {"id": "f", "severity": "medium", "title": "claim", "confidence": "tentative"}
+                    ]}}
+                }),
+            );
             let key = er_engine::ai::finding_key("a.rs", None, "claim");
-            let overlay = |provider| {
-                serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[{"id":key,"verdict":"escalated","rationale":"same","providers":[provider]}]}).to_string()
-            };
-            std::fs::write(er_dir.join("arbiter.json"), overlay("first")).unwrap();
+            let overlay = |provider| serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[{"id":key,"verdict":"escalated","rationale":"same","providers":[provider]}]});
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ArbiterReview>(
+                &er_dir,
+                overlay("first"),
+            );
             let mut app = make_app_with_n_tabs(1);
             app.tab_mut().er_root =
                 er_engine::paths::ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
@@ -13182,7 +13200,10 @@ mod tests {
                 app.tab().ai.review.as_ref().unwrap().files["a.rs"].findings[0].providers,
                 vec!["first"]
             );
-            std::fs::write(er_dir.join("arbiter.json"), overlay("second")).unwrap();
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ArbiterReview>(
+                &er_dir,
+                overlay("second"),
+            );
             assert!(app.tab_mut().check_ai_files_changed());
             assert_eq!(
                 app.tab().ai.review.as_ref().unwrap().files["a.rs"].findings[0].providers,
@@ -13952,7 +13973,6 @@ mod tests {
                 app.tab_mut().remote_repo = Some("owner/repo".to_string());
                 app.tab_mut().pr_number = Some(7);
                 let er_dir = app.tab().er_dir();
-                std::fs::create_dir_all(&er_dir).unwrap();
                 questions_path = std::path::Path::new(&er_dir).join("questions.json");
                 let payload: er_engine::ai::ErQuestions =
                     serde_json::from_value(serde_json::json!({
@@ -13970,11 +13990,7 @@ mod tests {
                         }]
                     }))
                     .unwrap();
-                std::fs::write(
-                    &questions_path,
-                    serde_json::to_string_pretty(&payload).unwrap(),
-                )
-                .unwrap();
+                er_engine::test_support::write_sidecar(std::path::Path::new(&er_dir), &payload);
                 app.tab_mut().ai.questions = Some(payload);
                 app.set_github_comment_poster(Arc::new(PostingCommentPoster));
             }
@@ -13999,7 +14015,7 @@ mod tests {
                 );
             }
             let stored: er_engine::ai::ErQuestions =
-                serde_json::from_str(&std::fs::read_to_string(&questions_path).unwrap()).unwrap();
+                er_engine::test_support::read_sidecar(questions_path.parent().unwrap());
             assert!(
                 stored.questions.iter().all(|q| q.id != "q-1"),
                 "the source question is gone from the file"
@@ -14061,10 +14077,9 @@ mod projected_review_tests {
         let dir = tempfile::tempdir().unwrap();
         er_engine::storage::with_test_storage_root(dir.path(), || {
             let bucket = dir.path().join("bucket");
-            std::fs::create_dir_all(&bucket).unwrap();
-            std::fs::write(
-                bucket.join("review.json"),
-                serde_json::to_vec(&serde_json::json!({
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+                &bucket,
+                serde_json::json!({
                     "version": 1, "diff_hash": "hash", "created_at": "t0",
                     "files": { "src/a.rs": { "risk": "medium", "findings": [
                         { "id": "a1", "severity": "medium", "title": "Old A", "line_start": 1 }
@@ -14073,14 +14088,11 @@ mod projected_review_tests {
                         { "id": "b1", "severity": "medium", "title": "Resolved B", "line_start": 2 }
                     ] }
                 }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            std::fs::create_dir_all(bucket.join("scoped/experts")).unwrap();
-            std::fs::write(
-                bucket.join("scoped/general.json"),
-                serde_json::to_vec(&serde_json::json!({
+                }),
+            );
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ScopedReview>(
+                &bucket,
+                serde_json::json!({
                     "version": 1, "diff_hash": "hash", "created_at": "t1",
                     "files": { "src/a.rs": { "risk": "medium", "findings": [
                         { "id": "n1", "severity": "medium", "title": "New A", "line_start": 5 }
@@ -14089,21 +14101,17 @@ mod projected_review_tests {
                     "base_diff_hash": "hash",
                     "base_created_at": "t0",
                     "host_stamped": true
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
             let key = er_engine::ai::identity::finding_key("src/b.rs", Some(2), "Resolved B");
-            std::fs::write(
-                bucket.join("validation.json"),
-                serde_json::to_vec(&serde_json::json!({
+            er_engine::test_support::write_sidecar_json::<er_engine::ai::ValidationReview>(
+                &bucket,
+                serde_json::json!({
                     "version": 1, "diff_hash": "hash", "review_created_at": "t0",
                     "created_at": "t1",
                     "outcomes": [{ "key": key, "file": "src/b.rs", "result": "resolved" }]
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
 
             let mut app = er_engine::app::App::new_for_test(Vec::new());
             app.tab_mut().er_root =

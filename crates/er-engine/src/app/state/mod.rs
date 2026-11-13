@@ -9854,6 +9854,7 @@ mod tests {
     use super::*;
     use crate::ai::AiState;
     use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
+    use crate::test_support::{write_sidecar, write_sidecar_json};
     use std::collections::{HashMap, HashSet};
 
     #[test]
@@ -10940,7 +10941,6 @@ mod tests {
             tab.diff_hash = "current-hash".to_string();
             let er_dir = tab.er_dir();
             std::fs::create_dir_all(&er_dir).unwrap();
-            let path = std::path::Path::new(&er_dir).join("questions.json");
 
             let root = ai::PrivateAnnotation {
                 id: "q-root".into(),
@@ -10974,7 +10974,7 @@ mod tests {
                 diff_hash: "old-hash".into(),
                 questions: vec![root.clone()],
             };
-            std::fs::write(&path, serde_json::to_string_pretty(&loaded).unwrap()).unwrap();
+            write_sidecar(std::path::Path::new(&er_dir), &loaded);
             tab.ai.questions = Some(loaded);
 
             // Written after the in-memory pass, so a wholesale write would lose it.
@@ -10983,12 +10983,12 @@ mod tests {
                 diff_hash: "old-hash".into(),
                 questions: vec![root, reply],
             };
-            std::fs::write(&path, serde_json::to_string_pretty(&with_reply).unwrap()).unwrap();
+            write_sidecar(std::path::Path::new(&er_dir), &with_reply);
 
             tab.relocate_all_comments();
 
             let after: ai::ErQuestions =
-                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                crate::test_support::read_sidecar(std::path::Path::new(&er_dir));
             assert!(
                 after.questions.iter().any(|q| q.id == "q-reply"),
                 "the concurrent reply survives"
@@ -11060,32 +11060,19 @@ mod tests {
                 github: None,
                 comments: vec![make_local_comment("c-orphan")],
             };
-            std::fs::write(
-                std::path::Path::new(&er_dir).join("github-comments.json"),
-                serde_json::to_string_pretty(&orphan).unwrap(),
-            )
-            .unwrap();
+            crate::test_support::write_sidecar(std::path::Path::new(&er_dir), &orphan);
             let existing = ai::ErGithubComments {
                 version: 1,
                 diff_hash: "h".into(),
                 github: None,
                 comments: vec![make_local_comment("c-existing")],
             };
-            std::fs::write(
-                std::path::Path::new(&gh_dir).join("github-comments.json"),
-                serde_json::to_string_pretty(&existing).unwrap(),
-            )
-            .unwrap();
+            crate::test_support::write_sidecar(std::path::Path::new(&gh_dir), &existing);
 
             app.tab_mut().reload_ai_state();
 
-            let merged: ai::ErGithubComments = serde_json::from_str(
-                &std::fs::read_to_string(
-                    std::path::Path::new(&gh_dir).join("github-comments.json"),
-                )
-                .unwrap(),
-            )
-            .unwrap();
+            let merged: ai::ErGithubComments =
+                crate::test_support::read_sidecar(std::path::Path::new(&gh_dir));
             let ids: Vec<&str> = merged.comments.iter().map(|c| c.id.as_str()).collect();
             assert!(ids.contains(&"c-orphan"), "orphan migrated: {ids:?}");
             assert!(
@@ -11119,7 +11106,7 @@ mod tests {
                 github: None,
                 comments: vec![make_local_comment("c-orphan")],
             };
-            std::fs::write(&orphan_path, serde_json::to_string_pretty(&orphan).unwrap()).unwrap();
+            write_sidecar(std::path::Path::new(&er_dir), &orphan);
             // The lock can be opened; the temp write cannot be created.
             std::fs::write(gh_dir.join(".lock"), "").unwrap();
             let mut perms = std::fs::metadata(&gh_dir).unwrap().permissions();
@@ -13775,9 +13762,8 @@ mod tests {
             app.submit_comment().unwrap();
 
             // notes.json holds the new note with an n- prefixed id.
-            let content = std::fs::read_to_string(format!("{root}/.er/notes.json"))
-                .expect("notes.json should be written");
-            let notes: crate::ai::ErNotes = serde_json::from_str(&content).unwrap();
+            let notes: crate::ai::ErNotes =
+                crate::test_support::read_sidecar(std::path::Path::new(&format!("{root}/.er")));
             assert_eq!(notes.notes.len(), 1);
             assert!(
                 notes.notes[0].id.starts_with("n-"),
@@ -14069,9 +14055,8 @@ mod tests {
                     .is_none_or(|qs| qs.questions.iter().all(|q| q.id != id)),
                 "the source question is gone from memory"
             );
-            let path = std::path::Path::new(&app.tab().er_dir()).join("questions.json");
             let stored: crate::ai::ErQuestions =
-                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                crate::test_support::read_sidecar(std::path::Path::new(&app.tab().er_dir()));
             assert!(
                 stored.questions.iter().all(|q| q.id != id),
                 "the source question is gone from the file"
@@ -14273,11 +14258,10 @@ mod tests {
             tab.apply_managed_root();
             let er_dir = tab.er_dir();
             std::fs::create_dir_all(&er_dir).unwrap();
-            std::fs::write(
-            std::path::Path::new(&er_dir).join("questions.json"),
-            r#"{"version":1,"diff_hash":"hash-abc","questions":[{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}]}"#,
-        )
-        .unwrap();
+            write_sidecar_json::<crate::ai::ErQuestions>(
+                std::path::Path::new(&er_dir),
+                serde_json::json!({"version":1,"diff_hash":"hash-abc","questions":[{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}]}),
+            );
 
             // A matching preload (empty state) is adopted without reading disk.
             tab.branch_diff_hash = "hash-abc".to_string();
@@ -14412,11 +14396,10 @@ mod tests {
             .expect("stub builds");
             let er_dir = tab.er_dir();
             std::fs::create_dir_all(&er_dir).unwrap();
-            std::fs::write(
-            std::path::Path::new(&er_dir).join("questions.json"),
-            r#"{"version":1,"diff_hash":"h","questions":[{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}]}"#,
-        )
-        .unwrap();
+            write_sidecar_json::<crate::ai::ErQuestions>(
+                std::path::Path::new(&er_dir),
+                serde_json::json!({"version":1,"diff_hash":"h","questions":[{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}]}),
+            );
 
             let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
             tab.populate_pr_tab(
@@ -14569,13 +14552,10 @@ mod tests {
             tab.apply_managed_root();
             let er_dir = std::path::PathBuf::from(tab.er_dir());
             std::fs::create_dir_all(&er_dir).unwrap();
-            std::fs::write(
-            er_dir.join("questions.json"),
-            format!(
-                r#"{{"version":1,"diff_hash":"{hash}","questions":[{{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}}]}}"#
-            ),
-        )
-        .unwrap();
+            write_sidecar_json::<crate::ai::ErQuestions>(
+                &er_dir,
+                serde_json::json!({"version":1,"diff_hash": hash,"questions":[{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}]}),
+            );
 
             tab.enter_pr_diff_preloaded("head-oid-abc".to_string(), true)
                 .expect("deferred entry succeeds");
@@ -14970,8 +14950,10 @@ mod tests {
                     }
                 ]
             });
-            let path = format!("{}/github-comments.json", er_dir);
-            std::fs::write(&path, serde_json::to_string(&comments_json).unwrap()).unwrap();
+            write_sidecar_json::<crate::ai::ErGithubComments>(
+                std::path::Path::new(&er_dir),
+                comments_json,
+            );
 
             let mut tab = TabState::new_for_test(vec![]);
             tab.repo_root = repo_root.clone();
@@ -16370,25 +16352,26 @@ mod tests {
             tab.er_root = ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
             let er_dir = std::path::PathBuf::from(tab.er_dir());
             std::fs::create_dir_all(&er_dir).unwrap();
-            std::fs::write(
-                er_dir.join("review.json"),
-                r#"{"version":1,"diff_hash":"hash","files":{}}"#,
-            )
-            .unwrap();
+            write_sidecar_json::<crate::ai::ErReview>(
+                &er_dir,
+                serde_json::json!({"version":1,"diff_hash":"hash","files":{}}),
+            );
             tab.branch_diff_hash = "hash".into();
             tab.reload_ai_state();
             assert!(!tab.check_ai_files_changed());
 
             let arbiter = er_dir.join("arbiter.json");
-            std::fs::write(
-                &arbiter,
-                r#"{"version":1,"diff_hash":"hash","verdicts":[]}"#,
-            )
-            .unwrap();
+            write_sidecar_json::<crate::ai::arbiter::ArbiterReview>(
+                &er_dir,
+                serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[]}),
+            );
             assert!(tab.check_ai_files_changed(), "creation must reload");
             assert!(!tab.check_ai_files_changed());
 
-            std::fs::write(&arbiter, r#"{"version":1,"diff_hash":"old","verdicts":[]}"#).unwrap();
+            write_sidecar_json::<crate::ai::arbiter::ArbiterReview>(
+                &er_dir,
+                serde_json::json!({"version":1,"diff_hash":"old","verdicts":[]}),
+            );
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .open(&arbiter)
@@ -16464,11 +16447,10 @@ mod tests {
 
             std::fs::write(er_dir.join("review.json"), r#"{"head_branch":"feature"}"#).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(20));
-            std::fs::write(
-                er_dir.join("questions.json"),
-                r#"{"version":1,"diff_hash":"x","questions":[]}"#,
-            )
-            .unwrap();
+            write_sidecar_json::<crate::ai::ErQuestions>(
+                &er_dir,
+                serde_json::json!({"version":1,"diff_hash":"x","questions":[]}),
+            );
             tab.mark_sidecar_written(er_dir.join("questions.json").to_str().unwrap());
 
             assert!(
@@ -16612,15 +16594,13 @@ mod tests {
 
     fn write_tour_json(dir: &str, diff_hash: &str, title: &str) {
         std::fs::create_dir_all(dir).unwrap();
-        let tour = serde_json::json!({
-            "version": 1, "diff_hash": diff_hash, "title": title,
-            "pillars": [{"id": "p1", "title": "P1"}]
-        });
-        std::fs::write(
-            format!("{dir}/tour.json"),
-            serde_json::to_string(&tour).unwrap(),
-        )
-        .unwrap();
+        write_sidecar_json::<crate::ai::ErTour>(
+            std::path::Path::new(dir),
+            serde_json::json!({
+                "version": 1, "diff_hash": diff_hash, "title": title,
+                "pillars": [{"id": "p1", "title": "P1"}]
+            }),
+        );
     }
 
     /// Local PR tab backed by a real git repo with a GitHub origin, so
@@ -16736,11 +16716,7 @@ mod tests {
                     "source": "github", "author": "o", "resolved": false
                 }]
             });
-            std::fs::write(
-                format!("{pr_dir}/github-comments.json"),
-                serde_json::to_string(&gc).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<crate::ai::ErGithubComments>(std::path::Path::new(&pr_dir), gc);
 
             tab.reload_ai_state();
             assert!(
@@ -16808,15 +16784,13 @@ mod tests {
 
             let branch_dir = tab.branch_bucket_er_dir().unwrap();
             std::fs::create_dir_all(&branch_dir).unwrap();
-            let tour = serde_json::json!({
-                "version": 1, "diff_hash": "x",
-                "pillars": [{"id": "p1", "title": "P1"}]
-            });
-            std::fs::write(
-                format!("{branch_dir}/tour.json"),
-                serde_json::to_string(&tour).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<crate::ai::ErTour>(
+                std::path::Path::new(&branch_dir),
+                serde_json::json!({
+                    "version": 1, "diff_hash": "x",
+                    "pillars": [{"id": "p1", "title": "P1"}]
+                }),
+            );
 
             tab.reload_ai_state();
             assert!(
@@ -16901,11 +16875,7 @@ mod tests {
                     "source": "github", "author": "octocat", "resolved": false
                 }]
             });
-            std::fs::write(
-                format!("{pr_dir}/github-comments.json"),
-                serde_json::to_string(&gc).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<crate::ai::ErGithubComments>(std::path::Path::new(&pr_dir), gc);
 
             // Branch view: github comments load from the PR bucket (shared).
             tab.reload_ai_state();

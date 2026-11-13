@@ -5634,16 +5634,14 @@ mod background_queue_tests {
     fn seeded_bucket(tmp: &std::path::Path) -> (std::path::PathBuf, BackgroundTaskTarget) {
         let bucket = tmp.join("bucket");
         std::fs::create_dir_all(bucket.join("scoped/experts")).unwrap();
-        std::fs::write(
-            bucket.join("scoped/general.json"),
-            r#"{"version":1,"files":{}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            bucket.join("validation.json"),
-            r#"{"version":1,"outcomes":[]}"#,
-        )
-        .unwrap();
+        crate::test_support::write_sidecar_json::<crate::ai::scoped_overlay::ScopedReview>(
+            &bucket,
+            serde_json::json!({"version":1,"files":{}}),
+        );
+        crate::test_support::write_sidecar_json::<crate::ai::validation::ValidationReview>(
+            &bucket,
+            serde_json::json!({"version":1,"outcomes":[]}),
+        );
         std::fs::write(bucket.join("review-files.txt"), "src/a.rs\n").unwrap();
         let target = BackgroundTaskTarget {
             repo_root: tmp.to_string_lossy().to_string(),
@@ -6232,16 +6230,14 @@ mod background_queue_tests {
         let current = tmp.path().join("current");
         std::fs::create_dir_all(spawned.join("scoped/experts")).unwrap();
         std::fs::create_dir_all(&current).unwrap();
-        std::fs::write(
-            spawned.join("scoped/general.json"),
-            r#"{"version":1,"files":{}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            spawned.join("validation.json"),
-            r#"{"version":1,"outcomes":[]}"#,
-        )
-        .unwrap();
+        crate::test_support::write_sidecar_json::<crate::ai::scoped_overlay::ScopedReview>(
+            &spawned,
+            serde_json::json!({"version":1,"files":{}}),
+        );
+        crate::test_support::write_sidecar_json::<crate::ai::validation::ValidationReview>(
+            &spawned,
+            serde_json::json!({"version":1,"outcomes":[]}),
+        );
         std::fs::write(spawned.join("review-files.txt"), "src/a.rs\n").unwrap();
         std::fs::write(current.join("review-files.txt"), "src/b.rs\n").unwrap();
 
@@ -6993,15 +6989,13 @@ mod background_queue_tests {
             }
             let er_dir = app.tab().er_dir();
             std::fs::create_dir_all(&er_dir).unwrap();
-            let q_path = format!("{er_dir}/questions.json");
-            std::fs::write(
-            &q_path,
-            r#"{"version":1,"diff_hash":"h","questions":[
-                {"id":"q-1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false},
-                {"id":"q-2","file":"x","hunk_index":0,"line_start":2,"line_content":"c","text":"other","resolved":false}
-            ]}"#,
-        )
-        .unwrap();
+            crate::test_support::write_sidecar_json::<crate::ai::ErQuestions>(
+                std::path::Path::new(&er_dir),
+                serde_json::json!({"version":1,"diff_hash":"h","questions":[
+                    {"id":"q-1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false},
+                    {"id":"q-2","file":"x","hunk_index":0,"line_start":2,"line_content":"c","text":"other","resolved":false}
+                ]}),
+            );
             app.tab_mut().reload_ai_state();
             assert_eq!(
                 app.tab().ai.questions.as_ref().map(|q| q.questions.len()),
@@ -7038,8 +7032,12 @@ mod background_queue_tests {
                 app.tab().ai.summary.is_none(),
                 "delete must not re-read unrelated sidecars"
             );
-            let on_disk = std::fs::read_to_string(&q_path).unwrap();
-            assert!(!on_disk.contains("\"q-1\"") && on_disk.contains("\"q-2\""));
+            let on_disk: crate::ai::ErQuestions =
+                crate::test_support::read_sidecar(std::path::Path::new(&er_dir));
+            assert!(
+                on_disk.questions.iter().all(|q| q.id != "q-1")
+                    && on_disk.questions.iter().any(|q| q.id == "q-2")
+            );
         });
     }
 
@@ -7093,7 +7091,7 @@ mod background_queue_tests {
                 "{message}"
             );
             let stored: crate::ai::ErQuestions =
-                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                crate::test_support::read_sidecar(std::path::Path::new(&er_dir));
             assert_eq!(stored.questions.len(), 1, "the corrupt file is replaced");
             assert_eq!(stored.questions[0].text, "Why?");
         });
@@ -7121,7 +7119,7 @@ mod background_queue_tests {
                 "{message}"
             );
             let stored: crate::ai::ErNotes =
-                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                crate::test_support::read_sidecar(std::path::Path::new(&er_dir));
             assert_eq!(stored.notes.len(), 1, "the corrupt file is replaced");
             assert_eq!(stored.notes[0].text, "Do this");
         });
@@ -7150,7 +7148,7 @@ mod background_queue_tests {
                 "{message}"
             );
             let stored: crate::ai::ErGithubComments =
-                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                crate::test_support::read_sidecar(std::path::Path::new(&er_dir));
             assert_eq!(stored.comments.len(), 1, "the corrupt file is replaced");
             assert_eq!(stored.comments[0].comment, "Comment");
         });
@@ -7501,14 +7499,13 @@ mod checklist_toggle_tests {
         tab.er_root = ErRoot::managed(format!("{}/.er", tmp.path().to_string_lossy()));
         let er_dir = std::path::PathBuf::from(tab.er_dir());
         std::fs::create_dir_all(&er_dir).unwrap();
-        std::fs::write(
-            er_dir.join("checklist.json"),
-            r#"{"version":1,"diff_hash":"h","items":[
+        crate::test_support::write_sidecar_json::<ErChecklist>(
+            &er_dir,
+            serde_json::json!({"version":1,"diff_hash":"h","items":[
                 {"id":"c-1","text":"Schema migration adds a NOT NULL column","category":"schema","checked":false,"related_findings":["f-1"],"related_files":["db/m.sql"]},
                 {"id":"c-2","text":"Retry path fails the test suite it should not","category":"tests","checked":true,"related_findings":[],"related_files":[]}
-            ]}"#,
-        )
-        .unwrap();
+            ]}),
+        );
         tab.reload_ai_state();
         app
     }
@@ -7518,8 +7515,7 @@ mod checklist_toggle_tests {
     }
 
     fn on_disk(tmp: &tempfile::TempDir) -> ErChecklist {
-        let raw = std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap();
-        serde_json::from_str(&raw).unwrap()
+        crate::test_support::read_sidecar(&tmp.path().join(".er"))
     }
 
     #[test]
@@ -7718,11 +7714,7 @@ mod github_handle_tests {
                 side: "RIGHT".into(),
             }],
         };
-        std::fs::write(
-            format!("{er_dir}/github-comments.json"),
-            serde_json::to_string_pretty(&document).unwrap(),
-        )
-        .unwrap();
+        crate::test_support::write_sidecar(std::path::Path::new(&er_dir), &document);
         (app, repo_root)
     }
 
@@ -8344,10 +8336,7 @@ mod update_job_tests {
     }
 
     fn read_questions(bucket: &str) -> Vec<(String, String)> {
-        let value: crate::ai::ErQuestions = serde_json::from_str(
-            &std::fs::read_to_string(Path::new(bucket).join("questions.json")).unwrap(),
-        )
-        .unwrap();
+        let value: crate::ai::ErQuestions = crate::test_support::read_sidecar(Path::new(bucket));
         value
             .questions
             .iter()
@@ -8367,8 +8356,7 @@ mod update_job_tests {
         let scope = er_store::Scope::dir(&fixture.bucket).unwrap();
         let key = er_store::ArtifactKey::<crate::ai::ErQuestions>::new(scope, ()).unwrap();
         let mut current: crate::ai::ErQuestions =
-            serde_json::from_str(&std::fs::read_to_string(fixture.path("questions.json")).unwrap())
-                .unwrap();
+            crate::test_support::read_sidecar(Path::new(&fixture.bucket));
         current.questions.push(
             serde_json::from_value(serde_json::json!({
                 "id": question.0,
@@ -8388,11 +8376,17 @@ mod update_job_tests {
     fn a_concurrent_questions_edit_survives_the_commit() {
         let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(None);
-        // The trailing newline makes the seeded bytes differ from the agent's
-        // compact rewrite, so the baseline sees a changed file; the entry
-        // values are what the merge compares.
-        let seeded = questions_json(&fixture.hash, &[("q1", "base")]);
-        std::fs::write(fixture.path("questions.json"), format!("{seeded}\n")).unwrap();
+        // The store's bytes differ from the agent's compact rewrite, so the
+        // baseline sees a changed file; the entry values are what the merge
+        // compares.
+        crate::test_support::write_sidecar_json::<crate::ai::ErQuestions>(
+            Path::new(&fixture.bucket),
+            serde_json::from_str::<serde_json::Value>(&questions_json(
+                &fixture.hash,
+                &[("q1", "base")],
+            ))
+            .unwrap(),
+        );
 
         crate::storage::with_test_storage_root(&fixture.root, || {
             let ready = fixture.root.join("ready");
@@ -8430,15 +8424,14 @@ mod update_job_tests {
         let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(Some(("questions.json", String::new())));
         // Seed after the fixture so the file carries the real hash.
-        std::fs::write(
-            fixture.path("questions.json"),
-            questions_json(&fixture.hash, &[("q1", "base")]),
-        )
-        .unwrap();
-        // Make the seeded bytes differ from the agent's rewrite below.
-        let seeded = std::fs::read_to_string(fixture.path("questions.json")).unwrap();
-        std::fs::write(fixture.path("questions.json"), format!("{seeded}\n")).unwrap();
-
+        crate::test_support::write_sidecar_json::<crate::ai::ErQuestions>(
+            Path::new(&fixture.bucket),
+            serde_json::from_str::<serde_json::Value>(&questions_json(
+                &fixture.hash,
+                &[("q1", "base")],
+            ))
+            .unwrap(),
+        );
         crate::storage::with_test_storage_root(&fixture.root, || {
             let ready = fixture.root.join("ready");
             let release = fixture.root.join("release");
@@ -8487,11 +8480,14 @@ mod update_job_tests {
     fn a_questions_job_stages_and_commits() {
         let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(Some(("questions.json", String::new())));
-        std::fs::write(
-            fixture.path("questions.json"),
-            questions_json(&fixture.hash, &[("q1", "base")]),
-        )
-        .unwrap();
+        crate::test_support::write_sidecar_json::<crate::ai::ErQuestions>(
+            Path::new(&fixture.bucket),
+            serde_json::from_str::<serde_json::Value>(&questions_json(
+                &fixture.hash,
+                &[("q1", "base")],
+            ))
+            .unwrap(),
+        );
         std::fs::write(fixture.path("questions.prev.json"), "{}\n").unwrap();
 
         crate::storage::with_test_storage_root(&fixture.root, || {
@@ -8521,11 +8517,14 @@ mod update_job_tests {
     fn a_notes_job_stages_and_commits() {
         let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(Some(("notes.json", String::new())));
-        std::fs::write(
-            fixture.path("notes.json"),
-            notes_json(&fixture.hash, &[("n1", "base")]),
-        )
-        .unwrap();
+        crate::test_support::write_sidecar_json::<crate::ai::ErNotes>(
+            Path::new(&fixture.bucket),
+            serde_json::from_str::<serde_json::Value>(&notes_json(
+                &fixture.hash,
+                &[("n1", "base")],
+            ))
+            .unwrap(),
+        );
         std::fs::write(fixture.path("notes.prev.json"), "{}\n").unwrap();
 
         crate::storage::with_test_storage_root(&fixture.root, || {
@@ -8542,8 +8541,7 @@ mod update_job_tests {
             let status = wait_for_command(&mut app, "notes");
             assert_eq!(status, CommandStatus::Done);
             let notes: crate::ai::ErNotes =
-                serde_json::from_str(&std::fs::read_to_string(fixture.path("notes.json")).unwrap())
-                    .unwrap();
+                crate::test_support::read_sidecar(Path::new(&fixture.bucket));
             assert_eq!(
                 notes.notes[0].text, "agent",
                 "the agent's notes change did not commit"
@@ -8558,11 +8556,14 @@ mod update_job_tests {
     fn a_validate_comments_job_stages_and_commits() {
         let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(Some(("github-comments.json", String::new())));
-        std::fs::write(
-            fixture.path("github-comments.json"),
-            comments_json(&fixture.hash, &[("c1", "base")]),
-        )
-        .unwrap();
+        crate::test_support::write_sidecar_json::<crate::ai::ErGithubComments>(
+            Path::new(&fixture.bucket),
+            serde_json::from_str::<serde_json::Value>(&comments_json(
+                &fixture.hash,
+                &[("c1", "base")],
+            ))
+            .unwrap(),
+        );
         std::fs::write(fixture.path("summary.md"), "# summary\n").unwrap();
 
         crate::storage::with_test_storage_root(&fixture.root, || {
@@ -8578,10 +8579,8 @@ mod update_job_tests {
 
             let status = wait_for_command(&mut app, "validate-comments");
             assert_eq!(status, CommandStatus::Done);
-            let comments: crate::ai::ErGithubComments = serde_json::from_str(
-                &std::fs::read_to_string(fixture.path("github-comments.json")).unwrap(),
-            )
-            .unwrap();
+            let comments: crate::ai::ErGithubComments =
+                crate::test_support::read_sidecar(Path::new(&fixture.bucket));
             assert_eq!(comments.comments[0].comment, "agent");
             let summary = std::fs::read_to_string(fixture.path("summary.md")).unwrap();
             assert!(summary.contains("Comment refresh: 1 resolved"), "{summary}");

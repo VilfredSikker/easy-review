@@ -563,6 +563,7 @@ mod review_flow_arena_inputs_tests {
     use super::*;
     use crate::arena::{ArenaPaths, ReviewerRef};
     use crate::config::{supplement_ai_hub, ErConfig};
+    use crate::test_support::write_sidecar_json;
     use serde_json::json;
     use std::sync::MutexGuard;
     use tempfile::tempdir;
@@ -749,18 +750,16 @@ mod review_flow_arena_inputs_tests {
             let _env = fake_arena(&app);
             let bucket = tmp.path().join("captured-bucket");
             std::fs::create_dir_all(&bucket).unwrap();
-            std::fs::write(
-                bucket.join("review.json"),
-                serde_json::to_vec(&json!({
+            write_sidecar_json::<crate::ai::ErReview>(
+                &bucket,
+                json!({
                     "version": 1, "diff_hash": "flow-hash",
                     "files": { "src/a.rs": { "risk": "medium", "findings": [{
                         "id": "general-1", "severity": "medium", "title": "general claim",
                         "description": "body", "line_start": 5
                     }] }}
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
             let lease = app
                 .acquire_review_flow_lease(bucket.to_str().unwrap())
                 .unwrap();
@@ -851,11 +850,7 @@ mod review_flow_arena_inputs_tests {
                     "description": "body", "line_start": 1
                 }] }}
             });
-            std::fs::write(
-                bucket.join("review.json"),
-                serde_json::to_vec(&review).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<crate::ai::ErReview>(&bucket, review);
             assert!(app.arena_start_seeded().unwrap().is_none());
         });
     }

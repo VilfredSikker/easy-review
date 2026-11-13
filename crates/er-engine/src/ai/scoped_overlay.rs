@@ -1070,6 +1070,7 @@ mod tests {
     use super::*;
     use crate::ai::review::{Confidence, ErFileReview, RiskLevel};
     use crate::storage::with_test_storage_root;
+    use crate::test_support::{read_sidecar, write_sidecar};
 
     fn finding(id: &str, title: &str, line: usize) -> Finding {
         Finding {
@@ -1386,7 +1387,7 @@ mod tests {
                 ],
                 &["src/a.rs", "src/b.rs"],
             );
-            std::fs::write(&path, serde_json::to_vec(&first).unwrap()).unwrap();
+            write_sidecar(&dir, &first);
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
                 base_diff_hash: String::new(),
@@ -1395,8 +1396,7 @@ mod tests {
             };
             assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
 
-            let stamped: ScopedReview =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let stamped: ScopedReview = read_sidecar(&dir);
             assert!(stamped.host_stamped);
             assert_eq!(stamped.scope_paths, vec!["src/a.rs", "src/b.rs"]);
             let a_ids: Vec<&str> = stamped.files["src/a.rs"]
@@ -1414,7 +1414,7 @@ mod tests {
                 vec![("src/c.rs", vec![finding("", "Second C", 8)])],
                 &["src/c.rs"],
             );
-            std::fs::write(&path, serde_json::to_vec(&second).unwrap()).unwrap();
+            write_sidecar(&dir, &second);
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/c.rs".to_string()],
                 base_diff_hash: String::new(),
@@ -1422,8 +1422,7 @@ mod tests {
                 previous_overlay: Some(previous),
             };
             assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
-            let merged: ScopedReview =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let merged: ScopedReview = read_sidecar(&dir);
             assert_eq!(merged.scope_paths, vec!["src/a.rs", "src/b.rs", "src/c.rs"]);
             assert!(merged.files.contains_key("src/a.rs"));
             assert!(merged.files.contains_key("src/b.rs"));
@@ -1448,7 +1447,7 @@ mod tests {
             };
 
             let first = scoped(vec![("src/a.rs", vec![finding("", "A", 1)])], &["src/a.rs"]);
-            std::fs::write(&path, serde_json::to_vec(&first).unwrap()).unwrap();
+            write_sidecar(&dir, &first);
             assert!(stamp_scoped_overlay(
                 &store,
                 &scope,
@@ -1459,13 +1458,12 @@ mod tests {
 
             let previous = std::fs::read(&path).unwrap();
             let second = scoped(vec![("src/b.rs", vec![finding("", "B", 2)])], &["src/b.rs"]);
-            std::fs::write(&path, serde_json::to_vec(&second).unwrap()).unwrap();
+            write_sidecar(&dir, &second);
             let mut second_stamp = stamp(vec!["src/b.rs".into()]);
             second_stamp.previous_overlay = Some(previous);
             assert!(stamp_scoped_overlay(&store, &scope, "review", &second_stamp).unwrap());
 
-            let merged: ScopedReview =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let merged: ScopedReview = read_sidecar(&dir);
             assert_eq!(merged.scope_paths, vec!["src/a.rs", "src/b.rs"]);
             assert_eq!(merged.files["src/a.rs"].findings[0].title, "A");
             assert_eq!(merged.files["src/b.rs"].findings[0].title, "B");
@@ -1487,11 +1485,7 @@ mod tests {
                 )],
                 &["src/a.rs"],
             );
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&overlay).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &overlay);
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/a.rs".to_string()],
                 base_diff_hash: "hash".to_string(),
@@ -1499,9 +1493,7 @@ mod tests {
                 previous_overlay: None,
             };
             assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
-            let stamped: ScopedReview =
-                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
-                    .unwrap();
+            let stamped: ScopedReview = read_sidecar(&dir);
             let ids: Vec<&str> = stamped.files["src/a.rs"]
                 .findings
                 .iter()
@@ -1528,7 +1520,7 @@ mod tests {
                 vec![("src/a.rs", vec![finding("scoped-k", "Kept", 1)])],
                 &["src/a.rs"],
             );
-            std::fs::write(&path, serde_json::to_vec(&overlay).unwrap()).unwrap();
+            write_sidecar(&dir, &overlay);
             let bytes = std::fs::read(&path).unwrap();
             let validation = ValidationReview {
                 version: 1,
@@ -1542,11 +1534,7 @@ mod tests {
                     patch: Default::default(),
                 }],
             };
-            std::fs::write(
-                dir.join("validation.json"),
-                serde_json::to_vec(&validation).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &validation);
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/a.rs".to_string()],
                 base_diff_hash: "hash".to_string(),
@@ -1555,9 +1543,7 @@ mod tests {
             };
             assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
-            let kept: ValidationReview =
-                serde_json::from_slice(&std::fs::read(dir.join("validation.json")).unwrap())
-                    .unwrap();
+            let kept: ValidationReview = read_sidecar(&dir);
             assert_eq!(
                 kept.outcomes.len(),
                 1,
@@ -1574,19 +1560,18 @@ mod tests {
             let store = crate::store_registry::store();
             let scope = Scope::dir(dir.to_str().unwrap()).unwrap();
             std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
-            let path = dir.join("scoped/general.json");
             let mut previous = scoped(
                 vec![("src/old.rs", vec![finding("", "Old", 1)])],
                 &["src/old.rs"],
             );
             previous.base_diff_hash = "older-base".to_string();
             let previous_bytes = serde_json::to_vec(&previous).unwrap();
-            std::fs::write(&path, &previous_bytes).unwrap();
+            write_sidecar(&dir, &previous);
             let agent = scoped(
                 vec![("src/new.rs", vec![finding("", "New", 2)])],
                 &["src/new.rs"],
             );
-            std::fs::write(&path, serde_json::to_vec(&agent).unwrap()).unwrap();
+            write_sidecar(&dir, &agent);
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/new.rs".to_string()],
                 base_diff_hash: "hash".to_string(),
@@ -1594,8 +1579,7 @@ mod tests {
                 previous_overlay: Some(previous_bytes),
             };
             assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
-            let merged: ScopedReview =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let merged: ScopedReview = read_sidecar(&dir);
             assert!(!merged.files.contains_key("src/old.rs"));
             assert_eq!(merged.scope_paths, vec!["src/new.rs"]);
         });
@@ -1619,11 +1603,7 @@ mod tests {
                 ],
                 &["src/b.rs"],
             );
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&agent).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &agent);
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/a.rs".to_string()],
                 base_diff_hash: "hash".to_string(),
@@ -1632,9 +1612,7 @@ mod tests {
             };
             assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
 
-            let stored: ScopedReview =
-                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
-                    .unwrap();
+            let stored: ScopedReview = read_sidecar(&dir);
             assert_eq!(
                 stored.scope_paths,
                 vec!["src/a.rs"],
@@ -1719,11 +1697,7 @@ mod tests {
                 vec![("src/a.rs", vec![finding("scoped-k", "Row", 1)])],
                 &["src/a.rs"],
             );
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&overlay).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &overlay);
             let mut edit = Some(|f: &mut Finding| -> anyhow::Result<()> {
                 f.responses.push(crate::ai::review::AiResponse {
                     id: "r1".to_string(),
@@ -1735,9 +1709,7 @@ mod tests {
                 Ok(())
             });
             assert!(with_finding_in_overlay(er_dir, "scoped-k", &mut edit).unwrap());
-            let stored: ScopedReview =
-                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
-                    .unwrap();
+            let stored: ScopedReview = read_sidecar(&dir);
             assert_eq!(
                 stored.files["src/a.rs"].findings[0].responses[0].text,
                 "answered"
@@ -1757,20 +1729,14 @@ mod tests {
                 vec![("src/a.rs", vec![finding("scoped-k", "Row", 1)])],
                 &["src/a.rs"],
             );
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&overlay).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &overlay);
             let mut edit = Some(|f: &mut Finding| -> anyhow::Result<()> {
                 f.resolved = true;
                 f.resolved_note = "fixed".to_string();
                 Ok(())
             });
             assert!(with_finding_in_overlay(er_dir, "scoped-k", &mut edit).unwrap());
-            let stored: ScopedReview =
-                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
-                    .unwrap();
+            let stored: ScopedReview = read_sidecar(&dir);
             assert!(stored.files["src/a.rs"].findings[0].resolved);
             assert_eq!(stored.files["src/a.rs"].findings[0].resolved_note, "fixed");
         });
@@ -1803,11 +1769,7 @@ mod tests {
                 base_created_at: "t0".to_string(),
                 host_stamped: true,
             };
-            std::fs::write(
-                dir.join("scoped/professor.json"),
-                serde_json::to_vec(&overlay).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &overlay);
             let mut edit = |findings: &mut Vec<Finding>, prefix: Option<&str>| {
                 if prefix != Some(PROFESSOR_ID_PREFIX) {
                     return false;
@@ -1816,9 +1778,7 @@ mod tests {
                 true
             };
             assert!(edit_finding_overlays(er_dir, &mut edit).unwrap());
-            let stored: ScopedProfessorReview =
-                serde_json::from_slice(&std::fs::read(dir.join("scoped/professor.json")).unwrap())
-                    .unwrap();
+            let stored: ScopedProfessorReview = read_sidecar(&dir);
             assert_eq!(stored.files["src/a.rs"].findings[0].description, "edited");
         });
         let _ = std::fs::remove_dir_all(dir);
@@ -1845,20 +1805,12 @@ mod tests {
                 created_at: "t1".to_string(),
                 outcomes: vec![outcome("k-a", "src/a.rs"), outcome("k-b", "src/b.rs")],
             };
-            std::fs::write(
-                dir.join("validation.json"),
-                serde_json::to_vec(&validation).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &validation);
             let agent = scoped(
                 vec![("src/a.rs", vec![finding("", "New A", 2)])],
                 &["src/a.rs"],
             );
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&agent).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &agent);
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/a.rs".to_string()],
                 base_diff_hash: "hash".to_string(),
@@ -1867,9 +1819,7 @@ mod tests {
             };
             assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
 
-            let stored: ValidationReview =
-                serde_json::from_slice(&std::fs::read(dir.join("validation.json")).unwrap())
-                    .unwrap();
+            let stored: ValidationReview = read_sidecar(&dir);
             let files: Vec<&str> = stored
                 .outcomes
                 .iter()
@@ -1891,11 +1841,7 @@ mod tests {
                 br#"{"version":1,"diff_hash":"hash","created_at":"t0","files":{}}"#;
             std::fs::write(dir.join("review.json"), review_bytes).unwrap();
             let agent = scoped(vec![("src/a.rs", vec![finding("", "A", 1)])], &["src/a.rs"]);
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&agent).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &agent);
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/a.rs".to_string()],
                 base_diff_hash: "hash".to_string(),
@@ -1970,17 +1916,12 @@ mod tests {
             let store = crate::store_registry::store();
             let scope = Scope::dir(dir.to_str().unwrap()).unwrap();
             std::fs::create_dir_all(dir.join("scoped/experts")).unwrap();
-            std::fs::write(
-                dir.join("review.json"),
-                br#"{"version":1,"diff_hash":"hash","created_at":"t0","files":{}}"#,
-            )
-            .unwrap();
+            crate::test_support::write_sidecar_json::<ErReview>(
+                &dir,
+                serde_json::json!({"version":1,"diff_hash":"hash","created_at":"t0","files":{}}),
+            );
             let agent = scoped(vec![("src/a.rs", vec![finding("", "A", 1)])], &["src/a.rs"]);
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&agent).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &agent);
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/a.rs".to_string()],
                 base_diff_hash: "hash".to_string(),
@@ -2011,11 +1952,7 @@ mod tests {
                 vec![("src/a.rs", vec![finding("", "Same row", 1)])],
                 &["src/a.rs"],
             );
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&overlay).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &overlay);
             let stamp = ScopedRunStamp {
                 scope_paths: vec!["src/a.rs".to_string()],
                 base_diff_hash: String::new(),
@@ -2024,9 +1961,7 @@ mod tests {
             };
             assert!(stamp_scoped_overlay(&store, &scope, "review", &stamp).unwrap());
 
-            let stored: ScopedReview =
-                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
-                    .unwrap();
+            let stored: ScopedReview = read_sidecar(&dir);
             let key = finding_key("src/a.rs", Some(1), "Same row");
             let overlay_id = stored.files["src/a.rs"].findings[0].id.clone();
             assert_eq!(overlay_id, format!("scoped-{key}"));
@@ -2067,11 +2002,7 @@ mod tests {
                 )],
                 &["src/a.rs"],
             );
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&overlay).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &overlay);
             let er_dir = dir.to_string_lossy().into_owned();
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
             let spawn = |id: &'static str, text: &'static str| {
@@ -2099,9 +2030,7 @@ mod tests {
             first.join().unwrap();
             second.join().unwrap();
 
-            let stored: ScopedReview =
-                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
-                    .unwrap();
+            let stored: ScopedReview = read_sidecar(&dir);
             let rows = &stored.files["src/a.rs"].findings;
             assert!(
                 rows.iter()
@@ -2129,11 +2058,7 @@ mod tests {
                 )],
                 &["src/a.rs"],
             );
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&overlay).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &overlay);
             let er_dir = dir.to_string_lossy().into_owned();
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
             let spawn = |id: &'static str| {
@@ -2156,9 +2081,7 @@ mod tests {
             first.join().unwrap();
             second.join().unwrap();
 
-            let stored: ScopedReview =
-                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
-                    .unwrap();
+            let stored: ScopedReview = read_sidecar(&dir);
             let rows = &stored.files["src/a.rs"].findings;
             assert!(rows.iter().all(|f| f.resolved), "both resolves survived");
         });
@@ -2193,11 +2116,7 @@ mod tests {
                 )],
                 &["src/a.rs"],
             );
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&overlay).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &overlay);
             let er_dir = dir.to_string_lossy().into_owned();
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
             let spawn = |id: &'static str, note: &'static str| {
@@ -2215,9 +2134,7 @@ mod tests {
             first.join().unwrap();
             second.join().unwrap();
 
-            let stored: ScopedReview =
-                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
-                    .unwrap();
+            let stored: ScopedReview = read_sidecar(&dir);
             let rows = &stored.files["src/a.rs"].findings;
             assert!(
                 rows.iter().any(|f| f.description == "first edit"),
@@ -2246,11 +2163,7 @@ mod tests {
                 ],
                 &["src/a.rs", "src/b.rs"],
             );
-            std::fs::write(
-                dir.join("scoped/general.json"),
-                serde_json::to_vec(&agent).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &agent);
             let previous = serde_json::to_vec(&scoped(
                 vec![
                     ("src/a.rs", vec![finding("scoped-a", "A old", 1)]),
@@ -2303,9 +2216,7 @@ mod tests {
             reply.join().unwrap();
             stamp.join().unwrap();
 
-            let stored: ScopedReview =
-                serde_json::from_slice(&std::fs::read(dir.join("scoped/general.json")).unwrap())
-                    .unwrap();
+            let stored: ScopedReview = read_sidecar(&dir);
             assert!(
                 stored.files.contains_key("src/c.rs"),
                 "the stamp restored the path the agent dropped"
@@ -2344,11 +2255,7 @@ mod tests {
                 created_at: "t1".to_string(),
                 outcomes: vec![outcome("k-a", "src/a.rs"), outcome("k-b", "src/b.rs")],
             };
-            std::fs::write(
-                dir.join("validation.json"),
-                serde_json::to_vec(&validation).unwrap(),
-            )
-            .unwrap();
+            write_sidecar(&dir, &validation);
             let er_dir = dir.to_string_lossy().into_owned();
             let guard = crate::store_registry::store()
                 .lock_scope(
@@ -2377,9 +2284,7 @@ mod tests {
             first.join().unwrap();
             second.join().unwrap();
 
-            let stored: ValidationReview =
-                serde_json::from_slice(&std::fs::read(dir.join("validation.json")).unwrap())
-                    .unwrap();
+            let stored: ValidationReview = read_sidecar(&dir);
             assert!(
                 stored.outcomes.is_empty(),
                 "both paths' outcomes were dropped"

@@ -768,21 +768,18 @@ mod tests {
     }
 
     fn write_review_contract(dir: &Path, diff_hash: &str) {
-        std::fs::write(
-            dir.join("review.json"),
-            format!(r#"{{"version":1,"diff_hash":"{diff_hash}","files":{{}}}}"#),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("order.json"),
-            format!(r#"{{"version":1,"diff_hash":"{diff_hash}","order":[],"groups":{{}}}}"#),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("checklist.json"),
-            format!(r#"{{"version":1,"diff_hash":"{diff_hash}","items":[]}}"#),
-        )
-        .unwrap();
+        crate::test_support::write_sidecar_json::<ErReview>(
+            dir,
+            serde_json::json!({"version":1,"diff_hash":diff_hash,"files":{}}),
+        );
+        crate::test_support::write_sidecar_json::<ErOrder>(
+            dir,
+            serde_json::json!({"version":1,"diff_hash":diff_hash,"order":[],"groups":{}}),
+        );
+        crate::test_support::write_sidecar_json::<ErChecklist>(
+            dir,
+            serde_json::json!({"version":1,"diff_hash":diff_hash,"items":[]}),
+        );
         std::fs::write(dir.join("summary.md"), "Review summary").unwrap();
     }
 
@@ -1532,19 +1529,17 @@ mod tests {
         let hash = crate::ai::compute_diff_hash(diff);
         std::fs::write(dir.join("diff-tmp"), diff).unwrap();
         std::fs::write(dir.join("summary.md"), "before").unwrap();
-        std::fs::write(
-            dir.join("github-comments.json"),
-            format!(r#"{{"version":1,"diff_hash":"{hash}","comments":[]}}"#),
-        )
-        .unwrap();
+        crate::test_support::write_sidecar_json::<ErGithubComments>(
+            &dir,
+            serde_json::json!({"version":1,"diff_hash":hash,"comments":[]}),
+        );
         let baseline =
             ArtifactBaseline::capture(ArtifactContract::ValidateComments, dir.to_str().unwrap())
                 .unwrap();
-        std::fs::write(
-            dir.join("github-comments.json"),
-            format!(r#"{{"version":1,"diff_hash":"{hash}","comments":[],"github":null}}"#),
-        )
-        .unwrap();
+        crate::test_support::write_sidecar_json::<ErGithubComments>(
+            &dir,
+            serde_json::json!({"version":1,"diff_hash":hash,"comments":[],"github":null}),
+        );
         let error = baseline
             .validate(dir.to_str().unwrap())
             .unwrap_err()
@@ -1562,11 +1557,10 @@ mod tests {
         let baseline =
             ArtifactBaseline::capture(ArtifactContract::ValidateReview, dir.to_str().unwrap())
                 .unwrap();
-        std::fs::write(
-            dir.join("review.json"),
-            format!(r#"{{"version":1,"diff_hash":"{hash}","files":{{}}}}"#),
-        )
-        .unwrap();
+        crate::test_support::write_sidecar_json::<ErReview>(
+            &dir,
+            serde_json::json!({"version":1,"diff_hash":hash,"files":{}}),
+        );
         std::fs::write(dir.join("summary.md"), "validated").unwrap();
         let error = baseline
             .validate(dir.to_str().unwrap())

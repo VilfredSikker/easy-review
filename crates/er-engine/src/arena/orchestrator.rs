@@ -1956,17 +1956,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             let er_dir = dir.path().to_str().unwrap();
-            std::fs::create_dir(dir.path().join("experts")).unwrap();
-            std::fs::write(dir.path().join("review.json"), serde_json::to_vec(&json!({
-            "version":1,"diff_hash":"hash","files":{"src/a.rs":{"risk":"medium","findings":[
-                {"id":"general-1","severity":"medium","title":"unvalidated input in cache key","description":"Long detailed general claim with supporting evidence","line_start":10}
-            ]}}
-        })).unwrap()).unwrap();
-            std::fs::write(dir.path().join("experts/security.json"), serde_json::to_vec(&json!({
-            "version":1,"expert_id":"security","diff_hash":"hash","files":{"src/a.rs":{"findings":[
-                {"id":"sec-1","severity":"medium","title":"unvalidated input in cache key.","description":"short","line_start":12}
-            ]}}
-        })).unwrap()).unwrap();
+            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+                dir.path(),
+                json!({
+                    "version":1,"diff_hash":"hash","files":{"src/a.rs":{"risk":"medium","findings":[
+                        {"id":"general-1","severity":"medium","title":"unvalidated input in cache key","description":"Long detailed general claim with supporting evidence","line_start":10}
+                    ]}}
+                }),
+            );
+            crate::test_support::write_sidecar_json_slot::<crate::ai::ExpertReview>(
+                dir.path(),
+                er_store::ExpertId::new("security").unwrap(),
+                json!({
+                    "version":1,"expert_id":"security","diff_hash":"hash","files":{"src/a.rs":{"findings":[
+                        {"id":"sec-1","severity":"medium","title":"unvalidated input in cache key.","description":"short","line_start":12}
+                    ]}}
+                }),
+            );
             let findings = super::super::seeded::dedupe_flow_findings(er_dir, "hash", "", true);
             assert_eq!(findings.len(), 1);
             assert_eq!(findings[0].line, Some(10));

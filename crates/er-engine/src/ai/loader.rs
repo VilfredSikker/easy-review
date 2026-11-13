@@ -499,6 +499,7 @@ pub fn load_diagrams(er_dir: &str, current_diff_hash: &str) -> Vec<ErDiagram> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{write_sidecar_json, write_sidecar_json_slot};
     use serde_json::json;
 
     #[test]
@@ -591,30 +592,26 @@ mod tests {
         crate::storage::with_test_storage_root(dir.path(), || {
             let path = dir.path();
             let key = super::super::identity::finding_key("src/a.rs", None, "claim");
-            std::fs::write(
-                path.join("review.json"),
-                serde_json::to_vec(&json!({
+            write_sidecar_json::<ErReview>(
+                path,
+                json!({
                     "version": 1, "diff_hash": "hash",
                     "files": { "src/a.rs": { "risk": "medium", "findings": [
                         { "id": "f-1", "severity": "medium", "title": "claim", "line_start": null },
                         { "id": "f-2", "severity": "medium", "title": "other", "line_start": null }
                     ] } }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
             let write_arbiter = |hash| {
-                std::fs::write(
-                    path.join("arbiter.json"),
-                    serde_json::to_vec(&json!({
+                write_sidecar_json::<super::super::arbiter::ArbiterReview>(
+                    path,
+                    json!({
                         "version": 1, "diff_hash": hash, "verdicts": [
                             { "id": key, "verdict": "escalated", "confidence": "informational" },
                             { "id": "orphan", "verdict": "kept" }
                         ]
-                    }))
-                    .unwrap(),
-                )
-                .unwrap();
+                    }),
+                );
             };
             write_arbiter("hash");
             let state = load_ai_state(path.to_str().unwrap(), "hash", None);
@@ -637,16 +634,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             let path = dir.path();
-            std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
+            write_sidecar_json::<ErReview>(
+                path,
+                json!({"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}),
+            );
             let key = super::super::identity::finding_key("a.rs", None, "claim");
             let overlay = |rationale| {
-                serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"escalated","rationale":rationale}]}).to_string()
+                write_sidecar_json::<super::super::arbiter::ArbiterReview>(
+                    path,
+                    json!({"version":1,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"escalated","rationale":rationale}]}),
+                );
             };
-            let file = path.join("arbiter.json");
-            std::fs::write(&file, overlay("A")).unwrap();
+            overlay("A");
             let captured =
                 super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
-            std::fs::write(&file, overlay("B")).unwrap();
+            overlay("B");
             let state =
                 load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
             assert_eq!(state.arbiter_verdicts.get(&key).unwrap().1, "A");
@@ -658,8 +660,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             let path = dir.path();
-            std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
+            write_sidecar_json::<ErReview>(
+                path,
+                json!({"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}),
+            );
             let key = super::super::identity::finding_key("a.rs", None, "claim");
+            // A newer version than the kind has, so it cannot go through the store.
             std::fs::write(
             path.join("arbiter.json"),
             serde_json::json!({"version":2,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"dropped","rationale":"no"}]}).to_string(),
@@ -690,16 +696,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             let path = dir.path();
-            std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
+            write_sidecar_json::<ErReview>(
+                path,
+                json!({"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}),
+            );
             let key = super::super::identity::finding_key("a.rs", None, "claim");
-            let arbiter = |version: u32, rationale: &str| {
-                serde_json::json!({"version":version,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"dropped","rationale":rationale}]}).to_string()
-            };
-            std::fs::write(path.join("arbiter.json"), arbiter(2, "from-v2")).unwrap();
+            let arbiter = |version: u32, rationale: &str| serde_json::json!({"version":version,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"dropped","rationale":rationale}]});
+            // Version 2 is newer than the kind, so it stays a raw write.
+            std::fs::write(
+                path.join("arbiter.json"),
+                serde_json::to_vec(&arbiter(2, "from-v2")).unwrap(),
+            )
+            .unwrap();
             let captured =
                 super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
             // The file on disk becomes a valid version 1 before the load runs.
-            std::fs::write(path.join("arbiter.json"), arbiter(1, "from-v1")).unwrap();
+            // The raw write is forced: the store refuses to replace a newer file.
+            std::fs::write(
+                path.join("arbiter.json"),
+                serde_json::to_vec(&arbiter(1, "from-v1")).unwrap(),
+            )
+            .unwrap();
 
             let state =
                 load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
@@ -725,20 +742,18 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let state = crate::storage::with_test_storage_root(dir.path(), || {
                 let er_dir = dir.path();
-                std::fs::write(
-                er_dir.join("review.json"),
-                serde_json::to_vec(&json!({
-                    "version": 1,
-                    "diff_hash": "hash",
-                    "files": { "src/a.rs": { "risk": "high", "findings": [
-                        { "id": "general-row", "severity": "high", "title": "same claim", "line_start": 9, "lens": "general", "raised_by": ["general"] },
-                        { "id": "security-row", "severity": "high", "title": "same claim", "line_start": 9, "lens": "security", "raised_by": ["security"] },
-                        { "id": "unrelated-a", "severity": "high", "title": "unrelated claim", "line_start": 4, "lens": "general", "raised_by": ["general"] }
-                    ] } }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                write_sidecar_json::<ErReview>(
+                    er_dir,
+                    json!({
+                        "version": 1,
+                        "diff_hash": "hash",
+                        "files": { "src/a.rs": { "risk": "high", "findings": [
+                            { "id": "general-row", "severity": "high", "title": "same claim", "line_start": 9, "lens": "general", "raised_by": ["general"] },
+                            { "id": "security-row", "severity": "high", "title": "same claim", "line_start": 9, "lens": "security", "raised_by": ["security"] },
+                            { "id": "unrelated-a", "severity": "high", "title": "unrelated claim", "line_start": 4, "lens": "general", "raised_by": ["general"] }
+                        ] } }
+                    }),
+                );
                 if let Some(diff_hash) = arbiter_hash {
                     let (line, title, raised_by, providers) = if verdict_target == "duplicate-b" {
                         (
@@ -756,16 +771,14 @@ mod tests {
                         )
                     };
                     let key = super::super::identity::finding_key("src/a.rs", Some(line), title);
-                    std::fs::write(
-                    er_dir.join("arbiter.json"),
-                    serde_json::to_vec(&json!({
-                        "version": 1, "diff_hash": diff_hash, "run_id": "run-1",
-                        "verdicts": [{ "id": key, "file": "src/a.rs", "verdict": "kept",
-                            "confidence": "confirmed", "raised_by": raised_by, "providers": providers }]
-                    }))
-                    .unwrap(),
-                )
-                .unwrap();
+                    write_sidecar_json::<super::super::arbiter::ArbiterReview>(
+                        er_dir,
+                        json!({
+                            "version": 1, "diff_hash": diff_hash, "run_id": "run-1",
+                            "verdicts": [{ "id": key, "file": "src/a.rs", "verdict": "kept",
+                                "confidence": "confirmed", "raised_by": raised_by, "providers": providers }]
+                        }),
+                    );
                 }
                 load_ai_state(er_dir.to_str().unwrap(), "hash", None)
             });
@@ -893,11 +906,7 @@ mod tests {
                     }
                 }
             });
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::to_string(&review).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<ErReview>(dir.path(), review);
 
             let state = load_ai_state(er_dir, "abc", Some("mikkelam/dev-5713-add-outbox"));
             let review = state
@@ -935,11 +944,7 @@ mod tests {
                     }
                 }
             });
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::to_string(&review).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<ErReview>(dir.path(), review);
 
             let state = load_ai_state(er_dir, "abc", None);
             let review = state
@@ -984,11 +989,7 @@ mod tests {
                     }
                 }
             });
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::to_string(&review).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<ErReview>(dir.path(), review);
 
             let state = load_ai_state(er_dir, "abc", None);
             let review = state.review.expect("review must survive one bad finding");
@@ -1012,11 +1013,7 @@ mod tests {
                 "head_branch": "<head branch if known>",
                 "files": {}
             });
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::to_string(&review).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<ErReview>(dir.path(), review);
 
             let state = load_ai_state(er_dir, "abc", Some("feature/x"));
             let r = state.review.expect("placeholder-head review should load");
@@ -1045,11 +1042,7 @@ mod tests {
                 }
             }
         });
-        std::fs::write(
-            dir.join("review.json"),
-            serde_json::to_string(&review).unwrap(),
-        )
-        .unwrap();
+        write_sidecar_json::<ErReview>(dir, review);
         std::fs::write(dir.join("summary.md"), "Adds the managing group.\n").unwrap();
     }
 
@@ -1109,13 +1102,7 @@ mod tests {
                 "head_branch": "",
                 "files": {}
             });
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::to_string(&review).unwrap(),
-            )
-            .unwrap();
-            let experts = dir.path().join("experts");
-            std::fs::create_dir_all(&experts).unwrap();
+            write_sidecar_json::<ErReview>(dir.path(), review);
             let expert = |id: &str, hash: &str, summary: &str| {
                 serde_json::json!({
                     "version": 1,
@@ -1136,16 +1123,16 @@ mod tests {
                     }
                 })
             };
-            std::fs::write(
-                experts.join("reliability.json"),
-                serde_json::to_string(&expert("reliability", "scoped", "Rel summary")).unwrap(),
-            )
-            .unwrap();
-            std::fs::write(
-                experts.join("security.json"),
-                serde_json::to_string(&expert("security", "older", "Old summary")).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json_slot::<crate::ai::experts::ExpertReview>(
+                dir.path(),
+                er_store::ExpertId::new("reliability").unwrap(),
+                expert("reliability", "scoped", "Rel summary"),
+            );
+            write_sidecar_json_slot::<crate::ai::experts::ExpertReview>(
+                dir.path(),
+                er_store::ExpertId::new("security").unwrap(),
+                expert("security", "older", "Old summary"),
+            );
 
             let state = load_ai_state(dir.path().to_str().unwrap(), "full", None);
             assert!(
@@ -1188,11 +1175,7 @@ mod tests {
                     }
                 }
             });
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::to_string(&review).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<ErReview>(dir.path(), review);
 
             let state = load_ai_state(dir.path().to_str().unwrap(), "new", None);
 
@@ -1227,16 +1210,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             std::fs::write(dir.path().join("review.json"), "{ bad").unwrap();
-            std::fs::write(
-                dir.path().join("triage.json"),
-                r#"{"version":1,"diff_hash":"hash","verdict":{"primary":"general"}}"#,
-            )
-            .unwrap();
-            std::fs::write(
-                dir.path().join("professor.json"),
-                r#"{"version":1,"diff_hash":"hash","summary":"the lesson"}"#,
-            )
-            .unwrap();
+            write_sidecar_json::<crate::ai::triage::TriageReview>(
+                dir.path(),
+                json!({"version":1,"diff_hash":"hash","verdict":{"primary":"general"}}),
+            );
+            write_sidecar_json::<crate::ai::professor::ProfessorReview>(
+                dir.path(),
+                json!({"version":1,"diff_hash":"hash","summary":"the lesson"}),
+            );
 
             let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
 
@@ -1274,11 +1255,10 @@ mod tests {
     fn review_file_written_by_an_agent_loads() {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
-            std::fs::write(
-            dir.path().join("review.json"),
-            r#"{"version":1,"diff_hash":"hash","head_branch":"","files":{"a.rs":{"risk":"medium","findings":[{"id":"1","title":"claim","severity":"medium","hunk_index":0}]}}}"#,
-        )
-        .unwrap();
+            write_sidecar_json::<ErReview>(
+                dir.path(),
+                json!({"version":1,"diff_hash":"hash","head_branch":"","files":{"a.rs":{"risk":"medium","findings":[{"id":"1","title":"claim","severity":"medium","hunk_index":0}]}}}),
+            );
 
             let state = load_ai_state(dir.path().to_str().unwrap(), "hash", None);
 
@@ -1294,11 +1274,10 @@ mod tests {
         crate::storage::with_test_storage_root(dir.path(), || {
             let er_dir = dir.path().to_str().unwrap();
             std::fs::write(dir.path().join("order.json"), "{ bad").unwrap();
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::json!({"version": 1, "diff_hash": "abc", "files": {}}).to_string(),
-            )
-            .unwrap();
+            write_sidecar_json::<ErReview>(
+                dir.path(),
+                json!({"version": 1, "diff_hash": "abc", "files": {}}),
+            );
 
             let state = load_ai_state(er_dir, "abc", None);
             assert!(state.order.is_none());
@@ -1312,11 +1291,10 @@ mod tests {
         crate::storage::with_test_storage_root(dir.path(), || {
             let er_dir = dir.path().to_str().unwrap();
             std::fs::write(dir.path().join("checklist.json"), "{ bad").unwrap();
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::json!({"version": 1, "diff_hash": "abc", "files": {}}).to_string(),
-            )
-            .unwrap();
+            write_sidecar_json::<ErReview>(
+                dir.path(),
+                json!({"version": 1, "diff_hash": "abc", "files": {}}),
+            );
 
             let state = load_ai_state(er_dir, "abc", None);
             assert!(state.checklist.is_none());
@@ -1347,11 +1325,7 @@ mod tests {
                     }
                 }
             });
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::to_string(&review).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<ErReview>(dir.path(), review);
             std::fs::write(
                 dir.path().join("summary.md"),
                 "# Branch Review: claude/dev-5067\n\nOld summary.",
@@ -1385,11 +1359,7 @@ mod tests {
                     }
                 }
             });
-            std::fs::write(
-                dir.path().join("review.json"),
-                serde_json::to_string(&review).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<ErReview>(dir.path(), review);
 
             let state = load_ai_state(er_dir, "abc", None);
 
@@ -1419,11 +1389,7 @@ mod tests {
                     "files": [{"path": "src/a.rs", "reason": "core", "finding_ids": ["f-1"]}]
                 }]
             });
-            std::fs::write(
-                dir.path().join("tour.json"),
-                serde_json::to_string(&tour).unwrap(),
-            )
-            .unwrap();
+            write_sidecar_json::<ErTour>(dir.path(), tour);
 
             // The tour is context-scoped and loaded by TabState (via the size-guarded
             // `load_tour_sidecar`), not by `load_ai_state`.
@@ -1483,7 +1449,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             let er_dir = dir.path().to_str().unwrap();
-            write_tour(dir.path(), "tour.json", a_tour());
+            write_sidecar_json::<ErTour>(dir.path(), a_tour());
+            // A name that is not the kind's file stays a raw write.
             write_tour(dir.path(), "tour.pr.json", a_tour());
 
             assert!(load_tour_sidecar(er_dir, "tour.json").is_some());
@@ -1547,11 +1514,10 @@ mod tests {
         crate::storage::with_test_storage_root(dir.path(), || {
             let er_dir = dir.path().to_str().unwrap();
             std::fs::write(dir.path().join("tour.json"), "{ not valid json").unwrap();
-            std::fs::write(
-            dir.path().join("review.json"),
-            r#"{"version":1,"diff_hash":"abc","files":{"a.rs":{"risk":"medium","findings":[{"id":"1","title":"claim","severity":"medium","hunk_index":0}]}}}"#,
-        )
-        .unwrap();
+            write_sidecar_json::<ErReview>(
+                dir.path(),
+                json!({"version":1,"diff_hash":"abc","files":{"a.rs":{"risk":"medium","findings":[{"id":"1","title":"claim","severity":"medium","hunk_index":0}]}}}),
+            );
             write_diagram_envelope(dir.path(), "flows.json", "abc");
 
             let state = load_ai_state(er_dir, "abc", None);
@@ -1831,9 +1797,9 @@ mod tests {
     }
 
     fn write_review(path: &Path, hash: &str, created_at: &str) {
-        std::fs::write(
-            path.join("review.json"),
-            serde_json::to_vec(&json!({
+        write_sidecar_json::<ErReview>(
+            path,
+            json!({
                 "version": 1, "diff_hash": hash, "created_at": created_at,
                 "files": {
                     "src/a.rs": { "risk": "medium", "findings": [
@@ -1843,17 +1809,15 @@ mod tests {
                         { "id": "b1", "severity": "medium", "title": "Old B", "line_start": 2 }
                     ] }
                 }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+            }),
+        );
     }
 
     fn write_scoped_general(path: &Path, scope: &str, base_created_at: &str, title: &str) {
         std::fs::create_dir_all(path.join("scoped/experts")).unwrap();
-        std::fs::write(
-            path.join("scoped/general.json"),
-            serde_json::to_vec(&json!({
+        write_sidecar_json::<super::super::scoped_overlay::ScopedReview>(
+            path,
+            json!({
                 "version": 1, "diff_hash": "hash", "created_at": "t1",
                 "files": { scope: { "risk": "medium", "findings": [
                     { "id": "n1", "severity": "medium", "title": title, "line_start": 5 }
@@ -1862,10 +1826,8 @@ mod tests {
                 "base_diff_hash": "hash",
                 "base_created_at": base_created_at,
                 "host_stamped": true
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+            }),
+        );
     }
 
     #[test]
@@ -1909,28 +1871,24 @@ mod tests {
         crate::storage::with_test_storage_root(dir.path(), || {
             let path = dir.path();
             write_review(path, "old", "t0");
-            std::fs::create_dir_all(path.join("experts")).unwrap();
-            std::fs::write(
-                path.join("experts/security.json"),
-                serde_json::to_vec(&json!({
+            write_sidecar_json_slot::<crate::ai::experts::ExpertReview>(
+                path,
+                er_store::ExpertId::new("security").unwrap(),
+                json!({
                     "version": 1, "expert_id": "security", "diff_hash": "old",
                     "created_at": "t0", "summary": "security summary",
                     "files": { "src/a.rs": { "findings": [
                         { "id": "sec-1", "severity": "high", "title": "Stale expert row" }
                     ] } }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            std::fs::write(
-                path.join("validation.json"),
-                serde_json::to_vec(&json!({
+                }),
+            );
+            write_sidecar_json::<crate::ai::validation::ValidationReview>(
+                path,
+                json!({
                     "version": 1, "diff_hash": "new", "review_created_at": "t0",
                     "created_at": "t1", "outcomes": []
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
 
             let state = load_ai_state(path.to_str().unwrap(), "new", None);
 
@@ -1989,9 +1947,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::storage::with_test_storage_root(dir.path(), || {
             let path = dir.path();
-            std::fs::write(
-                path.join("review.json"),
-                serde_json::to_vec(&json!({
+            write_sidecar_json::<ErReview>(
+                path,
+                json!({
                     "version": 1, "diff_hash": "hash", "created_at": "t0",
                     "files": {
                         "src/a.rs": { "risk": "medium", "findings": [
@@ -2001,22 +1959,18 @@ mod tests {
                             { "id": "b1", "severity": "medium", "title": "Resolved B", "line_start": 2 }
                         ] }
                     }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
             write_scoped_general(path, "src/a.rs", "t0", "New A");
             let key = crate::ai::identity::finding_key("src/b.rs", Some(2), "Resolved B");
-            std::fs::write(
-                path.join("validation.json"),
-                serde_json::to_vec(&json!({
+            write_sidecar_json::<crate::ai::validation::ValidationReview>(
+                path,
+                json!({
                     "version": 1, "diff_hash": "hash", "review_created_at": "t0",
                     "created_at": "t1",
                     "outcomes": [{ "key": key, "file": "src/b.rs", "result": "resolved" }]
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                }),
+            );
 
             let state = load_ai_state(path.to_str().unwrap(), "hash", None);
 

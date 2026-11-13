@@ -984,8 +984,11 @@ mod tests {
             )
             .unwrap();
             let review_path = Path::new(&fixture.er_dir).join("review.json");
-            let review = br#"{"version":1,"diff_hash":"new-review-generation","files":{}}"#;
-            std::fs::write(&review_path, review).unwrap();
+            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+                Path::new(&fixture.er_dir),
+                json!({"version": 1, "diff_hash": "new-review-generation", "files": {}}),
+            );
+            let review = std::fs::read(&review_path).unwrap();
             let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
             let run_before = std::fs::read(paths.run_json()).unwrap();
 
@@ -1055,20 +1058,26 @@ mod tests {
         })).unwrap());
         run.findings[0].raised_by = vec!["deep-finder".into()];
         save_run(&paths, &run).unwrap();
-        let bytes = serde_json::to_vec(&json!({
-            "version": 1, "diff_hash": run.diff_hash, "run_id": "old-quick",
-            "verdicts": [
-                {"id": crate::ai::finding_key("file.txt", Some(2), "Kept finding"), "file":"file.txt", "verdict":"dropped", "raised_by":["security"], "providers":["old-provider"]},
-                {"id": crate::ai::finding_key("file.txt", Some(1), "Unrelated finding"), "file":"file.txt", "verdict":"dropped"}
-            ]
-        })).unwrap();
-        std::fs::write(Path::new(&fixture.er_dir).join("arbiter.json"), &bytes).unwrap();
-        std::fs::write(Path::new(&fixture.er_dir).join("review.json"), serde_json::to_vec(&json!({
-            "version":1,"diff_hash":run.diff_hash,"files":{"file.txt":{"risk":"medium","findings":[
-                {"id":"unrelated","severity":"medium","title":"Unrelated finding","line_start":1},
-                {"id":"producer","severity":"medium","title":"Kept finding","line_start":2}
-            ]}}
-        })).unwrap()).unwrap();
+        crate::test_support::write_sidecar_json::<crate::ai::ArbiterReview>(
+            Path::new(&fixture.er_dir),
+            json!({
+                "version": 1, "diff_hash": run.diff_hash, "run_id": "old-quick",
+                "verdicts": [
+                    {"id": crate::ai::finding_key("file.txt", Some(2), "Kept finding"), "file":"file.txt", "verdict":"dropped", "raised_by":["security"], "providers":["old-provider"]},
+                    {"id": crate::ai::finding_key("file.txt", Some(1), "Unrelated finding"), "file":"file.txt", "verdict":"dropped"}
+                ]
+            }),
+        );
+        let bytes = std::fs::read(Path::new(&fixture.er_dir).join("arbiter.json")).unwrap();
+        crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+            Path::new(&fixture.er_dir),
+            json!({
+                "version":1,"diff_hash":run.diff_hash,"files":{"file.txt":{"risk":"medium","findings":[
+                    {"id":"unrelated","severity":"medium","title":"Unrelated finding","line_start":1},
+                    {"id":"producer","severity":"medium","title":"Kept finding","line_start":2}
+                ]}}
+            }),
+        );
         bytes
     }
 
@@ -1282,10 +1291,12 @@ mod tests {
         let mut fixture = fixture();
         let storage = fixture.repo.path().to_path_buf();
         crate::storage::with_test_storage_root(&storage, || {
-            let old_review = br#"{"version":1,"diff_hash":"old-generation","files":{"legacy.rs":{"risk":"medium","findings":[{"id":"legacy","severity":"medium","title":"Old generation finding"}]}}}"#;
             let review_path = Path::new(&fixture.er_dir).join("review.json");
-            std::fs::create_dir_all(Path::new(&fixture.er_dir)).unwrap();
-            std::fs::write(&review_path, old_review).unwrap();
+            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+                Path::new(&fixture.er_dir),
+                json!({"version":1,"diff_hash":"old-generation","files":{"legacy.rs":{"risk":"medium","findings":[{"id":"legacy","severity":"medium","title":"Old generation finding"}]}}}),
+            );
+            let old_review = std::fs::read(&review_path).unwrap();
             fixture
                 .app
                 .tabs
@@ -1298,7 +1309,7 @@ mod tests {
                 .unwrap();
             assert_eq!(accepted, 1);
             let review: crate::ai::ErReview =
-                serde_json::from_slice(&std::fs::read(&review_path).unwrap()).unwrap();
+                crate::test_support::read_sidecar(Path::new(&fixture.er_dir));
             assert_eq!(
                 review.diff_hash,
                 load_run(&ArenaPaths::for_run(
@@ -1319,7 +1330,7 @@ mod tests {
                 .map(|entry| entry.path().join("review.json"))
                 .find(|path| path.is_file())
                 .expect("older review should remain in the recovery archive");
-            assert_eq!(std::fs::read(archived).unwrap().as_slice(), old_review);
+            assert_eq!(std::fs::read(archived).unwrap(), old_review);
             assert!(!review.files.contains_key("legacy.rs"));
             assert_eq!(review.files["file.txt"].findings.len(), 1);
             let run = load_run(&ArenaPaths::for_run(
@@ -1444,15 +1455,17 @@ mod tests {
             let paths = ArenaPaths::for_run(Path::new(&fixture.er_dir), &fixture.run_id);
             let run = load_run(&paths).unwrap();
             let review_path = Path::new(&fixture.er_dir).join("review.json");
-            std::fs::create_dir_all(Path::new(&fixture.er_dir)).unwrap();
-            let original = serde_json::to_vec(&json!({
-            "version": 1,
-            "diff_hash": run.diff_hash,
-            "base_branch": "main",
-            "head_branch": "feature",
-            "files": {"legacy.rs": {"risk":"medium","findings":[{"id":"legacy","severity":"medium","title":"Existing finding"}]}}
-        })).unwrap();
-            std::fs::write(&review_path, &original).unwrap();
+            crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+                Path::new(&fixture.er_dir),
+                json!({
+                    "version": 1,
+                    "diff_hash": run.diff_hash,
+                    "base_branch": "main",
+                    "head_branch": "feature",
+                    "files": {"legacy.rs": {"risk":"medium","findings":[{"id":"legacy","severity":"medium","title":"Existing finding"}]}}
+                }),
+            );
+            let original = std::fs::read(&review_path).unwrap();
             let _fail_save = fail_run_save(&paths);
 
             let error = fixture

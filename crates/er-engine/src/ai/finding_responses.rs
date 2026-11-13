@@ -4,14 +4,6 @@ use super::experts::{expert_by_id, ExpertReview};
 use super::finding_cleanup::{matches_finding_id, sidecar_update, SidecarWrite};
 use super::professor::{ProfessorReview, PROFESSOR_ID_PREFIX};
 use super::review::{AiResponse, AiState, ErReview, Finding};
-#[cfg(test)]
-use std::path::Path;
-
-#[cfg(test)]
-fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let json = serde_json::to_string_pretty(value)?;
-    er_store::atomic::write_atomic(path, json.as_bytes())
-}
 
 fn iso_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -355,6 +347,7 @@ pub fn append_promote_replies(mut body: String, replies: &[(String, String)]) ->
 mod tests {
     use super::*;
     use crate::ai::review::{Confidence, ErFileReview, ErReview, Finding, RiskLevel};
+    use crate::test_support::{read_sidecar, read_sidecar_slot, write_sidecar, write_sidecar_slot};
     use std::collections::HashMap;
 
     #[test]
@@ -406,13 +399,12 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
                 file_hashes: HashMap::new(),
             };
-            write_json_atomic(&er.join("review.json"), &review).unwrap();
+            write_sidecar(er, &review);
 
             let id = append_finding_response(er.to_str().unwrap(), "f1", "first").unwrap();
             update_finding_response(er.to_str().unwrap(), "f1", &id, "updated").unwrap();
 
-            let content = std::fs::read_to_string(er.join("review.json")).unwrap();
-            let loaded: ErReview = serde_json::from_str(&content).unwrap();
+            let loaded: ErReview = read_sidecar(er);
             assert_eq!(
                 loaded.files["a.rs"].findings[0].responses[0].text,
                 "updated"
@@ -476,13 +468,13 @@ mod tests {
                 ))
                 .collect::<HashMap<_, _>>(),
             };
-            write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
+            write_sidecar_slot(er, er_store::ExpertId::new("api").unwrap(), &expert);
 
             // No review.json at all — must not error with "No such file or directory".
             append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
 
-            let content = std::fs::read_to_string(er.join("experts/api.json")).unwrap();
-            let loaded: ExpertReview = serde_json::from_str(&content).unwrap();
+            let loaded: ExpertReview =
+                read_sidecar_slot(er, er_store::ExpertId::new("api").unwrap());
             assert_eq!(
                 loaded.files["a.rs"].findings[0].responses[0].text,
                 "validated"
@@ -518,7 +510,7 @@ mod tests {
                 ))
                 .collect::<HashMap<_, _>>(),
             };
-            write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
+            write_sidecar_slot(er, er_store::ExpertId::new("api").unwrap(), &expert);
 
             append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
 
@@ -527,10 +519,8 @@ mod tests {
                 corrupt,
                 "a malformed sidecar is skipped, never rewritten"
             );
-            let loaded: ExpertReview = serde_json::from_str(
-                &std::fs::read_to_string(er.join("experts/api.json")).unwrap(),
-            )
-            .unwrap();
+            let loaded: ExpertReview =
+                read_sidecar_slot(er, er_store::ExpertId::new("api").unwrap());
             assert_eq!(
                 loaded.files["a.rs"].findings[0].responses[0].text,
                 "validated"
@@ -566,7 +556,7 @@ mod tests {
                 ))
                 .collect::<HashMap<_, _>>(),
             };
-            write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
+            write_sidecar_slot(er, er_store::ExpertId::new("api").unwrap(), &expert);
 
             append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
 
@@ -575,10 +565,8 @@ mod tests {
                 newer,
                 "a newer file is left alone"
             );
-            let loaded: ExpertReview = serde_json::from_str(
-                &std::fs::read_to_string(er.join("experts/api.json")).unwrap(),
-            )
-            .unwrap();
+            let loaded: ExpertReview =
+                read_sidecar_slot(er, er_store::ExpertId::new("api").unwrap());
             assert_eq!(
                 loaded.files["a.rs"].findings[0].responses[0].text,
                 "validated"
@@ -615,7 +603,7 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
                 file_hashes: HashMap::new(),
             };
-            write_json_atomic(&er.join("review.json"), &review).unwrap();
+            write_sidecar(er, &review);
 
             let expert = ExpertReview {
                 version: 1,
@@ -632,23 +620,19 @@ mod tests {
                 ))
                 .collect::<HashMap<_, _>>(),
             };
-            write_json_atomic(&er.join("experts/security.json"), &expert).unwrap();
+            write_sidecar_slot(er, er_store::ExpertId::new("security").unwrap(), &expert);
 
             append_finding_response(er.to_str().unwrap(), "f-1", "general-reply").unwrap();
             append_finding_response(er.to_str().unwrap(), "sec-2", "expert-reply").unwrap();
 
-            let r: ErReview =
-                serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
-                    .unwrap();
+            let r: ErReview = read_sidecar(er);
             assert_eq!(
                 r.files["a.rs"].findings[0].responses[0].text,
                 "general-reply"
             );
 
-            let e: ExpertReview = serde_json::from_str(
-                &std::fs::read_to_string(er.join("experts/security.json")).unwrap(),
-            )
-            .unwrap();
+            let e: ExpertReview =
+                read_sidecar_slot(er, er_store::ExpertId::new("security").unwrap());
             assert_eq!(
                 e.files["a.rs"].findings[0].responses[0].text,
                 "expert-reply"
@@ -683,14 +667,12 @@ mod tests {
                 ))
                 .collect::<HashMap<_, _>>(),
             };
-            write_json_atomic(&er.join("experts/security.json"), &expert).unwrap();
+            write_sidecar_slot(er, er_store::ExpertId::new("security").unwrap(), &expert);
 
             append_finding_response(er.to_str().unwrap(), "sec-3", "validated").unwrap();
 
-            let loaded: ExpertReview = serde_json::from_str(
-                &std::fs::read_to_string(er.join("experts/security.json")).unwrap(),
-            )
-            .unwrap();
+            let loaded: ExpertReview =
+                read_sidecar_slot(er, er_store::ExpertId::new("security").unwrap());
             assert_eq!(
                 loaded.files["a.rs"].findings[0].responses[0].text,
                 "validated"
@@ -723,13 +705,11 @@ mod tests {
                 ))
                 .collect::<HashMap<_, _>>(),
             };
-            write_json_atomic(&er.join("professor.json"), &prof).unwrap();
+            write_sidecar(er, &prof);
 
             append_finding_response(er.to_str().unwrap(), "prof-1", "validated").unwrap();
 
-            let loaded: ProfessorReview =
-                serde_json::from_str(&std::fs::read_to_string(er.join("professor.json")).unwrap())
-                    .unwrap();
+            let loaded: ProfessorReview = read_sidecar(er);
             assert_eq!(
                 loaded.files["a.rs"].findings[0].responses[0].text,
                 "validated"
@@ -767,7 +747,7 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
                 file_hashes: HashMap::new(),
             };
-            write_json_atomic(&er.join("review.json"), &review).unwrap();
+            write_sidecar(er, &review);
 
             // Unknown expert id with a colliding bare finding id "1".
             let unknown = ExpertReview {
@@ -785,24 +765,20 @@ mod tests {
                 ))
                 .collect::<HashMap<_, _>>(),
             };
-            write_json_atomic(&er.join("experts/made-up.json"), &unknown).unwrap();
+            write_sidecar_slot(er, er_store::ExpertId::new("made-up").unwrap(), &unknown);
 
             append_finding_response(er.to_str().unwrap(), "1", "general-reply").unwrap();
 
             // The reply lands in review.json…
-            let r: ErReview =
-                serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
-                    .unwrap();
+            let r: ErReview = read_sidecar(er);
             assert_eq!(
                 r.files["a.rs"].findings[0].responses[0].text,
                 "general-reply"
             );
 
             // …and the unknown sidecar is left untouched (no responses written).
-            let u: ExpertReview = serde_json::from_str(
-                &std::fs::read_to_string(er.join("experts/made-up.json")).unwrap(),
-            )
-            .unwrap();
+            let u: ExpertReview =
+                read_sidecar_slot(er, er_store::ExpertId::new("made-up").unwrap());
             assert!(u.files["a.rs"].findings[0].responses.is_empty());
         });
     }
@@ -869,7 +845,7 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
                 file_hashes: HashMap::new(),
             };
-            write_json_atomic(&er.join("review.json"), &review).unwrap();
+            write_sidecar(er, &review);
 
             let er_dir = er.to_string_lossy().into_owned();
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
@@ -888,9 +864,7 @@ mod tests {
             first.join().unwrap();
             second.join().unwrap();
 
-            let loaded: ErReview =
-                serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
-                    .unwrap();
+            let loaded: ErReview = read_sidecar(er);
             let findings = &loaded.files["a.rs"].findings;
             assert!(
                 findings

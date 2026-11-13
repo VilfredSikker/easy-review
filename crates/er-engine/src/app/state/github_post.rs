@@ -935,16 +935,13 @@ mod tests {
     }
 
     fn store(app: &App) -> ai::ErGithubComments {
-        let path = app.tab().github_comments_path();
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+        let dir = app.tab().github_comments_dir();
+        crate::test_support::read_sidecar(std::path::Path::new(&dir))
     }
 
     fn write_store(app: &App, gc: &ai::ErGithubComments) {
-        let path = app.tab().github_comments_path();
-        if let Some(dir) = std::path::Path::new(&path).parent() {
-            std::fs::create_dir_all(dir).unwrap();
-        }
-        std::fs::write(&path, serde_json::to_string_pretty(gc).unwrap()).unwrap();
+        let dir = app.tab().github_comments_dir();
+        crate::test_support::write_sidecar(std::path::Path::new(&dir), gc);
     }
 
     fn empty_store() -> ai::ErGithubComments {
