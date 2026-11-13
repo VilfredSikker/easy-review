@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-13 21:15 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-13 22:10 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,13 +9,13 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| D3 | – | [#487](https://github.com/VilfredSikker/easy-review/issues/487) P34a plan | – |
-| D1 | D6 | idle (reviews P31) | – |
-| D4 | T6 store core | [#485](https://github.com/VilfredSikker/easy-review/issues/485) P31 | C, E |
-| T2 | T4 git port | [#489](https://github.com/VilfredSikker/easy-review/issues/489) P36 plan | – |
+| D3 | – | idle (P34a plan approved, #487) | – |
+| D1 | D6 | idle (reviews P37) | – |
+| D4 | T6 store core | [#486](https://github.com/VilfredSikker/easy-review/issues/486) P37 | C, E, F |
+| T2 | T4 git port | idle (P36 plan approved, #489) | – |
 | T1, D2, D5 | – | idle | – |
 
-**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35, P26a–P33b, P30b and P48 are merged, and P31 is in progress. The rest of phase 3 runs one item at a time behind it, because every remaining item holds lane E.
+**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. P35, P26a–P33b, P30b, P31 and P48 are merged, and P37 is in progress. The rest of phase 3 runs one item at a time behind it, because every remaining item holds lane E.
 
 ## Progress
 
@@ -72,8 +72,8 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P33b | [#482](https://github.com/VilfredSikker/easy-review/issues/482) Delete the arena registry, pid kill, `progress.jsonl` and glue | W | opus | ✅ | [#513](https://github.com/VilfredSikker/easy-review/pull/513) | D4; D1 reviewed |
 | P30b.1 | [#483](https://github.com/VilfredSikker/easy-review/issues/483) Port the remaining raw readers/writers onto the store | E/W/C | opus | ✅ | [#514](https://github.com/VilfredSikker/easy-review/pull/514), [#515](https://github.com/VilfredSikker/easy-review/pull/515) | D3; D1 and T2 reviewed; #514 stop line waived by the owner |
 | P30b.2 | [#484](https://github.com/VilfredSikker/easy-review/issues/484) Envelope every agent kind; delete `Mode::Bare` | E/C | opus | ✅ | [#517](https://github.com/VilfredSikker/easy-review/pull/517), [#518](https://github.com/VilfredSikker/easy-review/pull/518) | D3; D1 and T2 reviewed |
-| P31 | [#485](https://github.com/VilfredSikker/easy-review/issues/485) Importance as a RiskRules artifact | C/E | opus | 🟡 | | D4; T2's plan approved |
-| P37 | [#486](https://github.com/VilfredSikker/easy-review/issues/486) Split the agent config into `agents.toml` (D16, A7) | C/E/F | opus | ⬜ | | after #485 |
+| P31 | [#485](https://github.com/VilfredSikker/easy-review/issues/485) Importance as a RiskRules artifact | C/E | opus | ✅ | [#519](https://github.com/VilfredSikker/easy-review/pull/519) | D4; D1 reviewed |
+| P37 | [#486](https://github.com/VilfredSikker/easy-review/issues/486) Split the agent config into `agents.toml` (D16, A7) | C/E/F | opus | 🟡 | | D4; D1's plan approved |
 | P34a | [#487](https://github.com/VilfredSikker/easy-review/issues/487) Accepted findings and the projection | W/E | opus | ⬜ | | after #482, #486 |
 | P34b | [#488](https://github.com/VilfredSikker/easy-review/issues/488) Delete the arena import, the rollback and the provenance run read | W/E | opus | ⬜ | | after #487 |
 | P36 | [#489](https://github.com/VilfredSikker/easy-review/issues/489) Registry gate | E/C/F | opus | ⬜ | | after #486 |
