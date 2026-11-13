@@ -447,14 +447,6 @@ mod tests {
         ArtifactKey::new(scope.clone(), slot).unwrap()
     }
 
-    fn bare_value() -> TestPayload {
-        TestPayload {
-            version: TestPayload::VERSION,
-            diff_hash: "abc".to_string(),
-            value: 9,
-        }
-    }
-
     #[test]
     fn enveloped_write_then_read_round_trips_and_has_every_envelope_field() {
         let (directory, store) = temp_store();

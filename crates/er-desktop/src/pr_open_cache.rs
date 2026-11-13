@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::commands::{PrOpenCacheEntry, PrOpenCacheKey};
 use anyhow::Result;
-use er_store::{Artifact, Loaded, Mode};
+use er_store::{Artifact, Loaded};
 
 /// Per-entry cap on the `raw_diff` we persist to disk. Entries above this stay
 /// in the in-memory cache but are skipped when writing the on-disk file — a big
@@ -31,7 +31,6 @@ impl schemars::JsonSchema for PersistedPrOpenFile {
 impl Artifact for PersistedPrOpenFile {
     const KIND: &'static str = "pr-open-cache";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "pr-open-cache.json";
     type Slot = ();
 }

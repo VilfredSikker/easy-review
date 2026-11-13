@@ -7,7 +7,7 @@
 //! — it's rederived on launch.
 
 use anyhow::{Context, Result};
-use er_store::{Artifact, Loaded, Mode};
+use er_store::{Artifact, Loaded};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -57,7 +57,6 @@ pub struct TabsFile {
 impl Artifact for TabsFile {
     const KIND: &'static str = "tabs";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "tabs.json";
     type Slot = ();
 }

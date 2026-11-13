@@ -141,7 +141,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let (store, scope) = store_and_scope(&tmp);
         let path = store.path(&key::<ErChecklist>(&scope).unwrap());
-        crate::test_support::write_sidecar(&tmp.path(), &checklist());
+        crate::test_support::write_sidecar(tmp.path(), &checklist());
 
         set_checked(&store, &scope, "c1", true).unwrap();
 

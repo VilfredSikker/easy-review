@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use crate::projects;
 use crate::snapshot::PrInfo;
 use anyhow::Result;
-use er_store::{Artifact, Loaded, Mode};
+use er_store::{Artifact, Loaded};
 
 pub type PrCacheMap = Arc<Mutex<HashMap<String, Vec<PrInfo>>>>;
 pub type PrCacheFetchedAtMap = Arc<Mutex<HashMap<String, u64>>>;
@@ -28,7 +28,6 @@ struct PersistedPrCacheEntry {
 impl Artifact for PersistedPrCacheFile {
     const KIND: &'static str = "pr-cache";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "pr-cache.json";
     type Slot = ();
 }

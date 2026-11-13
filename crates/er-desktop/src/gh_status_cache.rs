@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use er_store::{Artifact, Loaded, Mode};
+use er_store::{Artifact, Loaded};
 use serde::{Deserialize, Serialize};
 
 use crate::snapshot::GithubStatusSnapshot;
@@ -54,7 +54,6 @@ struct PersistedGhStatusFile {
 impl Artifact for PersistedGhStatusFile {
     const KIND: &'static str = "gh-status-cache";
     const VERSION: u32 = 2;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "gh-status-cache.json";
     type Slot = ();
 }

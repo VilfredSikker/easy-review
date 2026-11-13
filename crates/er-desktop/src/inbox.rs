@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use er_store::{Artifact, Loaded, Mode};
+use er_store::{Artifact, Loaded};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -154,7 +154,6 @@ struct InboxFile {
 impl Artifact for InboxFile {
     const KIND: &'static str = "inbox";
     const VERSION: u32 = 1;
-    const MODE: Mode = Mode::Enveloped;
     const FILE: &'static str = "inbox.json";
     type Slot = ();
 }
