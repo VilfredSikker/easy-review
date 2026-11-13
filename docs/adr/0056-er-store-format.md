@@ -1,8 +1,8 @@
 # The store format
 
-The first `er-store` shape is fixed for 1.0.0: the envelope, the two storage
-modes and the version rule. Later PRs add kinds; the wrapper and the version
-rules stay stable until 2.0.
+The first `er-store` shape is fixed for 1.0.0: the envelope and the version
+rule. Later PRs add kinds; the wrapper and the version rules stay stable until
+2.0.
 
 ## Envelope
 
@@ -13,21 +13,19 @@ version; the wrapper has no separate format version. Unknown wrapper keys are
 ignored, and a missing or mistyped `diff_hash`, `producer` or `written_at`
 reads as absent. Wrapper changes are additive until 2.0.
 
-## Bare kinds
+## No bare files
 
-An agent-written kind is the payload JSON by itself, with the payload's own
-`version` and `diff_hash` at the top level. The host writes the same bytes an
-agent would, so an agent that reads and rewrites the file in place keeps
-working. The mode exists because agent prompts describe the bare payload
-schema (ADR 0031); phase 3 removes it when the runner commits agent output.
+A file without an envelope does not load. It reads as malformed with a reason
+naming the missing envelope, and the store never writes one. The two-mode
+period of the 1.0.0 work ended when the runner began committing staged agent
+output through the store and upload began enveloping what it commits (ADR 0063).
 
 ## Versions
 
 A file newer than this build reads as `NewerVersion`, and `write` refuses to
 replace it, so an older binary cannot erase a newer one's file. An older
 version goes through `Artifact::migrate`; with no migration it reads as
-`UnknownVersion`. An Enveloped kind accepts a legacy bare file only when the
-kind declares `WAS_BARE_BEFORE`.
+`UnknownVersion`.
 
 Adding an optional payload field needs no bump. A new enum variant does: an
 older binary has no arm for it and reads the file as malformed, unless the

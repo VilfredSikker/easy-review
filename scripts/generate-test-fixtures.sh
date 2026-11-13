@@ -11,6 +11,10 @@
 # with realistic but synthetic data. The diff_hash matches the current diff
 # so the data will NOT show as stale.
 #
+# The JSON files are written in the store's envelope shape ({kind, version,
+# diff_hash, producer, written_at, payload}). A bare payload is rejected as a
+# pre-1.0 file and never loads.
+#
 # To test stale detection, edit a file after running this script.
 
 set -euo pipefail
@@ -89,8 +93,11 @@ done <<< "$FILES"
 
 REVIEW+='}}'
 
+WRITTEN_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+REVIEW_ENV='{"kind":"review","version":1,"diff_hash":"'"$DIFF_HASH"'","producer":"generate-test-fixtures.sh","written_at":"'"$WRITTEN_AT"'","payload":'"$REVIEW"'}'
+
 mkdir -p .er
-echo "$REVIEW" | python3 -m json.tool > .er/review.json 2>/dev/null || echo "$REVIEW" > .er/review.json
+echo "$REVIEW_ENV" | python3 -m json.tool > .er/review.json 2>/dev/null || echo "$REVIEW_ENV" > .er/review.json
 echo "✓ Created .er/review.json"
 
 # Build .er-order.json
@@ -107,7 +114,9 @@ while IFS= read -r filepath; do
 done <<< "$FILES"
 ORDER+='],"groups":{"main":{"label":"Main Changes","color":"blue"}}}'
 
-echo "$ORDER" | python3 -m json.tool > .er/order.json 2>/dev/null || echo "$ORDER" > .er/order.json
+ORDER_ENV='{"kind":"order","version":1,"diff_hash":"'"$DIFF_HASH"'","producer":"generate-test-fixtures.sh","written_at":"'"$WRITTEN_AT"'","payload":'"$ORDER"'}'
+
+echo "$ORDER_ENV" | python3 -m json.tool > .er/order.json 2>/dev/null || echo "$ORDER_ENV" > .er/order.json
 echo "✓ Created .er/order.json"
 
 # Build .er-checklist.json
@@ -119,7 +128,9 @@ CHECKLIST+='{"id":"c-3","text":"Review test coverage for new code paths","catego
 CHECKLIST+='{"id":"c-4","text":"Confirm no secrets or credentials in diff","category":"security","checked":true,"related_findings":[],"related_files":[]}'
 CHECKLIST+=']}'
 
-echo "$CHECKLIST" | python3 -m json.tool > .er/checklist.json 2>/dev/null || echo "$CHECKLIST" > .er/checklist.json
+CHECKLIST_ENV='{"kind":"checklist","version":1,"diff_hash":"'"$DIFF_HASH"'","producer":"generate-test-fixtures.sh","written_at":"'"$WRITTEN_AT"'","payload":'"$CHECKLIST"'}'
+
+echo "$CHECKLIST_ENV" | python3 -m json.tool > .er/checklist.json 2>/dev/null || echo "$CHECKLIST_ENV" > .er/checklist.json
 echo "✓ Created .er/checklist.json"
 
 # Build .er-summary.md
