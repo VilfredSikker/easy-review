@@ -2909,10 +2909,7 @@ impl App {
             let projects_imported = root.join(crate::legacy_projects::IMPORTED_MARKER).exists();
             if let Some(message) = legacy_root_notice(base, &entries, projects_imported) {
                 // A failed write means the notice shows again next launch.
-                super::local_files::mark_notice_once(
-                    root,
-                    super::local_files::LEGACY_ROOT_MARKER,
-                );
+                super::local_files::mark_notice_once(root, super::local_files::LEGACY_ROOT_MARKER);
                 messages.push(message);
             }
         }
@@ -3428,8 +3425,8 @@ impl App {
         std::thread::spawn(move || {
             let mut timer = er_agent::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                let debug_path = std::path::Path::new(&er_dir_path)
-                    .join(super::local_files::DEBUG_LOG_FILE);
+                let debug_path =
+                    std::path::Path::new(&er_dir_path).join(super::local_files::DEBUG_LOG_FILE);
 
                 // The argv still carries `{prompt}`; the runner substitutes the
                 // job prompt into it and waits for a slot, so `queue_ms` reads
