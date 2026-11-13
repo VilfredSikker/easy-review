@@ -50,6 +50,7 @@ fn register_ai_kinds(registry: &mut Registry) -> Result<(), er_store::StoreError
     registry.register::<crate::ai::ScopedExpertReview>()?;
     registry.register::<crate::ai::WorkflowRecord>()?;
     registry.register::<crate::ai::PanelRun>()?;
+    registry.register::<crate::ai::accepted_findings::AcceptedFindings>()?;
     registry.register::<crate::config::RiskRulesArtifact>()?;
     registry.register_text("summary", "summary.md")?;
     Ok(())
@@ -124,6 +125,7 @@ mod tests {
             ("workflow.json", "workflow"),
             ("panel-run.json", "panel-run"),
             ("risk-rules.json", "risk-rules"),
+            ("accepted-findings.json", "accepted-findings"),
             ("summary.md", "summary"),
             ("projects.json", "projects"),
             ("update-check.json", "update-check"),
@@ -253,6 +255,11 @@ mod tests {
             crate::ai::ScopedExpertReview,
             er_store::ExpertId::new("security").unwrap(),
             serde_json::json!({"version": 1, "expert_id": "security"})
+        );
+        check!(
+            crate::ai::accepted_findings::AcceptedFindings,
+            (),
+            serde_json::json!({"version": 1, "findings": []})
         );
     }
 

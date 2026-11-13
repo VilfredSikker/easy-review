@@ -6,10 +6,11 @@
 //! module existed:
 //!
 //! 1. Backfill lenses on the general review.
-//! 2. Append accepted expert rows, in ascending `expert_id` order.
-//! 3. Merge professor rows.
-//! 4. Clear agent-written providers and restore accepted-run provenance.
-//! 5. Overlay arbiter verdicts last, so they grade every row above.
+//! 2. Append the accepted-findings artifact, in acceptance order.
+//! 3. Append accepted expert rows, in ascending `expert_id` order.
+//! 4. Merge professor rows.
+//! 5. Clear agent-written providers and restore accepted-run provenance.
+//! 6. Overlay arbiter verdicts last, so they grade every row above.
 //!
 //! Scoped re-review overlays replace their paths in [`ProjectionInputs`]
 //! before stage 1, and validation runs between provenance and the arbiter.
@@ -17,6 +18,7 @@
 //! the arena restore. Only validation sits between provenance and the
 //! arbiter; the arbiter stays last so it grades the final rows.
 
+use super::accepted_findings::AcceptedFinding;
 use super::accepted_provenance::{ProvenanceRead, ReviewRowIdentity};
 use super::arbiter::{merge_arbiter_into_review, ArbiterEffect, ArbiterReview, ArbiterRuling};
 use super::experts::{backfill_finding_lenses, expert_by_id, expert_hash_accepted, ExpertReview};
@@ -29,6 +31,10 @@ use std::collections::{HashMap, HashSet};
 pub struct ProjectionInputs<'a> {
     /// The parsed `review.json`, not yet backfilled.
     pub general: Option<ErReview>,
+    /// The bucket's accepted findings, in acceptance order. Appended after the
+    /// general review and before the expert rows, which is where the import
+    /// left them.
+    pub accepted: &'a [AcceptedFinding],
     pub experts: &'a [ExpertReview],
     pub professor: Option<&'a ProfessorReview>,
     /// The arbitrated overlay captured from `arbiter.json`, never a second
@@ -58,6 +64,7 @@ pub struct FindingsProjection {
 pub fn build_findings_projection(inputs: ProjectionInputs<'_>) -> FindingsProjection {
     let ProjectionInputs {
         general,
+        accepted,
         experts,
         professor,
         arbiter,
@@ -73,6 +80,19 @@ pub fn build_findings_projection(inputs: ProjectionInputs<'_>) -> FindingsProjec
         .unwrap_or_default();
     if let Some(general) = review.as_mut() {
         backfill_finding_lenses(general);
+    }
+
+    // Accepted rows sit where the import used to leave them: after the general
+    // review's own rows and before the expert rows. Provenance clears their
+    // providers and restores them from the artifact row.
+    if let Some(general) = review.as_mut() {
+        append_accepted_findings(general, accepted);
+    } else if let Some(first) = accepted.first() {
+        let mut shell = review_shell(current_diff_hash, &first.accepted_at);
+        append_accepted_findings(&mut shell, accepted);
+        if !shell.files.is_empty() {
+            review = Some(shell);
+        }
     }
 
     // The hash rules differ, and stay as they were before this module:
@@ -171,6 +191,23 @@ fn review_shell(diff_hash: &str, created_at: &str) -> ErReview {
         head_branch: String::new(),
         files: HashMap::new(),
         file_hashes: HashMap::new(),
+    }
+}
+
+fn append_accepted_findings(review: &mut ErReview, accepted: &[AcceptedFinding]) {
+    for row in accepted {
+        let mut finding = row.finding.clone();
+        finding.providers.clear();
+        let entry = review
+            .files
+            .entry(row.file.clone())
+            .or_insert_with(|| ErFileReview {
+                risk: finding.severity,
+                risk_reason: String::new(),
+                summary: String::new(),
+                findings: Vec::new(),
+            });
+        entry.findings.push(finding);
     }
 }
 
@@ -292,6 +329,7 @@ mod tests {
     fn project(review: ErReview, experts: &[ExpertReview], current_diff_hash: &str) -> ErReview {
         let projection = build_findings_projection(ProjectionInputs {
             general: Some(review),
+            accepted: &[],
             experts,
             professor: None,
             arbiter: None,
@@ -523,6 +561,7 @@ mod tests {
     ) -> FindingsProjection {
         build_findings_projection(ProjectionInputs {
             general: Some(review),
+            accepted: &[],
             experts: &[],
             professor: None,
             arbiter: Some(arbiter),

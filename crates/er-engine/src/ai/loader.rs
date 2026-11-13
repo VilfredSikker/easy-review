@@ -376,20 +376,44 @@ pub fn load_ai_state_with_arbiter(
         }
     });
 
+    // The artifact is host-written, so its rows carry the providers the arena
+    // recorded. An unreadable file reads as none, the same as every other
+    // sidecar a load skips.
+    let accepted =
+        crate::store_registry::read_found::<super::accepted_findings::AcceptedFindings>(er_dir, ())
+            .map(|artifact| artifact.findings)
+            .unwrap_or_default();
+
     let projection =
         super::projection::build_findings_projection(super::projection::ProjectionInputs {
             general,
+            accepted: &accepted,
             experts: &experts,
             professor: professor.as_ref(),
             arbiter: arbiter.as_ref(),
             validation: validation.as_ref(),
             current_diff_hash,
             accepted_provenance: &|review_hash, rows| {
-                super::accepted_provenance::accepted_provenance_for_rows(
+                let mut read = super::accepted_provenance::accepted_provenance_for_rows(
                     Path::new(er_dir),
                     review_hash,
                     rows,
-                )
+                );
+                for row in &accepted {
+                    if rows
+                        .iter()
+                        .any(|row_identity| row_identity.id == row.finding.id)
+                    {
+                        read.rows.insert(
+                            row.finding.id.clone(),
+                            super::accepted_provenance::AcceptedProvenance {
+                                providers: row.providers.clone(),
+                                raisers: row.finding.raised_by.clone(),
+                            },
+                        );
+                    }
+                }
+                read
             },
         });
     for diagnostic in projection.provenance_diagnostics {
@@ -526,6 +550,7 @@ mod tests {
             let mut projection = crate::ai::projection::build_findings_projection(
                 crate::ai::projection::ProjectionInputs {
                     general: Some(review),
+                    accepted: &[],
                     experts: &[],
                     professor: None,
                     arbiter: None,
