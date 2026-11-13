@@ -47,7 +47,7 @@ pub(crate) mod test_support {
     impl Artifact for TestEnveloped {
         const KIND: &'static str = "test-enveloped";
         const VERSION: u32 = 2;
-            const FILE: &'static str = "test-enveloped.json";
+        const FILE: &'static str = "test-enveloped.json";
         type Slot = ();
     }
 
@@ -61,7 +61,7 @@ pub(crate) mod test_support {
     impl Artifact for TestPayload {
         const KIND: &'static str = "test-payload";
         const VERSION: u32 = 2;
-            const FILE: &'static str = "test-payload.json";
+        const FILE: &'static str = "test-payload.json";
         type Slot = ();
     }
 
@@ -75,7 +75,7 @@ pub(crate) mod test_support {
     impl Artifact for TestExpert {
         const KIND: &'static str = "test-expert";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "experts/{slot}.json";
+        const FILE: &'static str = "experts/{slot}.json";
         type Slot = ExpertId;
     }
 
@@ -89,7 +89,7 @@ pub(crate) mod test_support {
     impl Artifact for TestCounter {
         const KIND: &'static str = "test-counter";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "counter.json";
+        const FILE: &'static str = "counter.json";
         type Slot = ();
     }
 
@@ -101,7 +101,7 @@ pub(crate) mod test_support {
     impl Artifact for TestExpertSingleton {
         const KIND: &'static str = "test-expert-singleton";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "experts/security.json";
+        const FILE: &'static str = "experts/security.json";
         type Slot = ();
     }
 
@@ -114,7 +114,7 @@ pub(crate) mod test_support {
     impl Artifact for TestMigrateErr {
         const KIND: &'static str = "test-migrate-err";
         const VERSION: u32 = 2;
-            const FILE: &'static str = "test-migrate-err.json";
+        const FILE: &'static str = "test-migrate-err.json";
         type Slot = ();
 
         fn migrate(from: u32, _raw: serde_json::Value) -> Result<serde_json::Value, StoreError> {
@@ -135,7 +135,7 @@ pub(crate) mod test_support {
     impl Artifact for TestBig {
         const KIND: &'static str = "test-big";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "test-big.json";
+        const FILE: &'static str = "test-big.json";
         type Slot = ();
     }
 
@@ -147,7 +147,7 @@ pub(crate) mod test_support {
     impl Artifact for TestBigEnveloped {
         const KIND: &'static str = "test-big-enveloped";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "test-big-enveloped.json";
+        const FILE: &'static str = "test-big-enveloped.json";
         type Slot = ();
     }
 
@@ -160,7 +160,7 @@ pub(crate) mod test_support {
     impl Artifact for TestEnvelopedHash {
         const KIND: &'static str = "test-enveloped-hash";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "test-enveloped-hash.json";
+        const FILE: &'static str = "test-enveloped-hash.json";
         type Slot = ();
 
         fn diff_hash(&self) -> Option<&str> {
@@ -176,7 +176,7 @@ pub(crate) mod test_support {
     impl Artifact for TestBadSingleton {
         const KIND: &'static str = "test-bad-singleton";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "bad/{slot}.json";
+        const FILE: &'static str = "bad/{slot}.json";
         type Slot = ();
     }
 
@@ -188,7 +188,7 @@ pub(crate) mod test_support {
     impl Artifact for TestBadMulti {
         const KIND: &'static str = "test-bad-multi";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "bad.json";
+        const FILE: &'static str = "bad.json";
         type Slot = ExpertId;
     }
 
@@ -200,7 +200,7 @@ pub(crate) mod test_support {
     impl Artifact for TestAbsoluteTemplate {
         const KIND: &'static str = "test-absolute-template";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "/absolute.json";
+        const FILE: &'static str = "/absolute.json";
         type Slot = ();
     }
 
@@ -212,7 +212,7 @@ pub(crate) mod test_support {
     impl Artifact for TestDotDotTemplate {
         const KIND: &'static str = "test-dotdot-template";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "nested/../escape.json";
+        const FILE: &'static str = "nested/../escape.json";
         type Slot = ();
     }
 
@@ -224,7 +224,7 @@ pub(crate) mod test_support {
     impl Artifact for TestGeneral {
         const KIND: &'static str = "test-general";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "general.json";
+        const FILE: &'static str = "general.json";
         type Slot = ();
     }
 
@@ -238,7 +238,7 @@ pub(crate) mod test_support {
     impl Artifact for TestExpertAlt {
         const KIND: &'static str = "test-expert";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "experts-alt/{slot}.json";
+        const FILE: &'static str = "experts-alt/{slot}.json";
         type Slot = ExpertId;
     }
 
@@ -263,7 +263,7 @@ pub(crate) mod test_support {
     impl Artifact for TestBadSlotKind {
         const KIND: &'static str = "test-bad-slot";
         const VERSION: u32 = 1;
-            const FILE: &'static str = "bad-slot/{slot}.json";
+        const FILE: &'static str = "bad-slot/{slot}.json";
         type Slot = BadSlot;
     }
 

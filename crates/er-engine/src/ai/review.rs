@@ -1860,11 +1860,9 @@ mod tests {
         assert!(load_review(er_dir).is_none());
 
         let store = er_store::ArtifactStore::new(dir.path());
-        let key = er_store::ArtifactKey::<ErReview>::new(
-            er_store::Scope::dir(dir.path()).unwrap(),
-            (),
-        )
-        .unwrap();
+        let key =
+            er_store::ArtifactKey::<ErReview>::new(er_store::Scope::dir(dir.path()).unwrap(), ())
+                .unwrap();
         match store.read(&key).unwrap() {
             er_store::Loaded::Unreadable(er_store::Unreadable::Malformed(reason)) => {
                 assert!(

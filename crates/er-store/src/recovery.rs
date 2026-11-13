@@ -427,7 +427,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::test_support::{TestPayload, TestEnveloped};
+    use crate::test_support::{TestEnveloped, TestPayload};
 
     trait ParsedValue<T> {
         fn parsed_value(self) -> Option<T>;
@@ -580,9 +580,7 @@ mod tests {
             Loaded::Found(stored) => stored.value,
             other => panic!("expected Found, got {other:?}"),
         };
-        assert!(store
-            .restore_if_unchanged(&original, &changed_now)
-            .unwrap());
+        assert!(store.restore_if_unchanged(&original, &changed_now).unwrap());
         assert_eq!(
             std::fs::read(store.path(&key)).unwrap().as_slice(),
             original.bytes()

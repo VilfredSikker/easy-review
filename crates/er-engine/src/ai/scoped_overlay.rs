@@ -2180,10 +2180,8 @@ mod tests {
             );
             let previous_key =
                 ArtifactKey::<ScopedReview>::new(Scope::dir(&dir).unwrap(), ()).unwrap();
-            let previous = std::fs::read(
-                crate::store_registry::store().path(&previous_key),
-            )
-            .unwrap();
+            let previous =
+                std::fs::read(crate::store_registry::store().path(&previous_key)).unwrap();
             write_sidecar(&dir, &agent);
             let er_dir = dir.to_string_lossy().into_owned();
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));

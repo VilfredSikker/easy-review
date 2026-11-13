@@ -428,9 +428,9 @@ mod tests {
     use super::*;
     use crate::key::{ArtifactKey, BranchView, ExpertId, RelPath, Scope, Slug};
     use crate::test_support::{
-        TestAbsoluteTemplate, TestBadMulti, TestBadSingleton, TestPayload, TestBig, TestBigEnveloped,
+        TestAbsoluteTemplate, TestBadMulti, TestBadSingleton, TestBig, TestBigEnveloped,
         TestDotDotTemplate, TestEnveloped, TestEnvelopedHash, TestExpert, TestExpertAlt,
-        TestExpertSingleton, TestGeneral, TestMigrateErr,
+        TestExpertSingleton, TestGeneral, TestMigrateErr, TestPayload,
     };
 
     fn temp_store() -> (TempDir, ArtifactStore) {

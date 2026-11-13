@@ -244,7 +244,7 @@ mod tests {
     use crate::key::{ArtifactKey, RelPath};
     use crate::registry::Registry;
     use crate::test_support::{
-        ignore_patterns, TestPayload, TestCounter, TestEnveloped, TestEnvelopedHash, TestGeneral,
+        ignore_patterns, TestCounter, TestEnveloped, TestEnvelopedHash, TestGeneral, TestPayload,
     };
 
     const INCREMENT_ROUNDS: u32 = 25;
