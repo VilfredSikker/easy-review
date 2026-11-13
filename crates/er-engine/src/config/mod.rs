@@ -1,3 +1,4 @@
+mod agents;
 pub mod desktop_settings;
 mod file_kinds;
 mod flow_models;
@@ -8,6 +9,7 @@ pub mod settings;
 
 use anyhow::Result;
 
+pub use agents::{agents_path, load_agents_from, save_agents_to, AgentsConfig};
 pub use desktop_settings::{
     apply_config_field, desktop_settings_snapshot, validate_config_text_field, ConfigFieldValue,
     ConfigHubFieldDto, DesktopSettingsSnapshot, RISK_RULE_PATCH_KEY,
@@ -1801,14 +1803,29 @@ impl std::fmt::Display for ConfigReadError {
     }
 }
 
-fn parse_config_from_path(path: &std::path::Path) -> Result<ErConfig, ConfigReadError> {
+/// Read a config file as raw TOML tables, before any typed parse.
+fn read_config_table(path: &std::path::Path) -> Result<toml::Table, ConfigReadError> {
     let content = std::fs::read_to_string(path).map_err(ConfigReadError::Read)?;
-    let table = content
+    content
         .parse::<toml::Table>()
-        .map_err(ConfigReadError::Parse)?;
+        .map_err(ConfigReadError::Parse)
+}
+
+fn parse_config_from_path(path: &std::path::Path) -> Result<ErConfig, ConfigReadError> {
+    let table = read_config_table(path)?;
     toml::Value::Table(table)
         .try_into::<ErConfig>()
         .map_err(ConfigReadError::Parse)
+}
+
+fn parse_config_document(
+    path: &std::path::Path,
+) -> Result<(toml::Table, ErConfig), ConfigReadError> {
+    let table = read_config_table(path)?;
+    let config = toml::Value::Table(table.clone())
+        .try_into::<ErConfig>()
+        .map_err(ConfigReadError::Parse)?;
+    Ok((table, config))
 }
 
 /// The newest existing backup with the same bytes, if one exists. A repeated
@@ -1885,18 +1902,34 @@ fn backup_invalid_config(path: &std::path::Path) -> (Option<std::path::PathBuf>,
     (None, Some("could not find a free backup name".to_string()))
 }
 
-/// Load `path`, returning the default config and the error when the file
-/// exists but cannot be read or parsed. A missing file is not an error.
-pub fn load_config_from(path: &std::path::Path) -> (ErConfig, Option<ConfigLoadError>) {
-    match parse_config_from_path(path) {
-        Ok(config) => (config, None),
+/// Load `path` and its sibling `agents.toml`, returning the default config and
+/// the error when either file exists but cannot be read or parsed. A missing
+/// file is not an error.
+///
+/// The load also completes an interrupted agent-settings move, so it may write
+/// both files once. `adopt` controls whether a successful parse clears this
+/// session's failed-load marks; only a load whose result becomes the app's
+/// config should clear them.
+fn load_pair(path: &std::path::Path, adopt: bool) -> (ErConfig, Option<ConfigLoadError>) {
+    let (table, mut config) = match parse_config_document(path) {
+        Ok(pair) => {
+            if adopt {
+                clear_config_load_failure(path);
+            }
+            pair
+        }
         Err(ConfigReadError::Read(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            (ErConfig::default(), None)
+            if adopt {
+                clear_config_load_failure(path);
+            }
+            (toml::Table::new(), ErConfig::default())
         }
         Err(error) => {
+            // A config file that does not parse is left alone: no agents file
+            // is written and no move runs while this failure is recorded.
             record_config_load_failure(path);
             let (backup, backup_error) = backup_invalid_config(path);
-            (
+            return (
                 ErConfig::default(),
                 Some(ConfigLoadError {
                     path: path.to_path_buf(),
@@ -1904,9 +1937,18 @@ pub fn load_config_from(path: &std::path::Path) -> (ErConfig, Option<ConfigLoadE
                     backup,
                     backup_error,
                 }),
-            )
+            );
         }
-    }
+    };
+    let error = agents::reconcile_on_load(path, table, &mut config, adopt);
+    supplement_ai_hub(&mut config.ai_hub);
+    (config, error)
+}
+
+/// Load `path`, returning the default config and the error when the file
+/// exists but cannot be read or parsed. A missing file is not an error.
+pub fn load_config_from(path: &std::path::Path) -> (ErConfig, Option<ConfigLoadError>) {
+    load_pair(path, false)
 }
 
 /// Load `path` and, on success, clear a recorded failed-load mark. Call this
@@ -1914,26 +1956,19 @@ pub fn load_config_from(path: &std::path::Path) -> (ErConfig, Option<ConfigLoadE
 /// reload). A load whose result is used and discarded must use
 /// [`load_config_from`], which never clears the mark.
 pub fn adopt_config_from(path: &std::path::Path) -> (ErConfig, Option<ConfigLoadError>) {
-    let (config, error) = load_config_from(path);
-    if error.is_none() {
-        clear_config_load_failure(path);
-    }
-    (config, error)
+    load_pair(path, true)
 }
 
 /// Load the global config from managed storage.
 pub fn load_global_config() -> ErConfig {
-    let (mut config, _error) = load_config_from(&managed_config_path());
-    supplement_ai_hub(&mut config.ai_hub);
+    let (config, _error) = load_config_from(&managed_config_path());
     config
 }
 
 /// Load the global config, reporting a failed managed-config load instead of
 /// only defaulting.
 pub fn load_global_config_checked() -> (ErConfig, Option<ConfigLoadError>) {
-    let (mut config, error) = adopt_config_from(&managed_config_path());
-    supplement_ai_hub(&mut config.ai_hub);
-    (config, error)
+    adopt_config_from(&managed_config_path())
 }
 
 /// What `save_config` writes: discovered models and unedited catalog presets
@@ -1953,15 +1988,21 @@ pub fn persisted_config(config: &ErConfig) -> ErConfig {
     to_save
 }
 
-/// Save config to managed storage (`<storage_root>/config.toml`).
+/// Save config to managed storage: `agents.toml` and `config.toml`.
+///
+/// The config file is checked first, so a config.toml that does not parse
+/// leaves neither file written. The agents file is checked and written before
+/// config.toml, so a bad agents.toml stops the pair without a partial save.
 pub fn save_config(config: &ErConfig) -> Result<()> {
-    save_config_to(&managed_config_path(), config)
+    let config_path = managed_config_path();
+    ensure_config_saveable(&config_path)?;
+    agents::save_agents_to(&agents::agents_path(&config_path), config)?;
+    save_config_to(&config_path, config)
 }
 
-/// Save `config` to `path`, refusing to overwrite a file that exists and does
-/// not load. The bytes the user must fix stay exactly as they were until the
-/// file parses again; a missing file is simply written.
-pub fn save_config_to(path: &std::path::Path, config: &ErConfig) -> Result<()> {
+/// Refuse a save when `path` has a recorded failed load or does not parse,
+/// without writing anything.
+fn ensure_config_saveable(path: &std::path::Path) -> Result<()> {
     if config_load_failed(path) {
         anyhow::bail!(
             "Refusing to save: {} failed to load earlier in this session. Fix or remove the file, then reopen Settings or restart to reload it.",
@@ -1969,8 +2010,8 @@ pub fn save_config_to(path: &std::path::Path, config: &ErConfig) -> Result<()> {
         );
     }
     match parse_config_from_path(path) {
-        Ok(_) => {}
-        Err(ConfigReadError::Read(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => Ok(()),
+        Err(ConfigReadError::Read(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => {
             record_config_load_failure(path);
             anyhow::bail!(
@@ -1979,8 +2020,25 @@ pub fn save_config_to(path: &std::path::Path, config: &ErConfig) -> Result<()> {
             );
         }
     }
+}
 
-    let content = toml::to_string_pretty(&persisted_config(config))?;
+/// `config.toml`'s text: everything but the two sections that live in
+/// `agents.toml`.
+fn config_toml_string(config: &ErConfig) -> Result<String> {
+    let mut value = toml::Value::try_from(persisted_config(config))?;
+    if let Some(table) = value.as_table_mut() {
+        table.remove("agent");
+        table.remove("ai_hub");
+    }
+    Ok(toml::to_string_pretty(&value)?)
+}
+
+/// Save `config` to `path`, refusing to overwrite a file that exists and does
+/// not load. The bytes the user must fix stay exactly as they were until the
+/// file parses again; a missing file is simply written.
+pub fn save_config_to(path: &std::path::Path, config: &ErConfig) -> Result<()> {
+    ensure_config_saveable(path)?;
+    let content = config_toml_string(config)?;
     er_store::atomic::write_atomic_durable(path, content.as_bytes())?;
     Ok(())
 }
@@ -4352,34 +4410,40 @@ mod tests {
     fn a_non_adopting_load_does_not_clear_the_failed_load_mark() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "{").unwrap();
-        assert!(load_config_from(&path).1.is_some());
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(&path, "{").unwrap();
+            assert!(load_config_from(&path).1.is_some());
 
-        // The user repairs the file while the app still holds the defaults.
-        std::fs::write(&path, "[agent]\nmodel = \"keepme\"\n").unwrap();
+            // The user repairs the file while the app still holds the defaults.
+            std::fs::write(&path, "[agent]\nmodel = \"keepme\"\n").unwrap();
 
-        // A new tab, a finished review or a desktop command loads and discards.
-        let (loaded, error) = load_config_from(&path);
-        assert!(error.is_none(), "{error:?}");
-        assert_eq!(loaded.agent.model, "keepme");
+            // A new tab, a finished review or a desktop command loads and discards.
+            let (loaded, error) = load_config_from(&path);
+            assert!(error.is_none(), "{error:?}");
+            assert_eq!(loaded.agent.model, "keepme");
 
-        // The discarded load must not lift the refusal: the stale app config
-        // still cannot win.
-        let error = save_config_to(&path, &ErConfig::default()).unwrap_err();
-        assert!(
-            error.to_string().contains("failed to load earlier"),
-            "{error}"
-        );
-        assert!(std::fs::read_to_string(&path).unwrap().contains("keepme"));
+            // The discarded load must not lift the refusal: the stale app config
+            // still cannot win.
+            let error = save_config_to(&path, &ErConfig::default()).unwrap_err();
+            assert!(
+                error.to_string().contains("failed to load earlier"),
+                "{error}"
+            );
+            // The discarded load migrated the agent table, so the value now
+            // lives in agents.toml rather than config.toml.
+            assert!(std::fs::read_to_string(agents_path(&path))
+                .unwrap_or_default()
+                .contains("keepme"));
 
-        // Only an adopting load clears the mark.
-        let (adopted, error) = adopt_config_from(&path);
-        assert!(error.is_none(), "{error:?}");
-        assert_eq!(adopted.agent.model, "keepme");
-        save_config_to(&path, &adopted).unwrap();
-        let (reloaded, error) = load_config_from(&path);
-        assert!(error.is_none(), "{error:?}");
-        assert_eq!(reloaded.agent.model, "keepme");
+            // Only an adopting load clears the mark.
+            let (adopted, error) = adopt_config_from(&path);
+            assert!(error.is_none(), "{error:?}");
+            assert_eq!(adopted.agent.model, "keepme");
+            save_config_to(&path, &adopted).unwrap();
+            let (reloaded, error) = load_config_from(&path);
+            assert!(error.is_none(), "{error:?}");
+            assert_eq!(reloaded.agent.model, "keepme");
+        });
     }
 
     #[test]
