@@ -1,6 +1,7 @@
 //! Import shipped arena findings into `.er/review.json` for the Review tab.
 
 use super::model::{ArenaFinding, ArenaRun, Verdict};
+use crate::ai::accepted_findings::AcceptedFinding;
 use crate::ai::{Confidence, ErFileReview, ErReview, Finding, RiskLevel, GENERAL_LENS};
 use anyhow::{Context, Result};
 use er_store::{ArtifactKey, Loaded, Scope};
@@ -76,6 +77,51 @@ const fn is_importable(f: &ArenaFinding, run: &ArenaRun) -> bool {
         // Single-round runs complete without arbiter (legacy runs stayed pending).
         Verdict::Pending => run.config.rounds <= 1,
         Verdict::Dropped => false,
+    }
+}
+
+/// Build the artifact rows for the selected findings, in the given order.
+///
+/// The row id is the one the import produced, `arena-{run}-{finding}`, so ids
+/// and order match what the front ends saw before the artifact existed.
+pub fn accepted_finding_rows(
+    run: &ArenaRun,
+    ids: &[String],
+    accepted_at: &str,
+) -> Vec<AcceptedFinding> {
+    ids.iter()
+        .filter_map(|id| {
+            let finding = run.findings.iter().find(|f| f.id == *id)?;
+            if !is_importable(finding, run) || finding.accepted_at.is_some() {
+                return None;
+            }
+            let row = arena_finding_to_review(finding, run);
+            Some(AcceptedFinding {
+                file: finding.file.clone(),
+                run_finding_id: finding.id.clone(),
+                run_id: run.id.clone(),
+                run_diff_hash: run.diff_hash.clone(),
+                accepted_at: accepted_at.to_string(),
+                providers: row.providers.clone(),
+                finding: row,
+            })
+        })
+        .collect()
+}
+
+/// Mark the run's own record for the rows the artifact just took.
+pub fn mark_accepted(run: &mut ArenaRun, rows: &[AcceptedFinding], accepted_at: &str) {
+    for row in rows {
+        if let Some(finding) = run
+            .findings
+            .iter_mut()
+            .find(|finding| finding.id == row.run_finding_id)
+        {
+            finding.accepted_at = Some(accepted_at.to_string());
+        }
+        if !run.accepted_finding_ids.contains(&row.run_finding_id) {
+            run.accepted_finding_ids.push(row.run_finding_id.clone());
+        }
     }
 }
 
