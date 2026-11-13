@@ -52,11 +52,22 @@ fn background_job_kind(kind: &str) -> er_agent::job::JobKind {
     }
 }
 
+/// Read a registered text sidecar through the store. The raw text is what a
+/// caller copies or posts, so it is not parsed.
+fn stored_text(er_dir: &str, file: &str) -> Result<er_store::Loaded<String>> {
+    let store = crate::store_registry::store();
+    let scope = er_store::Scope::dir(er_dir)?;
+    let file = er_store::RelPath::new(file)?;
+    Ok(store.read_text(&scope, &file)?)
+}
+
 /// Push the summary file to the PR body. An unreadable summary is skipped, same
 /// as an empty one.
 fn push_summary_to_pr(github: &dyn er_github::GitHub, er_dir: &str, repo_root: &str) -> Result<()> {
-    let summary_path = std::path::Path::new(er_dir).join("summary.md");
-    let summary = std::fs::read_to_string(&summary_path).unwrap_or_default();
+    let summary = match stored_text(er_dir, "summary.md") {
+        Ok(er_store::Loaded::Found(stored)) => stored.value,
+        _ => String::new(),
+    };
     if summary.trim().is_empty() {
         return Ok(());
     }
@@ -925,11 +936,6 @@ fn legacy_root_notice(
     ))
 }
 
-/// Marker under the storage root: the retired `[commands].summary` key was
-/// announced. Separate from the legacy-root marker, so a machine that already
-/// saw that notice still hears about the key.
-const RETIRED_SUMMARY_NOTICED: &str = ".retired-summary-noticed";
-
 /// The notice that `[commands].summary` is no longer read.
 fn retired_summary_notice(config_path: &std::path::Path) -> Option<String> {
     if !crate::config::retired_summary_command_set(config_path) {
@@ -940,10 +946,6 @@ fn retired_summary_notice(config_path: &std::path::Path) -> Option<String> {
         config_path.display()
     ))
 }
-
-/// Marker under the storage root: the retired project `auto_triage` flag was
-/// announced. Separate from the legacy-root and retired-summary markers.
-const RETIRED_AUTO_TRIAGE_NOTICED: &str = ".retired-auto-triage-noticed";
 
 /// The notice that the per-project `auto_triage` flag is no longer read.
 fn retired_auto_triage_notice(projects_path: &std::path::Path) -> Option<String> {
@@ -2621,12 +2623,17 @@ impl App {
     /// Copy the current hunk to the system clipboard
     pub fn copy_review_json(&mut self) -> Result<()> {
         let er_dir = self.tab().er_dir();
-        let path = std::path::Path::new(&er_dir).join("review.json");
-        if !path.exists() {
-            self.notify("No review.json found");
-            return Ok(());
-        }
-        let content = std::fs::read_to_string(&path).context("Failed to read review.json")?;
+        let file = <ai::ErReview as er_store::Artifact>::FILE;
+        let content = match stored_text(&er_dir, file)? {
+            er_store::Loaded::Found(stored) => stored.value,
+            er_store::Loaded::Absent => {
+                self.notify("No review.json found");
+                return Ok(());
+            }
+            er_store::Loaded::Unreadable(_) => {
+                return Err(anyhow::anyhow!("Failed to read review.json"));
+            }
+        };
         let bytes = content.len();
         Self::copy_to_clipboard(&content)?;
         self.notify(&format!("Copied review.json ({} bytes)", bytes));
@@ -2643,12 +2650,16 @@ impl App {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("annotation file");
-        if !path.exists() {
-            self.notify(&format!("No {name} found"));
-            return Ok(());
-        }
-        let content =
-            std::fs::read_to_string(&path).with_context(|| format!("Failed to read {name}"))?;
+        let content = match ai::annotation_store::questions_text(&store, &scope)? {
+            er_store::Loaded::Found(stored) => stored.value,
+            er_store::Loaded::Absent => {
+                self.notify(&format!("No {name} found"));
+                return Ok(());
+            }
+            er_store::Loaded::Unreadable(_) => {
+                return Err(anyhow::anyhow!("Failed to read {name}"));
+            }
+        };
         let bytes = content.len();
         Self::copy_to_clipboard(&content)?;
         self.notify(&format!("Copied {name} ({} bytes)", bytes));
@@ -2893,33 +2904,39 @@ impl App {
         }
         let mut messages: Vec<String> = Vec::new();
 
-        let legacy_marker = root.join(".legacy-root-noticed");
-        if !legacy_marker.exists() {
+        if !root.join(super::local_files::LEGACY_ROOT_MARKER).exists() {
             let entries = crate::storage::legacy_root_entries_in(base, false);
             let projects_imported = root.join(crate::legacy_projects::IMPORTED_MARKER).exists();
             if let Some(message) = legacy_root_notice(base, &entries, projects_imported) {
-                let _ = std::fs::create_dir_all(root);
                 // A failed write means the notice shows again next launch.
-                let _ = std::fs::write(&legacy_marker, b"");
+                super::local_files::mark_notice_once(root, super::local_files::LEGACY_ROOT_MARKER);
                 messages.push(message);
             }
         }
 
-        let retired_marker = root.join(RETIRED_SUMMARY_NOTICED);
-        if !retired_marker.exists() {
+        if !root
+            .join(super::local_files::RETIRED_SUMMARY_MARKER)
+            .exists()
+        {
             if let Some(message) = retired_summary_notice(&crate::config::managed_config_path()) {
-                let _ = std::fs::create_dir_all(root);
-                let _ = std::fs::write(&retired_marker, b"");
+                super::local_files::mark_notice_once(
+                    root,
+                    super::local_files::RETIRED_SUMMARY_MARKER,
+                );
                 messages.push(message);
             }
         }
 
-        let retired_triage_marker = root.join(RETIRED_AUTO_TRIAGE_NOTICED);
-        if !retired_triage_marker.exists() {
+        if !root
+            .join(super::local_files::RETIRED_AUTO_TRIAGE_MARKER)
+            .exists()
+        {
             if let Some(path) = crate::projects_pins::projects_artifact_path() {
                 if let Some(message) = retired_auto_triage_notice(&path) {
-                    let _ = std::fs::create_dir_all(root);
-                    let _ = std::fs::write(&retired_triage_marker, b"");
+                    super::local_files::mark_notice_once(
+                        root,
+                        super::local_files::RETIRED_AUTO_TRIAGE_MARKER,
+                    );
                     messages.push(message);
                 }
             }
@@ -2935,13 +2952,20 @@ impl App {
     /// Build a human-readable summary after an agent command completes.
     /// Reads the output files to report what was produced.
     fn agent_completion_summary_for(tab: &TabState, name: &str) -> String {
-        let er_dir = std::path::PathBuf::from(tab.er_dir());
-
         match name {
             "review" => {
-                let review_path = er_dir.join("review.json");
-                if let Ok(content) = std::fs::read_to_string(&review_path) {
-                    if let Ok(review) = serde_json::from_str::<ai::ErReview>(&content) {
+                let store = crate::store_registry::store();
+                let Ok(scope) = er_store::Scope::dir(tab.er_dir()) else {
+                    return "Review done — but no review.json found (agent may lack permissions)"
+                        .into();
+                };
+                let Ok(key) = er_store::ArtifactKey::<ai::ErReview>::new(scope, ()) else {
+                    return "Review done — but no review.json found (agent may lack permissions)"
+                        .into();
+                };
+                match store.read(&key) {
+                    Ok(er_store::Loaded::Found(stored)) => {
+                        let review = stored.value;
                         let file_count = review.files.len();
                         let finding_count: usize =
                             review.files.values().map(|f| f.findings.len()).sum();
@@ -2952,11 +2976,13 @@ impl App {
                             finding_count,
                             if finding_count == 1 { "" } else { "s" },
                         )
-                    } else {
+                    }
+                    Ok(er_store::Loaded::Unreadable(_)) => {
                         "Review done — review.json written but could not be parsed".into()
                     }
-                } else {
-                    "Review done — but no review.json found (agent may lack permissions)".into()
+                    _ => {
+                        "Review done — but no review.json found (agent may lack permissions)".into()
+                    }
                 }
             }
             "questions" => {
@@ -3038,7 +3064,7 @@ impl App {
                 &crate::ai::prompts::sanitize_for_shell(&output_path),
             );
 
-        std::fs::create_dir_all(&er_dir)?;
+        super::local_files::ensure_dir(std::path::Path::new(&er_dir))?;
 
         let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
 
@@ -3368,7 +3394,7 @@ impl App {
         );
 
         // Ensure .er/ directory exists
-        std::fs::create_dir_all(&er_dir_path)?;
+        super::local_files::ensure_dir(std::path::Path::new(&er_dir_path))?;
 
         let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
         let prompt_owned = match &staging {
@@ -3399,7 +3425,8 @@ impl App {
         std::thread::spawn(move || {
             let mut timer = er_agent::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                let debug_path = std::path::Path::new(&er_dir_path).join("debug-agent.log");
+                let debug_path =
+                    std::path::Path::new(&er_dir_path).join(super::local_files::DEBUG_LOG_FILE);
 
                 // The argv still carries `{prompt}`; the runner substitutes the
                 // job prompt into it and waits for a slot, so `queue_ms` reads
@@ -3597,13 +3624,16 @@ impl App {
                         stdout_lines.join("\n"),
                         stderr_lines.join("\n"),
                     );
-                    let _ = std::fs::write(&debug_path, &debug_content);
+                    super::local_files::write_debug_log(&debug_path, &debug_content);
                 }
 
                 if !status.success() {
                     // Only point at the transcript when there is one to read.
                     let detail = if debug_agent_log_enabled() {
-                        format!(" (full transcript in {er_dir_path}/debug-agent.log)")
+                        format!(
+                            " (full transcript in {er_dir_path}/{})",
+                            super::local_files::DEBUG_LOG_FILE
+                        )
                     } else {
                         " (set ER_DEBUG=1 for the full transcript)".to_string()
                     };
@@ -3811,7 +3841,6 @@ impl App {
             anyhow::bail!("Nothing to tour");
         }
         let diff_dir = crate::ai::prepared_diff::tour_input_dir(&er_dir);
-        std::fs::create_dir_all(&diff_dir)?;
         let diff_hash = crate::ai::prepared_diff::ensure_diff_artifacts(&diff_dir, &raw)
             .map_err(|e| anyhow::anyhow!("failed to prepare tour diff: {e}"))?;
 
@@ -4271,7 +4300,7 @@ impl App {
             )?;
         }
 
-        std::fs::create_dir_all(&target.er_dir)?;
+        super::local_files::ensure_dir(std::path::Path::new(&target.er_dir))?;
 
         let task_id = task.id.clone();
         let er_dir = target.er_dir.clone();
@@ -4320,7 +4349,8 @@ impl App {
             };
             let mut timer = er_agent::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                let debug_path = std::path::Path::new(&er_dir).join("debug-agent.log");
+                let debug_path =
+                    std::path::Path::new(&er_dir).join(super::local_files::DEBUG_LOG_FILE);
 
                 // The argv still carries `{prompt}`; the runner substitutes the
                 // job prompt into it. The slot, the spawn and the stop verdicts
@@ -4497,7 +4527,7 @@ impl App {
                         stdout_lines.join("\n"),
                         stderr_lines.join("\n"),
                     );
-                    let _ = std::fs::write(&debug_path, &debug_content);
+                    super::local_files::write_debug_log(&debug_path, &debug_content);
                 }
 
                 if !status.success() {
@@ -7787,7 +7817,9 @@ mod github_handle_tests {
     #[cfg(unix)]
     fn a_failed_pr_body_write_reaches_the_command_status() {
         let tmp = tempfile::tempdir().unwrap();
-        crate::storage::with_test_storage_root(tmp.path(), || {
+        // The summary read happens on the job thread, which a thread-local
+        // root cannot reach.
+        crate::storage::with_process_test_storage_root(tmp.path(), || {
             let (mut app, _) = app_with_github_comments(&tmp);
             let er_dir = app.tab().er_dir();
             std::fs::write(format!("{er_dir}/summary.md"), "# summary").unwrap();
@@ -8556,6 +8588,97 @@ mod update_job_tests {
             let staging = std::fs::read_to_string(&record).unwrap();
             assert!(staging.contains("/staging/"), "{staging}");
             assert!(!Path::new(&staging).exists(), "{staging}");
+        });
+    }
+}
+
+#[cfg(test)]
+mod stored_sidecar_tests {
+    use super::*;
+    use crate::paths::ErRoot;
+
+    #[test]
+    fn the_clipboard_reads_the_stored_review_and_questions() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let bucket = dir.path().join(".er");
+            let scope = er_store::Scope::dir(&bucket).unwrap();
+            let store = crate::store_registry::store();
+            let review_key = er_store::ArtifactKey::<ai::ErReview>::new(scope.clone(), ()).unwrap();
+            let review: ai::ErReview = serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "diff_hash": "hash",
+                "files": {
+                    "src/a.rs": {
+                        "risk": "low",
+                        "findings": [{"id": "stored", "severity": "low", "title": "Stored finding"}]
+                    }
+                }
+            }))
+            .unwrap();
+            store.write(&review_key, &review).unwrap();
+            let questions =
+                er_store::RelPath::new(<ai::ErQuestions as er_store::Artifact>::FILE).unwrap();
+            store
+                .write_text(
+                    &scope,
+                    &questions,
+                    "{\"questions\": [{\"id\": \"stored-question\"}]}",
+                )
+                .unwrap();
+
+            let er_dir = bucket.to_str().unwrap();
+            match stored_text(er_dir, <ai::ErReview as er_store::Artifact>::FILE).unwrap() {
+                er_store::Loaded::Found(text) => {
+                    assert!(text.value.contains("Stored finding"), "{}", text.value);
+                }
+                _ => panic!("the stored review text is readable"),
+            }
+            match ai::annotation_store::questions_text(&store, &scope).unwrap() {
+                er_store::Loaded::Found(text) => {
+                    assert!(text.value.contains("stored-question"), "{}", text.value);
+                }
+                _ => panic!("the stored questions text is readable"),
+            }
+        });
+    }
+
+    #[test]
+    fn the_completion_summary_counts_the_stored_review() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let mut tab = TabState::new_for_test(Vec::new());
+            tab.er_root = ErRoot::managed(format!("{}/.er", dir.path().display()));
+            let scope = er_store::Scope::dir(tab.er_dir()).unwrap();
+            let store = crate::store_registry::store();
+            let key = er_store::ArtifactKey::<ai::ErReview>::new(scope, ()).unwrap();
+            let review: ai::ErReview = serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "diff_hash": "hash",
+                "files": {
+                    "a.rs": {
+                        "risk": "low",
+                        "findings": [
+                            {"id": "1", "severity": "low", "title": "A"},
+                            {"id": "2", "severity": "low", "title": "B"}
+                        ]
+                    },
+                    "b.rs": {
+                        "risk": "low",
+                        "findings": [{"id": "3", "severity": "low", "title": "C"}]
+                    }
+                }
+            }))
+            .unwrap();
+            store.write(&key, &review).unwrap();
+
+            let summary = App::agent_completion_summary_for(&tab, "review");
+            assert!(summary.contains("2 files"), "{summary}");
+            assert!(summary.contains("3 findings"), "{summary}");
+
+            store.delete::<ai::ErReview>(&key).unwrap();
+            let summary = App::agent_completion_summary_for(&tab, "review");
+            assert!(summary.contains("no review.json found"), "{summary}");
         });
     }
 }

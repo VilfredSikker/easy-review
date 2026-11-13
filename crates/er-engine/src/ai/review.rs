@@ -95,6 +95,36 @@ impl er_store::Artifact for ErReview {
     }
 }
 
+fn review_key(er_dir: &str) -> Option<er_store::ArtifactKey<ErReview>> {
+    let scope = er_store::Scope::dir(er_dir).ok()?;
+    er_store::ArtifactKey::<ErReview>::new(scope, ()).ok()
+}
+
+/// The store handle for a bucket the caller already holds. A directory scope
+/// ignores the managed root, so this one never resolves it.
+fn bucket_store(er_dir: &str) -> er_store::ArtifactStore {
+    er_store::ArtifactStore::new(er_dir)
+}
+
+/// Load `review.json` through the store. A file that cannot be used reads as
+/// `None`, the same as an absent one.
+pub fn load_review(er_dir: &str) -> Option<ErReview> {
+    let key = review_key(er_dir)?;
+    match bucket_store(er_dir).read(&key).ok()? {
+        er_store::Loaded::Found(stored) => Some(stored.value),
+        _ => None,
+    }
+}
+
+/// Whether the bucket holds a regular `review.json`, without parsing it, so a
+/// caller can offer to rewrite a malformed one.
+pub fn review_file_exists(er_dir: &str) -> bool {
+    let Some(key) = review_key(er_dir) else {
+        return false;
+    };
+    bucket_store(er_dir).exists(&key)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ErFileReview {
     pub risk: RiskLevel,
@@ -1789,6 +1819,33 @@ mod tests {
     use super::*;
     use crate::git::LineType;
     use std::collections::HashMap;
+
+    /// The two desktop loaders disagree on a malformed file by design: the
+    /// batch validate target exists, but there is no review to load. This test
+    /// deliberately runs with no storage-root override, so the store guard
+    /// proves neither helper resolves the managed root on its own.
+    #[test]
+    fn load_review_and_review_file_exists_treat_a_malformed_file_differently() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("review.json"), b"not json").unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        assert!(
+            review_file_exists(er_dir),
+            "the batch validate target still exists"
+        );
+        assert!(load_review(er_dir).is_none(), "there is no review to load");
+
+        let store = er_store::ArtifactStore::new(dir.path());
+        let scope = er_store::Scope::dir(dir.path()).unwrap();
+        let key = er_store::ArtifactKey::<ErReview>::new(scope, ()).unwrap();
+        let review: ErReview = serde_json::from_value(
+            serde_json::json!({"version": 1, "diff_hash": "hash", "files": {}}),
+        )
+        .unwrap();
+        store.write(&key, &review).unwrap();
+        assert!(load_review(er_dir).is_some());
+        assert!(review_file_exists(er_dir));
+    }
 
     // ── Helpers ──
 

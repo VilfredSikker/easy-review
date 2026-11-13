@@ -24,8 +24,8 @@ use std::sync::Mutex;
 static ARTIFACT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Directory inside a bucket where a tour keeps its own prepared diff, so it
-/// never rewrites the `diff-tmp` that a review flow has pinned. The caller
-/// creates it; `ensure_diff_artifacts` does not.
+/// never rewrites the `diff-tmp` that a review flow has pinned.
+/// `ensure_diff_artifacts` creates it.
 pub fn tour_input_dir(er_dir: &str) -> String {
     Path::new(er_dir)
         .join("tour-input")

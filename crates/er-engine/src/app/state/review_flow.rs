@@ -1458,10 +1458,18 @@ fn selection_for_provider(context: &ReviewFlowContext, provider: &FlowProvider) 
 }
 
 fn read_triage(er_dir: &str) -> Result<TriageReview> {
+    let store = crate::store_registry::store();
+    let scope = er_store::Scope::dir(er_dir)?;
+    let key = er_store::ArtifactKey::<TriageReview>::new(scope, ())?;
     let path = Path::new(er_dir).join("triage.json");
-    let contents =
-        crate::ai::read_sidecar(&path).with_context(|| format!("read {}", path.display()))?;
-    serde_json::from_str(&contents).context("parse triage output")
+    match store
+        .read(&key)
+        .with_context(|| format!("read {}", path.display()))?
+    {
+        er_store::Loaded::Found(stored) => Ok(stored.value),
+        er_store::Loaded::Absent => bail!("parse triage output: triage.json is missing"),
+        er_store::Loaded::Unreadable(reason) => bail!("parse triage output: {reason:?}"),
+    }
 }
 
 #[cfg(test)]
@@ -1483,6 +1491,35 @@ mod tests {
         fn path(&self) -> &std::path::Path {
             self.0.path()
         }
+    }
+
+    #[test]
+    fn read_triage_reads_through_the_store() {
+        let dir = TestDir::new("triage-store");
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let store = crate::store_registry::store();
+            let scope = er_store::Scope::dir(dir.path()).unwrap();
+            let key = er_store::ArtifactKey::<TriageReview>::new(scope, ()).unwrap();
+            let triage: TriageReview =
+                serde_json::from_value(serde_json::json!({"version": 1, "diff_hash": "hash"}))
+                    .unwrap();
+            store.write(&key, &triage).unwrap();
+            assert_eq!(
+                read_triage(dir.path().to_str().unwrap()).unwrap().diff_hash,
+                "hash"
+            );
+
+            // A version this build does not understand is unreadable, not a
+            // parse the raw text would have accepted.
+            let newer: TriageReview =
+                serde_json::from_value(serde_json::json!({"version": 2, "diff_hash": "hash"}))
+                    .unwrap();
+            store.write(&key, &newer).unwrap();
+            assert!(read_triage(dir.path().to_str().unwrap()).is_err());
+
+            store.delete::<TriageReview>(&key).unwrap();
+            assert!(read_triage(dir.path().to_str().unwrap()).is_err());
+        });
     }
 
     fn fake_app(dir: &TestDir, triage_primary: &str, experts: &[&str]) -> App {

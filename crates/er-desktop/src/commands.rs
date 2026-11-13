@@ -2357,8 +2357,7 @@ pub fn list_review_revisions(state: State<AppState>) -> Result<Vec<ReviewRevisio
         return Ok(Vec::new());
     }
     let er_dir = tab.er_dir();
-    let review_path = std::path::Path::new(&er_dir).join("review.json");
-    if !review_path.exists() {
+    if !er_engine::ai::review_file_exists(&er_dir) {
         return Ok(Vec::new());
     }
     Ok(vec![ReviewRevisionSummary {
@@ -4667,8 +4666,7 @@ pub async fn run_ai_validate(
         let er_dir = app.tab().er_dir();
         app.check_review_bucket_admission(&er_dir)
             .map_err(|e| e.to_string())?;
-        let review_path = std::path::Path::new(&er_dir).join("review.json");
-        let has_review = review_path.exists();
+        let has_review = er_engine::ai::review_file_exists(&er_dir);
         let comment_count = eligible_github_comment_count(app.tab());
         if !has_review && comment_count == 0 {
             return Err(

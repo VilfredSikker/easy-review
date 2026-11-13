@@ -4,6 +4,7 @@ pub(super) mod comments;
 mod diff_reuse;
 pub mod github_post;
 pub mod github_sync;
+mod local_files;
 pub(super) mod navigation;
 pub(super) mod preload;
 pub mod preview;

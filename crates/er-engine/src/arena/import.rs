@@ -3,12 +3,8 @@
 use super::model::{ArenaFinding, ArenaRun, Verdict};
 use crate::ai::{Confidence, ErFileReview, ErReview, Finding, RiskLevel, GENERAL_LENS};
 use anyhow::{Context, Result};
+use er_store::{ArtifactKey, Loaded, Scope};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-
-fn review_path(er_dir: &str) -> PathBuf {
-    Path::new(er_dir).join("review.json")
-}
 
 fn empty_review(run: &ArenaRun) -> ErReview {
     ErReview {
@@ -20,12 +16,6 @@ fn empty_review(run: &ArenaRun) -> ErReview {
         files: HashMap::new(),
         file_hashes: HashMap::new(),
     }
-}
-
-fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    let json = serde_json::to_string_pretty(value).context("serialize review")?;
-    er_store::atomic::write_atomic(path, json.as_bytes()).context("write review")?;
-    Ok(())
 }
 
 fn latest_severity(f: &ArenaFinding) -> RiskLevel {
@@ -95,12 +85,12 @@ pub fn import_arena_findings_to_review(
     run: &mut ArenaRun,
     finding_ids: Option<&[String]>,
 ) -> Result<usize> {
-    let path = review_path(er_dir);
-    let mut review: ErReview = if path.is_file() {
-        let content = std::fs::read_to_string(&path).context("read review.json")?;
-        serde_json::from_str(&content).unwrap_or_else(|_| empty_review(run))
-    } else {
-        empty_review(run)
+    let store = crate::store_registry::store();
+    let scope = Scope::dir(er_dir)?;
+    let key = ArtifactKey::<ErReview>::new(scope, ())?;
+    let mut review: ErReview = match store.read(&key).context("read review.json")? {
+        Loaded::Found(stored) => stored.value,
+        Loaded::Absent | Loaded::Unreadable(_) => empty_review(run),
     };
     review.diff_hash = run.diff_hash.clone();
 
@@ -150,10 +140,7 @@ pub fn import_arena_findings_to_review(
     }
 
     if imported > 0 {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        write_json_atomic(&path, &review)?;
+        store.write(&key, &review).context("write review")?;
     }
     Ok(imported)
 }
@@ -217,6 +204,70 @@ mod tests {
             GENERAL_LENS,
             "an unset kind is the general pass"
         );
+    }
+
+    #[test]
+    fn an_existing_review_is_merged_through_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let store = crate::store_registry::store();
+            let key = ArtifactKey::<ErReview>::new(Scope::dir(dir.path()).unwrap(), ()).unwrap();
+            let existing: ErReview = serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "diff_hash": "old",
+                "files": {
+                    "src/existing.rs": {
+                        "risk": "low",
+                        "findings": [{"id": "existing", "severity": "low", "title": "Existing"}]
+                    }
+                }
+            }))
+            .unwrap();
+            store.write(&key, &existing).unwrap();
+
+            let mut run: ArenaRun = serde_json::from_value(serde_json::json!({
+                "id": "run",
+                "branch_ref": "feature",
+                "base_branch": "main",
+                "scope": "branch",
+                "diff_hash": "new",
+                "created_at": "now",
+                "status": "complete",
+                "reviewers": [],
+                "findings": [{
+                    "id": "f1", "file": "src/new.rs", "line": 3,
+                    "title": "Imported", "body": "body",
+                    "severity_by_round": {"1": "high"}, "raised_by": [],
+                    "verdict": "kept", "confidence": 0.9, "rationale": "", "rounds": []
+                }],
+                "cost_estimate": {"tokens_in": 0, "tokens_out": 0, "usd": 0.0},
+                "config": {
+                    "reviewers": [], "rounds": 1,
+                    "arbiter": {"provider_id": "p", "model_id": "m"},
+                    "auto_accept_threshold": 0.0, "scope": "branch"
+                }
+            }))
+            .unwrap();
+
+            let imported =
+                import_arena_findings_to_review(dir.path().to_str().unwrap(), &mut run, None)
+                    .unwrap();
+            assert_eq!(imported, 1);
+            match store.read(&key).unwrap() {
+                Loaded::Found(stored) => {
+                    assert_eq!(stored.value.diff_hash, "new");
+                    assert!(
+                        stored.value.files.contains_key("src/existing.rs"),
+                        "the existing review survives the import"
+                    );
+                    assert!(
+                        stored.value.files.contains_key("src/new.rs"),
+                        "the imported finding lands in the stored review"
+                    );
+                }
+                other => panic!("expected Found, got {other:?}"),
+            }
+        });
     }
 
     #[test]
