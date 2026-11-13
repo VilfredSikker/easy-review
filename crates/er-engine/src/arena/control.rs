@@ -411,10 +411,11 @@ mod tests {
     #[test]
     fn a_panicking_supervisor_is_recorded_and_notifies() {
         let controls = ArenaRunControls::default();
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let notify_calls = Arc::clone(&calls);
+        // The notify runs after `finish` wakes a waiter, so the test waits for
+        // the notification itself rather than reading a shared counter.
+        let (notified_tx, notified_rx) = mpsc::channel();
         controls.set_notify(Arc::new(move || {
-            notify_calls.fetch_add(1, Ordering::SeqCst);
+            let _ = notified_tx.send(());
         }));
         let control = controls.new_control("run-panic", "/tmp/does-not-exist");
         start_arena_supervisor(&controls, Arc::clone(&control), |_| {
@@ -422,11 +423,10 @@ mod tests {
         })
         .expect("the supervisor starts");
         assert!(control.wait_finished(Duration::from_secs(2)));
+        notified_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the host was never notified");
         assert_eq!(control.panic_message().as_deref(), Some("supervisor boom"));
-        assert!(
-            calls.load(Ordering::SeqCst) >= 1,
-            "the host was never notified"
-        );
         assert_eq!(control.status(), RunStatus::Failed);
     }
 
