@@ -433,19 +433,17 @@ mod tests {
             "diff_hash": HASH,
             "files": files,
         });
-        let dir = er_dir.join("experts");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join(format!("{expert_id}.json")),
-            serde_json::to_string(&sidecar).unwrap(),
-        )
-        .unwrap();
+        crate::test_support::write_sidecar_json_slot::<crate::ai::ExpertReview>(
+            er_dir,
+            er_store::ExpertId::new(expert_id).unwrap(),
+            sidecar,
+        );
     }
 
     fn write_general(er_dir: &Path, hash: &str, title: &str, line: usize) {
-        std::fs::write(
-            er_dir.join("review.json"),
-            serde_json::to_vec(&json!({
+        crate::test_support::write_sidecar_json::<crate::ai::ErReview>(
+            er_dir,
+            json!({
                 "version": 1,
                 "diff_hash": hash,
                 "files": { "src/a.rs": {
@@ -455,10 +453,8 @@ mod tests {
                         "description": format!("{title} — body"), "line_start": line
                     }]
                 }}
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+            }),
+        );
     }
 
     #[test]
@@ -774,11 +770,21 @@ mod tests {
                 &[("src/a.rs", "unvalidated input in cache key.", 12)],
             );
             // Raise the second one to high without changing its identity.
-            let path = dir.path().join("experts/reliability.json");
-            let bumped = std::fs::read_to_string(&path)
-                .unwrap()
-                .replace("\"severity\":\"medium\"", "\"severity\":\"high\"");
-            std::fs::write(&path, bumped).unwrap();
+            let mut reliability: crate::ai::ExpertReview = crate::test_support::read_sidecar_slot(
+                dir.path(),
+                er_store::ExpertId::new("reliability").unwrap(),
+            );
+            reliability
+                .files
+                .get_mut("src/a.rs")
+                .expect("the reliability finding")
+                .findings[0]
+                .severity = crate::ai::RiskLevel::High;
+            crate::test_support::write_sidecar_slot(
+                dir.path(),
+                er_store::ExpertId::new("reliability").unwrap(),
+                &reliability,
+            );
 
             let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 

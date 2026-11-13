@@ -8376,11 +8376,17 @@ mod update_job_tests {
     fn a_concurrent_questions_edit_survives_the_commit() {
         let _serial = er_agent::agent_slots::test_serial();
         let fixture = Fixture::new(None);
-        // The trailing newline makes the seeded bytes differ from the agent's
-        // compact rewrite, so the baseline sees a changed file; the entry
-        // values are what the merge compares.
-        let seeded = questions_json(&fixture.hash, &[("q1", "base")]);
-        std::fs::write(fixture.path("questions.json"), format!("{seeded}\n")).unwrap();
+        // The store's bytes differ from the agent's compact rewrite, so the
+        // baseline sees a changed file; the entry values are what the merge
+        // compares.
+        crate::test_support::write_sidecar_json::<crate::ai::ErQuestions>(
+            Path::new(&fixture.bucket),
+            serde_json::from_str::<serde_json::Value>(&questions_json(
+                &fixture.hash,
+                &[("q1", "base")],
+            ))
+            .unwrap(),
+        );
 
         crate::storage::with_test_storage_root(&fixture.root, || {
             let ready = fixture.root.join("ready");
@@ -8426,10 +8432,6 @@ mod update_job_tests {
             ))
             .unwrap(),
         );
-        // Make the seeded bytes differ from the agent's rewrite below.
-        let seeded = std::fs::read_to_string(fixture.path("questions.json")).unwrap();
-        std::fs::write(fixture.path("questions.json"), format!("{seeded}\n")).unwrap();
-
         crate::storage::with_test_storage_root(&fixture.root, || {
             let ready = fixture.root.join("ready");
             let release = fixture.root.join("release");
