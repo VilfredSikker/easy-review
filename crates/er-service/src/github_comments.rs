@@ -8,8 +8,8 @@
 use er_engine::ai::{self, PrivateAnnotation};
 use er_engine::git::parse_diff;
 use er_engine::github_post::{
-    execute_comment_post, new_client_id, resolve_post_target_with, CommentPostContext,
-    GhCommentPoster, GitHubPostRequest,
+    execute_comment_post, new_client_id, resolve_post_target_with, GhCommentPoster,
+    GitHubPostRequest,
 };
 use er_engine::github_post_session::{NewGitHubComment, PostBegin};
 use er_engine::store_registry;
@@ -17,6 +17,7 @@ use er_store::{Loaded, Scope};
 
 use crate::actor::WorkspaceDeps;
 use crate::annotations::{failed, fetch_raw};
+use crate::github_sync::post_context;
 use crate::handle::WorkspaceError;
 use crate::protocol::{AnnotationTarget, TabContext};
 
@@ -26,15 +27,6 @@ struct PostedComment {
     id: String,
     /// The request, so a failed source removal can be reconciled on retry.
     request: GitHubPostRequest,
-}
-
-fn post_context(ctx: &TabContext) -> CommentPostContext {
-    CommentPostContext {
-        repo_root: ctx.repo_root.clone(),
-        is_remote: ctx.is_remote,
-        remote_repo: ctx.remote_repo.clone(),
-        pr_number: ctx.pr_number,
-    }
 }
 
 fn comments_payload(ctx: &TabContext) -> Option<ai::ErGithubComments> {

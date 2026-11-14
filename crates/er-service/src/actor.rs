@@ -13,6 +13,7 @@ use std::thread;
 use er_engine::ports::Ports;
 
 use crate::effect::resolve_target;
+use crate::github_sync::{Applied, Fetched};
 use crate::guard::{self, ActorThread};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError, WorkspaceHandle};
 use crate::protocol::{Command, Event, Reply};
@@ -97,8 +98,40 @@ fn run(
             ActorMsg::EffectDone { result, reply } => {
                 apply(&mut state, result, reply, &subscribers, &view);
             }
+            ActorMsg::Fetched { result, reply } => {
+                match result.and_then(crate::github_sync::apply) {
+                    Ok(Applied {
+                        reply: value,
+                        event,
+                    }) => {
+                        // A plain read changes nothing, so it publishes nothing.
+                        if let Some(event) = event {
+                            let revision = state.bump_revision();
+                            publish(&view, &state);
+                            broadcast(&subscribers, Event::ViewPublished { revision });
+                            broadcast(&subscribers, event);
+                        }
+                        let _ = reply.send(Ok(value));
+                    }
+                    Err(error) => apply(&mut state, Err(error), reply, &subscribers, &view),
+                }
+            }
         }
     }
+}
+
+/// Runs one GitHub read off the actor thread and sends what it read back for
+/// the actor to apply.
+fn spawn_fetch(
+    tx: &Sender<ActorMsg>,
+    reply: ReplySender,
+    work: impl FnOnce() -> Result<Fetched, WorkspaceError> + Send + 'static,
+) {
+    let tx = tx.clone();
+    let _ = thread::Builder::new().spawn(move || {
+        let result = work();
+        let _ = tx.send(ActorMsg::Fetched { result, reply });
+    });
 }
 
 /// Runs one command's blocking work off the actor thread and sends the typed
@@ -402,6 +435,62 @@ fn handle_command(
                     body,
                 )
                 .map(|id| Reply::CommentPromoted { id })
+            });
+        }
+        Command::SyncGithubComments { context, source } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_fetch(tx, reply, move || {
+                crate::github_sync::fetch_sync(&deps, context, source)
+            });
+        }
+        Command::GetPendingReview { context } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_fetch(tx, reply, move || {
+                crate::pending_review::get(&deps, context)
+            });
+        }
+        Command::AddPendingReviewComment {
+            context,
+            target,
+            body,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_fetch(tx, reply, move || {
+                crate::pending_review::add_comment(&deps, context, &target, &body)
+            });
+        }
+        Command::RemovePendingReviewComment {
+            context,
+            comment_node_id,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_fetch(tx, reply, move || {
+                crate::pending_review::remove_comment(&deps, context, &comment_node_id)
+            });
+        }
+        Command::SubmitPendingReview {
+            context,
+            event,
+            summary,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_fetch(tx, reply, move || {
+                crate::pending_review::submit(&deps, context, event, &summary)
             });
         }
         #[cfg(test)]

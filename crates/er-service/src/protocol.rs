@@ -135,6 +135,90 @@ pub enum Command {
         finding_id: String,
         body: Option<String>,
     },
+
+    // ── GitHub sync and the pending review ──
+    /// Pull the tab's PR comments into its comments sidecar. The fetch runs
+    /// off the actor; the actor writes the result.
+    SyncGithubComments {
+        context: TabContext,
+        source: SyncSource,
+    },
+    /// Read the viewer's pending review on the tab's PR.
+    GetPendingReview { context: TabContext },
+    /// Add one line comment to the viewer's pending review.
+    AddPendingReviewComment {
+        context: TabContext,
+        target: ReviewLineTarget,
+        body: String,
+    },
+    /// Remove one comment from the viewer's pending review.
+    RemovePendingReviewComment {
+        context: TabContext,
+        comment_node_id: String,
+    },
+    /// Submit the viewer's pending review with a decision.
+    SubmitPendingReview {
+        context: TabContext,
+        event: ReviewEvent,
+        summary: String,
+    },
+}
+
+/// What started a comment sync, which decides how fresh the read must be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncSource {
+    /// The user asked. `force` skips the hover-prefetch bundle.
+    Manual { force: bool },
+    /// The periodic tick. Always reads GitHub, then drops the cached bundle so
+    /// a later manual pull cannot go back to an older one.
+    Background,
+}
+
+/// A line the composer selected for the pending review, in its side's numbering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewLineTarget {
+    pub file: String,
+    pub line_num: usize,
+    pub line_num_end: Option<usize>,
+    /// `LEFT` or `RIGHT`; `None` is the new side.
+    pub side: Option<String>,
+}
+
+/// A review decision, as GitHub's review API names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewEvent {
+    Approve,
+    RequestChanges,
+    Comment,
+}
+
+impl ReviewEvent {
+    /// Parses the desktop's mode string; `None` for anything else.
+    pub fn parse(mode: &str) -> Option<Self> {
+        match mode {
+            "APPROVE" => Some(Self::Approve),
+            "REQUEST_CHANGES" => Some(Self::RequestChanges),
+            "COMMENT" => Some(Self::Comment),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "APPROVE",
+            Self::RequestChanges => "REQUEST_CHANGES",
+            Self::Comment => "COMMENT",
+        }
+    }
+}
+
+/// The PR a GitHub command acted on, so the caller can refresh what it caches
+/// for that PR.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
 }
 
 /// The tab a command acts on, with every input its effect needs. The desktop
@@ -245,6 +329,20 @@ pub enum Reply {
         root_id: String,
         reply_id: String,
     },
+    /// What the sidecar holds after a sync.
+    CommentsSynced {
+        github_count: usize,
+        local_count: usize,
+    },
+    /// The viewer's pending review, read after any write.
+    PendingReview {
+        pr: PrRef,
+        review: er_github::PendingReview,
+    },
+    /// The pending review was submitted.
+    ReviewSubmitted {
+        pr: PrRef,
+    },
     #[cfg(test)]
     Pong,
 }
@@ -263,5 +361,15 @@ pub enum Event {
     },
     CommandFailed {
         message: String,
+    },
+    /// A sync wrote the tab's comments sidecar.
+    CommentsSynced {
+        context: TabContext,
+        github_count: usize,
+        local_count: usize,
+    },
+    /// The viewer's pending review on the tab's PR changed or was submitted.
+    PendingReviewChanged {
+        context: TabContext,
     },
 }
