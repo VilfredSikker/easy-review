@@ -9,17 +9,16 @@
 //! 2. Append the accepted-findings artifact, in acceptance order.
 //! 3. Append accepted expert rows, in ascending `expert_id` order.
 //! 4. Merge professor rows.
-//! 5. Clear agent-written providers and restore accepted-run provenance.
+//! 5. Clear agent-written providers and restore the accepted artifact's.
 //! 6. Overlay arbiter verdicts last, so they grade every row above.
 //!
 //! Scoped re-review overlays replace their paths in [`ProjectionInputs`]
 //! before stage 1, and validation runs between provenance and the arbiter.
 //! A row added after provenance would keep agent-written providers and miss
-//! the arena restore. Only validation sits between provenance and the
+//! the artifact restore. Only validation sits between provenance and the
 //! arbiter; the arbiter stays last so it grades the final rows.
 
 use super::accepted_findings::AcceptedFinding;
-use super::accepted_provenance::{ProvenanceRead, ReviewRowIdentity};
 use super::arbiter::{merge_arbiter_into_review, ArbiterEffect, ArbiterReview, ArbiterRuling};
 use super::experts::{backfill_finding_lenses, expert_by_id, expert_hash_accepted, ExpertReview};
 use super::identity::finding_key;
@@ -44,9 +43,6 @@ pub struct ProjectionInputs<'a> {
     /// arbiter.
     pub validation: Option<&'a ValidationReview>,
     pub current_diff_hash: &'a str,
-    /// The only disk-backed input. `load_ai_state_with_arbiter` binds it to
-    /// the bucket's `arena/` runs; tests bind it to a fixed map.
-    pub accepted_provenance: &'a dyn Fn(&str, &[ReviewRowIdentity]) -> ProvenanceRead,
 }
 
 #[derive(Debug)]
@@ -55,22 +51,18 @@ pub struct FindingsProjection {
     pub arbiter_effect: ArbiterEffect,
     pub arbiter_graded_keys: HashSet<String>,
     pub arbiter_verdicts: HashMap<String, (ArbiterRuling, String)>,
-    /// Diagnostics from the accepted-run read; `load_ai_state_with_arbiter`
-    /// logs each one with `crate::dev_log::arena_line`.
-    pub provenance_diagnostics: Vec<String>,
     pub validation_effect: ValidationEffect,
 }
 
 pub fn build_findings_projection(inputs: ProjectionInputs<'_>) -> FindingsProjection {
     let ProjectionInputs {
         general,
-        accepted,
+        accepted: accepted_rows,
         experts,
         professor,
         arbiter,
         validation,
         current_diff_hash,
-        accepted_provenance,
     } = inputs;
 
     let mut review = general;
@@ -86,10 +78,10 @@ pub fn build_findings_projection(inputs: ProjectionInputs<'_>) -> FindingsProjec
     // review's own rows and before the expert rows. Provenance clears their
     // providers and restores them from the artifact row.
     if let Some(general) = review.as_mut() {
-        append_accepted_findings(general, accepted);
-    } else if let Some(first) = accepted.first() {
+        append_accepted_findings(general, accepted_rows);
+    } else if let Some(first) = accepted_rows.first() {
         let mut shell = review_shell(current_diff_hash, &first.accepted_at);
-        append_accepted_findings(&mut shell, accepted);
+        append_accepted_findings(&mut shell, accepted_rows);
         if !shell.files.is_empty() {
             review = Some(shell);
         }
@@ -129,9 +121,8 @@ pub fn build_findings_projection(inputs: ProjectionInputs<'_>) -> FindingsProjec
         }
     }
 
-    let mut provenance_diagnostics = Vec::new();
     if let Some(general) = review.as_mut() {
-        provenance_diagnostics = apply_accepted_provenance(general, accepted_provenance);
+        apply_accepted_provenance(general, accepted_rows);
     }
 
     let mut validation_effect = ValidationEffect::default();
@@ -177,7 +168,6 @@ pub fn build_findings_projection(inputs: ProjectionInputs<'_>) -> FindingsProjec
         arbiter_effect,
         arbiter_graded_keys,
         arbiter_verdicts,
-        provenance_diagnostics,
         validation_effect,
     }
 }
@@ -207,7 +197,16 @@ fn append_accepted_findings(review: &mut ErReview, accepted: &[AcceptedFinding])
                 summary: String::new(),
                 findings: Vec::new(),
             });
-        entry.findings.push(finding);
+        // A bucket that somehow holds both an imported copy and an artifact
+        // row shows the finding once.
+        match entry
+            .findings
+            .iter_mut()
+            .find(|existing| existing.id == finding.id)
+        {
+            Some(existing) => *existing = finding,
+            None => entry.findings.push(finding),
+        }
     }
 }
 
@@ -240,45 +239,21 @@ fn append_expert_findings(review: &mut ErReview, accepted: &[&ExpertReview]) {
     }
 }
 
-fn apply_accepted_provenance(
-    review: &mut ErReview,
-    accepted_provenance: &dyn Fn(&str, &[ReviewRowIdentity]) -> ProvenanceRead,
-) -> Vec<String> {
-    let rows: Vec<_> = review
-        .files
+fn apply_accepted_provenance(review: &mut ErReview, accepted: &[AcceptedFinding]) {
+    let restored: HashMap<&str, &[String]> = accepted
         .iter()
-        .flat_map(|(file, file_review)| {
-            file_review
-                .findings
-                .iter()
-                .map(move |finding| ReviewRowIdentity {
-                    id: finding.id.clone(),
-                    file: file.clone(),
-                    line: finding.line_start,
-                })
-        })
+        .map(|row| (row.finding.id.as_str(), row.providers.as_slice()))
         .collect();
     for file_review in review.files.values_mut() {
         for finding in &mut file_review.findings {
             // Provider attribution from review/expert producer JSON is never
-            // authoritative. Only accepted host runs or the arbiter restore it.
+            // authoritative. Only the accepted artifact or the arbiter restores it.
             finding.providers.clear();
-        }
-    }
-    let restored = accepted_provenance(&review.diff_hash, &rows);
-    for file_review in review.files.values_mut() {
-        for finding in &mut file_review.findings {
-            let Some(provenance) = restored.rows.get(&finding.id) else {
-                continue;
-            };
-            finding.providers = provenance.providers.clone();
-            if !provenance.raisers.is_empty() {
-                finding.raised_by = provenance.raisers.clone();
-                finding.lens = provenance.raisers[0].clone();
+            if let Some(providers) = restored.get(finding.id.as_str()) {
+                finding.providers = providers.to_vec();
             }
         }
     }
-    restored.diagnostics
 }
 
 fn prefix_finding_id(prefix: &str, id: &str) -> String {
@@ -326,6 +301,38 @@ mod tests {
         }
     }
 
+    /// A bucket that holds both an imported copy and an artifact row shows the
+    /// finding once, with the artifact's fields.
+    #[test]
+    fn an_artifact_row_with_the_same_id_as_a_review_row_is_not_duplicated() {
+        let review: ErReview = serde_json::from_value(serde_json::json!({
+            "version": 1, "diff_hash": "hash",
+            "files": { "a.rs": { "risk": "low", "findings": [
+                { "id": "arena-run-1-f1", "title": "Imported copy", "severity": "low" }
+            ] } }
+        }))
+        .unwrap();
+        let accepted: AcceptedFinding = serde_json::from_value(serde_json::json!({
+            "file": "a.rs", "run_finding_id": "f1", "run_id": "run-1",
+            "run_diff_hash": "hash", "accepted_at": "now", "providers": ["p1"],
+            "finding": { "id": "arena-run-1-f1", "title": "Artifact copy", "severity": "high", "line_start": 1 }
+        }))
+        .unwrap();
+        let projection = build_findings_projection(ProjectionInputs {
+            general: Some(review),
+            accepted: std::slice::from_ref(&accepted),
+            experts: &[],
+            professor: None,
+            arbiter: None,
+            validation: None,
+            current_diff_hash: "hash",
+        });
+        let findings = &projection.review.expect("a projected review").files["a.rs"].findings;
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].title, "Artifact copy");
+        assert_eq!(findings[0].providers, ["p1"]);
+    }
+
     fn project(review: ErReview, experts: &[ExpertReview], current_diff_hash: &str) -> ErReview {
         let projection = build_findings_projection(ProjectionInputs {
             general: Some(review),
@@ -335,7 +342,6 @@ mod tests {
             arbiter: None,
             validation: None,
             current_diff_hash,
-            accepted_provenance: &|_, _| ProvenanceRead::default(),
         });
         projection.review.expect("a projected review")
     }
@@ -567,7 +573,6 @@ mod tests {
             arbiter: Some(arbiter),
             validation: Some(validation),
             current_diff_hash: "hash",
-            accepted_provenance: &|_, _| ProvenanceRead::default(),
         })
     }
 

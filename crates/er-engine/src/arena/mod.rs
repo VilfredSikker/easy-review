@@ -3,10 +3,10 @@
 //! Orchestration (rounds 1–3) lands in later slices; this module provides the data spine
 //! and projection helpers consumed by desktop `arena_get` / the Svelte overlay.
 
+mod accepted_rows;
 mod agents;
 mod control;
 mod identity;
-mod import;
 pub(crate) mod jobs;
 mod merge;
 mod model;
@@ -23,10 +23,10 @@ mod voting;
 #[cfg(test)]
 pub(crate) use jobs::ARENA_TEST_ENV_LOCK;
 
+pub use accepted_rows::{accepted_finding_rows, mark_accepted};
 pub use agents::{agent_meta, list_arena_agent_kinds, AgentMeta};
 pub use control::{ArenaRunControl, ArenaRunControls};
 pub use identity::finding_id;
-pub use import::{accepted_finding_rows, import_arena_findings_to_review, mark_accepted};
 pub use jobs::fake_arena_call_count;
 pub use model::{ARENA_ARBITER_ROUND, *};
 pub use orchestrator::{

@@ -23,8 +23,8 @@ The stages run in the order the loader used: backfill lenses; append the
 accepted-findings artifact's rows (ADR 0065); append accepted experts in
 ascending `expert_id`; merge the professor; clear agent-written providers and
 restore accepted rows' provenance; overlay the arbiter last. The provenance
-step is a lookup closure, not a disk read inside the module, so the projection
-imports no `std::fs` and tests bind it to a fixed map.
+step reads the accepted-findings input directly (ADR 0066), so the projection
+still imports no `std::fs`.
 
 Scoped re-review overlays replace their paths in `ProjectionInputs` before the
 first stage, and validation sits between provenance and the arbiter. A row

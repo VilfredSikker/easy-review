@@ -393,32 +393,7 @@ pub fn load_ai_state_with_arbiter(
             arbiter: arbiter.as_ref(),
             validation: validation.as_ref(),
             current_diff_hash,
-            accepted_provenance: &|review_hash, rows| {
-                let mut read = super::accepted_provenance::accepted_provenance_for_rows(
-                    Path::new(er_dir),
-                    review_hash,
-                    rows,
-                );
-                for row in &accepted {
-                    if rows
-                        .iter()
-                        .any(|row_identity| row_identity.id == row.finding.id)
-                    {
-                        read.rows.insert(
-                            row.finding.id.clone(),
-                            super::accepted_provenance::AcceptedProvenance {
-                                providers: row.providers.clone(),
-                                raisers: row.finding.raised_by.clone(),
-                            },
-                        );
-                    }
-                }
-                read
-            },
         });
-    for diagnostic in projection.provenance_diagnostics {
-        crate::dev_log::arena_line(diagnostic);
-    }
     // The review's staleness comes from the projected hash; order, checklist
     // and triage may already have marked the state stale.
     let review_stale = projection
@@ -542,31 +517,31 @@ mod tests {
         });
     }
 
+    fn project_rows(
+        review: ErReview,
+        accepted: &[crate::ai::accepted_findings::AcceptedFinding],
+    ) -> ErReview {
+        let mut projection = crate::ai::projection::build_findings_projection(
+            crate::ai::projection::ProjectionInputs {
+                general: Some(review),
+                accepted,
+                experts: &[],
+                professor: None,
+                arbiter: None,
+                validation: None,
+                current_diff_hash: "hash",
+            },
+        );
+        projection.review.take().expect("a projected review")
+    }
+
+    /// A bucket upgraded from before the artifact: the row lives in
+    /// `review.json` and the run still names it, but no artifact row exists.
+    /// The row stays visible; the provider pills and the run's lens
+    /// normalization are gone. That loss is deliberate (ADR 0066, D15).
     #[test]
-    fn producer_provider_metadata_is_cleared_and_accepted_run_restores_it() {
+    fn an_imported_row_without_an_artifact_keeps_its_text_and_raisers_but_loses_providers() {
         let dir = tempfile::tempdir().unwrap();
-        let er_dir = dir.path().to_str().unwrap();
-        fn project(review: ErReview, er_dir: &str) -> ErReview {
-            let mut projection = crate::ai::projection::build_findings_projection(
-                crate::ai::projection::ProjectionInputs {
-                    general: Some(review),
-                    accepted: &[],
-                    experts: &[],
-                    professor: None,
-                    arbiter: None,
-                    validation: None,
-                    current_diff_hash: "hash",
-                    accepted_provenance: &|review_hash, rows| {
-                        crate::ai::accepted_provenance::accepted_provenance_for_rows(
-                            std::path::Path::new(er_dir),
-                            review_hash,
-                            rows,
-                        )
-                    },
-                },
-            );
-            projection.review.take().expect("a projected review")
-        }
         let review: ErReview = serde_json::from_value(json!({
             "version": 1,
             "diff_hash": "hash",
@@ -591,24 +566,50 @@ mod tests {
         )
         .unwrap();
 
-        let review = project(review, er_dir);
+        let review = project_rows(review, &[]);
         let finding = &review.files["src/a.rs"].findings[0];
-        assert_eq!(finding.providers, ["provider-a"]);
-        assert_eq!(finding.raised_by, ["security"]);
-        assert_eq!(finding.lens, "security");
+        assert!(
+            finding.providers.is_empty(),
+            "the run read no longer restores provider pills"
+        );
+        assert_eq!(
+            finding.raised_by,
+            ["general"],
+            "the row keeps what review.json holds"
+        );
+        assert_eq!(finding.lens, "general");
+        assert_eq!(finding.title, "claim");
+    }
 
-        std::fs::remove_dir_all(&run_dir).unwrap();
-        let producer_only: ErReview = serde_json::from_value(json!({
-            "version": 1, "diff_hash": "hash",
-            "files": { "src/a.rs": { "risk": "high", "findings": [{
-                "id": "plain", "severity": "high", "title": "claim", "providers": ["forged"]
-            }] } }
+    /// Provenance comes from the artifact alone; the bucket has no arena
+    /// directory at all.
+    #[test]
+    fn accepted_rows_restore_providers_from_the_artifact_without_a_run_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let review: ErReview = serde_json::from_value(json!({
+            "version": 1, "diff_hash": "hash", "files": {}
         }))
         .unwrap();
-        let producer_only = project(producer_only, er_dir);
-        assert!(producer_only.files["src/a.rs"].findings[0]
-            .providers
-            .is_empty());
+        let accepted: crate::ai::accepted_findings::AcceptedFinding =
+            serde_json::from_value(json!({
+                "file": "src/a.rs",
+                "run_finding_id": "f1",
+                "run_id": "run-1",
+                "run_diff_hash": "hash",
+                "accepted_at": "now",
+                "providers": ["provider-a"],
+                "finding": {
+                    "id": "arena-run-1-f1", "severity": "high", "title": "claim",
+                    "line_start": 9, "lens": "general", "raised_by": ["general"]
+                }
+            }))
+            .unwrap();
+
+        let review = project_rows(review, std::slice::from_ref(&accepted));
+        let finding = &review.files["src/a.rs"].findings[0];
+        assert_eq!(finding.id, "arena-run-1-f1");
+        assert_eq!(finding.providers, ["provider-a"]);
+        assert!(!dir.path().join("arena").exists());
     }
 
     #[test]

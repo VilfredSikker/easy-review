@@ -36,7 +36,7 @@ that reads run records.
 from another generation as matching the current diff. The artifact is the
 durable record: it outlives the run directory.
 
-**Costs.** Rows accepted before this change live inside `review.json` and keep
-their providers only through the run-file read until P34b removes it; they are
-not migrated into the artifact. The artifact spans runs and generations, so it
-carries no single `diff_hash`.
+**Costs.** Rows accepted before this change live inside `review.json`; P34b
+deletes the run-file read that restored their providers, so pre-release buckets
+show those rows without provider pills (ADR 0066). The artifact spans runs and
+generations, so it carries no single `diff_hash`.
