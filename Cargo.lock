@@ -1339,10 +1339,12 @@ dependencies = [
 name = "er-core"
 version = "0.6.5"
 dependencies = [
+ "glob",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha1",
+ "sha2 0.10.9",
 ]
 
 [[package]]

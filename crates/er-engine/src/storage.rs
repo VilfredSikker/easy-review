@@ -7,15 +7,16 @@
 
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
+#[cfg(test)]
+use er_core::slug::short_hash;
+use er_core::slug::{named_slug, readable_part};
 
 use crate::ErRoot;
 
+pub use er_core::slug::{slug_branch, slugify};
+
 /// Directory the 1.0.0 data lives in, under the storage base.
 const ROOT_VERSION_DIR: &str = "v1";
-
-/// Longest readable part of a hashed slug, in bytes.
-const READABLE_MAX_BYTES: usize = 80;
 
 /// Run `f` with the storage root overridden on this thread.
 ///
@@ -172,21 +173,6 @@ pub fn storage_root_from(
     storage_base_from(None, data_dir, home).join(ROOT_VERSION_DIR)
 }
 
-/// Sanitize a string for use as a directory name component.
-pub fn slugify(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '.' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
-}
-
 /// The key a repo's `[risk.<repo>]` / `[file_kinds]` tables live under.
 ///
 /// Pass `remote_repo` (`owner/repo`) only for a target with no clone: its
@@ -269,42 +255,6 @@ pub fn repo_storage_slug_for(
             .unwrap_or_else(|| repo_storage_slug_from_root(git, repo_root)),
         None => repo_storage_slug_from_root(git, repo_root),
     }
-}
-
-/// Sanitize a branch name for use as a directory component.
-///
-/// The readable part is the slugified name; the hash keeps branches that
-/// slugify alike (`feat/x` and `feat-x`) in separate folders.
-pub fn slug_branch(branch: &str) -> String {
-    named_slug(branch, &readable_part(branch))
-}
-
-/// The slugified name, lowercased and cut to at most [`READABLE_MAX_BYTES`]
-/// on a character boundary.
-fn readable_part(raw: &str) -> String {
-    let slug = slugify(raw).to_lowercase();
-    if slug.len() <= READABLE_MAX_BYTES {
-        return slug;
-    }
-    let mut end = READABLE_MAX_BYTES;
-    while !slug.is_char_boundary(end) {
-        end -= 1;
-    }
-    slug.get(..end).map(str::to_string).unwrap_or(slug)
-}
-
-/// The first 8 hex characters of SHA-256 over `raw`.
-fn short_hash(raw: &str) -> String {
-    let digest = Sha256::digest(raw.as_bytes());
-    format!(
-        "{:08x}",
-        u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]])
-    )
-}
-
-/// `<readable>-<8 hex>`; an empty readable part still yields a valid name.
-fn named_slug(raw: &str, readable: &str) -> String {
-    format!("{readable}-{}", short_hash(raw))
 }
 
 /// Every child of the storage base that belongs to a previous version.

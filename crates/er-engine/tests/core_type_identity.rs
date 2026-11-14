@@ -79,6 +79,29 @@ fn every_re_export_names_the_core_type() {
         er_engine::ai::RelocationResult,
         er_core::relocate::RelocationResult
     );
+    same_type!(er_engine::config::RiskTier, er_core::risk_rules::RiskTier);
+    same_type!(er_engine::config::RiskRule, er_core::risk_rules::RiskRule);
+    same_type!(
+        er_engine::config::RiskRuleTable,
+        er_core::risk_rules::RiskRuleTable
+    );
+    same_type!(
+        er_engine::config::RiskConfig,
+        er_core::risk_rules::RiskConfig
+    );
+    same_type!(
+        er_engine::config::RiskRuleSource,
+        er_core::risk_rules::RiskRuleSource
+    );
+    same_type!(
+        er_engine::config::MatchedRiskRule,
+        er_core::risk_rules::MatchedRiskRule
+    );
+    same_type!(
+        er_engine::config::ResolvedRisk,
+        er_core::risk_rules::ResolvedRisk
+    );
+    same_type!(er_engine::config::RiskRules, er_core::risk_rules::RiskRules);
 }
 
 fn assert_core_artifact<T: er_core::artifact::Artifact>() {}
