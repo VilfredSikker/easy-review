@@ -6161,7 +6161,7 @@ impl App {
         app.reconcile_workflow_records();
         if let Some(error) = config_load_error {
             app.notify_long(&error.to_string());
-            app.config_load_error = Some(crate::config::CONFIG_LOAD_BANNER.to_string());
+            app.config_load_error = Some(error.banner());
         }
         Ok(app)
     }
@@ -6223,7 +6223,7 @@ impl App {
         app.overlay_cached_discovered_models();
         if let Some(error) = config_load_error {
             app.notify_long(&error.to_string());
-            app.config_load_error = Some(crate::config::CONFIG_LOAD_BANNER.to_string());
+            app.config_load_error = Some(error.banner());
         }
         Ok(app)
     }
@@ -6285,7 +6285,7 @@ impl App {
         app.overlay_cached_discovered_models();
         if let Some(error) = config_load_error {
             app.notify_long(&error.to_string());
-            app.config_load_error = Some(crate::config::CONFIG_LOAD_BANNER.to_string());
+            app.config_load_error = Some(error.banner());
         }
         app
     }
@@ -8690,14 +8690,15 @@ impl App {
     pub fn reload_config_if_failed(&mut self) {
         // The banner is set at startup, but a file that breaks mid-session is
         // recorded by the config module without raising one. Reload for either.
-        if self.config_load_error.is_none() && !config::managed_config_load_failed() {
+        if self.config_load_error.is_none()
+            && !config::managed_config_load_failed()
+            && !config::managed_agents_load_failed()
+        {
             return;
         }
         let (config, error) = config::load_global_config_checked();
         self.config = config;
-        self.config_load_error = error
-            .as_ref()
-            .map(|_| config::CONFIG_LOAD_BANNER.to_string());
+        self.config_load_error = error.as_ref().map(|error| error.banner());
         if let Some(error) = error {
             self.notify_long(&error.to_string());
         }
@@ -13323,7 +13324,7 @@ mod tests {
             let mut app = make_test_app(tab);
             let (_config, error) = crate::config::load_global_config_checked();
             assert!(error.is_some());
-            app.config_load_error = Some(crate::config::CONFIG_LOAD_BANNER.to_string());
+            app.config_load_error = error.map(|error| error.banner());
 
             std::fs::write(&path, "[display]\ntheme = \"paper\"\n").unwrap();
             app.open_config_hub();
@@ -13340,34 +13341,55 @@ mod tests {
     fn settings_reloads_a_config_that_broke_mid_session() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "[agent]\nmodel = \"keepme\"\n").unwrap();
-
-        crate::config::with_managed_config_path(&path, || {
-            let tab = make_test_tab(vec![]);
-            let mut app = make_test_app(tab);
-            let (config, error) = crate::config::adopt_config_from(&path);
-            assert!(error.is_none(), "{error:?}");
-            app.config = config;
-            assert_eq!(app.config.agent.model, "keepme");
-
-            // The file breaks after startup. The desktop save path records the
-            // failure without raising the App banner.
-            std::fs::write(&path, "{").unwrap();
-            assert!(crate::config::save_config(&app.config).is_err());
-            assert!(app.config_load_error.is_none());
-            assert!(crate::config::managed_config_load_failed());
-
-            // The user repairs it and reopens Settings.
+        crate::storage::with_test_storage_root(dir.path(), || {
             std::fs::write(&path, "[agent]\nmodel = \"keepme\"\n").unwrap();
-            app.open_config_hub();
-            assert!(app.config_load_error.is_none());
-            assert_eq!(app.config.agent.model, "keepme");
 
-            // Saving now succeeds and keeps the user's value.
-            crate::config::save_config(&app.config).unwrap();
-            let (reloaded, error) = crate::config::load_config_from(&path);
-            assert!(error.is_none(), "{error:?}");
-            assert_eq!(reloaded.agent.model, "keepme");
+            crate::config::with_managed_config_path(&path, || {
+                let tab = make_test_tab(vec![]);
+                let mut app = make_test_app(tab);
+                let (config, error) = crate::config::adopt_config_from(&path);
+                assert!(error.is_none(), "{error:?}");
+                app.config = config;
+                assert_eq!(app.config.agent.model, "keepme");
+
+                // The file breaks after startup. The desktop save path records the
+                // failure without raising the App banner.
+                std::fs::write(&path, "{").unwrap();
+                assert!(crate::config::save_config(&app.config).is_err());
+                assert!(app.config_load_error.is_none());
+                assert!(crate::config::managed_config_load_failed());
+
+                // The user repairs it and reopens Settings.
+                std::fs::write(&path, "[agent]\nmodel = \"keepme\"\n").unwrap();
+                app.open_config_hub();
+                assert!(app.config_load_error.is_none());
+                assert_eq!(app.config.agent.model, "keepme");
+
+                // Saving now succeeds and keeps the user's value.
+                crate::config::save_config(&app.config).unwrap();
+                let (reloaded, error) = crate::config::load_config_from(&path);
+                assert!(error.is_none(), "{error:?}");
+                assert_eq!(reloaded.agent.model, "keepme");
+            });
+        });
+    }
+
+    /// A failure in agents.toml alone raises a banner naming that file.
+    #[test]
+    fn the_banner_names_agents_toml_when_only_it_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, "[display]\ntheme = \"paper\"\n").unwrap();
+            std::fs::write(crate::config::agents_path(&path), "{").unwrap();
+            crate::config::with_managed_config_path(&path, || {
+                let (_, error) = crate::config::load_config_from(&path);
+                assert!(error.is_some());
+                let mut app = App::new_for_test(vec![]);
+                app.reload_config_if_failed();
+                let banner = app.config_load_error.expect("the banner is set");
+                assert!(banner.starts_with("agents.toml "), "{banner}");
+            });
         });
     }
 
