@@ -24,8 +24,7 @@ pub fn registry() -> Registry {
         crate::ai::checklist_store::register(&mut registry)
             .expect("the checklist kinds register once");
         register_ai_kinds(&mut registry).expect("the AI kinds register once");
-        crate::session_store::register(&mut registry)
-            .expect("the session kinds register once");
+        crate::session_store::register(&mut registry).expect("the session kinds register once");
         registry
             .register::<crate::projects_pins::ProjectsFile>()
             .expect("the projects kind registers once");
@@ -144,12 +143,12 @@ pub fn audit(front_end: FrontEnd, registry: &Registry) -> AuditReport {
     let root = crate::storage::storage_root();
     for (dir, ignores) in audit_dirs(&root, front_end, &mut report.errors) {
         match registry.unaccounted(&dir, &ignores) {
-            Ok(files) => report.unaccounted.extend(files.into_iter().map(|file| {
-                UnaccountedFile {
+            Ok(files) => report
+                .unaccounted
+                .extend(files.into_iter().map(|file| UnaccountedFile {
                     scope: dir.clone(),
                     file,
-                }
-            })),
+                })),
             Err(error) => report
                 .errors
                 .push(format!("audit {}: {error}", dir.display())),
@@ -200,7 +199,11 @@ fn audit_dirs(
         }
         return out;
     };
-    for repo in repo_entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()) {
+    for repo in repo_entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+    {
         // Repo scope holds `risk-rules.json`; its branch and PR subtrees are
         // walked on their own below.
         let mut repo_ignores = base_ignores.clone();
@@ -210,7 +213,11 @@ fn audit_dirs(
 
         let branches = repo.join("branches");
         if let Ok(entries) = std::fs::read_dir(&branches) {
-            for branch in entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()) {
+            for branch in entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+            {
                 let buckets = branch.join("view-buckets");
                 match std::fs::read_dir(&buckets) {
                     Ok(buckets) => {
@@ -229,7 +236,11 @@ fn audit_dirs(
         }
         let prs = repo.join("prs");
         if let Ok(entries) = std::fs::read_dir(&prs) {
-            for pr in entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()) {
+            for pr in entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+            {
                 out.push((pr, base_ignores.clone()));
             }
         }
@@ -457,9 +468,7 @@ mod tests {
     fn an_unaccounted_file_is_reported_per_scope() {
         let _serial = audit_test_lock();
         let root = tempfile::tempdir().unwrap();
-        let bucket = root
-            .path()
-            .join("repos/acme/branches/main/view-buckets/b1");
+        let bucket = root.path().join("repos/acme/branches/main/view-buckets/b1");
         std::fs::create_dir_all(&bucket).unwrap();
         std::fs::write(bucket.join("stray.txt"), "x").unwrap();
 
@@ -477,9 +486,7 @@ mod tests {
     fn an_accounted_file_is_not_reported() {
         let _serial = audit_test_lock();
         let root = tempfile::tempdir().unwrap();
-        let bucket = root
-            .path()
-            .join("repos/acme/branches/main/view-buckets/b1");
+        let bucket = root.path().join("repos/acme/branches/main/view-buckets/b1");
         std::fs::create_dir_all(&bucket).unwrap();
         std::fs::write(bucket.join("review.json"), "{}").unwrap();
         let repo = root.path().join("repos/acme");

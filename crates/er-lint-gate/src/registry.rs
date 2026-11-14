@@ -39,7 +39,13 @@ const TYPED_CALLS: &[&str] = &[
 ];
 
 /// Method names that make their enclosing function a reader.
-const READ_CALLS: &[&str] = &["read", "read_found", "read_optional", "read_text", "snapshot"];
+const READ_CALLS: &[&str] = &[
+    "read",
+    "read_found",
+    "read_optional",
+    "read_text",
+    "snapshot",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KindDef {
@@ -126,9 +132,7 @@ impl<'ast> Visit<'ast> for Scanner {
         if body_has_read_call(&item.block) {
             self.reader_scope = true;
         }
-        self.facts
-            .text_uses
-            .extend(text_uses_in_block(&item.block));
+        self.facts.text_uses.extend(text_uses_in_block(&item.block));
         visit::visit_item_fn(self, item);
         self.reader_scope = previous;
     }
@@ -138,9 +142,7 @@ impl<'ast> Visit<'ast> for Scanner {
         if body_has_read_call(&item.block) {
             self.reader_scope = true;
         }
-        self.facts
-            .text_uses
-            .extend(text_uses_in_block(&item.block));
+        self.facts.text_uses.extend(text_uses_in_block(&item.block));
         visit::visit_impl_item_fn(self, item);
         self.reader_scope = previous;
     }
@@ -271,6 +273,23 @@ fn text_uses_in_block(block: &syn::Block) -> Vec<TextUse> {
         bindings: HashMap<String, (String, usize)>,
         uses: Vec<TextUse>,
     }
+    impl Collector {
+        fn record_argument(&mut self, argument: &Expr) {
+            if let Some(literal) = rel_path_literal(argument) {
+                self.uses.push(TextUse {
+                    file: literal,
+                    line: argument.span().start().line,
+                });
+            } else if let Some(ident) = argument_ident(argument) {
+                if let Some((literal, line)) = self.bindings.get(&ident) {
+                    self.uses.push(TextUse {
+                        file: literal.clone(),
+                        line: *line,
+                    });
+                }
+            }
+        }
+    }
     impl<'ast> Visit<'ast> for Collector {
         fn visit_local(&mut self, local: &'ast syn::Local) {
             if let Some(ident) = bound_ident(&local.pat) {
@@ -288,19 +307,7 @@ fn text_uses_in_block(block: &syn::Block) -> Vec<TextUse> {
             let method = call.method.to_string();
             if method.contains("read_text") || method.contains("write_text") {
                 for argument in &call.args {
-                    if let Some(literal) = rel_path_literal(argument) {
-                        self.uses.push(TextUse {
-                            file: literal,
-                            line: argument.span().start().line,
-                        });
-                    } else if let Some(ident) = argument_ident(argument) {
-                        if let Some((literal, line)) = self.bindings.get(&ident) {
-                            self.uses.push(TextUse {
-                                file: literal.clone(),
-                                line: *line,
-                            });
-                        }
-                    }
+                    self.record_argument(argument);
                 }
             }
             visit::visit_expr_method_call(self, call);
@@ -331,7 +338,9 @@ fn rel_path_literal(expression: &Expr) -> Option<String> {
         }
         Expr::Try(inner) => rel_path_literal(&inner.expr),
         Expr::Reference(inner) => rel_path_literal(&inner.expr),
-        Expr::MethodCall(call) if matches!(call.method.to_string().as_str(), "unwrap" | "expect") => {
+        Expr::MethodCall(call)
+            if matches!(call.method.to_string().as_str(), "unwrap" | "expect") =>
+        {
             rel_path_literal(&call.receiver)
         }
         _ => None,
@@ -399,7 +408,10 @@ pub fn evaluate(by_file: &BTreeMap<String, FileFacts>) -> Vec<Diagnostic> {
     let mut definitions: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
     for facts in by_file.values() {
         for def in &facts.definitions {
-            definitions.insert(def.type_name.as_str(), (def.kind.as_str(), def.file.as_str()));
+            definitions.insert(
+                def.type_name.as_str(),
+                (def.kind.as_str(), def.file.as_str()),
+            );
         }
     }
     let registered: BTreeSet<&str> = by_file
@@ -436,7 +448,12 @@ pub fn evaluate(by_file: &BTreeMap<String, FileFacts>) -> Vec<Diagnostic> {
                     "kind `{}` (`{kind}`, {def_file}) is used here but never registered",
                     typed_use.type_name
                 );
-                push(diagnostic(file, typed_use.line, message.clone()), file, typed_use.line, message);
+                push(
+                    diagnostic(file, typed_use.line, message.clone()),
+                    file,
+                    typed_use.line,
+                    message,
+                );
             }
         }
         for registration in &facts.registrations {
@@ -445,7 +462,12 @@ pub fn evaluate(by_file: &BTreeMap<String, FileFacts>) -> Vec<Diagnostic> {
             };
             if definitions.contains_key(type_name) && !read_types.contains(type_name) {
                 let message = format!("registered kind `{type_name}` has no reader");
-                push(diagnostic(file, registration.line, message.clone()), file, registration.line, message);
+                push(
+                    diagnostic(file, registration.line, message.clone()),
+                    file,
+                    registration.line,
+                    message,
+                );
             }
         }
         for text_use in &facts.text_uses {
@@ -454,7 +476,12 @@ pub fn evaluate(by_file: &BTreeMap<String, FileFacts>) -> Vec<Diagnostic> {
                     "text artifact `{}` is read or written but never registered",
                     text_use.file
                 );
-                push(diagnostic(file, text_use.line, message.clone()), file, text_use.line, message);
+                push(
+                    diagnostic(file, text_use.line, message.clone()),
+                    file,
+                    text_use.line,
+                    message,
+                );
             }
         }
     }
@@ -499,7 +526,9 @@ impl er_store::Artifact for Widget {
         );
         let diagnostics = evaluate(&scope(&[("crates/er-engine/src/a.rs", &source)]));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-        assert!(diagnostics[0].rendered.contains("used here but never registered"));
+        assert!(diagnostics[0]
+            .rendered
+            .contains("used here but never registered"));
     }
 
     #[test]

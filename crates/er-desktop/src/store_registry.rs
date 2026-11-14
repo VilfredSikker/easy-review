@@ -69,11 +69,7 @@ mod tests {
     fn the_shared_composition_does_not_claim_desktop_kinds() {
         let shared = er_engine::store_registry::registry();
         for (file, _) in DESKTOP_KINDS {
-            assert_eq!(
-                shared.kind_for(std::path::Path::new(file)),
-                None,
-                "{file}"
-            );
+            assert_eq!(shared.kind_for(std::path::Path::new(file)), None, "{file}");
         }
     }
 }
