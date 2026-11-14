@@ -170,8 +170,8 @@ mod tests {
     fn has_ident(src: &str, ident: &str) -> bool {
         let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
         src.match_indices(ident).any(|(at, _)| {
-            let before = src[..at].chars().next_back();
-            let after = src[at + ident.len()..].chars().next();
+            let before = src.get(..at).and_then(|s| s.chars().next_back());
+            let after = src.get(at + ident.len()..).and_then(|s| s.chars().next());
             !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
         })
     }
@@ -280,7 +280,10 @@ mod tests {
         });
         assert_eq!(browser.layout, BrowserLayout::Split);
         assert_eq!(browser.url, "http://localhost:5173/");
-        assert_eq!(browser.split_ratio, 0.65, "the ratio is clamped");
+        assert!(
+            (browser.split_ratio - 0.65).abs() < f32::EPSILON,
+            "the ratio is clamped"
+        );
         browser.apply(BrowserUpdate {
             annotate: Some(true),
             tooltips: Some(true),
