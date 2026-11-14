@@ -3,11 +3,11 @@
 use crate::commands::AppState;
 use crate::snapshot::{ArenaRunSnapshotWire, ArenaRunSummaryWire};
 use er_engine::app::App;
+#[cfg(not(feature = "v1-service"))]
+use er_engine::arena::{estimate_batch_cost_usd, ArenaBatchStartParams, ArenaStartParams};
 use er_engine::arena::{
     AgentGroupStart, ArenaDiffPreview, ArenaProgressState, ArenaScope, ReviewerRef, Verdict,
 };
-#[cfg(not(feature = "v1-service"))]
-use er_engine::arena::{estimate_batch_cost_usd, ArenaBatchStartParams, ArenaStartParams};
 use serde::Deserialize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -745,13 +745,17 @@ mod route_tests {
             "ArenaCommand::Delete",
             "ArenaCommand::Cancel",
             "ArenaCommand::Override",
-            "Query::ArenaEstimate {",
-            "Query::ArenaEstimateBatch",
-            "Query::ArenaProgress",
-            "Query::ArenaRun {",
-            "Query::ArenaRuns",
+            "ArenaCommand::Estimate {",
+            "ArenaCommand::EstimateBatch",
+            // Reads take the published view and the store, never a round trip.
+            "arena::read_progress(",
+            "arena::read_run(",
+            "arena::read_runs(",
         ] {
-            assert!(service.contains(sent), "{sent} is never sent");
+            assert!(service.contains(sent), "{sent} is never used");
         }
+        // The App's recovery must know the actors' runs, or a tab switch marks
+        // them stale.
+        assert!(include_str!("main.rs").contains("arena_service::attach("));
     }
 }

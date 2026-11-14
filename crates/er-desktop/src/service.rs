@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use er_engine::ports::Ports;
 use er_service::{
-    spawn, Command, OpenTarget, Query, QueryReply, Reply, WorkspaceDeps, WorkspaceError,
-    WorkspaceHandle, WorkspaceView,
+    spawn, Command, OpenTarget, Reply, WorkspaceDeps, WorkspaceError, WorkspaceHandle,
+    WorkspaceView,
 };
 
 /// The actors this desktop process has started.
@@ -49,11 +49,6 @@ impl ServiceState {
         self.handle_for(key).send_and_wait(command)
     }
 
-    /// Sends one read and waits for the actor's bounded answer.
-    pub fn query(&self, key: &str, query: Query) -> Result<QueryReply, WorkspaceError> {
-        self.handle_for(key).query(query)
-    }
-
     /// Sends one open command and waits for the actor's bounded reply.
     pub fn open_target(
         &self,
@@ -69,5 +64,17 @@ impl ServiceState {
     /// a reader never sees a missing handle as an error.
     pub fn view(&self, key: &str) -> Arc<WorkspaceView> {
         self.handle_for(key).view()
+    }
+
+    /// Whether any actor this process started is running `run_id`, from the
+    /// published views. The App asks before it marks a run stale.
+    pub fn arena_run_live(&self, run_id: &str) -> bool {
+        let handles: Vec<WorkspaceHandle> = match self.handles.lock() {
+            Ok(handles) => handles.values().cloned().collect(),
+            Err(poisoned) => poisoned.into_inner().values().cloned().collect(),
+        };
+        handles
+            .iter()
+            .any(|handle| handle.view().arena_run(run_id).is_some())
     }
 }

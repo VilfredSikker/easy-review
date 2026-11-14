@@ -1037,10 +1037,16 @@ fn main() {
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    #[cfg(feature = "v1-service")]
+    let service = Arc::new(er_desktop::service::ServiceState::new(ports.clone()));
+    #[cfg(feature = "v1-service")]
+    if let Ok(app) = app_arc.lock() {
+        er_desktop::arena_service::attach(&app, Arc::clone(&service));
+    }
     let state = AppState {
         ports: ports.clone(),
         #[cfg(feature = "v1-service")]
-        service: Arc::new(er_desktop::service::ServiceState::new(ports.clone())),
+        service: Arc::clone(&service),
         app: Arc::clone(&app_arc),
         pr_cache: Arc::clone(&pr_cache),
         pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
