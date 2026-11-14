@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ArenaRunSnapshot } from "$lib/types/arena";
-  import { ARBITER_COLOR, pageStats, reviewerColorVar, roundsRun, runDuration } from "$lib/arena/arenaView";
+  import { ARBITER_COLOR, pageStats, panelLine, panelMeasurement, reviewerColorVar, roundsRun, runDuration } from "$lib/arena/arenaView";
 
   interface Props {
     snapshot: ArenaRunSnapshot;
@@ -32,6 +32,8 @@
       snapshot.run.diff_hash ? `built from ${snapshot.run.diff_hash.slice(0, 7)}` : "",
     ].filter(Boolean).join(" · "),
   );
+  const panel = $derived(panelMeasurement(snapshot.panel));
+  const panelText = $derived(panel ? panelLine(panel) : null);
 </script>
 
 <div class="ar-stats">
@@ -51,6 +53,9 @@
       {/if}
     </div>
     <div class="mono line">{meta}</div>
+    {#if panel && panelText}
+      <div class="mono line panel" class:changed={panel.quorum_changed}>{panelText}</div>
+    {/if}
   </div>
 </div>
 
@@ -113,5 +118,11 @@
   .line {
     font-size: 11px;
     color: var(--color-muted);
+  }
+  .panel {
+    color: var(--color-muted);
+  }
+  .panel.changed {
+    color: var(--color-fg);
   }
 </style>

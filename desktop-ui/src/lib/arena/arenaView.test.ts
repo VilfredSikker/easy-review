@@ -16,6 +16,8 @@ import {
   lensColorVar,
   modelPickKey,
   outAfterRound,
+  panelLine,
+  panelMeasurement,
   picksToReviewers,
   reviewerToPickKey,
   pageStats,
@@ -255,5 +257,18 @@ describe("overlayAccess", () => {
     const a = overlayAccess({ flowAcceptance: false, runKind: "seeded", readOnlyVerification: true });
     expect(a.readOnly).toBe(true);
     expect(a.keepAnyway).toBe(false);
+  });
+});
+
+describe("panel measurement", () => {
+  it("shows one line for a multi-round panel", () => {
+    const panel = { rounds: 2, round1_confirmed: 2, round2_confirmed: 3, quorum_changed: true };
+    expect(panelMeasurement(panel)).toEqual(panel);
+    expect(panelLine(panel)).toBe("panel · 2 rounds · confirmed 2 → 3 · quorum changed");
+  });
+
+  it("shows nothing for a single-round panel", () => {
+    expect(panelMeasurement({ rounds: 1, round1_confirmed: 3, quorum_changed: false })).toBeNull();
+    expect(panelMeasurement(undefined)).toBeNull();
   });
 });
