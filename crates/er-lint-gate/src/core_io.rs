@@ -19,6 +19,8 @@ pub const CODE: &str = "er::core_io";
 pub const SOURCE: &str = "crates/er-core/src";
 /// The manifest whose `[dependencies]` the allow-list checks.
 pub const MANIFEST: &str = "crates/er-core/Cargo.toml";
+/// The core's arena module, the one place a `crate::arena` path is expected.
+pub const ARENA_SOURCE: &str = "crates/er-core/src/arena/";
 /// The dependencies the core crate may declare.
 pub const ALLOWED: &[&str] = &[
     "anyhow",
@@ -164,6 +166,67 @@ pub fn findings(source: &str) -> Vec<Finding> {
     finder.findings
 }
 
+/// Whether `file` is inside the core's arena module.
+pub fn is_arena_file(file: &str) -> bool {
+    file.starts_with(ARENA_SOURCE)
+}
+
+/// A path into the core's arena module, from a file outside it.
+fn arena_path(segments: &[String]) -> Option<String> {
+    let [root, arena, ..] = segments else {
+        return None;
+    };
+    ((root == "crate" || root == "super") && arena == "arena").then(|| segments.join("::"))
+}
+
+struct ArenaFinder {
+    findings: Vec<Finding>,
+}
+
+impl ArenaFinder {
+    fn check(&mut self, segments: &[String], line: usize) {
+        if let Some(found) = arena_path(segments) {
+            self.findings.push(Finding {
+                line,
+                message: format!("`{found}` reaches the arena rules from outside the arena module"),
+            });
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for ArenaFinder {
+    fn visit_item_use(&mut self, item: &'ast ItemUse) {
+        let mut paths = Vec::new();
+        collect_use_paths(&item.tree, &mut Vec::new(), &mut paths);
+        for path in paths {
+            let segments: Vec<String> = path.split("::").map(str::to_string).collect();
+            self.check(&segments, item.span().start().line);
+        }
+    }
+
+    fn visit_expr_path(&mut self, path: &'ast ExprPath) {
+        self.check(&path_segments(&path.path), path.span().start().line);
+        visit::visit_expr_path(self, path);
+    }
+
+    fn visit_type_path(&mut self, path: &'ast TypePath) {
+        self.check(&path_segments(&path.path), path.span().start().line);
+        visit::visit_type_path(self, path);
+    }
+}
+
+/// Findings for an arena reference in a source file outside the arena module.
+pub fn arena_findings(source: &str) -> Vec<Finding> {
+    let Ok(file) = syn::parse_file(source) else {
+        return Vec::new();
+    };
+    let mut finder = ArenaFinder {
+        findings: Vec::new(),
+    };
+    finder.visit_file(&file);
+    finder.findings
+}
+
 /// Turn findings into gate diagnostics for every file the rule scanned.
 pub fn evaluate(findings_by_file: &BTreeMap<String, Vec<Finding>>, code: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
@@ -259,6 +322,27 @@ mod tests {
             findings("fn f() { let _ = glob::glob_with(\"*\", glob::MatchOptions::new()); }").len(),
             1
         );
+    }
+
+    #[test]
+    fn a_crate_arena_use_is_flagged() {
+        assert_eq!(
+            arena_findings("use crate::arena::model::ArenaFinding;").len(),
+            1
+        );
+        let source = "fn f() -> Option<super::arena::model::Verdict> { None }";
+        assert_eq!(arena_findings(source).len(), 1);
+    }
+
+    #[test]
+    fn a_review_path_passes() {
+        assert!(arena_findings("use crate::review::Finding;").is_empty());
+    }
+
+    #[test]
+    fn only_the_arena_module_is_local() {
+        assert!(is_arena_file("crates/er-core/src/arena/voting.rs"));
+        assert!(!is_arena_file("crates/er-core/src/projection.rs"));
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! `er::core_io` fails the gate on any of those, and on a dependency outside
 //! the crate's allow-list.
 
+pub mod accepted_findings;
 pub mod annotations;
 pub mod arbiter;
 pub mod arena;
@@ -16,6 +17,7 @@ pub mod identity;
 pub mod panel;
 pub mod path_rules;
 pub mod professor;
+pub mod projection;
 pub mod relocate;
 pub mod review;
 pub mod risk_rules;
