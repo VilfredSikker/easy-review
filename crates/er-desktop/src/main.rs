@@ -2255,6 +2255,10 @@ mod tests {
     /// The flag is opt-in: a plain build compiles the App path and reports it.
     /// Flipping the feature into `default` makes this fail before anything runs.
     #[test]
+    #[expect(
+        clippy::assertions_on_constants,
+        reason = "the constant is the build's compiled feature value, which is the point"
+    )]
     fn the_service_flag_is_off_in_a_default_build() {
         assert!(
             !cfg!(feature = "v1-service"),
