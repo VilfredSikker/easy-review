@@ -42,6 +42,12 @@ _Avoid_: view mode, screen
 One independent review target, with its own diff, selection, and artifacts.
 _Avoid_: session, workspace, pane
 
+**Workspace**:
+The state one actor owns for a single repo/worktree: the PR targets opened in
+it and which one is active. The actor is its only writer; readers get an
+immutable view published per revision.
+_Avoid_: tab (a tab is a review target), project, session
+
 **Finding**:
 A remark an AI review produced about a specific place in the diff. Findings
 belong to the AI that wrote them; a person reads them and acts, and does not
