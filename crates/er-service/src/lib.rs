@@ -27,10 +27,10 @@ pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use protocol::{
     AnnotationKind, AnnotationTarget, Command, Event, OpenTarget, Reply, TabContext,
 };
-pub use workspace::{WorkspaceTarget, WorkspaceView};
 pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
+pub use workspace::{WorkspaceTarget, WorkspaceView};
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod settings_tests;
+#[cfg(test)]
+mod tests;

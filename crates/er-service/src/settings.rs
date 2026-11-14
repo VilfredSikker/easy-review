@@ -3,7 +3,7 @@
 //! Config is app-scoped, so no workspace actor owns it: one settings actor per
 //! process holds the config, applies every settings write as a command, and
 //! publishes a [`SettingsView`] per revision, read the way a
-//! [`crate::WorkspaceView`] is (ADR 0067, ADR 0068). The caller never picks it
+//! [`crate::WorkspaceView`] is (ADR 0067, ADR 0069). The caller never picks it
 //! from a tab.
 //!
 //! The config is loaded on the caller's thread before the loop starts, so no
@@ -180,7 +180,10 @@ enum Outcome {
 
 impl SettingsHandle {
     /// Sends a command and returns the reply channel immediately.
-    pub fn send(&self, command: SettingsCommand) -> Receiver<Result<SettingsReply, WorkspaceError>> {
+    pub fn send(
+        &self,
+        command: SettingsCommand,
+    ) -> Receiver<Result<SettingsReply, WorkspaceError>> {
         let (reply, replies) = mpsc::channel();
         let _ = self.tx.send(SettingsMsg::Command { command, reply });
         replies
@@ -227,7 +230,7 @@ impl SettingsHandle {
 /// beside it.
 pub fn spawn_settings(deps: WorkspaceDeps, config_path: PathBuf) -> SettingsHandle {
     let (config, error) = adopt_config_from(&config_path);
-    let mut state = SettingsState {
+    let state = SettingsState {
         config,
         config_path,
         revision: 0,
@@ -407,7 +410,9 @@ fn write_and_save(
     let saves = Arc::clone(&state.saves);
     let path = state.config_path.clone();
     spawn_effect(tx, reply, move || {
-        saves.write_latest(&path).map(|()| Outcome::Saved { warnings })
+        saves
+            .write_latest(&path)
+            .map(|()| Outcome::Saved { warnings })
     });
 }
 
@@ -544,7 +549,9 @@ fn refresh_models(
         .iter()
         .filter(|(id, p)| {
             !p.models_command.is_empty()
-                && provider_id.as_deref().is_none_or(|want| want == id.as_str())
+                && provider_id
+                    .as_deref()
+                    .is_none_or(|want| want == id.as_str())
                 && !state.discovery_inflight.contains(id.as_str())
         })
         .map(|(id, p)| (id.clone(), p.models_command.clone()))
@@ -637,7 +644,9 @@ fn apply(
             artifact,
         }) => {
             state.artifacts.insert(key.clone(), artifact);
-            state.risk_keys.insert((repo_root, remote_repo), key.clone());
+            state
+                .risk_keys
+                .insert((repo_root, remote_repo), key.clone());
             state.rebuild_risk(&key);
             state.revision += 1;
             let version = state.risk.get(&key).map_or(0, |view| view.version);

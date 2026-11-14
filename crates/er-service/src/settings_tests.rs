@@ -54,12 +54,17 @@ fn the_config_hub_view_carries_the_live_rows() -> anyhow::Result<()> {
 
         let view = handle.view();
         assert!(view.revision > before, "the patch published a revision");
-        let theme = view.hub.fields.general.iter().find_map(|field| match field {
-            ConfigHubFieldDto::Cycle { key, value, .. } if key == "display.theme" => {
-                Some(value.clone())
-            }
-            _ => None,
-        });
+        let theme = view
+            .hub
+            .fields
+            .general
+            .iter()
+            .find_map(|field| match field {
+                ConfigHubFieldDto::Cycle { key, value, .. } if key == "display.theme" => {
+                    Some(value.clone())
+                }
+                _ => None,
+            });
         assert_eq!(theme.as_deref(), Some("paper"));
         assert_eq!(view.config.display.theme, "paper");
         Ok(())
