@@ -193,22 +193,36 @@ fn the_actor_loop_never_dereferences_a_port() {
     );
 }
 
+/// Times the real routed open command: parse the target, fetch the PR state
+/// through the scripted port off-actor, apply the result, answer the caller.
+/// The baseline is the same effect called directly with the same port.
 #[test]
 #[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]
 fn the_actor_hop_stays_within_the_latency_budget() -> anyhow::Result<()> {
     const RUNS: usize = 100;
-    let deps = WorkspaceDeps::new(Ports::with_github(github(Ok("OPEN"))));
+    let github = github(Ok("OPEN"));
+    let github_port: Arc<dyn er_github::GitHub> = github.clone();
+    let deps = WorkspaceDeps::new(Ports::with_github(github_port));
     let target = remote_pr();
 
+    // Baseline: the same effect called directly, with the same scripted port.
     let direct = median_duration(RUNS, || Ok(resolve_target(&deps, &target).map(|_| ())?))?;
 
     let handle = spawn(deps);
     handle.send_and_wait_with(open_remote(), Duration::from_secs(5))?;
+    // Every timed command must do the real work — parse, the off-actor port
+    // call, the apply — or the comparison times an empty round trip.
+    let calls_before = github.calls().len();
     let actor = median_duration(RUNS, || {
         Ok(handle
             .send_and_wait_with(open_remote(), Duration::from_secs(5))
             .map(|_| ())?)
     })?;
+    assert_eq!(
+        github.calls().len(),
+        calls_before + RUNS,
+        "a timed command skipped the port call"
+    );
 
     println!("direct median {direct:?}, actor median {actor:?} over {RUNS} runs");
     let budget = direct * 11 / 10 + Duration::from_millis(2);
