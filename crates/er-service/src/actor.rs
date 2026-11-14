@@ -493,6 +493,41 @@ fn handle_command(
                 crate::pending_review::submit(&deps, context, event, &summary)
             });
         }
+        Command::PostGithubPrComment { context, body } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_fetch(tx, reply, move || {
+                crate::pr_posts::post_pr_comment(&deps, context, &body)
+            });
+        }
+        Command::PostGithubLineComment {
+            context,
+            target,
+            body,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_fetch(tx, reply, move || {
+                crate::pr_posts::post_line_comment(&deps, context, &target, &body)
+            });
+        }
+        Command::SubmitGithubPrDecision {
+            context,
+            event,
+            summary,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_fetch(tx, reply, move || {
+                crate::pr_posts::submit_decision(&deps, context, event, &summary)
+            });
+        }
         #[cfg(test)]
         Command::Ping => {
             let _ = reply.send(Ok(Reply::Pong));
