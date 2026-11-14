@@ -5,7 +5,6 @@
 pub mod ai;
 #[cfg(feature = "ui")]
 pub mod app;
-#[cfg(feature = "ui")]
 pub mod arena;
 pub mod config;
 pub use config::{
@@ -28,6 +27,7 @@ pub mod github;
 pub mod github_post;
 #[cfg(feature = "highlight")]
 pub mod highlight;
+pub mod jobs;
 mod legacy_projects;
 pub mod model_discovery;
 pub mod os_launch;

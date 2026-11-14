@@ -391,7 +391,7 @@ pub fn reconcile_stale_runs(er_dir: &Path) -> Result<()> {
 
 /// Recover only this entered bucket. Registry membership owns the writer even
 /// after its status turns terminal, until the supervisor releases its entry.
-pub(crate) fn reconcile_stale_runs_excluding(
+pub fn reconcile_stale_runs_excluding(
     er_dir: &Path,
     is_registered: impl Fn(&str) -> bool,
 ) -> Result<()> {
@@ -440,6 +440,7 @@ pub fn start_arena_run(
 }
 
 /// Flow ownership is written with the first run record, before the supervisor starts.
+#[cfg(feature = "ui")]
 pub(crate) fn start_review_flow_run(
     controls: &ArenaRunControls,
     config: ErConfig,
@@ -550,7 +551,7 @@ fn start_arena_run_with_kind(
         base_branch,
         scope: params.scope,
         diff_hash,
-        created_at: crate::app::chrono_now(),
+        created_at: crate::sync::chrono_now(),
         completed_at: None,
         status: RunStatus::Queued,
         config: ArenaConfig {
@@ -610,7 +611,7 @@ fn start_arena_run_with_kind(
                 control.set_status(RunStatus::Cancelled);
                 if let Ok(mut run) = load_run(&paths_clone) {
                     run.status = RunStatus::Cancelled;
-                    run.completed_at = Some(crate::app::chrono_now());
+                    run.completed_at = Some(crate::sync::chrono_now());
                     let _ = save_run(&paths_clone, &run);
                 }
             } else {
@@ -618,7 +619,7 @@ fn start_arena_run_with_kind(
                 control.set_status(RunStatus::Failed);
                 if let Ok(mut run) = load_run(&paths_clone) {
                     run.status = RunStatus::Failed;
-                    run.completed_at = Some(crate::app::chrono_now());
+                    run.completed_at = Some(crate::sync::chrono_now());
                     let _ = save_run(&paths_clone, &run);
                 }
             }
@@ -630,7 +631,7 @@ fn start_arena_run_with_kind(
         // must leave neither behind.
         if let Ok(mut run) = load_run(&paths) {
             run.status = RunStatus::Failed;
-            run.completed_at = Some(crate::app::chrono_now());
+            run.completed_at = Some(crate::sync::chrono_now());
             let _ = save_run(&paths, &run);
         }
         if let Some(workflow) = workflow_for_error.as_ref() {
@@ -792,7 +793,7 @@ pub fn start_seeded_run(
                     crate::dev_log::arena_line(format!("seeded {run_id_thread}: {e:#}"));
                 }
                 run.status = RunStatus::Complete;
-                run.completed_at = Some(crate::app::chrono_now());
+                run.completed_at = Some(crate::sync::chrono_now());
                 control.set_status(RunStatus::Complete);
                 let _ = save_run(&paths_clone, &run);
                 control.emit(&ProgressEvent::RunComplete {
@@ -803,7 +804,7 @@ pub fn start_seeded_run(
                 crate::dev_log::arena_line(format!("seeded {run_id_thread} failed: {e:#}"));
                 control.set_status(RunStatus::Failed);
                 run.status = RunStatus::Failed;
-                run.completed_at = Some(crate::app::chrono_now());
+                run.completed_at = Some(crate::sync::chrono_now());
                 let _ = save_run(&paths_clone, &run);
             }
         }
@@ -811,7 +812,7 @@ pub fn start_seeded_run(
     if let Err(error) = started {
         if let Ok(mut run) = load_run(&paths) {
             run.status = RunStatus::Failed;
-            run.completed_at = Some(crate::app::chrono_now());
+            run.completed_at = Some(crate::sync::chrono_now());
             let _ = save_run(&paths, &run);
         }
         if let Some(workflow) = workflow_for_error.as_ref() {
@@ -878,7 +879,7 @@ fn arbiter_review_from_run(
     crate::ai::ArbiterReview {
         version: 1,
         diff_hash: diff_hash.to_string(),
-        created_at: crate::app::chrono_now(),
+        created_at: crate::sync::chrono_now(),
         run_id: run_id.to_string(),
         verdicts,
     }
@@ -1063,7 +1064,7 @@ fn run_round1_parallel(
     let patch_path = patch_path.to_string();
     let review_md = std::fs::read_to_string(paths.review_md()).ok();
     let cancel = control.cancel_flag();
-    let runner = Arc::new(super::jobs::arena_runner(&config));
+    let limits = super::jobs::arena_limits(&config);
     let bridge = super::jobs::CancelBridge::start(Arc::clone(&cancel));
     let ok: Arc<Mutex<Vec<(String, super::schema::Round1Output)>>> =
         Arc::new(Mutex::new(Vec::new()));
@@ -1096,7 +1097,6 @@ fn run_round1_parallel(
         let paths = paths.clone();
         let storage_dir = storage_dir.clone();
         let cancel = Arc::clone(&cancel);
-        let runner = Arc::clone(&runner);
         let bridge = bridge.clone();
         let ok = Arc::clone(&ok);
         let failed = Arc::clone(&failed);
@@ -1146,7 +1146,13 @@ fn run_round1_parallel(
                     reviewer_id: reviewer.id.clone(),
                     round: 1,
                 });
-                match super::jobs::run_arena_job(&runner, &spec, &bridge, "arena_child") {
+                match super::jobs::run_arena_job(
+                    control.jobs(),
+                    limits,
+                    &spec,
+                    &bridge,
+                    "arena_child",
+                ) {
                     Ok(v) => match super::schema::validate_round1_output(&v) {
                         Ok(out) => {
                             let _ = save_round_output(&paths, 1, &reviewer.id, &v);
@@ -1239,7 +1245,7 @@ fn run_round2_parallel(
     // threads.
     let findings_json = Arc::new(findings_json.to_string());
     let cancel = control.cancel_flag();
-    let runner = Arc::new(super::jobs::arena_runner(&config));
+    let limits = super::jobs::arena_limits(&config);
     let bridge = super::jobs::CancelBridge::start(Arc::clone(&cancel));
     let ok: Arc<Mutex<Vec<(String, super::schema::Round2Output)>>> =
         Arc::new(Mutex::new(Vec::new()));
@@ -1270,7 +1276,6 @@ fn run_round2_parallel(
         let paths = paths.clone();
         let storage_dir = storage_dir.clone();
         let cancel = Arc::clone(&cancel);
-        let runner = Arc::clone(&runner);
         let bridge = bridge.clone();
         let ok = Arc::clone(&ok);
         let failed = Arc::clone(&failed);
@@ -1319,7 +1324,13 @@ fn run_round2_parallel(
                     reviewer_id: reviewer.id.clone(),
                     round,
                 });
-                match super::jobs::run_arena_job(&runner, &spec, &bridge, "arena_child") {
+                match super::jobs::run_arena_job(
+                    control.jobs(),
+                    limits,
+                    &spec,
+                    &bridge,
+                    "arena_child",
+                ) {
                     Ok(v) => match super::schema::validate_round2_output(&v) {
                         Ok(out) => {
                             let _ = save_round_output(&paths, round, &reviewer.id, &v);
@@ -1394,7 +1405,7 @@ fn run_supervisor(
     macro_rules! bail_cancelled {
         () => {
             run.status = RunStatus::Cancelled;
-            run.completed_at = Some(crate::app::chrono_now());
+            run.completed_at = Some(crate::sync::chrono_now());
             save_run(paths, &run)?;
             control.set_status(RunStatus::Cancelled);
             emit(
@@ -1494,7 +1505,7 @@ fn run_supervisor(
             panel.record(&run)?;
         }
         run.status = RunStatus::Complete;
-        run.completed_at = Some(crate::app::chrono_now());
+        run.completed_at = Some(crate::sync::chrono_now());
         control.set_status(RunStatus::Complete);
         save_run(paths, &run)?;
         emit(control, &ProgressEvent::RunComplete { run_id });
@@ -1571,7 +1582,7 @@ fn run_supervisor(
     }
 
     run.status = RunStatus::Complete;
-    run.completed_at = Some(crate::app::chrono_now());
+    run.completed_at = Some(crate::sync::chrono_now());
     control.set_status(RunStatus::Complete);
     save_run(paths, &run)?;
     emit(control, &ProgressEvent::RunComplete { run_id });
@@ -1730,7 +1741,7 @@ fn run_arbiter(
     };
     // The arbiter is an agent process like any reviewer: the runner charges it
     // to the same arena cap, so N seeded runs cannot start N arbiters past it.
-    let runner = super::jobs::arena_runner(config);
+    let limits = super::jobs::arena_limits(config);
     let bridge = super::jobs::CancelBridge::start(control.cancel_flag());
     emit(
         control,
@@ -1740,7 +1751,8 @@ fn run_arbiter(
         },
     );
     let arbiter_started = std::time::Instant::now();
-    let v = match super::jobs::run_arena_job(&runner, &spec, &bridge, "arena_child") {
+    let v = match super::jobs::run_arena_job(control.jobs(), limits, &spec, &bridge, "arena_child")
+    {
         Ok(v) => v,
         Err(super::jobs::JobFailure::Cancelled) => return cancel_run(ctx, run),
         Err(super::jobs::JobFailure::Failed(reason)) => {
@@ -1820,7 +1832,7 @@ fn run_arbiter(
 /// did at the call site before this was extracted.
 fn cancel_run(ctx: &SupervisorCtx<'_>, run: &mut ArenaRun) -> Result<ArbiterOutcome> {
     run.status = RunStatus::Cancelled;
-    run.completed_at = Some(crate::app::chrono_now());
+    run.completed_at = Some(crate::sync::chrono_now());
     save_run(ctx.paths, run)?;
     ctx.control.set_status(RunStatus::Cancelled);
     emit(

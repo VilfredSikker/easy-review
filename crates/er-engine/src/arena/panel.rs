@@ -13,7 +13,7 @@
 //! round has returned.
 
 use super::control::ArenaRunControl;
-use super::jobs::{arena_job, arena_runner, run_arena_job, CancelBridge, JobFailure};
+use super::jobs::{arena_job, arena_limits, run_arena_job, CancelBridge, JobFailure};
 use super::model::{Reviewer, ReviewerRunStatus, RunStatus, Vote};
 use super::orchestrator::{
     record_reviewer_failure, Round1ParallelOutcome, Round2ParallelOutcome, SupervisorCtx,
@@ -295,7 +295,8 @@ impl Panel {
         // The shared pool, charged as arena work: a panel reviewer must not
         // take a background review's slot.
         run_arena_job(
-            &arena_runner(&self.ctx.config),
+            self.ctx.control.jobs(),
+            arena_limits(&self.ctx.config),
             &spec,
             bridge,
             "arena_child",
