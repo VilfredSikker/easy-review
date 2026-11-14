@@ -153,6 +153,34 @@ fn every_re_export_names_the_core_type() {
         er_engine::ai::panel_run::Agreement,
         er_core::panel::Agreement
     );
+    same_type!(
+        er_engine::ai::ProjectionInputs<'static>,
+        er_core::projection::ProjectionInputs<'static>
+    );
+    same_type!(
+        er_engine::ai::FindingsProjection,
+        er_core::projection::FindingsProjection
+    );
+    same_type!(
+        er_engine::ai::ValidationReview,
+        er_core::validation::ValidationReview
+    );
+    same_type!(
+        er_engine::ai::ValidationOutcome,
+        er_core::validation::ValidationOutcome
+    );
+    same_type!(
+        er_engine::ai::ValidationResult,
+        er_core::validation::ValidationResult
+    );
+    same_type!(
+        er_engine::ai::ValidationPatch,
+        er_core::validation::ValidationPatch
+    );
+    same_type!(
+        er_engine::ai::accepted_findings::AcceptedFinding,
+        er_core::accepted_findings::AcceptedFinding
+    );
 }
 
 fn assert_core_artifact<T: er_core::artifact::Artifact>() {}
