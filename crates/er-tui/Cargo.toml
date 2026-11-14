@@ -14,6 +14,7 @@ path = "src/main.rs"
 er-agent = { path = "../er-agent" }
 er-engine = { path = "../er-engine" }
 er-git = { path = "../er-git" }
+er-service = { path = "../er-service", optional = true }
 
 # TUI
 ratatui = "0.30"
@@ -32,6 +33,11 @@ anyhow.workspace = true
 # `er update` and the status-bar release check (HTTP stays out of er-engine, ADR 0026)
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 tempfile = "3"
+
+[features]
+default = []
+# Compiles the v1 service path beside the App path. Off by default.
+v1-service = ["dep:er-service"]
 
 [dev-dependencies]
 # Thread-scoped ER_STORAGE_ROOT override for tests that seed the projects record.

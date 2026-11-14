@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 er-engine = { path = "../er-engine" }
 er-store = { path = "../er-store" }
+er-service = { path = "../er-service", optional = true }
 tauri = { version = "2", features = ["devtools", "unstable", "macos-private-api"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-log = "2"
@@ -31,6 +32,12 @@ dirs.workspace = true
 portable-pty = "0.9"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 base64 = "0.23"
+
+[features]
+default = []
+# Compiles the v1 service path beside the App path. Off by default; the
+# desktop-ui boot check compares this build value with VITE_ER_V1_SERVICE.
+v1-service = ["dep:er-service"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
