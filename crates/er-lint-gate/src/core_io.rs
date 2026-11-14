@@ -20,7 +20,15 @@ pub const SOURCE: &str = "crates/er-core/src";
 /// The manifest whose `[dependencies]` the allow-list checks.
 pub const MANIFEST: &str = "crates/er-core/Cargo.toml";
 /// The dependencies the core crate may declare.
-pub const ALLOWED: &[&str] = &["schemars", "serde", "serde_json", "sha1"];
+pub const ALLOWED: &[&str] = &[
+    "anyhow",
+    "glob",
+    "schemars",
+    "serde",
+    "serde_json",
+    "sha1",
+    "sha2",
+];
 
 /// Module prefixes that reach the outside world.
 const BANNED: &[&[&str]] = &[
@@ -46,13 +54,19 @@ struct IoFinder {
 
 impl IoFinder {
     fn check(&mut self, segments: &[String], line: usize) {
-        let Some(found) = banned(segments) else {
+        if let Some(found) = banned(segments) {
+            self.findings.push(Finding {
+                line,
+                message: format!("`{found}` is IO in the pure core crate"),
+            });
             return;
-        };
-        self.findings.push(Finding {
-            line,
-            message: format!("`{found}` is IO in the pure core crate"),
-        });
+        }
+        if let Some(found) = glob_walk(segments) {
+            self.findings.push(Finding {
+                line,
+                message: format!("`{found}` walks the filesystem in the pure core crate"),
+            });
+        }
     }
 }
 
@@ -127,6 +141,15 @@ fn banned(segments: &[String]) -> Option<String> {
     }
     let root = segments.first()?;
     (segments.len() >= 2 && BANNED_ROOTS.contains(&root.as_str())).then(|| segments.join("::"))
+}
+
+/// The glob entry points that walk the filesystem; `Pattern` and `MatchOptions`
+/// stay allowed, because matching a string is pure.
+fn glob_walk(segments: &[String]) -> Option<String> {
+    let [root, call] = segments else {
+        return None;
+    };
+    (root == "glob" && (call == "glob" || call == "glob_with")).then(|| segments.join("::"))
 }
 
 /// Findings for one source file. A file that does not parse yields none.
@@ -230,6 +253,21 @@ mod tests {
     }
 
     #[test]
+    fn a_glob_walk_is_flagged() {
+        assert_eq!(findings("fn f() { let _ = glob::glob(\"*\"); }").len(), 1);
+        assert_eq!(
+            findings("fn f() { let _ = glob::glob_with(\"*\", glob::MatchOptions::new()); }").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn glob_pattern_matching_passes() {
+        let source = "fn f() -> bool { glob::Pattern::new(\"*\").is_ok_and(|p| p.matches(\"x\")) }";
+        assert!(findings(source).is_empty(), "{:?}", findings(source));
+    }
+
+    #[test]
     fn an_unrelated_std_path_passes() {
         let source = "use std::sync::Arc; \
                       fn f() -> std::collections::HashMap<u8, u8> { std::collections::HashMap::new() }";
@@ -238,7 +276,7 @@ mod tests {
 
     #[test]
     fn the_allow_list_accepts_the_declared_set() {
-        let manifest = "[dependencies]\nserde.workspace = true\nserde_json.workspace = true\nschemars.workspace = true\nsha1.workspace = true\n";
+        let manifest = "[dependencies]\nserde.workspace = true\nserde_json.workspace = true\nschemars.workspace = true\nsha1.workspace = true\nglob.workspace = true\nsha2.workspace = true\nanyhow.workspace = true\n";
         assert!(manifest_findings(manifest).is_empty());
     }
 

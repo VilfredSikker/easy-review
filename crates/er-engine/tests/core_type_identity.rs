@@ -79,6 +79,80 @@ fn every_re_export_names_the_core_type() {
         er_engine::ai::RelocationResult,
         er_core::relocate::RelocationResult
     );
+    same_type!(er_engine::config::RiskTier, er_core::risk_rules::RiskTier);
+    same_type!(er_engine::config::RiskRule, er_core::risk_rules::RiskRule);
+    same_type!(
+        er_engine::config::RiskRuleTable,
+        er_core::risk_rules::RiskRuleTable
+    );
+    same_type!(
+        er_engine::config::RiskConfig,
+        er_core::risk_rules::RiskConfig
+    );
+    same_type!(
+        er_engine::config::RiskRuleSource,
+        er_core::risk_rules::RiskRuleSource
+    );
+    same_type!(
+        er_engine::config::MatchedRiskRule,
+        er_core::risk_rules::MatchedRiskRule
+    );
+    same_type!(
+        er_engine::config::ResolvedRisk,
+        er_core::risk_rules::ResolvedRisk
+    );
+    same_type!(er_engine::config::RiskRules, er_core::risk_rules::RiskRules);
+    same_type!(er_engine::ai::ExpertDef, er_core::experts::ExpertDef);
+    same_type!(er_engine::ai::ExpertReview, er_core::experts::ExpertReview);
+    same_type!(
+        er_engine::ai::ExpertFileReview,
+        er_core::experts::ExpertFileReview
+    );
+    same_type!(er_engine::ai::ReviewerKind, er_core::experts::ReviewerKind);
+    same_type!(
+        er_engine::ai::ProfessorReview,
+        er_core::professor::ProfessorReview
+    );
+    same_type!(
+        er_engine::ai::ProfessorFileReview,
+        er_core::professor::ProfessorFileReview
+    );
+    same_type!(
+        er_engine::arena::ArenaFinding,
+        er_core::arena::model::ArenaFinding
+    );
+    same_type!(er_engine::arena::ArenaRun, er_core::arena::model::ArenaRun);
+    same_type!(
+        er_engine::arena::ArenaConfig,
+        er_core::arena::model::ArenaConfig
+    );
+    same_type!(er_engine::arena::Ballot, er_core::arena::model::Ballot);
+    same_type!(er_engine::arena::Verdict, er_core::arena::model::Verdict);
+    same_type!(er_engine::arena::Vote, er_core::arena::model::Vote);
+    same_type!(
+        er_engine::arena::ReviewerKind,
+        er_core::arena::model::ReviewerKind
+    );
+    same_type!(
+        er_engine::arena::FunnelStage,
+        er_core::arena::model::FunnelStage
+    );
+    same_type!(
+        er_engine::arena::Round1Output,
+        er_core::arena::schema::Round1Output
+    );
+    same_type!(
+        er_engine::arena::Round2Output,
+        er_core::arena::schema::Round2Output
+    );
+    same_type!(
+        er_engine::arena::Round3Output,
+        er_core::arena::schema::Round3Output
+    );
+    same_type!(
+        er_engine::ai::panel_run::Agreement,
+        er_core::panel::Agreement
+    );
 }
 
 fn assert_core_artifact<T: er_core::artifact::Artifact>() {}

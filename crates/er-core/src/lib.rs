@@ -7,11 +7,19 @@
 
 pub mod annotations;
 pub mod arbiter;
+pub mod arena;
 pub mod artifact;
 pub mod diff;
+pub mod experts;
+pub mod hash;
 pub mod identity;
+pub mod panel;
+pub mod path_rules;
+pub mod professor;
 pub mod relocate;
 pub mod review;
+pub mod risk_rules;
 pub mod slot;
+pub mod slug;
 pub mod status;
 pub mod validation;
