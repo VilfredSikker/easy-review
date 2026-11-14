@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use er_engine::ai::accepted_provenance::{AcceptedProvenance, ProvenanceRead};
+use er_engine::ai::accepted_findings::AcceptedFinding;
 use er_engine::ai::{
     build_findings_projection, finding_key, load_ai_state, AiState, ArbiterEffect, ArbiterReview,
     ArbiterRuling, ErReview, ExpertReview, ProjectionInputs,
@@ -566,7 +566,6 @@ fn case_07_expert_order() -> Value {
         arbiter: None,
         validation: None,
         current_diff_hash: "H",
-        accepted_provenance: &|_, _| ProvenanceRead::default(),
     });
     let review = projection.review.as_ref().expect("a projected review");
     let ids: Vec<&str> = review.files["x.rs"]
@@ -597,15 +596,25 @@ fn case_08_provenance_before_the_arbiter() -> Value {
         "version": 1,
         "diff_hash": "H",
         "files": {
-            "a.rs": {"risk": "low", "findings": [
-                {"id": "arena-run-1-a", "title": "A", "severity": "low", "hunk_index": 0, "line_start": 1}
-            ]},
             "b.rs": {"risk": "low", "findings": [
                 {"id": "arena-run-1-b", "title": "B", "severity": "low", "hunk_index": 0, "line_start": 2}
             ]}
         }
     }))
-    .expect("a general review with two rows");
+    .expect("a general review with one row");
+    let accepted: AcceptedFinding = serde_json::from_value(json!({
+        "file": "a.rs",
+        "run_finding_id": "a",
+        "run_id": "run-1",
+        "run_diff_hash": "H",
+        "accepted_at": "2026-01-01T00:00:00Z",
+        "providers": ["host-a"],
+        "finding": {
+            "id": "arena-run-1-a", "title": "A", "severity": "low",
+            "hunk_index": 0, "line_start": 1, "lens": "security", "raised_by": ["security"]
+        }
+    }))
+    .expect("an accepted row");
     let arbiter: ArbiterReview = serde_json::from_value(json!({
         "version": 1,
         "diff_hash": "H",
@@ -621,25 +630,12 @@ fn case_08_provenance_before_the_arbiter() -> Value {
 
     let projection = build_findings_projection(ProjectionInputs {
         general: Some(review),
-        accepted: &[],
+        accepted: std::slice::from_ref(&accepted),
         experts: &[],
         professor: None,
         arbiter: Some(&arbiter),
         validation: None,
         current_diff_hash: "H",
-        accepted_provenance: &|_, rows| {
-            let mut read = ProvenanceRead::default();
-            if rows.iter().any(|row| row.id == "arena-run-1-a") {
-                read.rows.insert(
-                    "arena-run-1-a".to_string(),
-                    AcceptedProvenance {
-                        providers: vec!["host-a".to_string()],
-                        raisers: vec!["security".to_string()],
-                    },
-                );
-            }
-            read
-        },
     });
     let review = projection.review.as_ref().expect("a projected review");
     let a = &review.files["a.rs"].findings[0];
@@ -700,10 +696,10 @@ fn case_09_accepted_rows_keep_their_place() -> Value {
   "findings": [
     {"file": "a.rs", "run_finding_id": "kept-a", "run_id": "run-x", "run_diff_hash": "H",
      "accepted_at": "2026-01-02T00:00:00Z", "providers": ["deep-provider"],
-     "finding": {"id": "arena-run-x-kept-a", "title": "Accepted A", "severity": "high", "hunk_index": 0, "line_start": 5, "raised_by": ["general"]}},
+     "finding": {"id": "arena-run-x-kept-a", "title": "Accepted A", "severity": "high", "hunk_index": 0, "line_start": 5, "lens": "general", "raised_by": ["general"]}},
     {"file": "b.rs", "run_finding_id": "kept-b", "run_id": "run-x", "run_diff_hash": "H",
      "accepted_at": "2026-01-02T00:00:00Z", "providers": ["second-provider"],
-     "finding": {"id": "arena-run-x-kept-b", "title": "Accepted B", "severity": "medium", "line_start": 3, "raised_by": ["security"]}}
+     "finding": {"id": "arena-run-x-kept-b", "title": "Accepted B", "severity": "medium", "line_start": 3, "lens": "security", "raised_by": ["security"]}}
   ]
 }"#,
     );
@@ -745,7 +741,7 @@ fn case_10_accepted_only() -> Value {
   "findings": [
     {"file": "a.rs", "run_finding_id": "kept", "run_id": "run-y", "run_diff_hash": "H",
      "accepted_at": "2026-01-03T00:00:00Z", "providers": ["p1"],
-     "finding": {"id": "arena-run-y-kept", "title": "Only accepted", "severity": "medium", "line_start": 4, "raised_by": ["general"]}}
+     "finding": {"id": "arena-run-y-kept", "title": "Only accepted", "severity": "medium", "line_start": 4, "lens": "general", "raised_by": ["general"]}}
   ]
 }"#,
     );

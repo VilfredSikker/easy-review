@@ -3,7 +3,6 @@
 use super::super::background::BackgroundTaskTarget;
 use super::super::{App, DiffMode};
 use crate::ai::accepted_findings::record_accepted;
-use crate::ai::accepted_provenance::invalidate_accepted_provenance;
 use crate::ai::review_flow::FlowState;
 use crate::arena::{
     accepted_finding_rows, load_run, mark_accepted, save_run, ArenaPaths, ArenaRun, ArenaRunKind,
@@ -336,7 +335,6 @@ impl App {
             };
         }
 
-        invalidate_accepted_provenance(Path::new(er_dir));
         for tab in self.tabs.iter_mut().filter(|tab| tab.er_dir() == er_dir) {
             tab.reload_ai_state();
         }

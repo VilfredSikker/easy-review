@@ -27,7 +27,6 @@ pub mod validation;
 pub mod workflow_record;
 
 pub mod accepted_findings;
-pub mod accepted_provenance;
 pub mod arbiter;
 pub mod identity;
 pub use arbiter::*;
