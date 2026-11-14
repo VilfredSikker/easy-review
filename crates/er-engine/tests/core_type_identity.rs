@@ -117,6 +117,42 @@ fn every_re_export_names_the_core_type() {
         er_engine::ai::ProfessorFileReview,
         er_core::professor::ProfessorFileReview
     );
+    same_type!(
+        er_engine::arena::ArenaFinding,
+        er_core::arena::model::ArenaFinding
+    );
+    same_type!(er_engine::arena::ArenaRun, er_core::arena::model::ArenaRun);
+    same_type!(
+        er_engine::arena::ArenaConfig,
+        er_core::arena::model::ArenaConfig
+    );
+    same_type!(er_engine::arena::Ballot, er_core::arena::model::Ballot);
+    same_type!(er_engine::arena::Verdict, er_core::arena::model::Verdict);
+    same_type!(er_engine::arena::Vote, er_core::arena::model::Vote);
+    same_type!(
+        er_engine::arena::ReviewerKind,
+        er_core::arena::model::ReviewerKind
+    );
+    same_type!(
+        er_engine::arena::FunnelStage,
+        er_core::arena::model::FunnelStage
+    );
+    same_type!(
+        er_engine::arena::Round1Output,
+        er_core::arena::schema::Round1Output
+    );
+    same_type!(
+        er_engine::arena::Round2Output,
+        er_core::arena::schema::Round2Output
+    );
+    same_type!(
+        er_engine::arena::Round3Output,
+        er_core::arena::schema::Round3Output
+    );
+    same_type!(
+        er_engine::ai::panel_run::Agreement,
+        er_core::panel::Agreement
+    );
 }
 
 fn assert_core_artifact<T: er_core::artifact::Artifact>() {}
