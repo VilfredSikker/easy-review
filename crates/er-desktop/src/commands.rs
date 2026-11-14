@@ -14444,6 +14444,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn add_comment_failure_returns_the_error_and_writes_nothing() {
         use std::sync::Arc;
@@ -14550,6 +14551,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn promote_to_comment_deletes_the_source_question() {
         use std::sync::Arc;
