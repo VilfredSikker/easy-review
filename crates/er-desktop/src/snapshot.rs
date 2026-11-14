@@ -454,7 +454,7 @@ impl From<&er_engine::git::ProdDiffStats> for DiffLineStatsSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct AppSnapshot {
     pub preview_context_key: String,
     /// Exact managed storage bucket used by review actions for this tab.
@@ -1168,7 +1168,7 @@ pub struct PrInfo {
     pub latest_reviewer_states: Vec<(String, String)>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Panels {
     pub left: bool,
     pub tree: bool,
@@ -1571,7 +1571,7 @@ pub struct FileRiskSnapshot {
     pub summary: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct AiSnapshot {
     pub fresh: bool,
     pub stale_reason: Option<String>,

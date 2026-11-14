@@ -154,6 +154,10 @@ pub struct OpenSourceResult {
 #[derive(Clone)]
 pub struct AppState {
     pub ports: er_engine::ports::Ports,
+    /// Workspace actors for the `v1-service` command path (ADR 0067). The
+    /// default build has no service and no field.
+    #[cfg(feature = "v1-service")]
+    pub service: Arc<crate::service::ServiceState>,
     pub app: Arc<Mutex<App>>,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     pub pr_cache_fetched_at: PrCacheFetchedAtMap,
@@ -6436,6 +6440,125 @@ fn record_remote_recent_pr(
     Ok(project_id)
 }
 
+/// The desktop side of the `v1-service` open path. App-scoped records are
+/// resolved here, where they live, so the actor's command carries the repo
+/// root and the remote and the service never reads the store.
+#[cfg(feature = "v1-service")]
+fn service_key(repo_root: &str, remote: &str) -> String {
+    if repo_root.is_empty() {
+        format!("remote:{remote}")
+    } else {
+        repo_root.to_string()
+    }
+}
+
+#[cfg(feature = "v1-service")]
+fn project_root_for_remote(remote: &str) -> String {
+    let file = projects::load();
+    find_project_id_for_remote(&file, remote)
+        .and_then(|id| {
+            file.projects
+                .iter()
+                .find(|project| project.id == id)
+                .map(|project| project.root_path.clone())
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "v1-service")]
+fn service_open(
+    state: &AppState,
+    key: &str,
+    target: er_service::OpenTarget,
+    replace: Option<bool>,
+) -> Result<AppSnapshot, String> {
+    let reply = state
+        .service
+        .open_target(key, target, replace.unwrap_or(false))
+        .map_err(|error| error.to_string())?;
+    // The production protocol has one reply; the test-only variants do not
+    // exist in this build, so the pattern is exhaustive.
+    let er_service::Reply::TargetOpened(_) = reply;
+    // The flag-on desktop does not render from the service yet, so the
+    // command acknowledges the open without moving the view.
+    Ok(AppSnapshot::default())
+}
+
+#[cfg(feature = "v1-service")]
+fn service_open_pr_url(
+    state: &AppState,
+    url: String,
+    replace: Option<bool>,
+) -> Result<AppSnapshot, String> {
+    let pr_ref = er_engine::github::parse_github_pr_url(&url)
+        .ok_or_else(|| format!("Not a valid GitHub PR URL: {url}"))?;
+    let remote = format!("{}/{}", pr_ref.owner, pr_ref.repo);
+    let repo_root = project_root_for_remote(&remote);
+    let key = service_key(&repo_root, &remote);
+    service_open(
+        state,
+        &key,
+        er_service::OpenTarget::PrUrl { url, repo_root },
+        replace,
+    )
+}
+
+#[cfg(feature = "v1-service")]
+fn service_open_remote_pr(
+    state: &AppState,
+    owner: String,
+    repo: String,
+    number: u64,
+    replace: Option<bool>,
+) -> Result<AppSnapshot, String> {
+    let remote = format!("{owner}/{repo}");
+    let repo_root = project_root_for_remote(&remote);
+    let key = service_key(&repo_root, &remote);
+    service_open(
+        state,
+        &key,
+        er_service::OpenTarget::RemotePr {
+            owner,
+            repo,
+            number,
+            repo_root,
+        },
+        replace,
+    )
+}
+
+#[cfg(feature = "v1-service")]
+fn service_open_pr_review(
+    state: &AppState,
+    project_id: String,
+    pr_number: u64,
+    replace: Option<bool>,
+) -> Result<AppSnapshot, String> {
+    let file = projects::load();
+    let project = file
+        .projects
+        .iter()
+        .find(|project| project.id == project_id);
+    let repo_root = project
+        .map(|project| project.root_path.clone())
+        .unwrap_or_default();
+    let remote = project
+        .and_then(|project| project.remote.clone())
+        .unwrap_or_default();
+    let key = service_key(&repo_root, &remote);
+    service_open(
+        state,
+        &key,
+        er_service::OpenTarget::PrReview {
+            project_id,
+            remote,
+            pr_number,
+            repo_root,
+        },
+        replace,
+    )
+}
+
 #[tauri::command]
 pub async fn open_remote_pr(
     owner: String,
@@ -6445,7 +6568,11 @@ pub async fn open_remote_pr(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || open_remote_pr_impl(owner, repo, number, replace, &state)).await
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || service_open_remote_pr(&state, owner, repo, number, replace))
+        .await;
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || open_remote_pr_impl(owner, repo, number, replace, &state)).await;
 }
 
 fn open_remote_pr_impl(
@@ -6467,9 +6594,13 @@ pub async fn open_pr_url(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || open_pr_url_impl(url, replace, &state)).await
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || service_open_pr_url(&state, url, replace)).await;
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || open_pr_url_impl(url, replace, &state)).await;
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn open_pr_url_impl(
     url: String,
     replace: Option<bool>,
@@ -7574,6 +7705,14 @@ pub async fn open_pr_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return {
+        // The open path is service-owned now; the hint is not consumed until
+        // the desktop renders from the view.
+        drop(hint);
+        run_blocking(move || service_open_pr_review(&state, project_id, pr_number, replace)).await
+    };
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, hint, &state)).await
 }
 
@@ -11799,6 +11938,10 @@ mod tests {
         let watch_status = Arc::new(Mutex::new(crate::snapshot::WatchStatusSnapshot::default()));
         AppState {
             ports: er_engine::ports::Ports::cli(),
+            #[cfg(feature = "v1-service")]
+            service: Arc::new(crate::service::ServiceState::new(
+                er_engine::ports::Ports::for_test(),
+            )),
             app,
             pr_cache: Arc::new(Mutex::new(HashMap::new())),
             pr_cache_fetched_at: Arc::new(Mutex::new(HashMap::new())),
@@ -11827,6 +11970,54 @@ mod tests {
             sent_files: Arc::new(Mutex::new(Default::default())),
             line_commits_cache: Arc::default(),
         }
+    }
+
+    /// The flag-on open path must not take the App lock: it resolves the
+    /// project, sends to the actor, and answers the thread's snapshot from the
+    /// view. Holding the lock through the call and enforcing the call's own
+    /// deadline turns a lock attempt into a failing test, not a hung suite.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_service_open_path_does_not_take_the_app_lock() {
+        use std::time::Duration;
+
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let github = Arc::new(
+                er_engine::github::FakeGitHub::default().with_pr_state(Ok("OPEN".to_string())),
+            );
+            let github_port: Arc<dyn er_engine::github::GitHub> = github.clone();
+            let mut state = review_flow_test_state(&dir);
+            state.service = Arc::new(crate::service::ServiceState::new(
+                er_engine::ports::Ports::with_github(github_port),
+            ));
+            let held = match state.app.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let calling_state = state.clone();
+            std::thread::spawn(move || {
+                let result = service_open_pr_url(
+                    &calling_state,
+                    "https://github.com/acme/widgets/pull/7".to_string(),
+                    None,
+                );
+                let _ = done_tx.send(result.map(|_| ()));
+            });
+            let Ok(result) = done_rx.recv_timeout(Duration::from_secs(5)) else {
+                panic!("the service open path blocked on the App lock");
+            };
+            drop(held);
+            assert!(result.is_ok(), "the service open path failed: {result:?}");
+            assert_eq!(
+                github.calls(),
+                vec!["pr_state(owner=\"acme\", repo=\"widgets\", number=7)"]
+            );
+        });
     }
 
     #[test]
