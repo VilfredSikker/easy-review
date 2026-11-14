@@ -10,11 +10,13 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
+use er_engine::jobs::JobSink;
 use er_engine::ports::Ports;
 
 use crate::effect::resolve_target;
 use crate::guard::{self, ActorThread};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError, WorkspaceHandle};
+use crate::jobs::JobHost;
 use crate::protocol::{Command, Event, Reply};
 use crate::workspace::{WorkspaceState, WorkspaceView};
 
@@ -24,11 +26,24 @@ use crate::workspace::{WorkspaceState, WorkspaceView};
 #[derive(Clone)]
 pub struct WorkspaceDeps {
     ports: Ports,
+    jobs: Option<Arc<dyn JobSink>>,
 }
 
 impl WorkspaceDeps {
     pub fn new(ports: Ports) -> Self {
-        Self { ports }
+        Self { ports, jobs: None }
+    }
+
+    /// Sends the workspace's agent jobs to `jobs` instead of the actor's own
+    /// sink. Tests record submissions with this.
+    #[must_use]
+    pub fn with_jobs(mut self, jobs: Arc<dyn JobSink>) -> Self {
+        self.jobs = Some(jobs);
+        self
+    }
+
+    pub(crate) fn jobs(&self) -> Option<Arc<dyn JobSink>> {
+        self.jobs.clone()
     }
 
     /// The ports, for use inside an off-actor effect. Every effect runs on its
@@ -77,13 +92,33 @@ fn run(
 ) {
     let _actor = ActorThread::enter();
     let mut state = WorkspaceState::new();
+    let mut jobs = JobHost::new(&deps, &tx);
     while let Ok(message) = rx.recv() {
         match message {
             ActorMsg::Command { command, reply } => {
-                handle_command(&deps, &state, &tx, command, reply);
+                handle_command(&deps, &state, &mut jobs, &tx, command, reply);
             }
             ActorMsg::EffectDone { result, reply } => {
                 apply(&mut state, result, reply, &subscribers, &view);
+            }
+            ActorMsg::Query { query, reply } => {
+                let deps = deps.clone();
+                let arena = jobs.arena().clone();
+                let _ = thread::Builder::new().spawn(move || {
+                    let _ = reply.send(crate::arena::query(&deps, &arena, query));
+                });
+            }
+            ActorMsg::JobProgress { job, line } => {
+                broadcast(&subscribers, Event::JobProgress { job, line });
+            }
+            ActorMsg::JobFinished { job, outcome } => {
+                jobs.finished(job);
+                broadcast(&subscribers, Event::JobFinished { job, outcome });
+            }
+            ActorMsg::ArenaChanged => {
+                let revision = state.bump_revision();
+                publish(&view, &state);
+                broadcast(&subscribers, Event::ViewPublished { revision });
             }
         }
     }
@@ -130,6 +165,7 @@ fn refuse_stale(reply: ReplySender) {
 fn handle_command(
     deps: &WorkspaceDeps,
     state: &WorkspaceState,
+    jobs: &mut JobHost,
     tx: &Sender<ActorMsg>,
     command: Command,
     reply: ReplySender,
@@ -327,6 +363,29 @@ fn handle_command(
                 )
                 .map(|(root_id, reply_id)| Reply::FindingReplied { root_id, reply_id })
             });
+        }
+        Command::StartJob {
+            job,
+            submission,
+            result,
+        } => jobs.start(tx, job, submission, result, reply),
+        Command::CancelJob { job } => match jobs.cancel(job) {
+            Some(kill) => spawn_effect(tx, reply, move || {
+                kill();
+                Ok(Reply::JobCancelled { job })
+            }),
+            None => crate::jobs::refuse_unknown(job, reply),
+        },
+        Command::Reconcile { buckets } => {
+            let arena = jobs.arena().clone();
+            spawn_effect(tx, reply, move || {
+                Ok(crate::arena::reconcile(&arena, &buckets))
+            });
+        }
+        Command::Arena(command) => {
+            let deps = deps.clone();
+            let arena = jobs.arena().clone();
+            spawn_effect(tx, reply, move || crate::arena::run(&deps, &arena, command));
         }
         #[cfg(test)]
         Command::Ping => {

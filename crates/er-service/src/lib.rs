@@ -15,18 +15,23 @@
 
 mod actor;
 mod annotations;
+mod arena;
 mod effect;
 mod guard;
 mod handle;
+mod jobs;
 mod protocol;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use protocol::{
-    AnnotationKind, AnnotationTarget, Command, Event, OpenTarget, Reply, TabContext,
+    AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event, JobOutcome,
+    OpenTarget, Query, QueryReply, Reply, TabContext,
 };
 pub use workspace::{WorkspaceTarget, WorkspaceView};
 
+#[cfg(test)]
+mod job_tests;
 #[cfg(test)]
 mod tests;

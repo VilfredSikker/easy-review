@@ -8,7 +8,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use crate::protocol::{Command, Event, Reply};
+use er_agent::job::JobProgress;
+use er_engine::jobs::JobId;
+
+use crate::protocol::{Command, Event, JobOutcome, Query, QueryReply, Reply};
 use crate::workspace::WorkspaceView;
 
 /// How long a caller waits for a reply before deciding the actor is stuck. The
@@ -42,6 +45,7 @@ impl fmt::Display for WorkspaceError {
 impl std::error::Error for WorkspaceError {}
 
 pub(crate) type ReplySender = Sender<Result<Reply, WorkspaceError>>;
+pub(crate) type QueryReplySender = Sender<Result<QueryReply, WorkspaceError>>;
 
 /// The actor's inbox.
 #[expect(
@@ -58,6 +62,23 @@ pub(crate) enum ActorMsg {
         result: Result<Reply, WorkspaceError>,
         reply: ReplySender,
     },
+    /// A read, answered by its effect without touching the state.
+    Query {
+        query: Query,
+        reply: QueryReplySender,
+    },
+    JobProgress {
+        job: JobId,
+        line: JobProgress,
+    },
+    /// A job's effect returned; the actor drops its stop handle and tells
+    /// subscribers.
+    JobFinished {
+        job: JobId,
+        outcome: JobOutcome,
+    },
+    /// A live arena run wrote progress; readers refresh.
+    ArenaChanged,
 }
 
 /// A handle to one workspace actor.
@@ -96,6 +117,20 @@ impl WorkspaceHandle {
         match replies.recv_timeout(timeout) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => Err(WorkspaceError::Timeout(timeout)),
+            Err(RecvTimeoutError::Disconnected) => Err(WorkspaceError::Disconnected),
+        }
+    }
+
+    /// Sends a read and waits up to [`REPLY_TIMEOUT`] for its answer.
+    pub fn query(&self, query: Query) -> Result<QueryReply, WorkspaceError> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        let _ = self.tx.send(ActorMsg::Query {
+            query,
+            reply: reply_tx,
+        });
+        match reply_rx.recv_timeout(REPLY_TIMEOUT) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => Err(WorkspaceError::Timeout(REPLY_TIMEOUT)),
             Err(RecvTimeoutError::Disconnected) => Err(WorkspaceError::Disconnected),
         }
     }

@@ -29,7 +29,7 @@ fn bucket_scope(dir: &str) -> Result<Scope, WorkspaceError> {
 
 /// Fetch the tab's raw diff through the ports. Runs on an effect thread, never
 /// on the actor.
-fn fetch_raw(deps: &WorkspaceDeps, ctx: &TabContext) -> Result<String, WorkspaceError> {
+pub(crate) fn fetch_raw(deps: &WorkspaceDeps, ctx: &TabContext) -> Result<String, WorkspaceError> {
     let inputs = BranchScopeFetchInputs {
         ports: deps.ports().clone(),
         repo_root: ctx.repo_root.clone(),
