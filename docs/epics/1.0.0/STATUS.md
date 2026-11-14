@@ -1,6 +1,6 @@
 # Epic 1.0.0 status
 
-> Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
+> Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md), [ADDENDUM-05](./ADDENDUM-05-phase-4.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
 > Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-14 11:00 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
@@ -15,7 +15,7 @@
 | T2 | T4 git port | reviews P36 | – |
 | T1, D2, D5 | – | idle | – |
 
-**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. Everything in phase 3 is merged except P36 ([#524](https://github.com/VilfredSikker/easy-review/pull/524), in its fix round). The phase-4 plan is being re-checked against the current tree, so its issues can open as soon as P36 lands.
+**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538, and P38 starts first.
 
 ## Progress
 
@@ -76,7 +76,21 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P37 | [#486](https://github.com/VilfredSikker/easy-review/issues/486) Split the agent config into `agents.toml` (D16, A7) | C/E/F | opus | ✅ | [#520](https://github.com/VilfredSikker/easy-review/pull/520) | D4; D1 reviewed |
 | P34a | [#487](https://github.com/VilfredSikker/easy-review/issues/487) Accepted findings and the projection | W/E | opus | ✅ | [#521](https://github.com/VilfredSikker/easy-review/pull/521) | D3; T2 reviewed |
 | P34b | [#488](https://github.com/VilfredSikker/easy-review/issues/488) Delete the arena import, the rollback and the provenance run read | W/E | opus | ✅ | [#523](https://github.com/VilfredSikker/easy-review/pull/523) | D3; D1 reviewed |
-| P36 | [#489](https://github.com/VilfredSikker/easy-review/issues/489) Registry gate | E/C/F | opus | 🔧 | [#524](https://github.com/VilfredSikker/easy-review/pull/524) | D3; T2 reviewing; desktop display follow-up [#525](https://github.com/VilfredSikker/easy-review/issues/525) |
+| P36 | [#489](https://github.com/VilfredSikker/easy-review/issues/489) Registry gate | E/C/F | opus | ✅ | [#524](https://github.com/VilfredSikker/easy-review/pull/524) | D3; T2 reviewed |
+| D17 display | [#525](https://github.com/VilfredSikker/easy-review/issues/525) Show the D17 panel measurement in the desktop arena detail | F | opus | 🟡 | | D1 |
+| P38 | [#526](https://github.com/VilfredSikker/easy-review/issues/526) Build flag and the `er-service` skeleton | C/F | opus | ⬜ | | |
+| P39.1 | [#527](https://github.com/VilfredSikker/easy-review/issues/527) `er-core`: crate, types and the `Artifact` move | C/E-core | opus | ⬜ | | after #526 |
+| P39.2 | [#528](https://github.com/VilfredSikker/easy-review/issues/528) `er-core`: risk evaluation, hashes, branch helpers and arena rules | C/E-core/W | opus | ⬜ | | after #527 |
+| P39.3 | [#529](https://github.com/VilfredSikker/easy-review/issues/529) `er-core`: the projection | C/E-core | opus | ⬜ | | after #528 |
+| P40 | [#530](https://github.com/VilfredSikker/easy-review/issues/530) Workspace actor | E-svc | opus | ⬜ | | after #526, #527 |
+| P41 | [#531](https://github.com/VilfredSikker/easy-review/issues/531) Annotation commands and the override deletion | E-svc/F | opus | ⬜ | | after #530 |
+| P42 | [#532](https://github.com/VilfredSikker/easy-review/issues/532) Sync and GitHub commands | E-svc/F | opus | ⬜ | | after #531 |
+| P43 | [#533](https://github.com/VilfredSikker/easy-review/issues/533) Job and workflow commands | W/E-svc/F | opus | ⬜ | | after #532 |
+| P44 | [#534](https://github.com/VilfredSikker/easy-review/issues/534) Settings schema | E-svc/F | opus | ⬜ | | after #530 |
+| P45 | [#535](https://github.com/VilfredSikker/easy-review/issues/535) Tab persistence and open-target caches | E-svc/F | opus | ⬜ | | after #530, #532 |
+| P46 | [#536](https://github.com/VilfredSikker/easy-review/issues/536) Single-owner view state into the front ends | E-svc/F | opus | ⬜ | | after #530, #531 |
+| P47.1 | [#537](https://github.com/VilfredSikker/easy-review/issues/537) Snapshot builder over the read API | F/E-svc | opus | ⬜ | | after #534, #536 |
+| P47.2 | [#538](https://github.com/VilfredSikker/easy-review/issues/538) Routing the remaining commands and the phase exit | F/E-svc/C | opus | ⬜ | | after #537 |
 
 ## Designs
 
@@ -98,7 +112,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | Gate | Issue | Status |
 | --- | --- | --- |
 | Phase 3: jobs and workflows | [#396](https://github.com/VilfredSikker/easy-review/issues/396) | ✅ passed 2026-11-10; [ADDENDUM-04](./ADDENDUM-04-phase-3.md), issues #471–#489 |
-| Phase 4: core and service | [#397](https://github.com/VilfredSikker/easy-review/issues/397) | ⬜ |
+| Phase 4: core and service | [#397](https://github.com/VilfredSikker/easy-review/issues/397) | ✅ passed 2026-11-14; [ADDENDUM-05](./ADDENDUM-05-phase-4.md), issues #526–#538 |
 | Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | ⬜ |
 | Phase 5b: TUI | [#399](https://github.com/VilfredSikker/easy-review/issues/399) | ⬜ |
 | Phase 6: consolidate | [#400](https://github.com/VilfredSikker/easy-review/issues/400) | ⬜ |
