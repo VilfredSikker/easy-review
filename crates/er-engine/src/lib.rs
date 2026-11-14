@@ -37,6 +37,7 @@ pub mod projects_pins;
 pub mod release_install;
 pub mod release_update;
 pub mod review_queue;
+pub mod session_store;
 pub mod sidecar_summary;
 pub mod sidecar_upload;
 pub mod storage;

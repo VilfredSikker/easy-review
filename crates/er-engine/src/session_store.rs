@@ -200,8 +200,6 @@ pub fn save_reviewed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TabState;
-    use crate::paths::ErRoot;
     use tempfile::TempDir;
 
     fn store_and_scope(tmp: &TempDir) -> (ArtifactStore, Scope) {
@@ -259,6 +257,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unmarking_refuses_a_newer_reviewed_file() {
+        let tmp = TempDir::new().unwrap();
+        let (store, scope) = store_and_scope(&tmp);
+        let path = reviewed_path(&store, &scope);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let newer = r#"{"kind":"reviewed","version":99,"payload":{"files":{"a.rs":"hash-a"}}}"#;
+        std::fs::write(&path, newer).unwrap();
+
+        let error = save_reviewed(&store, &scope, &HashMap::new()).unwrap_err();
+        assert!(matches!(error, StoreError::NewerVersion { found: 99, .. }));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), newer);
+    }
+
+    #[test]
+    fn a_session_with_an_unknown_version_is_ignored() {
+        let tmp = TempDir::new().unwrap();
+        let (store, scope) = store_and_scope(&tmp);
+        let path = store.path(&key::<SessionState>(&scope).unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            r#"{"kind":"session","version":99,"payload":{"diff_hash":"hash"}}"#,
+        )
+        .unwrap();
+        assert!(load_session(&store, &scope).is_none());
+    }
+
+}
+
+#[cfg(all(test, feature = "ui"))]
+mod ui_tests {
+    use super::*;
+    use crate::app::TabState;
+    use crate::paths::ErRoot;
+    use tempfile::TempDir;
+
+    fn store_and_scope(tmp: &TempDir) -> (ArtifactStore, Scope) {
+        (
+            ArtifactStore::new(tmp.path()),
+            Scope::dir(tmp.path()).unwrap(),
+        )
+    }
+
     fn captured_session() -> SessionState {
         let mut tab = TabState::new_for_test(vec![]);
         tab.branch_diff_hash = "hash".to_string();
@@ -288,34 +330,6 @@ mod tests {
         let error = save_session(&store, &scope, &captured_session()).unwrap_err();
         assert!(matches!(error, StoreError::AlreadyLocked { .. }));
         drop(guard);
-    }
-
-    #[test]
-    fn unmarking_refuses_a_newer_reviewed_file() {
-        let tmp = TempDir::new().unwrap();
-        let (store, scope) = store_and_scope(&tmp);
-        let path = reviewed_path(&store, &scope);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let newer = r#"{"kind":"reviewed","version":99,"payload":{"files":{"a.rs":"hash-a"}}}"#;
-        std::fs::write(&path, newer).unwrap();
-
-        let error = save_reviewed(&store, &scope, &HashMap::new()).unwrap_err();
-        assert!(matches!(error, StoreError::NewerVersion { found: 99, .. }));
-        assert_eq!(std::fs::read_to_string(path).unwrap(), newer);
-    }
-
-    #[test]
-    fn a_session_with_an_unknown_version_is_ignored() {
-        let tmp = TempDir::new().unwrap();
-        let (store, scope) = store_and_scope(&tmp);
-        let path = store.path(&key::<SessionState>(&scope).unwrap());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            path,
-            r#"{"kind":"session","version":99,"payload":{"diff_hash":"hash"}}"#,
-        )
-        .unwrap();
-        assert!(load_session(&store, &scope).is_none());
     }
 
     #[test]

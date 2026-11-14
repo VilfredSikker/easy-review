@@ -24,8 +24,7 @@ pub fn registry() -> Registry {
         crate::ai::checklist_store::register(&mut registry)
             .expect("the checklist kinds register once");
         register_ai_kinds(&mut registry).expect("the AI kinds register once");
-        #[cfg(feature = "ui")]
-        crate::app::session_store::register(&mut registry)
+        crate::session_store::register(&mut registry)
             .expect("the session kinds register once");
         registry
             .register::<crate::projects_pins::ProjectsFile>()
