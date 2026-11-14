@@ -89,9 +89,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      # The ratchet gate (ADR 0038), then its own tests.
+      # The ratchet gate (ADR 0038), then the suite it protects: scripts and
+      # the desktop unit tests (the IPC allowlist test among them).
       - run: bun run lint --no-cache
-      - run: bun test scripts
+      - run: bun run test
 
   herdr-plugin:
     name: Herdr plugin
