@@ -3667,6 +3667,10 @@ impl App {
                 Ok(())
             })();
             let ok = result.is_ok();
+            // Completion is the caller's signal that staging is gone, so remove
+            // it before the message: the receiver may check the directory the
+            // moment the status changes.
+            drop(staging);
             let _ = tx.send(result);
             timer.emit("tab_command", &name_owned, ok);
         });
@@ -4645,6 +4649,9 @@ impl App {
                 Ok(())
             })();
             let ok = result.is_ok();
+            // As above: the result receiver must not observe a live staging
+            // directory after the task reports completion.
+            drop(staging);
             progress_signal.send_result(result);
             timer.emit("background", &command_name_emit, ok);
         });
