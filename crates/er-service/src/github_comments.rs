@@ -27,6 +27,8 @@ pub(crate) struct PostedComment {
     id: String,
     /// The request, so a failed source removal can be reconciled on retry.
     pub(crate) request: GitHubPostRequest,
+    /// A retry adopted an earlier post whose body differs from this one.
+    kept_earlier_body: bool,
 }
 
 fn comments_payload(ctx: &TabContext) -> Option<ai::ErGithubComments> {
@@ -104,17 +106,31 @@ pub(crate) fn post_with(
             .finish(ticket, execution)
             .map_err(|error| WorkspaceError::Failed(error.to_string()))?
     };
-    if record.posted.kept_earlier_body {
-        return Err(WorkspaceError::Failed(
-            "Your earlier version was posted; this edit was not".to_string(),
-        ));
-    }
+    // The pull's cached comment list is stale whether or not a row was recorded;
+    // a warm cache would drop this comment from the sidecar on the next pull.
+    deps.ports().github.invalidate_comments();
     let id = record
         .posted
         .store_id
         .clone()
         .unwrap_or_else(|| request.client_id.clone());
-    Ok(PostedComment { id, request })
+    let kept_earlier_body = record.posted.kept_earlier_body;
+    Ok(PostedComment {
+        id,
+        request,
+        kept_earlier_body,
+    })
+}
+
+/// A create reports an adopted earlier body, so the composer keeps the edit.
+/// The promotes ignore it: GitHub holds the comment and the source must go.
+fn created_id(posted: PostedComment) -> Result<String, WorkspaceError> {
+    if posted.kept_earlier_body {
+        return Err(WorkspaceError::Failed(
+            "Your earlier version was posted; this edit was not".to_string(),
+        ));
+    }
+    Ok(posted.id)
 }
 
 pub(crate) fn add_comment(
@@ -133,7 +149,7 @@ pub(crate) fn add_comment(
         side,
         body.to_string(),
     );
-    post(deps, ctx, intent, client_id).map(|posted| posted.id)
+    post(deps, ctx, intent, client_id).and_then(created_id)
 }
 
 pub(crate) fn reply_to_github_thread(
@@ -144,7 +160,7 @@ pub(crate) fn reply_to_github_thread(
     client_id: Option<String>,
 ) -> Result<String, WorkspaceError> {
     let intent = NewGitHubComment::reply(parent_id.to_string(), body.to_string());
-    post(deps, ctx, intent, client_id).map(|posted| posted.id)
+    post(deps, ctx, intent, client_id).and_then(created_id)
 }
 
 fn private_items<'a>(
