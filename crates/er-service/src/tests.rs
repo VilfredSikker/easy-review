@@ -259,7 +259,9 @@ mod annotations {
 
     use crate::actor::WorkspaceDeps;
     use crate::handle::WorkspaceError;
-    use crate::protocol::{AnnotationTarget, Command, OpenTarget, Reply, TabContext};
+    use crate::protocol::{
+        AnnotationKind, AnnotationTarget, Command, OpenTarget, Reply, TabContext,
+    };
     use crate::{spawn, WorkspaceHandle};
 
     const RAW: &str = "\
@@ -315,6 +317,14 @@ diff --git a/src/b.rs b/src/b.rs
             line_num: line,
             line_num_end: None,
         }
+    }
+
+    /// A temp root and one bucket under it. The caller keeps the root alive.
+    fn temp_bucket() -> anyhow::Result<(tempfile::TempDir, String)> {
+        let dir = tempfile::tempdir()?;
+        let bucket = dir.path().join("bucket");
+        std::fs::create_dir_all(&bucket)?;
+        Ok((dir, bucket.to_string_lossy().into_owned()))
     }
 
     #[test]
@@ -494,6 +504,400 @@ diff --git a/src/b.rs b/src/b.rs
             let scope = er_store::Scope::dir(&bucket_text)?;
             let map = er_engine::session_store::load_reviewed(&store, &scope)?;
             assert!(map.is_empty(), "a refused write changes nothing");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn mark_reviewed_sets_and_clears_the_named_path() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            for (reviewed, present) in [(true, true), (false, false)] {
+                let reply = handle.send_and_wait_with(
+                    Command::MarkReviewed {
+                        context: context(&bucket, "/repo"),
+                        path: "src/a.rs".to_string(),
+                        reviewed,
+                    },
+                    Duration::from_secs(5),
+                )?;
+                assert_eq!(reply, Reply::ReviewedChanged { changed: 1 });
+                let map = er_engine::session_store::load_reviewed(&store, &scope)?;
+                assert_eq!(map.contains_key("src/a.rs"), present);
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn bulk_review_marks_every_path_of_the_named_pillar() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErTour>(
+            &dir.path().join("bucket"),
+            serde_json::json!({
+                "version": 1,
+                "diff_hash": "",
+                "pillars": [{"id": "p-1", "title": "One", "files": [{"path": "src/a.rs"}]}]
+            }),
+        );
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            let reply = handle.send_and_wait_with(
+                Command::BulkReviewPillar {
+                    context: context(&bucket, "/repo"),
+                    pillar_id: "p-1".to_string(),
+                    reviewed: true,
+                },
+                Duration::from_secs(5),
+            )?;
+            assert_eq!(reply, Reply::ReviewedChanged { changed: 1 });
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let map = er_engine::session_store::load_reviewed(&store, &scope)?;
+            assert!(map.contains_key("src/a.rs"), "the pillar's path flips");
+            assert!(!map.contains_key("src/b.rs"), "another pillar's path stays");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn add_note_writes_a_note_with_the_painted_id() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            let reply = handle.send_and_wait_with(
+                Command::AddNote {
+                    context: context(&bucket, "/repo"),
+                    target: target("src/b.rs", Some(2)),
+                    body: "remember this".to_string(),
+                    side: None,
+                    client_id: Some("n-opt-1".to_string()),
+                    reply_to: None,
+                    finding_ref: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            assert_eq!(
+                reply,
+                Reply::AnnotationWritten {
+                    id: "n-opt-1".to_string()
+                }
+            );
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_notes(&store, &scope)?
+            else {
+                anyhow::bail!("notes were not written");
+            };
+            let note = &stored.value.notes[0];
+            assert_eq!(note.id, "n-opt-1");
+            assert_eq!(note.file, "src/b.rs");
+            assert_eq!(note.text, "remember this");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn add_document_thread_anchors_on_the_document_line() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            let reply = handle.send_and_wait_with(
+                Command::AddDocumentThread {
+                    context: context(&bucket, "/repo"),
+                    file: "src/b.rs".to_string(),
+                    line: 2,
+                    line_end: None,
+                    kind: AnnotationKind::Question,
+                    body: "why this line?".to_string(),
+                    source: "alpha\nbravo\ncharlie".to_string(),
+                },
+                Duration::from_secs(5),
+            )?;
+            let Reply::AnnotationWritten { id } = reply else {
+                anyhow::bail!("got {reply:?}");
+            };
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_questions(&store, &scope)?
+            else {
+                anyhow::bail!("questions were not written");
+            };
+            let question = stored
+                .value
+                .questions
+                .iter()
+                .find(|q| q.id == id)
+                .expect("the document thread");
+            assert!(question.is_document_anchor(), "no hunk owns the line");
+            assert_eq!(question.line_start, Some(2));
+            assert_eq!(question.line_content, "bravo");
+            assert_eq!(question.hunk_index, None);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn update_thread_message_replaces_the_body() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            handle.send_and_wait_with(
+                Command::AddQuestion {
+                    context: context(&bucket, "/repo"),
+                    target: target("src/a.rs", Some(2)),
+                    body: "first".to_string(),
+                    side: None,
+                    client_id: Some("q-opt-1".to_string()),
+                    reply_to: None,
+                    finding_ref: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            let reply = handle.send_and_wait_with(
+                Command::UpdateThreadMessage {
+                    context: context(&bucket, "/repo"),
+                    id: "q-opt-1".to_string(),
+                    body: "edited".to_string(),
+                },
+                Duration::from_secs(5),
+            )?;
+            assert!(
+                matches!(reply, Reply::ThreadChanged { ref path } if path.ends_with("questions.json"))
+            );
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_questions(&store, &scope)?
+            else {
+                anyhow::bail!("questions were not written");
+            };
+            assert_eq!(stored.value.questions[0].text, "edited");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn delete_thread_removes_the_root_and_its_replies() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            handle.send_and_wait_with(
+                Command::AddQuestion {
+                    context: context(&bucket, "/repo"),
+                    target: target("src/a.rs", Some(2)),
+                    body: "root".to_string(),
+                    side: None,
+                    client_id: Some("q-opt-1".to_string()),
+                    reply_to: None,
+                    finding_ref: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            handle.send_and_wait_with(
+                Command::ReplyToThread {
+                    context: context(&bucket, "/repo"),
+                    parent_id: "q-opt-1".to_string(),
+                    body: "reply".to_string(),
+                    client_id: Some("q-opt-2".to_string()),
+                },
+                Duration::from_secs(5),
+            )?;
+            let reply = handle.send_and_wait_with(
+                Command::DeleteThread {
+                    context: context(&bucket, "/repo"),
+                    id: "q-opt-1".to_string(),
+                },
+                Duration::from_secs(5),
+            )?;
+            assert!(
+                matches!(reply, Reply::ThreadChanged { ref path } if path.ends_with("questions.json"))
+            );
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_questions(&store, &scope)?
+            else {
+                anyhow::bail!("questions were not written");
+            };
+            assert!(
+                stored.value.questions.is_empty(),
+                "the root and its reply are both gone"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn resolve_thread_marks_the_row_resolved() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            handle.send_and_wait_with(
+                Command::AddQuestion {
+                    context: context(&bucket, "/repo"),
+                    target: target("src/a.rs", Some(2)),
+                    body: "open".to_string(),
+                    side: None,
+                    client_id: Some("q-opt-1".to_string()),
+                    reply_to: None,
+                    finding_ref: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            let reply = handle.send_and_wait_with(
+                Command::ResolveThread {
+                    context: context(&bucket, "/repo"),
+                    id: "q-opt-1".to_string(),
+                },
+                Duration::from_secs(5),
+            )?;
+            assert!(
+                matches!(reply, Reply::ThreadChanged { ref path } if path.ends_with("questions.json"))
+            );
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_questions(&store, &scope)?
+            else {
+                anyhow::bail!("questions were not written");
+            };
+            assert!(stored.value.questions[0].resolved);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn promote_to_note_moves_the_question_into_the_notes() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            handle.send_and_wait_with(
+                Command::AddQuestion {
+                    context: context(&bucket, "/repo"),
+                    target: target("src/a.rs", Some(2)),
+                    body: "keep this".to_string(),
+                    side: None,
+                    client_id: Some("q-opt-1".to_string()),
+                    reply_to: None,
+                    finding_ref: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            let reply = handle.send_and_wait_with(
+                Command::PromoteToNote {
+                    context: context(&bucket, "/repo"),
+                    id: "q-opt-1".to_string(),
+                    body: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            let Reply::NotePromoted { id } = reply else {
+                anyhow::bail!("got {reply:?}");
+            };
+            assert!(id.starts_with("n-"), "promotion mints a note id: {id}");
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(notes) =
+                er_engine::ai::annotation_store::load_notes(&store, &scope)?
+            else {
+                anyhow::bail!("notes were not written");
+            };
+            let note = notes
+                .value
+                .notes
+                .iter()
+                .find(|n| n.id == id)
+                .expect("the promoted note");
+            assert_eq!(note.file, "src/a.rs");
+            assert_eq!(note.text, "keep this");
+            let er_store::Loaded::Found(questions) =
+                er_engine::ai::annotation_store::load_questions(&store, &scope)?
+            else {
+                anyhow::bail!("the questions file vanished");
+            };
+            assert!(
+                questions.value.questions.is_empty(),
+                "the source question is gone"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn reply_to_finding_starts_a_thread_rooted_at_the_finding() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+            &dir.path().join("bucket"),
+            serde_json::json!({
+                "version": 1,
+                "diff_hash": "diff-hash",
+                "files": {
+                    "src/b.rs": {
+                        "risk": "low",
+                        "findings": [{
+                            "id": "f-1",
+                            "severity": "low",
+                            "title": "A defect",
+                            "hunk_index": 0,
+                            "line_start": 2
+                        }]
+                    }
+                }
+            }),
+        );
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            let reply = handle.send_and_wait_with(
+                Command::ReplyToFinding {
+                    context: context(&bucket, "/repo"),
+                    finding_id: "f-1".to_string(),
+                    body: "agreed".to_string(),
+                    ai_assist: false,
+                    client_id: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            let Reply::FindingReplied { root_id, reply_id } = reply else {
+                anyhow::bail!("got {reply:?}");
+            };
+            assert_ne!(root_id, reply_id);
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
+            else {
+                anyhow::bail!("comments were not written");
+            };
+            let root = stored
+                .value
+                .comments
+                .iter()
+                .find(|c| c.id == root_id)
+                .expect("the thread root");
+            assert_eq!(root.finding_ref.as_deref(), Some("f-1"));
+            assert_eq!(root.file, "src/b.rs");
+            let reply_row = stored
+                .value
+                .comments
+                .iter()
+                .find(|c| c.id == reply_id)
+                .expect("the reply");
+            assert_eq!(reply_row.in_reply_to.as_deref(), Some(root_id.as_str()));
+            assert_eq!(reply_row.comment, "agreed");
             Ok(())
         })
     }
