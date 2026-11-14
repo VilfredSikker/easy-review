@@ -13277,7 +13277,10 @@ mod tests {
 
             let comments = app.tab().ai.github_comments.as_ref().unwrap();
             assert_eq!(comments.comments.len(), 1, "the comment landed");
-            assert_eq!(comments.diff_hash, "", "no branch hash outside branch scope");
+            assert_eq!(
+                comments.diff_hash, "",
+                "no branch hash outside branch scope"
+            );
         });
     }
 
