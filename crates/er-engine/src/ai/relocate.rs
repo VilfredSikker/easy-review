@@ -1,1 +1,1 @@
-pub use er_core::relocate::*;
+pub use er_core::relocate::{relocate_comment, CommentAnchor, RelocationResult};
