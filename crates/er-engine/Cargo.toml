@@ -20,6 +20,7 @@ test-support = []
 
 [dependencies]
 er-agent = { path = "../er-agent" }
+er-core = { path = "../er-core" }
 er-git = { path = "../er-git" }
 er-github = { path = "../er-github" }
 er-store = { path = "../er-store" }

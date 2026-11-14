@@ -13,6 +13,7 @@ pub mod agent_spawn;
 mod attrs;
 pub mod cohesion;
 pub mod comment_boundary;
+pub mod core_io;
 pub mod diagnostics;
 pub mod ratchet;
 pub mod registry;

@@ -1,8 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::artifact::Artifact;
-use crate::error::StoreError;
+use crate::artifact::{Artifact, MigrateError};
 
 /// The wrapper fields a `Found` file carried, when it was enveloped.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,7 +119,7 @@ fn version_of(value: &Value) -> Option<u32> {
 fn migrate<T: Artifact>(from: u32, raw: Value, meta: Option<EnvelopeMeta>) -> Loaded<T> {
     match T::migrate(from, raw) {
         Ok(value) => found::<T>(value, meta),
-        Err(StoreError::UnsupportedVersion { found }) => {
+        Err(MigrateError::UnsupportedVersion { found }) => {
             Loaded::Unreadable(Unreadable::UnknownVersion { found })
         }
         Err(error) => Loaded::Unreadable(Unreadable::Malformed(error.to_string())),

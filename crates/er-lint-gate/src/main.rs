@@ -19,8 +19,8 @@ use anyhow::{bail, Context};
 use er_lint_gate::diagnostics::Diagnostic;
 use er_lint_gate::ratchet::{Baseline, Entry};
 use er_lint_gate::{
-    agent_spawn, cohesion, comment_boundary, diagnostics, evaluate, registry, sidecar_fs, spawn,
-    store_bytes,
+    agent_spawn, cohesion, comment_boundary, core_io, diagnostics, evaluate, registry, sidecar_fs,
+    spawn, store_bytes,
 };
 
 const BUDGET_FILE: &str = "clippy-warning-budget.json";
@@ -298,6 +298,24 @@ fn registry_diagnostics(root: &Path) -> anyhow::Result<Vec<Diagnostic>> {
     Ok(registry::evaluate(&by_file))
 }
 
+fn core_io_diagnostics(root: &Path) -> anyhow::Result<Vec<Diagnostic>> {
+    let mut by_file = BTreeMap::new();
+    for rel in crate_sources(root)? {
+        if !rel.starts_with(core_io::SOURCE) {
+            continue;
+        }
+        let source = std::fs::read_to_string(root.join(&rel))?;
+        let found = core_io::findings(&source);
+        if !found.is_empty() {
+            by_file.insert(rel.to_string_lossy().replace('\\', "/"), found);
+        }
+    }
+    let mut out = core_io::evaluate(&by_file, core_io::CODE);
+    let manifest = std::fs::read_to_string(root.join(core_io::MANIFEST))?;
+    out.extend(core_io::manifest_diagnostics(&manifest, core_io::CODE));
+    Ok(out)
+}
+
 fn comment_boundary_diagnostics(root: &Path, allow: &[String]) -> anyhow::Result<Vec<Diagnostic>> {
     let mut by_file = BTreeMap::new();
     for rel in crate_sources(root)? {
@@ -366,6 +384,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     let store_bytes = store_bytes_diagnostics(&root)?;
     let boundary = comment_boundary_diagnostics(&root, &config.comment_boundary_allow)?;
     let registry_rule = registry_diagnostics(&root)?;
+    let core_io_rule = core_io_diagnostics(&root)?;
     let agent = agent_spawn_diagnostics(&root, &config.agent_spawn_os_launch)?;
     if flags.cohesion_only {
         for d in &cohesion {
@@ -413,6 +432,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     diags.extend(store_bytes);
     diags.extend(boundary);
     diags.extend(registry_rule);
+    diags.extend(core_io_rule);
     diags.extend(agent);
     let clippy_ok = default_success && feature_success;
     let e = evaluate(diags, &config.budgeted, &budget, clippy_ok);

@@ -7,6 +7,8 @@ license.workspace = true
 description = "Workspace actor and use cases for easy-review"
 
 [dependencies]
+# P40's actor reads these types; declared here so P40 is manifest-free.
+er-core = { path = "../er-core" }
 er-engine = { path = "../er-engine", default-features = false }
 er-store = { path = "../er-store" }
 er-git = { path = "../er-git" }
