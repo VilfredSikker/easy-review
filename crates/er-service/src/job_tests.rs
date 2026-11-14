@@ -140,6 +140,7 @@ fn an_actor_job_takes_an_agent_slot() {
     assert_eq!(agent_slots::active_count(), 0, "the slot was released");
 }
 
+#[cfg(test)]
 fn pid_alive(pid: &str) -> bool {
     std::process::Command::new("kill")
         .args(["-0", pid])
