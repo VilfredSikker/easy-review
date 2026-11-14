@@ -325,7 +325,7 @@ pub fn estimate_cost_usd(
 }
 
 /// Diff size + cost/latency preview for launcher UI (same diff path as [`start_arena_run`]).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ArenaDiffPreview {
     pub diff_bytes: usize,
     pub cost_usd: f32,
