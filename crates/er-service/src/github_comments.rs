@@ -118,14 +118,14 @@ pub(crate) fn add_comment(
     side: Option<String>,
     client_id: Option<String>,
 ) -> Result<String, WorkspaceError> {
-    let intent = NewGitHubComment::Line {
-        file: target.file.clone(),
-        hunk_idx: target.hunk_idx,
-        line_start: target.line_num,
-        line_end: target.line_num_end,
+    let intent = NewGitHubComment::line(
+        target.file.clone(),
+        target.hunk_idx,
+        target.line_num,
+        target.line_num_end,
         side,
-        body: body.to_string(),
-    };
+        body.to_string(),
+    );
     post(deps, ctx, intent, client_id).map(|posted| posted.id)
 }
 
@@ -136,10 +136,7 @@ pub(crate) fn reply_to_github_thread(
     body: &str,
     client_id: Option<String>,
 ) -> Result<String, WorkspaceError> {
-    let intent = NewGitHubComment::Reply {
-        parent_id: parent_id.to_string(),
-        body: body.to_string(),
-    };
+    let intent = NewGitHubComment::reply(parent_id.to_string(), body.to_string());
     post(deps, ctx, intent, client_id).map(|posted| posted.id)
 }
 

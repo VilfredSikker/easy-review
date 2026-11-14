@@ -14417,8 +14417,10 @@ mod tests {
         ));
     }
 
+    #[cfg(not(feature = "v1-service"))]
     struct RefusingCommentPoster;
 
+    #[cfg(not(feature = "v1-service"))]
     impl er_engine::github_post::GitHubCommentPoster for RefusingCommentPoster {
         fn post(
             &self,
@@ -14522,8 +14524,10 @@ mod tests {
         });
     }
 
+    #[cfg(not(feature = "v1-service"))]
     struct PostingCommentPoster;
 
+    #[cfg(not(feature = "v1-service"))]
     impl er_engine::github_post::GitHubCommentPoster for PostingCommentPoster {
         fn post(
             &self,

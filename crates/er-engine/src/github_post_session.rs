@@ -42,6 +42,38 @@ pub enum NewGitHubComment {
     },
 }
 
+impl NewGitHubComment {
+    /// A line comment intent. The service's routed create builds through this
+    /// boundary, so `er::comment_boundary` keeps one construction site.
+    pub fn line(
+        file: String,
+        hunk_idx: usize,
+        line_start: Option<usize>,
+        line_end: Option<usize>,
+        side: Option<String>,
+        body: String,
+    ) -> Self {
+        Self::Line {
+            file,
+            hunk_idx,
+            line_start,
+            line_end,
+            side,
+            body,
+        }
+    }
+
+    /// A reply intent.
+    pub fn reply(parent_id: String, body: String) -> Self {
+        Self::Reply { parent_id, body }
+    }
+
+    /// A PR-wide comment intent.
+    pub fn general(body: String) -> Self {
+        Self::General { body }
+    }
+}
+
 impl From<crate::ai::promote::PromotedComment> for NewGitHubComment {
     fn from(promoted: crate::ai::promote::PromotedComment) -> Self {
         Self::Line {

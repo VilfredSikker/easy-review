@@ -151,7 +151,7 @@ sidecar-fs-deny = [
 # other module goes through `ai::promote`. The list is shrink-only: an entry
 # with no findings fails as stale.
 comment-boundary = { allow = [
-  "crates/er-engine/src/app/state/github_post.rs",
+  "crates/er-engine/src/github_post_session.rs",
   "crates/er-engine/src/github_post.rs",
   "crates/er-desktop/src/github_comment_builders.rs",
 ] }

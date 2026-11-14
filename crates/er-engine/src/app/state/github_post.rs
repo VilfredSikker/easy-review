@@ -146,19 +146,19 @@ impl App {
                 .iter()
                 .find(|c| c.id == parent_id)?;
             parent.github_id?;
-            return Some(NewGitHubComment::Reply { parent_id, body });
+            return Some(NewGitHubComment::reply(parent_id, body));
         }
         if tab.comment_file.is_empty() {
-            return Some(NewGitHubComment::General { body });
+            return Some(NewGitHubComment::general(body));
         }
-        Some(NewGitHubComment::Line {
-            file: tab.comment_file.clone(),
-            hunk_idx: tab.comment_hunk,
-            line_start: tab.comment_line_num,
-            line_end: tab.comment_line_end,
-            side: tab.comment_side.clone(),
+        Some(NewGitHubComment::line(
+            tab.comment_file.clone(),
+            tab.comment_hunk,
+            tab.comment_line_num,
+            tab.comment_line_end,
+            tab.comment_side.clone(),
             body,
-        })
+        ))
     }
 
     /// TUI submit: post the open composer's comment now.
