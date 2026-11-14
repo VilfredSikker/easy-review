@@ -2,8 +2,8 @@
 
 pub use er_core::experts::{
     backfill_finding_lenses, expert_by_id, expert_hash_accepted, expert_id_for_id_prefix,
-    expert_task_kind, lens_for_producer_id, parse_reviewer_kind, ExpertDef, ExpertFileReview,
-    ExpertReview, ReviewerKind, EXPERTS,
+    expert_label_for_id, expert_task_kind, lens_for_producer_id, parse_reviewer_kind, ExpertDef,
+    ExpertFileReview, ExpertReview, ReviewerKind, EXPERTS,
 };
 
 #[cfg(test)]
@@ -74,10 +74,6 @@ pub fn expert_summary_focus(expert_id: &str) -> &'static str {
         }
         _ => "findings from this expert lens in 2–3 short paragraphs",
     }
-}
-
-pub fn expert_label_for_id(id: &str) -> Option<&'static str> {
-    expert_by_id(id).map(|e| e.label)
 }
 
 /// Display label for a producer: an expert id, `professor`, or `triage`. Fed a

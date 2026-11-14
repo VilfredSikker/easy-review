@@ -80,6 +80,10 @@ pub fn expert_by_id(id: &str) -> Option<&'static ExpertDef> {
     EXPERTS.iter().find(|e| e.id == id)
 }
 
+pub fn expert_label_for_id(id: &str) -> Option<&'static str> {
+    expert_by_id(id).map(|e| e.label)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewerKind {
     Triage,
