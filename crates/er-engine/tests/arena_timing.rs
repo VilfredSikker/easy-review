@@ -214,10 +214,12 @@ fn arena_wall_clock_tracks_round_count_not_the_cap() {
         "adding a round should cost wall-clock: one={one_round:?} two={two_rounds:?}"
     );
     // Above the cap the surplus queues for a slot, so the same single round
-    // now costs about two reviewer latencies. This is the only case where the
-    // cap, rather than the round count, sets the round's duration.
+    // now costs about two reviewer latencies. Bound it against the fixed
+    // reviewer latency directly: `one_round` carries startup jitter, and a
+    // slow first run can eat the old margin. A single wave costs about one
+    // reviewer latency; a second wave cannot fit under one and a half.
     assert!(
-        above_cap > one_round + per_round / 2,
+        above_cap > per_round + per_round / 2,
         "with {} reviewers over a cap of 3 the round should need a second wave: \
          one_round={one_round:?} above_cap={above_cap:?}",
         REVIEWERS + 2
