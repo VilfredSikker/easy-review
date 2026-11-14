@@ -62,7 +62,6 @@ impl Artifact for TabsFile {
 }
 
 /// Register this record's kind beside the engine's kinds.
-#[cfg(test)]
 pub(crate) fn register(registry: &mut er_store::Registry) -> Result<(), er_store::StoreError> {
     registry.register::<TabsFile>()
 }

@@ -1810,6 +1810,12 @@ fn main() {
             }
         })
         .setup(move |app| {
+            if cfg!(debug_assertions) {
+                er_engine::store_registry::startup_audit(
+                    er_engine::store_registry::FrontEnd::Desktop,
+                    &er_desktop::store_registry::registry(),
+                );
+            }
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
                     *h = Some(app.handle().clone());

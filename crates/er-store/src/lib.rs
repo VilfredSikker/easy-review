@@ -31,6 +31,40 @@ pub use registry::{Pattern, Registry};
 pub use store::{ArtifactStore, MAX_ARTIFACT_BYTES};
 pub use time::format_rfc3339_utc;
 
+/// The names a managed scope directory legitimately carries without a
+/// registered kind: temporary, backup and host-tool files.
+///
+/// The registry audit and the store's own tests share this list so a new
+/// host-tool file is accounted for in exactly one place.
+pub fn ignore_patterns() -> Vec<crate::registry::Pattern> {
+    [
+        "*.tmp",
+        "*.tmp.*",
+        "*.prev.json",
+        ".diff-tmp.sha256",
+        ".diff-annotated.sha256",
+        "diff-tmp",
+        "diff-annotated",
+        "change-facts.md",
+        "review-md.md",
+        "review-files.txt",
+        "debug-agent.log",
+        "snapshots/**",
+        "arena/**",
+        "tour-input/**",
+        "flow-backups/**",
+        "ui-annotations.json",
+        "finding-promotions.json",
+        "browser-annotations.json",
+        "browser-assets/**",
+        ".lock",
+        ".lease",
+    ]
+    .into_iter()
+    .map(crate::registry::Pattern::new)
+    .collect()
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use schemars::JsonSchema;
@@ -267,33 +301,5 @@ pub(crate) mod test_support {
         type Slot = BadSlot;
     }
 
-    /// The ignore entries a store bucket carries; the tests use them to check filtering.
-    pub fn ignore_patterns() -> Vec<crate::registry::Pattern> {
-        [
-            "*.tmp",
-            "*.tmp.*",
-            "*.prev.json",
-            ".diff-tmp.sha256",
-            ".diff-annotated.sha256",
-            "diff-tmp",
-            "diff-annotated",
-            "change-facts.md",
-            "review-md.md",
-            "review-files.txt",
-            "debug-agent.log",
-            "snapshots/**",
-            "arena/**",
-            "tour-input/**",
-            "flow-backups/**",
-            "ui-annotations.json",
-            "finding-promotions.json",
-            "browser-annotations.json",
-            "browser-assets/**",
-            ".lock",
-            ".lease",
-        ]
-        .into_iter()
-        .map(crate::registry::Pattern::new)
-        .collect()
-    }
+    pub(crate) use crate::ignore_patterns;
 }
