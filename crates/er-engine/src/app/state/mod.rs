@@ -100,26 +100,7 @@ fn tour_stale_for(
     prev
 }
 
-/// Anchor data captured at comment creation time for later relocation
-#[derive(Default)]
-pub struct LineAnchor {
-    line_start: Option<usize>,
-    line_content: String,
-    context_before: Vec<String>,
-    context_after: Vec<String>,
-    old_line_start: Option<usize>,
-    hunk_header: String,
-}
-
-/// Where a comment submitted without the input-mode flow is placed.
-#[derive(Debug, Clone)]
-pub struct CommentTarget {
-    pub file: String,
-    pub hunk_idx: usize,
-    pub line_num: Option<usize>,
-    /// Inclusive end line for a range comment; ignored unless it is past `line_num`.
-    pub line_num_end: Option<usize>,
-}
+pub use crate::annotations::{CommentTarget, LineAnchor};
 
 // ── Enums ──
 
@@ -856,16 +837,6 @@ pub struct TabState {
     /// Optional finding ID this comment responds to (for finding replies)
     pub comment_finding_ref: Option<String>,
 
-    /// Transient override for the comment's `author` field on next submit.
-    /// Consumed (cleared) by submit_question / submit_github_comment.
-    /// Used by the desktop `ask_ai` flow to attribute AI replies as "ai".
-    pub comment_author_override: Option<String>,
-
-    /// Transient: the AI action that produced the next question or note reply,
-    /// stamped on it as `ai_action`. Set on every desktop submit, so a value
-    /// cannot outlive the submit it was meant for.
-    pub comment_ai_action_override: Option<String>,
-
     /// Transient: selection side for the next comment/question/note ("LEFT"/"RIGHT").
     /// Consumed by submit_question / submit_note / submit_github_comment. Defaults to "RIGHT".
     pub comment_side: Option<String>,
@@ -874,11 +845,6 @@ pub struct TabState {
     /// `submit_document_comment` when the line sits outside every hunk.
     /// Consumed by submit_question / submit_note.
     pub comment_document_anchor: Option<LineAnchor>,
-
-    /// Transient: client-minted id for the next comment/question/note. Consumed
-    /// by submit. Lets the desktop paint a thread and persist the same id so a
-    /// follow-up reply/delete before ingest still hits the backend row.
-    pub comment_id_override: Option<String>,
 
     /// Client id of the composer's current GitHub post, reused by a retry so
     /// the engine can reconcile instead of posting twice. Cleared on success,
@@ -1613,11 +1579,8 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
-            comment_author_override: None,
-            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
-            comment_id_override: None,
             comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
@@ -1757,11 +1720,8 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
-            comment_author_override: None,
-            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
-            comment_id_override: None,
             comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
@@ -1895,11 +1855,8 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
-            comment_author_override: None,
-            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
-            comment_id_override: None,
             comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
@@ -2051,11 +2008,8 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
-            comment_author_override: None,
-            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
-            comment_id_override: None,
             comment_client_id: None,
             pr_data: None,
             pr_commits: Vec::new(),
@@ -10051,11 +10005,8 @@ mod tests {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
-            comment_author_override: None,
-            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
-            comment_id_override: None,
             comment_client_id: None,
             pr_data: None,
             pr_commits: Vec::new(),
@@ -13245,6 +13196,54 @@ mod tests {
 
         assert_eq!(anchor.line_content, "comment target line");
         assert_eq!(anchor.line_start, Some(2));
+    }
+
+    /// The target names the file, not the selection: with the selection on the
+    /// first file, a write for the second stores the second file's anchor.
+    #[test]
+    fn an_annotation_lands_on_the_explicit_target_not_the_selected_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let selected_lines = vec![DiffLine {
+                line_type: LineType::Add,
+                content: "selected file line".to_string(),
+                old_num: None,
+                new_num: Some(2),
+            }];
+            let target_lines = vec![DiffLine {
+                line_type: LineType::Add,
+                content: "target file line".to_string(),
+                old_num: None,
+                new_num: Some(2),
+            }];
+            let mut tab = make_test_tab(vec![
+                make_file("first.rs", vec![make_hunk(selected_lines)], 1, 0),
+                make_file("second.rs", vec![make_hunk(target_lines)], 1, 0),
+            ]);
+            // A bucket under the temp root, so rows from another run cannot be
+            // what the assertions read.
+            tab.er_root = ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
+            tab.selected_file = 0;
+            let mut app = make_test_app(tab);
+
+            app.submit_comment_text(
+                CommentTarget {
+                    file: "second.rs".to_string(),
+                    hunk_idx: 0,
+                    line_num: Some(2),
+                    line_num_end: None,
+                },
+                "on the target".to_string(),
+                CommentType::Question,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let question = &app.tab().ai.questions.as_ref().unwrap().questions[0];
+            assert_eq!(question.file, "second.rs");
+            assert_eq!(question.line_content, "target file line");
+        });
     }
 
     // ── config hub display toggles ──
