@@ -286,6 +286,7 @@ diff --git a/src/b.rs b/src/b.rs
         TabContext {
             er_dir: bucket.to_string(),
             comments_dir: bucket.to_string(),
+            is_remote: false,
             repo_root: repo_root.to_string(),
             base_branch: "main".to_string(),
             scope: "branch".to_string(),
@@ -898,6 +899,263 @@ diff --git a/src/b.rs b/src/b.rs
                 .expect("the reply");
             assert_eq!(reply_row.in_reply_to.as_deref(), Some(root_id.as_str()));
             assert_eq!(reply_row.comment, "agreed");
+            Ok(())
+        })
+    }
+
+    // ── GitHub comment creates and promotes (P41.2) ──
+
+    fn pr_context(bucket: &str) -> TabContext {
+        TabContext {
+            is_remote: true,
+            remote_repo: Some("acme/widgets".to_string()),
+            pr_number: Some(7),
+            // A remote tab has no checkout to diff against.
+            local_branch_view: None,
+            ..context(bucket, "/repo")
+        }
+    }
+
+    fn posting_actor(raw: &str, github: FakeGitHub) -> WorkspaceHandle {
+        let git: Arc<dyn er_git::Git> =
+            Arc::new(FakeGit::default().with_diff_against_branch(Ok(raw.to_string())));
+        let github: Arc<dyn er_github::GitHub> = Arc::new(github);
+        spawn(WorkspaceDeps::new(Ports { git, github }))
+    }
+
+    fn line_post(id: u64) -> er_github::CreatedComment {
+        er_github::CreatedComment {
+            id,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            author: "you".to_string(),
+        }
+    }
+
+    fn scripted_line_post(id: u64) -> FakeGitHub {
+        FakeGitHub::default()
+            .with_pr_diff_remote(Ok(RAW.to_string()))
+            .with_pr_head_oid(Ok("abc123".to_string()))
+            .with_post_line_comment(Ok(line_post(id)))
+    }
+
+    #[test]
+    fn add_comment_posts_and_records_the_github_row() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = posting_actor(RAW, scripted_line_post(4242));
+            let reply = handle.send_and_wait_with(
+                Command::AddComment {
+                    context: pr_context(&bucket),
+                    target: target("src/b.rs", Some(2)),
+                    body: "look here".to_string(),
+                    side: Some("RIGHT".to_string()),
+                    client_id: Some("c-opt-1".to_string()),
+                },
+                Duration::from_secs(5),
+            )?;
+            assert_eq!(
+                reply,
+                Reply::AnnotationWritten {
+                    id: "gh-4242".to_string()
+                }
+            );
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
+            else {
+                anyhow::bail!("the comment was not recorded");
+            };
+            let row = &stored.value.comments[0];
+            assert_eq!(row.id, "gh-4242");
+            assert_eq!(row.comment, "look here");
+            assert_eq!(row.file, "src/b.rs");
+            assert_eq!(row.line_start, Some(2));
+            assert_eq!(row.line_content, "b-new");
+            assert_eq!(row.github_id, Some(4242));
+            assert_eq!(row.in_reply_to, None);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn reply_to_github_thread_posts_a_reply_under_its_parent() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErGithubComments>(
+            &dir.path().join("bucket"),
+            serde_json::json!({
+                "version": 1,
+                "diff_hash": "",
+                "comments": [{
+                    "id": "gh-99",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "file": "src/b.rs",
+                    "hunk_index": 0,
+                    "line_start": 2,
+                    "line_content": "b-new",
+                    "comment": "parent",
+                    "github_id": 99,
+                    "author": "you",
+                    "source": "github",
+                    "side": "RIGHT"
+                }]
+            }),
+        );
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let github = FakeGitHub::default()
+                .with_pr_diff_remote(Ok(RAW.to_string()))
+                .with_post_reply(Ok(line_post(500)));
+            let handle = posting_actor(RAW, github);
+            let reply = handle.send_and_wait_with(
+                Command::ReplyToGithubThread {
+                    context: pr_context(&bucket),
+                    parent_id: "gh-99".to_string(),
+                    body: "agreed".to_string(),
+                    client_id: Some("c-opt-2".to_string()),
+                },
+                Duration::from_secs(5),
+            )?;
+            assert_eq!(
+                reply,
+                Reply::AnnotationWritten {
+                    id: "gh-500".to_string()
+                }
+            );
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
+            else {
+                anyhow::bail!("the reply was not recorded");
+            };
+            let row = stored
+                .value
+                .comments
+                .iter()
+                .find(|c| c.id == "gh-500")
+                .expect("the reply row");
+            assert_eq!(row.in_reply_to.as_deref(), Some("gh-99"));
+            assert_eq!(row.comment, "agreed");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn promote_to_comment_writes_only_the_github_comment() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = posting_actor(RAW, scripted_line_post(77));
+            handle.send_and_wait_with(
+                Command::AddQuestion {
+                    context: context(&bucket, "/repo"),
+                    target: target("src/b.rs", Some(2)),
+                    body: "promote me".to_string(),
+                    side: None,
+                    client_id: Some("q-opt-1".to_string()),
+                    reply_to: None,
+                    finding_ref: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            let reply = handle.send_and_wait_with(
+                Command::PromoteToComment {
+                    context: pr_context(&bucket),
+                    id: "q-opt-1".to_string(),
+                    body: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            assert_eq!(
+                reply,
+                Reply::CommentPromoted {
+                    id: "gh-77".to_string()
+                }
+            );
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(comments) =
+                er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
+            else {
+                anyhow::bail!("the promoted comment was not recorded");
+            };
+            assert_eq!(comments.value.comments.len(), 1);
+            assert_eq!(comments.value.comments[0].comment, "promote me");
+            let notes_are_private =
+                match er_engine::ai::annotation_store::load_notes(&store, &scope) {
+                    Ok(er_store::Loaded::Found(notes)) => notes.value.notes.is_empty(),
+                    _ => true,
+                };
+            assert!(notes_are_private, "promotion must not write a private note");
+            let er_store::Loaded::Found(questions) =
+                er_engine::ai::annotation_store::load_questions(&store, &scope)?
+            else {
+                anyhow::bail!("the questions file vanished");
+            };
+            assert!(
+                questions.value.questions.is_empty(),
+                "the source question is removed"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn promote_finding_to_comment_posts_and_removes_the_finding() -> anyhow::Result<()> {
+        let (dir, bucket) = temp_bucket()?;
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+            &dir.path().join("bucket"),
+            serde_json::json!({
+                "version": 1,
+                "diff_hash": "diff-hash",
+                "files": {
+                    "src/b.rs": {
+                        "risk": "low",
+                        "findings": [{
+                            "id": "f-1",
+                            "severity": "low",
+                            "title": "A defect",
+                            "description": "desc",
+                            "hunk_index": 0,
+                            "line_start": 2
+                        }]
+                    }
+                }
+            }),
+        );
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = posting_actor(RAW, scripted_line_post(88));
+            let reply = handle.send_and_wait_with(
+                Command::PromoteFindingToComment {
+                    context: pr_context(&bucket),
+                    finding_id: "f-1".to_string(),
+                    body: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            assert_eq!(
+                reply,
+                Reply::CommentPromoted {
+                    id: "gh-88".to_string()
+                }
+            );
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket)?;
+            let er_store::Loaded::Found(comments) =
+                er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
+            else {
+                anyhow::bail!("the promoted comment was not recorded");
+            };
+            assert_eq!(comments.value.comments.len(), 1);
+            assert_eq!(comments.value.comments[0].github_id, Some(88));
+            let review = er_engine::ai::load_ai_state(&bucket, "diff-hash", None).review;
+            let findings = review
+                .and_then(|review| review.files.get("src/b.rs").map(|f| f.findings.len()))
+                .unwrap_or(0);
+            assert_eq!(findings, 0, "the finding is removed after the post");
             Ok(())
         })
     }

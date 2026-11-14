@@ -188,6 +188,31 @@ where
     Ok(changed)
 }
 
+/// The bucket file that records which findings were promoted to comments.
+pub fn finding_promotions_path(er_dir: &str) -> String {
+    format!("{er_dir}/finding-promotions.json")
+}
+
+/// The promoted-finding markers the desktop renders. A missing or malformed
+/// file reads as empty.
+pub fn load_finding_promotions(er_dir: &str) -> std::collections::HashMap<String, String> {
+    let path = finding_promotions_path(er_dir);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the promoted-finding markers.
+pub fn save_finding_promotions(
+    er_dir: &str,
+    map: &std::collections::HashMap<String, String>,
+) -> std::io::Result<()> {
+    let path = finding_promotions_path(er_dir);
+    let json = serde_json::to_string_pretty(map).unwrap_or_else(|_| "{}".to_string());
+    er_store::atomic::write_atomic(std::path::Path::new(&path), json.as_bytes())
+}
+
 /// Remove a finding from `review.json`, `professor.json`, and `experts/*.json`. Returns true if any file changed.
 pub fn remove_finding_from_sidecars(er_dir: &str, finding_id: &str) -> std::io::Result<bool> {
     edit_finding_sidecars(er_dir, |findings, prefix| {
