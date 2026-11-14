@@ -11,6 +11,8 @@ use er_store::{Artifact, Loaded};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::view_state::{BrowserLayout, DesktopViewState, TabBrowserState, ViewStateHandle};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TabKind {
@@ -77,15 +79,19 @@ pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
     Ok(())
 }
 
-/// Serialize the live tab list and active index to disk.
-pub fn save_app_tabs(app: &er_engine::app::App) -> Result<()> {
-    let (descriptors, active) = persisted_tabs(app);
+/// Serialize the live tab list and active index to disk. Each tab's browser URL
+/// and layout come from the desktop view state.
+pub fn save_app_tabs(app: &er_engine::app::App, view: &DesktopViewState) -> Result<()> {
+    let (descriptors, active) = persisted_tabs(app, view);
     save_tabs(&descriptors, active)
 }
 
 /// The tabs worth restoring, and the active one's index among them. The
 /// placeholder has no repo to reopen, so it is left out.
-fn persisted_tabs(app: &er_engine::app::App) -> (Vec<TabDescriptor>, usize) {
+fn persisted_tabs(
+    app: &er_engine::app::App,
+    view: &DesktopViewState,
+) -> (Vec<TabDescriptor>, usize) {
     let kept: Vec<(usize, &er_engine::app::TabState)> = app
         .tabs
         .iter()
@@ -98,14 +104,22 @@ fn persisted_tabs(app: &er_engine::app::App) -> (Vec<TabDescriptor>, usize) {
         .unwrap_or(kept.len().saturating_sub(1));
     let descriptors = kept
         .into_iter()
-        .map(|(_, t)| descriptor_from_tab(t))
+        .map(|(_, t)| descriptor_from_tab(t, view))
         .collect();
     (descriptors, active)
 }
 
-/// Best-effort [`save_app_tabs`]; logs a warning on failure.
-pub fn persist_app_tabs(app: &er_engine::app::App) {
-    if let Err(e) = save_app_tabs(app) {
+/// Best-effort [`save_app_tabs`]; logs a warning on failure. Called with the
+/// engine lock held after a tab-list change, so it also drops the browser
+/// state of tabs that are gone.
+pub fn persist_app_tabs(app: &er_engine::app::App, view: &ViewStateHandle) {
+    let Ok(mut view) = view.lock() else {
+        log::warn!("er-desktop: view state lock poisoned; tabs not persisted");
+        return;
+    };
+    let live: Vec<er_engine::TabKey> = app.tabs.iter().map(|t| t.key()).collect();
+    view.retain_tabs(&live);
+    if let Err(e) = save_app_tabs(app, &view) {
         log::warn!("er-desktop: failed to persist tabs: {e}");
     }
 }
@@ -120,33 +134,42 @@ pub fn load_tabs() -> Option<TabsFile> {
     }
 }
 
-fn browser_descriptor_fields(tab: &er_engine::app::TabState) -> (Option<String>, Option<String>) {
-    let url = if tab.browser_url.trim().is_empty() {
+fn browser_descriptor_fields(browser: &TabBrowserState) -> (Option<String>, Option<String>) {
+    let url = if browser.url.trim().is_empty() {
         None
     } else {
-        Some(tab.browser_url.clone())
+        Some(browser.url.clone())
     };
-    let layout = if tab.browser_layout == er_engine::app::BrowserLayout::Hidden {
+    let layout = if browser.layout == BrowserLayout::Hidden {
         None
     } else {
-        Some(tab.browser_layout.as_str().to_string())
+        Some(browser.layout.as_str().to_string())
     };
     (url, layout)
 }
 
-/// Apply persisted browser fields from a descriptor onto a live tab.
-pub fn apply_descriptor_browser(tab: &mut er_engine::app::TabState, d: &TabDescriptor) {
+/// Apply a saved descriptor's browser URL and layout to the restored tab's
+/// entry in the view state.
+pub fn apply_descriptor_browser(
+    view: &mut DesktopViewState,
+    tab: &er_engine::app::TabState,
+    d: &TabDescriptor,
+) {
+    let browser = view.browser_mut(tab.key());
     if let Some(url) = d.browser_url.clone() {
-        tab.browser_url = url;
+        browser.url = url;
     }
     if let Some(layout) = d.browser_layout.as_deref() {
-        tab.browser_layout = er_engine::app::BrowserLayout::from_label(layout);
+        browser.layout = BrowserLayout::from_label(layout);
     }
 }
 
 /// Convert a live `TabState` into a persistable descriptor.
-pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
-    let (browser_url, browser_layout) = browser_descriptor_fields(tab);
+pub fn descriptor_from_tab(
+    tab: &er_engine::app::TabState,
+    view: &DesktopViewState,
+) -> TabDescriptor {
+    let (browser_url, browser_layout) = browser_descriptor_fields(&view.browser(tab.key()));
     // Remote-only PR (GitHub slug, no local-branch view / clone).
     if tab.is_remote() {
         let slug = tab.remote_repo.as_deref().unwrap_or("");
@@ -332,7 +355,7 @@ pub fn rebuild_tab_with(
     lazy: bool,
     ports: &er_engine::ports::Ports,
 ) -> Result<er_engine::app::TabState> {
-    let mut tab = match d.kind {
+    let tab = match d.kind {
         TabKind::Working => {
             if lazy {
                 let base = match d.base_ref.as_deref() {
@@ -354,26 +377,20 @@ pub fn rebuild_tab_with(
         TabKind::RemotePr => rebuild_remote_pr(d, lazy, ports)?,
         TabKind::LocalPr => rebuild_local_pr(d, lazy, ports)?,
     };
-    apply_descriptor_browser(&mut tab, d);
     Ok(tab)
 }
 
-/// Backwards-compatible eager rebuild (legacy callers).
-pub fn rebuild_tab(
+/// Rebuild a saved tab (a stub without its first diff when `lazy`) and hand its
+/// browser URL and layout to the view state under the new tab's key.
+pub fn restore_tab(
     d: &TabDescriptor,
+    lazy: bool,
     ports: &er_engine::ports::Ports,
+    view: &mut DesktopViewState,
 ) -> Result<er_engine::app::TabState> {
-    rebuild_tab_with(d, false, ports)
-}
-
-/// Lazy rebuild: returns a stub without running the initial `refresh_diff()`.
-/// The tab's `needs_initial_refresh` flag is set so a focus handler (or
-/// background warmer) can run the diff later.
-pub fn rebuild_tab_stub(
-    d: &TabDescriptor,
-    ports: &er_engine::ports::Ports,
-) -> Result<er_engine::app::TabState> {
-    rebuild_tab_with(d, true, ports)
+    let tab = rebuild_tab_with(d, lazy, ports)?;
+    apply_descriptor_browser(view, &tab, d);
+    Ok(tab)
 }
 
 #[cfg(test)]
@@ -532,7 +549,7 @@ mod tests {
             .expect("tab");
             tab.pr_number = Some(42);
             tab.local_branch_view = Some("dependabot/cargo-abc".to_string());
-            let d = descriptor_from_tab(&tab);
+            let d = descriptor_from_tab(&tab, &DesktopViewState::default());
             assert_eq!(d.kind, TabKind::LocalPr);
             assert_eq!(d.pr_number, Some(42));
             assert!(d.pr_head_ref.is_none());
@@ -557,7 +574,7 @@ mod tests {
             tab.local_branch_view = Some("feat/delete-plates".to_string());
             tab.remote_repo = Some("reshapebiotech/discovery".to_string());
             tab.base_branch = "origin/main".to_string();
-            let d = descriptor_from_tab(&tab);
+            let d = descriptor_from_tab(&tab, &DesktopViewState::default());
             assert_eq!(d.kind, TabKind::LocalPr);
             assert_eq!(d.pr_number, Some(1425));
             assert_eq!(d.branch.as_deref(), Some("feat/delete-plates"));
@@ -573,7 +590,7 @@ mod tests {
         tab.pr_number = Some(1425);
         tab.current_branch = "feat/from-fork".to_string();
         tab.base_branch = "main".to_string();
-        let d = descriptor_from_tab(&tab);
+        let d = descriptor_from_tab(&tab, &DesktopViewState::default());
         assert_eq!(d.kind, TabKind::RemotePr);
         assert_eq!(d.pr_number, Some(1425));
         assert_eq!(d.pr_owner.as_deref(), Some("reshapebiotech"));
@@ -673,9 +690,80 @@ mod tests {
             let mut app = er_engine::app::App::new_unloaded(root, er_engine::ports::Ports::cli())
                 .expect("app");
             app.active_tab = 99;
-            let (descriptors, active) = persisted_tabs(&app);
+            let (descriptors, active) = persisted_tabs(&app, &DesktopViewState::default());
             assert_eq!(active, 0);
             assert_eq!(descriptors.len(), 1);
+        });
+    }
+
+    fn remote_pr_tab() -> er_engine::app::TabState {
+        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("octo/cat".to_string());
+        tab.pr_number = Some(42);
+        tab
+    }
+
+    #[test]
+    fn tab_descriptors_round_trip_browser_state() {
+        let storage = tempfile::tempdir().expect("tempdir");
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let tab = remote_pr_tab();
+            let mut view = DesktopViewState::default();
+            view.browser_mut(tab.key())
+                .apply(crate::view_state::BrowserUpdate {
+                    url: Some("http://localhost:5173/review".to_string()),
+                    layout: Some("fullscreen".to_string()),
+                    annotate: Some(true),
+                    ..Default::default()
+                });
+            save_tabs(&[descriptor_from_tab(&tab, &view)], 0).expect("save");
+
+            let loaded = load_tabs().expect("a saved record");
+            let mut restored_view = DesktopViewState::default();
+            let restored = restore_tab(
+                &loaded.tabs[0],
+                true,
+                &er_engine::ports::Ports::for_test(),
+                &mut restored_view,
+            )
+            .expect("restore");
+
+            assert_ne!(restored.key(), tab.key(), "a restored tab gets a new key");
+            let browser = restored_view.browser(restored.key());
+            assert_eq!(browser.url, "http://localhost:5173/review");
+            assert_eq!(browser.layout, BrowserLayout::Fullscreen);
+            assert!(!browser.annotate_mode, "only url and layout are saved");
+        });
+    }
+
+    /// A `tabs.json` written by the build before the view state moved out of
+    /// `TabState`, generated by running `save_tabs` on that build.
+    #[test]
+    fn a_tabs_file_from_before_the_view_state_restores_url_and_layout() {
+        let storage = tempfile::tempdir().expect("tempdir");
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let path = er_engine::store_registry::app_path::<TabsFile>().expect("tabs path");
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(
+                &path,
+                include_str!("../tests/fixtures/tabs-before-view-state.json"),
+            )
+            .expect("write fixture");
+
+            let file = load_tabs().expect("the old file still loads");
+            let mut view = DesktopViewState::default();
+            let tab = restore_tab(
+                &file.tabs[0],
+                true,
+                &er_engine::ports::Ports::for_test(),
+                &mut view,
+            )
+            .expect("restore");
+
+            assert_eq!(tab.pr_number, Some(42));
+            let browser = view.browser(tab.key());
+            assert_eq!(browser.url, "http://localhost:5173/review");
+            assert_eq!(browser.layout, BrowserLayout::Split);
         });
     }
 
@@ -685,7 +773,7 @@ mod tests {
         er_engine::storage::with_test_storage_root(storage.path(), || {
             // Saving it would make the next launch try to restore a tab with no repo.
             let app = er_engine::app::App::new_empty(er_engine::ports::Ports::for_test());
-            let (descriptors, active) = persisted_tabs(&app);
+            let (descriptors, active) = persisted_tabs(&app, &DesktopViewState::default());
             assert!(descriptors.is_empty());
             assert_eq!(active, 0);
         });

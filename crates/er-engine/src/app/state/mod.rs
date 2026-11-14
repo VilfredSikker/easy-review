@@ -1054,54 +1054,9 @@ pub struct TabState {
     /// Whether the agent log panel auto-scrolls to the latest entry
     pub agent_log_auto_scroll: bool,
 
-    // ── Desktop browser pane (per-tab; TUI ignores) ──
-    /// URL loaded in the review browser for this tab.
-    pub browser_url: String,
-    /// Layout of the browser relative to the diff view.
-    pub browser_layout: BrowserLayout,
-    /// Horizontal split ratio (diff column fraction), clamped 0.35..0.65.
-    pub browser_split_ratio: f32,
-    /// In-page annotation mode for this tab's browser.
-    pub browser_annotate_mode: bool,
-    /// Show tooltips on all pins in the browser page.
-    pub browser_show_tooltips: bool,
-}
-
-/// Per-tab browser layout (desktop only).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BrowserLayout {
-    #[default]
-    Hidden,
-    Split,
-    Fullscreen,
-}
-
-impl BrowserLayout {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Hidden => "hidden",
-            Self::Split => "split",
-            Self::Fullscreen => "fullscreen",
-        }
-    }
-
-    pub fn from_label(s: &str) -> Self {
-        match s {
-            "split" => Self::Split,
-            "fullscreen" => Self::Fullscreen,
-            _ => Self::Hidden,
-        }
-    }
-
-    #[must_use]
-    pub const fn cycle(self) -> Self {
-        match self {
-            Self::Hidden => Self::Split,
-            Self::Split => Self::Fullscreen,
-            Self::Fullscreen => Self::Hidden,
-        }
-    }
+    /// Process-local identity, set when the tab is built and never persisted.
+    /// Front ends key their own view state on it (ADR 0068).
+    key: crate::TabKey,
 }
 
 /// A single reference to a symbol (file + line)
@@ -1172,6 +1127,11 @@ pub struct PrRefreshResult {
 }
 
 impl TabState {
+    /// This tab's identity for the rest of the process.
+    pub fn key(&self) -> crate::TabKey {
+        self.key
+    }
+
     /// Get the comment text from the textarea, joined and trimmed
     pub fn comment_text(&self) -> String {
         self.comment_textarea.lines().join("\n").trim().to_string()
@@ -1621,11 +1581,7 @@ impl TabState {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
-            browser_url: String::new(),
-            browser_layout: BrowserLayout::default(),
-            browser_split_ratio: 0.45,
-            browser_annotate_mode: false,
-            browser_show_tooltips: false,
+            key: crate::TabKey::next(),
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
@@ -1759,11 +1715,7 @@ impl TabState {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
-            browser_url: String::new(),
-            browser_layout: BrowserLayout::default(),
-            browser_split_ratio: 0.45,
-            browser_annotate_mode: false,
-            browser_show_tooltips: false,
+            key: crate::TabKey::next(),
             needs_initial_refresh: true,
             storage_notice: None,
             last_diff_head_oid: None,
@@ -1893,11 +1845,7 @@ impl TabState {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
-            browser_url: String::new(),
-            browser_layout: BrowserLayout::default(),
-            browser_split_ratio: 0.45,
-            browser_annotate_mode: false,
-            browser_show_tooltips: false,
+            key: crate::TabKey::next(),
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
@@ -2044,11 +1992,7 @@ impl TabState {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
-            browser_url: String::new(),
-            browser_layout: BrowserLayout::default(),
-            browser_split_ratio: 0.45,
-            browser_annotate_mode: false,
-            browser_show_tooltips: false,
+            key: crate::TabKey::next(),
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
@@ -5748,23 +5692,6 @@ pub struct AgentLogEntry {
     pub text: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct PanelsVisible {
-    pub left: bool,
-    pub tree: bool,
-    pub right: bool,
-}
-
-impl Default for PanelsVisible {
-    fn default() -> Self {
-        Self {
-            left: true,
-            tree: true,
-            right: true,
-        }
-    }
-}
-
 /// A message for a UI to surface once.
 ///
 /// The engine owns *what was said* and *how many times*; each UI owns how long
@@ -5849,9 +5776,6 @@ pub struct App {
 
     /// Last known terminal width (updated each tick for resize calculations)
     pub last_terminal_width: u16,
-
-    /// Which panels are currently visible in the desktop UI
-    pub panels_visible: PanelsVisible,
 
     /// App-level background review tasks. Keyed by task id. Outlive
     /// per-tab state so the user can switch tabs/branches while a review
@@ -6081,7 +6005,6 @@ impl App {
             pending_ai_selection_override: None,
             pending_hub_action: None,
             last_terminal_width: 0,
-            panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
@@ -6148,7 +6071,6 @@ impl App {
             pending_ai_selection_override: None,
             pending_hub_action: None,
             last_terminal_width: 0,
-            panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
@@ -6210,7 +6132,6 @@ impl App {
             pending_ai_selection_override: None,
             pending_hub_action: None,
             last_terminal_width: 0,
-            panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
@@ -6275,7 +6196,6 @@ impl App {
             pending_ai_selection_override: None,
             pending_hub_action: None,
             last_terminal_width: 0,
-            panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
@@ -6688,15 +6608,6 @@ impl App {
     }
 
     // ── Tab Accessors ──
-
-    pub fn toggle_panel(&mut self, name: &str) {
-        match name {
-            "left" => self.panels_visible.left = !self.panels_visible.left,
-            "tree" => self.panels_visible.tree = !self.panels_visible.tree,
-            "right" => self.panels_visible.right = !self.panels_visible.right,
-            _ => {}
-        }
-    }
 
     /// Get a reference to the active tab. `App` always holds at least one tab
     /// (`close_tab` refuses to remove the last one); the index is clamped so a
@@ -10046,11 +9957,7 @@ mod tests {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
-            browser_url: String::new(),
-            browser_layout: BrowserLayout::default(),
-            browser_split_ratio: 0.45,
-            browser_annotate_mode: false,
-            browser_show_tooltips: false,
+            key: crate::TabKey::next(),
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
@@ -12914,7 +12821,6 @@ mod tests {
             pending_ai_selection_override: None,
             pending_hub_action: None,
             last_terminal_width: 0,
-            panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
