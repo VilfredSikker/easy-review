@@ -15,6 +15,7 @@ mod panel;
 mod progress;
 mod projections;
 mod provenance;
+mod runs;
 mod schema;
 mod seeded;
 mod storage;
@@ -46,6 +47,10 @@ pub use projections::{
     build_snapshot_with_panel, ArenaRunSnapshot, PanelSummary,
 };
 pub use provenance::{normalized_raisers_for, providers_for};
+pub use runs::{
+    accept_findings, bucket_for_run, check_bucket_admission, list_summaries, override_finding,
+    run_snapshot,
+};
 pub use schema::{
     validate_round1_output, validate_round2_output, validate_round3_output, Round1Output,
     Round2Output, Round3Output,

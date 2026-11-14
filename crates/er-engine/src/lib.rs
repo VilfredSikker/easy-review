@@ -48,6 +48,7 @@ pub mod sync;
 pub mod uninstall;
 #[cfg(feature = "watch")]
 pub mod watch;
+pub mod workflow_recovery;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
