@@ -1841,11 +1841,15 @@ fn parse_config_document(
     Ok((table, config))
 }
 
-/// The newest existing backup with the same bytes, if one exists. A repeated
-/// failed load of unchanged bytes must not add another copy.
-fn newest_identical_backup(path: &std::path::Path, bytes: &[u8]) -> Option<std::path::PathBuf> {
+/// The newest existing backup with the same bytes for `reason`, if one exists.
+/// A repeated failed load of unchanged bytes must not add another copy.
+fn newest_identical_backup(
+    path: &std::path::Path,
+    reason: &str,
+    bytes: &[u8],
+) -> Option<std::path::PathBuf> {
     let name = path.file_name()?.to_str()?;
-    let prefix = format!("{name}.invalid-");
+    let prefix = format!("{name}.{reason}-");
     let mut newest: Option<(String, std::path::PathBuf)> = None;
     for entry in std::fs::read_dir(path.parent()?).ok()? {
         let entry = entry.ok()?;
@@ -1869,16 +1873,19 @@ fn newest_identical_backup(path: &std::path::Path, bytes: &[u8]) -> Option<std::
     newest.map(|(_, path)| path)
 }
 
-/// Copy an unreadable config beside itself, with a name no earlier backup
-/// holds. `create_new` reserves the name, so two failures in the same
-/// nanosecond still leave two files. The copy's failure is returned, never
-/// discarded: a backup that did not happen is not a backup.
-fn backup_invalid_config(path: &std::path::Path) -> (Option<std::path::PathBuf>, Option<String>) {
+/// Copy a config file beside itself under `reason`, with a name no earlier
+/// backup for that reason holds. `create_new` reserves the name, so two
+/// failures in the same nanosecond still leave two files. The copy's failure
+/// is returned, never discarded: a backup that did not happen is not a backup.
+fn backup_config_copy(
+    path: &std::path::Path,
+    reason: &str,
+) -> (Option<std::path::PathBuf>, Option<String>) {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return (None, Some("the config path has no file name".to_string()));
     };
     if let Ok(bytes) = std::fs::read(path) {
-        if let Some(existing) = newest_identical_backup(path, &bytes) {
+        if let Some(existing) = newest_identical_backup(path, reason, &bytes) {
             return (Some(existing), None);
         }
     }
@@ -1888,9 +1895,9 @@ fn backup_invalid_config(path: &std::path::Path) -> (Option<std::path::PathBuf>,
         .unwrap_or(0);
     for attempt in 0..100u32 {
         let candidate = path.with_file_name(if attempt == 0 {
-            format!("{name}.invalid-{stamp}")
+            format!("{name}.{reason}-{stamp}")
         } else {
-            format!("{name}.invalid-{stamp}-{attempt}")
+            format!("{name}.{reason}-{stamp}-{attempt}")
         });
         match std::fs::OpenOptions::new()
             .write(true)
@@ -1941,7 +1948,7 @@ fn load_pair(path: &std::path::Path, adopt: bool) -> (ErConfig, Option<ConfigLoa
             // A config file that does not parse is left alone: no agents file
             // is written and no move runs while this failure is recorded.
             record_config_load_failure(path);
-            let (backup, backup_error) = backup_invalid_config(path);
+            let (backup, backup_error) = backup_config_copy(path, "invalid");
             return (
                 ErConfig::default(),
                 Some(ConfigLoadError {

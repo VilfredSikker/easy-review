@@ -14,6 +14,10 @@ use std::sync::{Mutex, OnceLock};
 /// The file name next to `config.toml`.
 pub const AGENTS_FILE: &str = "agents.toml";
 
+/// The migration backup's reason, so the copy does not look like a parse
+/// failure to anyone who finds it.
+const MIGRATION_BACKUP_REASON: &str = "pre-agents-split";
+
 /// The two sections that live in `agents.toml`, in their serde shapes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentsConfig {
@@ -85,7 +89,7 @@ fn read_agents_state(path: &Path, adopt: bool) -> AgentsState {
         }
         Err(error) => {
             record_agents_load_failure(path);
-            let (backup, backup_error) = super::backup_invalid_config(path);
+            let (backup, backup_error) = super::backup_config_copy(path, "invalid");
             AgentsState::Failed(ConfigLoadError {
                 path: path.to_path_buf(),
                 message: error.to_string(),
@@ -271,7 +275,7 @@ fn migrate(config_path: &Path, mut table: toml::Table) -> Result<AgentsConfig, C
         ));
     }
 
-    let (_, backup_error) = super::backup_invalid_config(config_path);
+    let (_, backup_error) = super::backup_config_copy(config_path, MIGRATION_BACKUP_REASON);
     if let Some(error) = backup_error {
         return Err(migration_error(
             config_path,
@@ -536,7 +540,10 @@ theme = "paper"
                 .unwrap()
                 .filter_map(|entry| entry.ok())
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| name.starts_with("config.toml.invalid-"))
+                .filter(|name| {
+                    name.starts_with("config.toml.invalid-")
+                        || name.starts_with(&format!("config.toml.{MIGRATION_BACKUP_REASON}-"))
+                })
                 .collect();
             backups.sort();
             assert_eq!(backups.len(), 3, "{backups:?}");
@@ -548,6 +555,42 @@ theme = "paper"
             assert_eq!(
                 contents,
                 ["[agent]\ncommand = \"x\"\n", "not = [valid", "{"]
+            );
+        });
+    }
+
+    /// The pre-move copy says why it exists: a name under `invalid-` would
+    /// tell a user their valid config had failed to parse.
+    #[test]
+    fn the_migration_backup_names_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = temp_config(&dir);
+            write_agent_sections(&path);
+            let original = std::fs::read_to_string(&path).unwrap();
+            let (_, error) = load(&path);
+            assert!(error.is_none(), "{error:?}");
+
+            let names: Vec<String> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            let prefix = format!("config.toml.{MIGRATION_BACKUP_REASON}-");
+            let backups: Vec<&String> = names
+                .iter()
+                .filter(|name| name.starts_with(&prefix))
+                .collect();
+            assert_eq!(backups.len(), 1, "{names:?}");
+            assert!(
+                !names
+                    .iter()
+                    .any(|name| name.starts_with("config.toml.invalid-")),
+                "a valid config must not get an invalid- backup: {names:?}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join(backups[0])).unwrap(),
+                original
             );
         });
     }
