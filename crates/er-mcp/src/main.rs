@@ -82,6 +82,13 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
+    if cfg!(debug_assertions) {
+        er_engine::store_registry::startup_audit(
+            er_engine::store_registry::FrontEnd::Mcp,
+            &er_engine::store_registry::registry(),
+        );
+    }
+
     let service = server::ErMcp::new()
         .serve(stdio())
         .await

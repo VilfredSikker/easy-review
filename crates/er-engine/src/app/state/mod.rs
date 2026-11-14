@@ -13,11 +13,9 @@ mod review_flow;
 mod review_flow_admission;
 mod review_flow_output;
 mod review_flow_progress;
-pub mod session_store;
+pub use crate::session_store::{self, SessionState};
 pub(super) mod tour_navigation;
 mod workflow;
-
-pub use session_store::SessionState;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, FileKindRepoConfig, RiskRules, WatchedConfig};

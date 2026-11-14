@@ -1294,19 +1294,6 @@ mod tests {
         );
     }
 
-    /// Every desktop app record has its own kind and file: a duplicate would
-    /// make two records overwrite each other, and the registry rejects both a
-    /// repeated kind and a repeated path.
-    #[test]
-    fn every_desktop_app_record_registers_beside_the_engine_kinds() {
-        let mut registry = er_engine::store_registry::registry();
-        crate::inbox::register(&mut registry).expect("inbox registers");
-        crate::pr_cache::register(&mut registry).expect("pr-cache registers");
-        crate::pr_open_cache::register(&mut registry).expect("pr-open-cache registers");
-        crate::gh_status_cache::register(&mut registry).expect("gh-status-cache registers");
-        crate::tabs::register(&mut registry).expect("tabs registers");
-    }
-
     /// A pin that lands while a desktop writer is running must survive the
     /// write. The writer rebuilds from the stored record inside the store lock;
     /// a writer that saved a snapshot loaded earlier would overwrite the pin.

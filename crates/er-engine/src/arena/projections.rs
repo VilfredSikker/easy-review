@@ -14,6 +14,40 @@ pub struct ArenaRunSnapshot {
     pub funnel: FunnelStages,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arbiter: Option<ArbiterView>,
+    /// D17's free round-two measurement, when this bucket has the run's panel
+    /// record. Absent for a single-round run or one from before the panel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel: Option<PanelSummary>,
+}
+
+/// The panel's measurement as a snapshot carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PanelSummary {
+    pub rounds: u8,
+    /// Claims two or more reviewers backed after round 1.
+    pub round1_confirmed: usize,
+    /// The same count after the first cross round; `None` for one round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round2_confirmed: Option<usize>,
+    pub quorum_changed: bool,
+}
+
+impl PanelSummary {
+    /// The summary for a run's own record; another run's record is not it.
+    pub fn for_run(record: &crate::ai::panel_run::PanelRun, run_id: &str) -> Option<Self> {
+        if record.run_id != run_id {
+            return None;
+        }
+        Some(Self {
+            rounds: record.rounds,
+            round1_confirmed: record.round1_quorum.confirmed.len(),
+            round2_confirmed: record
+                .round2_quorum
+                .as_ref()
+                .map(|agreement| agreement.confirmed.len()),
+            quorum_changed: record.quorum_changed,
+        })
+    }
 }
 
 pub fn build_arbiter_view(config: &ErConfig, run: &ArenaRun) -> Option<ArbiterView> {
@@ -29,6 +63,15 @@ pub fn build_arbiter_view(config: &ErConfig, run: &ArenaRun) -> Option<ArbiterVi
 }
 
 pub fn build_snapshot_with_config(config: &ErConfig, run: ArenaRun) -> ArenaRunSnapshot {
+    build_snapshot_with_panel(config, run, None)
+}
+
+/// The snapshot with the panel measurement a caller already loaded.
+pub fn build_snapshot_with_panel(
+    config: &ErConfig,
+    run: ArenaRun,
+    panel: Option<PanelSummary>,
+) -> ArenaRunSnapshot {
     let arbiter = build_arbiter_view(config, &run);
     let matrix = build_matrix(&run.findings);
     let funnel = build_funnel(&run.findings);
@@ -37,6 +80,7 @@ pub fn build_snapshot_with_config(config: &ErConfig, run: ArenaRun) -> ArenaRunS
         matrix,
         funnel,
         arbiter,
+        panel,
     }
 }
 
@@ -48,6 +92,7 @@ pub fn build_snapshot(run: ArenaRun) -> ArenaRunSnapshot {
         matrix,
         funnel,
         arbiter: None,
+        panel: None,
     }
 }
 

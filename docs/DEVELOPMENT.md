@@ -360,6 +360,14 @@ cd desktop-ui && bun run lint:raw                    # every violation, baseline
 `cargo clippy -- -D warnings` fails on the budgeted lints, which are
 warnings by design; use `just clippy`.
 
+The gate also runs static rules over every crate source, each under its own
+code. `er::sidecar_fs` fails a direct filesystem call in a file that must use
+the store, `er::store_bytes` fails an `er-store` function that takes written
+bytes, and the spawn rules fail a process spawn outside its home.
+`er::registry` fails a stored kind used but never registered, a registered kind
+nothing reads, or a text artifact read or written with no `register_text`; it
+has no allow list, so a kind it cannot see is fixed in the composition.
+
 Writes that must be atomic go through `er_store::atomic::write_atomic`, whose
 temporary name carries the pid and a process-wide counter. A fixed
 `<file>.tmp` name lets two writers of one path consume each other's file:

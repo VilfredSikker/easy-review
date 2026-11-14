@@ -15,6 +15,7 @@ pub mod cohesion;
 pub mod comment_boundary;
 pub mod diagnostics;
 pub mod ratchet;
+pub mod registry;
 pub mod sidecar_fs;
 pub mod spawn;
 pub mod store_bytes;

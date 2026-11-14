@@ -21,6 +21,7 @@ pub mod profile_log;
 pub mod projects;
 pub mod remote_pr_open_cache;
 pub mod snapshot;
+pub mod store_registry;
 pub mod tabs;
 pub mod terminal;
 pub mod triage_update;

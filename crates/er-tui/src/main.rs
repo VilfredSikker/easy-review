@@ -165,6 +165,12 @@ fn run_uninstall(yes: bool, dry_run: bool, opts: uninstall::UninstallOptions) ->
 fn main() -> Result<()> {
     er_engine::env_path::init_cli_path();
     install_panic_hook();
+    if cfg!(debug_assertions) {
+        er_engine::store_registry::startup_audit(
+            er_engine::store_registry::FrontEnd::Tui,
+            &er_engine::store_registry::registry(),
+        );
+    }
     let cli = Cli::parse();
 
     if let Some(Commands::Uninstall {

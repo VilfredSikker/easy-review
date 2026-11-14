@@ -1,9 +1,9 @@
 use crate::arena::{
-    accepted_finding_rows, build_arena_diff_preview, build_snapshot_with_config, delete_run_dir,
-    load_run, mark_accepted, reconcile_stale_runs_excluding, save_run, scope_git_mode,
-    start_arena_batch, start_arena_run, start_seeded_run, ArenaBatchStartParams, ArenaDiffPreview,
-    ArenaPaths, ArenaProgressState, ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaScope,
-    ArenaStartParams, HumanOverride, ReviewerRef, SeededStartParams, Verdict,
+    accepted_finding_rows, build_arena_diff_preview, delete_run_dir, load_run, mark_accepted,
+    reconcile_stale_runs_excluding, save_run, scope_git_mode, start_arena_batch, start_arena_run,
+    start_seeded_run, ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState,
+    ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride,
+    ReviewerRef, SeededStartParams, Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
 use anyhow::{Context, Result};
@@ -498,7 +498,18 @@ impl App {
         if let Some(control) = self.arena_runs.get(run_id) {
             run.status = control.status();
         }
-        Ok(build_snapshot_with_config(&self.config, run))
+        // A bucket-rooted store reaches the same file the panel wrote, without
+        // resolving the process storage root for a bucket the caller named.
+        let panel = crate::ai::panel_run::load(
+            &er_store::ArtifactStore::new(&er_dir),
+            &er_store::Scope::dir(&er_dir)?,
+        )
+        .and_then(|record| crate::arena::PanelSummary::for_run(&record, &run.id));
+        Ok(crate::arena::build_snapshot_with_panel(
+            &self.config,
+            run,
+            panel,
+        ))
     }
 
     pub fn arena_branch_ref(&self) -> String {
@@ -1278,6 +1289,59 @@ mod tests {
             app.arena_er_dir_for_run("missing"),
             std::path::PathBuf::from(&er_a)
         );
+    }
+
+    #[test]
+    fn arena_get_snapshot_carries_the_panel_measurement_for_its_run() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tb.path(), || {
+            let app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+            let er_b = app.tabs[1].er_dir();
+            let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-panel");
+            crate::arena::save_run(&paths, &sample_run("arena-panel")).unwrap();
+            let record = |run_id: &str| {
+                serde_json::from_value(serde_json::json!({
+                    "version": 1, "run_id": run_id, "diff_hash": "hash", "started_at": "t0",
+                    "rounds": 2,
+                    "reviewers": [],
+                    "round1_quorum": {"confirmed": ["a", "b"]},
+                    "round2_quorum": {"confirmed": ["a", "b", "c"]},
+                    "quorum_changed": true
+                }))
+                .unwrap()
+            };
+            crate::test_support::write_sidecar_json::<crate::ai::PanelRun>(
+                Path::new(&er_b),
+                record("another-run"),
+            );
+
+            // Another run's record is not this run's measurement.
+            assert!(app
+                .arena_get_snapshot("arena-panel")
+                .unwrap()
+                .panel
+                .is_none());
+
+            crate::test_support::write_sidecar_json::<crate::ai::PanelRun>(
+                Path::new(&er_b),
+                record("arena-panel"),
+            );
+            let panel = app
+                .arena_get_snapshot("arena-panel")
+                .unwrap()
+                .panel
+                .expect("the panel measurement");
+            assert_eq!(
+                panel,
+                crate::arena::PanelSummary {
+                    rounds: 2,
+                    round1_confirmed: 2,
+                    round2_confirmed: Some(3),
+                    quorum_changed: true,
+                }
+            );
+        });
     }
 
     #[test]

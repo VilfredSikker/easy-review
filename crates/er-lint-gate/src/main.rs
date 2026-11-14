@@ -19,7 +19,8 @@ use anyhow::{bail, Context};
 use er_lint_gate::diagnostics::Diagnostic;
 use er_lint_gate::ratchet::{Baseline, Entry};
 use er_lint_gate::{
-    agent_spawn, cohesion, comment_boundary, diagnostics, evaluate, sidecar_fs, spawn, store_bytes,
+    agent_spawn, cohesion, comment_boundary, diagnostics, evaluate, registry, sidecar_fs, spawn,
+    store_bytes,
 };
 
 const BUDGET_FILE: &str = "clippy-warning-budget.json";
@@ -284,6 +285,19 @@ fn store_bytes_diagnostics(root: &Path) -> anyhow::Result<Vec<Diagnostic>> {
     Ok(store_bytes::evaluate(&by_file, store_bytes::CODE))
 }
 
+fn registry_diagnostics(root: &Path) -> anyhow::Result<Vec<Diagnostic>> {
+    let mut by_file = BTreeMap::new();
+    for rel in crate_sources(root)? {
+        let source = std::fs::read_to_string(root.join(&rel))?;
+        let facts = registry::findings(&source);
+        if facts != registry::FileFacts::default() {
+            let file = rel.to_string_lossy().replace('\\', "/");
+            by_file.insert(file, facts);
+        }
+    }
+    Ok(registry::evaluate(&by_file))
+}
+
 fn comment_boundary_diagnostics(root: &Path, allow: &[String]) -> anyhow::Result<Vec<Diagnostic>> {
     let mut by_file = BTreeMap::new();
     for rel in crate_sources(root)? {
@@ -337,6 +351,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     let sidecar = sidecar_fs_diagnostics(&root, &config.sidecar_fs_deny)?;
     let store_bytes = store_bytes_diagnostics(&root)?;
     let boundary = comment_boundary_diagnostics(&root, &config.comment_boundary_allow)?;
+    let registry_rule = registry_diagnostics(&root)?;
     let agent = agent_spawn_diagnostics(&root, &config.agent_spawn_os_launch)?;
     if flags.cohesion_only {
         for d in &cohesion {
@@ -366,6 +381,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     diags.extend(sidecar);
     diags.extend(store_bytes);
     diags.extend(boundary);
+    diags.extend(registry_rule);
     diags.extend(agent);
     let e = evaluate(diags, &config.budgeted, &budget, output.status.success());
 

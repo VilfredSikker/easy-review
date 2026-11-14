@@ -78,6 +78,16 @@ pub fn save(store: &ArtifactStore, scope: &Scope, record: &PanelRun) -> anyhow::
     Ok(())
 }
 
+/// The panel record stored in this bucket, if it parses. An absent or
+/// unreadable record reads as `None`, like every other sidecar.
+pub fn load(store: &ArtifactStore, scope: &Scope) -> Option<PanelRun> {
+    let key = ArtifactKey::<PanelRun>::new(scope.clone(), ()).ok()?;
+    match store.read(&key).ok()? {
+        er_store::Loaded::Found(stored) => Some(stored.value),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,11 +137,8 @@ mod tests {
             let record: PanelRun = serde_json::from_value(record_json()).unwrap();
             save(&store, &scope, &record).unwrap();
 
-            let key = ArtifactKey::<PanelRun>::new(scope, ()).unwrap();
-            let er_store::Loaded::Found(stored) = store.read(&key).unwrap() else {
-                panic!("the saved panel record was not found");
-            };
-            assert_eq!(stored.value, record);
+            let loaded = load(&store, &scope).expect("the saved panel record");
+            assert_eq!(loaded, record);
         });
     }
 }
