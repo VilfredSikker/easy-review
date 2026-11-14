@@ -7,6 +7,7 @@ import type {
   ArenaRunSummary,
   ArenaSeverity,
   Ballot,
+  PanelSummary,
   ReviewerRef,
   RunStatus,
   Verdict,
@@ -274,6 +275,22 @@ export function runDigest(snapshot: ArenaRunSnapshot): ArenaRunDigest {
 export function digestLine(ordinal: number | undefined, d: ArenaRunDigest): string {
   const head = ordinal ? `Run #${ordinal} · ` : "";
   return `${head}${d.reviewers} reviewer${d.reviewers === 1 ? "" : "s"} · ${d.rounds} round${d.rounds === 1 ? "" : "s"} · ${d.survived} of ${d.total} findings survived`;
+}
+
+/** The panel measurement a multi-round run shows; a single-round run has none. */
+export function panelMeasurement(panel: PanelSummary | undefined): PanelSummary | null {
+  if (!panel || panel.rounds <= 1) return null;
+  return panel;
+}
+
+/** One dense line: the panel's rounds, the quorum before and after round two, and whether it moved. */
+export function panelLine(panel: PanelSummary): string {
+  const rounds = `${panel.rounds} round${panel.rounds === 1 ? "" : "s"}`;
+  const confirmed =
+    panel.round2_confirmed === undefined
+      ? `confirmed ${panel.round1_confirmed}`
+      : `confirmed ${panel.round1_confirmed} → ${panel.round2_confirmed}`;
+  return `panel · ${rounds} · ${confirmed} · quorum ${panel.quorum_changed ? "changed" : "held"}`;
 }
 
 /** "2m 18s"; null when the run has not finished or a stamp does not parse. */
