@@ -102,6 +102,21 @@ fn every_re_export_names_the_core_type() {
         er_core::risk_rules::ResolvedRisk
     );
     same_type!(er_engine::config::RiskRules, er_core::risk_rules::RiskRules);
+    same_type!(er_engine::ai::ExpertDef, er_core::experts::ExpertDef);
+    same_type!(er_engine::ai::ExpertReview, er_core::experts::ExpertReview);
+    same_type!(
+        er_engine::ai::ExpertFileReview,
+        er_core::experts::ExpertFileReview
+    );
+    same_type!(er_engine::ai::ReviewerKind, er_core::experts::ReviewerKind);
+    same_type!(
+        er_engine::ai::ProfessorReview,
+        er_core::professor::ProfessorReview
+    );
+    same_type!(
+        er_engine::ai::ProfessorFileReview,
+        er_core::professor::ProfessorFileReview
+    );
 }
 
 fn assert_core_artifact<T: er_core::artifact::Artifact>() {}

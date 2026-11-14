@@ -1,101 +1,22 @@
 //! Professor learning agent — `.er/professor.json` sidecar and merge into review.
 
-use super::review::{ErFileReview, ErReview, Finding, RiskLevel};
-use std::collections::HashMap;
+pub use er_core::professor::{
+    merge_professor_into_review, professor_task_kind, ProfessorFileReview, ProfessorReview,
+    PROFESSOR_ID, PROFESSOR_ID_PREFIX, PROFESSOR_LABEL,
+};
 
-pub const PROFESSOR_ID: &str = "professor";
-pub const PROFESSOR_LABEL: &str = "Professor";
-pub const PROFESSOR_ID_PREFIX: &str = "prof";
-
-/// `.er/professor.json` — teaching insights anchored to hunks.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct ProfessorReview {
-    pub version: u32,
-    pub diff_hash: String,
-    #[serde(default)]
-    pub diff_scope: String,
-    #[serde(default)]
-    pub created_at: String,
-    #[serde(default)]
-    pub focus_prompt: String,
-    /// 2–3 short markdown paragraphs on what the diff implements (teaching tone).
-    #[serde(default)]
-    pub summary: String,
-    #[serde(default)]
-    pub files: HashMap<String, ProfessorFileReview>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct ProfessorFileReview {
-    #[serde(default, deserialize_with = "super::review::lenient_findings")]
-    pub findings: Vec<Finding>,
-}
-
-impl er_store::Artifact for ProfessorReview {
-    const KIND: &'static str = "professor";
-    const VERSION: u32 = 1;
-    const FILE: &'static str = "professor.json";
-    type Slot = ();
-
-    fn diff_hash(&self) -> Option<&str> {
-        Some(&self.diff_hash)
-    }
-}
+/// What the `summary` field in professor.json should cover (prompt + skills).
+pub const PROFESSOR_SUMMARY_FOCUS: &str = "what this diff implements for a skilled developer: purpose, architecture, data flow, and 1–2 non-obvious mechanisms (teaching tone, not a bug list)";
 
 pub fn load_professor_review(er_dir: &str) -> Option<ProfessorReview> {
     crate::store_registry::read_found::<ProfessorReview>(er_dir, ())
 }
 
-fn prefix_finding_id(id: &str) -> String {
-    if id.starts_with(&format!("{PROFESSOR_ID_PREFIX}-")) {
-        id.to_string()
-    } else {
-        format!("{PROFESSOR_ID_PREFIX}-{id}")
-    }
-}
-
-/// Merge professor insights into `review` (skip stale).
-pub fn merge_professor_into_review(
-    review: &mut ErReview,
-    professor: &ProfessorReview,
-    current_diff_hash: &str,
-) {
-    if professor.diff_hash != current_diff_hash {
-        return;
-    }
-    for (path, pfr) in &professor.files {
-        let entry = review
-            .files
-            .entry(path.clone())
-            .or_insert_with(|| ErFileReview {
-                risk: RiskLevel::Info,
-                risk_reason: String::new(),
-                summary: String::new(),
-                findings: Vec::new(),
-            });
-        for mut finding in pfr.findings.clone() {
-            finding.id = prefix_finding_id(&finding.id);
-            finding.lens = PROFESSOR_ID.to_string();
-            if finding.raised_by.is_empty() {
-                finding.raised_by = vec![PROFESSOR_ID.to_string()];
-            }
-            entry.findings.push(finding);
-        }
-    }
-}
-
-/// Background task kind for professor runs.
-pub fn professor_task_kind() -> String {
-    PROFESSOR_ID.to_string()
-}
-
-/// What the `summary` field in professor.json should cover (prompt + skills).
-pub const PROFESSOR_SUMMARY_FOCUS: &str = "what this diff implements for a skilled developer: purpose, architecture, data flow, and 1–2 non-obvious mechanisms (teaching tone, not a bug list)";
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::review::{Confidence, RiskLevel};
+    use crate::ai::review::{Confidence, ErReview, Finding, RiskLevel};
+    use std::collections::HashMap;
 
     fn sample_insight(id: &str) -> Finding {
         Finding {
