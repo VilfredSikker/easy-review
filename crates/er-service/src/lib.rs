@@ -19,6 +19,7 @@ mod effect;
 mod guard;
 mod handle;
 mod protocol;
+mod settings;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
@@ -27,6 +28,9 @@ pub use protocol::{
     AnnotationKind, AnnotationTarget, Command, Event, OpenTarget, Reply, TabContext,
 };
 pub use workspace::{WorkspaceTarget, WorkspaceView};
+pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod settings_tests;
