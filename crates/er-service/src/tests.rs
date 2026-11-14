@@ -505,6 +505,20 @@ diff --git a/src/b.rs b/src/b.rs
             let scope = er_store::Scope::dir(&bucket_text)?;
             let map = er_engine::session_store::load_reviewed(&store, &scope)?;
             assert!(map.is_empty(), "a refused write changes nothing");
+
+            // A GitHub comment is refused before its effect reaches the poster.
+            let comment = Command::AddComment {
+                context: context(&bucket_text, "/repo-b"),
+                target: target("src/b.rs", Some(2)),
+                body: "too late".to_string(),
+                side: None,
+                client_id: None,
+            };
+            let refused = handle.send_and_wait_with(comment, Duration::from_secs(5));
+            assert!(
+                matches!(refused, Err(WorkspaceError::Failed(ref message)) if message.contains("moved")),
+                "got {refused:?}"
+            );
             Ok(())
         })
     }
@@ -917,10 +931,20 @@ diff --git a/src/b.rs b/src/b.rs
     }
 
     fn posting_actor(raw: &str, github: FakeGitHub) -> WorkspaceHandle {
+        posting_actor_shared(raw, &Arc::new(github))
+    }
+
+    /// Keeps the fake, so a test can read the calls the effects made.
+    fn posting_actor_shared(raw: &str, github: &Arc<FakeGitHub>) -> WorkspaceHandle {
         let git: Arc<dyn er_git::Git> =
             Arc::new(FakeGit::default().with_diff_against_branch(Ok(raw.to_string())));
-        let github: Arc<dyn er_github::GitHub> = Arc::new(github);
+        let github: Arc<dyn er_github::GitHub> = github.clone();
         spawn(WorkspaceDeps::new(Ports { git, github }))
+    }
+
+    fn calls_to(github: &FakeGitHub, method: &str) -> usize {
+        let calls = github.calls();
+        calls.iter().filter(|call| call.starts_with(method)).count()
     }
 
     fn line_post(id: u64) -> er_github::CreatedComment {
@@ -1156,6 +1180,78 @@ diff --git a/src/b.rs b/src/b.rs
                 .and_then(|review| review.files.get("src/b.rs").map(|f| f.findings.len()))
                 .unwrap_or(0);
             assert_eq!(findings, 0, "the finding is removed after the post");
+            Ok(())
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_promote_whose_source_removal_failed_adopts_the_post_on_retry() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, private) = temp_bucket()?;
+        let comments_dir = dir.path().join("comments");
+        std::fs::create_dir_all(&comments_dir)?;
+        let ctx = TabContext {
+            comments_dir: comments_dir.to_string_lossy().into_owned(),
+            ..pr_context(&private)
+        };
+        let now = er_engine::sync::chrono_now();
+        // The comment the first attempt landed, as the retry lists it.
+        let on_github: er_github::GitHubComment = serde_json::from_value(serde_json::json!({
+            "id": 77, "body": "retry me", "path": "src/b.rs", "line": 2, "original_line": 2,
+            "side": "RIGHT", "in_reply_to_id": null, "user": { "login": "you" },
+            "created_at": now, "updated_at": now, "diff_hunk": null,
+        }))?;
+        let github = Arc::new(
+            scripted_line_post(77)
+                .with_viewer_login(Ok("you".to_string()))
+                .with_pr_comments_remote(Ok(vec![on_github])),
+        );
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = posting_actor_shared(RAW, &github);
+            handle.send_and_wait_with(
+                Command::AddQuestion {
+                    context: context(&private, "/repo"),
+                    target: target("src/b.rs", Some(2)),
+                    body: "retry me".to_string(),
+                    side: None,
+                    client_id: Some("q-retry-1".to_string()),
+                    reply_to: None,
+                    finding_ref: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            let promote = || Command::PromoteToComment {
+                context: ctx.clone(),
+                id: "q-retry-1".to_string(),
+                body: None,
+            };
+            // A read-only bucket makes the source removal fail after the post.
+            std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o555))?;
+            let first = handle.send_and_wait_with(promote(), Duration::from_secs(5));
+            std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755))?;
+            assert!(first.is_err(), "the removal failure is reported: {first:?}");
+            assert_eq!(calls_to(&github, "post_line_comment("), 1);
+
+            let retried = handle.send_and_wait_with(promote(), Duration::from_secs(5))?;
+            let id = "gh-77".to_string();
+            assert_eq!(retried, Reply::CommentPromoted { id });
+            assert_eq!(
+                calls_to(&github, "post_line_comment("),
+                1,
+                "the retry posted again"
+            );
+            assert_eq!(
+                calls_to(&github, "pr_comments_remote("),
+                1,
+                "the retry did not list"
+            );
+            let questions = er_engine::ai::load_ai_state(&private, &ctx.diff_hash, None).questions;
+            assert_eq!(
+                questions.map_or(0, |q| q.questions.len()),
+                0,
+                "the source stayed"
+            );
             Ok(())
         })
     }
