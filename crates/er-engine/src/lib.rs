@@ -13,8 +13,10 @@ pub use config::{
     ConfigHubFieldDto, DesktopSettingsSnapshot, SettingsScope,
 };
 pub mod agent_runtime;
+pub mod annotations;
 pub mod dev_log;
 pub mod diagram_upload;
+pub mod diff_fetch;
 pub mod env_path;
 #[cfg(feature = "ui")]
 pub mod export;

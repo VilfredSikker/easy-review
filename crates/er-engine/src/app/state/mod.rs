@@ -100,26 +100,7 @@ fn tour_stale_for(
     prev
 }
 
-/// Anchor data captured at comment creation time for later relocation
-#[derive(Default)]
-pub struct LineAnchor {
-    line_start: Option<usize>,
-    line_content: String,
-    context_before: Vec<String>,
-    context_after: Vec<String>,
-    old_line_start: Option<usize>,
-    hunk_header: String,
-}
-
-/// Where a comment submitted without the input-mode flow is placed.
-#[derive(Debug, Clone)]
-pub struct CommentTarget {
-    pub file: String,
-    pub hunk_idx: usize,
-    pub line_num: Option<usize>,
-    /// Inclusive end line for a range comment; ignored unless it is past `line_num`.
-    pub line_num_end: Option<usize>,
-}
+pub use crate::annotations::{CommentTarget, LineAnchor};
 
 // ── Enums ──
 
@@ -856,16 +837,6 @@ pub struct TabState {
     /// Optional finding ID this comment responds to (for finding replies)
     pub comment_finding_ref: Option<String>,
 
-    /// Transient override for the comment's `author` field on next submit.
-    /// Consumed (cleared) by submit_question / submit_github_comment.
-    /// Used by the desktop `ask_ai` flow to attribute AI replies as "ai".
-    pub comment_author_override: Option<String>,
-
-    /// Transient: the AI action that produced the next question or note reply,
-    /// stamped on it as `ai_action`. Set on every desktop submit, so a value
-    /// cannot outlive the submit it was meant for.
-    pub comment_ai_action_override: Option<String>,
-
     /// Transient: selection side for the next comment/question/note ("LEFT"/"RIGHT").
     /// Consumed by submit_question / submit_note / submit_github_comment. Defaults to "RIGHT".
     pub comment_side: Option<String>,
@@ -874,11 +845,6 @@ pub struct TabState {
     /// `submit_document_comment` when the line sits outside every hunk.
     /// Consumed by submit_question / submit_note.
     pub comment_document_anchor: Option<LineAnchor>,
-
-    /// Transient: client-minted id for the next comment/question/note. Consumed
-    /// by submit. Lets the desktop paint a thread and persist the same id so a
-    /// follow-up reply/delete before ingest still hits the backend row.
-    pub comment_id_override: Option<String>,
 
     /// Client id of the composer's current GitHub post, reused by a retry so
     /// the engine can reconcile instead of posting twice. Cleared on success,
@@ -1613,11 +1579,8 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
-            comment_author_override: None,
-            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
-            comment_id_override: None,
             comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
@@ -1757,11 +1720,8 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
-            comment_author_override: None,
-            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
-            comment_id_override: None,
             comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
@@ -1895,11 +1855,8 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
-            comment_author_override: None,
-            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
-            comment_id_override: None,
             comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
@@ -2051,11 +2008,8 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
-            comment_author_override: None,
-            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
-            comment_id_override: None,
             comment_client_id: None,
             pr_data: None,
             pr_commits: Vec::new(),
@@ -10051,11 +10005,8 @@ mod tests {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
-            comment_author_override: None,
-            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
-            comment_id_override: None,
             comment_client_id: None,
             pr_data: None,
             pr_commits: Vec::new(),

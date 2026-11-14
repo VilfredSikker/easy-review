@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::annotations::ReplyAttribution;
 use crate::app::job_commit::commit_error;
 use er_agent::job::{JobError, JobProgress, JobRun, JobRunner, JobSpec, OutputContract};
 use er_agent::provider::ProviderSpec;
@@ -862,48 +863,6 @@ fn agent_stderr_snippet(stderr_lines: &[String]) -> String {
     }
 }
 
-fn mint_comment_id(prefix: &str) -> String {
-    crate::ai::annotation_store::new_annotation_id(prefix)
-}
-
-/// Anchor on 1-based `line` of a whole document, with the same three lines of
-/// context a hunk anchor keeps. `None` when the line is past the end.
-fn document_line_anchor(source: &str, line: usize) -> Option<LineAnchor> {
-    let lines: Vec<&str> = source.lines().collect();
-    let idx = line.checked_sub(1).filter(|&i| i < lines.len())?;
-    let owned = |range: &[&str]| range.iter().map(|l| (*l).to_string()).collect();
-    Some(LineAnchor {
-        line_start: Some(line),
-        line_content: lines[idx].to_string(),
-        context_before: owned(&lines[idx.saturating_sub(3)..idx]),
-        context_after: owned(&lines[idx + 1..(idx + 4).min(lines.len())]),
-        old_line_start: None,
-        hunk_header: String::new(),
-    })
-}
-
-fn take_comment_id(tab: &mut TabState, prefix: &str) -> String {
-    let usable = tab
-        .comment_id_override
-        .as_deref()
-        .is_some_and(|id| !id.is_empty() && id.starts_with(prefix));
-    if usable {
-        return tab
-            .comment_id_override
-            .take()
-            .unwrap_or_else(|| mint_comment_id(prefix));
-    }
-    mint_comment_id(prefix)
-}
-
-/// Who a desktop submit is written as. Both fields are set on every desktop
-/// submit, so an override never carries over into the next one.
-#[derive(Default)]
-struct ReplyAttribution {
-    author: Option<String>,
-    ai_action: Option<String>,
-}
-
 /// The one-time notice that the previous version's data was left behind.
 ///
 /// `None` when there is nothing from a previous version. The old settings path
@@ -1161,333 +1120,171 @@ impl App {
         self.input_mode = InputMode::Comment;
     }
 
-    /// Submit the current comment/question to the appropriate file
+    /// Submit the current comment/question to the appropriate file.
     pub fn submit_comment(&mut self) -> Result<()> {
-        let tab = self.tab();
-        let text = tab.comment_text();
+        let text = self.tab().comment_text();
         if text.is_empty() {
-            self.tab_mut().comment_id_override = None;
             self.input_mode = InputMode::Normal;
             return Ok(());
         }
 
         // If editing an existing comment, update it in-place
-        if let Some(edit_id) = tab.comment_edit_id.clone() {
+        if let Some(edit_id) = self.tab().comment_edit_id.clone() {
             return self.update_comment(edit_id, text);
         }
 
-        let comment_type = tab.comment_type;
-        match comment_type {
-            CommentType::Question => self.submit_question(text),
-            CommentType::Note => self.submit_note(text),
-            CommentType::GitHubComment => self.submit_github_comment(text),
-        }
-    }
-
-    /// Submit a personal review question to .er-questions.json
-    fn submit_question(&mut self, text: String) -> Result<()> {
-        let tab = self.tab();
-        let er_dir = tab.er_dir();
-        let repo_root = tab.repo_root.clone();
-        let mut diff_hash = tab.branch_diff_hash.clone();
-        let base_branch = tab.base_branch.clone();
-        let file_path = tab.comment_file.clone();
-        let hunk_index = tab.comment_hunk;
-        let comment_line_num = tab.comment_line_num;
-        let comment_line_end = tab.comment_line_end;
-        let reply_to = tab.comment_reply_to.clone();
-        let pr_head_ref_owned = tab.pr_head_ref.clone();
-
-        // Compute branch_diff_hash on-demand when not yet set (e.g., non-Branch mode with no AI data).
-        // Without this, questions would always be marked stale because the hash would be empty.
-        // Skip in remote mode — git_diff_raw requires a local git repo.
-        if diff_hash.is_empty() && !self.tab().is_remote() {
-            if let Ok(br) = self.tab().ports.git.diff_raw(
-                "branch",
-                &base_branch,
-                &repo_root,
-                pr_head_ref_owned.as_deref(),
-            ) {
-                diff_hash = ai::compute_diff_hash(&br);
-                self.tab_mut().branch_diff_hash = diff_hash.clone();
-            }
-        }
-
-        let (hunk_index, anchor) = self.take_comment_anchor(hunk_index, comment_line_num);
-
-        let id = take_comment_id(self.tab_mut(), "q-");
-
-        let is_reply = reply_to.is_some();
+        let target = self.composer_target();
+        let kind = self.tab().comment_type;
+        let reply_to = self.tab().comment_reply_to.clone();
         let finding_ref = self.tab().comment_finding_ref.clone();
-        let author = self
-            .tab_mut()
-            .comment_author_override
-            .take()
-            .unwrap_or_else(|| "You".to_string());
-        let side = self
-            .tab_mut()
-            .comment_side
-            .take()
-            .unwrap_or_else(|| "RIGHT".to_string());
-        let question = ai::PrivateAnnotation {
-            id,
-            timestamp: chrono_now(),
-            file: file_path,
-            hunk_index,
-            line_start: anchor.line_start,
-            line_end: Self::normalize_line_end(anchor.line_start, comment_line_end),
-            line_content: anchor.line_content,
-            text: text.clone(),
-            resolved: false,
-            stale: false,
-            context_before: anchor.context_before,
-            context_after: anchor.context_after,
-            old_line_start: anchor.old_line_start,
-            side,
-            hunk_header: anchor.hunk_header,
-            anchor_status: "original".to_string(),
-            relocated_at_hash: self.tab().diff_hash.clone(),
-            in_reply_to: reply_to,
-            author,
-            promoted_to: None,
+        let document_anchor = self.tab_mut().comment_document_anchor.take();
+        let result = self.write_annotation(
+            &target,
+            &text,
+            kind,
+            reply_to,
             finding_ref,
-            ai_action: self.tab_mut().comment_ai_action_override.take(),
-        };
-
-        let store = crate::store_registry::store();
-        let scope = er_store::Scope::dir(er_dir.as_str())?;
-        let questions_path = ai::annotation_store::path_of::<ai::ErQuestions>(&store, &scope)?;
-        let updated = ai::annotation_store::update_questions(&store, &scope, move |current| {
-            let mut questions = current.unwrap_or_else(|| ai::ErQuestions {
-                version: 1,
-                diff_hash: diff_hash.clone(),
-                questions: Vec::new(),
-            });
-            // Preserve the stored questions; the relocation system handles drift.
-            questions.diff_hash = diff_hash;
-            questions.questions.push(question);
-            Ok::<_, std::convert::Infallible>(questions)
-        })
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-        self.tab_mut().ai.questions = Some(updated.value);
-        self.tab_mut().ai.rebuild_comment_index();
-        self.tab_mut()
-            .mark_sidecar_written(questions_path.to_string_lossy().as_ref());
+            ReplyAttribution::default(),
+            None,
+            document_anchor,
+        );
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
-        let label = if is_reply { "Reply" } else { "Question" };
-        self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
-        if updated.was_unreadable {
-            self.notify_invalid_json_warning(&questions_path);
-        }
-        Ok(())
+        result
     }
 
-    /// Submit a local note to notes.json. Mirrors `submit_question` but writes to
-    /// the separate notes sidecar and uses an `n-` id prefix.
-    fn submit_note(&mut self, text: String) -> Result<()> {
+    /// The composer's placement, as the explicit target the writer takes.
+    fn composer_target(&self) -> CommentTarget {
         let tab = self.tab();
-        let er_dir = tab.er_dir();
-        let repo_root = tab.repo_root.clone();
-        let mut diff_hash = tab.branch_diff_hash.clone();
-        let base_branch = tab.base_branch.clone();
-        let file_path = tab.comment_file.clone();
-        let hunk_index = tab.comment_hunk;
-        let comment_line_num = tab.comment_line_num;
-        let comment_line_end = tab.comment_line_end;
-        let reply_to = tab.comment_reply_to.clone();
-        let pr_head_ref_owned = tab.pr_head_ref.clone();
-
-        if diff_hash.is_empty() && !self.tab().is_remote() {
-            if let Ok(br) = self.tab().ports.git.diff_raw(
-                "branch",
-                &base_branch,
-                &repo_root,
-                pr_head_ref_owned.as_deref(),
-            ) {
-                diff_hash = ai::compute_diff_hash(&br);
-                self.tab_mut().branch_diff_hash = diff_hash.clone();
-            }
+        CommentTarget {
+            file: tab.comment_file.clone(),
+            hunk_idx: tab.comment_hunk,
+            line_num: tab.comment_line_num,
+            line_num_end: tab.comment_line_end,
         }
-
-        let (hunk_index, anchor) = self.take_comment_anchor(hunk_index, comment_line_num);
-
-        let id = take_comment_id(self.tab_mut(), "n-");
-
-        let is_reply = reply_to.is_some();
-        let finding_ref = self.tab().comment_finding_ref.clone();
-        let author = self
-            .tab_mut()
-            .comment_author_override
-            .take()
-            .unwrap_or_else(|| "You".to_string());
-        let side = self
-            .tab_mut()
-            .comment_side
-            .take()
-            .unwrap_or_else(|| "RIGHT".to_string());
-        let note = ai::PrivateAnnotation {
-            id,
-            timestamp: chrono_now(),
-            file: file_path,
-            hunk_index,
-            line_start: anchor.line_start,
-            line_end: Self::normalize_line_end(anchor.line_start, comment_line_end),
-            line_content: anchor.line_content,
-            text: text.clone(),
-            resolved: false,
-            stale: false,
-            context_before: anchor.context_before,
-            context_after: anchor.context_after,
-            old_line_start: anchor.old_line_start,
-            side,
-            hunk_header: anchor.hunk_header,
-            anchor_status: "original".to_string(),
-            relocated_at_hash: self.tab().diff_hash.clone(),
-            in_reply_to: reply_to,
-            author,
-            promoted_to: None,
-            finding_ref,
-            ai_action: self.tab_mut().comment_ai_action_override.take(),
-        };
-
-        let store = crate::store_registry::store();
-        let scope = er_store::Scope::dir(er_dir.as_str())?;
-        let notes_path = ai::annotation_store::path_of::<ai::ErNotes>(&store, &scope)?;
-        let updated = ai::annotation_store::update_notes(&store, &scope, move |current| {
-            let mut notes = current.unwrap_or_else(|| ai::ErNotes {
-                version: 1,
-                diff_hash: diff_hash.clone(),
-                notes: Vec::new(),
-            });
-            notes.diff_hash = diff_hash;
-            notes.notes.push(note);
-            Ok::<_, std::convert::Infallible>(notes)
-        })
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-        self.tab_mut().ai.notes = Some(updated.value);
-        self.tab_mut().ai.rebuild_comment_index();
-        self.tab_mut()
-            .mark_sidecar_written(notes_path.to_string_lossy().as_ref());
-        self.tab_mut().comment_textarea = TextArea::default();
-        self.input_mode = InputMode::Normal;
-        let label = if is_reply { "Reply" } else { "Note" };
-        self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
-        if updated.was_unreadable {
-            self.notify_invalid_json_warning(&notes_path);
-        }
-        Ok(())
     }
 
-    /// Submit a GitHub PR comment to .er/github-comments.json
-    fn submit_github_comment(&mut self, text: String) -> Result<()> {
+    /// The parsed diff for a file an annotation names: the History list when
+    /// that mode is active, otherwise the tab's files. An empty file means the
+    /// composer's selected file.
+    fn annotation_file(&self, file: &str) -> Option<&crate::git::DiffFile> {
         let tab = self.tab();
-        let diff_hash = tab.branch_diff_hash.clone();
-        let file_path = tab.comment_file.clone();
-        let hunk_index = tab.comment_hunk;
-        let reply_to = tab.comment_reply_to.clone();
-        let finding_ref = tab.comment_finding_ref.clone();
-        let comment_line_num = tab.comment_line_num;
-        let comment_line_end = tab.comment_line_end;
-
-        let anchor = self.get_line_anchor(hunk_index, comment_line_num);
-
-        let id = take_comment_id(self.tab_mut(), "c-");
-
-        let is_reply = reply_to.is_some();
-        let author = self
-            .tab_mut()
-            .comment_author_override
-            .take()
-            .unwrap_or_else(|| "You".to_string());
-        let side = self
-            .tab_mut()
-            .comment_side
-            .take()
-            .unwrap_or_else(|| "RIGHT".to_string());
-        let comment = ai::GithubComment {
-            id,
-            timestamp: chrono_now(),
-            file: file_path,
-            hunk_index: Some(hunk_index),
-            line_start: anchor.line_start,
-            line_end: Self::normalize_line_end(anchor.line_start, comment_line_end),
-            line_content: anchor.line_content,
-            comment: text.clone(),
-            in_reply_to: reply_to,
-            resolved: false,
-            source: "local".to_string(),
-            github_id: None,
-            author,
-            outdated: false,
-            stale: false,
-            context_before: anchor.context_before,
-            context_after: anchor.context_after,
-            old_line_start: anchor.old_line_start,
-            hunk_header: anchor.hunk_header,
-            anchor_status: "original".to_string(),
-            relocated_at_hash: self.tab().diff_hash.clone(),
-            finding_ref,
-            side,
-        };
-
-        // github-comments.json is PR-scoped: the shared PR bucket for PR tabs.
-        let comments_dir = self.tab().github_comments_dir();
-        let store = crate::store_registry::store();
-        let scope = er_store::Scope::dir(comments_dir.as_str())?;
-        let comments_path = ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &scope)?;
-        let updated =
-            ai::annotation_store::update_github_comments(&store, &scope, move |current| {
-                let mut gc = current.unwrap_or_else(|| ai::ErGithubComments {
-                    version: 1,
-                    diff_hash: diff_hash.clone(),
-                    github: None,
-                    comments: Vec::new(),
-                });
-                // Preserve the stored comments; the relocation system handles drift.
-                gc.diff_hash = diff_hash;
-                gc.comments.push(comment);
-                Ok::<_, std::convert::Infallible>(gc)
-            })
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        // Keep the in-memory copy. `reload_ai_state()` re-reads every sidecar
-        // (review/experts/tour/…) and is what made each local inline comment
-        // feel like a GitHub round-trip. The comment is local and unpushed.
-        self.tab_mut().ai.github_comments = Some(updated.value);
-        self.tab_mut().ai.rebuild_comment_index();
-        self.tab_mut()
-            .mark_sidecar_written(comments_path.to_string_lossy().as_ref());
-        self.tab_mut().comment_textarea = TextArea::default();
-        self.input_mode = InputMode::Normal;
-        let label = if is_reply { "Reply" } else { "Comment" };
-        self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
-        if updated.was_unreadable {
-            self.notify_invalid_json_warning(&comments_path);
+        if file.is_empty() {
+            tab.selected_diff_file()
+        } else if tab.mode == DiffMode::History {
+            tab.history
+                .as_ref()
+                .and_then(|history| history.commit_files.iter().find(|f| f.path == file))
+        } else {
+            tab.files.iter().find(|f| f.path == file)
         }
-        Ok(())
     }
 
-    /// Anchor for the question or note being submitted, with the hunk it is
-    /// stored under. A document anchor set by `submit_document_comment` wins
-    /// and stores no hunk; a reply to a document-anchored thread inherits its
-    /// parent's line, since the diff holds no line to re-anchor it on.
-    fn take_comment_anchor(
+    /// Write one annotation through the shared use case and adopt the result.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the parameters are the explicit submit inputs; grouping them would change the shared writer's shape"
+    )]
+    fn write_annotation(
         &mut self,
-        hunk_index: usize,
-        comment_line_num: Option<usize>,
-    ) -> (Option<usize>, LineAnchor) {
-        let explicit = self.tab_mut().comment_document_anchor.take();
-        let anchor = explicit.or_else(|| {
-            let parent = self.tab().comment_reply_to.as_deref()?;
-            self.document_anchor_of(parent)
-        });
-        match anchor {
-            Some(anchor) => (None, anchor),
-            None => (
-                Some(hunk_index),
-                self.get_line_anchor(hunk_index, comment_line_num),
-            ),
+        target: &CommentTarget,
+        text: &str,
+        kind: CommentType,
+        reply_to: Option<String>,
+        finding_ref: Option<String>,
+        attribution: ReplyAttribution,
+        client_id: Option<String>,
+        document_anchor: Option<LineAnchor>,
+    ) -> Result<()> {
+        let (er_dir, comments_dir, repo_root, base_branch, pr_head_ref, is_remote, diff_hash) = {
+            let tab = self.tab();
+            (
+                tab.er_dir(),
+                tab.github_comments_dir(),
+                tab.repo_root.clone(),
+                tab.base_branch.clone(),
+                tab.pr_head_ref.clone(),
+                tab.is_remote(),
+                tab.diff_hash.clone(),
+            )
+        };
+        // Questions carry the branch diff hash; compute it on demand when the
+        // tab has none yet (non-Branch views with no AI data). Remote tabs have
+        // no local git to ask.
+        let mut branch_diff_hash = self.tab().branch_diff_hash.clone();
+        if branch_diff_hash.is_empty() && !is_remote {
+            if let Ok(raw) = self.tab().ports.git.diff_raw(
+                "branch",
+                &base_branch,
+                &repo_root,
+                pr_head_ref.as_deref(),
+            ) {
+                branch_diff_hash = ai::compute_diff_hash(&raw);
+                self.tab_mut().branch_diff_hash = branch_diff_hash.clone();
+            }
         }
+        // The side is consumed: a value must not outlive the submit it was set for.
+        let side = self
+            .tab_mut()
+            .comment_side
+            .take()
+            .unwrap_or_else(|| "RIGHT".to_string());
+        let parent_document_anchor = reply_to
+            .as_deref()
+            .and_then(|parent| self.document_anchor_of(parent));
+        let store = crate::store_registry::store();
+        let file_data = self.annotation_file(&target.file);
+        let written = {
+            let input = crate::annotations::AnnotationInput {
+                kind,
+                file: &target.file,
+                hunk_idx: target.hunk_idx,
+                line_num: target.line_num,
+                line_num_end: target.line_num_end,
+                text,
+                side: Some(side.as_str()),
+                reply_to,
+                finding_ref,
+                client_id,
+                attribution,
+                branch_diff_hash: &branch_diff_hash,
+                diff_hash: &diff_hash,
+                file_data,
+                document_anchor,
+                parent_document_anchor,
+                er_dir: &er_dir,
+                comments_dir: &comments_dir,
+            };
+            crate::annotations::write_annotation(&store, &input)?
+        };
+        match written.payload {
+            crate::annotations::WrittenPayload::Questions(questions) => {
+                self.tab_mut().ai.questions = Some(questions);
+            }
+            crate::annotations::WrittenPayload::Notes(notes) => {
+                self.tab_mut().ai.notes = Some(notes);
+            }
+            crate::annotations::WrittenPayload::Comments(comments) => {
+                self.tab_mut().ai.github_comments = Some(comments);
+            }
+        }
+        self.tab_mut().ai.rebuild_comment_index();
+        let path = written.path.to_string_lossy().into_owned();
+        self.tab_mut().mark_sidecar_written(&path);
+        let label = if written.is_reply {
+            "Reply"
+        } else {
+            match kind {
+                CommentType::Question => "Question",
+                CommentType::Note => "Note",
+                CommentType::GitHubComment => "Comment",
+            }
+        };
+        self.notify(&format!("{} added: {}", label, truncate(text, 40)));
+        if written.was_unreadable {
+            self.notify_invalid_json_warning(std::path::Path::new(&path));
+        }
+        Ok(())
     }
 
     /// The stored line of a question or note anchored on the document rather
@@ -1526,21 +1323,18 @@ impl App {
             anyhow::bail!("A GitHub comment must sit on a line in the diff");
         }
         let line = target.line_num.context("A document comment needs a line")?;
-        let anchor = document_line_anchor(source, line)
+        let anchor = crate::annotations::document_line_anchor(source, line)
             .with_context(|| format!("Line {line} is past the end of {}", target.file))?;
-        self.tab_mut().comment_document_anchor = Some(anchor);
-        let result = self.submit_comment_text_inner(
-            target,
-            text,
+        self.write_annotation(
+            &target,
+            &text,
             comment_type,
             None,
             None,
             ReplyAttribution::default(),
-        );
-        // An empty body returns before the anchor is taken; never let it leak
-        // into the next submit.
-        self.tab_mut().comment_document_anchor = None;
-        result
+            None,
+            Some(anchor),
+        )
     }
 
     /// Richer anchor data captured when placing a comment
@@ -1579,13 +1373,30 @@ impl App {
         reply_to: Option<String>,
         finding_ref: Option<String>,
     ) -> Result<()> {
-        self.submit_comment_text_inner(
-            target,
-            text,
+        self.submit_comment_text_with_id(target, text, comment_type, reply_to, finding_ref, None)
+    }
+
+    /// [`Self::submit_comment_text`] with the id the front end painted. The
+    /// stored row reuses it, so the confirming snapshot replaces the painted
+    /// row instead of swapping ids under the cursor.
+    pub fn submit_comment_text_with_id(
+        &mut self,
+        target: CommentTarget,
+        text: String,
+        comment_type: CommentType,
+        reply_to: Option<String>,
+        finding_ref: Option<String>,
+        client_id: Option<String>,
+    ) -> Result<()> {
+        self.write_annotation(
+            &target,
+            &text,
             comment_type,
             reply_to,
             finding_ref,
             ReplyAttribution::default(),
+            client_id,
+            None,
         )
     }
 
@@ -1600,9 +1411,9 @@ impl App {
         reply_to: Option<String>,
         ai_action: Option<&str>,
     ) -> Result<()> {
-        self.submit_comment_text_inner(
-            target,
-            text,
+        self.write_annotation(
+            &target,
+            &text,
             comment_type,
             reply_to,
             None,
@@ -1610,40 +1421,9 @@ impl App {
                 author: Some("ai".to_string()),
                 ai_action: ai_action.map(str::to_string),
             },
+            None,
+            None,
         )
-    }
-
-    fn submit_comment_text_inner(
-        &mut self,
-        target: CommentTarget,
-        text: String,
-        comment_type: CommentType,
-        reply_to: Option<String>,
-        finding_ref: Option<String>,
-        attribution: ReplyAttribution,
-    ) -> Result<()> {
-        let CommentTarget {
-            file,
-            hunk_idx,
-            line_num,
-            line_num_end,
-        } = target;
-        {
-            let tab = self.tab_mut();
-            tab.comment_file = file;
-            tab.comment_hunk = hunk_idx;
-            tab.comment_line_num = line_num;
-            tab.comment_line_end = Self::normalize_line_end(line_num, line_num_end);
-            tab.comment_reply_to = reply_to;
-            tab.comment_finding_ref = finding_ref;
-            tab.comment_type = comment_type;
-            tab.comment_edit_id = None;
-            tab.comment_textarea = TextArea::new(vec![text]);
-            tab.comment_author_override = attribution.author;
-            tab.comment_ai_action_override = attribution.ai_action;
-        }
-        self.input_mode = InputMode::Comment;
-        self.submit_comment()
     }
 
     /// Delete a comment or question by ID, bypassing the confirmation dialog.

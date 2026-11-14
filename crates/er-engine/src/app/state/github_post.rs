@@ -426,76 +426,7 @@ impl App {
             tab.files.iter().find(|f| f.path == file)
         };
 
-        let Some(df) = diff_file else {
-            return LineAnchor::default();
-        };
-        let Some(hunk) = df.hunks.get(hunk_idx) else {
-            return LineAnchor::default();
-        };
-        let Some(ln) = line else {
-            return LineAnchor {
-                line_start: None,
-                line_content: hunk.header.clone(),
-                context_before: Vec::new(),
-                context_after: Vec::new(),
-                old_line_start: None,
-                hunk_header: hunk.header.clone(),
-            };
-        };
-
-        let target_idx = match side {
-            Some("LEFT") => hunk
-                .lines
-                .iter()
-                .position(|l| l.old_num == Some(ln))
-                .or_else(|| hunk.lines.iter().position(|l| l.new_num == Some(ln))),
-            Some("RIGHT") => hunk
-                .lines
-                .iter()
-                .position(|l| l.new_num == Some(ln))
-                .or_else(|| hunk.lines.iter().position(|l| l.old_num == Some(ln))),
-            _ => hunk
-                .lines
-                .iter()
-                .position(|l| l.new_num == Some(ln))
-                .or_else(|| hunk.lines.iter().position(|l| l.old_num == Some(ln))),
-        };
-        let (line_content, old_line_start) = match target_idx {
-            Some(idx) => {
-                let dl = &hunk.lines[idx];
-                (dl.content.clone(), dl.old_num)
-            }
-            None => (String::new(), None),
-        };
-        let context_before = match target_idx {
-            Some(idx) => {
-                let start = idx.saturating_sub(3);
-                hunk.lines[start..idx]
-                    .iter()
-                    .map(|l| l.content.clone())
-                    .collect()
-            }
-            None => Vec::new(),
-        };
-        let context_after = match target_idx {
-            Some(idx) => {
-                let end = (idx + 4).min(hunk.lines.len());
-                hunk.lines[(idx + 1)..end]
-                    .iter()
-                    .map(|l| l.content.clone())
-                    .collect()
-            }
-            None => Vec::new(),
-        };
-
-        LineAnchor {
-            line_start: Some(ln),
-            line_content,
-            context_before,
-            context_after,
-            old_line_start,
-            hunk_header: hunk.header.clone(),
-        }
+        crate::annotations::line_anchor_at(diff_file, hunk_idx, line, side)
     }
 
     fn known_github_ids(&self) -> HashSet<u64> {
