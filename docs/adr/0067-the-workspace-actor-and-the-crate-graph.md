@@ -42,6 +42,13 @@ next paint.
 returns `Timeout`; the actor keeps running. A caller that needs a tighter bound
 passes its own deadline.
 
+**This grows ADR 0015's rule.** ADR 0015 sends blocking commands to a
+`run_blocking` worker. On the flag path the wait is explicit: `send` returns a
+reply `Receiver`, so a command that blocks on it inside `run_blocking` must
+bound the wait — `send_and_wait`, which carries `REPLY_TIMEOUT`, or its own
+`recv_timeout`. An unbounded `recv()` would hold a worker for as long as the
+actor lives and turn a dead actor into a frozen command.
+
 **The crate graph stays headless.** `er-service` depends on `er-engine` with
 `default-features = false` and has no front end in its graph. `v1-service` is
 an optional feature on `er-desktop` and `er-tui`; the default build is

@@ -2,6 +2,11 @@
 
 Synchronous Tauri commands execute on the main thread, so a command that takes the `App` mutex or shells out to git freezes the window for as long as it runs. The rule is that such a command is an `async fn` wrapping its blocking body in `run_blocking` (`tauri::async_runtime::spawn_blocking`, `crates/er-desktop/src/commands.rs`), with `AppState` all `Arc`s that derive `Clone` so the body can move onto the worker thread.
 
+On the workspace flag path (`v1-service`), `WorkspaceHandle::send` returns a
+reply `Receiver`: a command that blocks on it inside `run_blocking` must bound
+the wait with `send_and_wait` (`REPLY_TIMEOUT`) or its own `recv_timeout` —
+see ADR 0067.
+
 **The rule is not yet universal, and the exceptions are not all benign.** The navigation commands (`next_file`, `prev_file`, `next_hunk`, `prev_hunk`, `toggle_compacted`, `jump_to_unreviewed`) are plain `fn`s that lock the app and build a snapshot inline; `toggle_compacted` also reaches git for a compacted file. Treat the pattern as the direction rather than as a description of the tree.
 
 ## Consequences
