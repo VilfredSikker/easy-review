@@ -9,6 +9,7 @@ pub mod settings;
 
 use anyhow::Result;
 
+pub(crate) use agents::managed_agents_load_failed;
 pub use agents::{agents_path, load_agents_from, save_agents_to, AgentsConfig};
 pub use desktop_settings::{
     apply_config_field, desktop_settings_snapshot, validate_config_text_field, ConfigFieldValue,
@@ -1788,6 +1789,18 @@ impl std::fmt::Display for ConfigLoadError {
 }
 
 impl std::error::Error for ConfigLoadError {}
+
+impl ConfigLoadError {
+    /// The one-line banner a front end shows, naming the file that failed.
+    pub fn banner(&self) -> String {
+        let name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config.toml");
+        format!("{name} failed to load; saving is disabled until it is reloaded")
+    }
+}
 
 enum ConfigReadError {
     Read(std::io::Error),
@@ -4302,6 +4315,77 @@ mod tests {
         });
     }
 
+    /// A managed save writes the split directly: agents.toml carries the two
+    /// moved sections, config.toml carries every other section and neither.
+    #[test]
+    fn a_managed_save_writes_both_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path().join("config.toml");
+            with_managed_config_path(&path, || {
+                let mut config = ErConfig::default();
+                config.display.theme = "ember".to_string();
+                config.agent.command = "my-agent".to_string();
+                config.agent.args = vec!["--flag".to_string()];
+                config.ai_hub.default_provider = Some("my-provider".to_string());
+                config.ai_hub.providers.insert(
+                    "my-provider".to_string(),
+                    AiProviderConfig {
+                        command: "my-provider-cli".to_string(),
+                        ..Default::default()
+                    },
+                );
+
+                save_config(&config).unwrap();
+
+                let config_toml: toml::Table =
+                    std::fs::read_to_string(&path).unwrap().parse().unwrap();
+                assert!(
+                    !config_toml.contains_key("agent"),
+                    "config.toml kept [agent]: {config_toml:?}"
+                );
+                assert!(
+                    !config_toml.contains_key("ai_hub"),
+                    "config.toml kept [ai_hub]: {config_toml:?}"
+                );
+                assert_eq!(config_toml["display"]["theme"].as_str(), Some("ember"));
+
+                let agents: toml::Table = std::fs::read_to_string(agents_path(&path))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert_eq!(agents["agent"]["command"].as_str(), Some("my-agent"));
+                assert_eq!(agents["agent"]["args"][0].as_str(), Some("--flag"));
+                assert_eq!(
+                    agents["ai_hub"]["default_provider"].as_str(),
+                    Some("my-provider")
+                );
+                assert_eq!(
+                    agents["ai_hub"]["providers"]["my-provider"]["command"].as_str(),
+                    Some("my-provider-cli")
+                );
+            });
+        });
+    }
+
+    /// The banner names the file whose parse failed, not always config.toml.
+    #[test]
+    fn the_load_banner_names_the_file_that_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, "[display]\ntheme = \"paper\"\n").unwrap();
+            std::fs::write(agents_path(&path), "{").unwrap();
+            with_managed_config_path(&path, || {
+                let (_, error) = load_global_config_checked();
+                let error = error.expect("the agents load failed");
+                let banner = error.banner();
+                assert!(banner.starts_with("agents.toml "), "{banner}");
+                assert!(!banner.contains("config.toml"), "{banner}");
+            });
+        });
+    }
+
     #[test]
     fn an_unparseable_config_is_never_overwritten_by_a_save() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -4474,14 +4558,16 @@ mod tests {
     fn the_public_save_refuses_an_unparseable_managed_config() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "{").unwrap();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            std::fs::write(&path, "{").unwrap();
 
-        with_managed_config_path(&path, || {
-            let (_config, error) = load_global_config_checked();
-            assert!(error.is_some());
-            let error = save_config(&ErConfig::default()).unwrap_err();
-            assert!(error.to_string().contains("Refusing to save"), "{error}");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), "{");
+            with_managed_config_path(&path, || {
+                let (_config, error) = load_global_config_checked();
+                assert!(error.is_some());
+                let error = save_config(&ErConfig::default()).unwrap_err();
+                assert!(error.to_string().contains("Refusing to save"), "{error}");
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), "{");
+            });
         });
     }
 
