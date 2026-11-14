@@ -70,7 +70,8 @@ pub(crate) mod test_support {
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
 
-    use super::{Artifact, StoreError};
+    use super::Artifact;
+    use crate::artifact::MigrateError;
     use crate::key::{ExpertId, SlotName};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -151,10 +152,9 @@ pub(crate) mod test_support {
         const FILE: &'static str = "test-migrate-err.json";
         type Slot = ();
 
-        fn migrate(from: u32, _raw: serde_json::Value) -> Result<serde_json::Value, StoreError> {
-            Err(StoreError::InvalidComponent {
-                what: "migration",
-                value: from.to_string(),
+        fn migrate(from: u32, _raw: serde_json::Value) -> Result<serde_json::Value, MigrateError> {
+            Err(MigrateError::Failed {
+                reason: from.to_string(),
             })
         }
     }

@@ -367,6 +367,8 @@ bytes, and the spawn rules fail a process spawn outside its home.
 `er::registry` fails a stored kind used but never registered, a registered kind
 nothing reads, or a text artifact read or written with no `register_text`; it
 has no allow list, so a kind it cannot see is fixed in the composition.
+`er::core_io` fails a filesystem, process, thread or channel path in
+`er-core`, and a dependency outside that crate's allow-list.
 
 Writes that must be atomic go through `er_store::atomic::write_atomic`, whose
 temporary name carries the pid and a process-wide counter. A fixed

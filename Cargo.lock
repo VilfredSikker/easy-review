@@ -1336,6 +1336,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "er-core"
+version = "0.6.5"
+dependencies = [
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "er-crap"
 version = "0.6.5"
 dependencies = [
@@ -1389,6 +1398,7 @@ dependencies = [
  "anyhow",
  "dirs 6.0.0",
  "er-agent",
+ "er-core",
  "er-engine",
  "er-git",
  "er-github",
@@ -1416,6 +1426,7 @@ name = "er-git"
 version = "0.6.5"
 dependencies = [
  "anyhow",
+ "er-core",
  "glob",
  "serde",
  "tempfile",
@@ -1468,6 +1479,7 @@ name = "er-service"
 version = "0.6.5"
 dependencies = [
  "anyhow",
+ "er-core",
  "er-engine",
  "er-git",
  "er-github",
@@ -1481,6 +1493,7 @@ dependencies = [
 name = "er-store"
 version = "0.6.5"
 dependencies = [
+ "er-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
