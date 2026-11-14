@@ -99,14 +99,10 @@ fn run(
                 handle_command(&deps, &state, &mut jobs, &tx, command, reply);
             }
             ActorMsg::EffectDone { result, reply } => {
+                // An arena effect may have started, cancelled or removed a run;
+                // the revision it publishes carries the runs as they are now.
+                state.set_arena_runs(jobs.live_arena_runs());
                 apply(&mut state, result, reply, &subscribers, &view);
-            }
-            ActorMsg::Query { query, reply } => {
-                let deps = deps.clone();
-                let arena = jobs.arena().clone();
-                let _ = thread::Builder::new().spawn(move || {
-                    let _ = reply.send(crate::arena::query(&deps, &arena, query));
-                });
             }
             ActorMsg::JobProgress { job, line } => {
                 broadcast(&subscribers, Event::JobProgress { job, line });
@@ -116,6 +112,7 @@ fn run(
                 broadcast(&subscribers, Event::JobFinished { job, outcome });
             }
             ActorMsg::ArenaChanged => {
+                state.set_arena_runs(jobs.live_arena_runs());
                 let revision = state.bump_revision();
                 publish(&view, &state);
                 broadcast(&subscribers, Event::ViewPublished { revision });

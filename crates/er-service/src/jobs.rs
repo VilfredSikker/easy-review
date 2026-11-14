@@ -8,6 +8,7 @@
 //! with the run's cancel bridge before it is submitted.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -20,6 +21,7 @@ use crate::actor::WorkspaceDeps;
 use crate::guard;
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError};
 use crate::protocol::{Command, JobOutcome, Reply};
+use crate::workspace::LiveArenaRun;
 
 /// Lines a job may get ahead of its forwarder before the runner drops some.
 const PROGRESS_BUFFER: usize = 256;
@@ -60,6 +62,8 @@ impl JobSink for ActorJobSink {
 pub(crate) struct JobHost {
     running: HashMap<JobId, Arc<AgentRunHandle>>,
     arena: ArenaRunControls,
+    /// Set while an arena wake-up is queued and not yet published.
+    pending: Arc<AtomicBool>,
 }
 
 impl JobHost {
@@ -71,17 +75,44 @@ impl JobHost {
             .unwrap_or_else(|| Arc::new(ActorJobSink::new(tx.clone())));
         let arena = ArenaRunControls::with_jobs(sink);
         let notify = tx.clone();
+        let pending = Arc::new(AtomicBool::new(false));
+        let raised = Arc::clone(&pending);
+        // Progress ticks arrive in bursts; one wake-up per publish is enough,
+        // since the actor reads every run's latest state when it publishes.
         arena.set_notify(Arc::new(move || {
-            let _ = notify.send(ActorMsg::ArenaChanged);
+            if !raised.swap(true, Ordering::AcqRel) {
+                let _ = notify.send(ActorMsg::ArenaChanged);
+            }
         }));
         Self {
             running: HashMap::new(),
             arena,
+            pending,
         }
     }
 
     pub(crate) fn arena(&self) -> &ArenaRunControls {
         &self.arena
+    }
+
+    /// The live arena section of the view. Reads the controls' in-memory
+    /// state only, so it runs on the actor thread. Clears the pending
+    /// wake-up first, so a tick that lands while this reads raises another.
+    pub(crate) fn live_arena_runs(&self) -> Vec<LiveArenaRun> {
+        self.pending.store(false, Ordering::Release);
+        let mut runs: Vec<LiveArenaRun> = self
+            .arena
+            .all()
+            .into_iter()
+            .map(|control| LiveArenaRun {
+                run_id: control.run_id.clone(),
+                er_dir: control.er_dir.clone(),
+                status: control.status(),
+                progress: control.progress_state(),
+            })
+            .collect();
+        runs.sort_by(|left, right| left.run_id.cmp(&right.run_id));
+        runs
     }
 
     pub(crate) fn start(

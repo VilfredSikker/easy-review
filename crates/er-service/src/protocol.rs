@@ -10,8 +10,7 @@ use std::sync::Arc;
 
 use er_agent::job::{JobError, JobProgress};
 use er_engine::arena::{
-    ArenaBatchStartParams, ArenaDiffPreview, ArenaProgressState, ArenaRunSnapshot, ArenaRunSummary,
-    ArenaScope, ArenaStartParams, ReviewerRef, Verdict,
+    ArenaBatchStartParams, ArenaDiffPreview, ArenaScope, ArenaStartParams, ReviewerRef, Verdict,
 };
 use er_engine::config::ErConfig;
 use er_engine::jobs::{JobId, JobResult, JobSubmission};
@@ -140,6 +139,21 @@ pub enum Command {
 /// a cancel, which acts on the live run alone.
 #[derive(Clone, Debug)]
 pub enum ArenaCommand {
+    /// Price a run before it starts. It reads the diff through the ports, so
+    /// it runs as an effect and answers with the preview; there is no state
+    /// to publish for it.
+    Estimate {
+        arena: ArenaContext,
+        scope: ArenaScope,
+        files: Option<Vec<String>>,
+        reviewers: Vec<ReviewerRef>,
+        rounds: Option<u8>,
+        arbiter: Option<ReviewerRef>,
+    },
+    EstimateBatch {
+        arena: ArenaContext,
+        params: ArenaBatchStartParams,
+    },
     StartRun {
         arena: ArenaContext,
         params: ArenaStartParams,
@@ -189,39 +203,6 @@ pub struct ArenaContext {
     /// The loaded review's diff hash, which seeded validation is checked
     /// against. Empty when no review is loaded.
     pub review_hash: String,
-}
-
-/// A read sent to the workspace actor. Reads answer with engine snapshots,
-/// which have no equality, so they have their own reply type.
-#[derive(Clone, Debug)]
-pub enum Query {
-    ArenaEstimate {
-        arena: ArenaContext,
-        scope: ArenaScope,
-        files: Option<Vec<String>>,
-        reviewers: Vec<ReviewerRef>,
-        rounds: Option<u8>,
-        arbiter: Option<ReviewerRef>,
-    },
-    ArenaEstimateBatch {
-        arena: ArenaContext,
-        params: ArenaBatchStartParams,
-    },
-    /// The live progress of a run this actor started.
-    ArenaProgress { run_id: String },
-    /// One run's snapshot, with its live status.
-    ArenaRun { arena: ArenaContext, run_id: String },
-    /// The active bucket's runs on the tab's branch.
-    ArenaRuns { arena: ArenaContext },
-}
-
-/// The answer to a [`Query`].
-#[derive(Clone, Debug)]
-pub enum QueryReply {
-    ArenaEstimate(ArenaDiffPreview),
-    ArenaProgress(ArenaProgressState),
-    ArenaRun(Box<ArenaRunSnapshot>),
-    ArenaRuns(Vec<ArenaRunSummary>),
 }
 
 /// How a job ended, as subscribers see it.
@@ -330,8 +311,8 @@ impl OpenTarget {
     }
 }
 
-/// The actor's answer to one command.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The actor's answer to one command. No `Eq`: an estimate carries prices.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Reply {
     TargetOpened(WorkspaceTarget),
     /// The stored row's id, which is the painted id when one was supplied.
@@ -365,6 +346,7 @@ pub enum Reply {
     Reconciled {
         resumable: Vec<String>,
     },
+    ArenaEstimate(ArenaDiffPreview),
     ArenaStarted {
         run_ids: Vec<String>,
     },

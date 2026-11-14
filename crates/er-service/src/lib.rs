@@ -15,7 +15,7 @@
 
 mod actor;
 mod annotations;
-mod arena;
+pub mod arena;
 mod effect;
 mod guard;
 mod handle;
@@ -27,9 +27,9 @@ pub use actor::{spawn, WorkspaceDeps};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use protocol::{
     AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event, JobOutcome,
-    OpenTarget, Query, QueryReply, Reply, TabContext,
+    OpenTarget, Reply, TabContext,
 };
-pub use workspace::{WorkspaceTarget, WorkspaceView};
+pub use workspace::{LiveArenaRun, WorkspaceTarget, WorkspaceView};
 
 #[cfg(test)]
 mod job_tests;

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use er_agent::agent_run::AgentRunHandle;
 use er_agent::agent_slots::{self, Workload};
 use er_agent::decode::OutputProtocol;
-use er_agent::job::{JobKind, JobOutput, JobSpec, OutputContract, RetryPolicy};
+use er_agent::job::{JobKind, JobOutput, JobProgress, JobSpec, OutputContract, RetryPolicy};
 use er_agent::provider::ProviderSpec;
 use er_engine::arena::{ArenaPaths, ArenaScope, ArenaStartParams, ReviewerRef, RunStatus};
 use er_engine::config::{AiModelConfig, AiProviderConfig, ErConfig};
@@ -380,5 +380,144 @@ fn a_workspace_load_spawns_nothing() {
             record.stage("verifying:arbiter").unwrap().status,
             er_engine::ai::StageStatus::Interrupted
         );
+    });
+}
+
+#[test]
+fn two_jobs_keep_their_progress_apart() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = spawn(WorkspaceDeps::new(ports()));
+    let events = handle.subscribe();
+    let sink = actor_sink(&handle);
+    let first = sink.submit(script_job(
+        "for i in 1 2 3; do echo first; done",
+        dir.path(),
+    ));
+    let second = sink.submit(script_job(
+        "for i in 1 2 3; do echo second; done",
+        dir.path(),
+    ));
+    let jobs = [(first.id, "first"), (second.id, "second")];
+
+    let mut finished = 0;
+    let mut seen = 0;
+    while finished < jobs.len() {
+        match wait_for(&events, |event| {
+            matches!(event, Event::JobProgress { .. } | Event::JobFinished { .. })
+        }) {
+            Event::JobProgress { job, line } => {
+                let Some((_, word)) = jobs.iter().find(|(id, _)| *id == job) else {
+                    continue;
+                };
+                assert_eq!(
+                    line,
+                    JobProgress::StdoutLine(format!("{word}\n")),
+                    "{job}'s line"
+                );
+                seen += 1;
+            }
+            Event::JobFinished { job, .. } if jobs.iter().any(|(id, _)| *id == job) => {
+                finished += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(seen, 6, "every line arrived once, under its own job");
+    assert!(first.wait().is_ok() && second.wait().is_ok());
+}
+
+#[test]
+fn an_estimate_answers_with_its_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let bucket = dir.path().to_string_lossy().into_owned();
+    let handle = spawn(WorkspaceDeps::new(ports()));
+    let reply = handle
+        .send_and_wait_with(
+            Command::Arena(ArenaCommand::Estimate {
+                arena: arena_context(&bucket),
+                scope: ArenaScope::Branch,
+                files: None,
+                reviewers: vec![fake_ref(), fake_ref()],
+                rounds: Some(1),
+                arbiter: None,
+            }),
+            DEADLINE,
+        )
+        .unwrap();
+    let Reply::ArenaEstimate(preview) = reply else {
+        panic!("unexpected reply {reply:?}");
+    };
+    assert_eq!(preview.diff_bytes, RAW.len(), "priced over the tab's diff");
+}
+
+#[test]
+fn a_live_run_is_published_in_the_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let bucket = dir.path().join("bucket");
+    std::fs::create_dir_all(&bucket).unwrap();
+    let bucket = bucket.to_string_lossy().into_owned();
+    er_engine::storage::with_process_test_storage_root(dir.path(), || {
+        let sink = Arc::new(RecordingSink::default());
+        let handle = spawn(WorkspaceDeps::new(ports()).with_jobs(sink));
+        let arena = arena_context(&bucket);
+        let params = ArenaStartParams {
+            title: None,
+            reviewers: vec![fake_ref(), fake_ref()],
+            scope: ArenaScope::Branch,
+            files: None,
+            rounds: Some(1),
+            arbiter: Some(fake_ref()),
+            confirm: true,
+            agent_kind: None,
+            effort: None,
+        };
+        let reply = handle
+            .send_and_wait_with(
+                Command::Arena(ArenaCommand::StartRun {
+                    arena: arena.clone(),
+                    params,
+                }),
+                DEADLINE,
+            )
+            .unwrap();
+        let Reply::ArenaStarted { run_ids } = reply else {
+            panic!("unexpected reply {reply:?}");
+        };
+        let run_id = &run_ids[0];
+        wait_terminal(&bucket, run_id);
+
+        // The run's last progress publishes after its record is written.
+        let deadline = Instant::now() + DEADLINE;
+        let live = loop {
+            let view = handle.view();
+            if let Some(live) = view.arena_run(run_id).filter(|live| {
+                matches!(
+                    live.status,
+                    RunStatus::Complete | RunStatus::Failed | RunStatus::Cancelled
+                )
+            }) {
+                break live.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the run never reached the view: {:?}",
+                view.arena_runs
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(live.er_dir, bucket);
+        let view = handle.view();
+        assert_eq!(
+            crate::arena::read_progress(&view, run_id),
+            live.progress,
+            "progress reads from the view"
+        );
+        let snapshot = crate::arena::read_run(&view, &arena, run_id).unwrap();
+        assert_eq!(
+            snapshot.run.status, live.status,
+            "the snapshot carries the live status"
+        );
+        let runs = crate::arena::read_runs(&arena).unwrap();
+        assert!(runs.iter().any(|run| &run.id == run_id));
     });
 }
