@@ -6740,8 +6740,11 @@ fn route_annotation(
 ) -> Result<AppSnapshot, String> {
     let (key, command) = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, state, view) {
-            return early;
+        // The flag-on desktop does not render the service snapshot (D21), so a
+        // wrong-view snapshot would read as success and leave the paint in
+        // place. Err is what makes the frontend roll the paint back.
+        if abort_wrong_view(&app, state, view).is_some() {
+            return Err("The active view changed; the annotation was not written".to_string());
         }
         let context = tab_context(&app);
         let key = service_key(
@@ -9887,7 +9890,6 @@ fn promote_finding_to_comment_impl(
     Ok(snap_from_confirmed(&app, state))
 }
 
-#[cfg(not(feature = "v1-service"))]
 const FINDING_THREAD_STUB: &str = "Follow-up on this finding.";
 
 #[tauri::command]
@@ -9901,8 +9903,8 @@ pub async fn reply_to_finding(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
-        route_annotation(&state, view.as_ref(), |context| {
+    return run_blocking(move || match finding_reply_route(ai_assist) {
+        FindingReplyRoute::Service => route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::ReplyToFinding {
                 context,
                 finding_id,
@@ -9910,14 +9912,35 @@ pub async fn reply_to_finding(
                 ai_assist,
                 client_id: id,
             }
-        })
+        }),
+        // AI-assist spawns an agent, which stays the desktop's job; the
+        // service's finding reply is the plain write only.
+        FindingReplyRoute::FlagOff => {
+            reply_to_finding_impl(finding_id, body, ai_assist, id, view, &state)
+        }
     })
     .await;
     #[cfg(not(feature = "v1-service"))]
     run_blocking(move || reply_to_finding_impl(finding_id, body, ai_assist, id, view, &state)).await
 }
 
-#[cfg(not(feature = "v1-service"))]
+/// Which path answers a finding reply. AI-assist stays on the flag-off route;
+/// only the plain write goes through the service.
+#[cfg(feature = "v1-service")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FindingReplyRoute {
+    Service,
+    FlagOff,
+}
+
+#[cfg(feature = "v1-service")]
+fn finding_reply_route(ai_assist: bool) -> FindingReplyRoute {
+    if ai_assist {
+        FindingReplyRoute::FlagOff
+    } else {
+        FindingReplyRoute::Service
+    }
+}
 fn reply_to_finding_impl(
     finding_id: String,
     body: String,
@@ -12161,6 +12184,38 @@ mod tests {
         let modes = tab.visible_modes(&config);
         assert!(modes.contains(&er_engine::app::DiffMode::Staged));
         assert!(modes.contains(&er_engine::app::DiffMode::Unstaged));
+    }
+
+    /// A route painted on a view that has since changed must fail, because the
+    /// flag-on desktop does not render the service snapshot: Ok would leave the
+    /// orphan paint in place.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn a_route_on_a_stale_view_returns_an_error() {
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            let stale = crate::snapshot::OptimisticView {
+                active_tab: 99,
+                repo_root: "/gone".to_string(),
+                pr_number: None,
+                branch: String::new(),
+                mode: "branch".to_string(),
+            };
+            let result = route_annotation(&state, Some(&stale), |context| {
+                er_service::Command::ToggleReviewed {
+                    context,
+                    path: "src/lib.rs".to_string(),
+                }
+            });
+            assert!(
+                result.is_err(),
+                "a stale route reported success: {result:?}"
+            );
+        });
     }
 
     fn review_flow_test_state(dir: &ReviewFlowTestDir) -> AppState {
@@ -14627,6 +14682,16 @@ mod projected_review_tests {
 
 #[cfg(all(test, feature = "v1-service"))]
 mod route_tests {
+    use super::{finding_reply_route, FindingReplyRoute};
+
+    /// AI-assist spawns an agent the service does not own, so it stays on the
+    /// flag-off path; only the plain finding reply is routed.
+    #[test]
+    fn only_plain_finding_replies_take_the_service_route() {
+        assert_eq!(finding_reply_route(false), FindingReplyRoute::Service);
+        assert_eq!(finding_reply_route(true), FindingReplyRoute::FlagOff);
+    }
+
     /// Every routed annotation command has a service route. The service tests
     /// drive the actor itself; this holds the desktop side to sending each
     /// command instead of falling through to the flag-off body.
