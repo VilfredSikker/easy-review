@@ -246,3 +246,255 @@ fn median_duration(
     samples.sort_unstable();
     Ok(samples[runs / 2])
 }
+
+/// The annotation commands: the diff is fetched through the port, the target
+/// is the command's, and the painted id survives the write.
+mod annotations {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use er_engine::ports::Ports;
+    use er_git::FakeGit;
+    use er_github::FakeGitHub;
+
+    use crate::actor::WorkspaceDeps;
+    use crate::handle::WorkspaceError;
+    use crate::protocol::{AnnotationTarget, Command, OpenTarget, Reply, TabContext};
+    use crate::{spawn, WorkspaceHandle};
+
+    const RAW: &str = "\
+diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,2 +1,2 @@
+ a-one
+-a-old
++a-new
+diff --git a/src/b.rs b/src/b.rs
+--- a/src/b.rs
++++ b/src/b.rs
+@@ -1,3 +1,3 @@
+ b-one
+-b-old
++b-new
+ b-three
+";
+
+    fn context(bucket: &str, repo_root: &str) -> TabContext {
+        TabContext {
+            er_dir: bucket.to_string(),
+            comments_dir: bucket.to_string(),
+            repo_root: repo_root.to_string(),
+            base_branch: "main".to_string(),
+            scope: "branch".to_string(),
+            remote_repo: None,
+            pr_number: None,
+            pr_head_ref: None,
+            local_branch_view: Some("feature".to_string()),
+            checkout_root: None,
+            branch_diff_hash: String::new(),
+            diff_hash: "diff-hash".to_string(),
+        }
+    }
+
+    fn ports(raw: &str) -> Ports {
+        let git: Arc<dyn er_git::Git> =
+            Arc::new(FakeGit::default().with_diff_against_branch(Ok(raw.to_string())));
+        let github: Arc<dyn er_github::GitHub> = Arc::new(FakeGitHub::default());
+        Ports { git, github }
+    }
+
+    fn actor(raw: &str) -> WorkspaceHandle {
+        spawn(WorkspaceDeps::new(ports(raw)))
+    }
+
+    fn target(file: &str, line: Option<usize>) -> AnnotationTarget {
+        AnnotationTarget {
+            file: file.to_string(),
+            hunk_idx: 0,
+            line_num: line,
+            line_num_end: None,
+        }
+    }
+
+    #[test]
+    fn toggle_reviewed_uses_the_named_path_and_the_diff_hash() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bucket = dir.path().join("bucket");
+        std::fs::create_dir_all(&bucket)?;
+        let bucket_text = bucket.to_string_lossy().into_owned();
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            let reply = handle.send_and_wait_with(
+                Command::ToggleReviewed {
+                    context: context(&bucket_text, "/repo"),
+                    path: "src/b.rs".to_string(),
+                },
+                Duration::from_secs(5),
+            )?;
+            assert_eq!(reply, Reply::ReviewedChanged { changed: 1 });
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket_text)?;
+            let map = er_engine::session_store::load_reviewed(&store, &scope)?;
+            let expected =
+                er_engine::ai::compute_per_file_hash(RAW, "src/b.rs").expect("b.rs is in the diff");
+            assert_eq!(map.get("src/b.rs"), Some(&expected));
+            assert!(!map.contains_key("src/a.rs"), "only the named path flips");
+
+            let reply = handle.send_and_wait_with(
+                Command::ToggleReviewed {
+                    context: context(&bucket_text, "/repo"),
+                    path: "src/b.rs".to_string(),
+                },
+                Duration::from_secs(5),
+            )?;
+            assert_eq!(reply, Reply::ReviewedChanged { changed: 1 });
+            let map = er_engine::session_store::load_reviewed(&store, &scope)?;
+            assert!(!map.contains_key("src/b.rs"), "the second toggle clears");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn an_annotation_lands_on_the_named_target_and_keeps_the_painted_id() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bucket = dir.path().join("bucket");
+        std::fs::create_dir_all(&bucket)?;
+        let bucket_text = bucket.to_string_lossy().into_owned();
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            let reply = handle.send_and_wait_with(
+                Command::AddQuestion {
+                    context: context(&bucket_text, "/repo"),
+                    target: target("src/b.rs", Some(2)),
+                    body: "why?".to_string(),
+                    side: Some("RIGHT".to_string()),
+                    client_id: Some("q-opt-7".to_string()),
+                    reply_to: None,
+                    finding_ref: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            assert_eq!(
+                reply,
+                Reply::AnnotationWritten {
+                    id: "q-opt-7".to_string()
+                }
+            );
+
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket_text)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_questions(&store, &scope)?
+            else {
+                anyhow::bail!("questions were not written");
+            };
+            let question = &stored.value.questions[0];
+            assert_eq!(question.id, "q-opt-7");
+            assert_eq!(question.file, "src/b.rs");
+            assert_eq!(question.line_content, "b-new");
+            assert_eq!(question.relocated_at_hash, "diff-hash");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn a_reply_reuses_the_painted_id_and_points_at_its_parent() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bucket = dir.path().join("bucket");
+        std::fs::create_dir_all(&bucket)?;
+        let bucket_text = bucket.to_string_lossy().into_owned();
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let handle = actor(RAW);
+            handle.send_and_wait_with(
+                Command::AddQuestion {
+                    context: context(&bucket_text, "/repo"),
+                    target: target("src/a.rs", Some(2)),
+                    body: "root".to_string(),
+                    side: None,
+                    client_id: Some("q-opt-1".to_string()),
+                    reply_to: None,
+                    finding_ref: None,
+                },
+                Duration::from_secs(5),
+            )?;
+            let reply = handle.send_and_wait_with(
+                Command::ReplyToThread {
+                    context: context(&bucket_text, "/repo"),
+                    parent_id: "q-opt-1".to_string(),
+                    body: "reply".to_string(),
+                    client_id: Some("q-opt-2".to_string()),
+                },
+                Duration::from_secs(5),
+            )?;
+            assert_eq!(
+                reply,
+                Reply::AnnotationWritten {
+                    id: "q-opt-2".to_string()
+                }
+            );
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket_text)?;
+            let er_store::Loaded::Found(stored) =
+                er_engine::ai::annotation_store::load_questions(&store, &scope)?
+            else {
+                anyhow::bail!("questions were not written");
+            };
+            let reply_row = stored
+                .value
+                .questions
+                .iter()
+                .find(|q| q.id == "q-opt-2")
+                .expect("the reply row");
+            assert_eq!(reply_row.in_reply_to.as_deref(), Some("q-opt-1"));
+            assert_eq!(reply_row.file, "src/a.rs");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn a_command_for_another_repo_is_refused_as_stale() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bucket = dir.path().join("bucket");
+        std::fs::create_dir_all(&bucket)?;
+        let bucket_text = bucket.to_string_lossy().into_owned();
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let git: Arc<dyn er_git::Git> =
+                Arc::new(FakeGit::default().with_diff_against_branch(Ok(RAW.to_string())));
+            let github: Arc<dyn er_github::GitHub> =
+                Arc::new(FakeGitHub::default().with_pr_state(Ok("OPEN".to_string())));
+            let handle = spawn(WorkspaceDeps::new(Ports { git, github }));
+            let opened = handle.send_and_wait_with(
+                Command::OpenTarget {
+                    target: OpenTarget::RemotePr {
+                        owner: "acme".to_string(),
+                        repo: "widgets".to_string(),
+                        number: 7,
+                        repo_root: "/repo-a".to_string(),
+                    },
+                    replace: false,
+                },
+                Duration::from_secs(5),
+            )?;
+            assert!(matches!(opened, Reply::TargetOpened(_)));
+
+            let refused = handle.send_and_wait_with(
+                Command::ToggleReviewed {
+                    context: context(&bucket_text, "/repo-b"),
+                    path: "src/b.rs".to_string(),
+                },
+                Duration::from_secs(5),
+            );
+            assert!(
+                matches!(refused, Err(WorkspaceError::Failed(ref message)) if message.contains("moved")),
+                "got {refused:?}"
+            );
+            let store = er_engine::store_registry::store();
+            let scope = er_store::Scope::dir(&bucket_text)?;
+            let map = er_engine::session_store::load_reviewed(&store, &scope)?;
+            assert!(map.is_empty(), "a refused write changes nothing");
+            Ok(())
+        })
+    }
+}

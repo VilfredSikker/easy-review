@@ -14,6 +14,7 @@
 //! See ADR 0067 for the crate graph and the actor's position in it.
 
 mod actor;
+mod annotations;
 mod effect;
 mod guard;
 mod handle;
@@ -22,7 +23,9 @@ mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
-pub use protocol::{Command, Event, OpenTarget, Reply};
+pub use protocol::{
+    AnnotationKind, AnnotationTarget, Command, Event, OpenTarget, Reply, TabContext,
+};
 pub use workspace::{WorkspaceTarget, WorkspaceView};
 
 #[cfg(test)]

@@ -78,6 +78,12 @@ impl WorkspaceState {
         self.bump()
     }
 
+    /// Raises the revision after a write the view does not carry (an
+    /// annotation sidecar change), so readers refresh.
+    pub(crate) fn bump_revision(&mut self) -> u64 {
+        self.bump()
+    }
+
     fn bump(&mut self) -> u64 {
         self.revision += 1;
         self.view.revision = self.revision;
