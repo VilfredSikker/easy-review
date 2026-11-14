@@ -7,6 +7,7 @@ license.workspace = true
 description = "Typed artifact store shared by the engine, TUI and desktop"
 
 [dependencies]
+er-core = { path = "../er-core" }
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

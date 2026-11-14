@@ -7,6 +7,7 @@ license.workspace = true
 description = "Git subprocess access behind a trait for easy-review"
 
 [dependencies]
+er-core = { path = "../er-core" }
 anyhow.workspace = true
 serde.workspace = true
 glob.workspace = true

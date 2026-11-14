@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use er_core::artifact::MigrateError;
+
 use crate::lock::HolderInfo;
 use crate::store::MAX_ARTIFACT_BYTES;
 
@@ -18,6 +20,8 @@ pub enum StoreError {
     DuplicateRegistration { kind: &'static str },
     /// The artifact's schema version has no migration.
     UnsupportedVersion { found: u32 },
+    /// A migration ran and could not produce a payload this build reads.
+    MigrationFailed { reason: String },
     /// The file on disk is newer than this build; writes leave it alone.
     NewerVersion {
         path: PathBuf,
@@ -60,6 +64,9 @@ impl std::fmt::Display for StoreError {
             }
             Self::UnsupportedVersion { found } => {
                 write!(f, "no migration from artifact version {found}")
+            }
+            Self::MigrationFailed { reason } => {
+                write!(f, "artifact migration failed: {reason}")
             }
             Self::NewerVersion {
                 path,
@@ -131,6 +138,15 @@ impl From<serde_json::Error> for StoreError {
     }
 }
 
+impl From<MigrateError> for StoreError {
+    fn from(error: MigrateError) -> Self {
+        match error {
+            MigrateError::UnsupportedVersion { found } => Self::UnsupportedVersion { found },
+            MigrateError::Failed { reason } => Self::MigrationFailed { reason },
+        }
+    }
+}
+
 /// A read-modify-write failure: the store, or the caller's closure.
 #[derive(Debug)]
 pub enum UpdateError<E> {
@@ -159,5 +175,24 @@ impl<E: std::error::Error + 'static> std::error::Error for UpdateError<E> {
 impl<E> From<StoreError> for UpdateError<E> {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_errors_map_onto_the_store_error() {
+        assert!(matches!(
+            StoreError::from(MigrateError::UnsupportedVersion { found: 3 }),
+            StoreError::UnsupportedVersion { found: 3 }
+        ));
+        assert!(matches!(
+            StoreError::from(MigrateError::Failed {
+                reason: "bad rule".to_string(),
+            }),
+            StoreError::MigrationFailed { reason } if reason == "bad rule"
+        ));
     }
 }
