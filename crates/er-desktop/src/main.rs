@@ -833,6 +833,17 @@ fn run_revision_watcher(watch_handle: &tauri::AppHandle, watch_rev: &std::sync::
     }
 }
 
+/// Whether this build compiled the v1 service path.
+///
+/// desktop-ui compares it with its own build-time `VITE_ER_V1_SERVICE` and
+/// refuses to start when the two disagree, so a mismatched dev or release
+/// build fails loudly instead of running one path while the front end expects
+/// the other.
+#[tauri::command]
+fn v1_service_enabled() -> bool {
+    cfg!(feature = "v1-service")
+}
+
 fn main() {
     er_engine::env_path::init_cli_path();
     dev_log::init();
@@ -1894,6 +1905,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            v1_service_enabled,
             commands::start_window_drag,
             commands::get_snapshot,
             commands::toggle_panel,
@@ -2239,6 +2251,21 @@ fn next_probe_interval_secs(current: u64, changed: bool) -> u64 {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    /// The flag is opt-in: a plain build compiles the App path and reports it.
+    /// Flipping the feature into `default` makes this fail before anything runs.
+    #[test]
+    #[expect(
+        clippy::assertions_on_constants,
+        reason = "the constant is the build's compiled feature value, which is the point"
+    )]
+    fn the_service_flag_is_off_in_a_default_build() {
+        assert!(
+            !cfg!(feature = "v1-service"),
+            "v1-service must stay off by default"
+        );
+        assert!(!v1_service_enabled());
+    }
 
     // ── comment_sync_recently_synced (skip gate) ──
     // `base` is the synced-at instant; `base + elapsed` is "now", so the gate

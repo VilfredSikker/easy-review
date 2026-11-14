@@ -5,6 +5,7 @@
 identifier = "allow-app-commands"
 description = "All Easy Review application commands"
 commands.allow = [
+  "v1_service_enabled",
   "start_window_drag",
   "get_snapshot",
   "toggle_panel",

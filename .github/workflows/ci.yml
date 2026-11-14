@@ -77,6 +77,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
 
+  # The flag-on path: the declaring packages' tests compiled with the feature.
+  # The default-build flag assertion lives in the er-desktop bin target, so the
+  # lib target is what runs here with the feature on.
+  test-v1:
+    name: Test (v1-service)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/tauri-linux-deps
+        timeout-minutes: 5
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p er-desktop --lib --features v1-service
+      - run: cargo test -p er-tui --features v1-service
+
   desktop-ui-lint:
     name: Desktop UI lint
     needs: changes
@@ -160,9 +177,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       # No Tauri system deps on purpose: er-engine without UI features must
-      # build in a bare container.
+      # build in a bare container, and so must er-service's own graph.
       - run: cargo build -p er-engine --no-default-features
       - run: cargo build -p er-engine --no-default-features --features highlight
+      - run: cargo check -p er-service --all-targets
 
   # Runs only on the release PR into main. The report is not a gate, and it
   # repeats the engine and TUI tests under instrumentation, so once per release

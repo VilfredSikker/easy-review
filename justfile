@@ -244,13 +244,26 @@ lint: fmt-check clippy check-ui lint-ui docs-check comments-check atomic-tmp-che
 # clippy and frontend lint gates, tests, docs, inline comments, atomic temp
 # names, headless engine builds.
 [group('ci')]
-ci: fmt-check clippy lint-ui docs-check comments-check atomic-tmp-check test build-engine-headless
+ci: fmt-check clippy lint-ui docs-check comments-check atomic-tmp-check test build-engine-headless build-service-headless test-v1
 
 # Build the headless engine the way CI does (no UI features, then +highlight).
 [group('ci')]
 build-engine-headless:
     cargo build -p er-engine --no-default-features
     cargo build -p er-engine --no-default-features --features highlight
+
+# Build the service the way CI does: its own graph, no Tauri system deps, so an
+# engine reference to a `ui`-gated module fails here and nowhere else.
+[group('ci')]
+build-service-headless:
+    cargo check -p er-service --all-targets
+
+# The flag-on suite. The default-build flag assertion lives in the er-desktop
+# bin target, so the lib target is what runs with the feature on.
+[group('ci')]
+test-v1: build-service-headless
+    cargo test -p er-desktop --lib --features v1-service
+    cargo test -p er-tui --features v1-service
 
 # Fast local pre-commit gate: format the tree, clippy, then TUI/engine tests.
 [group('ci')]

@@ -315,6 +315,20 @@ fn comment_boundary_diagnostics(root: &Path, allow: &[String]) -> anyhow::Result
     ))
 }
 
+/// Run one clippy pass and return its JSON stream and success.
+fn clippy_json(cargo: &str, root: &Path, args: &[&str]) -> anyhow::Result<(String, bool)> {
+    let output = Command::new(cargo)
+        .current_dir(root)
+        .args(args)
+        .stderr(Stdio::inherit())
+        .output()
+        .context("could not run cargo clippy")?;
+    Ok((
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        output.status.success(),
+    ))
+}
+
 fn read_budget(path: &Path) -> anyhow::Result<Baseline> {
     if !path.exists() {
         return Ok(Baseline::new());
@@ -362,19 +376,36 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     }
 
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let output = Command::new(cargo)
-        .current_dir(&root)
-        .args([
+    let (default_stream, default_success) = clippy_json(
+        &cargo,
+        &root,
+        &[
             "clippy",
             "--workspace",
             "--all-targets",
             "--message-format=json",
-        ])
-        .stderr(Stdio::inherit())
-        .output()
-        .context("could not run cargo clippy")?;
-    let stream = String::from_utf8_lossy(&output.stdout);
-    let mut diags = diagnostics::parse(&stream);
+        ],
+    )?;
+    // The feature pass compiles the packages that declare the flag with it on,
+    // so feature-only code is linted too. It repeats shared diagnostics; both
+    // streams go through one parse, which keeps one count per site for the
+    // budget, `--accept-warnings`, `--prune` and the stale check.
+    let (feature_stream, feature_success) = clippy_json(
+        &cargo,
+        &root,
+        &[
+            "clippy",
+            "-p",
+            "er-desktop",
+            "-p",
+            "er-tui",
+            "--all-targets",
+            "--features",
+            "er-desktop/v1-service,er-tui/v1-service",
+            "--message-format=json",
+        ],
+    )?;
+    let mut diags = diagnostics::parse(&format!("{default_stream}\n{feature_stream}"));
     diags.extend(cohesion);
     diags.extend(spawn);
     diags.extend(spawn_gh);
@@ -383,7 +414,8 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     diags.extend(boundary);
     diags.extend(registry_rule);
     diags.extend(agent);
-    let e = evaluate(diags, &config.budgeted, &budget, output.status.success());
+    let clippy_ok = default_success && feature_success;
+    let e = evaluate(diags, &config.budgeted, &budget, clippy_ok);
 
     let mut problems = Vec::new();
     let writing = flags.prune || flags.accept_warnings;
@@ -442,7 +474,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
             describe(&e.ratchet.stale).join("\n")
         ));
     }
-    if !output.status.success() && e.failures.is_empty() {
+    if !clippy_ok && e.failures.is_empty() {
         problems.push("cargo clippy failed without a diagnostic; see its output above.".into());
     }
 

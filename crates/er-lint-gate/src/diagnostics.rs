@@ -153,6 +153,18 @@ mod tests {
         assert_eq!(unwraps[0].level, "warning");
     }
 
+    /// The feature pass lints shared code a second time; the same site from
+    /// two passes is one diagnostic, so the budget counts it once.
+    #[test]
+    fn a_site_seen_in_both_passes_is_one_diagnostic() {
+        let line = FIXTURE
+            .lines()
+            .find(|line| line.contains("unwrap_used"))
+            .expect("the fixture has the lint");
+        let diags = parse(&format!("{line}\n{line}"));
+        assert_eq!(by_code(&diags, "clippy::unwrap_used").len(), 1);
+    }
+
     #[test]
     fn follows_a_macro_expansion_back_to_the_workspace_call_site() {
         let diags = parse(FIXTURE);
