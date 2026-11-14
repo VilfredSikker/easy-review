@@ -811,7 +811,6 @@ fn run_active_branch_watcher(
 fn spawn_service_comment_sync(
     app: Arc<Mutex<App>>,
     pr_cache: pr_cache::PrCacheMap,
-    loading: LoadingState,
     service: Arc<er_desktop::service::ServiceState>,
 ) {
     use std::time::{Duration, Instant};
@@ -827,21 +826,13 @@ fn spawn_service_comment_sync(
                     continue;
                 };
                 let head_oid = cached_head_oid(&pr_cache, &pr.0, &pr.1, pr.2);
-                let ttl = Duration::from_secs(90);
-                if comment_sync_recently_synced(
-                    last_synced.get(&pr),
-                    &head_oid,
-                    Instant::now(),
-                    ttl,
-                ) {
+                let (now, ttl) = (Instant::now(), Duration::from_secs(90));
+                if comment_sync_recently_synced(last_synced.get(&pr), &head_oid, now, ttl) {
                     continue;
                 }
                 let (workspace, context) = er_desktop::commands::active_tab_command(&guard);
                 (workspace, context, pr, head_oid)
             };
-            if let Ok(mut flags) = loading.lock() {
-                flags.gh_comments = true;
-            }
             let synced = service.send(
                 &workspace,
                 er_service::Command::SyncGithubComments {
@@ -849,9 +840,6 @@ fn spawn_service_comment_sync(
                     source: er_service::SyncSource::Background,
                 },
             );
-            if let Ok(mut flags) = loading.lock() {
-                flags.gh_comments = false;
-            }
             match synced {
                 Ok(_) => {
                     last_synced.insert(pr, (head_oid, Instant::now()));
@@ -1449,7 +1437,6 @@ fn main() {
     spawn_service_comment_sync(
         Arc::clone(&app_arc),
         Arc::clone(&pr_cache),
-        Arc::clone(&loading),
         Arc::clone(&state.service),
     );
 

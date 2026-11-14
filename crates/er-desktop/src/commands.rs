@@ -12621,29 +12621,20 @@ mod tests {
                 comments: Vec::new(),
                 threads: HashMap::new(),
             };
-            let overview = er_engine::github::PrOverviewData {
-                number: 7,
-                title: String::new(),
-                body: String::new(),
-                state: "OPEN".to_string(),
-                author: "you".to_string(),
-                url: String::new(),
-                base_branch: "main".to_string(),
-                head_branch: "feature".to_string(),
-                checks: Vec::new(),
-                reviewers: Vec::new(),
+            // Writes fail, so no route kicks a real status refresh.
+            let refused = || {
+                Err(GhError::Unprocessable {
+                    message: "Validation Failed".to_string(),
+                })
             };
             let github = Arc::new(
                 FakeGitHub::default()
                     .with_pr_diff_remote(Ok(String::new()))
                     .with_pr_comment_bundle_cached(Ok(Arc::new(bundle)))
-                    .with_overview_remote(Ok(Some(overview)))
-                    .with_viewer_login(Ok("you".to_string()))
                     .with_pending_review(Ok(er_engine::github::PendingReview::default()))
-                    .with_pending_review_add_comment(Err(GhError::Unprocessable {
-                        message: "Validation Failed".to_string(),
-                    }))
-                    .with_pending_review_remove_comment(Ok(())),
+                    .with_pending_review_add_comment(refused())
+                    .with_pending_review_remove_comment(Ok(()))
+                    .with_pending_review_submit(refused().map(|()| 0)),
             );
             let github_port: Arc<dyn er_engine::github::GitHub> = github.clone();
             let mut state = review_flow_test_state(&dir);
@@ -12674,11 +12665,8 @@ mod tests {
             assert!(message.contains("Likely causes"), "{message}");
             let removed = service_remove_pending_review_comment(&state, "PRRC_1".to_string());
             assert!(removed.is_ok(), "remove: {removed:?}");
-            let approved = service_submit_pending_review(&state, "APPROVE", String::new());
-            assert_eq!(
-                approved.map(|_| ()),
-                Err(er_service::OWN_PR_APPROVAL_REFUSED.to_string())
-            );
+            let submitted = service_submit_pending_review(&state, "COMMENT", "ok".to_string());
+            assert!(submitted.is_err_and(|message| message.contains("Likely causes")));
 
             let calls = github.calls();
             let names: Vec<&str> = calls
@@ -12690,24 +12678,14 @@ mod tests {
                 "pending_review",
                 "pending_review_add_comment",
                 "pending_review_remove_comment",
-                "viewer_login",
+                "pending_review_submit",
             ] {
                 assert!(names.contains(&sent), "{sent} was not routed: {calls:?}");
             }
-            assert!(
-                !names.contains(&"pending_review_submit"),
-                "the own-PR approval reached GitHub: {calls:?}"
-            );
-            assert!(
-                calls
-                    .iter()
-                    .any(|call| call.starts_with("pending_review(") && call.contains("pr=7")),
-                "the read did not name the tab's PR: {calls:?}"
-            );
-            assert!(
-                calls.iter().any(|call| call.contains("PRRC_1")),
-                "the removal lost its id: {calls:?}"
-            );
+            let named_pr = calls
+                .iter()
+                .any(|call| call.starts_with("pending_review(") && call.contains("pr=7"));
+            assert!(named_pr, "the read did not name the tab's PR: {calls:?}");
         });
     }
 

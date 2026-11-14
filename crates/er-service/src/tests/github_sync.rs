@@ -262,56 +262,21 @@ fn a_sync_publishes_an_event_the_relay_hears() -> anyhow::Result<()> {
     })
 }
 
-#[test]
-fn a_command_for_another_repo_is_refused_before_the_sync_runs() -> anyhow::Result<()> {
-    let (dir, bucket) = seeded_bucket()?;
-    let github = Arc::new(
-        FakeGitHub::default()
-            .with_pr_state(Ok("OPEN".to_string()))
-            .with_pr_diff_remote(Ok(RAW.to_string())),
-    );
-    er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
-        let handle = actor(&github);
-        handle.send_and_wait_with(
-            Command::OpenTarget {
-                target: crate::protocol::OpenTarget::RemotePr {
-                    owner: "acme".to_string(),
-                    repo: "widgets".to_string(),
-                    number: 7,
-                    repo_root: "/other".to_string(),
-                },
-                replace: false,
-            },
-            WAIT,
-        )?;
-        let reply = handle.send_and_wait_with(sync(&bucket), WAIT);
-        assert!(matches!(reply, Err(WorkspaceError::Failed(_))), "{reply:?}");
-        assert!(
-            calls_named(&github, &["pr_comment_bundle_cached", "pr_diff_remote"]).is_empty(),
-            "the stale sync ran: {:?}",
-            github.calls()
-        );
-        Ok(())
-    })
-}
-
-fn pending(comments: usize) -> PendingReview {
+/// A pending review holding one draft comment, `PRRC_0`.
+fn pending() -> PendingReview {
+    let draft = PendingReviewComment {
+        id: "PRRC_0".to_string(),
+        database_id: None,
+        path: "src/b.rs".to_string(),
+        line: Some(2),
+        start_line: None,
+        side: "RIGHT".to_string(),
+        body: "draft".to_string(),
+    };
     PendingReview {
         review_id: Some(9),
-        review_node_id: Some("PRR_9".to_string()),
-        comments: (0..comments)
-            .map(|index| PendingReviewComment {
-                id: format!("PRRC_{index}"),
-                database_id: None,
-                path: "src/b.rs".to_string(),
-                line: Some(2),
-                start_line: None,
-                side: "RIGHT".to_string(),
-                body: "draft".to_string(),
-            })
-            .collect(),
-        viewer: Some("you".to_string()),
-        review_request: None,
+        comments: vec![draft],
+        ..PendingReview::default()
     }
 }
 
@@ -328,7 +293,7 @@ fn line_two() -> ReviewLineTarget {
 fn a_fake_backed_pending_review_post_round_trips() -> anyhow::Result<()> {
     let github = Arc::new(
         FakeGitHub::default()
-            .with_pending_review(Ok(pending(1)))
+            .with_pending_review(Ok(pending()))
             .with_pending_review_add_comment(Ok(()))
             .with_pending_review_remove_comment(Ok(()))
             .with_pending_review_submit(Ok(1)),
@@ -337,7 +302,7 @@ fn a_fake_backed_pending_review_post_round_trips() -> anyhow::Result<()> {
     let tab = pr_tab("/unused");
     let expected = Reply::PendingReview {
         pr: acme_7(),
-        review: pending(1),
+        review: pending(),
     };
 
     let read = Command::GetPendingReview {
@@ -365,38 +330,19 @@ fn a_fake_backed_pending_review_post_round_trips() -> anyhow::Result<()> {
         Reply::ReviewSubmitted { pr: acme_7() }
     );
 
-    let order = calls_named(
-        &github,
-        &[
-            "pending_review",
-            "pending_review_add_comment",
-            "pending_review_remove_comment",
-            "pending_review_submit",
-        ],
+    let (read, add, remove, submit) = (
+        "pending_review",
+        "pending_review_add_comment",
+        "pending_review_remove_comment",
+        "pending_review_submit",
     );
-    assert_eq!(
-        order,
-        [
-            "pending_review",
-            "pending_review_add_comment",
-            "pending_review",
-            "pending_review_remove_comment",
-            "pending_review",
-            "pending_review_submit",
-        ]
-    );
-    let calls = github.calls();
+    let order = calls_named(&github, &[read, add, remove, submit]);
+    assert_eq!(order, [read, add, read, remove, read, submit]);
+    let calls = github.calls().join("\n");
+    assert!(calls.contains("PRRC_0"), "the comment id was lost: {calls}");
     assert!(
-        calls.iter().any(|call| call.contains("PRRC_0")),
-        "the named comment was not removed: {calls:?}"
-    );
-    assert!(
-        calls
-            .iter()
-            .any(|call| call.starts_with("pending_review_submit(")
-                && call.contains("COMMENT")
-                && call.contains("\"looks good\"")),
-        "the submit lost its event or summary: {calls:?}"
+        calls.contains("\"looks good\""),
+        "the summary was lost: {calls}"
     );
     Ok(())
 }

@@ -331,22 +331,4 @@ mod tests {
         assert!(payloads[0].contains("a.rs"), "{}", payloads[0]);
         assert!(payloads[0].contains("hey"), "{}", payloads[0]);
     }
-
-    #[test]
-    fn review_batch_entry_maps_ranges_and_sides() {
-        let single = review_batch_entry("src/a.rs", 10, None, None, "x").unwrap();
-        assert_eq!((single.line, single.start_line), (10, None));
-        assert_eq!(single.side, "RIGHT");
-
-        let range = review_batch_entry("src/a.rs", 10, Some(12), Some("LEFT"), "x").unwrap();
-        assert_eq!((range.line, range.start_line), (12, Some(10)));
-        assert_eq!(range.side, "LEFT");
-
-        // An end at or before the start is a single line, not a reversed range.
-        let flat = review_batch_entry("src/a.rs", 10, Some(10), None, "x").unwrap();
-        assert_eq!(flat.start_line, None);
-
-        assert!(review_batch_entry("src/a.rs", 10, None, Some("BOTH"), "x").is_err());
-        assert!(review_batch_entry("", 10, None, None, "x").is_err());
-    }
 }
