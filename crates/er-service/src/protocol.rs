@@ -126,7 +126,10 @@ pub struct TabContext {
     pub pr_head_ref: Option<String>,
     pub local_branch_view: Option<String>,
     pub checkout_root: Option<String>,
-    /// The tab's branch diff hash; empty asks the effect to compute it.
+    /// The tab's branch diff hash. Question and note writes compute one when
+    /// it is empty; `PromoteToNote` and GitHub comments store it as given, so
+    /// an empty value stays empty — the same file contents the flag-off path
+    /// wrote.
     pub branch_diff_hash: String,
     /// The tab's parsed diff hash.
     pub diff_hash: String,
