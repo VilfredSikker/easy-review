@@ -14624,3 +14624,33 @@ mod projected_review_tests {
         });
     }
 }
+
+#[cfg(all(test, feature = "v1-service"))]
+mod route_tests {
+    /// Every routed annotation command has a service route. The service tests
+    /// drive the actor itself; this holds the desktop side to sending each
+    /// command instead of falling through to the flag-off body.
+    #[test]
+    fn every_annotation_command_has_a_service_route() {
+        let source = include_str!("commands.rs");
+        for command in [
+            "Command::ToggleReviewed",
+            "Command::MarkReviewed",
+            "Command::BulkReviewPillar",
+            "Command::AddQuestion",
+            "Command::AddNote",
+            "Command::AddDocumentThread",
+            "Command::ReplyToThread",
+            "Command::UpdateThreadMessage",
+            "Command::DeleteThread",
+            "Command::ResolveThread",
+            "Command::PromoteToNote",
+            "Command::ReplyToFinding",
+        ] {
+            assert!(
+                source.contains(&format!("er_service::{command}")),
+                "{command} has no service route"
+            );
+        }
+    }
+}
