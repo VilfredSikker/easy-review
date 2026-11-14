@@ -11,7 +11,7 @@ use std::time::Duration;
 use er_agent::job::JobProgress;
 use er_engine::jobs::JobId;
 
-use crate::protocol::{Command, Event, JobOutcome, Query, QueryReply, Reply};
+use crate::protocol::{Command, Event, JobOutcome, Reply};
 use crate::workspace::WorkspaceView;
 
 /// How long a caller waits for a reply before deciding the actor is stuck. The
@@ -45,7 +45,6 @@ impl fmt::Display for WorkspaceError {
 impl std::error::Error for WorkspaceError {}
 
 pub(crate) type ReplySender = Sender<Result<Reply, WorkspaceError>>;
-pub(crate) type QueryReplySender = Sender<Result<QueryReply, WorkspaceError>>;
 
 /// The actor's inbox.
 #[expect(
@@ -61,11 +60,6 @@ pub(crate) enum ActorMsg {
     EffectDone {
         result: Result<Reply, WorkspaceError>,
         reply: ReplySender,
-    },
-    /// A read, answered by its effect without touching the state.
-    Query {
-        query: Query,
-        reply: QueryReplySender,
     },
     JobProgress {
         job: JobId,
@@ -117,20 +111,6 @@ impl WorkspaceHandle {
         match replies.recv_timeout(timeout) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => Err(WorkspaceError::Timeout(timeout)),
-            Err(RecvTimeoutError::Disconnected) => Err(WorkspaceError::Disconnected),
-        }
-    }
-
-    /// Sends a read and waits up to [`REPLY_TIMEOUT`] for its answer.
-    pub fn query(&self, query: Query) -> Result<QueryReply, WorkspaceError> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        let _ = self.tx.send(ActorMsg::Query {
-            query,
-            reply: reply_tx,
-        });
-        match reply_rx.recv_timeout(REPLY_TIMEOUT) {
-            Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => Err(WorkspaceError::Timeout(REPLY_TIMEOUT)),
             Err(RecvTimeoutError::Disconnected) => Err(WorkspaceError::Disconnected),
         }
     }

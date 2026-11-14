@@ -11,13 +11,15 @@ use std::sync::Arc;
 use er_engine::ai::workflow_record::ArenaWorkflow;
 use er_engine::ai::WorkflowHolder;
 use er_engine::arena::{
-    self, ArenaRunControls, ArenaRunInputs, ArenaRunKind, ArenaScope, RunStatus, SeededStartParams,
+    self, ArenaProgressState, ArenaRunControls, ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot,
+    ArenaRunSummary, ArenaScope, RunStatus, SeededStartParams,
 };
 use er_store::Scope;
 
 use crate::actor::WorkspaceDeps;
 use crate::handle::WorkspaceError;
-use crate::protocol::{ArenaCommand, ArenaContext, Query, QueryReply, Reply};
+use crate::protocol::{ArenaCommand, ArenaContext, Reply};
+use crate::workspace::WorkspaceView;
 
 fn failed(context: &str, error: impl std::fmt::Display) -> WorkspaceError {
     WorkspaceError::Failed(format!("{context}: {error:#}"))
@@ -88,6 +90,40 @@ fn is_flow_run(run: &er_engine::arena::ArenaRun) -> bool {
     run.config.run_kind == ArenaRunKind::ReviewFlow
 }
 
+/// One run's snapshot for a reader: the record on disk with the live status
+/// the view published. Reads the store and the published view only, so the
+/// caller never waits on the actor (ADR 0067).
+pub fn read_run(
+    view: &WorkspaceView,
+    arena: &ArenaContext,
+    run_id: &str,
+) -> Result<ArenaRunSnapshot, WorkspaceError> {
+    let live = view.arena_run(run_id);
+    let er_dir = arena::bucket_for_run_in(
+        live.map(|run| run.er_dir.as_str()),
+        &arena.buckets,
+        &arena.tab.er_dir,
+        run_id,
+    );
+    let status = live.map(|run| run.status.clone());
+    arena::run_snapshot_with_status(&arena.config, status, &er_dir, run_id, is_flow_run)
+        .map_err(|error| failed("read the run", error))
+}
+
+/// The active bucket's run summaries on the tab's branch, newest first.
+pub fn read_runs(arena: &ArenaContext) -> Result<Vec<ArenaRunSummary>, WorkspaceError> {
+    arena::list_summaries(Path::new(&arena.tab.er_dir), Some(&arena.branch_ref))
+        .map_err(|error| failed("list the runs", error))
+}
+
+/// A live run's progress from the published view; empty for a run this actor
+/// is not running, as the flag-off read answers.
+pub fn read_progress(view: &WorkspaceView, run_id: &str) -> ArenaProgressState {
+    view.arena_run(run_id)
+        .map(|run| run.progress.clone())
+        .unwrap_or_default()
+}
+
 /// Runs one arena command. Called on an effect thread.
 pub(crate) fn run(
     deps: &WorkspaceDeps,
@@ -95,6 +131,42 @@ pub(crate) fn run(
     command: ArenaCommand,
 ) -> Result<Reply, WorkspaceError> {
     match command {
+        ArenaCommand::Estimate {
+            arena,
+            scope,
+            files,
+            reviewers,
+            rounds,
+            arbiter,
+        } => {
+            let raw = raw_diff(deps, &arena, scope, files.as_deref())?;
+            arena::build_arena_diff_preview(
+                &arena.config,
+                &raw,
+                &reviewers,
+                rounds,
+                arbiter.as_ref(),
+            )
+            .map(Reply::ArenaEstimate)
+            .map_err(|error| failed("estimate the run", error))
+        }
+        ArenaCommand::EstimateBatch { arena, params } => {
+            let raw = raw_diff(deps, &arena, params.scope, params.files.as_deref())?;
+            let hub = &arena.config.ai_hub;
+            let models: Vec<_> = params
+                .groups
+                .iter()
+                .flat_map(|group| group.models.iter())
+                .cloned()
+                .collect();
+            Ok(Reply::ArenaEstimate(arena::ArenaDiffPreview {
+                diff_bytes: raw.len(),
+                cost_usd: arena::estimate_batch_cost_usd(raw.len(), &params, hub),
+                latency_sec: arena::estimate_latency_sec(&models, params.rounds, hub),
+                cost_limit_usd: arena::DEFAULT_COST_LIMIT_USD,
+                max_rounds: arena::ARENA_ROUNDS_V1,
+            }))
+        }
         ArenaCommand::StartRun { arena, params } => {
             arena::check_bucket_admission(&arena.tab.er_dir)
                 .map_err(|error| failed("admit the run", error))?;
@@ -224,69 +296,6 @@ fn validate_findings(
     )
     .map_err(|error| failed("start the validation", error))?;
     Ok(Reply::ArenaValidating { run_id })
-}
-
-/// Answers one read. Called on an effect thread.
-pub(crate) fn query(
-    deps: &WorkspaceDeps,
-    controls: &ArenaRunControls,
-    query: Query,
-) -> Result<QueryReply, WorkspaceError> {
-    match query {
-        Query::ArenaEstimate {
-            arena,
-            scope,
-            files,
-            reviewers,
-            rounds,
-            arbiter,
-        } => {
-            let raw = raw_diff(deps, &arena, scope, files.as_deref())?;
-            arena::build_arena_diff_preview(
-                &arena.config,
-                &raw,
-                &reviewers,
-                rounds,
-                arbiter.as_ref(),
-            )
-            .map(QueryReply::ArenaEstimate)
-            .map_err(|error| failed("estimate the run", error))
-        }
-        Query::ArenaEstimateBatch { arena, params } => {
-            let raw = raw_diff(deps, &arena, params.scope, params.files.as_deref())?;
-            let hub = &arena.config.ai_hub;
-            let models: Vec<_> = params
-                .groups
-                .iter()
-                .flat_map(|group| group.models.iter())
-                .cloned()
-                .collect();
-            Ok(QueryReply::ArenaEstimate(arena::ArenaDiffPreview {
-                diff_bytes: raw.len(),
-                cost_usd: arena::estimate_batch_cost_usd(raw.len(), &params, hub),
-                latency_sec: arena::estimate_latency_sec(&models, params.rounds, hub),
-                cost_limit_usd: arena::DEFAULT_COST_LIMIT_USD,
-                max_rounds: arena::ARENA_ROUNDS_V1,
-            }))
-        }
-        Query::ArenaProgress { run_id } => Ok(QueryReply::ArenaProgress(
-            controls
-                .get(&run_id)
-                .map(|control| control.progress_state())
-                .unwrap_or_default(),
-        )),
-        Query::ArenaRun { arena, run_id } => {
-            let er_dir = bucket_for(controls, &arena, &run_id);
-            arena::run_snapshot(&arena.config, controls, &er_dir, &run_id, is_flow_run)
-                .map(|snapshot| QueryReply::ArenaRun(Box::new(snapshot)))
-                .map_err(|error| failed("read the run", error))
-        }
-        Query::ArenaRuns { arena } => {
-            arena::list_summaries(Path::new(&arena.tab.er_dir), Some(&arena.branch_ref))
-                .map(QueryReply::ArenaRuns)
-                .map_err(|error| failed("list the runs", error))
-        }
-    }
 }
 
 /// Load-time recovery: marks stale arena runs and a dead owner's running
