@@ -1137,7 +1137,6 @@ impl App {
         let kind = self.tab().comment_type;
         let reply_to = self.tab().comment_reply_to.clone();
         let finding_ref = self.tab().comment_finding_ref.clone();
-        let document_anchor = self.tab_mut().comment_document_anchor.take();
         let result = self.write_annotation(
             &target,
             &text,
@@ -1146,7 +1145,7 @@ impl App {
             finding_ref,
             ReplyAttribution::default(),
             None,
-            document_anchor,
+            None,
         );
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
@@ -1213,11 +1212,16 @@ impl App {
                 tab.diff_hash.clone(),
             )
         };
-        // Questions carry the branch diff hash; compute it on demand when the
-        // tab has none yet (non-Branch views with no AI data). Remote tabs have
-        // no local git to ask.
+        // Questions and notes carry the branch diff hash; compute it on demand
+        // when the tab has none yet (non-Branch views with no AI data). A local
+        // GitHub comment keeps whatever the tab holds — empty outside branch
+        // scope — so this path stays a pure write for it, with no git call.
+        // Remote tabs have no local git to ask.
         let mut branch_diff_hash = self.tab().branch_diff_hash.clone();
-        if branch_diff_hash.is_empty() && !is_remote {
+        if matches!(kind, CommentType::Question | CommentType::Note)
+            && branch_diff_hash.is_empty()
+            && !is_remote
+        {
             if let Ok(raw) = self.tab().ports.git.diff_raw(
                 "branch",
                 &base_branch,

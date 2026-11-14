@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md), [ADDENDUM-05](./ADDENDUM-05-phase-4.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-14 11:00 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-14 17:45 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,13 +9,13 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| D3 | – | [#489](https://github.com/VilfredSikker/easy-review/issues/489) P36 fix round; phase-4 plan re-check | E, C, F |
-| D1 | D6 | idle | – |
-| D4 | T6 store core | idle | – |
-| T2 | T4 git port | reviews P36 | – |
+| D4 | T6 store core | [#531](https://github.com/VilfredSikker/easy-review/issues/531) P41 | E-svc, F |
+| T2 | T4 git port | reviews P41 | – |
+| D1 | D6 | idle (reviews P42) | – |
+| D3 | – | idle | – |
 | T1, D2, D5 | – | idle | – |
 
-**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538, and P38 starts first.
+**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538. P38, P39 and P40 are merged; P41 is in progress, and every remaining entry has an approved step plan on its issue.
 
 ## Progress
 
@@ -77,13 +77,13 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P34a | [#487](https://github.com/VilfredSikker/easy-review/issues/487) Accepted findings and the projection | W/E | opus | ✅ | [#521](https://github.com/VilfredSikker/easy-review/pull/521) | D3; T2 reviewed |
 | P34b | [#488](https://github.com/VilfredSikker/easy-review/issues/488) Delete the arena import, the rollback and the provenance run read | W/E | opus | ✅ | [#523](https://github.com/VilfredSikker/easy-review/pull/523) | D3; D1 reviewed |
 | P36 | [#489](https://github.com/VilfredSikker/easy-review/issues/489) Registry gate | E/C/F | opus | ✅ | [#524](https://github.com/VilfredSikker/easy-review/pull/524) | D3; T2 reviewed |
-| D17 display | [#525](https://github.com/VilfredSikker/easy-review/issues/525) Show the D17 panel measurement in the desktop arena detail | F | opus | 🟡 | | D1 |
-| P38 | [#526](https://github.com/VilfredSikker/easy-review/issues/526) Build flag and the `er-service` skeleton | C/F | opus | ⬜ | | |
-| P39.1 | [#527](https://github.com/VilfredSikker/easy-review/issues/527) `er-core`: crate, types and the `Artifact` move | C/E-core | opus | ⬜ | | after #526 |
-| P39.2 | [#528](https://github.com/VilfredSikker/easy-review/issues/528) `er-core`: risk evaluation, hashes, branch helpers and arena rules | C/E-core/W | opus | ⬜ | | after #527 |
-| P39.3 | [#529](https://github.com/VilfredSikker/easy-review/issues/529) `er-core`: the projection | C/E-core | opus | ⬜ | | after #528 |
-| P40 | [#530](https://github.com/VilfredSikker/easy-review/issues/530) Workspace actor | E-svc | opus | ⬜ | | after #526, #527 |
-| P41 | [#531](https://github.com/VilfredSikker/easy-review/issues/531) Annotation commands and the override deletion | E-svc/F | opus | ⬜ | | after #530 |
+| D17 display | [#525](https://github.com/VilfredSikker/easy-review/issues/525) Show the D17 panel measurement in the desktop arena detail | F | opus | ✅ | [#539](https://github.com/VilfredSikker/easy-review/pull/539) | D1; coordinator reviewed |
+| P38 | [#526](https://github.com/VilfredSikker/easy-review/issues/526) Build flag and the `er-service` skeleton | C/F | opus | ✅ | [#541](https://github.com/VilfredSikker/easy-review/pull/541) | D4; T2 reviewed |
+| P39.1 | [#527](https://github.com/VilfredSikker/easy-review/issues/527) `er-core`: crate, types and the `Artifact` move | C/E-core | opus | ✅ | [#543](https://github.com/VilfredSikker/easy-review/pull/543), [#544](https://github.com/VilfredSikker/easy-review/pull/544) | D3; D1 reviewed |
+| P39.2 | [#528](https://github.com/VilfredSikker/easy-review/issues/528) `er-core`: risk evaluation, hashes, branch helpers and arena rules | C/E-core/W | opus | ✅ | [#545](https://github.com/VilfredSikker/easy-review/pull/545) | D3; D1 reviewed |
+| P39.3 | [#529](https://github.com/VilfredSikker/easy-review/issues/529) `er-core`: the projection | C/E-core | opus | ✅ | [#547](https://github.com/VilfredSikker/easy-review/pull/547) | D3; T2 reviewed |
+| P40 | [#530](https://github.com/VilfredSikker/easy-review/issues/530) Workspace actor | E-svc | opus | ✅ | [#546](https://github.com/VilfredSikker/easy-review/pull/546) | T2; D4 reviewed |
+| P41 | [#531](https://github.com/VilfredSikker/easy-review/issues/531) Annotation commands and the override deletion | E-svc/F | opus | 🟡 | | D4; plan approved |
 | P42 | [#532](https://github.com/VilfredSikker/easy-review/issues/532) Sync and GitHub commands | E-svc/F | opus | ⬜ | | after #531 |
 | P43 | [#533](https://github.com/VilfredSikker/easy-review/issues/533) Job and workflow commands | W/E-svc/F | opus | ⬜ | | after #532 |
 | P44 | [#534](https://github.com/VilfredSikker/easy-review/issues/534) Settings schema | E-svc/F | opus | ⬜ | | after #530 |

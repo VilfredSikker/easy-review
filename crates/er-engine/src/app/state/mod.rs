@@ -841,11 +841,6 @@ pub struct TabState {
     /// Consumed by submit_question / submit_note / submit_github_comment. Defaults to "RIGHT".
     pub comment_side: Option<String>,
 
-    /// Transient: a document-line anchor for the next question or note, set by
-    /// `submit_document_comment` when the line sits outside every hunk.
-    /// Consumed by submit_question / submit_note.
-    pub comment_document_anchor: Option<LineAnchor>,
-
     /// Client id of the composer's current GitHub post, reused by a retry so
     /// the engine can reconcile instead of posting twice. Cleared on success,
     /// cancel, or a new composer.
@@ -1580,7 +1575,6 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_side: None,
-            comment_document_anchor: None,
             comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
@@ -1721,7 +1715,6 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_side: None,
-            comment_document_anchor: None,
             comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
@@ -1856,7 +1849,6 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_side: None,
-            comment_document_anchor: None,
             comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
@@ -2009,7 +2001,6 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_side: None,
-            comment_document_anchor: None,
             comment_client_id: None,
             pr_data: None,
             pr_commits: Vec::new(),
@@ -10006,7 +9997,6 @@ mod tests {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_side: None,
-            comment_document_anchor: None,
             comment_client_id: None,
             pr_data: None,
             pr_commits: Vec::new(),
@@ -13246,6 +13236,54 @@ mod tests {
         });
     }
 
+    /// A local GitHub comment outside branch scope keeps the empty branch hash
+    /// the flag-off path stored. Computing one would change the file's contents
+    /// and cost a git call the write never used to make.
+    #[test]
+    fn a_github_comment_outside_branch_scope_stores_no_branch_hash() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let lines = vec![DiffLine {
+                line_type: LineType::Add,
+                content: "github line".to_string(),
+                old_num: None,
+                new_num: Some(2),
+            }];
+            let mut tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)]);
+            tab.er_root = ErRoot::managed(tmp.path().join(".er").to_string_lossy().into_owned());
+            tab.branch_diff_hash = String::new();
+            // A fetch that would succeed if the write asked for one: the
+            // stored hash then proves the write did not ask. The writer reads
+            // the tab's ports, not the app's.
+            tab.ports = Ports::with_git(std::sync::Arc::new(
+                er_git::FakeGit::default()
+                    .with_diff_raw(Ok("diff --git a/a.rs b/a.rs".to_string())),
+            ));
+            let mut app = make_test_app(tab);
+
+            app.submit_comment_text(
+                CommentTarget {
+                    file: "a.rs".to_string(),
+                    hunk_idx: 0,
+                    line_num: Some(2),
+                    line_num_end: None,
+                },
+                "a local github comment".to_string(),
+                CommentType::GitHubComment,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let comments = app.tab().ai.github_comments.as_ref().unwrap();
+            assert_eq!(comments.comments.len(), 1, "the comment landed");
+            assert_eq!(
+                comments.diff_hash, "",
+                "no branch hash outside branch scope"
+            );
+        });
+    }
+
     // ── config hub display toggles ──
 
     #[test]
@@ -13900,10 +13938,6 @@ mod tests {
             assert_eq!(q.context_before, vec!["alpha", "beta", "gamma"]);
             assert_eq!(q.context_after, vec!["epsilon", "zeta"]);
             assert!(q.is_document_anchor());
-            assert!(
-                app.tab().comment_document_anchor.is_none(),
-                "the anchor is consumed by the submit"
-            );
         });
     }
 
