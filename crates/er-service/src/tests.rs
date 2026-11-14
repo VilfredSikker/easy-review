@@ -506,19 +506,42 @@ diff --git a/src/b.rs b/src/b.rs
             let map = er_engine::session_store::load_reviewed(&store, &scope)?;
             assert!(map.is_empty(), "a refused write changes nothing");
 
-            // A GitHub comment is refused before its effect reaches the poster.
-            let comment = Command::AddComment {
-                context: context(&bucket_text, "/repo-b"),
-                target: target("src/b.rs", Some(2)),
-                body: "too late".to_string(),
-                side: None,
-                client_id: None,
-            };
-            let refused = handle.send_and_wait_with(comment, Duration::from_secs(5));
-            assert!(
-                matches!(refused, Err(WorkspaceError::Failed(ref message)) if message.contains("moved")),
-                "got {refused:?}"
-            );
+            // Each GitHub comment command is refused before its effect reaches
+            // the poster.
+            let stale = || context(&bucket_text, "/repo-b");
+            let late = || "too late".to_string();
+            let comments = [
+                Command::AddComment {
+                    context: stale(),
+                    target: target("src/b.rs", Some(2)),
+                    body: late(),
+                    side: None,
+                    client_id: None,
+                },
+                Command::ReplyToGithubThread {
+                    context: stale(),
+                    parent_id: "gh-1".to_string(),
+                    body: late(),
+                    client_id: None,
+                },
+                Command::PromoteToComment {
+                    context: stale(),
+                    id: "q-1".to_string(),
+                    body: None,
+                },
+                Command::PromoteFindingToComment {
+                    context: stale(),
+                    finding_id: "f-1".to_string(),
+                    body: None,
+                },
+            ];
+            for comment in comments {
+                let refused = handle.send_and_wait_with(comment, Duration::from_secs(5));
+                assert!(
+                    matches!(refused, Err(WorkspaceError::Failed(ref message)) if message.contains("moved")),
+                    "got {refused:?}"
+                );
+            }
             Ok(())
         })
     }
@@ -962,11 +985,37 @@ diff --git a/src/b.rs b/src/b.rs
             .with_post_line_comment(Ok(line_post(id)))
     }
 
+    fn github_rows(bucket: &str) -> anyhow::Result<er_engine::ai::ErGithubComments> {
+        let store = er_engine::store_registry::store();
+        let scope = er_store::Scope::dir(bucket)?;
+        let er_store::Loaded::Found(stored) =
+            er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
+        else {
+            anyhow::bail!("no GitHub comment was recorded");
+        };
+        Ok(stored.value)
+    }
+
+    fn ask(handle: &WorkspaceHandle, bucket: &str, id: &str, body: &str) -> anyhow::Result<()> {
+        let question = Command::AddQuestion {
+            context: context(bucket, "/repo"),
+            target: target("src/b.rs", Some(2)),
+            body: body.to_string(),
+            side: None,
+            client_id: Some(id.to_string()),
+            reply_to: None,
+            finding_ref: None,
+        };
+        handle.send_and_wait_with(question, Duration::from_secs(5))?;
+        Ok(())
+    }
+
     #[test]
     fn add_comment_posts_and_records_the_github_row() -> anyhow::Result<()> {
         let (dir, bucket) = temp_bucket()?;
         er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
-            let handle = posting_actor(RAW, scripted_line_post(4242));
+            let github = Arc::new(scripted_line_post(4242));
+            let handle = posting_actor_shared(RAW, &github);
             let reply = handle.send_and_wait_with(
                 Command::AddComment {
                     context: pr_context(&bucket),
@@ -983,15 +1032,11 @@ diff --git a/src/b.rs b/src/b.rs
                     id: "gh-4242".to_string()
                 }
             );
+            let dropped = calls_to(&github, "invalidate_comments(");
+            assert!(dropped >= 1, "the pull's comment cache kept the old list");
 
-            let store = er_engine::store_registry::store();
-            let scope = er_store::Scope::dir(&bucket)?;
-            let er_store::Loaded::Found(stored) =
-                er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
-            else {
-                anyhow::bail!("the comment was not recorded");
-            };
-            let row = &stored.value.comments[0];
+            let rows = github_rows(&bucket)?;
+            let row = &rows.comments[0];
             assert_eq!(row.id, "gh-4242");
             assert_eq!(row.comment, "look here");
             assert_eq!(row.file, "src/b.rs");
@@ -1047,15 +1092,8 @@ diff --git a/src/b.rs b/src/b.rs
                 }
             );
 
-            let store = er_engine::store_registry::store();
-            let scope = er_store::Scope::dir(&bucket)?;
-            let er_store::Loaded::Found(stored) =
-                er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
-            else {
-                anyhow::bail!("the reply was not recorded");
-            };
-            let row = stored
-                .value
+            let rows = github_rows(&bucket)?;
+            let row = rows
                 .comments
                 .iter()
                 .find(|c| c.id == "gh-500")
@@ -1071,15 +1109,13 @@ diff --git a/src/b.rs b/src/b.rs
         let (dir, bucket) = temp_bucket()?;
         er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
             let handle = posting_actor(RAW, scripted_line_post(77));
+            ask(&handle, &bucket, "q-opt-1", "promote me")?;
             handle.send_and_wait_with(
-                Command::AddQuestion {
+                Command::ReplyToThread {
                     context: context(&bucket, "/repo"),
-                    target: target("src/b.rs", Some(2)),
-                    body: "promote me".to_string(),
-                    side: None,
-                    client_id: Some("q-opt-1".to_string()),
-                    reply_to: None,
-                    finding_ref: None,
+                    parent_id: "q-opt-1".to_string(),
+                    body: "seconded".to_string(),
+                    client_id: Some("q-opt-2".to_string()),
                 },
                 Duration::from_secs(5),
             )?;
@@ -1098,15 +1134,13 @@ diff --git a/src/b.rs b/src/b.rs
                 }
             );
 
+            let comments = github_rows(&bucket)?.comments;
+            assert_eq!(comments.len(), 1);
+            let posted = &comments[0].comment;
+            let quoted = posted.starts_with("promote me") && posted.contains("> seconded");
+            assert!(quoted, "the reply is quoted: {posted:?}");
             let store = er_engine::store_registry::store();
             let scope = er_store::Scope::dir(&bucket)?;
-            let er_store::Loaded::Found(comments) =
-                er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
-            else {
-                anyhow::bail!("the promoted comment was not recorded");
-            };
-            assert_eq!(comments.value.comments.len(), 1);
-            assert_eq!(comments.value.comments[0].comment, "promote me");
             let notes_are_private =
                 match er_engine::ai::annotation_store::load_notes(&store, &scope) {
                     Ok(er_store::Loaded::Found(notes)) => notes.value.notes.is_empty(),
@@ -1120,7 +1154,7 @@ diff --git a/src/b.rs b/src/b.rs
             };
             assert!(
                 questions.value.questions.is_empty(),
-                "the source question is removed"
+                "the source question and its reply are removed"
             );
             Ok(())
         })
@@ -1166,15 +1200,9 @@ diff --git a/src/b.rs b/src/b.rs
                 }
             );
 
-            let store = er_engine::store_registry::store();
-            let scope = er_store::Scope::dir(&bucket)?;
-            let er_store::Loaded::Found(comments) =
-                er_engine::ai::annotation_store::load_github_comments(&store, &scope)?
-            else {
-                anyhow::bail!("the promoted comment was not recorded");
-            };
-            assert_eq!(comments.value.comments.len(), 1);
-            assert_eq!(comments.value.comments[0].github_id, Some(88));
+            let comments = github_rows(&bucket)?.comments;
+            assert_eq!(comments.len(), 1);
+            assert_eq!(comments[0].github_id, Some(88));
             let review = er_engine::ai::load_ai_state(&bucket, "diff-hash", None).review;
             let findings = review
                 .and_then(|review| review.files.get("src/b.rs").map(|f| f.findings.len()))
@@ -1209,31 +1237,23 @@ diff --git a/src/b.rs b/src/b.rs
         );
         er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
             let handle = posting_actor_shared(RAW, &github);
-            handle.send_and_wait_with(
-                Command::AddQuestion {
-                    context: context(&private, "/repo"),
-                    target: target("src/b.rs", Some(2)),
-                    body: "retry me".to_string(),
-                    side: None,
-                    client_id: Some("q-retry-1".to_string()),
-                    reply_to: None,
-                    finding_ref: None,
-                },
-                Duration::from_secs(5),
-            )?;
-            let promote = || Command::PromoteToComment {
+            ask(&handle, &private, "q-retry-1", "retry me")?;
+            let promote = |body: Option<&str>| Command::PromoteToComment {
                 context: ctx.clone(),
                 id: "q-retry-1".to_string(),
-                body: None,
+                body: body.map(str::to_string),
             };
             // A read-only bucket makes the source removal fail after the post.
             std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o555))?;
-            let first = handle.send_and_wait_with(promote(), Duration::from_secs(5));
+            let first = handle.send_and_wait_with(promote(None), Duration::from_secs(5));
             std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755))?;
             assert!(first.is_err(), "the removal failure is reported: {first:?}");
             assert_eq!(calls_to(&github, "post_line_comment("), 1);
 
-            let retried = handle.send_and_wait_with(promote(), Duration::from_secs(5))?;
+            // The dialog keeps an edit open after the error; sending it adopts
+            // the earlier post and still removes the source.
+            let edited = promote(Some("retry me, edited"));
+            let retried = handle.send_and_wait_with(edited, Duration::from_secs(5))?;
             let id = "gh-77".to_string();
             assert_eq!(retried, Reply::CommentPromoted { id });
             assert_eq!(
@@ -1252,6 +1272,9 @@ diff --git a/src/b.rs b/src/b.rs
                 0,
                 "the source stayed"
             );
+            let rows = github_rows(&ctx.comments_dir)?.comments;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].comment, "retry me", "the row holds what GitHub has");
             Ok(())
         })
     }
