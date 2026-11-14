@@ -6,9 +6,9 @@ An Arbiter judges findings produced by other reviewers — merging duplicates,
 regrading confidence, dropping claims it cannot substantiate. Its output has to be
 stored somewhere and matched back to the findings it judged.
 
-The obvious place is `review.json`, because that is what the Arena already does:
-`import_arena_findings_to_review` (`crates/er-engine/src/arena/import.rs`)
-upserts accepted findings into it.
+The obvious place is `review.json`, because that is what the Arena did before
+1.0: `import_arena_findings_to_review` upserted accepted findings into it.
+Acceptance now records them in their own artifact (ADR 0065).
 
 Two facts made that the wrong choice here.
 
