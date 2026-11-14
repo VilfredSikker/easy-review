@@ -2514,10 +2514,7 @@ pub async fn add_question(
         if let Some(ref s) = side {
             app.tab_mut().comment_side = Some(s.clone());
         }
-        if let Some(id) = id {
-            app.tab_mut().comment_id_override = Some(id);
-        }
-        app.submit_comment_text(
+        app.submit_comment_text_with_id(
             CommentTarget {
                 file,
                 hunk_idx,
@@ -2528,6 +2525,7 @@ pub async fn add_question(
             CommentType::Question,
             None,
             None,
+            id,
         )
         .map_err(|e| e.to_string())?;
         Ok(snap_from_confirmed(&app, &state))
@@ -2560,10 +2558,7 @@ pub async fn add_note(
         if let Some(ref s) = side {
             app.tab_mut().comment_side = Some(s.clone());
         }
-        if let Some(id) = id {
-            app.tab_mut().comment_id_override = Some(id);
-        }
-        app.submit_comment_text(
+        app.submit_comment_text_with_id(
             CommentTarget {
                 file,
                 hunk_idx,
@@ -2574,6 +2569,7 @@ pub async fn add_note(
             CommentType::Note,
             None,
             None,
+            id,
         )
         .map_err(|e| e.to_string())?;
         Ok(snap_from_confirmed(&app, &state))
@@ -9642,11 +9638,8 @@ fn reply_to_finding_impl(
         return early;
     }
     // Reuse the id the frontend painted with (see `optimisticInvokeArgs`) so the
-    // confirming snapshot lands on the same row. Consumed by the first
-    // `submit_comment_text`: the stub root when a thread is created, else the reply.
-    if let Some(id) = id {
-        app.tab_mut().comment_id_override = Some(id);
-    }
+    // confirming snapshot lands on the same row. It goes to the first write only:
+    // the stub root when a thread is created, else the reply.
 
     // v1: create a github comment that references the finding's location.
     let (target, finding_text) = {
@@ -9687,7 +9680,7 @@ fn reply_to_finding_impl(
         {
             root
         } else {
-            app.submit_comment_text(
+            app.submit_comment_text_with_id(
                 CommentTarget {
                     file,
                     hunk_idx,
@@ -9698,6 +9691,7 @@ fn reply_to_finding_impl(
                 CommentType::GitHubComment,
                 None,
                 Some(finding_id.clone()),
+                id,
             )
             .map_err(|e| e.to_string())?;
             app.tab()
@@ -9726,7 +9720,7 @@ fn reply_to_finding_impl(
 
     let root_id = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id);
     if let Some(root_id) = root_id {
-        app.submit_comment_text(
+        app.submit_comment_text_with_id(
             CommentTarget {
                 file,
                 hunk_idx,
@@ -9737,10 +9731,11 @@ fn reply_to_finding_impl(
             CommentType::GitHubComment,
             Some(root_id),
             None,
+            id,
         )
         .map_err(|e| e.to_string())?;
     } else {
-        app.submit_comment_text(
+        app.submit_comment_text_with_id(
             CommentTarget {
                 file: file.clone(),
                 hunk_idx,
@@ -9751,6 +9746,7 @@ fn reply_to_finding_impl(
             CommentType::GitHubComment,
             None,
             Some(finding_id.clone()),
+            id,
         )
         .map_err(|e| e.to_string())?;
         let root_id = app
