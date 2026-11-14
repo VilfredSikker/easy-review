@@ -498,8 +498,10 @@ impl App {
         if let Some(control) = self.arena_runs.get(run_id) {
             run.status = control.status();
         }
+        // A bucket-rooted store reaches the same file the panel wrote, without
+        // resolving the process storage root for a bucket the caller named.
         let panel = crate::ai::panel_run::load(
-            &crate::store_registry::store(),
+            &er_store::ArtifactStore::new(&er_dir),
             &er_store::Scope::dir(&er_dir)?,
         )
         .and_then(|record| crate::arena::PanelSummary::for_run(&record, &run.id));
