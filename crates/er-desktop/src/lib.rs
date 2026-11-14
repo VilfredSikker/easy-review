@@ -27,4 +27,5 @@ pub mod store_registry;
 pub mod tabs;
 pub mod terminal;
 pub mod triage_update;
+pub mod view_state;
 pub mod window_placement;
