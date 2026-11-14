@@ -492,6 +492,81 @@ fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// One target as the Settings uninstall dialog lists it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallTargetDto {
+    pub kind: String,
+    pub path: String,
+    pub exists: bool,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallPreview {
+    pub targets: Vec<UninstallTargetDto>,
+    pub existing_count: usize,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallResult {
+    pub removed: Vec<String>,
+    pub deferred: Vec<String>,
+    pub missing: Vec<String>,
+    pub failed: Vec<String>,
+    /// Frontend should quit the app after a successful uninstall.
+    pub should_quit: bool,
+}
+
+/// What an uninstall with `opts` would remove. Reads the filesystem.
+pub fn preview(opts: &UninstallOptions) -> UninstallPreview {
+    let targets = plan(opts);
+    let existing_count = targets.iter().filter(|t| t.exists).count();
+    UninstallPreview {
+        targets: targets
+            .into_iter()
+            .map(|t| UninstallTargetDto {
+                kind: t.kind.label().to_string(),
+                path: t.path.display().to_string(),
+                exists: t.exists,
+                description: t.description(),
+            })
+            .collect(),
+        existing_count,
+    }
+}
+
+/// Removes what `opts` names and schedules what is in use. The caller quits
+/// the app when `should_quit` is set.
+pub fn run(opts: &UninstallOptions) -> Result<UninstallResult, String> {
+    let existing = existing_targets(opts);
+    if existing.is_empty() {
+        return Ok(UninstallResult::default());
+    }
+    let report = execute(&existing);
+    if !report.deferred.is_empty() {
+        if let Err(e) = schedule_deferred_removal(&report.deferred) {
+            return Err(format!("Could not schedule removal of in-use paths: {e}"));
+        }
+    }
+    let shown = |paths: &[PathBuf]| paths.iter().map(|p| p.display().to_string()).collect();
+    Ok(UninstallResult {
+        removed: shown(&report.removed),
+        deferred: shown(&report.deferred),
+        missing: shown(&report.missing),
+        failed: report
+            .failed
+            .iter()
+            .map(|(p, e)| format!("{}: {e}", p.display()))
+            .collect(),
+        // Must quit whenever deferred deletes were scheduled — otherwise the
+        // waiter never sees this PID exit.
+        should_quit: report.is_success() || !report.deferred.is_empty(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
