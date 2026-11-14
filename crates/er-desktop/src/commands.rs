@@ -6472,9 +6472,9 @@ fn service_open(
         .service
         .open_target(key, target, replace.unwrap_or(false))
         .map_err(|error| error.to_string())?;
-    // The production protocol has one reply; the test-only variants do not
-    // exist in this build, so the pattern is exhaustive.
-    let er_service::Reply::TargetOpened(_) = reply;
+    // The open path answers with the opened target; the other replies belong
+    // to the annotation commands.
+    if let er_service::Reply::TargetOpened(_) = reply {}
     // The flag-on desktop does not render from the service yet, so the
     // command acknowledges the open without moving the view.
     Ok(AppSnapshot::default())
