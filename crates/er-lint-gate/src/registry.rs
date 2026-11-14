@@ -131,6 +131,7 @@ impl<'ast> Visit<'ast> for Scanner {
         let previous = self.reader_scope;
         if body_has_read_call(&item.block) {
             self.reader_scope = true;
+            self.record_return_types(&item.sig.output);
         }
         self.facts.text_uses.extend(text_uses_in_block(&item.block));
         visit::visit_item_fn(self, item);
@@ -141,6 +142,7 @@ impl<'ast> Visit<'ast> for Scanner {
         let previous = self.reader_scope;
         if body_has_read_call(&item.block) {
             self.reader_scope = true;
+            self.record_return_types(&item.sig.output);
         }
         self.facts.text_uses.extend(text_uses_in_block(&item.block));
         visit::visit_impl_item_fn(self, item);
@@ -169,26 +171,6 @@ impl<'ast> Visit<'ast> for Scanner {
         visit::visit_expr_method_call(self, call);
     }
 
-    fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
-        if self.reader_scope {
-            if let Some(segment) = path.path.segments.last() {
-                let name = if segment.ident == "Self" {
-                    self.impl_type.clone()
-                } else {
-                    Some(segment.ident.to_string())
-                };
-                if let Some(type_name) = name {
-                    self.facts.typed_uses.push(TypedUse {
-                        type_name,
-                        read: true,
-                        line: segment.ident.span().start().line,
-                    });
-                }
-            }
-        }
-        visit::visit_type_path(self, path);
-    }
-
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
         for segment in &path.path.segments {
             if !TYPED_CALLS.iter().any(|name| segment.ident == name) {
@@ -203,6 +185,45 @@ impl<'ast> Visit<'ast> for Scanner {
             }
         }
         visit::visit_expr_path(self, path);
+    }
+}
+
+impl Scanner {
+    /// Mark the types a store-reading function returns: a loader's return
+    /// type is the kind it loaded. A type that only appears as a parameter is
+    /// not a read, so a signature mention cannot satisfy the reader check.
+    fn record_return_types(&mut self, output: &syn::ReturnType) {
+        let syn::ReturnType::Type(_, ty) = output else {
+            return;
+        };
+        struct Collector {
+            names: Vec<(String, usize)>,
+        }
+        impl<'ast> Visit<'ast> for Collector {
+            fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+                if let Some(segment) = path.path.segments.last() {
+                    self.names
+                        .push((segment.ident.to_string(), segment.ident.span().start().line));
+                }
+                visit::visit_type_path(self, path);
+            }
+        }
+        let mut collector = Collector { names: Vec::new() };
+        collector.visit_type(ty);
+        for (name, line) in collector.names {
+            let type_name = if name == "Self" {
+                self.impl_type.clone()
+            } else {
+                Some(name)
+            };
+            if let Some(type_name) = type_name {
+                self.facts.typed_uses.push(TypedUse {
+                    type_name,
+                    read: true,
+                    line,
+                });
+            }
+        }
     }
 }
 
@@ -574,6 +595,22 @@ fn read_summary(store: &er_store::ArtifactStore) {
 }
 "#;
         assert!(evaluate(&scope(&[("crates/er-engine/src/a.rs", source)])).is_empty());
+    }
+
+    /// A registered kind named only as a parameter type, in a function that
+    /// reads a text artifact, is still unread.
+    #[test]
+    fn a_parameter_type_is_not_a_reader() {
+        let source = format!(
+            "{DEFINITION}\nfn register_it(registry: &mut er_store::Registry) {{\n    registry.register::<Widget>().unwrap();\n}}\nfn register_text(registry: &mut er_store::Registry) {{\n    registry.register_text(\"summary\", \"summary.md\").unwrap();\n}}\nfn read_summary(store: &er_store::ArtifactStore, _named: &Widget) {{\n    let file = er_store::RelPath::new(\"summary.md\").unwrap();\n    let _ = store.read_text(&scope, &file);\n}}\n"
+        );
+        let diagnostics = evaluate(&scope(&[("crates/er-engine/src/a.rs", &source)]));
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic
+                .rendered
+                .contains("registered kind `Widget` has no reader")),
+            "{diagnostics:?}"
+        );
     }
 
     #[test]

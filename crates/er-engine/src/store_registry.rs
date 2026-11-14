@@ -179,6 +179,46 @@ pub fn startup_audit(front_end: FrontEnd, registry: &Registry) -> AuditReport {
     report
 }
 
+/// The child directories of `path`. A missing directory is empty; any other
+/// read failure is reported, so it cannot read as an empty audit.
+fn child_dirs(path: &std::path::Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
+    match std::fs::read_dir(path) {
+        Ok(entries) => entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            errors.push(format!("audit {}: {error}", path.display()));
+            Vec::new()
+        }
+    }
+}
+
+/// One repo's scopes: the repo dir, its view buckets and its PR buckets.
+fn collect_repo_dirs(
+    repo: &std::path::Path,
+    base_ignores: &[er_store::Pattern],
+    errors: &mut Vec<String>,
+    out: &mut Vec<(PathBuf, Vec<er_store::Pattern>)>,
+) {
+    // Repo scope holds `risk-rules.json`; its branch and PR subtrees are
+    // walked on their own.
+    let mut repo_ignores = base_ignores.to_vec();
+    repo_ignores.push(er_store::Pattern::new("branches/**"));
+    repo_ignores.push(er_store::Pattern::new("prs/**"));
+    out.push((repo.to_path_buf(), repo_ignores));
+    for branch in child_dirs(&repo.join("branches"), errors) {
+        for bucket in child_dirs(&branch.join("view-buckets"), errors) {
+            out.push((bucket, base_ignores.to_vec()));
+        }
+    }
+    for pr in child_dirs(&repo.join("prs"), errors) {
+        out.push((pr, base_ignores.to_vec()));
+    }
+}
+
 /// The scope directories to walk, each with the ignore list that keeps the
 /// walk from descending into its children.
 fn audit_dirs(
@@ -188,62 +228,8 @@ fn audit_dirs(
 ) -> Vec<(PathBuf, Vec<er_store::Pattern>)> {
     let base_ignores = er_store::ignore_patterns();
     let mut out = Vec::new();
-    let repos = root.join("repos");
-    let Ok(repo_entries) = std::fs::read_dir(&repos) else {
-        // A fresh root has no repos directory: nothing to audit.
-        if front_end == FrontEnd::Desktop {
-            let app = root.join("app");
-            if app.is_dir() {
-                out.push((app, base_ignores));
-            }
-        }
-        return out;
-    };
-    for repo in repo_entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-    {
-        // Repo scope holds `risk-rules.json`; its branch and PR subtrees are
-        // walked on their own below.
-        let mut repo_ignores = base_ignores.clone();
-        repo_ignores.push(er_store::Pattern::new("branches/**"));
-        repo_ignores.push(er_store::Pattern::new("prs/**"));
-        out.push((repo.clone(), repo_ignores));
-
-        let branches = repo.join("branches");
-        if let Ok(entries) = std::fs::read_dir(&branches) {
-            for branch in entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir())
-            {
-                let buckets = branch.join("view-buckets");
-                match std::fs::read_dir(&buckets) {
-                    Ok(buckets) => {
-                        for bucket in buckets
-                            .flatten()
-                            .map(|entry| entry.path())
-                            .filter(|path| path.is_dir())
-                        {
-                            out.push((bucket, base_ignores.clone()));
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => errors.push(format!("audit {}: {error}", buckets.display())),
-                }
-            }
-        }
-        let prs = repo.join("prs");
-        if let Ok(entries) = std::fs::read_dir(&prs) {
-            for pr in entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir())
-            {
-                out.push((pr, base_ignores.clone()));
-            }
-        }
+    for repo in child_dirs(&root.join("repos"), errors) {
+        collect_repo_dirs(&repo, &base_ignores, errors, &mut out);
     }
     if front_end == FrontEnd::Desktop {
         let app = root.join("app");
@@ -480,6 +466,18 @@ mod tests {
                 file: std::path::PathBuf::from("stray.txt"),
             }]
         );
+    }
+
+    /// A path that exists but cannot be read is a reportable failure, not an
+    /// empty audit.
+    #[test]
+    fn an_unreadable_audit_dir_is_reported() {
+        let _serial = audit_test_lock();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("repos"), "not a directory").unwrap();
+        let report = audit_root(root.path(), FrontEnd::Tui);
+        assert!(report.is_empty());
+        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
     }
 
     #[test]

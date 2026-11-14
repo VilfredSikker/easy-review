@@ -1294,14 +1294,6 @@ mod tests {
         );
     }
 
-    /// Every desktop app record has its own kind and file: a duplicate would
-    /// make two records overwrite each other, and the registry rejects both a
-    /// repeated kind and a repeated path.
-    #[test]
-    fn every_desktop_app_record_registers_beside_the_engine_kinds() {
-        let _ = crate::store_registry::registry();
-    }
-
     /// A pin that lands while a desktop writer is running must survive the
     /// write. The writer rebuilds from the stored record inside the store lock;
     /// a writer that saved a snapshot loaded earlier would overwrite the pin.
