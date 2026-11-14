@@ -330,14 +330,15 @@ fn a_fake_backed_pending_review_post_round_trips() -> anyhow::Result<()> {
         Reply::ReviewSubmitted { pr: acme_7() }
     );
 
-    let (read, add, remove, submit) = (
+    let (read, add, remove, submit, drop) = (
         "pending_review",
         "pending_review_add_comment",
         "pending_review_remove_comment",
         "pending_review_submit",
+        "invalidate_comments",
     );
-    let order = calls_named(&github, &[read, add, remove, submit]);
-    assert_eq!(order, [read, add, read, remove, read, submit]);
+    let order = calls_named(&github, &[read, add, remove, submit, drop]);
+    assert_eq!(order, [read, add, drop, read, remove, read, submit, drop]);
     let calls = github.calls().join("\n");
     assert!(calls.contains("PRRC_0"), "the comment id was lost: {calls}");
     assert!(
