@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use er_engine::ports::Ports;
 use er_service::{
-    spawn, Command, OpenTarget, Reply, WorkspaceDeps, WorkspaceError, WorkspaceHandle,
-    WorkspaceView,
+    spawn, Command, OpenTarget, Query, QueryReply, Reply, WorkspaceDeps, WorkspaceError,
+    WorkspaceHandle, WorkspaceView,
 };
 
 /// The actors this desktop process has started.
@@ -47,6 +47,11 @@ impl ServiceState {
     /// Sends one command and waits for the actor's bounded reply.
     pub fn send(&self, key: &str, command: Command) -> Result<Reply, WorkspaceError> {
         self.handle_for(key).send_and_wait(command)
+    }
+
+    /// Sends one read and waits for the actor's bounded answer.
+    pub fn query(&self, key: &str, query: Query) -> Result<QueryReply, WorkspaceError> {
+        self.handle_for(key).query(query)
     }
 
     /// Sends one open command and waits for the actor's bounded reply.

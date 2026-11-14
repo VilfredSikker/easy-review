@@ -6658,7 +6658,7 @@ fn record_remote_recent_pr(
 /// resolved here, where they live, so the actor's command carries the repo
 /// root and the remote and the service never reads the store.
 #[cfg(feature = "v1-service")]
-fn service_key(repo_root: &str, remote: &str) -> String {
+pub(crate) fn service_key(repo_root: &str, remote: &str) -> String {
     if repo_root.is_empty() {
         format!("remote:{remote}")
     } else {
@@ -6702,7 +6702,7 @@ fn service_open(
 /// needs. The desktop reads these here, where the tab lives; the actor never
 /// reads the front end's state.
 #[cfg(feature = "v1-service")]
-fn tab_context(app: &er_engine::app::App) -> er_service::TabContext {
+pub(crate) fn tab_context(app: &er_engine::app::App) -> er_service::TabContext {
     let tab = app.tab();
     er_service::TabContext {
         er_dir: tab.er_dir(),
