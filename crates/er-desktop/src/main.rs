@@ -1039,6 +1039,8 @@ fn main() {
         Arc::new(Mutex::new(HashMap::new()));
     let state = AppState {
         ports: ports.clone(),
+        #[cfg(feature = "v1-service")]
+        service: Arc::new(er_desktop::service::ServiceState::new(ports.clone())),
         app: Arc::clone(&app_arc),
         pr_cache: Arc::clone(&pr_cache),
         pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),

@@ -1,29 +1,29 @@
-//! The Workspace actor: commands in, events out, one actor per repo.
+//! The Workspace actor: commands in, events out, one actor per repo/worktree.
 //!
-//! The service layer the flag path talks to. The actor loop, its protocol and
-//! the use cases land in the entries that follow; this crate exists so the
-//! build flag, its clippy pass and its headless build have the crate to
-//! compile.
+//! The actor owns the workspace state for one repository. A command names what
+//! to do; the actor reads that state on its own thread, hands any subprocess
+//! work to an effect thread through [`WorkspaceDeps::ports`], and applies the
+//! typed result back on the actor thread. Readers never touch the state: the
+//! actor publishes an immutable [`WorkspaceView`] per revision behind an
+//! `RwLock<Arc<_>>`, and [`WorkspaceHandle::view`] clones the current one.
 //!
-//! The engine dependency is deliberately headless: the service may use the
-//! always-compiled half (storage, the store registry, config, `sync.rs`) and
-//! must not reach the `ui`-gated `app` or `arena` modules, which is what the
-//! standalone build checks.
+//! The engine dependency is deliberately headless (`default-features =
+//! false`): the actor is the seam the desktop and the TUI will share, so it
+//! must not pull a front end into the build.
+//!
+//! See ADR 0067 for the crate graph and the actor's position in it.
 
-/// One repository's workspace: the actor's state.
-pub struct Workspace;
+mod actor;
+mod effect;
+mod guard;
+mod handle;
+mod protocol;
+mod workspace;
 
-/// The handle a front end holds for one workspace.
-#[derive(Clone)]
-pub struct WorkspaceHandle;
+pub use actor::{spawn, WorkspaceDeps};
+pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
+pub use protocol::{Command, Event, OpenTarget, Reply};
+pub use workspace::{WorkspaceTarget, WorkspaceView};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_handle_is_cloneable_and_thread_safe() {
-        fn assert_send_sync_clone<T: Send + Sync + Clone>() {}
-        assert_send_sync_clone::<WorkspaceHandle>();
-    }
-}
+mod tests;
