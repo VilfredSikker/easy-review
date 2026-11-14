@@ -3,7 +3,7 @@
 use er_engine::app::DiffMode;
 use er_engine::config::{
     apply_config_field, desktop_settings_snapshot, save_config, ConfigFieldValue,
-    DesktopSettingsSnapshot, FeatureFlags,
+    DesktopSettingsSnapshot, FeatureFlags, ModelUpsert, ProviderUpsert,
 };
 use tauri::State;
 
@@ -197,53 +197,14 @@ pub async fn save_config_global_cmd(state: State<'_, AppState>) -> Result<AppSna
 
 // ── Uninstall ───────────────────────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UninstallTargetDto {
-    pub kind: String,
-    pub path: String,
-    pub exists: bool,
-    pub description: String,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UninstallPreview {
-    pub targets: Vec<UninstallTargetDto>,
-    pub existing_count: usize,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UninstallResult {
-    pub removed: Vec<String>,
-    pub deferred: Vec<String>,
-    pub missing: Vec<String>,
-    pub failed: Vec<String>,
-    /// Frontend should quit the app after a successful uninstall.
-    pub should_quit: bool,
-}
+pub use er_engine::uninstall::{UninstallPreview, UninstallResult, UninstallTargetDto};
 
 #[tauri::command]
 pub async fn preview_uninstall(
     request: Option<er_engine::uninstall::UninstallOptions>,
 ) -> Result<UninstallPreview, String> {
     crate::commands::run_blocking(move || {
-        let opts = request.unwrap_or_default();
-        let targets = er_engine::uninstall::plan(&opts);
-        let existing_count = targets.iter().filter(|t| t.exists).count();
-        Ok(UninstallPreview {
-            targets: targets
-                .into_iter()
-                .map(|t| UninstallTargetDto {
-                    kind: t.kind.label().to_string(),
-                    path: t.path.display().to_string(),
-                    exists: t.exists,
-                    description: t.description(),
-                })
-                .collect(),
-            existing_count,
-        })
+        Ok(er_engine::uninstall::preview(&request.unwrap_or_default()))
     })
     .await
 }
@@ -254,51 +215,8 @@ pub async fn run_uninstall(
     request: Option<er_engine::uninstall::UninstallOptions>,
 ) -> Result<UninstallResult, String> {
     let result = crate::commands::run_blocking(move || {
-        let opts = request.unwrap_or_default();
-        let existing = er_engine::uninstall::existing_targets(&opts);
-        if existing.is_empty() {
-            return Ok(UninstallResult {
-                removed: vec![],
-                deferred: vec![],
-                missing: vec![],
-                failed: vec![],
-                should_quit: false,
-            });
-        }
-
-        let report = er_engine::uninstall::execute(&existing);
-        if !report.deferred.is_empty() {
-            if let Err(e) = er_engine::uninstall::schedule_deferred_removal(&report.deferred) {
-                let msg = format!("Could not schedule removal of in-use paths: {e}");
-                log::error!("run_uninstall: {msg}");
-                return Err(msg);
-            }
-        }
-
-        Ok(UninstallResult {
-            removed: report
-                .removed
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect(),
-            deferred: report
-                .deferred
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect(),
-            missing: report
-                .missing
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect(),
-            failed: report
-                .failed
-                .iter()
-                .map(|(p, e)| format!("{}: {e}", p.display()))
-                .collect(),
-            // Must quit whenever deferred deletes were scheduled — otherwise the
-            // waiter never sees this PID exit.
-            should_quit: report.is_success() || !report.deferred.is_empty(),
+        er_engine::uninstall::run(&request.unwrap_or_default()).inspect_err(|msg| {
+            log::error!("run_uninstall: {msg}");
         })
     })
     .await?;
@@ -330,32 +248,6 @@ pub async fn run_uninstall(
 }
 
 // ── AI provider / model editor ──────────────────────────────────────────────
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderUpsertDto {
-    pub id: String,
-    pub original_id: Option<String>,
-    pub label: Option<String>,
-    pub command: String,
-    pub args: String,
-    pub family: Option<String>,
-    pub models_command: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelUpsertDto {
-    pub id: String,
-    pub original_id: Option<String>,
-    pub label: Option<String>,
-    pub description: Option<String>,
-    pub args: String,
-    pub effort_levels: Vec<String>,
-    pub cost_per_1k_in: Option<f32>,
-    pub cost_per_1k_out: Option<f32>,
-    pub avg_latency_ms: Option<u32>,
-}
 
 fn bump_revision(state: &AppState) {
     state
@@ -521,62 +413,19 @@ pub async fn refresh_ai_models(
 
 #[tauri::command]
 pub async fn upsert_ai_provider(
-    provider: ProviderUpsertDto,
+    provider: ProviderUpsert,
     state: State<'_, AppState>,
 ) -> Result<GetConfigHubResponse, String> {
     let state = state.inner().clone();
     crate::commands::run_blocking(move || {
-        use er_engine::config::{
-            save_config, split_shell_args, validate_provider_config, AiProviderConfig,
-        };
-
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let id = provider.id.trim().to_string();
-        let original_id = provider
-            .original_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty() && *s != id.as_str())
-            .map(|s| s.to_string());
-
-        let mut existing_models = Vec::new();
-        let mut existing_tombstones = Vec::new();
-        let source_key = original_id.as_deref().unwrap_or(id.as_str());
-        if let Some(prev) = app.config.ai_hub.providers.get(source_key) {
-            existing_models = prev.models.clone();
-            existing_tombstones = prev.removed_catalog_models.clone();
-        }
-
-        let cfg = AiProviderConfig {
-            label: provider.label.filter(|s| !s.trim().is_empty()),
-            command: provider.command,
-            args: split_shell_args(&provider.args),
-            family: provider.family.filter(|s| !s.trim().is_empty()),
-            models_command: provider
-                .models_command
-                .map(|s| split_shell_args(&s))
-                .unwrap_or_default(),
-            models: existing_models,
-            removed_catalog_models: existing_tombstones,
-        };
-        let warnings = validate_provider_config(&id, &cfg)?;
-
-        let renamed_from = original_id.clone();
-        if let Some(old) = original_id {
-            app.config.ai_hub.providers.remove(&old);
-            if app.config.ai_hub.default_provider.as_deref() == Some(old.as_str()) {
-                app.config.ai_hub.default_provider = Some(id.clone());
-            }
-        }
-        app.config.ai_hub.providers.insert(id.clone(), cfg);
+        let edit = er_engine::config::hub_edits::upsert_provider(&mut app.config, provider)?;
         save_config(&app.config).map_err(|e| e.to_string())?;
-        if app.config.ai_hub.default_provider.as_deref() == Some(id.as_str())
-            || renamed_from.is_some()
-        {
+        if edit.defaults_changed {
             app.sync_ai_selection_from_defaults();
         }
         bump_revision(&state);
-        Ok(hub_response_with_warnings(&app, warnings))
+        Ok(hub_response_with_warnings(&app, edit.warnings))
     })
     .await
 }
@@ -588,20 +437,8 @@ pub async fn delete_ai_provider(
 ) -> Result<GetConfigHubResponse, String> {
     let state = state.inner().clone();
     crate::commands::run_blocking(move || {
-        use er_engine::config::{remove_ai_provider, save_config};
-
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let id = provider_id.trim().to_string();
-        if id.is_empty() {
-            return Err("provider_id must not be empty".into());
-        }
-        remove_ai_provider(&mut app.config.ai_hub, &id);
-        let agent = app.config.agent.clone();
-        if app.config.ai_hub.default_provider.as_deref() == Some(id.as_str()) {
-            let selection = app.config.ai_hub.resolve_default_selection(&agent);
-            app.config.ai_hub.default_provider = selection.provider_id;
-            app.config.ai_hub.default_model = selection.model_id;
-        }
+        er_engine::config::hub_edits::delete_provider(&mut app.config, &provider_id)?;
         save_config(&app.config).map_err(|e| e.to_string())?;
         app.sync_ai_selection_from_defaults();
         bump_revision(&state);
@@ -613,68 +450,17 @@ pub async fn delete_ai_provider(
 #[tauri::command]
 pub async fn upsert_ai_model(
     provider_id: String,
-    model: ModelUpsertDto,
+    model: ModelUpsert,
     state: State<'_, AppState>,
 ) -> Result<GetConfigHubResponse, String> {
     let state = state.inner().clone();
     crate::commands::run_blocking(move || {
-        use er_engine::config::{
-            save_config, split_shell_args, validate_provider_config, AiModelConfig,
-        };
-
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let pid = provider_id.trim().to_string();
-        let provider = app
-            .config
-            .ai_hub
-            .providers
-            .get_mut(&pid)
-            .ok_or_else(|| format!("unknown provider: {pid}"))?;
-
-        let new_id = model.id.trim().to_string();
-        if new_id.is_empty() {
-            return Err("model id must not be empty".into());
-        }
-        let original_id = model
-            .original_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty() && *s != new_id.as_str())
-            .map(|s| s.to_string());
-
-        if let Some(old) = &original_id {
-            provider.models.retain(|m| m.id != *old);
-        } else {
-            provider.models.retain(|m| m.id != new_id);
-        }
-
-        provider.models.push(AiModelConfig {
-            id: new_id.clone(),
-            label: model.label.filter(|s| !s.trim().is_empty()),
-            description: model.description.filter(|s| !s.trim().is_empty()),
-            args: split_shell_args(&model.args),
-            cost_per_1k_in: model.cost_per_1k_in,
-            cost_per_1k_out: model.cost_per_1k_out,
-            avg_latency_ms: model.avg_latency_ms,
-            effort_levels: model.effort_levels,
-            discovered: false,
-            edited: true,
-        });
-
-        let warnings_provider = provider.clone();
-        let warnings = validate_provider_config(&pid, &warnings_provider)?;
-
-        if let Some(old) = original_id {
-            if app.config.ai_hub.default_model.as_deref() == Some(old.as_str())
-                && app.config.ai_hub.default_provider.as_deref() == Some(pid.as_str())
-            {
-                app.config.ai_hub.default_model = Some(new_id);
-            }
-        }
-
+        let edit =
+            er_engine::config::hub_edits::upsert_model(&mut app.config, &provider_id, model)?;
         save_config(&app.config).map_err(|e| e.to_string())?;
         bump_revision(&state);
-        Ok(hub_response_with_warnings(&app, warnings))
+        Ok(hub_response_with_warnings(&app, edit.warnings))
     })
     .await
 }
@@ -687,21 +473,8 @@ pub async fn delete_ai_model(
 ) -> Result<GetConfigHubResponse, String> {
     let state = state.inner().clone();
     crate::commands::run_blocking(move || {
-        use er_engine::config::{remove_ai_model, save_config};
-
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let pid = provider_id.trim().to_string();
-        let mid = model_id.trim().to_string();
-        remove_ai_model(&mut app.config.ai_hub, &pid, &mid)?;
-
-        if app.config.ai_hub.default_provider.as_deref() == Some(pid.as_str())
-            && app.config.ai_hub.default_model.as_deref() == Some(mid.as_str())
-        {
-            let agent = app.config.agent.clone();
-            let selection = app.config.ai_hub.resolve_default_selection(&agent);
-            app.config.ai_hub.default_model = selection.model_id;
-        }
-
+        er_engine::config::hub_edits::delete_model(&mut app.config, &provider_id, &model_id)?;
         save_config(&app.config).map_err(|e| e.to_string())?;
         app.sync_ai_selection_from_defaults();
         bump_revision(&state);
