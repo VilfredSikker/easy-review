@@ -635,6 +635,7 @@ pub(crate) fn active_github_key(app: &App, state: &AppState) -> Option<(String, 
     crate::snapshot::resolve_github_status_key(tab, &cache)
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn active_pr_author(
     app: &App,
     state: &AppState,
@@ -663,10 +664,12 @@ fn active_pr_author(
         .filter(|author| !author.trim().is_empty())
 }
 
+#[cfg(any(test, not(feature = "v1-service")))]
 fn own_pr_approval_error() -> String {
     "GitHub does not allow approving your own pull request.".to_string()
 }
 
+#[cfg(any(test, not(feature = "v1-service")))]
 fn is_own_pr_approval_error(raw: &str) -> bool {
     let lower = raw.to_lowercase();
     lower.contains("can not approve your own pull request")
@@ -676,10 +679,12 @@ fn is_own_pr_approval_error(raw: &str) -> bool {
 /// GitHub keeps one pending review per reviewer per PR and refuses a
 /// standalone review comment while it exists, so "Add single comment" has to
 /// wait until the review is submitted (as github.com hides it meanwhile).
+#[cfg(not(feature = "v1-service"))]
 fn pending_review_blocks_single_comment() -> String {
     er_engine::github_post::PENDING_REVIEW_BLOCKS_COMMENT.to_string()
 }
 
+#[cfg(any(test, not(feature = "v1-service")))]
 fn is_one_pending_review_error(raw: &str) -> bool {
     raw.to_lowercase().contains("one pending review")
 }
@@ -3563,6 +3568,7 @@ fn pull_github_comments_blocking(state: &AppState, force: bool) -> Result<AppSna
     }
 }
 
+#[cfg(any(test, not(feature = "v1-service")))]
 fn gh_review_submit_err(e: anyhow::Error) -> String {
     let raw = e.to_string();
     if is_own_pr_approval_error(&raw) {
@@ -3596,6 +3602,21 @@ fn with_review_hints(raw: String, unprocessable: bool) -> String {
 /// Submit a bare PR review decision (APPROVE / REQUEST_CHANGES / COMMENT) from
 /// the GitHub card. It sends only the body + event; inline comments post as
 /// they are created (ADR 0053), so there is no draft to bundle here.
+///
+/// The flag path is async: its reply waits on `gh`, which must not block the
+/// main thread.
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub async fn submit_github_pr_decision(
+    mode: String,
+    summary: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || service_submit_github_pr_decision(&state, &mode, &summary)).await
+}
+
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub fn submit_github_pr_decision(
     mode: String,
@@ -3685,10 +3706,14 @@ pub async fn post_github_pr_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || post_github_pr_comment_impl(body, &state)).await
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || service_post_github_pr_comment(&state, &body)).await;
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || post_github_pr_comment_impl(body, &state)).await;
 }
 
 /// `gh` network call; runs on the blocking pool so the window stays responsive.
+#[cfg(not(feature = "v1-service"))]
 fn post_github_pr_comment_impl(body: String, state: &AppState) -> Result<AppSnapshot, String> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
@@ -3746,6 +3771,7 @@ pub struct ReviewLineTarget {
 }
 
 impl ReviewLineTarget {
+    #[cfg(any(test, not(feature = "v1-service")))]
     fn batch_entry(&self, body: &str) -> Result<er_engine::github::ReviewBatchEntry, String> {
         crate::github_comment_builders::review_batch_entry(
             &self.file,
@@ -3775,6 +3801,7 @@ fn review_comment_body(text: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn active_pr_or_err(state: &AppState) -> Result<(String, String, u64), String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     active_github_key(&app, state)
@@ -3976,6 +4003,9 @@ pub async fn post_github_line_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || service_post_github_line_comment(&state, target, &text)).await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let entry = target.batch_entry(&review_comment_body(&text)?)?;
         let (owner, repo, number) = active_pr_or_err(&state)?;
@@ -6973,6 +7003,102 @@ fn service_submit_pending_review(
     match reply {
         er_service::Reply::ReviewSubmitted { pr } => {
             after_github_write(state, pr.owner, pr.repo, pr.number);
+            Ok(AppSnapshot::default())
+        }
+        other => Err(unexpected_reply(&other)),
+    }
+}
+
+#[cfg(feature = "v1-service")]
+fn service_post_github_pr_comment(state: &AppState, body: &str) -> Result<AppSnapshot, String> {
+    let body = body.trim().to_string();
+    if body.is_empty() {
+        return Err("Comment body cannot be empty".to_string());
+    }
+    let reply = send_for_active_tab(state, |context| er_service::Command::PostGithubPrComment {
+        context,
+        body,
+    })
+    .map_err(|error| format!("Failed to post comment: {error}"))?;
+    match reply {
+        er_service::Reply::CommentPosted { pr } => {
+            // The comment count and the recent list come from the status card.
+            kick_github_status_refresh(
+                state.gh_status_cache.clone(),
+                Arc::clone(&state.gh_status_in_flight),
+                Arc::clone(&state.desktop_revision),
+                Some(Arc::clone(&state.loading)),
+                pr.owner,
+                pr.repo,
+                pr.number,
+            );
+            Ok(AppSnapshot::default())
+        }
+        other => Err(unexpected_reply(&other)),
+    }
+}
+
+#[cfg(feature = "v1-service")]
+fn service_post_github_line_comment(
+    state: &AppState,
+    target: ReviewLineTarget,
+    text: &str,
+) -> Result<AppSnapshot, String> {
+    let body = review_comment_body(text)?;
+    let target = target.into_service();
+    let reply = send_for_active_tab(state, |context| {
+        er_service::Command::PostGithubLineComment {
+            context,
+            target,
+            body,
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    match reply {
+        er_service::Reply::CommentPosted { pr } => {
+            after_github_write(state, pr.owner, pr.repo, pr.number);
+            Ok(AppSnapshot::default())
+        }
+        other => Err(unexpected_reply(&other)),
+    }
+}
+
+#[cfg(feature = "v1-service")]
+fn service_submit_github_pr_decision(
+    state: &AppState,
+    mode: &str,
+    summary: &str,
+) -> Result<AppSnapshot, String> {
+    let event = er_service::ReviewEvent::parse(mode).ok_or_else(|| {
+        format!("Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES.")
+    })?;
+    let summary = summary.trim().to_string();
+    // GitHub rejects a REQUEST_CHANGES or COMMENT review with a blank body.
+    if event != er_service::ReviewEvent::Approve && summary.is_empty() {
+        let event = event.as_str();
+        return Err(format!(
+            "GitHub requires a comment for {event} reviews. Add a summary first."
+        ));
+    }
+    let reply = send_for_active_tab(state, |context| {
+        er_service::Command::SubmitGithubPrDecision {
+            context,
+            event,
+            summary,
+        }
+    })
+    .map_err(review_write_message)?;
+    match reply {
+        er_service::Reply::ReviewSubmitted { pr } => {
+            kick_github_status_refresh(
+                state.gh_status_cache.clone(),
+                Arc::clone(&state.gh_status_in_flight),
+                Arc::clone(&state.desktop_revision),
+                Some(Arc::clone(&state.loading)),
+                pr.owner,
+                pr.repo,
+                pr.number,
+            );
             Ok(AppSnapshot::default())
         }
         other => Err(unexpected_reply(&other)),
@@ -12689,6 +12815,63 @@ mod tests {
         });
     }
 
+    /// The three PR-level posts route to the service with the feature on. Each
+    /// scripted write fails, so no route kicks a real status refresh.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_pr_level_posts_route_with_the_feature_on() {
+        use er_engine::github::{FakeGitHub, GhError};
+
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let refused = GhError::Unprocessable {
+                message: "Validation Failed".to_string(),
+            };
+            // No head oid is scripted, so the line post stops before sending.
+            let github = Arc::new(
+                FakeGitHub::default()
+                    .with_pr_diff_remote(Ok(String::new()))
+                    .with_pending_review(Ok(er_engine::github::PendingReview::default()))
+                    .with_post_general(Err(refused.clone()))
+                    .with_submit_review_remote(Err(refused)),
+            );
+            let github_port: Arc<dyn er_engine::github::GitHub> = github.clone();
+            let mut state = review_flow_test_state(&dir);
+            state.service = Arc::new(crate::service::ServiceState::new(
+                er_engine::ports::Ports::with_github(github_port),
+            ));
+            {
+                let mut app = state.app.lock().unwrap();
+                let tab = app.tab_mut();
+                tab.remote_repo = Some("acme/widgets".to_string());
+                tab.pr_number = Some(7);
+            }
+
+            assert!(service_post_github_pr_comment(&state, "ship it").is_err());
+            let target = ReviewLineTarget {
+                file: "src/lib.rs".to_string(),
+                line_num: 1,
+                line_num_end: None,
+                side: None,
+            };
+            assert!(service_post_github_line_comment(&state, target, "here").is_err());
+            let decided = service_submit_github_pr_decision(&state, "REQUEST_CHANGES", "fix");
+            assert!(decided.is_err_and(|message| message.contains("Likely causes")));
+
+            let calls = github.calls();
+            let names: Vec<&str> = calls
+                .iter()
+                .filter_map(|call| call.split('(').next())
+                .collect();
+            for sent in ["post_general", "pending_review", "submit_review_remote"] {
+                assert!(names.contains(&sent), "{sent} was not routed: {calls:?}");
+            }
+        });
+    }
+
     #[test]
     fn review_flow_poll_delivers_flow_progress_after_background_wake() {
         use std::time::{Duration, Instant};
@@ -15044,6 +15227,9 @@ mod route_tests {
             "Command::AddPendingReviewComment",
             "Command::RemovePendingReviewComment",
             "Command::SubmitPendingReview",
+            "Command::PostGithubPrComment",
+            "Command::PostGithubLineComment",
+            "Command::SubmitGithubPrDecision",
         ] {
             assert!(
                 source.contains(&format!("er_service::{command}")),
