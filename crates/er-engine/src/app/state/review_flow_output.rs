@@ -79,11 +79,6 @@ impl FlowOutputBackup {
         self.archived.as_ref().map(BackupSnapshot::backup_path)
     }
 
-    /// The archived file, for a caller that must compare it or read it back.
-    pub(super) fn archived(&self) -> Option<&BackupSnapshot> {
-        self.archived.as_ref()
-    }
-
     /// Restore the previous file only when the stage left no usable output.
     ///
     /// A parseable producer output is left in place, even if it belongs to a

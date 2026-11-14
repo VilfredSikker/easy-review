@@ -26,7 +26,7 @@ pub(crate) use jobs::ARENA_TEST_ENV_LOCK;
 pub use agents::{agent_meta, list_arena_agent_kinds, AgentMeta};
 pub use control::{ArenaRunControl, ArenaRunControls};
 pub use identity::finding_id;
-pub use import::import_arena_findings_to_review;
+pub use import::{accepted_finding_rows, import_arena_findings_to_review, mark_accepted};
 pub use jobs::fake_arena_call_count;
 pub use model::{ARENA_ARBITER_ROUND, *};
 pub use orchestrator::{

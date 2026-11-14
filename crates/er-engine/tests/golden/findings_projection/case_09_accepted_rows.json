@@ -1,0 +1,176 @@
+{
+  "arbiter_effect": {
+    "dropped": 0,
+    "kept": 0,
+    "merged": 0,
+    "regraded": 0,
+    "unmatched": 0
+  },
+  "arbiter_graded_keys": [],
+  "arbiter_verdicts": [],
+  "review": {
+    "base_branch": "",
+    "created_at": "2026-01-01T00:00:00Z",
+    "diff_hash": "H",
+    "file_hashes": {},
+    "files": {
+      "a.rs": {
+        "findings": [
+          {
+            "category": "",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "general-1",
+            "lens": "general",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 1,
+            "outside_diff": false,
+            "providers": [],
+            "raised_by": [
+              "general"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "low",
+            "suggestion": "",
+            "title": "General",
+            "verification_plan": ""
+          },
+          {
+            "category": "",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "arena-run-x-kept-a",
+            "lens": "general",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 5,
+            "outside_diff": false,
+            "providers": [
+              "deep-provider"
+            ],
+            "raised_by": [
+              "general"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "high",
+            "suggestion": "",
+            "title": "Accepted A",
+            "verification_plan": ""
+          },
+          {
+            "category": "",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "sec-1",
+            "lens": "security",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 2,
+            "outside_diff": false,
+            "providers": [],
+            "raised_by": [
+              "security"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "medium",
+            "suggestion": "",
+            "title": "Expert A",
+            "verification_plan": ""
+          }
+        ],
+        "risk": "low",
+        "risk_reason": "",
+        "summary": ""
+      },
+      "b.rs": {
+        "findings": [
+          {
+            "category": "",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": null,
+            "id": "arena-run-x-kept-b",
+            "lens": "security",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 3,
+            "outside_diff": false,
+            "providers": [
+              "second-provider"
+            ],
+            "raised_by": [
+              "security"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "medium",
+            "suggestion": "",
+            "title": "Accepted B",
+            "verification_plan": ""
+          }
+        ],
+        "risk": "medium",
+        "risk_reason": "",
+        "summary": ""
+      },
+      "c.rs": {
+        "findings": [
+          {
+            "category": "",
+            "confidence": "tentative",
+            "description": "",
+            "evidence": [],
+            "hunk_index": 0,
+            "id": "general-c",
+            "lens": "general",
+            "line_content": "",
+            "line_end": null,
+            "line_start": 7,
+            "outside_diff": false,
+            "providers": [],
+            "raised_by": [
+              "general"
+            ],
+            "related_files": [],
+            "resolved": false,
+            "resolved_at": "",
+            "resolved_note": "",
+            "responses": [],
+            "severity": "low",
+            "suggestion": "",
+            "title": "General C",
+            "verification_plan": ""
+          }
+        ],
+        "risk": "low",
+        "risk_reason": "",
+        "summary": ""
+      }
+    },
+    "head_branch": "",
+    "version": 1
+  }
+}
