@@ -305,9 +305,13 @@ fn core_io_diagnostics(root: &Path) -> anyhow::Result<Vec<Diagnostic>> {
             continue;
         }
         let source = std::fs::read_to_string(root.join(&rel))?;
-        let found = core_io::findings(&source);
+        let file = rel.to_string_lossy().replace('\\', "/");
+        let mut found = core_io::findings(&source);
+        if !core_io::is_arena_file(&file) {
+            found.extend(core_io::arena_findings(&source));
+        }
         if !found.is_empty() {
-            by_file.insert(rel.to_string_lossy().replace('\\', "/"), found);
+            by_file.insert(file, found);
         }
     }
     let mut out = core_io::evaluate(&by_file, core_io::CODE);
