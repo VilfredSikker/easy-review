@@ -28,6 +28,124 @@ pub enum Command {
     /// own timeout fires.
     #[cfg(test)]
     Stall,
+
+    // ── Annotation commands (P41.1) ──
+    /// Flip one path's reviewed mark against the stored map.
+    ToggleReviewed { context: TabContext, path: String },
+    /// Set one path's reviewed mark to an explicit state.
+    MarkReviewed {
+        context: TabContext,
+        path: String,
+        reviewed: bool,
+    },
+    /// Set every in-diff path of a tour pillar to an explicit state.
+    BulkReviewPillar {
+        context: TabContext,
+        pillar_id: String,
+        reviewed: bool,
+    },
+    /// Add a question. `client_id` is the id the front end painted.
+    AddQuestion {
+        context: TabContext,
+        target: AnnotationTarget,
+        body: String,
+        side: Option<String>,
+        client_id: Option<String>,
+        reply_to: Option<String>,
+        finding_ref: Option<String>,
+    },
+    /// Add a note.
+    AddNote {
+        context: TabContext,
+        target: AnnotationTarget,
+        body: String,
+        side: Option<String>,
+        client_id: Option<String>,
+        reply_to: Option<String>,
+        finding_ref: Option<String>,
+    },
+    /// Anchor a question or note on a line of the document itself.
+    AddDocumentThread {
+        context: TabContext,
+        file: String,
+        line: usize,
+        line_end: Option<usize>,
+        kind: AnnotationKind,
+        body: String,
+        /// The previewed file text the line was picked in.
+        source: String,
+    },
+    /// Reply to a question, note or local GitHub comment.
+    ReplyToThread {
+        context: TabContext,
+        parent_id: String,
+        body: String,
+        client_id: Option<String>,
+    },
+    /// Replace one thread message's body.
+    UpdateThreadMessage {
+        context: TabContext,
+        id: String,
+        body: String,
+    },
+    /// Delete one thread and its replies from its sidecar.
+    DeleteThread { context: TabContext, id: String },
+    /// Mark one thread resolved.
+    ResolveThread { context: TabContext, id: String },
+    /// Promote a question to a private note.
+    PromoteToNote {
+        context: TabContext,
+        id: String,
+        body: Option<String>,
+    },
+    /// Reply to a finding; the AI-assist variant stays on the flag-off path.
+    ReplyToFinding {
+        context: TabContext,
+        finding_id: String,
+        body: String,
+        ai_assist: bool,
+        client_id: Option<String>,
+    },
+}
+
+/// The tab a command acts on, with every input its effect needs. The desktop
+/// resolves these from the tab before sending, so the actor never reads the
+/// front end's state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabContext {
+    /// Managed bucket the private sidecars live in.
+    pub er_dir: String,
+    /// Bucket the GitHub comment sidecar lives in (the PR bucket for PR tabs).
+    pub comments_dir: String,
+    pub repo_root: String,
+    pub base_branch: String,
+    /// `branch`, `staged` or `unstaged`.
+    pub scope: String,
+    pub remote_repo: Option<String>,
+    pub pr_number: Option<u64>,
+    pub pr_head_ref: Option<String>,
+    pub local_branch_view: Option<String>,
+    pub checkout_root: Option<String>,
+    /// The tab's branch diff hash; empty asks the effect to compute it.
+    pub branch_diff_hash: String,
+    /// The tab's parsed diff hash.
+    pub diff_hash: String,
+}
+
+/// Where an annotation goes, as the desktop passes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnnotationTarget {
+    pub file: String,
+    pub hunk_idx: usize,
+    pub line_num: Option<usize>,
+    pub line_num_end: Option<usize>,
+}
+
+/// Which private annotation a document anchor creates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnnotationKind {
+    Question,
+    Note,
 }
 
 /// What to open. See the module docs for why the repo root is a parameter.
@@ -68,6 +186,27 @@ impl OpenTarget {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
     TargetOpened(WorkspaceTarget),
+    /// The stored row's id, which is the painted id when one was supplied.
+    AnnotationWritten {
+        id: String,
+    },
+    /// How many reviewed rows changed.
+    ReviewedChanged {
+        changed: usize,
+    },
+    /// The sidecar a thread row was changed in.
+    ThreadChanged {
+        path: String,
+    },
+    /// The note a question was promoted into.
+    NotePromoted {
+        id: String,
+    },
+    /// The finding thread a reply landed in.
+    FindingReplied {
+        root_id: String,
+        reply_id: String,
+    },
     #[cfg(test)]
     Pong,
 }
