@@ -1,4 +1,4 @@
-//! The settings table is the schema (ADR 0068): every config leaf is either a
+//! The settings table is the schema (ADR 0069): every config leaf is either a
 //! row in it, under a bespoke editor's root, or named here as non-form.
 //!
 //! The fixtures name every field of every config struct without
