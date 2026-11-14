@@ -20,7 +20,7 @@ pub const SOURCE: &str = "crates/er-core/src";
 /// The manifest whose `[dependencies]` the allow-list checks.
 pub const MANIFEST: &str = "crates/er-core/Cargo.toml";
 /// The dependencies the core crate may declare.
-pub const ALLOWED: &[&str] = &["schemars", "serde", "serde_json"];
+pub const ALLOWED: &[&str] = &["schemars", "serde", "serde_json", "sha1"];
 
 /// Module prefixes that reach the outside world.
 const BANNED: &[&[&str]] = &[
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn the_allow_list_accepts_the_declared_set() {
-        let manifest = "[dependencies]\nserde.workspace = true\nserde_json.workspace = true\nschemars.workspace = true\n";
+        let manifest = "[dependencies]\nserde.workspace = true\nserde_json.workspace = true\nschemars.workspace = true\nsha1.workspace = true\n";
         assert!(manifest_findings(manifest).is_empty());
     }
 

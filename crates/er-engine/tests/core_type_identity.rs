@@ -22,6 +22,63 @@ fn every_re_export_names_the_core_type() {
     same_type!(er_git::FileStatus, er_core::status::FileStatus);
     same_type!(er_store::ExpertId, er_core::slot::ExpertId);
     same_type!(er_store::DiagramId, er_core::slot::DiagramId);
+    same_type!(er_engine::ai::ErReview, er_core::review::ErReview);
+    same_type!(er_engine::ai::ErFileReview, er_core::review::ErFileReview);
+    same_type!(er_engine::ai::Finding, er_core::review::Finding);
+    same_type!(er_engine::ai::Confidence, er_core::review::Confidence);
+    same_type!(er_engine::ai::RiskLevel, er_core::review::RiskLevel);
+    same_type!(er_engine::ai::EvidenceItem, er_core::review::EvidenceItem);
+    same_type!(er_engine::ai::InlineLayers, er_core::review::InlineLayers);
+    same_type!(er_engine::ai::AiResponse, er_core::review::AiResponse);
+    same_type!(
+        er_engine::ai::ErQuestions,
+        er_core::annotations::ErQuestions
+    );
+    same_type!(er_engine::ai::ErNotes, er_core::annotations::ErNotes);
+    same_type!(
+        er_engine::ai::PrivateAnnotation,
+        er_core::annotations::PrivateAnnotation
+    );
+    same_type!(
+        er_engine::ai::ErGithubComments,
+        er_core::annotations::ErGithubComments
+    );
+    same_type!(
+        er_engine::ai::GithubComment,
+        er_core::annotations::GithubComment
+    );
+    same_type!(
+        er_engine::ai::GitHubSyncState,
+        er_core::annotations::GitHubSyncState
+    );
+    same_type!(
+        er_engine::ai::ArbiterReview,
+        er_core::arbiter::ArbiterReview
+    );
+    same_type!(
+        er_engine::ai::ArbiterRuling,
+        er_core::arbiter::ArbiterRuling
+    );
+    same_type!(
+        er_engine::ai::ArbiterVerdict,
+        er_core::arbiter::ArbiterVerdict
+    );
+    same_type!(
+        er_engine::ai::ArbiterEffect,
+        er_core::arbiter::ArbiterEffect
+    );
+    same_type!(
+        er_engine::ai::ValidationEffect,
+        er_core::validation::ValidationEffect
+    );
+    same_type!(
+        er_engine::ai::CommentAnchor,
+        er_core::relocate::CommentAnchor
+    );
+    same_type!(
+        er_engine::ai::RelocationResult,
+        er_core::relocate::RelocationResult
+    );
 }
 
 fn assert_core_artifact<T: er_core::artifact::Artifact>() {}

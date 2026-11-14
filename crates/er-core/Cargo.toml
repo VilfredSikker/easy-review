@@ -10,6 +10,7 @@ description = "Domain types and the artifact contract shared by the engine, stor
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
+sha1.workspace = true
 
 [lints]
 workspace = true

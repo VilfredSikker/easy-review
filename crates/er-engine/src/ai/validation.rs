@@ -69,12 +69,7 @@ pub struct ValidationPatch {
     pub line_end: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ValidationEffect {
-    pub applied: usize,
-    pub unmatched: usize,
-    pub ignored: bool,
-}
+pub use er_core::validation::ValidationEffect;
 
 impl Artifact for ValidationReview {
     const KIND: &'static str = "validation";
