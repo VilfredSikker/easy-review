@@ -1411,49 +1411,106 @@ pub async fn change_base(
 // ── Reviewed state ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn toggle_reviewed(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    // toggle_reviewed bumps tab.reviewed_revision internally
-    app.toggle_reviewed().map_err(|e| e.to_string())?;
-    // Return chrome-only: counts update, no hunk rebuild needed
-    Ok(chrome_snap_from(&app, &state))
+pub async fn toggle_reviewed(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, None, |context| {
+            er_service::Command::ToggleReviewed { context, path }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
+    {
+        let _ = path;
+        run_blocking(move || {
+            let mut app = state.app.lock().map_err(|e| e.to_string())?;
+            // toggle_reviewed bumps tab.reviewed_revision internally
+            app.toggle_reviewed().map_err(|e| e.to_string())?;
+            // Return chrome-only: counts update, no hunk rebuild needed
+            Ok(chrome_snap_from(&app, &state))
+        })
+        .await
+    }
 }
 
 #[tauri::command]
-pub fn mark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+pub async fn mark_reviewed(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, None, |context| er_service::Command::MarkReviewed {
+            context,
+            path,
+            reviewed: true,
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     {
-        let tab = app.tab_mut();
-        if tab.active_diff_files().iter().any(|f| f.path == path) {
-            let hash = tab.per_file_hash(&path);
-            tab.reviewed.insert(path, hash);
-            tab.reviewed_revision += 1;
-            let _ = tab.save_reviewed_files();
-        }
+        run_blocking(move || {
+            let mut app = state.app.lock().map_err(|e| e.to_string())?;
+            {
+                let tab = app.tab_mut();
+                if tab.active_diff_files().iter().any(|f| f.path == path) {
+                    let hash = tab.per_file_hash(&path);
+                    tab.reviewed.insert(path, hash);
+                    tab.reviewed_revision += 1;
+                    let _ = tab.save_reviewed_files();
+                }
+            }
+            // Return chrome-only: counts update, no hunk rebuild needed
+            Ok(chrome_snap_from(&app, &state))
+        })
+        .await
     }
-    // Return chrome-only: counts update, no hunk rebuild needed
-    Ok(chrome_snap_from(&app, &state))
 }
 
 #[tauri::command]
-pub fn unmark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+pub async fn unmark_reviewed(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, None, |context| er_service::Command::MarkReviewed {
+            context,
+            path,
+            reviewed: false,
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     {
-        let tab = app.tab_mut();
-        if tab.active_diff_files().iter().any(|f| f.path == path) {
-            tab.reviewed.remove(&path);
-            tab.reviewed_revision += 1;
-            let _ = tab.save_reviewed_files();
-        }
+        run_blocking(move || {
+            let mut app = state.app.lock().map_err(|e| e.to_string())?;
+            {
+                let tab = app.tab_mut();
+                if tab.active_diff_files().iter().any(|f| f.path == path) {
+                    tab.reviewed.remove(&path);
+                    tab.reviewed_revision += 1;
+                    let _ = tab.save_reviewed_files();
+                }
+            }
+            // Return chrome-only: counts update, no hunk rebuild needed
+            Ok(chrome_snap_from(&app, &state))
+        })
+        .await
     }
-    // Return chrome-only: counts update, no hunk rebuild needed
-    Ok(chrome_snap_from(&app, &state))
 }
 
 /// Paths of a tour pillar's files that are present in the current diff. The
 /// synthetic `__other__` pillar resolves to diff files no pillar references.
 /// Filtering to in-diff files keeps stale-tour entries out of the shared branch
 /// `reviewed` set (mirrors `mark_reviewed`'s `active_diff_files` guard).
+#[cfg(not(feature = "v1-service"))]
 fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<String> {
     let diff_paths: std::collections::HashSet<&str> = tab
         .active_diff_files()
@@ -1495,6 +1552,18 @@ pub async fn bulk_review_pillar(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::BulkReviewPillar {
+                context,
+                pillar_id,
+                reviewed: true,
+            }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
@@ -1530,6 +1599,18 @@ pub async fn unbulk_review_pillar(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::BulkReviewPillar {
+                context,
+                pillar_id,
+                reviewed: false,
+            }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
@@ -2506,6 +2587,27 @@ pub async fn add_question(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::AddQuestion {
+                context,
+                target: er_service::AnnotationTarget {
+                    file,
+                    hunk_idx,
+                    line_num,
+                    line_num_end,
+                },
+                body: text,
+                side,
+                client_id: id,
+                reply_to: None,
+                finding_ref: None,
+            }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
@@ -2550,6 +2652,27 @@ pub async fn add_note(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::AddNote {
+                context,
+                target: er_service::AnnotationTarget {
+                    file,
+                    hunk_idx,
+                    line_num,
+                    line_num_end,
+                },
+                body: text,
+                side,
+                client_id: id,
+                reply_to: None,
+                finding_ref: None,
+            }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
@@ -2592,12 +2715,66 @@ pub async fn add_document_thread(
     preview_key: String,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        let kind = match kind.as_str() {
+            "question" => er_service::AnnotationKind::Question,
+            "note" => er_service::AnnotationKind::Note,
+            other => return Err(format!("A document anchor cannot hold a {other}")),
+        };
+        let (active_tab, request) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            (
+                app.active_tab,
+                app.tab()
+                    .capture_file_preview(&file)
+                    .map_err(|e| e.to_string())?,
+            )
+        };
+        if request.preview_key != preview_key {
+            return Err("The document changed before the comment was saved".to_string());
+        }
+        let source = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
+        let (key, command) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            if app.active_tab != active_tab
+                || app.tab().file_preview_key(&file) != request.preview_key
+            {
+                return Err("The document changed before the comment was saved".to_string());
+            }
+            let context = tab_context(&app);
+            let key = service_key(
+                &context.repo_root,
+                context.remote_repo.as_deref().unwrap_or(""),
+            );
+            (
+                key,
+                er_service::Command::AddDocumentThread {
+                    context,
+                    file,
+                    line: line_num,
+                    line_end: line_num_end,
+                    kind,
+                    body: text,
+                    source,
+                },
+            )
+        };
+        state
+            .service
+            .send(&key, command)
+            .map_err(|error| error.to_string())?;
+        Ok(AppSnapshot::default())
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     let comment_type = match kind.as_str() {
         "question" => CommentType::Question,
         "note" => CommentType::Note,
         other => return Err(format!("A document anchor cannot hold a {other}")),
     };
-    let state = state.inner().clone();
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let (active_tab, request) = {
             let app = state.app.lock().map_err(|e| e.to_string())?;
@@ -2642,9 +2819,23 @@ pub async fn reply_to_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::ReplyToThread {
+                context,
+                parent_id,
+                body: text,
+                client_id: None,
+            }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || reply_to_thread_impl(parent_id, text, view, &state)).await
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn reply_to_thread_impl(
     parent_id: String,
     text: String,
@@ -2760,6 +2951,14 @@ pub async fn delete_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::DeleteThread { context, id }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
@@ -2843,6 +3042,7 @@ pub async fn remove_finding_thread(
     .await
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn scope_for_sidecar_dir(dir: &str) -> Result<er_store::Scope, String> {
     er_store::Scope::dir(dir).map_err(|e| e.to_string())
 }
@@ -2850,6 +3050,7 @@ fn scope_for_sidecar_dir(dir: &str) -> Result<er_store::Scope, String> {
 /// Mark a thread root resolved in whichever sidecar holds it. Returns the path
 /// of the sidecar that holds the thread (written only if it was unresolved),
 /// or `None` when no sidecar knows the id.
+#[cfg(not(feature = "v1-service"))]
 fn mark_thread_resolved_in_files(
     id: &str,
     er_dir: &str,
@@ -2953,6 +3154,7 @@ fn mark_thread_resolved_in_files(
 
 /// Mirror `mark_thread_resolved_in_files` on the in-memory AI state so the
 /// handler does not need `reload_ai_state()` (which re-reads every sidecar).
+#[cfg(not(feature = "v1-service"))]
 fn mark_thread_resolved_in_memory(ai: &mut er_engine::ai::AiState, id: &str) {
     if let Some(qs) = ai.questions.as_mut() {
         for q in qs.questions.iter_mut().filter(|q| q.id == id) {
@@ -2979,6 +3181,14 @@ pub async fn resolve_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::ResolveThread { context, id }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
@@ -5046,6 +5256,14 @@ pub async fn promote_to_note(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::PromoteToNote { context, id, body }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
@@ -6472,11 +6690,70 @@ fn service_open(
         .service
         .open_target(key, target, replace.unwrap_or(false))
         .map_err(|error| error.to_string())?;
-    // The production protocol has one reply; the test-only variants do not
-    // exist in this build, so the pattern is exhaustive.
-    let er_service::Reply::TargetOpened(_) = reply;
+    // The open path answers with the opened target; the other replies belong
+    // to the annotation commands.
+    if let er_service::Reply::TargetOpened(_) = reply {}
     // The flag-on desktop does not render from the service yet, so the
     // command acknowledges the open without moving the view.
+    Ok(AppSnapshot::default())
+}
+
+/// The tab a routed annotation command acts on, with every field its effect
+/// needs. The desktop reads these here, where the tab lives; the actor never
+/// reads the front end's state.
+#[cfg(feature = "v1-service")]
+fn tab_context(app: &er_engine::app::App) -> er_service::TabContext {
+    let tab = app.tab();
+    er_service::TabContext {
+        er_dir: tab.er_dir(),
+        comments_dir: tab.github_comments_dir(),
+        repo_root: tab.repo_root.clone(),
+        base_branch: tab.base_branch.clone(),
+        scope: match tab.mode {
+            er_engine::app::DiffMode::Unstaged => "unstaged",
+            er_engine::app::DiffMode::Staged => "staged",
+            _ => "branch",
+        }
+        .to_string(),
+        remote_repo: tab.remote_repo.clone(),
+        pr_number: tab.pr_number,
+        pr_head_ref: tab.pr_head_ref.clone(),
+        local_branch_view: tab.local_branch_view.clone(),
+        checkout_root: tab.local_branch_checkout_root.clone(),
+        branch_diff_hash: tab.branch_diff_hash.clone(),
+        diff_hash: tab.diff_hash.clone(),
+    }
+}
+
+/// Sends one annotation command through the service and acknowledges it.
+///
+/// The flag-on desktop does not render from the service yet (D21), so the
+/// returned snapshot is empty; the open commands are tab changes and blank
+/// until the next poll, while annotation commands keep the painted row
+/// (ADR 0017). The view is checked before the context is read, so a write
+/// painted on a tab switch is refused.
+#[cfg(feature = "v1-service")]
+fn route_annotation(
+    state: &AppState,
+    view: Option<&crate::snapshot::OptimisticView>,
+    build: impl FnOnce(er_service::TabContext) -> er_service::Command,
+) -> Result<AppSnapshot, String> {
+    let (key, command) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, state, view) {
+            return early;
+        }
+        let context = tab_context(&app);
+        let key = service_key(
+            &context.repo_root,
+            context.remote_repo.as_deref().unwrap_or(""),
+        );
+        (key, build(context))
+    };
+    state
+        .service
+        .send(&key, command)
+        .map_err(|error| error.to_string())?;
     Ok(AppSnapshot::default())
 }
 
@@ -9610,6 +9887,7 @@ fn promote_finding_to_comment_impl(
     Ok(snap_from_confirmed(&app, state))
 }
 
+#[cfg(not(feature = "v1-service"))]
 const FINDING_THREAD_STUB: &str = "Follow-up on this finding.";
 
 #[tauri::command]
@@ -9622,9 +9900,24 @@ pub async fn reply_to_finding(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::ReplyToFinding {
+                context,
+                finding_id,
+                body,
+                ai_assist,
+                client_id: id,
+            }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || reply_to_finding_impl(finding_id, body, ai_assist, id, view, &state)).await
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn reply_to_finding_impl(
     finding_id: String,
     body: String,
@@ -9795,6 +10088,14 @@ pub async fn update_thread_message(
     }
 
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::UpdateThreadMessage { context, id, body }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
@@ -11674,10 +11975,9 @@ pub fn get_background_task_log(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use er_engine::ai::{
-        load_ui_annotations, save_ui_annotations, ErGithubComments, ErQuestions, GithubComment,
-        PrivateAnnotation, UiAnnotation,
-    };
+    use er_engine::ai::{load_ui_annotations, save_ui_annotations, UiAnnotation};
+    #[cfg(not(feature = "v1-service"))]
+    use er_engine::ai::{ErGithubComments, ErQuestions, GithubComment, PrivateAnnotation};
 
     #[test]
     fn an_available_branch_error_names_the_command_once() {
@@ -12811,6 +13111,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn resolve_thread_updates_question_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -12863,6 +13164,7 @@ mod tests {
         });
     }
 
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn resolve_thread_updates_github_comment_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -14076,6 +14378,7 @@ mod tests {
         });
     }
 
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn reply_to_thread_refuses_a_parent_on_github() {
         let dir = ReviewFlowTestDir::new();

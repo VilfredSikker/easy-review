@@ -1196,6 +1196,11 @@ impl App {
         client_id: Option<String>,
         document_anchor: Option<LineAnchor>,
     ) -> Result<()> {
+        // An empty body is a cancelled composer, not a row: the old composer
+        // path returned before taking the anchor, and nothing may be written.
+        if text.is_empty() {
+            return Ok(());
+        }
         let (er_dir, comments_dir, repo_root, base_branch, pr_head_ref, is_remote, diff_hash) = {
             let tab = self.tab();
             (

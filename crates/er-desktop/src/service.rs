@@ -44,6 +44,11 @@ impl ServiceState {
             .clone()
     }
 
+    /// Sends one command and waits for the actor's bounded reply.
+    pub fn send(&self, key: &str, command: Command) -> Result<Reply, WorkspaceError> {
+        self.handle_for(key).send_and_wait(command)
+    }
+
     /// Sends one open command and waits for the actor's bounded reply.
     pub fn open_target(
         &self,

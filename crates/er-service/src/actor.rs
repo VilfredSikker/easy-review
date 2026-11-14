@@ -16,7 +16,7 @@ use crate::effect::resolve_target;
 use crate::guard::{self, ActorThread};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError, WorkspaceHandle};
 use crate::protocol::{Command, Event, Reply};
-use crate::workspace::{WorkspaceState, WorkspaceTarget, WorkspaceView};
+use crate::workspace::{WorkspaceState, WorkspaceView};
 
 /// The actor's dependencies. This is the seam P45 extends: the actor takes
 /// this value rather than the ports directly, so a new dependency (the shared
@@ -80,7 +80,7 @@ fn run(
     while let Ok(message) = rx.recv() {
         match message {
             ActorMsg::Command { command, reply } => {
-                handle_command(&deps, &tx, command, reply);
+                handle_command(&deps, &state, &tx, command, reply);
             }
             ActorMsg::EffectDone { result, reply } => {
                 apply(&mut state, result, reply, &subscribers, &view);
@@ -89,10 +89,47 @@ fn run(
     }
 }
 
+/// Runs one command's blocking work off the actor thread and sends the typed
+/// result back.
+fn spawn_effect(
+    tx: &Sender<ActorMsg>,
+    reply: ReplySender,
+    work: impl FnOnce() -> Result<Reply, WorkspaceError> + Send + 'static,
+) {
+    let tx = tx.clone();
+    // Unnamed on purpose: the storage guard lets only unnamed worker threads
+    // use a process-wide test root, and production spawns unnamed threads too.
+    let _ = thread::Builder::new().spawn(move || {
+        let result = work();
+        let _ = tx.send(ActorMsg::EffectDone { result, reply });
+    });
+}
+
+/// Whether an annotation command names the repo the actor is showing.
+///
+/// A command for another repo is a stale view: the user switched tabs between
+/// the paint and the write (ADR 0017). An actor with no opened target accepts
+/// any repo, since annotations do not require the workspace view.
+fn context_matches(state: &WorkspaceState, repo_root: &str) -> bool {
+    let view = state.view();
+    let Some(target) = view.active.and_then(|index| view.targets.get(index)) else {
+        return true;
+    };
+    repo_root.is_empty() || target.repo_root == repo_root
+}
+
+/// Answers a command whose view has moved on, without running its effect.
+fn refuse_stale(reply: ReplySender) {
+    let _ = reply.send(Err(WorkspaceError::Failed(
+        "the workspace moved to another target before the write".into(),
+    )));
+}
+
 /// Dispatches one command on the actor thread. This function must not touch a
-/// port: only the effect closure below may, and it runs on a new thread.
+/// port: only the effects it spawns may, and they run on new threads.
 fn handle_command(
     deps: &WorkspaceDeps,
+    state: &WorkspaceState,
     tx: &Sender<ActorMsg>,
     command: Command,
     reply: ReplySender,
@@ -100,13 +137,196 @@ fn handle_command(
     match command {
         Command::OpenTarget { target, replace: _ } => {
             let deps = deps.clone();
-            let tx = tx.clone();
-            let _ = thread::Builder::new()
-                .name("er-workspace-effect".into())
-                .spawn(move || {
-                    let result = resolve_target(&deps, &target);
-                    let _ = tx.send(ActorMsg::EffectDone { result, reply });
-                });
+            spawn_effect(tx, reply, move || {
+                resolve_target(&deps, &target).map(Reply::TargetOpened)
+            });
+        }
+        Command::ToggleReviewed { context, path } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::annotations::toggle_reviewed(&deps, &context, &path)
+                    .map(|changed| Reply::ReviewedChanged { changed })
+            });
+        }
+        Command::MarkReviewed {
+            context,
+            path,
+            reviewed,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::annotations::mark_reviewed(&deps, &context, &path, reviewed)
+                    .map(|changed| Reply::ReviewedChanged { changed })
+            });
+        }
+        Command::BulkReviewPillar {
+            context,
+            pillar_id,
+            reviewed,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::annotations::bulk_review_pillar(&deps, &context, &pillar_id, reviewed)
+                    .map(|changed| Reply::ReviewedChanged { changed })
+            });
+        }
+        Command::AddQuestion {
+            context,
+            target,
+            body,
+            side,
+            client_id,
+            reply_to,
+            finding_ref,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::annotations::add_question(
+                    &deps,
+                    &context,
+                    &target,
+                    &body,
+                    side.as_deref(),
+                    client_id,
+                    reply_to,
+                    finding_ref,
+                )
+                .map(|id| Reply::AnnotationWritten { id })
+            });
+        }
+        Command::AddNote {
+            context,
+            target,
+            body,
+            side,
+            client_id,
+            reply_to,
+            finding_ref,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::annotations::add_note(
+                    &deps,
+                    &context,
+                    &target,
+                    &body,
+                    side.as_deref(),
+                    client_id,
+                    reply_to,
+                    finding_ref,
+                )
+                .map(|id| Reply::AnnotationWritten { id })
+            });
+        }
+        Command::AddDocumentThread {
+            context,
+            file,
+            line,
+            line_end,
+            kind,
+            body,
+            source,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::annotations::add_document_thread(
+                    &deps, &context, &file, line, line_end, kind, &body, &source,
+                )
+                .map(|id| Reply::AnnotationWritten { id })
+            });
+        }
+        Command::ReplyToThread {
+            context,
+            parent_id,
+            body,
+            client_id,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::annotations::reply_to_thread(&deps, &context, &parent_id, &body, client_id)
+                    .map(|id| Reply::AnnotationWritten { id })
+            });
+        }
+        Command::UpdateThreadMessage { context, id, body } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            spawn_effect(tx, reply, move || {
+                crate::annotations::update_thread_message(&context, &id, &body)
+                    .map(|path| Reply::ThreadChanged { path })
+            });
+        }
+        Command::DeleteThread { context, id } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            spawn_effect(tx, reply, move || {
+                crate::annotations::delete_thread(&context, &id)
+                    .map(|path| Reply::ThreadChanged { path })
+            });
+        }
+        Command::ResolveThread { context, id } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            spawn_effect(tx, reply, move || {
+                crate::annotations::resolve_thread(&context, &id)
+                    .map(|path| Reply::ThreadChanged { path })
+            });
+        }
+        Command::PromoteToNote { context, id, body } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::annotations::promote_to_note(&deps, &context, &id, body)
+                    .map(|id| Reply::NotePromoted { id })
+            });
+        }
+        Command::ReplyToFinding {
+            context,
+            finding_id,
+            body,
+            ai_assist,
+            client_id,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::annotations::reply_to_finding(
+                    &deps,
+                    &context,
+                    &finding_id,
+                    &body,
+                    ai_assist,
+                    client_id,
+                )
+                .map(|(root_id, reply_id)| Reply::FindingReplied { root_id, reply_id })
+            });
         }
         #[cfg(test)]
         Command::Ping => {
@@ -130,23 +350,30 @@ fn handle_command(
 /// tells subscribers and the caller.
 fn apply(
     state: &mut WorkspaceState,
-    result: Result<WorkspaceTarget, WorkspaceError>,
+    result: Result<Reply, WorkspaceError>,
     reply: ReplySender,
     subscribers: &Mutex<Vec<Sender<Event>>>,
     view: &RwLock<Arc<WorkspaceView>>,
 ) {
     match result {
-        Ok(target) => {
-            let revision = state.apply_opened(target.clone());
+        Ok(reply_value) => {
+            let revision = match &reply_value {
+                Reply::TargetOpened(target) => state.apply_opened(target.clone()),
+                // An annotation write does not change the workspace view, but
+                // readers still need a revision to refresh on.
+                _ => state.bump_revision(),
+            };
             publish(view, state);
             broadcast(subscribers, Event::ViewPublished { revision });
-            broadcast(
-                subscribers,
-                Event::TargetOpened {
-                    target: target.clone(),
-                },
-            );
-            let _ = reply.send(Ok(Reply::TargetOpened(target)));
+            if let Reply::TargetOpened(target) = &reply_value {
+                broadcast(
+                    subscribers,
+                    Event::TargetOpened {
+                        target: target.clone(),
+                    },
+                );
+            }
+            let _ = reply.send(Ok(reply_value));
         }
         Err(error) => {
             let message = error.to_string();

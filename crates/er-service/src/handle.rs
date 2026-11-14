@@ -44,6 +44,10 @@ impl std::error::Error for WorkspaceError {}
 pub(crate) type ReplySender = Sender<Result<Reply, WorkspaceError>>;
 
 /// The actor's inbox.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one message per command; boxing would add an allocation on every send"
+)]
 pub(crate) enum ActorMsg {
     Command {
         command: Command,
@@ -51,7 +55,7 @@ pub(crate) enum ActorMsg {
     },
     /// An off-actor effect finished; the actor applies it and answers.
     EffectDone {
-        result: Result<crate::workspace::WorkspaceTarget, WorkspaceError>,
+        result: Result<Reply, WorkspaceError>,
         reply: ReplySender,
     },
 }

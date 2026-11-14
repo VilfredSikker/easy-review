@@ -388,3 +388,128 @@ pub fn apply_reviewed(
         reviewed.remove(path).is_some()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::parse_diff;
+    use er_store::Loaded;
+
+    const RAW: &str = "\
+diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,3 +1,3 @@
+ line one
+-old line
++new line
+ line three
+";
+
+    fn input<'a>(
+        dir: &'a str,
+        files: &'a [DiffFile],
+        kind: CommentType,
+        client_id: Option<&str>,
+    ) -> AnnotationInput<'a> {
+        AnnotationInput {
+            kind,
+            file: "src/a.rs",
+            hunk_idx: 0,
+            line_num: Some(2),
+            line_num_end: None,
+            text: "a body",
+            side: Some("RIGHT"),
+            reply_to: None,
+            finding_ref: None,
+            client_id: client_id.map(str::to_string),
+            attribution: ReplyAttribution::default(),
+            branch_diff_hash: "branch-hash",
+            diff_hash: "diff-hash",
+            file_data: files.first(),
+            document_anchor: None,
+            parent_document_anchor: None,
+            er_dir: dir,
+            comments_dir: dir,
+        }
+    }
+
+    #[test]
+    fn a_client_id_survives_every_kind_of_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_text = dir.path().to_string_lossy().into_owned();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let store = crate::store_registry::store();
+            let files = parse_diff(RAW);
+            let written = |kind, prefix| {
+                let id = format!("{prefix}opt-1");
+                let input = input(&dir_text, &files, kind, Some(id.as_str()));
+                super::write_annotation(&store, &input).unwrap()
+            };
+            assert_eq!(written(CommentType::Question, "q-").id, "q-opt-1");
+            assert_eq!(written(CommentType::Note, "n-").id, "n-opt-1");
+            assert_eq!(written(CommentType::GitHubComment, "c-").id, "c-opt-1");
+
+            let questions = crate::ai::annotation_store::load_questions(
+                &store,
+                &er_store::Scope::dir(&dir_text).unwrap(),
+            )
+            .unwrap();
+            let Loaded::Found(questions) = questions else {
+                panic!("questions were not written");
+            };
+            assert_eq!(questions.value.questions[0].id, "q-opt-1");
+            assert_eq!(questions.value.questions[0].anchor_status, "original");
+            assert_eq!(questions.value.questions[0].line_start, Some(2));
+            assert_eq!(questions.value.questions[0].line_content, "new line");
+        });
+    }
+
+    #[test]
+    fn a_mismatched_prefix_gets_a_fresh_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_text = dir.path().to_string_lossy().into_owned();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let store = crate::store_registry::store();
+            let files = parse_diff(RAW);
+            let input = input(&dir_text, &files, CommentType::Question, Some("n-opt-9"));
+            let written = super::write_annotation(&store, &input).unwrap();
+            assert!(written.id.starts_with("q-"), "got {}", written.id);
+            assert_ne!(written.id, "n-opt-9");
+        });
+    }
+
+    #[test]
+    fn the_target_names_the_file_not_the_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_text = dir.path().to_string_lossy().into_owned();
+        crate::storage::with_test_storage_root(dir.path(), || {
+            let store = crate::store_registry::store();
+            let files = parse_diff(RAW);
+            let mut input = input(&dir_text, &files, CommentType::Note, None);
+            // A different file carries its own content, so an implementation
+            // that read a selection instead would store the wrong anchor.
+            input.file = "src/a.rs";
+            let written = super::write_annotation(&store, &input).unwrap();
+            let Loaded::Found(notes) = crate::ai::annotation_store::load_notes(
+                &store,
+                &er_store::Scope::dir(&dir_text).unwrap(),
+            )
+            .unwrap() else {
+                panic!("notes were not written");
+            };
+            assert_eq!(notes.value.notes[0].id, written.id);
+            assert_eq!(notes.value.notes[0].file, "src/a.rs");
+            assert_eq!(notes.value.notes[0].line_content, "new line");
+        });
+    }
+
+    #[test]
+    fn apply_reviewed_is_idempotent() {
+        let mut map = HashMap::new();
+        assert!(apply_reviewed(&mut map, "a.rs", "h1".into(), true));
+        assert!(!apply_reviewed(&mut map, "a.rs", "h1".into(), true));
+        assert!(apply_reviewed(&mut map, "a.rs", "h1".into(), false));
+        assert!(!apply_reviewed(&mut map, "a.rs", "h1".into(), false));
+    }
+}
