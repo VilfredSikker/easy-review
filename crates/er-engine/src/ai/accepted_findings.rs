@@ -2,7 +2,7 @@
 //!
 //! Acceptance used to merge a run's kept findings into `review.json`, which
 //! made the general review a target for arena writes and re-stamped its diff
-//! hash with the run's (ADR 0035, ADR 0064). An accepted row is host output:
+//! hash with the run's (ADR 0035, ADR 0065). An accepted row is host output:
 //! it keeps the run it came from, the providers where the run recorded them,
 //! and the review-row id the import path produced.
 
