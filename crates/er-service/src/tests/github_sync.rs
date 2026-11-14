@@ -156,8 +156,8 @@ fn comments_path(bucket: &str) -> anyhow::Result<String> {
     )
 }
 
-/// A GitHub read on the actor thread trips the guard and kills the actor,
-/// so a sync that answers at all fetched on an effect thread.
+/// The guard covers `deps.ports()`, but the sync reads through the handle it
+/// carries, so the fake's thread record is what proves where each call ran.
 #[test]
 fn the_sync_fetch_runs_off_the_actor_thread() -> anyhow::Result<()> {
     let (dir, bucket) = seeded_bucket()?;
@@ -169,11 +169,13 @@ fn the_sync_fetch_runs_off_the_actor_thread() -> anyhow::Result<()> {
             matches!(reply, Ok(Reply::CommentsSynced { .. })),
             "the sync did not answer: {reply:?}"
         );
-        assert_eq!(
-            calls_named(&github, &["pr_comment_bundle_cached"]).len(),
-            1,
-            "{:?}",
-            github.calls()
+        assert_eq!(calls_named(&github, &["pr_comment_bundle_cached"]).len(), 1);
+        let calls = github.calls_with_threads();
+        let on_actor =
+            |(_, thread): &(_, Option<String>)| thread.as_deref() == Some("er-workspace-actor");
+        assert!(
+            !calls.iter().any(on_actor),
+            "GitHub was called on the actor: {calls:?}"
         );
         Ok(())
     })
