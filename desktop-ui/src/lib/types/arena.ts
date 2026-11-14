@@ -197,11 +197,25 @@ export interface FunnelStages {
   exited_at: Record<string, FunnelStage>;
 }
 
+/** D17's free round-two measurement, when the bucket holds the run's panel record. */
+export interface PanelSummary {
+  /** Rounds the panel actually ran. */
+  rounds: number;
+  /** Claims two or more reviewers backed after round 1. */
+  round1_confirmed: number;
+  /** The same count after the first cross round; absent for one round. */
+  round2_confirmed?: number;
+  /** Whether round two changed the quorum outcome. */
+  quorum_changed: boolean;
+}
+
 export interface ArenaRunSnapshot {
   run: ArenaRun;
   matrix: MatrixRow[];
   funnel: FunnelStages;
   arbiter?: ArbiterView;
+  /** Absent for a single-round run or one from before the panel. */
+  panel?: PanelSummary;
 }
 
 /**

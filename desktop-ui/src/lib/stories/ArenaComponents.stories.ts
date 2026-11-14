@@ -3,6 +3,7 @@ import ArenaVoteLegend from "$lib/components/arena/ArenaVoteLegend.svelte";
 import ArenaFinalTruth from "$lib/components/arena/ArenaFinalTruth.svelte";
 import ArenaFindingDetail from "$lib/components/arena/ArenaFindingDetail.svelte";
 import ArenaStatsStrip from "$lib/components/arena/ArenaStatsStrip.svelte";
+import ArenaPanelStates from "./ArenaPanelStates.svelte";
 import ArenaSwatch from "./ArenaSwatch.svelte";
 import { MOCK_ARENA_SNAPSHOT, MOCK_MODEL_ARENA_SNAPSHOT } from "$lib/arena/mockRun";
 
@@ -23,6 +24,11 @@ export const StatsStrip: StoryObj = {
       Component: ArenaStatsStrip,
       props: { snapshot: MOCK_ARENA_SNAPSHOT, effort: "High" },
     }) as never,
+};
+
+export const PanelStates: StoryObj = {
+  render: () => ({ Component: ArenaPanelStates }),
+  parameters: { layout: "fullscreen" },
 };
 
 export const FindingDetail: StoryObj = {
