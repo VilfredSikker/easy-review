@@ -41,7 +41,7 @@ pub(crate) use orchestrator::{reconcile_stale_runs_excluding, start_review_flow_
 pub use progress::{ArenaNotify, ArenaProgress, ArenaProgressState, ProgressEvent};
 pub use projections::{
     build_arbiter_view, build_funnel, build_matrix, build_snapshot, build_snapshot_with_config,
-    ArenaRunSnapshot,
+    build_snapshot_with_panel, ArenaRunSnapshot, PanelSummary,
 };
 pub use provenance::{normalized_raisers_for, providers_for};
 pub use schema::{

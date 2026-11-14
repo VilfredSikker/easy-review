@@ -284,10 +284,13 @@ mod tests {
         .unwrap();
         assert!(load_session(&store, &scope).is_none());
     }
-
 }
 
 #[cfg(all(test, feature = "ui"))]
+#[expect(
+    clippy::unwrap_used,
+    reason = "this test module needs the ui feature, which clippy's test exemption does not recognise"
+)]
 mod ui_tests {
     use super::*;
     use crate::app::TabState;
