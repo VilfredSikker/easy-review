@@ -232,6 +232,7 @@ fn arena_context(bucket: &str) -> ArenaContext {
         tab: TabContext {
             er_dir: bucket.to_string(),
             comments_dir: bucket.to_string(),
+            is_remote: false,
             repo_root: bucket.to_string(),
             base_branch: "main".to_string(),
             scope: "branch".to_string(),
