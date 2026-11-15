@@ -86,6 +86,8 @@ commands.allow = [
   "list_ai_providers",
   "set_ai_selection",
   "get_config_hub",
+  "get_risk_rules",
+  "get_risk_files",
   "set_review_flow_models",
   "apply_config_patch",
   "save_config_global_cmd",

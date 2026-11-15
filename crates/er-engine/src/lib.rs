@@ -8,8 +8,8 @@ pub mod app;
 pub mod arena;
 pub mod config;
 pub use config::{
-    apply_config_field, config_hub_items_for_scope, desktop_settings_snapshot, ConfigFieldValue,
-    ConfigHubFieldDto, DesktopSettingsSnapshot, SettingsScope,
+    apply_config_field, config_hub_items_for_scope, ConfigFieldValue, ConfigHubFieldDto,
+    SettingsScope,
 };
 pub mod agent_runtime;
 pub mod annotations;
@@ -37,11 +37,14 @@ pub mod model_discovery;
 pub mod os_launch;
 pub mod paths;
 pub mod ports;
+pub mod pr_open_cache;
+pub mod pr_open_entry;
 pub mod pr_resolve;
 pub mod pr_review_feedback;
 pub mod projects_pins;
 pub mod release_install;
 pub mod release_update;
+pub mod remote_pr_open_cache;
 pub mod review_flow_driver;
 pub mod review_queue;
 pub mod session_store;
@@ -53,6 +56,7 @@ pub mod store_registry;
 pub mod sync;
 pub mod tab_key;
 pub use tab_key::TabKey;
+pub mod tabs_record;
 pub mod task_target;
 pub mod uninstall;
 #[cfg(feature = "watch")]

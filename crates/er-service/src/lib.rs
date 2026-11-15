@@ -15,6 +15,7 @@
 
 mod actor;
 mod annotations;
+mod app_registry;
 pub mod arena;
 mod effect;
 mod flows;
@@ -30,6 +31,7 @@ mod settings;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
+pub use app_registry::{AppCommand, AppRegistry, TabEntry, TabsView};
 pub use flows::read_flow_run;
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use pending_review::OWN_PR_APPROVAL_REFUSED;

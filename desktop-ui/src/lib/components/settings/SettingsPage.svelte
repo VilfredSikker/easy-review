@@ -24,9 +24,9 @@
     RISK_RULE_PATCH_KEY,
     type RiskFileRow,
     type RiskRuleRow,
-    type RiskSettingsPayload,
     type RiskTier,
   } from "./riskRules";
+  import { changedPaths, getRiskFiles, getRiskRules, riskTarget } from "$lib/riskRequests";
 
   interface Props {
     onBack: () => void;
@@ -73,19 +73,41 @@
   );
 
   function applySettings(res: GetConfigHubResponse) {
-    const settings: GetConfigHubResponse["settings"] & RiskSettingsPayload = res.settings;
-    generalFields = settings.general;
-    terminalFields = settings.terminal;
+    generalFields = res.settings.general;
+    terminalFields = res.settings.terminal;
     providers = res.providers;
     reviewModels = res.reviewModels;
     familyOptions = res.familyOptions ?? [];
     activeEffort = res.activeEffort ?? "Auto";
-    riskRepo = settings.riskRepo ?? "";
-    riskRules = settings.riskRules ?? [];
-    riskDefault = settings.riskDefault ?? "ai";
-    riskFiles = settings.riskFiles ?? [];
     for (const w of res.warnings ?? []) {
       app.showToast("info", w);
+    }
+  }
+
+  // The rule table belongs to the active tab's repo and counts its changed
+  // files. Read untracked: the page loads it on open and after a rule edit,
+  // not on every snapshot.
+  async function loadRisk(): Promise<RiskRuleRow[] | null> {
+    const { target, paths } = untrack(() => ({
+      target: riskTarget(app.snapshot),
+      paths: changedPaths(app.snapshot),
+    }));
+    if (!target) {
+      riskRepo = "";
+      riskRules = [];
+      riskFiles = [];
+      return [];
+    }
+    try {
+      const [view, resolved] = await Promise.all([getRiskRules(target), getRiskFiles(target, paths)]);
+      riskRepo = view.repo;
+      riskDefault = view.default;
+      riskRules = resolved.rules;
+      riskFiles = resolved.files;
+      return riskRules;
+    } catch (e) {
+      app.showToast("error", `get_risk_rules: ${e}`);
+      return null;
     }
   }
 
@@ -94,7 +116,8 @@
   // every pick in the AI tab would scroll the page away from it.
   async function reload() {
     try {
-      applySettings(await invoke<GetConfigHubResponse>("get_config_hub", {}));
+      const [hub] = await Promise.all([invoke<GetConfigHubResponse>("get_config_hub", {}), loadRisk()]);
+      applySettings(hub);
     } catch (e) {
       app.showToast("error", `get_config_hub: ${e}`);
     } finally {
@@ -132,7 +155,7 @@
   async function editRiskRule(edit: string): Promise<RiskRuleRow[] | null> {
     const res = await send(RISK_RULE_PATCH_KEY, edit);
     if (!res) return null;
-    return (res.settings as GetConfigHubResponse["settings"] & RiskSettingsPayload).riskRules ?? [];
+    return loadRisk();
   }
 
   // Hands off to the agent and returns as soon as the task is queued — it reads

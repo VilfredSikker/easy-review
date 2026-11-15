@@ -8,9 +8,10 @@ const page = read("SettingsPage.svelte");
 const risk = read("RiskRulesSection.svelte");
 
 describe("SettingsPage risk rules", () => {
-  it("reads the merged rule table off the settings payload", () => {
-    expect(page).toContain("riskRules = settings.riskRules ?? [];");
-    expect(page).toContain("riskFiles = settings.riskFiles ?? [];");
+  it("reads the merged rule table from the risk commands, for the paths it names", () => {
+    expect(page).toContain("getRiskFiles(target, paths)");
+    expect(page).toContain("riskRules = resolved.rules;");
+    expect(page).toContain("riskFiles = resolved.files;");
   });
 
   it("writes rules through the engine's one patch key", () => {
