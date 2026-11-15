@@ -82,10 +82,12 @@ impl TabState {
         allow_preload: bool,
     ) -> Result<(String, Option<String>)> {
         self.load_diff_with_preview_head_using(scope, allow_preload, |tab, scope| {
-            let head = tab.fetch_preview_head();
-            let raw = tab.fetch_tab_raw_diff(scope)?;
-            let confirmed_head = tab.fetch_preview_head();
-            Ok((raw, if head == confirmed_head { head } else { None }))
+            crate::diff_load::fetch_raw_with_preview_head(
+                &tab.ports,
+                &tab.identity(),
+                scope,
+                tab.committed_unpushed,
+            )
         })
     }
 
@@ -101,27 +103,6 @@ impl TabState {
             }
         }
         fetch(self, scope)
-    }
-
-    fn fetch_preview_head(&self) -> Option<String> {
-        if self.pr_number.is_some()
-            && (self.is_remote()
-                || self.mode == DiffMode::PrDiff
-                || (self.mode == DiffMode::Tour && self.tour_is_pr)
-                || (self.local_branch_view.is_some() && self.local_branch_checkout_root.is_none()))
-        {
-            self.remote_repo
-                .as_deref()
-                .and_then(|slug| slug.split_once('/'))
-                .and_then(|(owner, repo)| {
-                    self.ports
-                        .github
-                        .pr_head_oid_remote(owner, repo, self.pr_number.unwrap_or(0))
-                        .ok()
-                })
-        } else {
-            None
-        }
     }
 
     pub(super) fn capture_preview_rename_blobs(&mut self) {
