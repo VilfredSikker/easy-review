@@ -85,6 +85,10 @@ pub(crate) enum ActorMsg {
     },
     /// A live arena run wrote progress; readers refresh.
     ArenaChanged,
+    /// A flow call finished; the actor publishes what it changed.
+    FlowsChanged(crate::flows::FlowsUpdate),
+    /// A flow stage finished; the flows advance.
+    FlowTick,
 }
 
 /// A handle to one workspace actor.

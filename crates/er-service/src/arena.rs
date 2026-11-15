@@ -84,8 +84,7 @@ fn bucket_for(
     arena::bucket_for_run(controls, &arena.buckets, &arena.tab.er_dir, run_id)
 }
 
-/// The flag path has no review-flow host yet, so a run is flow-owned when its
-/// record says so.
+/// A run is flow-owned when its record says so, whichever host started it.
 fn is_flow_run(run: &er_engine::arena::ArenaRun) -> bool {
     run.config.run_kind == ArenaRunKind::ReviewFlow
 }
@@ -296,22 +295,4 @@ fn validate_findings(
     )
     .map_err(|error| failed("start the validation", error))?;
     Ok(Reply::ArenaValidating { run_id })
-}
-
-/// Load-time recovery: marks stale arena runs and a dead owner's running
-/// workflow stages in each bucket. Never submits a job. Returns the buckets
-/// whose workflow can be re-run.
-pub(crate) fn reconcile(controls: &ArenaRunControls, buckets: &[String]) -> Reply {
-    let mut resumable = Vec::new();
-    for bucket in buckets {
-        let _ = arena::reconcile_stale_runs_excluding(Path::new(bucket), |run_id| {
-            controls.contains(run_id)
-        });
-        if er_engine::workflow_recovery::reconcile_workflow_record(bucket)
-            .is_some_and(|record| record.resumable())
-        {
-            resumable.push(bucket.clone());
-        }
-    }
-    Reply::Reconciled { resumable }
 }

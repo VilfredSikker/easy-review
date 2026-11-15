@@ -3,7 +3,7 @@
 use super::ReviewFlows;
 use crate::ai::review_flow::{FlowDepth, ReviewFlow};
 use crate::ai::workflow_record::{
-    self, StageStatus, WorkflowHolder, WorkflowKind, WorkflowOutcome, WorkflowRecord,
+    self, ResumePlan, StageStatus, WorkflowHolder, WorkflowKind, WorkflowOutcome, WorkflowRecord,
 };
 use er_store::Scope;
 
@@ -84,6 +84,20 @@ impl ReviewFlows {
             record.holder = None;
         });
     }
+}
+
+/// What a re-run of `record` does against the prepared diff at
+/// `current_diff_hash`: the stages it resumes, or `None` when it starts a new
+/// flow. Only a Quick or Standard record at the same diff generation resumes;
+/// anything else re-confirms Deep and re-runs the panel rather than trusting
+/// a partial one.
+pub fn rerun_plan(record: &WorkflowRecord, current_diff_hash: &str) -> Option<ResumePlan> {
+    let plan = record.plan_resume(current_diff_hash);
+    let resumes = matches!(
+        record.kind,
+        Some(WorkflowKind::Quick | WorkflowKind::Standard)
+    );
+    (resumes && !plan.restart).then_some(plan)
 }
 
 pub fn flow_from_record(record: &WorkflowRecord) -> ReviewFlow {

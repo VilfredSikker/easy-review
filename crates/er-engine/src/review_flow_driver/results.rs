@@ -1,13 +1,15 @@
 //! Read-only projection and explicit acceptance for review-flow arena results.
 
-use super::super::background::BackgroundTaskTarget;
-use super::super::{App, DiffMode};
+use super::{ReviewFlowHost, ReviewFlows};
 use crate::ai::accepted_findings::record_accepted;
-use crate::ai::review_flow::FlowState;
+use crate::ai::review_flow::{FlowState, ReviewFlow};
+#[cfg(test)]
+use crate::app::{App, DiffMode};
 use crate::arena::{
     accepted_finding_rows, load_run, mark_accepted, save_run, ArenaPaths, ArenaRun, ArenaRunKind,
     RunStatus, Verdict,
 };
+use crate::task_target::BackgroundTaskTarget;
 use anyhow::{bail, Context, Result};
 use er_store::{ArtifactKey, ArtifactSnapshot, ArtifactStore, Loaded, RelPath, Scope};
 use serde::{Deserialize, Serialize};
@@ -153,55 +155,23 @@ pub struct ReviewFlowResultFinding {
     pub selectable: bool,
 }
 
-impl App {
+impl ReviewFlows {
     /// Load a flow's surviving results without importing or changing any files.
     /// Both the bucket and run ID are required; this never follows the active tab.
     pub fn review_flow_results(&self, er_dir: &str, run_id: &str) -> Result<ReviewFlowResults> {
-        let target = self.require_review_flow_run_target(er_dir, run_id)?;
-        self.validate_current_flow_identity(er_dir, run_id)?;
-        let run = load_run(&ArenaPaths::for_run(Path::new(er_dir), run_id))?;
-        validate_flow_result_run(&run, run_id)?;
-        validate_run_target(&run, target, &self.review_flows.flows[er_dir].diff_hash)?;
-
-        let findings = run
-            .findings
-            .iter()
-            .filter(|finding| matches!(finding.verdict, Verdict::Kept | Verdict::Escalated))
-            .map(|finding| {
-                let accepted =
-                    finding.accepted_at.is_some() || run.accepted_finding_ids.contains(&finding.id);
-                ReviewFlowResultFinding {
-                    id: finding.id.clone(),
-                    file: finding.file.clone(),
-                    line: finding.line,
-                    title: finding.title.clone(),
-                    body: finding.body.clone(),
-                    confidence: finding.confidence,
-                    raised_by: crate::arena::normalized_raisers_for(
-                        finding,
-                        &run.reviewers,
-                        run.config.agent_kind.as_deref(),
-                    ),
-                    verdict: finding.verdict.clone(),
-                    accepted,
-                    selectable: !accepted
-                        && matches!(finding.verdict, Verdict::Kept | Verdict::Escalated),
-                }
-            })
-            .collect();
-
-        Ok(ReviewFlowResults {
-            er_dir: target.er_dir.clone(),
-            run_id: run.id,
-            diff_hash: run.diff_hash,
-            findings,
-        })
+        flow_run_results(
+            self.flows.get(er_dir),
+            self.review_flow_run_target(er_dir, run_id),
+            er_dir,
+            run_id,
+        )
     }
 
     /// Explicitly import only selected, still-eligible findings from a flow run.
     /// Admission, captured-view checks, and a fresh diff hash guard the write.
     pub fn accept_review_flow_findings(
         &mut self,
+        host: &mut dyn ReviewFlowHost,
         er_dir: &str,
         run_id: &str,
         finding_ids: Vec<String>,
@@ -209,13 +179,15 @@ impl App {
         if finding_ids.is_empty() {
             bail!("Select at least one finding to accept");
         }
-        let target = self.require_review_flow_run_target(er_dir, run_id)?.clone();
-        self.check_review_bucket_admission(er_dir)?;
-        self.recover_arena_bucket(er_dir)?;
-        let lease = self.acquire_review_flow_lease(er_dir)?;
+        let target =
+            require_run_target(self.review_flow_run_target(er_dir, run_id), er_dir)?.clone();
+        crate::arena::check_bucket_admission(er_dir)?;
+        host.recover_arena_bucket(er_dir)?;
+        let lease = host.acquire_review_flow_lease(er_dir)?;
 
-        let result = self.accept_flow_findings_with_lease(er_dir, run_id, &target, finding_ids);
-        let release = self.release_review_flow_lease(&lease);
+        let result =
+            self.accept_flow_findings_with_lease(host, er_dir, run_id, &target, finding_ids);
+        let release = host.release_review_flow_lease(&lease);
         match (result, release) {
             (Ok(count), Ok(())) => Ok(count),
             (Err(error), Ok(())) => Err(error),
@@ -228,26 +200,15 @@ impl App {
 
     fn accept_flow_findings_with_lease(
         &mut self,
+        host: &mut dyn ReviewFlowHost,
         er_dir: &str,
         run_id: &str,
         target: &BackgroundTaskTarget,
         finding_ids: Vec<String>,
     ) -> Result<usize> {
-        self.validate_current_flow_identity(er_dir, run_id)?;
+        validate_current_flow_identity(self.flows.get(er_dir), run_id)?;
 
-        let tab_index = self
-            .tabs
-            .iter()
-            .position(|tab| tab_matches_target(tab, target))
-            .context("The captured review target is no longer open; start a new Review")?;
-        let raw_diff = self.tabs[tab_index]
-            .fetch_tab_raw_diff(&target.scope)
-            .context("fetch the current diff for review acceptance")?;
-        let globs = crate::projects_pins::review_ignore_globs_for_repo(
-            &target.repo_root,
-            target.remote_repo.as_deref(),
-        );
-        let current_diff = crate::git::filter_raw_diff_exclude_globs(&raw_diff, &globs);
+        let current_diff = host.current_review_diff(target)?;
         if current_diff.trim().is_empty()
             || crate::ai::compute_diff_hash(&current_diff)
                 != load_run(&ArenaPaths::for_run(Path::new(er_dir), run_id))?.diff_hash
@@ -258,7 +219,7 @@ impl App {
         let paths = ArenaPaths::for_run(Path::new(er_dir), run_id);
         let mut run = load_run(&paths)?;
         validate_flow_result_run(&run, run_id)?;
-        validate_run_target(&run, target, &self.review_flows.flows[er_dir].diff_hash)?;
+        validate_run_target(&run, target, &self.flows[er_dir].diff_hash)?;
         if run.status != RunStatus::Complete {
             bail!("Only completed review-flow results can be accepted");
         }
@@ -294,7 +255,7 @@ impl App {
         // live in their own artifact. The run's own record is saved after the
         // artifact, and a failed save rolls the artifact back so the two never
         // disagree.
-        let now = crate::app::chrono_now();
+        let now = crate::sync::chrono_now();
         let rows = accepted_finding_rows(&run, &finding_ids, &now);
         if rows.is_empty() {
             bail!("Selection contains a missing, dropped, or already accepted finding");
@@ -335,10 +296,7 @@ impl App {
             };
         }
 
-        for tab in self.tabs.iter_mut().filter(|tab| tab.er_dir() == er_dir) {
-            tab.reload_ai_state();
-        }
-        if let Some(flow) = self.review_flows.get_mut(er_dir) {
+        if let Some(flow) = self.flows.get_mut(er_dir) {
             if let FlowState::Done {
                 awaiting_accept, ..
             } = &mut flow.state
@@ -355,34 +313,80 @@ impl App {
                 *awaiting_accept = remaining;
             }
         }
-        self.review_flows.bump_review_flow_revision();
-        self.notify(&format!("Accepted {} finding(s) into Review", rows.len()));
+        self.bump_review_flow_revision();
+        host.notify(&format!("Accepted {} finding(s) into Review", rows.len()));
         Ok(rows.len())
     }
+}
 
-    fn require_review_flow_run_target(
-        &self,
-        er_dir: &str,
-        run_id: &str,
-    ) -> Result<&BackgroundTaskTarget> {
-        let target = self
-            .review_flow_run_target(er_dir, run_id)
-            .context("Unknown or stale review-flow run")?;
-        if target.er_dir != er_dir {
-            bail!("Review-flow run bucket does not match");
-        }
-        Ok(target)
+/// The results of `run_id` for a flow a host published: its projection and
+/// the target it captured when the run started. A reader that holds only the
+/// published copy checks a run the same way the flow's owner does.
+pub fn flow_run_results(
+    flow: Option<&ReviewFlow>,
+    target: Option<&BackgroundTaskTarget>,
+    er_dir: &str,
+    run_id: &str,
+) -> Result<ReviewFlowResults> {
+    let target = require_run_target(target, er_dir)?;
+    let flow = validate_current_flow_identity(flow, run_id)?;
+    let run = load_run(&ArenaPaths::for_run(Path::new(er_dir), run_id))?;
+    validate_flow_result_run(&run, run_id)?;
+    validate_run_target(&run, target, &flow.diff_hash)?;
+
+    let findings = run
+        .findings
+        .iter()
+        .filter(|finding| matches!(finding.verdict, Verdict::Kept | Verdict::Escalated))
+        .map(|finding| {
+            let accepted =
+                finding.accepted_at.is_some() || run.accepted_finding_ids.contains(&finding.id);
+            ReviewFlowResultFinding {
+                id: finding.id.clone(),
+                file: finding.file.clone(),
+                line: finding.line,
+                title: finding.title.clone(),
+                body: finding.body.clone(),
+                confidence: finding.confidence,
+                raised_by: crate::arena::normalized_raisers_for(
+                    finding,
+                    &run.reviewers,
+                    run.config.agent_kind.as_deref(),
+                ),
+                verdict: finding.verdict.clone(),
+                accepted,
+                selectable: !accepted
+                    && matches!(finding.verdict, Verdict::Kept | Verdict::Escalated),
+            }
+        })
+        .collect();
+
+    Ok(ReviewFlowResults {
+        er_dir: target.er_dir.clone(),
+        run_id: run.id,
+        diff_hash: run.diff_hash,
+        findings,
+    })
+}
+
+fn require_run_target<'a>(
+    target: Option<&'a BackgroundTaskTarget>,
+    er_dir: &str,
+) -> Result<&'a BackgroundTaskTarget> {
+    let target = target.context("Unknown or stale review-flow run")?;
+    if target.er_dir != er_dir {
+        bail!("Review-flow run bucket does not match");
     }
+    Ok(target)
+}
 
-    fn validate_current_flow_identity(&self, er_dir: &str, run_id: &str) -> Result<()> {
-        if self
-            .review_flows
-            .get(er_dir)
-            .is_none_or(|flow| flow.arena_run_id.as_deref() != Some(run_id))
-        {
-            bail!("This review-flow result no longer matches the current flow");
-        }
-        Ok(())
+fn validate_current_flow_identity<'a>(
+    flow: Option<&'a ReviewFlow>,
+    run_id: &str,
+) -> Result<&'a ReviewFlow> {
+    match flow {
+        Some(flow) if flow.arena_run_id.as_deref() == Some(run_id) => Ok(flow),
+        _ => bail!("This review-flow result no longer matches the current flow"),
     }
 }
 
@@ -422,31 +426,6 @@ fn arena_scope(scope: &str) -> Result<crate::arena::ArenaScope> {
         _ => bail!("Unsupported review-flow result scope"),
     }
 }
-
-fn tab_matches_target(tab: &crate::app::TabState, target: &BackgroundTaskTarget) -> bool {
-    let branch_ref = tab
-        .local_branch_view
-        .as_deref()
-        .unwrap_or(tab.current_branch.as_str());
-    let scope_matches = match target.scope.as_str() {
-        "branch" => matches!(
-            tab.mode,
-            DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour
-        ),
-        "staged" => tab.mode == DiffMode::Staged,
-        "unstaged" => tab.mode == DiffMode::Unstaged,
-        _ => false,
-    };
-    tab.repo_root == target.repo_root
-        && tab.er_dir() == target.er_dir
-        && branch_ref == target.branch_label
-        && tab.base_branch == target.base_branch
-        && tab.pr_number == target.pr_number
-        && tab.remote_repo == target.remote_repo
-        && tab.is_remote() == (target.remote_repo.is_some() && tab.local_branch_view.is_none())
-        && scope_matches
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
