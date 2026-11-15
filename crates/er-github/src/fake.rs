@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[derive(Debug, Default)]
 pub struct FakeGitHub {
     state: Mutex<FakeState>,
+    /// Held by a test to keep a bundle read in flight.
+    bundle_hold: Mutex<()>,
 }
 
 #[expect(
@@ -25,8 +27,6 @@ pub struct FakeGitHub {
 #[derive(Debug, Default)]
 struct FakeState {
     calls: Vec<String>,
-    /// The name of the thread each of `calls` ran on.
-    call_threads: Vec<Option<String>>,
     run_pr_action: Option<Result<(), GhError>>,
     delete_remote_branch: Option<Result<(), GhError>>,
     pr_state: Option<Result<String, GhError>>,
@@ -121,22 +121,19 @@ impl FakeGitHub {
     fn record(&self, call: String) -> MutexGuard<'_, FakeState> {
         let mut state = self.lock();
         state.calls.push(call);
-        let thread = std::thread::current().name().map(str::to_string);
-        state.call_threads.push(thread);
         state
-    }
-
-    /// Every call so far with the name of the thread it ran on, so a test can
-    /// prove which thread reached GitHub.
-    pub fn calls_with_threads(&self) -> Vec<(String, Option<String>)> {
-        let state = self.lock();
-        let threads = state.call_threads.iter().cloned();
-        state.calls.iter().cloned().zip(threads).collect()
     }
 
     /// Every call made so far, in order.
     pub fn calls(&self) -> Vec<String> {
         self.lock().calls.clone()
+    }
+
+    /// Holds every `pr_comment_bundle_cached` call, once recorded, until the guard drops.
+    pub fn hold_pr_comment_bundle(&self) -> MutexGuard<'_, ()> {
+        self.bundle_hold
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     #[must_use]
@@ -1164,12 +1161,17 @@ impl GitHub for FakeGitHub {
         pr: u64,
         repo_root: Option<&str>,
     ) -> Result<Arc<PrCommentBundle>, GhError> {
-        self.record(format!(
+        let answer = self.record(format!(
             "pr_comment_bundle_cached(owner={owner:?}, repo={repo:?}, pr={pr:?}, repo_root={repo_root:?})"
         ))
         .pr_comment_bundle_cached
-        .clone()
-        .unwrap_or_else(|| Err(unscripted("pr_comment_bundle_cached")))
+        .clone();
+        drop(
+            self.bundle_hold
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        answer.unwrap_or_else(|| Err(unscripted("pr_comment_bundle_cached")))
     }
 
     fn invalidate_comments(&self) {
