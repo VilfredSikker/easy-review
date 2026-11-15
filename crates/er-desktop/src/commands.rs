@@ -12479,7 +12479,9 @@ mod tests {
     }
 
     /// Every config command but `run_uninstall` runs for real against a held
-    /// App lock and leaves its mark on the settings actor. `run_uninstall`
+    /// App lock, and each is checked by an effect only the settings actor
+    /// produces: a reload of a file repaired mid-session, a save, a preview,
+    /// an edit, a reordered model group, a raised revision. `run_uninstall`
     /// deletes files, so only its route is checked, by the source scan.
     #[cfg(feature = "v1-service")]
     #[test]
@@ -12538,9 +12540,33 @@ mod tests {
                 assert!(result.is_ok(), "{what} failed: {result:?}");
             };
 
-            locked("get_config_hub", |s| cc::config_hub(s).map(drop));
+            // Break the file mid-session and repair it: only the actor's
+            // reload, sent when Settings reopens, adopts the repaired theme.
+            let config_path = dir.path().join("settings").join("config.toml");
+            let theme = |value: &str| {
+                settings.send_and_wait(er_service::SettingsCommand::ApplyConfigPatch {
+                    key: "display.theme".to_string(),
+                    value: er_engine::config::ConfigFieldValue::String(value.to_string()),
+                })
+            };
+            assert!(theme("first-theme").is_ok(), "the first save failed");
+            let Ok(good) = std::fs::read_to_string(&config_path) else {
+                panic!("the first save wrote no config.toml");
+            };
+            assert!(std::fs::write(&config_path, "not = = toml").is_ok());
+            assert!(theme("while-broken").is_err(), "a save over a broken file");
+            let repaired = good.replace("first-theme", "repaired-theme");
+            assert!(std::fs::write(&config_path, repaired).is_ok());
+            let reopened = while_the_app_is_locked(&state, "get_config_hub", cc::config_hub);
+            let Ok(reopened) = reopened else {
+                panic!("get_config_hub failed: {reopened:?}");
+            };
+            assert_eq!(theme_row(&reopened).as_deref(), Some("repaired-theme"));
+            assert_eq!(settings.view().config.display.theme, "repaired-theme");
+
+            assert!(std::fs::remove_file(&config_path).is_ok());
             locked("save_config_global_cmd", |s| cc::save_global(s).map(drop));
-            assert!(dir.path().join("settings").join("config.toml").exists());
+            assert!(config_path.exists());
 
             locked("preview_uninstall", |s| {
                 let none = UninstallOptions {
@@ -12610,6 +12636,11 @@ mod tests {
                 .providers
                 .contains_key("fixture-cli"));
 
+            let mut fast = settings.view().config.ai_hub.review_models.fast.clone();
+            assert!(
+                fast.len() >= 2 && fast[0] != fast[1],
+                "the reorder needs two distinct fast models: {fast:?}"
+            );
             locked("set_review_flow_models", |s| {
                 let mut groups = s
                     .service
@@ -12622,13 +12653,16 @@ mod tests {
                 groups.fast.reverse();
                 cc::review_flow_models(s, groups).map(drop)
             });
+            fast.reverse();
+            assert_eq!(settings.view().config.ai_hub.review_models.fast, fast);
 
-            // An unknown provider has no models command, so nothing shells out.
+            // An unknown provider has no models command, so nothing shells
+            // out; the actor still publishes the empty discovery.
             let before = settings.view().revision;
             locked("refresh_ai_models", |s| {
                 cc::refresh_models(s, Some("no-such-provider".into()), true).map(drop)
             });
-            assert!(settings.view().revision >= before);
+            assert!(settings.view().revision > before);
         });
     }
 
