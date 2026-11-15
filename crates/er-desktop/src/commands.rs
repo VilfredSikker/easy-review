@@ -10593,8 +10593,7 @@ fn service_new_tab(state: &AppState) -> Result<AppSnapshot, String> {
         pr_number: None,
         pr_head_ref: None,
         base_ref: None,
-        browser_url: None,
-        browser_layout: None,
+        extra: serde_json::Map::new(),
     };
     service_tab_command(state, er_service::AppCommand::NewTab { tab })
 }
@@ -12750,8 +12749,7 @@ mod tests {
             pr_number: None,
             pr_head_ref: None,
             base_ref: None,
-            browser_url: None,
-            browser_layout: None,
+            extra: serde_json::Map::new(),
         };
         let dir = ReviewFlowTestDir::new();
         let Ok(tmp) = tempfile::tempdir() else {
@@ -12814,6 +12812,90 @@ mod tests {
                 matches!(on_disk, Ok(None)),
                 "the desktop saved the open cache"
             );
+        });
+    }
+
+    /// With the feature on, both prefetch commands go to the app registry,
+    /// which warms its caches through the service's ports; the desktop's own
+    /// caches stay empty.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_prefetch_commands_route_with_the_feature_on() {
+        use er_engine::github::FakeGitHub;
+        use std::time::{Duration, Instant};
+
+        let wait_for = |ready: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            ready()
+        };
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let hint = PrOpenHint {
+                base_ref: "main".to_string(),
+                head_ref: "feature".to_string(),
+                head_oid: "head-1".to_string(),
+                updated_at: "2026-11-15T00:00:00Z".to_string(),
+                title: "T".to_string(),
+                author: "octo".to_string(),
+            };
+            let github = Arc::new(
+                FakeGitHub::default()
+                    .with_pr_diff(Ok("diff --git a/y b/y\n".to_string()))
+                    .with_pr_commits(Ok(Vec::new()))
+                    .with_pr_head_oid_remote(Ok("head-1".to_string()))
+                    .with_overview_remote(Ok(Some(pr_overview_from_hint(&hint, 7, None))))
+                    .with_pr_diff_remote(Ok("diff --git a/x b/x\n".to_string()))
+                    .with_commits_remote(Ok(Vec::new())),
+            );
+            let ports = er_engine::ports::Ports {
+                git: Arc::new(
+                    er_git::FakeGit::default().with_rev_parse_verify(Ok(Some("base".to_string()))),
+                ),
+                github: github.clone(),
+            };
+            let mut state = review_flow_test_state(&dir);
+            state.service = Arc::new(crate::service::ServiceState::new(ports));
+            let project_id = projects::ensure_remote_project("acme/widgets").expect("project");
+            let repo_root = projects::load()
+                .projects
+                .iter()
+                .find(|p| p.id == project_id)
+                .map(|p| p.root_path.clone())
+                .expect("the project is saved");
+
+            prefetch_remote_pr_open_impl("acme".into(), "widgets".into(), 7, &state)
+                .expect("remote prefetch");
+            prefetch_pr_open_impl(project_id.clone(), 7, hint, &state).expect("local prefetch");
+
+            let registry = state.service.app_registry();
+            let key = pr_open_cache_key(&project_id, &repo_root, 7);
+            assert!(
+                wait_for(&|| registry
+                    .remote_pr_open_entry("acme", "widgets", 7)
+                    .is_some()),
+                "the remote prefetch did not reach the registry"
+            );
+            assert!(
+                wait_for(&|| registry.pr_open_entry(&key).is_some()),
+                "the local prefetch did not reach the registry"
+            );
+            let calls = github.calls();
+            for sent in ["pr_diff_remote", "overview_remote", "pr_diff", "pr_commits"] {
+                assert!(
+                    calls
+                        .iter()
+                        .any(|call| call.split('(').next() == Some(sent)),
+                    "{sent} did not go through the port: {calls:?}"
+                );
+            }
+            assert!(state.remote_pr_open_cache.lock().unwrap().is_empty());
+            assert!(state.pr_open_cache.lock().unwrap().is_empty());
         });
     }
 

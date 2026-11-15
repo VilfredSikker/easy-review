@@ -191,8 +191,7 @@ mod tests {
                 pr_number: None,
                 pr_head_ref: None,
                 base_ref: None,
-                browser_url: None,
-                browser_layout: None,
+                extra: serde_json::Map::new(),
             };
             let added = service.send_app(er_service::AppCommand::NewTab { tab });
             assert!(added.is_ok(), "{added:?}");
