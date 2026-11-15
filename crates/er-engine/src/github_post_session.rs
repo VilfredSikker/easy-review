@@ -7,8 +7,10 @@
 //! reuses the client id so the pending attempt is reconciled instead of posting
 //! twice.
 //!
-//! The App and the workspace actor each keep a session: the state here is the
-//! retry map and the ticket, not either front end's tab.
+//! The App builds its session from one pending map shared by all its tabs. The
+//! service keeps one session in `WorkspaceDeps`, which every workspace actor in
+//! the process clones, so all actors share it. The state here is the retry map
+//! and the ticket, not either front end's tab.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
