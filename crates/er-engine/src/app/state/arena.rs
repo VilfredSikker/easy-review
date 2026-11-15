@@ -8,9 +8,9 @@ use crate::git::filter_raw_diff_by_paths;
 use anyhow::Result;
 use std::path::Path;
 
-use super::review_flow_admission::ReviewFlowLease;
 use super::App;
 use super::TabState;
+use crate::review_flow_driver::ReviewFlowLease;
 
 /// The `diff_hash` a review's sidecars carry, which is what a verdict's hash has
 /// to match for the overlay to apply.
