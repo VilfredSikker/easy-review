@@ -118,9 +118,9 @@ pub fn run_standard(state: &AppState, er_dir: String) -> Result<AppSnapshot, Str
     .map(|(_, snapshot)| snapshot)
 }
 
-/// Acceptance targets the run's captured bucket, not the active tab; the actor
-/// matches that capture against the active view this sends. The App's tabs on
-/// the bucket reload what was accepted.
+/// Acceptance targets the bucket the run captured. The actor matches that
+/// capture against the active view this sends, and the App's tabs on the
+/// bucket reload what was accepted.
 pub fn accept(
     state: &AppState,
     er_dir: String,
