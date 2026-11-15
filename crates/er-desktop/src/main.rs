@@ -804,6 +804,52 @@ fn run_active_branch_watcher(
     }
 }
 
+/// The flag path's 45s comment tick. The same head-OID throttle decides
+/// whether to sync; the sync itself is a command to the tab's workspace actor,
+/// which writes the sidecar and publishes the change for the relay to emit.
+#[cfg(feature = "v1-service")]
+fn spawn_service_comment_sync(
+    app: Arc<Mutex<App>>,
+    pr_cache: pr_cache::PrCacheMap,
+    service: Arc<er_desktop::service::ServiceState>,
+) {
+    use std::time::{Duration, Instant};
+    std::thread::spawn(move || {
+        let mut last_synced: HashMap<(String, String, u64), (String, Instant)> = HashMap::new();
+        loop {
+            std::thread::sleep(Duration::from_secs(45));
+            let (workspace, context, pr, head_oid) = {
+                let Ok(guard) = app.try_lock() else {
+                    continue;
+                };
+                let Some(pr) = active_pr_identity(guard.tab(), &pr_cache) else {
+                    continue;
+                };
+                let head_oid = cached_head_oid(&pr_cache, &pr.0, &pr.1, pr.2);
+                let (now, ttl) = (Instant::now(), Duration::from_secs(90));
+                if comment_sync_recently_synced(last_synced.get(&pr), &head_oid, now, ttl) {
+                    continue;
+                }
+                let (workspace, context) = er_desktop::commands::active_tab_command(&guard);
+                (workspace, context, pr, head_oid)
+            };
+            let synced = service.send(
+                &workspace,
+                er_service::Command::SyncGithubComments {
+                    context,
+                    source: er_service::SyncSource::Background,
+                },
+            );
+            match synced {
+                Ok(_) => {
+                    last_synced.insert(pr, (head_oid, Instant::now()));
+                }
+                Err(e) => log::error!("github comment sync failed: {e}"),
+            }
+        }
+    });
+}
+
 /// Emit `er://revision` whenever `desktop_revision` advances; see the call site.
 fn run_revision_watcher(watch_handle: &tauri::AppHandle, watch_rev: &std::sync::atomic::AtomicU64) {
     use tauri::Emitter;
@@ -1035,9 +1081,16 @@ fn main() {
     let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
     #[cfg(feature = "v1-service")]
-    let service = Arc::new(er_desktop::service::ServiceState::new(
+    let service = Arc::new(er_desktop::service::ServiceState::with_revision_relay(
         ports.clone(),
-        Arc::clone(&desktop_revision),
+        {
+            // The revision watcher emits `er://revision` for this bump, so the
+            // relay does not emit one of its own.
+            let desktop_revision = Arc::clone(&desktop_revision);
+            move |_| {
+                profile_log::bump_desktop_revision(&desktop_revision, "service_view");
+            }
+        },
     ));
     #[cfg(feature = "v1-service")]
     if let Ok(app) = app_arc.lock() {
@@ -1377,11 +1430,19 @@ fn main() {
         });
     }
 
+    #[cfg(feature = "v1-service")]
+    spawn_service_comment_sync(
+        Arc::clone(&app_arc),
+        Arc::clone(&pr_cache),
+        Arc::clone(&state.service),
+    );
+
     // Spawn background GitHub comment sync. Three-phase design so network I/O
     // never holds the app mutex:
     //   Phase 1 (brief lock) — snapshot identity + files from active tab.
     //   Phase 2 (no lock)   — fetch comments, review threads, PR overview.
     //   Phase 3 (brief lock) — apply results to the correct tab.
+    #[cfg(not(feature = "v1-service"))]
     {
         let comments_app = Arc::clone(&app_arc);
         let comments_pr_cache = Arc::clone(&pr_cache);

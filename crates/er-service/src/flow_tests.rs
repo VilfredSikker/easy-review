@@ -1,7 +1,7 @@
 //! Review flows on the actor: a Deep flow runs its stages as actor jobs, shows
 //! its arena run's live progress, announces its record changes as events and
-//! accepts only against the view it captured; a load shows interrupted flows
-//! and starts nothing. Every test owns its deadline.
+//! accepts only against a fresh diff of the target it captured; a load shows
+//! interrupted flows and starts nothing. Every test owns its deadline.
 
 use std::path::Path;
 use std::sync::mpsc::Receiver;
@@ -22,7 +22,7 @@ use er_git::FakeGit;
 use er_github::FakeGitHub;
 
 use crate::actor::WorkspaceDeps;
-use crate::protocol::{Command, Event, FlowCommand, FlowContext, Reply};
+use crate::protocol::{AcceptanceDiff, Command, Event, FlowCommand, FlowContext, Reply};
 use crate::{spawn, WorkspaceHandle, WorkspaceView};
 
 /// Generous: a Deep flow runs triage, two reviewers over three rounds and an
@@ -293,35 +293,43 @@ fn a_deep_flow_runs_on_the_actor_with_live_progress_and_events() {
     });
 }
 
-/// Acceptance matches the run's captured target against the view the command
-/// carries: another view is refused before anything is read, the same view
-/// gets past the match to the selection check.
+/// Acceptance checks the run against the fresh diff the command carries for
+/// the run's target: another target is refused before anything is read, a
+/// fresh diff that moved on is refused even while the view the flow started
+/// from still holds the old one, and the same diff gets past the match to the
+/// selection check.
 #[test]
-fn flow_acceptance_matches_the_view_the_actor_was_sent() {
+fn flow_acceptance_checks_the_fresh_diff_for_the_run_target() {
     let _serial = er_agent::agent_slots::test_serial();
     let dir = tempfile::tempdir().unwrap();
     er_engine::storage::with_process_test_storage_root(dir.path(), || {
         let run = run_deep_flow(dir.path());
-        let accept = |view: ReviewFlowInputs| {
+        let accept = |target: BackgroundTaskTarget, diff: &str| {
             run.handle.send_and_wait_with(
                 Command::Flow(FlowCommand::AcceptFindings {
-                    context: context(&run.config, view),
                     er_dir: run.bucket.clone(),
                     run_id: run.run_id.clone(),
                     finding_ids: vec!["missing".into()],
+                    current: Some(AcceptanceDiff {
+                        target,
+                        diff: Ok(diff.into()),
+                    }),
                 }),
                 DEADLINE,
             )
         };
+        let target = view_of(&run.repo, &run.bucket).target;
 
-        let mut elsewhere = view_of(&run.repo, &run.bucket);
-        elsewhere.target.branch_label = "another-branch".into();
-        let refused = accept(elsewhere).unwrap_err().to_string();
+        let mut elsewhere = target.clone();
+        elsewhere.branch_label = "another-branch".into();
+        let refused = accept(elsewhere, RAW).unwrap_err().to_string();
         assert!(refused.contains("no longer open"), "{refused}");
 
-        let matched = accept(view_of(&run.repo, &run.bucket))
-            .unwrap_err()
-            .to_string();
+        let moved_on = format!("{RAW}+fn d() {{}}\n");
+        let stale = accept(target.clone(), &moved_on).unwrap_err().to_string();
+        assert!(stale.contains("The diff changed"), "{stale}");
+
+        let matched = accept(target, RAW).unwrap_err().to_string();
         assert!(matched.contains("Selection contains"), "{matched}");
     });
 }
@@ -341,9 +349,12 @@ impl JobSink for CountingSink {
     }
 }
 
-fn write_record(bucket: &Path, outcome: Option<&str>) {
+/// A record of `kind` (`None` for one triage never classified), whose finding
+/// stage was running when its owner died.
+fn write_record(bucket: &Path, kind: Option<&str>, outcome: Option<&str>) {
+    std::fs::create_dir_all(bucket).unwrap();
     let mut record = serde_json::json!({
-        "version": 1, "kind": "standard", "diff_hash": "hash", "started_at": "t0",
+        "version": 1, "diff_hash": "hash", "started_at": "t0",
         "holder": { "pid": 1, "label": "flow-1" },
         "stages": [
             { "id": "triage", "stage": "triage", "label": "Triage",
@@ -352,6 +363,9 @@ fn write_record(bucket: &Path, outcome: Option<&str>) {
               "status": "running", "diff_hash": "hash" }
         ]
     });
+    if let Some(kind) = kind {
+        record["kind"] = kind.into();
+    }
     if let Some(outcome) = outcome {
         record["outcome"] = outcome.into();
     }
@@ -363,20 +377,21 @@ fn write_record(bucket: &Path, outcome: Option<&str>) {
 }
 
 /// A load over a dead owner's flow shows it interrupted, with the stages its
-/// re-run would run again, and keeps a cancelled flow cancelled. It submits no
+/// re-run would run again, and keeps a cancelled flow cancelled. A Deep or
+/// kind-less record shows no stages: its re-run starts over. It submits no
 /// job: resuming is an explicit re-run.
 #[test]
 fn a_load_shows_interrupted_flows_and_starts_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let interrupted = dir.path().join("interrupted");
-    let cancelled = dir.path().join("cancelled");
-    std::fs::create_dir_all(&interrupted).unwrap();
-    std::fs::create_dir_all(&cancelled).unwrap();
-    let interrupted_bucket = interrupted.to_string_lossy().into_owned();
-    let cancelled_bucket = cancelled.to_string_lossy().into_owned();
+    let bucket = |name: &str| dir.path().join(name);
+    let path = |name: &str| bucket(name).to_string_lossy().into_owned();
+    let (interrupted_bucket, cancelled_bucket) = (path("interrupted"), path("cancelled"));
+    let (deep_bucket, kindless_bucket) = (path("deep"), path("kindless"));
     er_engine::storage::with_process_test_storage_root(dir.path(), || {
-        write_record(&interrupted, None);
-        write_record(&cancelled, Some("cancelled"));
+        write_record(&bucket("interrupted"), Some("standard"), None);
+        write_record(&bucket("cancelled"), Some("standard"), Some("cancelled"));
+        write_record(&bucket("deep"), Some("deep"), None);
+        write_record(&bucket("kindless"), None, None);
         let sink = Arc::new(CountingSink::default());
         let handle = spawn(WorkspaceDeps::new(ports()).with_jobs(sink.clone()));
         let mut events = Events {
@@ -387,7 +402,12 @@ fn a_load_shows_interrupted_flows_and_starts_nothing() {
         let reply = handle
             .send_and_wait_with(
                 Command::Reconcile {
-                    buckets: vec![interrupted_bucket.clone(), cancelled_bucket.clone()],
+                    buckets: vec![
+                        interrupted_bucket.clone(),
+                        cancelled_bucket.clone(),
+                        deep_bucket.clone(),
+                        kindless_bucket.clone(),
+                    ],
                 },
                 DEADLINE,
             )
@@ -396,16 +416,28 @@ fn a_load_shows_interrupted_flows_and_starts_nothing() {
         assert_eq!(
             reply,
             Reply::Reconciled {
-                resumable: vec![interrupted_bucket.clone()]
+                resumable: vec![
+                    interrupted_bucket.clone(),
+                    deep_bucket.clone(),
+                    kindless_bucket.clone()
+                ]
             }
         );
-        events.until(&handle, "the interrupted flow is published", |view| {
-            view.review_flow(&interrupted_bucket).is_some()
+        events.until(&handle, "the interrupted flows are published", |view| {
+            view.review_flows.len() == 3
         });
         let view = handle.view();
         let live = view.review_flow(&interrupted_bucket).unwrap();
         assert!(matches!(live.flow.state, FlowState::Interrupted { .. }));
         assert_eq!(live.rerun_stages, vec!["finding:security".to_string()]);
+        for starts_over in [&deep_bucket, &kindless_bucket] {
+            let live = view.review_flow(starts_over).unwrap();
+            assert!(matches!(live.flow.state, FlowState::Interrupted { .. }));
+            assert!(
+                live.rerun_stages.is_empty(),
+                "a re-run of {starts_over} starts over, so it names no stages"
+            );
+        }
         assert!(view.review_flow(&cancelled_bucket).is_none());
         let store = er_engine::store_registry::store();
         let scope = er_store::Scope::dir(&cancelled_bucket).unwrap();

@@ -11,14 +11,13 @@ use std::sync::Arc;
 
 use er_engine::app::App;
 use er_engine::review_flow_driver::ReviewFlowHost;
-use er_service::{Command, FlowCommand, FlowContext, Reply};
+use er_service::{AcceptanceDiff, Command, FlowCommand, FlowContext, Reply};
 
 use crate::arena_commands::validate_review_flow_bucket;
 use crate::commands::{service_key, snap_from_command, AppState};
 use crate::snapshot::{AppSnapshot, ArenaRunSnapshotWire};
 
-/// The live settings, and the view `scope` names when the command reviews or
-/// accepts against one.
+/// The live settings, and the view `scope` names when the command reviews one.
 fn context(app: &App, scope: Option<&str>) -> FlowContext {
     FlowContext {
         config: Arc::new(app.config.clone()),
@@ -118,9 +117,10 @@ pub fn run_standard(state: &AppState, er_dir: String) -> Result<AppSnapshot, Str
     .map(|(_, snapshot)| snapshot)
 }
 
-/// Acceptance targets the bucket the run captured. The actor matches that
-/// capture against the active view this sends, and the App's tabs on the
-/// bucket reload what was accepted.
+/// Acceptance targets the bucket the run captured. The actor checks the run
+/// against the diff the open tab that shows the run's target has now, which
+/// the App fetches fresh here by its own rules, as the flag-off path does.
+/// The App's tabs on the bucket then reload what was accepted.
 pub fn accept(
     state: &AppState,
     er_dir: String,
@@ -129,18 +129,20 @@ pub fn accept(
 ) -> Result<AppSnapshot, String> {
     let bucket = er_dir.clone();
     route(state, &er_dir.clone(), false, |app| {
-        let context = match crate::commands::resolve_review_scope("current", app.tab()) {
-            Ok(scope) => context(app, Some(&scope)),
-            Err(reason) => FlowContext {
-                view: Err(reason),
-                ..context(app, None)
-            },
-        };
+        let view = state.service.view(&key(app));
+        let current = view
+            .review_flow(&er_dir)
+            .and_then(|live| live.run_targets.iter().find(|(id, _)| *id == run_id))
+            .map(|(_, target)| AcceptanceDiff {
+                target: target.clone(),
+                diff: <App as ReviewFlowHost>::current_review_diff(app, target)
+                    .map_err(|error| format!("{error:#}")),
+            });
         Ok(FlowCommand::AcceptFindings {
-            context,
             er_dir,
             run_id,
             finding_ids,
+            current,
         })
     })?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;

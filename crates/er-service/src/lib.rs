@@ -19,18 +19,23 @@ pub mod arena;
 mod effect;
 mod flows;
 mod github_comments;
+mod github_sync;
 mod guard;
 mod handle;
 mod jobs;
+mod pending_review;
+mod pr_posts;
 mod protocol;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
 pub use flows::read_flow_run;
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
+pub use pending_review::OWN_PR_APPROVAL_REFUSED;
 pub use protocol::{
-    AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event, FlowCommand,
-    FlowContext, JobOutcome, OpenTarget, Reply, TabContext,
+    AcceptanceDiff, AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event,
+    FlowCommand, FlowContext, JobOutcome, OpenTarget, PrRef, Reply, ReviewEvent, ReviewLineTarget,
+    SyncSource, TabContext,
 };
 pub use workspace::{LiveArenaRun, LiveReviewFlow, WorkspaceTarget, WorkspaceView};
 

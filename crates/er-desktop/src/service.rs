@@ -9,7 +9,6 @@
 //! command path untouched.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use er_engine::ports::Ports;
@@ -18,27 +17,39 @@ use er_service::{
     WorkspaceView,
 };
 
+/// Told the revision of every view an actor publishes.
+type RevisionRelay = Arc<dyn Fn(u64) + Send + Sync>;
+
 /// The actors this desktop process has started.
 pub struct ServiceState {
     deps: WorkspaceDeps,
     handles: Mutex<HashMap<String, WorkspaceHandle>>,
-    /// The desktop revision. Every view an actor publishes bumps it, so the
-    /// front end re-reads on `er://revision` (ADR 0011) with no poll of its
-    /// own: a live arena run's progress reaches the page this way.
-    desktop_revision: Arc<AtomicU64>,
+    relay: Option<RevisionRelay>,
 }
 
 impl ServiceState {
-    pub fn new(ports: Ports, desktop_revision: Arc<AtomicU64>) -> Self {
-        Self::with_deps(WorkspaceDeps::new(ports), desktop_revision)
+    pub fn new(ports: Ports) -> Self {
+        Self {
+            deps: WorkspaceDeps::new(ports),
+            handles: Mutex::new(HashMap::new()),
+            relay: None,
+        }
+    }
+
+    /// Like [`Self::new`], with every actor's published revisions forwarded to
+    /// `relay`. The desktop bumps its revision from it, so a flag-path change
+    /// reaches the front end as an `er://revision` event instead of waiting
+    /// for a poll; a live arena run's progress reaches the page this way.
+    pub fn with_revision_relay(ports: Ports, relay: impl Fn(u64) + Send + Sync + 'static) -> Self {
+        Self::with_deps(WorkspaceDeps::new(ports), relay)
     }
 
     /// The same, over deps the caller built, such as a test's job sink.
-    pub fn with_deps(deps: WorkspaceDeps, desktop_revision: Arc<AtomicU64>) -> Self {
+    pub fn with_deps(deps: WorkspaceDeps, relay: impl Fn(u64) + Send + Sync + 'static) -> Self {
         Self {
             deps,
             handles: Mutex::new(HashMap::new()),
-            desktop_revision,
+            relay: Some(Arc::new(relay)),
         }
     }
 
@@ -53,9 +64,9 @@ impl ServiceState {
             .entry(key.to_string())
             .or_insert_with(|| {
                 let handle = spawn(self.deps.clone());
-                // Subscribed before the handle is handed out, so the first
-                // command's publish is not missed.
-                forward_views(&handle, Arc::clone(&self.desktop_revision));
+                if let Some(relay) = &self.relay {
+                    forward_revisions(&handle, Arc::clone(relay));
+                }
                 handle
             })
             .clone()
@@ -96,18 +107,27 @@ impl ServiceState {
     }
 }
 
-/// Bumps the desktop revision for each event that changes what the front end
-/// reads. The thread touches only the counter, and ends when the actor and its
-/// handles are gone.
-fn forward_views(handle: &WorkspaceHandle, desktop_revision: Arc<AtomicU64>) {
+/// One thread per actor, alive as long as the actor: each event that changes
+/// what the front end reads goes to the relay with the revision to re-read.
+/// A panel record carries no revision of its own, so it re-sends the latest.
+fn forward_revisions(handle: &WorkspaceHandle, relay: RevisionRelay) {
     let events = handle.subscribe();
-    std::thread::spawn(move || {
-        for event in events {
-            if bumps_revision(&event) {
-                crate::profile_log::bump_desktop_revision(&desktop_revision, "service_view");
+    let _ = std::thread::Builder::new()
+        .name("er-workspace-relay".into())
+        .spawn(move || {
+            let mut latest = 0;
+            for event in events {
+                if !bumps_revision(&event) {
+                    continue;
+                }
+                if let Event::ViewPublished { revision } | Event::WorkflowChanged { revision, .. } =
+                    event
+                {
+                    latest = revision;
+                }
+                relay(latest);
             }
-        }
-    });
+        });
 }
 
 /// A published view, a flow's record change, and a panel record the view does
@@ -121,7 +141,38 @@ fn bumps_revision(event: &Event) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use er_engine::github::FakeGitHub;
+    use er_engine::ports::Ports;
+
+    use er_service::Event;
+
+    use super::{bumps_revision, ServiceState};
+
+    /// A flag-path change reaches the relay as an event; nothing polls the
+    /// desktop revision for it.
+    #[test]
+    fn an_actor_revision_reaches_the_relay() {
+        let github = Arc::new(FakeGitHub::default().with_pr_state(Ok("OPEN".to_string())));
+        let (tx, revisions) = std::sync::mpsc::channel();
+        let tx = std::sync::Mutex::new(tx);
+        let service = ServiceState::with_revision_relay(Ports::with_github(github), move |rev| {
+            if let Ok(tx) = tx.lock() {
+                let _ = tx.send(rev);
+            }
+        });
+        let target = er_service::OpenTarget::RemotePr {
+            owner: "acme".to_string(),
+            repo: "widgets".to_string(),
+            number: 7,
+            repo_root: "/repo".to_string(),
+        };
+        let opened = service.open_target("/repo", target, false);
+        assert!(opened.is_ok(), "{opened:?}");
+        assert_eq!(revisions.recv_timeout(Duration::from_secs(5)), Ok(1));
+    }
 
     /// The flow events reach the page through the same revision as a view,
     /// with no poll of their own.

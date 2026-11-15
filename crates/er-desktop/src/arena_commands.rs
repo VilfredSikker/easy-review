@@ -826,6 +826,9 @@ mod route_tests {
             "FlowCommand::Cancel {",
             "FlowCommand::RunStandard {",
             "FlowCommand::AcceptFindings {",
+            // Acceptance hashes a fresh diff of the tab that shows the run's
+            // target, never the active view's cached one.
+            "<App as ReviewFlowHost>::current_review_diff(app, target)",
             // A run read takes the published view and the store.
             "er_service::read_flow_run(",
         ] {
