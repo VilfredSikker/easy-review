@@ -46,6 +46,8 @@ pub mod sidecar_upload;
 pub mod storage;
 pub mod store_registry;
 pub mod sync;
+pub mod tab_key;
+pub use tab_key::TabKey;
 pub mod task_target;
 pub mod uninstall;
 #[cfg(feature = "watch")]

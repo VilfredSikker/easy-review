@@ -29,7 +29,23 @@ fn bucket_scope(dir: &str) -> Result<Scope, WorkspaceError> {
 
 /// Fetch the tab's raw diff through the ports. Runs on an effect thread, never
 /// on the actor.
+///
+/// The engine helper covers branch-view and remote tabs only. A plain repo tab,
+/// the one `er` opens by default, has neither and takes the same `diff_raw`
+/// fallthrough as `TabState::fetch_tab_raw_diff`.
 pub(crate) fn fetch_raw(deps: &WorkspaceDeps, ctx: &TabContext) -> Result<String, WorkspaceError> {
+    if ctx.local_branch_view.is_none() && ctx.remote_repo.is_none() {
+        return deps
+            .ports()
+            .git
+            .diff_raw(
+                &ctx.scope,
+                &ctx.base_branch,
+                &ctx.repo_root,
+                ctx.pr_head_ref.as_deref(),
+            )
+            .map_err(|error| failed("fetch the diff", error));
+    }
     let inputs = BranchScopeFetchInputs {
         ports: deps.ports().clone(),
         repo_root: ctx.repo_root.clone(),
