@@ -46,6 +46,7 @@ pub mod review_queue;
 pub mod session_store;
 pub mod sidecar_summary;
 pub mod sidecar_upload;
+pub mod stage_job;
 pub mod storage;
 pub mod store_registry;
 pub mod sync;
