@@ -16,7 +16,7 @@ use crate::effect::resolve_target;
 use crate::github_sync::{Applied, Fetched};
 use crate::guard::{self, ActorThread};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError, WorkspaceHandle};
-use crate::protocol::{Command, Event, Reply};
+use crate::protocol::{Command, Event, Reply, TabContext};
 use crate::workspace::{WorkspaceState, WorkspaceView};
 
 /// The actor's dependencies. This is the seam P45 extends: the actor takes
@@ -120,16 +120,22 @@ fn run(
     }
 }
 
-/// Runs one GitHub read off the actor thread and sends what it read back for
-/// the actor to apply.
+/// Runs one GitHub read for the tab off the actor thread and sends what it
+/// read back for the actor to apply. A tab the workspace has left is refused.
 fn spawn_fetch(
+    deps: &WorkspaceDeps,
+    state: &WorkspaceState,
     tx: &Sender<ActorMsg>,
     reply: ReplySender,
-    work: impl FnOnce() -> Result<Fetched, WorkspaceError> + Send + 'static,
+    context: TabContext,
+    work: impl FnOnce(&WorkspaceDeps, TabContext) -> Result<Fetched, WorkspaceError> + Send + 'static,
 ) {
-    let tx = tx.clone();
+    if !context_matches(state, &context.repo_root) {
+        return refuse_stale(reply);
+    }
+    let (deps, tx) = (deps.clone(), tx.clone());
     let _ = thread::Builder::new().spawn(move || {
-        let result = work();
+        let result = work(&deps, context);
         let _ = tx.send(ActorMsg::Fetched { result, reply });
     });
 }
@@ -438,46 +444,28 @@ fn handle_command(
             });
         }
         Command::SyncGithubComments { context, source } => {
-            if !context_matches(state, &context.repo_root) {
-                return refuse_stale(reply);
-            }
-            let deps = deps.clone();
-            spawn_fetch(tx, reply, move || {
-                crate::github_sync::fetch_sync(&deps, context, source)
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::github_sync::fetch_sync(deps, context, source)
             });
         }
         Command::GetPendingReview { context } => {
-            if !context_matches(state, &context.repo_root) {
-                return refuse_stale(reply);
-            }
-            let deps = deps.clone();
-            spawn_fetch(tx, reply, move || {
-                crate::pending_review::get(&deps, context)
-            });
+            spawn_fetch(deps, state, tx, reply, context, crate::pending_review::get);
         }
         Command::AddPendingReviewComment {
             context,
             target,
             body,
         } => {
-            if !context_matches(state, &context.repo_root) {
-                return refuse_stale(reply);
-            }
-            let deps = deps.clone();
-            spawn_fetch(tx, reply, move || {
-                crate::pending_review::add_comment(&deps, context, &target, &body)
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pending_review::add_comment(deps, context, &target, &body)
             });
         }
         Command::RemovePendingReviewComment {
             context,
             comment_node_id,
         } => {
-            if !context_matches(state, &context.repo_root) {
-                return refuse_stale(reply);
-            }
-            let deps = deps.clone();
-            spawn_fetch(tx, reply, move || {
-                crate::pending_review::remove_comment(&deps, context, &comment_node_id)
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pending_review::remove_comment(deps, context, &comment_node_id)
             });
         }
         Command::SubmitPendingReview {
@@ -485,12 +473,8 @@ fn handle_command(
             event,
             summary,
         } => {
-            if !context_matches(state, &context.repo_root) {
-                return refuse_stale(reply);
-            }
-            let deps = deps.clone();
-            spawn_fetch(tx, reply, move || {
-                crate::pending_review::submit(&deps, context, event, &summary)
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pending_review::submit(deps, context, event, &summary)
             });
         }
         Command::PostGithubPrComment { context, body } => {

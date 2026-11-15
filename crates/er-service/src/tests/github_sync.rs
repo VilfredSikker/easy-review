@@ -106,7 +106,8 @@ fn syncing_github() -> anyhow::Result<Arc<FakeGitHub>> {
         FakeGitHub::default()
             .with_pr_diff_remote(Ok(RAW.to_string()))
             .with_pr_comment_bundle_cached(Ok(Arc::new(bundle)))
-            .with_overview_remote(Ok(Some(overview("author")))),
+            .with_overview_remote(Ok(Some(overview("author"))))
+            .with_pending_review(Ok(PendingReview::default())),
     ))
 }
 
@@ -156,21 +157,33 @@ fn comments_path(bucket: &str) -> anyhow::Result<String> {
     )
 }
 
-/// A GitHub read on the actor thread trips the guard and kills the actor,
-/// so a sync that answers at all fetched on an effect thread.
+/// The guard sees only `deps.ports()`, so the bundle read is held and the
+/// actor must answer meanwhile: a fetch on the actor thread would block it.
 #[test]
 fn the_sync_fetch_runs_off_the_actor_thread() -> anyhow::Result<()> {
     let (dir, bucket) = seeded_bucket()?;
     let github = syncing_github()?;
     er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
         let handle = actor(&github);
-        let reply = handle.send_and_wait_with(sync(&bucket), WAIT);
+        let hold = github.hold_pr_comment_bundle();
+        let synced = handle.send(sync(&bucket));
+        let deadline = Instant::now() + WAIT;
+        let bundle = ["pr_comment_bundle_cached"];
+        while calls_named(&github, &bundle).is_empty() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let context = pr_tab(&bucket);
+        let read = handle.send(Command::GetPendingReview { context });
+        let answered = read.recv_timeout(WAIT);
+        drop(hold);
+        assert!(matches!(answered, Ok(Ok(_))), "stalled: {answered:?}");
+        let reply = synced.recv_timeout(WAIT)?;
         assert!(
             matches!(reply, Ok(Reply::CommentsSynced { .. })),
             "the sync did not answer: {reply:?}"
         );
         assert_eq!(
-            calls_named(&github, &["pr_comment_bundle_cached"]).len(),
+            calls_named(&github, &bundle).len(),
             1,
             "{:?}",
             github.calls()
@@ -330,14 +343,15 @@ fn a_fake_backed_pending_review_post_round_trips() -> anyhow::Result<()> {
         Reply::ReviewSubmitted { pr: acme_7() }
     );
 
-    let (read, add, remove, submit) = (
+    let (read, add, remove, submit, drop) = (
         "pending_review",
         "pending_review_add_comment",
         "pending_review_remove_comment",
         "pending_review_submit",
+        "invalidate_comments",
     );
-    let order = calls_named(&github, &[read, add, remove, submit]);
-    assert_eq!(order, [read, add, read, remove, read, submit]);
+    let order = calls_named(&github, &[read, add, remove, submit, drop]);
+    assert_eq!(order, [read, add, drop, read, remove, read, submit, drop]);
     let calls = github.calls().join("\n");
     assert!(calls.contains("PRRC_0"), "the comment id was lost: {calls}");
     assert!(

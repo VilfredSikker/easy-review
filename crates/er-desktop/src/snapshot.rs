@@ -1025,13 +1025,13 @@ pub struct BrowserSnapshot {
     pub show_tooltips: bool,
 }
 
-fn browser_snapshot_from_tab(tab: &TabState) -> BrowserSnapshot {
+fn browser_snapshot(browser: &crate::view_state::TabBrowserState) -> BrowserSnapshot {
     BrowserSnapshot {
-        url: tab.browser_url.clone(),
-        layout: tab.browser_layout.as_str().to_string(),
-        split_ratio: tab.browser_split_ratio.clamp(0.35, 0.65),
-        annotate_mode: tab.browser_annotate_mode,
-        show_tooltips: tab.browser_show_tooltips,
+        url: browser.url.clone(),
+        layout: browser.layout.as_str().to_string(),
+        split_ratio: browser.split_ratio.clamp(0.35, 0.65),
+        annotate_mode: browser.annotate_mode,
+        show_tooltips: browser.show_tooltips,
     }
 }
 
@@ -3071,6 +3071,7 @@ pub struct SnapshotSources<'a> {
     pub inbox: Option<&'a InboxHandle>,
     pub sent_files: Option<&'a SentFilesHandle>,
     pub branch_base_remote_oid: Option<&'a BranchBaseRemoteOid>,
+    pub view: Option<&'a crate::view_state::ViewStateHandle>,
 }
 
 /// Build a full snapshot, with differential-snapshot support: when
@@ -3110,9 +3111,15 @@ fn build_snapshot_inner(
         inbox,
         sent_files,
         branch_base_remote_oid,
+        view,
     } = *sources;
     let t0 = std::time::Instant::now();
     let tab = app.tab();
+    // Copied out so the view lock is not held while the rest is built.
+    let (browser, panels) = match view.and_then(|v| v.lock().ok()) {
+        Some(v) => (v.browser(tab.key()), v.panels().clone()),
+        None => Default::default(),
+    };
     let review_bucket_er_dir = tab.er_dir();
     let review_flow = ReviewFlowSnapshot::from_app(app, &review_bucket_er_dir);
 
@@ -3517,9 +3524,9 @@ fn build_snapshot_inner(
         ai,
         pr,
         panels: Panels {
-            left: app.panels_visible.left,
-            tree: app.panels_visible.tree,
-            right: app.panels_visible.right,
+            left: panels.left,
+            tree: panels.tree,
+            right: panels.right,
         },
         theme: app.config.display.theme.clone(),
         features: FeatureFlagsSnapshot::from(&app.config.features),
@@ -3554,7 +3561,7 @@ fn build_snapshot_inner(
         tabs,
         active_tab,
         ui_annotations,
-        browser: browser_snapshot_from_tab(tab),
+        browser: browser_snapshot(&browser),
         github,
         stack,
         detected_pr_number,

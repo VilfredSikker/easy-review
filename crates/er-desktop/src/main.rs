@@ -976,17 +976,13 @@ fn main() {
     // cold `git diff` calls before the window appears. Each stub is upgraded
     // when its tab gains focus (see `commands::kick_deferred_tab_refresh`).
     let mut deferred_tab_indices: Vec<usize> = Vec::new();
+    let mut view_state = er_desktop::view_state::DesktopViewState::default();
     if let Some(file) = tabs::load_tabs() {
         let active_idx = file.active_idx.min(file.tabs.len().saturating_sub(1));
         let mut rebuilt: Vec<er_engine::app::TabState> = Vec::new();
         for (i, d) in file.tabs.iter().enumerate() {
             let eager = i == active_idx;
-            let result = if eager {
-                tabs::rebuild_tab(d, &ports)
-            } else {
-                tabs::rebuild_tab_stub(d, &ports)
-            };
-            match result {
+            match tabs::restore_tab(d, !eager, &ports, &mut view_state) {
                 Ok(t) => {
                     if !eager {
                         deferred_tab_indices.push(rebuilt.len());
@@ -1079,6 +1075,7 @@ fn main() {
     let gh_status_in_flight: Arc<Mutex<std::collections::HashSet<(String, String, u64)>>> =
         Arc::new(Mutex::new(std::collections::HashSet::new()));
     let app_arc: Arc<Mutex<App>> = Arc::new(Mutex::new(app));
+    let view_arc: er_desktop::view_state::ViewStateHandle = Arc::new(Mutex::new(view_state));
     let terminals: Arc<Mutex<HashMap<String, terminal::PtySession>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let terminals_for_exit = Arc::clone(&terminals);
@@ -1106,6 +1103,7 @@ fn main() {
             },
         )),
         app: Arc::clone(&app_arc),
+        view: Arc::clone(&view_arc),
         pr_cache: Arc::clone(&pr_cache),
         pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
         branch_base_remote_oid: Arc::clone(&branch_base_remote_oid),
@@ -1819,6 +1817,8 @@ fn main() {
 
     let persist_app = Arc::clone(&app_arc);
     let persist_app_on_close = Arc::clone(&app_arc);
+    let persist_view = Arc::clone(&view_arc);
+    let persist_view_on_close = Arc::clone(&view_arc);
     // Throttles eager geometry saves on move/resize (see the on_window_event
     // handler below). Init to now() so the programmatic resizes fired during the
     // startup restore_state don't trigger a redundant save.
@@ -1867,7 +1867,7 @@ fn main() {
             match event {
                 tauri::WindowEvent::CloseRequested { .. } => {
                     if let Ok(guard) = persist_app_on_close.lock() {
-                        tabs::persist_app_tabs(&guard);
+                        tabs::persist_app_tabs(&guard, &persist_view_on_close);
                     }
                 }
                 // The window-state plugin only writes geometry to disk on a
@@ -2187,7 +2187,7 @@ fn main() {
         match event {
             tauri::RunEvent::ExitRequested { .. } => {
                 if let Ok(guard) = persist_app.lock() {
-                    tabs::persist_app_tabs(&guard);
+                    tabs::persist_app_tabs(&guard, &persist_view);
                 }
                 // Kill any live shell sessions. Drop runs PtySession::drop on
                 // each, which kills + reaps the child.
