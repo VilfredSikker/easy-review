@@ -214,3 +214,39 @@ fn an_agents_file_broken_mid_session_recovers_on_reopen() -> anyhow::Result<()> 
         )
     })
 }
+
+fn theme_row(handle: &SettingsHandle) -> Option<String> {
+    handle
+        .view()
+        .hub
+        .fields
+        .general
+        .iter()
+        .find_map(|field| match field {
+            ConfigHubFieldDto::Cycle { key, value, .. } if key == "display.theme" => {
+                Some(value.clone())
+            }
+            _ => None,
+        })
+}
+
+/// A save the file refuses leaves the published view equal to the disk: the
+/// refused edit is undone, and the failure is shown.
+#[test]
+fn a_refused_save_leaves_the_view_as_saved() -> anyhow::Result<()> {
+    in_temp_storage(|dir| {
+        let handle = actor(dir);
+        patch(&handle, "display.theme", text("first-theme"))?;
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "not = = toml")?;
+
+        let refused = patch(&handle, "display.theme", text("while-broken"));
+        assert!(refused.is_err(), "a save over a broken file is refused");
+        let view = handle.view();
+        assert_eq!(view.config.display.theme, "first-theme");
+        assert_eq!(theme_row(&handle).as_deref(), Some("first-theme"));
+        assert!(view.last_error.is_some(), "the refusal is shown");
+        assert_eq!(std::fs::read_to_string(&path)?, "not = = toml");
+        Ok(())
+    })
+}
