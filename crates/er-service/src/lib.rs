@@ -21,6 +21,7 @@ mod github_sync;
 mod guard;
 mod handle;
 mod pending_review;
+mod pr_posts;
 mod protocol;
 mod workspace;
 
