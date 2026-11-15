@@ -44,6 +44,9 @@ fn persisted_tabs(
 /// Best-effort [`save_app_tabs`]; logs a warning on failure. Called with the
 /// engine lock held after a tab-list change, so it also drops the browser
 /// state of tabs that are gone.
+///
+/// With `v1-service` the service's app registry is the record's one writer,
+/// so this only prunes the view state.
 pub fn persist_app_tabs(app: &er_engine::app::App, view: &ViewStateHandle) {
     let Ok(mut view) = view.lock() else {
         log::warn!("er-desktop: view state lock poisoned; tabs not persisted");
@@ -51,6 +54,7 @@ pub fn persist_app_tabs(app: &er_engine::app::App, view: &ViewStateHandle) {
     };
     let live: Vec<er_engine::TabKey> = app.tabs.iter().map(|t| t.key()).collect();
     view.retain_tabs(&live);
+    #[cfg(not(feature = "v1-service"))]
     if let Err(e) = save_app_tabs(app, &view) {
         log::warn!("er-desktop: failed to persist tabs: {e}");
     }
