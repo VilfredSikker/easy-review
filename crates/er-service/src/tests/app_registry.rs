@@ -232,7 +232,9 @@ fn the_service_has_no_tabstate() -> anyhow::Result<()> {
     )?;
     let probes = [["Tab", "State"].concat(), ["er_engine::", "app::"].concat()];
     for (path, text) in &sources {
-        let code = text.lines().filter(|line| !line.trim_start().starts_with("//"));
+        let code = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"));
         for (line, probe) in code.flat_map(|line| probes.iter().map(move |p| (line, p))) {
             assert!(
                 !line.contains(probe.as_str()),
