@@ -16,6 +16,7 @@ use er_engine::ports::Ports;
 use crate::effect::resolve_target;
 use crate::guard::{self, ActorThread};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError, WorkspaceHandle};
+use crate::flows::{FlowRunner, FlowsUpdate};
 use crate::jobs::JobHost;
 use crate::protocol::{Command, Event, Reply};
 use crate::workspace::{WorkspaceState, WorkspaceView};
@@ -106,10 +107,11 @@ fn run(
     let _actor = ActorThread::enter();
     let mut state = WorkspaceState::new();
     let mut jobs = JobHost::new(&deps, &tx);
+    let flows = FlowRunner::new(&deps, jobs.sink(), jobs.arena().clone(), &tx);
     while let Ok(message) = rx.recv() {
         match message {
             ActorMsg::Command { command, reply } => {
-                handle_command(&deps, &state, &mut jobs, &tx, command, reply);
+                handle_command(&deps, &state, &mut jobs, &flows, &tx, command, reply);
             }
             ActorMsg::EffectDone { result, reply } => {
                 // An arena effect may have started, cancelled or removed a run;
@@ -129,8 +131,43 @@ fn run(
                 let revision = state.bump_revision();
                 publish(&view, &state);
                 broadcast(&subscribers, Event::ViewPublished { revision });
+                // A flow waits on its arena run; the run's progress and end
+                // are what move it on.
+                if !state.view().review_flows.is_empty() {
+                    flows.request_advance();
+                }
+            }
+            ActorMsg::FlowTick => flows.request_advance(),
+            ActorMsg::FlowsChanged(update) => {
+                apply_flows(&mut state, &jobs, update, &subscribers, &view);
             }
         }
+    }
+}
+
+/// Publishes what a flow call changed: the flow section with a new revision
+/// and `WorkflowChanged` per changed bucket, then `PanelRunChanged` per new
+/// panel record.
+fn apply_flows(
+    state: &mut WorkspaceState,
+    jobs: &JobHost,
+    update: FlowsUpdate,
+    subscribers: &Mutex<Vec<Sender<Event>>>,
+    view: &RwLock<Arc<WorkspaceView>>,
+) {
+    let changed = state.set_review_flows(update.flows);
+    if !changed.is_empty() {
+        // A flow's arena run may have started or ended in the same call.
+        state.set_arena_runs(jobs.live_arena_runs());
+        let revision = state.bump_revision();
+        publish(view, state);
+        broadcast(subscribers, Event::ViewPublished { revision });
+        for er_dir in changed {
+            broadcast(subscribers, Event::WorkflowChanged { er_dir, revision });
+        }
+    }
+    for (er_dir, run_id) in update.panel_runs {
+        broadcast(subscribers, Event::PanelRunChanged { er_dir, run_id });
     }
 }
 
@@ -176,6 +213,7 @@ fn handle_command(
     deps: &WorkspaceDeps,
     state: &WorkspaceState,
     jobs: &mut JobHost,
+    flows: &FlowRunner,
     tx: &Sender<ActorMsg>,
     command: Command,
     reply: ReplySender,
@@ -451,10 +489,12 @@ fn handle_command(
             None => crate::jobs::refuse_unknown(job, reply),
         },
         Command::Reconcile { buckets } => {
-            let arena = jobs.arena().clone();
-            spawn_effect(tx, reply, move || {
-                Ok(crate::arena::reconcile(&arena, &buckets))
-            });
+            let flows = flows.clone();
+            spawn_effect(tx, reply, move || Ok(flows.reconcile(&buckets)));
+        }
+        Command::Flow(command) => {
+            let flows = flows.clone();
+            spawn_effect(tx, reply, move || flows.run(command));
         }
         Command::Arena(command) => {
             let deps = deps.clone();

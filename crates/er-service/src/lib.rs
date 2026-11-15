@@ -17,6 +17,7 @@ mod actor;
 mod annotations;
 pub mod arena;
 mod effect;
+mod flows;
 mod github_comments;
 mod guard;
 mod handle;
@@ -25,13 +26,16 @@ mod protocol;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
+pub use flows::read_flow_run;
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use protocol::{
-    AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event, JobOutcome,
-    OpenTarget, Reply, TabContext,
+    AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event, FlowCommand,
+    FlowContext, JobOutcome, OpenTarget, Reply, TabContext,
 };
-pub use workspace::{LiveArenaRun, WorkspaceTarget, WorkspaceView};
+pub use workspace::{LiveArenaRun, LiveReviewFlow, WorkspaceTarget, WorkspaceView};
 
+#[cfg(test)]
+mod flow_tests;
 #[cfg(test)]
 mod job_tests;
 #[cfg(test)]

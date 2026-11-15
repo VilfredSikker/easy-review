@@ -14,6 +14,7 @@ use er_engine::arena::{
 };
 use er_engine::config::ErConfig;
 use er_engine::jobs::{JobId, JobResult, JobSubmission};
+use er_engine::review_flow_driver::ReviewFlowInputs;
 
 use crate::workspace::WorkspaceTarget;
 
@@ -162,6 +163,61 @@ pub enum Command {
     Reconcile { buckets: Vec<String> },
     /// An arena action on the actor's live runs.
     Arena(ArenaCommand),
+    /// A review-flow action on the actor's flows.
+    Flow(FlowCommand),
+}
+
+/// A review-flow action. Each names the flow by its bucket, except a start,
+/// which reviews the view its context carries.
+#[derive(Clone, Debug)]
+pub enum FlowCommand {
+    Start {
+        context: FlowContext,
+        scope: String,
+    },
+    /// Re-run an interrupted flow from its workflow record.
+    Rerun {
+        context: FlowContext,
+        er_dir: String,
+    },
+    /// Start a Deep plan the user approved.
+    Confirm {
+        context: FlowContext,
+        er_dir: String,
+    },
+    Decline {
+        er_dir: String,
+    },
+    /// Run the lenses triage chose as Standard finders instead of Deep.
+    RunStandard {
+        context: FlowContext,
+        er_dir: String,
+    },
+    Cancel {
+        er_dir: String,
+    },
+    /// Import selected findings from a flow's run. The run must still match
+    /// the view the context carries.
+    AcceptFindings {
+        context: FlowContext,
+        er_dir: String,
+        run_id: String,
+        finding_ids: Vec<String>,
+    },
+}
+
+/// What a flow command reads from the App, resolved by the desktop before
+/// sending.
+#[derive(Clone, Debug)]
+pub struct FlowContext {
+    /// Live settings: a confirm or a switch to Standard rechecks its model
+    /// groups against these.
+    pub config: Arc<ErConfig>,
+    pub effort: Option<String>,
+    /// The active view, read by the App's own rules for what a flow may
+    /// review, or why it cannot be reviewed. A start reviews it, and an
+    /// acceptance matches the run's captured target against it.
+    pub view: Result<ReviewFlowInputs, String>,
 }
 
 /// An arena action. Each carries the [`ArenaContext`] its effect needs, except
@@ -395,6 +451,13 @@ pub enum Reply {
     ArenaChanged {
         run_id: String,
     },
+    /// The bucket of the flow the command changed.
+    FlowChanged {
+        er_dir: String,
+    },
+    FlowAccepted {
+        accepted: usize,
+    },
     #[cfg(test)]
     Pong,
 }
@@ -422,5 +485,17 @@ pub enum Event {
     JobFinished {
         job: JobId,
         outcome: JobOutcome,
+    },
+    /// A flow's projection changed, and with it its workflow record's stage
+    /// rows. `revision` is the view revision that carries it.
+    WorkflowChanged {
+        er_dir: String,
+        revision: u64,
+    },
+    /// A flow's panel run wrote its record. The record is on disk, not in the
+    /// view, so no view revision comes with it.
+    PanelRunChanged {
+        er_dir: String,
+        run_id: String,
     },
 }
