@@ -6523,6 +6523,25 @@ mod tests {
         });
     }
 
+    /// The default build's view rows are the engine tab's own selection, the
+    /// selected file given as its position in the visible list.
+    #[test]
+    fn the_default_build_reads_the_view_rows_from_the_tab() {
+        let raw = "\
+diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-a\n+A\n\
+diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-b\n+B\n\
+diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = App::new_for_test(er_engine::git::parse_diff(raw));
+            use_cli_ports(&mut app);
+            app.tab_mut().selected_file = 2;
+            app.tab_mut().current_hunk = 1;
+            let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
+            assert_eq!((snap.selected_file, snap.current_hunk), (2, Some(1)));
+        });
+    }
+
     fn snapshot_with_cache(app: &App, pr_cache: &PrCache) -> AppSnapshot {
         build_snapshot_with_delta(
             app,
