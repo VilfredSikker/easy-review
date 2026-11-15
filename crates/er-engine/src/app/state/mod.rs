@@ -11802,7 +11802,12 @@ mod tests {
         tab.selection_anchor = Some(1);
         tab.next_file();
         assert_eq!(
-            (tab.selected_file, tab.current_hunk, tab.current_line, tab.selection_anchor),
+            (
+                tab.selected_file,
+                tab.current_hunk,
+                tab.current_line,
+                tab.selection_anchor
+            ),
             (0, 0, Some(3), Some(1)),
             "a filtered-out selection snaps to the first file"
         );
@@ -11860,7 +11865,9 @@ mod tests {
         );
 
         for path in ["a.rs", "c.rs"] {
-            app.tab_mut().reviewed.insert(path.to_string(), String::new());
+            app.tab_mut()
+                .reviewed
+                .insert(path.to_string(), String::new());
         }
         app.next_unreviewed_file();
         assert_eq!(app.tab().selected_file, 0, "nothing to jump to");

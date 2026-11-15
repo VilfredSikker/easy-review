@@ -48,7 +48,9 @@ pub fn next_file(
             .map_or(FileMove::LeaveWatched, |&first| FileMove::File(first));
     }
     let Some(&first) = visible.first() else {
-        return watched.first().map_or(FileMove::Stay, |&w| FileMove::Watched(w));
+        return watched
+            .first()
+            .map_or(FileMove::Stay, |&w| FileMove::Watched(w));
     };
     let Some(pos) = visible.iter().position(|&idx| idx == selected_file) else {
         return FileMove::Snap(first);
@@ -229,18 +231,74 @@ mod tests {
         use FileMove::{File, LeaveWatched, Snap, Stay, Watched};
         let visible = [0, 2, 4];
         let watched = [0, 1];
-        type Case = (&'static str, usize, Option<usize>, &'static [usize], &'static [usize], FileMove, FileMove);
+        type Case = (
+            &'static str,
+            usize,
+            Option<usize>,
+            &'static [usize],
+            &'static [usize],
+            FileMove,
+            FileMove,
+        );
         let cases: [Case; 10] = [
             // name, file, watched sel, visible, watched, next, prev
             ("start", 0, None, &[0, 2, 4], &[0, 1], File(2), Watched(1)),
             ("middle", 2, None, &[0, 2, 4], &[0, 1], File(4), File(0)),
             ("end", 4, None, &[0, 2, 4], &[0, 1], Watched(0), File(2)),
-            ("wrap without watched", 4, None, &[0, 2, 4], &[], File(0), File(2)),
-            ("start without watched", 0, None, &[0, 2, 4], &[], File(2), File(4)),
-            ("filtered out", 3, None, &[0, 2, 4], &[0, 1], Snap(0), Snap(0)),
-            ("first watched", 4, Some(0), &[0, 2, 4], &[0, 1], Watched(1), File(4)),
-            ("last watched", 4, Some(1), &[0, 2, 4], &[0, 1], File(0), Watched(0)),
-            ("watched with no diff", 0, Some(1), &[], &[0, 1], LeaveWatched, Watched(0)),
+            (
+                "wrap without watched",
+                4,
+                None,
+                &[0, 2, 4],
+                &[],
+                File(0),
+                File(2),
+            ),
+            (
+                "start without watched",
+                0,
+                None,
+                &[0, 2, 4],
+                &[],
+                File(2),
+                File(4),
+            ),
+            (
+                "filtered out",
+                3,
+                None,
+                &[0, 2, 4],
+                &[0, 1],
+                Snap(0),
+                Snap(0),
+            ),
+            (
+                "first watched",
+                4,
+                Some(0),
+                &[0, 2, 4],
+                &[0, 1],
+                Watched(1),
+                File(4),
+            ),
+            (
+                "last watched",
+                4,
+                Some(1),
+                &[0, 2, 4],
+                &[0, 1],
+                File(0),
+                Watched(0),
+            ),
+            (
+                "watched with no diff",
+                0,
+                Some(1),
+                &[],
+                &[0, 1],
+                LeaveWatched,
+                Watched(0),
+            ),
             ("empty visible", 0, None, &[], &[0, 1], Watched(0), Stay),
         ];
         for (name, file, sel, vis, wat, next, prev) in cases {
@@ -273,12 +331,42 @@ mod tests {
         let at = |hunk, line| LineCursor { hunk, line };
         let to = |hunk, line| LineMove::To(LineCursor { hunk, line });
         let cases = [
-            ("enter at the top", at(0, None), to(0, Some(0)), to(0, Some(2))),
-            ("over a fold", at(0, Some(0)), to(0, Some(2)), LineMove::Exit),
-            ("folds to the end", at(0, Some(2)), to(1, Some(0)), to(0, Some(0))),
-            ("next hunk's first", at(1, Some(0)), to(1, Some(1)), to(0, Some(2))),
-            ("last line of the file", at(1, Some(2)), LineMove::Stay, to(1, Some(1))),
-            ("enter on a fold-led hunk", at(1, None), to(1, Some(1)), to(1, Some(2))),
+            (
+                "enter at the top",
+                at(0, None),
+                to(0, Some(0)),
+                to(0, Some(2)),
+            ),
+            (
+                "over a fold",
+                at(0, Some(0)),
+                to(0, Some(2)),
+                LineMove::Exit,
+            ),
+            (
+                "folds to the end",
+                at(0, Some(2)),
+                to(1, Some(0)),
+                to(0, Some(0)),
+            ),
+            (
+                "next hunk's first",
+                at(1, Some(0)),
+                to(1, Some(1)),
+                to(0, Some(2)),
+            ),
+            (
+                "last line of the file",
+                at(1, Some(2)),
+                LineMove::Stay,
+                to(1, Some(1)),
+            ),
+            (
+                "enter on a fold-led hunk",
+                at(1, None),
+                to(1, Some(1)),
+                to(1, Some(2)),
+            ),
         ];
         for (name, cursor, next, prev) in cases {
             assert_eq!(next_line(cursor, &hunks, fold), next, "next_line: {name}");
