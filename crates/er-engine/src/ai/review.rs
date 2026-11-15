@@ -513,10 +513,10 @@ impl Clone for AiState {
             is_stale: self.is_stale,
             tour_stale: self.tour_stale,
             stale_files: self.stale_files.clone(),
-            arbiter_effect: self.arbiter_effect.clone(),
+            arbiter_effect: self.arbiter_effect,
             arbiter_graded_keys: self.arbiter_graded_keys.clone(),
             arbiter_verdicts: self.arbiter_verdicts.clone(),
-            validation_effect: self.validation_effect.clone(),
+            validation_effect: self.validation_effect,
             comment_index: OnceLock::new(),
         }
     }
