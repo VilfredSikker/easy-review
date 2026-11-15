@@ -980,7 +980,8 @@ pub(crate) fn agent_stderr_snippet(stderr_lines: &[String]) -> String {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::jobs::{JobResult, JobTicket};
