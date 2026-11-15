@@ -105,7 +105,9 @@ staleness. `branch_diff_hash` exists as the always-SHA-256 sibling for that reas
   `app.active_tab`. Never from `poll` / `get_snapshot`. With `v1-service` it
   saves nothing: the service's app registry is the one writer of `tabs.json` and
   `pr-open-cache.json`, and the tab and prefetch commands go to it
-  (`crates/er-service/src/app_registry.rs`).
+  (`crates/er-service/src/app_registry.rs`). A desktop call that saves either
+  record needs `#[cfg(not(feature = "v1-service"))]` on the line above it, or
+  `the_tabs_record_has_one_writer` fails.
 - Pick `snap_from_confirmed` or `snap_from_command` by asking whether the frontend
   already holds this content — the choice sets the revision markers and so decides
   whether the next poll resends. It is invisible in the response body.
