@@ -1281,3 +1281,4 @@ diff --git a/src/b.rs b/src/b.rs
 }
 
 mod github_sync;
+mod pr_posts;

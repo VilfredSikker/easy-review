@@ -23,6 +23,7 @@ mod guard;
 mod handle;
 mod jobs;
 mod pending_review;
+mod pr_posts;
 mod protocol;
 mod workspace;
 

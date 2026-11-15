@@ -33,6 +33,12 @@ pub(crate) enum Fetched {
         context: TabContext,
         pr: PrRef,
     },
+    /// A PR-level comment, or a bare decision when `decision`, was posted.
+    Posted {
+        context: TabContext,
+        pr: PrRef,
+        decision: bool,
+    },
 }
 
 /// One sync's fetched data and everything its write needs.
@@ -86,6 +92,18 @@ pub(crate) fn apply(fetched: Fetched) -> Result<Applied, WorkspaceError> {
         Fetched::ReviewSubmitted { context, pr } => Ok(Applied {
             reply: Reply::ReviewSubmitted { pr },
             event: Some(Event::PendingReviewChanged { context }),
+        }),
+        Fetched::Posted {
+            context,
+            pr,
+            decision,
+        } => Ok(Applied {
+            reply: if decision {
+                Reply::ReviewSubmitted { pr }
+            } else {
+                Reply::CommentPosted { pr }
+            },
+            event: Some(Event::CommentPosted { context }),
         }),
     }
 }

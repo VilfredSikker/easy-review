@@ -189,6 +189,23 @@ pub enum Command {
         event: ReviewEvent,
         summary: String,
     },
+
+    // ── PR-level posts ──
+    /// Post a PR-wide comment.
+    PostGithubPrComment { context: TabContext, body: String },
+    /// Post one line comment outside any review. Refused while the viewer
+    /// has a pending review, which GitHub would attach it to.
+    PostGithubLineComment {
+        context: TabContext,
+        target: ReviewLineTarget,
+        body: String,
+    },
+    /// Submit a bare review decision with no inline comments.
+    SubmitGithubPrDecision {
+        context: TabContext,
+        event: ReviewEvent,
+        summary: String,
+    },
 }
 
 /// What started a comment sync, which decides how fresh the read must be.
@@ -489,8 +506,12 @@ pub enum Reply {
         pr: PrRef,
         review: er_github::PendingReview,
     },
-    /// The pending review was submitted.
+    /// The pending review, or a bare decision, was submitted.
     ReviewSubmitted {
+        pr: PrRef,
+    },
+    /// A PR-level comment was posted.
+    CommentPosted {
         pr: PrRef,
     },
     #[cfg(test)]
@@ -529,6 +550,10 @@ pub enum Event {
     },
     /// The viewer's pending review on the tab's PR changed or was submitted.
     PendingReviewChanged {
+        context: TabContext,
+    },
+    /// A comment or a decision was posted to the tab's PR.
+    CommentPosted {
         context: TabContext,
     },
 }

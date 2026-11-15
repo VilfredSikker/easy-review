@@ -15,7 +15,7 @@ use crate::protocol::{
 };
 use crate::{spawn, WorkspaceHandle, OWN_PR_APPROVAL_REFUSED};
 
-const RAW: &str = "\
+pub(super) const RAW: &str = "\
 diff --git a/src/b.rs b/src/b.rs
 --- a/src/b.rs
 +++ b/src/b.rs
@@ -26,10 +26,10 @@ diff --git a/src/b.rs b/src/b.rs
  b-three
 ";
 
-const WAIT: Duration = Duration::from_secs(5);
+pub(super) const WAIT: Duration = Duration::from_secs(5);
 
 /// A remote PR tab, acme/widgets#7, whose comments live in `bucket`.
-fn pr_tab(bucket: &str) -> TabContext {
+pub(super) fn pr_tab(bucket: &str) -> TabContext {
     TabContext {
         er_dir: bucket.to_string(),
         comments_dir: bucket.to_string(),
@@ -47,7 +47,7 @@ fn pr_tab(bucket: &str) -> TabContext {
     }
 }
 
-fn acme_7() -> PrRef {
+pub(super) fn acme_7() -> PrRef {
     PrRef {
         owner: "acme".to_string(),
         repo: "widgets".to_string(),
@@ -55,14 +55,14 @@ fn acme_7() -> PrRef {
     }
 }
 
-fn actor(github: &Arc<FakeGitHub>) -> WorkspaceHandle {
+pub(super) fn actor(github: &Arc<FakeGitHub>) -> WorkspaceHandle {
     let git: Arc<dyn er_git::Git> = Arc::new(FakeGit::default());
     let github: Arc<dyn er_github::GitHub> = github.clone();
     spawn(WorkspaceDeps::new(Ports { git, github }))
 }
 
 /// The method names the fake saw, in order, for the methods in `of`.
-fn calls_named(github: &FakeGitHub, of: &[&str]) -> Vec<String> {
+pub(super) fn calls_named(github: &FakeGitHub, of: &[&str]) -> Vec<String> {
     github
         .calls()
         .into_iter()
@@ -71,7 +71,7 @@ fn calls_named(github: &FakeGitHub, of: &[&str]) -> Vec<String> {
         .collect()
 }
 
-fn overview(author: &str) -> er_github::PrOverviewData {
+pub(super) fn overview(author: &str) -> er_github::PrOverviewData {
     er_github::PrOverviewData {
         number: 7,
         title: "T".to_string(),
@@ -276,7 +276,7 @@ fn a_sync_publishes_an_event_the_relay_hears() -> anyhow::Result<()> {
 }
 
 /// A pending review holding one draft comment, `PRRC_0`.
-fn pending() -> PendingReview {
+pub(super) fn pending() -> PendingReview {
     let draft = PendingReviewComment {
         id: "PRRC_0".to_string(),
         database_id: None,
@@ -293,7 +293,7 @@ fn pending() -> PendingReview {
     }
 }
 
-fn line_two() -> ReviewLineTarget {
+pub(super) fn line_two() -> ReviewLineTarget {
     ReviewLineTarget {
         file: "src/b.rs".to_string(),
         line_num: 2,
