@@ -183,7 +183,10 @@ fn tab_label(tab: &TabDescriptor, branch: Option<&str>) -> String {
     }
     std::path::Path::new(&tab.repo_root)
         .file_name()
-        .map_or_else(|| tab.repo_root.clone(), |name| name.to_string_lossy().into_owned())
+        .map_or_else(
+            || tab.repo_root.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        )
 }
 
 #[cfg(test)]
@@ -366,7 +369,10 @@ mod tests {
             .collect();
         assert_eq!(
             strip,
-            [("widgets", "working", false), ("gadgets#7", "remote_pr", true)]
+            [
+                ("widgets", "working", false),
+                ("gadgets#7", "remote_pr", true)
+            ]
         );
         assert_eq!(snap.tabs[1].remote.as_deref(), Some("acme/gadgets"));
         assert_eq!(snap.theme, "light");

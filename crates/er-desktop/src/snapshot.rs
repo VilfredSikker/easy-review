@@ -3103,8 +3103,7 @@ pub trait SnapshotRead {
     /// freshness and its arena runs. Every section the other accessors answer
     /// is left at its default. `None` when the source publishes no tab
     /// content, and the snapshot then carries empty tab rows.
-    fn tab_content(&self, sources: &SnapshotSources<'_>, chrome_only: bool)
-        -> Option<AppSnapshot>;
+    fn tab_content(&self, sources: &SnapshotSources<'_>, chrome_only: bool) -> Option<AppSnapshot>;
     fn view_rows(&self) -> ViewRows;
     /// The tab strip and the active tab's position in it. The active tab's
     /// `stale` flag is set by the builder from the tab's diff freshness.
@@ -3147,11 +3146,7 @@ impl SnapshotRead for AppRead<'_> {
         Some(self.0.tab().key())
     }
 
-    fn tab_content(
-        &self,
-        sources: &SnapshotSources<'_>,
-        chrome_only: bool,
-    ) -> Option<AppSnapshot> {
+    fn tab_content(&self, sources: &SnapshotSources<'_>, chrome_only: bool) -> Option<AppSnapshot> {
         Some(app_tab_content(self.0, sources, chrome_only))
     }
 
@@ -3285,7 +3280,10 @@ pub fn build_snapshot_from<R: SnapshotRead>(
     // Copied out so the view lock is not held while the rest is built.
     let (browser, panels) = match sources.view.and_then(|v| v.lock().ok()) {
         Some(v) => (
-            source.tab_key().map(|key| v.browser(key)).unwrap_or_default(),
+            source
+                .tab_key()
+                .map(|key| v.browser(key))
+                .unwrap_or_default(),
             v.panels().clone(),
         ),
         None => Default::default(),
@@ -3550,7 +3548,7 @@ fn app_tab_content(app: &App, sources: &SnapshotSources<'_>, chrome_only: bool) 
         None
     };
 
-    let filter =if tab.filter_expr.is_empty() {
+    let filter = if tab.filter_expr.is_empty() {
         None
     } else {
         Some(tab.filter_expr.clone())
@@ -3725,7 +3723,7 @@ fn app_tab_content(app: &App, sources: &SnapshotSources<'_>, chrome_only: bool) 
         local_branch_divergence_for(tab, pr_head, (!chrome_only).then_some(&unstaged_stat))
     });
 
-    let stack =snapshot_stack(tab).map(|mut s| {
+    let stack = snapshot_stack(tab).map(|mut s| {
         let branch = tab
             .local_branch_view
             .as_deref()
