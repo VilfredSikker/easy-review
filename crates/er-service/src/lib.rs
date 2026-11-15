@@ -16,11 +16,13 @@
 mod actor;
 mod annotations;
 mod app_registry;
+pub mod arena;
 mod effect;
 mod github_comments;
 mod github_sync;
 mod guard;
 mod handle;
+mod jobs;
 mod pending_review;
 mod pr_posts;
 mod protocol;
@@ -31,10 +33,12 @@ pub use app_registry::{AppCommand, AppRegistry, TabEntry, TabsView};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use pending_review::OWN_PR_APPROVAL_REFUSED;
 pub use protocol::{
-    AnnotationKind, AnnotationTarget, Command, Event, OpenTarget, PrRef, Reply, ReviewEvent,
-    ReviewLineTarget, SyncSource, TabContext,
+    AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event, JobOutcome,
+    OpenTarget, PrRef, Reply, ReviewEvent, ReviewLineTarget, SyncSource, TabContext,
 };
-pub use workspace::{WorkspaceTarget, WorkspaceView};
+pub use workspace::{LiveArenaRun, WorkspaceTarget, WorkspaceView};
 
+#[cfg(test)]
+mod job_tests;
 #[cfg(test)]
 mod tests;

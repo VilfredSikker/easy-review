@@ -4,6 +4,8 @@
 //! the revision, and swaps the `Arc`; a reader that grabbed the previous view
 //! keeps rendering it until it asks again.
 
+use er_engine::arena::{ArenaProgressState, RunStatus};
+
 /// One PR the workspace has open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceTarget {
@@ -30,6 +32,26 @@ pub struct WorkspaceView {
     pub active: Option<usize>,
     /// The last effect failure, cleared by the next successful open.
     pub last_error: Option<String>,
+    /// The arena runs this actor started, by run id order. Run records stay
+    /// on disk; this section carries what only the live run knows.
+    pub arena_runs: Vec<LiveArenaRun>,
+}
+
+impl WorkspaceView {
+    pub fn arena_run(&self, run_id: &str) -> Option<&LiveArenaRun> {
+        self.arena_runs.iter().find(|run| run.run_id == run_id)
+    }
+}
+
+/// One arena run's live state, copied from its control when the actor
+/// publishes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveArenaRun {
+    pub run_id: String,
+    /// The bucket the run writes to.
+    pub er_dir: String,
+    pub status: RunStatus,
+    pub progress: ArenaProgressState,
 }
 
 /// The actor-thread state. Private to the crate: readers only ever see a
@@ -82,6 +104,12 @@ impl WorkspaceState {
     /// annotation sidecar change), so readers refresh.
     pub(crate) fn bump_revision(&mut self) -> u64 {
         self.bump()
+    }
+
+    /// Replaces the live arena section. The caller publishes it with the
+    /// next revision.
+    pub(crate) fn set_arena_runs(&mut self, runs: Vec<LiveArenaRun>) {
+        self.view.arena_runs = runs;
     }
 
     fn bump(&mut self) -> u64 {
