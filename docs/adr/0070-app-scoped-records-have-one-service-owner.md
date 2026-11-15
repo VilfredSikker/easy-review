@@ -24,7 +24,9 @@ lock and writes after releasing it, and port calls run on effect threads.
 - The tab record lives in the engine, which must not name the desktop's
   browser fields (ADR 0068). `TabDescriptor` keeps keys it does not own in a
   flattened map, and the desktop reads and writes its browser URL and layout
-  there. A key the engine does not know now survives a save, and the saved
-  file's key order can differ from older builds.
+  there. A key the engine does not know now survives the engine's load and
+  save, and so a save from the registry; the desktop's flag-off save still
+  rebuilds each descriptor from its tab and drops such a key. The saved file's
+  key order can differ from older builds.
 - Tab commands name a tab by its `TabKey`; a position travels only where the
   command needs one, as the reorder target.
