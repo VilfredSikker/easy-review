@@ -451,3 +451,67 @@ pub fn compute_stale_files(state: &mut AiState, branch_raw_diff: &str) {
         state.stale_files = stale;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RAW: &str = "\
+diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,2 +1,2 @@
+ a-one
+-a-old
++a-new
+diff --git a/src/b.rs b/src/b.rs
+--- a/src/b.rs
++++ b/src/b.rs
+@@ -1,2 +1,2 @@
+ b-one
+-b-old
++b-new
+";
+
+    type HashMapOf = std::collections::HashMap<String, String>;
+
+    fn reviewed_against(file_hashes: HashMapOf) -> AiState {
+        let mut state = AiState::default();
+        state.review = Some(ai::ErReview {
+            version: 1,
+            diff_hash: "old".to_string(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: std::collections::HashMap::new(),
+            file_hashes,
+        });
+        state
+    }
+
+    #[test]
+    fn a_file_whose_hash_moved_or_left_the_diff_is_stale() {
+        let current = ai::compute_per_file_hashes(RAW);
+        let mut file_hashes = HashMapOf::new();
+        file_hashes.insert("src/a.rs".to_string(), current["src/a.rs"].clone());
+        file_hashes.insert("src/b.rs".to_string(), "moved".to_string());
+        file_hashes.insert("src/gone.rs".to_string(), "gone".to_string());
+        let mut state = reviewed_against(file_hashes);
+
+        compute_stale_files(&mut state, RAW);
+
+        let mut stale: Vec<&str> = state.stale_files.iter().map(String::as_str).collect();
+        stale.sort_unstable();
+        assert_eq!(stale, vec!["src/b.rs", "src/gone.rs"]);
+    }
+
+    #[test]
+    fn a_review_without_file_hashes_leaves_the_stale_set_alone() {
+        let mut state = reviewed_against(HashMapOf::new());
+        state.stale_files.insert("kept.rs".to_string());
+
+        compute_stale_files(&mut state, RAW);
+
+        assert!(state.stale_files.contains("kept.rs"));
+    }
+}
