@@ -27,6 +27,9 @@ pub mod github;
 pub mod github_post;
 #[cfg(feature = "highlight")]
 pub mod highlight;
+pub mod job_commit;
+mod job_merge;
+pub mod job_staging;
 pub mod jobs;
 mod legacy_projects;
 pub mod model_discovery;
