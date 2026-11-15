@@ -12399,6 +12399,7 @@ mod tests {
             #[cfg(feature = "v1-service")]
             service: Arc::new(crate::service::ServiceState::new(
                 er_engine::ports::Ports::for_test(),
+                Arc::clone(&desktop_revision),
             )),
             app,
             view: Default::default(),
@@ -12452,6 +12453,7 @@ mod tests {
             let mut state = review_flow_test_state(&dir);
             state.service = Arc::new(crate::service::ServiceState::new(
                 er_engine::ports::Ports::with_github(github_port),
+                Arc::clone(&state.desktop_revision),
             ));
             let held = match state.app.lock() {
                 Ok(guard) => guard,

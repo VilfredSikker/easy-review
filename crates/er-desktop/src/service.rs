@@ -9,11 +9,12 @@
 //! command path untouched.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use er_engine::ports::Ports;
 use er_service::{
-    spawn, Command, OpenTarget, Reply, WorkspaceDeps, WorkspaceError, WorkspaceHandle,
+    spawn, Command, Event, OpenTarget, Reply, WorkspaceDeps, WorkspaceError, WorkspaceHandle,
     WorkspaceView,
 };
 
@@ -21,13 +22,23 @@ use er_service::{
 pub struct ServiceState {
     deps: WorkspaceDeps,
     handles: Mutex<HashMap<String, WorkspaceHandle>>,
+    /// The desktop revision. Every view an actor publishes bumps it, so the
+    /// front end re-reads on `er://revision` (ADR 0011) with no poll of its
+    /// own: a live arena run's progress reaches the page this way.
+    desktop_revision: Arc<AtomicU64>,
 }
 
 impl ServiceState {
-    pub fn new(ports: Ports) -> Self {
+    pub fn new(ports: Ports, desktop_revision: Arc<AtomicU64>) -> Self {
+        Self::with_deps(WorkspaceDeps::new(ports), desktop_revision)
+    }
+
+    /// The same, over deps the caller built, such as a test's job sink.
+    pub fn with_deps(deps: WorkspaceDeps, desktop_revision: Arc<AtomicU64>) -> Self {
         Self {
-            deps: WorkspaceDeps::new(ports),
+            deps,
             handles: Mutex::new(HashMap::new()),
+            desktop_revision,
         }
     }
 
@@ -40,7 +51,13 @@ impl ServiceState {
         };
         handles
             .entry(key.to_string())
-            .or_insert_with(|| spawn(self.deps.clone()))
+            .or_insert_with(|| {
+                let handle = spawn(self.deps.clone());
+                // Subscribed before the handle is handed out, so the first
+                // command's publish is not missed.
+                forward_views(&handle, Arc::clone(&self.desktop_revision));
+                handle
+            })
             .clone()
     }
 
@@ -77,4 +94,17 @@ impl ServiceState {
             .iter()
             .any(|handle| handle.view().arena_run(run_id).is_some())
     }
+}
+
+/// Bumps the desktop revision for each view the actor publishes. The thread
+/// touches only the counter, and ends when the actor and its handles are gone.
+fn forward_views(handle: &WorkspaceHandle, desktop_revision: Arc<AtomicU64>) {
+    let events = handle.subscribe();
+    std::thread::spawn(move || {
+        for event in events {
+            if let Event::ViewPublished { .. } = event {
+                crate::profile_log::bump_desktop_revision(&desktop_revision, "service_view");
+            }
+        }
+    });
 }
