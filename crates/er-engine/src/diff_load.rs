@@ -102,6 +102,17 @@ pub fn changed_reviewed(
         .collect()
 }
 
+/// The reviewed paths absent from `active`: orphans from another branch's
+/// marks, or legacy lines. A full refresh drops them.
+pub fn orphaned_reviewed(reviewed: &HashMap<String, String>, active: &[DiffFile]) -> Vec<String> {
+    let active: HashSet<&str> = active.iter().map(|f| f.path.as_str()).collect();
+    reviewed
+        .keys()
+        .filter(|p| !active.contains(p.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// GitHub PR diff for AI review when this tab is PR-associated. Skips local
 /// working-tree scopes on a checked-out branch so Branch/Unstaged/Staged
 /// use the working tree (live edits) instead of `gh pr diff`. PrDiff and
@@ -323,4 +334,79 @@ pub fn parse_lazy_file(
         }
     }
     true
+}
+
+/// Plain inputs a PR refresh needs.
+///
+/// Owned, so [`fetch_pr_refresh_with`] can run with no App lock held and
+/// no tab to borrow — which is the whole point of splitting the fetch out.
+#[derive(Debug, Clone)]
+pub struct PrRefreshInputs {
+    pub repo_root: String,
+    pub pr_number: u64,
+}
+
+/// What [`fetch_pr_refresh_with`] brought back, ready for a tab to adopt.
+#[derive(Debug)]
+pub struct PrRefreshResult {
+    pub head_ref: String,
+    /// The resolved remote-tracking base (e.g. `origin/main`).
+    pub resolved_base: String,
+    pub last_diff_head_oid: Option<String>,
+    pub commits: Vec<crate::git::CommitInfo>,
+}
+
+/// Every network leg a local PR tab's refresh needs: fetch the PR head ref,
+/// look up the base and the commits, fetch the base ref. The head fetch and
+/// the `gh pr view` are independent, so they overlap; the base fetch needs the
+/// base name the lookup returns, so it follows them.
+pub fn fetch_pr_refresh_with(
+    github: &dyn er_github::GitHub,
+    git: &dyn er_git::Git,
+    inputs: &PrRefreshInputs,
+) -> Result<PrRefreshResult> {
+    let pr_number = inputs.pr_number;
+    let repo_root = inputs.repo_root.as_str();
+
+    let (head_result, lookup_result) = std::thread::scope(|s| {
+        let head_handle = s.spawn(move || crate::github::fetch_pr_head(git, pr_number, repo_root));
+        let lookup = github.pr_base_branch_and_commits(repo_root, pr_number, 250);
+        let head_result = head_handle
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("pr head fetch thread panicked")));
+        (head_result, lookup)
+    });
+    let head_ref = head_result?;
+
+    // Base branch and commit list are two fields of one PR, so one
+    // `gh pr view` answers both. Two invocations cost two round trips
+    // (~0.6s each) for the same object.
+    let (base_branch, commits) = match lookup_result {
+        Ok(pair) => pair,
+        // A failed union cannot say which field was at fault, so fall back
+        // to the two-call form and keep its error split: a base lookup
+        // failure is fatal, a commit lookup failure is not (an empty list
+        // keeps the existing one — see `apply_pr_commit_refresh`).
+        Err(_) => (
+            github.pr_base_branch(pr_number, repo_root)?,
+            github
+                .pr_commits(repo_root, pr_number, 250)
+                .map_err(|e| {
+                    eprintln!("sync: pr commits re-fetch failed for #{pr_number}: {e}");
+                })
+                .unwrap_or_default(),
+        ),
+    };
+
+    let resolved_base = github.fetch_pr_base_ref(git, repo_root, pr_number, &base_branch)?;
+    // The oid the diff is about to be computed against, so the desktop
+    // freshness check can compare it to the latest PR head_oid.
+    let last_diff_head_oid = crate::github::rev_parse_oid(git, repo_root, &head_ref);
+
+    Ok(PrRefreshResult {
+        head_ref,
+        resolved_base,
+        last_diff_head_oid,
+        commits,
+    })
 }

@@ -1011,26 +1011,7 @@ pub struct MemoryBudget {
     pub compacted_files: usize,
 }
 
-/// Plain inputs a PR refresh needs.
-///
-/// Owned, so [`TabState::fetch_pr_refresh`] can run with no App lock held and
-/// no tab to borrow — which is the whole point of splitting the fetch out.
-#[derive(Debug, Clone)]
-pub struct PrRefreshInputs {
-    pub repo_root: String,
-    pub pr_number: u64,
-}
-
-/// What [`TabState::fetch_pr_refresh`] brought back, ready for
-/// [`TabState::apply_pr_refresh`].
-#[derive(Debug)]
-pub struct PrRefreshResult {
-    pub head_ref: String,
-    /// The resolved remote-tracking base (e.g. `origin/main`).
-    pub resolved_base: String,
-    pub last_diff_head_oid: Option<String>,
-    pub commits: Vec<crate::git::CommitInfo>,
-}
+pub use crate::diff_load::{PrRefreshInputs, PrRefreshResult};
 
 impl TabState {
     /// This tab's identity for the rest of the process.
@@ -1083,6 +1064,40 @@ impl TabState {
     ) -> Result<Self> {
         let current_branch = ports.git.current_branch(&repo_root)?;
         Self::new_inner(repo_root, current_branch, base_branch, false, ports)
+    }
+
+    /// A tab for a resolved identity, without its first diff. Storage is set
+    /// up as the constructors do before they learn the viewed branch, so a
+    /// branch or PR tab syncs its storage again before it refreshes.
+    pub fn from_resolved(resolved: crate::tab_identity::ResolvedTab, ports: Ports) -> Result<Self> {
+        if resolved.identity().is_remote() {
+            let slug = resolved.remote_repo.as_deref().unwrap_or("");
+            let (owner, repo) = slug.split_once('/').unwrap_or((slug, ""));
+            let pr_ref = crate::github::PrRef {
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+                number: resolved.pr_number.unwrap_or(0),
+            };
+            let mut tab = Self::new_remote_stub(&pr_ref, ports)?;
+            tab.current_branch = resolved.current_branch;
+            tab.base_branch = resolved.base_branch;
+            return Ok(tab);
+        }
+        let mut tab = Self::new_inner(
+            resolved.repo_root,
+            resolved.current_branch,
+            resolved.base_branch,
+            false,
+            ports,
+        )?;
+        tab.local_branch_view = resolved.local_branch_view;
+        tab.pr_number = resolved.pr_number;
+        tab.pr_head_ref = resolved.pr_head_ref;
+        tab.remote_repo = resolved.remote_repo;
+        tab.local_branch_checkout_root = resolved.checkout_root;
+        tab.mode = resolved.mode;
+        tab.tour_is_pr = resolved.tour_is_pr;
+        Ok(tab)
     }
 
     /// Stub tab for an async-miss PR open: placed instantly with a
@@ -2453,51 +2468,7 @@ impl TabState {
         git: &dyn er_git::Git,
         inputs: &PrRefreshInputs,
     ) -> Result<PrRefreshResult> {
-        let pr_number = inputs.pr_number;
-        let repo_root = inputs.repo_root.as_str();
-
-        let (head_result, lookup_result) = std::thread::scope(|s| {
-            let head_handle =
-                s.spawn(move || crate::github::fetch_pr_head(git, pr_number, repo_root));
-            let lookup = github.pr_base_branch_and_commits(repo_root, pr_number, 250);
-            let head_result = head_handle
-                .join()
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("pr head fetch thread panicked")));
-            (head_result, lookup)
-        });
-        let head_ref = head_result?;
-
-        // Base branch and commit list are two fields of one PR, so one
-        // `gh pr view` answers both. Two invocations cost two round trips
-        // (~0.6s each) for the same object.
-        let (base_branch, commits) = match lookup_result {
-            Ok(pair) => pair,
-            // A failed union cannot say which field was at fault, so fall back
-            // to the two-call form and keep its error split: a base lookup
-            // failure is fatal, a commit lookup failure is not (an empty list
-            // keeps the existing one — see `apply_pr_commit_refresh`).
-            Err(_) => (
-                github.pr_base_branch(pr_number, repo_root)?,
-                github
-                    .pr_commits(repo_root, pr_number, 250)
-                    .map_err(|e| {
-                        eprintln!("sync: pr commits re-fetch failed for #{pr_number}: {e}");
-                    })
-                    .unwrap_or_default(),
-            ),
-        };
-
-        let resolved_base = github.fetch_pr_base_ref(git, repo_root, pr_number, &base_branch)?;
-        // The oid the diff is about to be computed against, so the desktop
-        // freshness check can compare it to the latest PR head_oid.
-        let last_diff_head_oid = crate::github::rev_parse_oid(git, repo_root, &head_ref);
-
-        Ok(PrRefreshResult {
-            head_ref,
-            resolved_base,
-            last_diff_head_oid,
-            commits,
-        })
+        crate::diff_load::fetch_pr_refresh_with(github, git, inputs)
     }
 
     /// Assign a fetched refresh to this tab.
@@ -3369,439 +3340,27 @@ impl TabState {
 
     /// Relocate all comments to their new positions after a diff change.
     pub fn relocate_all_comments(&mut self) {
-        let current_hash = self.diff_hash.clone();
-
-        // The per-id anchor changes to re-apply to `current` when writing back.
-        #[derive(Clone)]
-        struct AnchorUpdate {
-            hunk_index: Option<usize>,
-            line_start: Option<usize>,
-            anchor_status: String,
-            relocated_at_hash: String,
-            stale: bool,
-        }
-        let mut question_updates: std::collections::HashMap<String, AnchorUpdate> =
-            std::collections::HashMap::new();
-        let mut note_updates: std::collections::HashMap<String, AnchorUpdate> =
-            std::collections::HashMap::new();
-        let mut comment_updates: std::collections::HashMap<String, AnchorUpdate> =
-            std::collections::HashMap::new();
-        macro_rules! record {
-            ($map:ident, $item:expr) => {
-                $map.insert(
-                    $item.id.clone(),
-                    AnchorUpdate {
-                        hunk_index: $item.hunk_index,
-                        line_start: $item.line_start,
-                        anchor_status: $item.anchor_status.clone(),
-                        relocated_at_hash: $item.relocated_at_hash.clone(),
-                        stale: $item.stale,
-                    },
-                );
-            };
-        }
-        fn apply_updates<T>(
-            items: &mut [T],
-            updates: &std::collections::HashMap<String, AnchorUpdate>,
-            id_of: impl Fn(&T) -> &str,
-            apply: impl Fn(&mut T, &AnchorUpdate),
-        ) {
-            for item in items.iter_mut() {
-                if let Some(update) = updates.get(id_of(item)) {
-                    apply(item, update);
-                }
-            }
-        }
-
-        // Build rename map: old path → new path
-        let rename_map: std::collections::HashMap<String, String> = self
-            .files
-            .iter()
-            .filter_map(|f| {
-                if let git::FileStatus::Renamed(ref old_path) = f.status {
-                    Some((old_path.clone(), f.path.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let is_lazy = self.lazy_mode;
-
-        // Ready / unparsed-stub / missing. Unparsed lazy stubs must not be
-        // treated as Missing — that stamped every comment `stale` and the
-        // Comments panel hid them behind Hide outdated.
-        enum RelocateLookup {
-            Ready(usize),
-            UnparsedStub,
-            Missing,
-        }
-        let lookup_file = |path: &str| -> RelocateLookup {
-            let find_idx =
-                |p: &str| -> Option<usize> { self.files.iter().position(|f| f.path == p) };
-            let Some(idx) =
-                find_idx(path).or_else(|| rename_map.get(path).and_then(|np| find_idx(np)))
-            else {
-                return RelocateLookup::Missing;
-            };
-            if is_lazy {
-                let f = &self.files[idx];
-                if f.hunks.is_empty() && !f.compacted {
-                    return RelocateLookup::UnparsedStub;
-                }
-            }
-            RelocateLookup::Ready(idx)
-        };
-
-        // Process questions
-        let questions_changed = if let Some(ref mut qs) = self.ai.questions {
-            let mut changed = false;
-            for q in &mut qs.questions {
-                if q.relocated_at_hash == current_hash {
-                    continue;
-                }
-                // File-level and document-line questions have no hunk anchor to relocate — skip
-                if q.is_file_level() || q.is_document_anchor() {
-                    q.relocated_at_hash = current_hash.clone();
-                    continue;
-                }
-                let result = match lookup_file(&q.file) {
-                    RelocateLookup::UnparsedStub => continue,
-                    RelocateLookup::Ready(idx) => {
-                        let anchor = ai::CommentAnchor {
-                            hunk_index: q.hunk_index,
-                            line_start: q.line_start,
-                            line_content: q.line_content.clone(),
-                            context_before: q.context_before.clone(),
-                            context_after: q.context_after.clone(),
-                            old_line_start: q.old_line_start,
-                            hunk_header: q.hunk_header.clone(),
-                        };
-                        ai::relocate_comment(&anchor, &self.files[idx])
-                    }
-                    RelocateLookup::Missing => ai::RelocationResult::Lost,
-                };
-                match result {
-                    ai::RelocationResult::Unchanged => {
-                        q.anchor_status = "original".to_string();
-                        q.relocated_at_hash = current_hash.clone();
-                        q.stale = false;
-                        changed = true;
-                        record!(question_updates, q);
-                    }
-                    ai::RelocationResult::Relocated {
-                        new_hunk_index,
-                        new_line_start,
-                    } => {
-                        q.hunk_index = Some(new_hunk_index);
-                        q.line_start = Some(new_line_start);
-                        q.anchor_status = "relocated".to_string();
-                        q.relocated_at_hash = current_hash.clone();
-                        q.stale = false;
-                        changed = true;
-                        record!(question_updates, q);
-                    }
-                    ai::RelocationResult::Lost => {
-                        q.anchor_status = "lost".to_string();
-                        q.stale = true;
-                        q.relocated_at_hash = current_hash.clone();
-                        changed = true;
-                        record!(question_updates, q);
-                    }
-                }
-            }
-            changed
-        } else {
-            false
-        };
-
-        // Process notes (same anchoring model as questions)
-        let notes_changed = if let Some(ref mut ns) = self.ai.notes {
-            let mut changed = false;
-            for n in &mut ns.notes {
-                if n.relocated_at_hash == current_hash {
-                    continue;
-                }
-                if n.is_file_level() || n.is_document_anchor() {
-                    n.relocated_at_hash = current_hash.clone();
-                    continue;
-                }
-                let result = match lookup_file(&n.file) {
-                    RelocateLookup::UnparsedStub => continue,
-                    RelocateLookup::Ready(idx) => {
-                        let anchor = ai::CommentAnchor {
-                            hunk_index: n.hunk_index,
-                            line_start: n.line_start,
-                            line_content: n.line_content.clone(),
-                            context_before: n.context_before.clone(),
-                            context_after: n.context_after.clone(),
-                            old_line_start: n.old_line_start,
-                            hunk_header: n.hunk_header.clone(),
-                        };
-                        ai::relocate_comment(&anchor, &self.files[idx])
-                    }
-                    RelocateLookup::Missing => ai::RelocationResult::Lost,
-                };
-                match result {
-                    ai::RelocationResult::Unchanged => {
-                        n.anchor_status = "original".to_string();
-                        n.relocated_at_hash = current_hash.clone();
-                        n.stale = false;
-                        changed = true;
-                        record!(note_updates, n);
-                    }
-                    ai::RelocationResult::Relocated {
-                        new_hunk_index,
-                        new_line_start,
-                    } => {
-                        n.hunk_index = Some(new_hunk_index);
-                        n.line_start = Some(new_line_start);
-                        n.anchor_status = "relocated".to_string();
-                        n.relocated_at_hash = current_hash.clone();
-                        n.stale = false;
-                        changed = true;
-                        record!(note_updates, n);
-                    }
-                    ai::RelocationResult::Lost => {
-                        n.anchor_status = "lost".to_string();
-                        n.stale = true;
-                        n.relocated_at_hash = current_hash.clone();
-                        changed = true;
-                        record!(note_updates, n);
-                    }
-                }
-            }
-            changed
-        } else {
-            false
-        };
-
-        // Process GitHub comments (top-level only; replies follow their parent)
-        let comments_changed = if let Some(ref mut gc) = self.ai.github_comments {
-            let mut changed = false;
-            for c in &mut gc.comments {
-                if c.relocated_at_hash == current_hash {
-                    continue;
-                }
-                if c.in_reply_to.is_some() {
-                    continue;
-                }
-                // File-level comments have no anchor to relocate — skip
-                if c.hunk_index.is_none() && c.line_start.is_none() && c.hunk_header.is_empty() {
-                    c.relocated_at_hash = current_hash.clone();
-                    continue;
-                }
-                let result = match lookup_file(&c.file) {
-                    RelocateLookup::UnparsedStub => continue,
-                    RelocateLookup::Ready(idx) => {
-                        let anchor = ai::CommentAnchor {
-                            hunk_index: c.hunk_index,
-                            line_start: c.line_start,
-                            line_content: c.line_content.clone(),
-                            context_before: c.context_before.clone(),
-                            context_after: c.context_after.clone(),
-                            old_line_start: c.old_line_start,
-                            hunk_header: c.hunk_header.clone(),
-                        };
-                        ai::relocate_comment(&anchor, &self.files[idx])
-                    }
-                    RelocateLookup::Missing => ai::RelocationResult::Lost,
-                };
-                match result {
-                    ai::RelocationResult::Unchanged => {
-                        c.anchor_status = "original".to_string();
-                        c.relocated_at_hash = current_hash.clone();
-                        c.stale = false;
-                        changed = true;
-                        record!(comment_updates, c);
-                    }
-                    ai::RelocationResult::Relocated {
-                        new_hunk_index,
-                        new_line_start,
-                    } => {
-                        c.hunk_index = Some(new_hunk_index);
-                        c.line_start = Some(new_line_start);
-                        c.anchor_status = "relocated".to_string();
-                        c.relocated_at_hash = current_hash.clone();
-                        c.stale = false;
-                        changed = true;
-                        record!(comment_updates, c);
-                    }
-                    ai::RelocationResult::Lost => {
-                        c.anchor_status = "lost".to_string();
-                        c.stale = true;
-                        c.relocated_at_hash = current_hash.clone();
-                        changed = true;
-                        record!(comment_updates, c);
-                    }
-                }
-            }
-            changed
-        } else {
-            false
-        };
-
-        // Write back to disk if anything changed. Write failures are ignored — the
-        // next refresh re-relocates the same comments from scratch. Each write
-        // re-applies the id's anchor change to `current`, so a comment added
-        // since the in-memory pass is not lost.
-        if questions_changed {
-            if let Ok(scope) = er_store::Scope::dir(self.er_dir()) {
-                let store = crate::store_registry::store();
-                let _ = ai::annotation_store::update_questions(&store, &scope, move |current| {
-                    let mut qs = current.context("the questions file is missing or unreadable")?;
-                    apply_updates(
-                        &mut qs.questions,
-                        &question_updates,
-                        |q| q.id.as_str(),
-                        |q, update| {
-                            q.hunk_index = update.hunk_index;
-                            q.line_start = update.line_start;
-                            q.anchor_status = update.anchor_status.clone();
-                            q.relocated_at_hash = update.relocated_at_hash.clone();
-                            q.stale = update.stale;
-                        },
-                    );
-                    Ok::<_, anyhow::Error>(qs)
-                });
-            }
-        }
-        if notes_changed {
-            if let Ok(scope) = er_store::Scope::dir(self.er_dir()) {
-                let store = crate::store_registry::store();
-                let _ = ai::annotation_store::update_notes(&store, &scope, move |current| {
-                    let mut ns = current.context("the notes file is missing or unreadable")?;
-                    apply_updates(
-                        &mut ns.notes,
-                        &note_updates,
-                        |n| n.id.as_str(),
-                        |n, update| {
-                            n.hunk_index = update.hunk_index;
-                            n.line_start = update.line_start;
-                            n.anchor_status = update.anchor_status.clone();
-                            n.relocated_at_hash = update.relocated_at_hash.clone();
-                            n.stale = update.stale;
-                        },
-                    );
-                    Ok::<_, anyhow::Error>(ns)
-                });
-            }
-        }
-        if comments_changed {
-            if let Ok(scope) = er_store::Scope::dir(self.github_comments_dir()) {
-                let store = crate::store_registry::store();
-                let _ =
-                    ai::annotation_store::update_github_comments(&store, &scope, move |current| {
-                        let mut gc =
-                            current.context("the GitHub comments file is missing or unreadable")?;
-                        apply_updates(
-                            &mut gc.comments,
-                            &comment_updates,
-                            |c| c.id.as_str(),
-                            |c, update| {
-                                c.hunk_index = update.hunk_index;
-                                c.line_start = update.line_start;
-                                c.anchor_status = update.anchor_status.clone();
-                                c.relocated_at_hash = update.relocated_at_hash.clone();
-                                c.stale = update.stale;
-                            },
-                        );
-                        Ok::<_, anyhow::Error>(gc)
-                    });
-            }
-        }
-
-        // Relocation mutates hunk_index / line_start in memory; rebuild the lazy
-        // comment index so inline lookups stay in sync (file-level counts alone
-        // would still look correct with a stale index).
-        if questions_changed || notes_changed || comments_changed {
-            self.ai.rebuild_comment_index();
-        }
+        let er_dir = self.er_dir();
+        let mut ai_state = std::mem::take(&mut self.ai);
+        ai::tab_refresh::relocate_all_comments(
+            &mut ai_state,
+            &self.files,
+            self.lazy_mode,
+            &self.diff_hash,
+            &er_dir,
+            || self.github_comments_dir(),
+        );
+        self.ai = ai_state;
     }
 
     /// Recompute per-finding staleness against the current diff.
-    ///
-    /// Findings are never re-anchored, so this only sets the flag on each one:
-    /// a finding whose target line is gone is suspect, while a sibling in the
-    /// same file whose line merely moved is not. `stale_files` (file-level) is
-    /// computed separately and still drives the file-tree indicator.
-    ///
-    /// Three outcomes per reviewed file, matching `relocate_all_comments`:
-    /// present and parsed → compare each finding against it; an unparsed lazy
-    /// stub → skip, because an empty `hunks` means "not loaded yet", not "the
-    /// code is gone"; absent from the diff entirely → stale, the same verdict
-    /// the comment path reaches for a missing file.
     pub fn refresh_finding_staleness(&mut self) {
-        let is_lazy = self.lazy_mode;
-        let rename_map: std::collections::HashMap<String, String> = self
-            .files
-            .iter()
-            .filter_map(|f| match &f.status {
-                git::FileStatus::Renamed(old_path) => Some((old_path.clone(), f.path.clone())),
-                _ => None,
-            })
-            .collect();
-
-        let files = &self.files;
-        let Some(ref mut review) = self.ai.review else {
-            return;
-        };
-        // Indexed once: this runs on every refresh and a linear scan per review
-        // file is quadratic on a large diff.
-        let index_by_path: std::collections::HashMap<&str, usize> = files
-            .iter()
-            .enumerate()
-            .map(|(idx, f)| (f.path.as_str(), idx))
-            .collect();
-        for (path, file_review) in review.files.iter_mut() {
-            let idx = index_by_path
-                .get(path.as_str())
-                .or_else(|| {
-                    rename_map
-                        .get(path)
-                        .and_then(|p| index_by_path.get(p.as_str()))
-                })
-                .copied();
-            let diff_file = match idx {
-                Some(idx) => {
-                    let file = &files[idx];
-                    // Not loaded yet is not the same as gone — the trap
-                    // `relocate_all_comments` documents. Leave the flags alone.
-                    if is_lazy && file.hunks.is_empty() && !file.compacted {
-                        continue;
-                    }
-                    Some(file)
-                }
-                // The file left the diff entirely, so an anchored finding points
-                // at nothing. The comment path reaches the same verdict
-                // (`Missing → Lost → stale`).
-                None => None,
-            };
-            for finding in &mut file_review.findings {
-                finding.refresh_stale(diff_file);
-            }
-        }
+        ai::tab_refresh::refresh_finding_staleness(&mut self.ai, &self.files, self.lazy_mode);
     }
 
     /// Compute which files have changed since the review, populating stale_files
     fn compute_stale_files(&mut self, branch_raw_diff: &str) {
-        if let Some(ref review) = self.ai.review {
-            if review.file_hashes.is_empty() {
-                return;
-            }
-            let current_hashes = ai::compute_per_file_hashes(branch_raw_diff);
-            let mut stale = std::collections::HashSet::new();
-            for (file, review_hash) in &review.file_hashes {
-                match current_hashes.get(file) {
-                    Some(current_hash) if current_hash == review_hash => {}
-                    _ => {
-                        stale.insert(file.clone());
-                    }
-                }
-            }
-            // Files in current diff but not in review are new (not stale)
-            self.ai.stale_files = stale;
-        }
+        ai::tab_refresh::compute_stale_files(&mut self.ai, branch_raw_diff);
     }
 
     /// Check if .er-* files have been updated since last load (called on tick)
@@ -4860,7 +4419,7 @@ impl TabState {
         // allowed to persist — they write to the shared prs/pr-N dir.
         // Only skip when remote AND NOT the Pr bucket (shouldn't happen today, but
         // guards against future remote modes that have no managed dir).
-        if self.is_remote() && self.review_bucket() != ReviewBucket::Pr {
+        if !self.identity().persists_reviewed() {
             return Ok(());
         }
         let store = crate::store_registry::store();
@@ -4875,17 +4434,7 @@ impl TabState {
         if self.active_diff_files().is_empty() {
             return 0;
         }
-        let active: std::collections::HashSet<&str> = self
-            .active_diff_files()
-            .iter()
-            .map(|f| f.path.as_str())
-            .collect();
-        let orphan: Vec<String> = self
-            .reviewed
-            .keys()
-            .filter(|p| !active.contains(p.as_str()))
-            .cloned()
-            .collect();
+        let orphan = crate::diff_load::orphaned_reviewed(&self.reviewed, self.active_diff_files());
         let count = orphan.len();
         if count > 0 {
             for path in orphan {

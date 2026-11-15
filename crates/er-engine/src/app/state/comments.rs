@@ -887,18 +887,7 @@ impl App {
             };
             crate::annotations::write_annotation(&store, &input)?
         };
-        match written.payload {
-            crate::annotations::WrittenPayload::Questions(questions) => {
-                self.tab_mut().ai.questions = Some(questions);
-            }
-            crate::annotations::WrittenPayload::Notes(notes) => {
-                self.tab_mut().ai.notes = Some(notes);
-            }
-            crate::annotations::WrittenPayload::Comments(comments) => {
-                self.tab_mut().ai.github_comments = Some(comments);
-            }
-        }
-        self.tab_mut().ai.rebuild_comment_index();
+        written.payload.adopt(&mut self.tab_mut().ai);
         let path = written.path.to_string_lossy().into_owned();
         self.tab_mut().mark_sidecar_written(&path);
         let label = if written.is_reply {
