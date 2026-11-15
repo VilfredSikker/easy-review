@@ -13,51 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{AgentLogEntry, AgentLogSource, CommandStatus, TabState};
 
-/// Stable identity used to dedup background tasks and match them back to
-/// the tab(s) they belong to. Two tasks for the same target cannot run
-/// concurrently.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct BackgroundTaskTarget {
-    pub repo_root: String,
-    pub er_dir: String,
-    pub branch_label: String,
-    pub base_branch: String,
-    pub scope: String,
-    pub pr_number: Option<u64>,
-    pub remote_repo: Option<String>,
-    /// True for Desktop managed-local reviews: er_dir is outside repo_root but
-    /// git commands still need cwd = repo_root (not er_dir).
-    pub managed_local: bool,
-}
-
-impl BackgroundTaskTarget {
-    /// Stable string key for ID generation and HashMap lookups.
-    pub fn key(&self) -> String {
-        format!(
-            "{}|{}|{}|{}|{}|{}",
-            self.repo_root,
-            self.branch_label,
-            self.base_branch,
-            self.scope,
-            self.pr_number.map(|n| n.to_string()).unwrap_or_default(),
-            self.remote_repo.clone().unwrap_or_default(),
-        )
-    }
-
-    /// Human-readable label for the review *target* ("branch-name",
-    /// "owner/repo#123", etc.). This is the *where*, not the *what* — use
-    /// [`kind_label`] for the intent of the agent running against it.
-    pub fn display_label(&self) -> String {
-        if let (Some(slug), Some(n)) = (&self.remote_repo, self.pr_number) {
-            return format!("{}#{}", slug, n);
-        }
-        if self.branch_label.is_empty() {
-            self.repo_root.clone()
-        } else {
-            self.branch_label.clone()
-        }
-    }
-}
+pub use crate::task_target::BackgroundTaskTarget;
 
 /// Human-readable name for the *kind* of agent (the intent of the run) so
 /// concurrent tasks against the same target are distinguishable in the UI.
@@ -94,7 +50,7 @@ pub struct BackgroundTask {
     pub error: Option<String>,
     /// Captured checkout for flow-owned launches. Target identity continues to
     /// name the project and bucket even when another worktree supplies code.
-    pub(super) execution_root: Option<String>,
+    pub(crate) execution_root: Option<String>,
 }
 
 impl BackgroundTask {
@@ -165,14 +121,7 @@ pub struct PendingBackgroundTask {
     pub staging: Option<std::sync::Arc<crate::app::job_staging::JobStaging>>,
 }
 
-/// Host-owned diagram write target — agent emits JSON; Easy Review persists it.
-#[derive(Debug, Clone)]
-pub struct HostWriteDiagram {
-    pub output_path: std::path::PathBuf,
-    pub kind: String,
-    pub diff_hash: String,
-    pub custom_prompt: Option<String>,
-}
+pub use crate::stage_job::HostWriteDiagram;
 
 /// In-flight + recently finished background task channels. The `App` owns
 /// this; one entry per task id.

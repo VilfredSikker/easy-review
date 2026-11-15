@@ -17,8 +17,7 @@ pub(super) const RETIRED_SUMMARY_MARKER: &str = ".retired-summary-noticed";
 /// other two markers for the same reason.
 pub(super) const RETIRED_AUTO_TRIAGE_MARKER: &str = ".retired-auto-triage-noticed";
 
-/// The opt-in full agent transcript.
-pub(super) const DEBUG_LOG_FILE: &str = "debug-agent.log";
+pub(super) use crate::stage_job::DEBUG_LOG_FILE;
 
 /// Create the bucket before a command writes into it.
 pub(super) fn ensure_dir(dir: &Path) -> std::io::Result<()> {

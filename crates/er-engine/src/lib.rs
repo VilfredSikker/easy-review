@@ -28,6 +28,9 @@ pub mod github_post;
 pub mod github_post_session;
 #[cfg(feature = "highlight")]
 pub mod highlight;
+pub mod job_commit;
+mod job_merge;
+pub mod job_staging;
 pub mod jobs;
 mod legacy_projects;
 pub mod model_discovery;
@@ -39,15 +42,18 @@ pub mod pr_review_feedback;
 pub mod projects_pins;
 pub mod release_install;
 pub mod release_update;
+pub mod review_flow_driver;
 pub mod review_queue;
 pub mod session_store;
 pub mod sidecar_summary;
 pub mod sidecar_upload;
+pub mod stage_job;
 pub mod storage;
 pub mod store_registry;
 pub mod sync;
 pub mod tab_key;
 pub use tab_key::TabKey;
+pub mod task_target;
 pub mod uninstall;
 #[cfg(feature = "watch")]
 pub mod watch;
