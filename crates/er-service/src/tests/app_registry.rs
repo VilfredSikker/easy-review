@@ -216,8 +216,9 @@ fn a_tab_command_whose_save_fails_takes_effect_and_reports_it() -> anyhow::Resul
 
 /// `tabs.json` and `pr-open-cache.json` have one writer each in the app's
 /// code: the engine's record modules, called from the desktop's flag-off
-/// path and from this registry. The desktop's calls are compiled out with
-/// `v1-service`, which its routing test checks.
+/// path and from this registry. Each desktop call is compiled out with
+/// `v1-service`: the scan below requires the gate on the line before it,
+/// since `main.rs` is a binary that no library test runs.
 #[test]
 fn the_tabs_record_has_one_writer() -> anyhow::Result<()> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -272,8 +273,38 @@ fn the_tabs_record_has_one_writer() -> anyhow::Result<()> {
                 path.display()
             );
         }
+        if path
+            .components()
+            .any(|part| part.as_os_str() == "er-desktop")
+        {
+            assert_desktop_saves_gated(path, text);
+        }
     }
     Ok(())
+}
+
+/// Every desktop call that writes `tabs.json` or `pr-open-cache.json` has
+/// `#[cfg(not(feature = "v1-service"))]` as its nearest non-blank line above.
+/// `save_app_tabs` itself, the wrapper over `save_tabs`, is gated at its caller.
+fn assert_desktop_saves_gated(path: &Path, text: &str) {
+    const GATE: &str = "#[cfg(not(feature = \"v1-service\"))]";
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    for (at, line) in lines.iter().enumerate() {
+        let writes = ["save_app_tabs(", "save_persisted_pr_open_cache("]
+            .iter()
+            .any(|call| line.contains(call));
+        if !writes || line.contains("fn save_app_tabs(") || line.starts_with("//") {
+            continue;
+        }
+        let above = lines[..at].iter().rev().find(|prev| !prev.is_empty());
+        assert_eq!(
+            above.copied(),
+            Some(GATE),
+            "{}:{} writes an app record without the v1-service gate",
+            path.display(),
+            at + 1
+        );
+    }
 }
 
 fn collect_rust(dir: &Path, out: &mut Vec<(std::path::PathBuf, String)>) -> anyhow::Result<()> {
