@@ -51,7 +51,8 @@ pub use pending_review::{
 };
 pub use repo::*;
 pub use review::{
-    gh_pr_head_oid_remote, gh_pr_submit_review, gh_pr_submit_review_remote, ReviewBatchEntry,
+    gh_pr_head_oid_remote, gh_pr_submit_review, gh_pr_submit_review_remote, review_batch_entry,
+    ReviewBatchEntry,
 };
 pub use runner::{GhCall, GhRunner, ProcessRunner};
 pub use slug::RepoSlug;

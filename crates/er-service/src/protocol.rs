@@ -117,6 +117,23 @@ pub enum Command {
         client_id: Option<String>,
     },
 
+    // ── Job and arena commands ──
+    /// Run one agent job on an effect thread. The actor keeps its stop handle
+    /// until it finishes, so `CancelJob` can reach the runner; the outcome goes
+    /// to `result` and out as `Event::JobFinished`.
+    StartJob {
+        job: JobId,
+        submission: JobSubmission,
+        result: Sender<JobResult>,
+    },
+    /// Stop a running job by killing the stop handle its runner watches.
+    CancelJob { job: JobId },
+    /// Load-time recovery of the named buckets: stale arena runs and a dead
+    /// owner's running workflow stages are marked. Nothing is started.
+    Reconcile { buckets: Vec<String> },
+    /// An arena action on the actor's live runs.
+    Arena(ArenaCommand),
+
     // ── GitHub comment commands (P41.2) ──
     /// Create a comment and post it to the tab's pull request.
     AddComment {
@@ -146,22 +163,106 @@ pub enum Command {
         body: Option<String>,
     },
 
-    // ── Job and arena commands ──
-    /// Run one agent job on an effect thread. The actor keeps its stop handle
-    /// until it finishes, so `CancelJob` can reach the runner; the outcome goes
-    /// to `result` and out as `Event::JobFinished`.
-    StartJob {
-        job: JobId,
-        submission: JobSubmission,
-        result: Sender<JobResult>,
+    // ── GitHub sync and the pending review ──
+    /// Pull the tab's PR comments into its comments sidecar. The fetch runs
+    /// off the actor; the actor writes the result.
+    SyncGithubComments {
+        context: TabContext,
+        source: SyncSource,
     },
-    /// Stop a running job by killing the stop handle its runner watches.
-    CancelJob { job: JobId },
-    /// Load-time recovery of the named buckets: stale arena runs and a dead
-    /// owner's running workflow stages are marked. Nothing is started.
-    Reconcile { buckets: Vec<String> },
-    /// An arena action on the actor's live runs.
-    Arena(ArenaCommand),
+    /// Read the viewer's pending review on the tab's PR.
+    GetPendingReview { context: TabContext },
+    /// Add one line comment to the viewer's pending review.
+    AddPendingReviewComment {
+        context: TabContext,
+        target: ReviewLineTarget,
+        body: String,
+    },
+    /// Remove one comment from the viewer's pending review.
+    RemovePendingReviewComment {
+        context: TabContext,
+        comment_node_id: String,
+    },
+    /// Submit the viewer's pending review with a decision.
+    SubmitPendingReview {
+        context: TabContext,
+        event: ReviewEvent,
+        summary: String,
+    },
+
+    // ── PR-level posts ──
+    /// Post a PR-wide comment.
+    PostGithubPrComment { context: TabContext, body: String },
+    /// Post one line comment outside any review. Refused while the viewer
+    /// has a pending review, which GitHub would attach it to.
+    PostGithubLineComment {
+        context: TabContext,
+        target: ReviewLineTarget,
+        body: String,
+    },
+    /// Submit a bare review decision with no inline comments.
+    SubmitGithubPrDecision {
+        context: TabContext,
+        event: ReviewEvent,
+        summary: String,
+    },
+}
+
+/// What started a comment sync, which decides how fresh the read must be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncSource {
+    /// The user asked. `force` skips the hover-prefetch bundle.
+    Manual { force: bool },
+    /// The periodic tick. Always reads GitHub, then drops the cached bundle so
+    /// a later manual pull cannot go back to an older one.
+    Background,
+}
+
+/// A line the composer selected for the pending review, in its side's numbering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewLineTarget {
+    pub file: String,
+    pub line_num: usize,
+    pub line_num_end: Option<usize>,
+    /// `LEFT` or `RIGHT`; `None` is the new side.
+    pub side: Option<String>,
+}
+
+/// A review decision, as GitHub's review API names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewEvent {
+    Approve,
+    RequestChanges,
+    Comment,
+}
+
+impl ReviewEvent {
+    /// Parses the desktop's mode string; `None` for anything else.
+    pub fn parse(mode: &str) -> Option<Self> {
+        match mode {
+            "APPROVE" => Some(Self::Approve),
+            "REQUEST_CHANGES" => Some(Self::RequestChanges),
+            "COMMENT" => Some(Self::Comment),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "APPROVE",
+            Self::RequestChanges => "REQUEST_CHANGES",
+            Self::Comment => "COMMENT",
+        }
+    }
+}
+
+/// The PR a GitHub command acted on, so the caller can refresh what it caches
+/// for that PR.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
 }
 
 /// An arena action. Each carries the [`ArenaContext`] its effect needs, except
@@ -395,6 +496,24 @@ pub enum Reply {
     ArenaChanged {
         run_id: String,
     },
+    /// What the sidecar holds after a sync.
+    CommentsSynced {
+        github_count: usize,
+        local_count: usize,
+    },
+    /// The viewer's pending review, read after any write.
+    PendingReview {
+        pr: PrRef,
+        review: er_github::PendingReview,
+    },
+    /// The pending review, or a bare decision, was submitted.
+    ReviewSubmitted {
+        pr: PrRef,
+    },
+    /// A PR-level comment was posted.
+    CommentPosted {
+        pr: PrRef,
+    },
     #[cfg(test)]
     Pong,
 }
@@ -422,5 +541,19 @@ pub enum Event {
     JobFinished {
         job: JobId,
         outcome: JobOutcome,
+    },
+    /// A sync wrote the tab's comments sidecar.
+    CommentsSynced {
+        context: TabContext,
+        github_count: usize,
+        local_count: usize,
+    },
+    /// The viewer's pending review on the tab's PR changed or was submitted.
+    PendingReviewChanged {
+        context: TabContext,
+    },
+    /// A comment or a decision was posted to the tab's PR.
+    CommentPosted {
+        context: TabContext,
     },
 }

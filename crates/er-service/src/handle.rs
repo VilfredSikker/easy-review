@@ -28,6 +28,9 @@ pub enum WorkspaceError {
     Timeout(Duration),
     /// The effect failed; the message is the port's error.
     Failed(String),
+    /// A GitHub call failed. The variant is the port's own classification
+    /// (ADR 0055), so a caller matches it instead of reading text.
+    Github(er_github::GhError),
 }
 
 impl fmt::Display for WorkspaceError {
@@ -38,7 +41,14 @@ impl fmt::Display for WorkspaceError {
                 write!(f, "workspace actor did not reply within {timeout:?}")
             }
             Self::Failed(message) => write!(f, "{message}"),
+            Self::Github(error) => write!(f, "{error}"),
         }
+    }
+}
+
+impl From<er_github::GhError> for WorkspaceError {
+    fn from(error: er_github::GhError) -> Self {
+        Self::Github(error)
     }
 }
 
@@ -47,10 +57,6 @@ impl std::error::Error for WorkspaceError {}
 pub(crate) type ReplySender = Sender<Result<Reply, WorkspaceError>>;
 
 /// The actor's inbox.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one message per command; boxing would add an allocation on every send"
-)]
 pub(crate) enum ActorMsg {
     Command {
         command: Command,
@@ -59,6 +65,12 @@ pub(crate) enum ActorMsg {
     /// An off-actor effect finished; the actor applies it and answers.
     EffectDone {
         result: Result<Reply, WorkspaceError>,
+        reply: ReplySender,
+    },
+    /// An off-actor effect read GitHub; the actor applies what it read (and
+    /// writes it, for a sync) before answering.
+    Fetched {
+        result: Result<crate::github_sync::Fetched, WorkspaceError>,
         reply: ReplySender,
     },
     JobProgress {

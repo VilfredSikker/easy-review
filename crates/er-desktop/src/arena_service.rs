@@ -319,7 +319,11 @@ diff --git a/src/lib.rs b/src/lib.rs
         let git: Arc<dyn er_git::Git> =
             Arc::new(FakeGit::default().with_diff_against_branch(Ok(RAW.to_string())));
         let deps = WorkspaceDeps::new(Ports::with_git(git)).with_jobs(sink);
-        Arc::new(ServiceState::with_deps(deps, revision))
+        // The relay `main.rs` gives the service: each published view bumps
+        // the desktop revision.
+        Arc::new(ServiceState::with_deps(deps, move |_| {
+            crate::profile_log::bump_desktop_revision(&revision, "service_view");
+        }))
     }
 
     fn fake_ref() -> ReviewerRef {
