@@ -7644,6 +7644,8 @@ fn remember_pr_open_entry(
             &mut guard, key, freshness, raw_diff, pr_data, pr_commits,
         );
     }
+    // With `v1-service` the service's app registry is the file's one writer.
+    #[cfg(not(feature = "v1-service"))]
     crate::pr_open_cache::save_persisted_pr_open_cache(cache);
 }
 
@@ -8721,6 +8723,32 @@ pub fn prefetch_pr_open(
     prefetch_pr_open_impl(project_id, pr_number, hint, state.inner())
 }
 
+/// With `v1-service` the app registry warms its own cache through the ports.
+#[cfg(feature = "v1-service")]
+fn prefetch_pr_open_impl(
+    project_id: String,
+    pr_number: u64,
+    hint: PrOpenHint,
+    state: &AppState,
+) -> Result<(), String> {
+    let file = projects::load();
+    let Some(proj) = file.projects.iter().find(|p| p.id == project_id) else {
+        return Ok(());
+    };
+    let command = er_service::AppCommand::PrefetchOpenTarget {
+        repo_root: proj.root_path.clone(),
+        project_id,
+        pr_number,
+        freshness: freshness_from_hint(&hint),
+    };
+    state
+        .service
+        .send_app(command)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(feature = "v1-service"))]
 fn prefetch_pr_open_impl(
     project_id: String,
     pr_number: u64,
@@ -8863,6 +8891,26 @@ pub fn prefetch_remote_pr_open(
     prefetch_remote_pr_open_impl(owner, repo, number, state.inner())
 }
 
+#[cfg(feature = "v1-service")]
+fn prefetch_remote_pr_open_impl(
+    owner: String,
+    repo: String,
+    number: u64,
+    state: &AppState,
+) -> Result<(), String> {
+    let command = er_service::AppCommand::PrefetchRemoteOpenTarget {
+        owner,
+        repo,
+        number,
+    };
+    state
+        .service
+        .send_app(command)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(feature = "v1-service"))]
 fn prefetch_remote_pr_open_impl(
     owner: String,
     repo: String,
@@ -10585,6 +10633,106 @@ pub async fn exit_history(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 
 // ── Tab management ──────────────────────────────────────────────────────────
 
+// With `v1-service` the four tab commands go to the app registry, the tab
+// record's one writer. The desktop maps the strip's index to the registry's
+// tab key here. The App keeps its own tab list and keys until the service
+// builds the desktop's snapshot; the flag-on desktop does not render from the
+// registry yet, so each command answers with an empty snapshot.
+
+#[cfg(feature = "v1-service")]
+fn service_tab_key(state: &AppState, idx: usize) -> Result<er_engine::TabKey, String> {
+    let view = state.service.app_registry().tabs_view();
+    view.key_at(idx)
+        .ok_or_else(|| format!("no tab at position {idx}"))
+}
+
+#[cfg(feature = "v1-service")]
+fn service_tab_command(
+    state: &AppState,
+    command: er_service::AppCommand,
+) -> Result<AppSnapshot, String> {
+    state.service.send_app(command).map_err(|e| e.to_string())?;
+    Ok(AppSnapshot::default())
+}
+
+/// A Working tab on the active tab's repo, read from the registry's view
+/// rather than the App, so the command never waits on the App lock.
+#[cfg(feature = "v1-service")]
+fn service_new_tab(state: &AppState) -> Result<AppSnapshot, String> {
+    let view = state.service.app_registry().tabs_view();
+    let Some(root) = view.active_entry().or(view.tabs.first()) else {
+        return Err("Failed to open new tab: no open tab names a repo".to_string());
+    };
+    let tab = crate::tabs::TabDescriptor {
+        kind: crate::tabs::TabKind::Working,
+        repo_root: root.descriptor.repo_root.clone(),
+        branch: None,
+        pr_owner: None,
+        pr_repo: None,
+        pr_number: None,
+        pr_head_ref: None,
+        base_ref: None,
+        browser_url: None,
+        browser_layout: None,
+    };
+    service_tab_command(state, er_service::AppCommand::NewTab { tab })
+}
+
+#[cfg(feature = "v1-service")]
+fn service_close_tab(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
+    let key = service_tab_key(state, idx)?;
+    service_tab_command(state, er_service::AppCommand::CloseTab { key })
+}
+
+#[cfg(feature = "v1-service")]
+fn service_select_tab(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
+    let key = service_tab_key(state, idx)?;
+    service_tab_command(state, er_service::AppCommand::SelectTab { key })
+}
+
+#[cfg(feature = "v1-service")]
+fn service_reorder_tabs(state: &AppState, from: usize, to: usize) -> Result<AppSnapshot, String> {
+    let key = service_tab_key(state, from)?;
+    service_tab_command(
+        state,
+        er_service::AppCommand::ReorderTabs { key, to_idx: to },
+    )
+}
+
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
+    service_new_tab(&state)
+}
+
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub fn close_tab(idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
+    service_close_tab(&state, idx)
+}
+
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub async fn select_tab(idx: usize, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || service_select_tab(&state, idx)).await
+}
+
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+#[expect(
+    non_snake_case,
+    reason = "camelCase parameters match the keys of the JS IPC payload"
+)]
+pub fn reorder_tabs(
+    fromIdx: usize,
+    toIdx: usize,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    service_reorder_tabs(&state, fromIdx, toIdx)
+}
+
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -10602,6 +10750,7 @@ pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
     Ok(snap_from(&app, &state))
 }
 
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub fn close_tab(
     idx: usize,
@@ -10626,6 +10775,7 @@ pub fn close_tab(
     Ok(snap_from(&app, &state))
 }
 
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub async fn select_tab(
     idx: usize,
@@ -11352,6 +11502,7 @@ pub fn cycle_tab_browser_layout(
     Ok(snap_from(&app, &state))
 }
 
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 #[expect(
     non_snake_case,
@@ -12658,6 +12809,91 @@ mod tests {
             sent_files: Arc::new(Mutex::new(Default::default())),
             line_commits_cache: Arc::default(),
         }
+    }
+
+    /// With the feature on, the four tab commands edit the app registry's list,
+    /// mapping the strip's index to its key, without taking the App lock; the
+    /// registry saves `tabs.json`, and the App's own save writes nothing.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_tab_commands_route_with_the_feature_on() {
+        use crate::tabs::{TabDescriptor, TabKind};
+        use std::time::Duration;
+
+        let working = |root: &str| TabDescriptor {
+            kind: TabKind::Working,
+            repo_root: root.to_string(),
+            branch: None,
+            pr_owner: None,
+            pr_repo: None,
+            pr_number: None,
+            pr_head_ref: None,
+            base_ref: None,
+            browser_url: None,
+            browser_layout: None,
+        };
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            crate::tabs::save_tabs(&[working("/a"), working("/b")], 0).expect("seed tabs");
+            let state = review_flow_test_state(&dir);
+            let held = match state.app.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let calling = state.clone();
+            std::thread::spawn(move || {
+                let routed = [
+                    service_select_tab(&calling, 1),
+                    service_reorder_tabs(&calling, 1, 0),
+                    service_new_tab(&calling),
+                    service_close_tab(&calling, 2),
+                ];
+                let _ = done_tx.send(routed.into_iter().collect::<Result<Vec<_>, _>>());
+            });
+            let Ok(routed) = done_rx.recv_timeout(Duration::from_secs(5)) else {
+                panic!("a routed tab command blocked on the App lock");
+            };
+            assert!(routed.is_ok(), "{routed:?}");
+
+            let view = state.service.app_registry().tabs_view();
+            let roots: Vec<&str> = view
+                .tabs
+                .iter()
+                .map(|tab| tab.descriptor.repo_root.as_str())
+                .collect();
+            assert_eq!(
+                roots,
+                ["/b", "/a"],
+                "select, reorder, new and close all routed"
+            );
+            assert_eq!(view.revision, 4);
+            let saved = crate::tabs::load_tabs().expect("the registry saved");
+            assert_eq!((saved.tabs.len(), saved.active_idx), (2, 1));
+
+            // The App's tab list differs from the registry's; its save must not
+            // write over the registry's record on the flag path.
+            crate::tabs::persist_app_tabs(&held, &state.view);
+            drop(held);
+            assert_eq!(crate::tabs::load_tabs(), Some(saved));
+            // Nor does the desktop's own open cache save.
+            let freshness = PrOpenFreshness {
+                base_branch: "main".to_string(),
+                head_branch: "feature".to_string(),
+                head_oid: "oid".to_string(),
+                updated_at: String::new(),
+            };
+            let key = pr_open_cache_key("proj", "/a", 7);
+            remember_pr_open_entry(&state.pr_open_cache, key, freshness, "d".into(), None, None);
+            let on_disk = er_engine::pr_open_cache::load_persisted_pr_open_cache();
+            assert!(
+                matches!(on_disk, Ok(None)),
+                "the desktop saved the open cache"
+            );
+        });
     }
 
     /// The flag-on open path must not take the App lock: it resolves the

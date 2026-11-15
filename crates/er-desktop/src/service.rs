@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use er_engine::ports::Ports;
 use er_service::{
-    spawn, Command, Event, OpenTarget, Reply, WorkspaceDeps, WorkspaceError, WorkspaceHandle,
-    WorkspaceView,
+    spawn, AppCommand, AppRegistry, Command, Event, OpenTarget, Reply, WorkspaceDeps,
+    WorkspaceError, WorkspaceHandle, WorkspaceView,
 };
 
 /// Told the revision of every view an actor publishes.
@@ -25,14 +25,19 @@ pub struct ServiceState {
     deps: WorkspaceDeps,
     handles: Mutex<HashMap<String, WorkspaceHandle>>,
     relay: Option<RevisionRelay>,
+    /// The one app registry: the tab list and the PR open caches. A fixed slot,
+    /// never keyed by a tab, since its records are app-scoped.
+    app_registry: Arc<AppRegistry>,
 }
 
 impl ServiceState {
     pub fn new(ports: Ports) -> Self {
+        let app_registry = Arc::new(AppRegistry::new(ports.clone()));
         Self {
-            deps: WorkspaceDeps::new(ports),
+            deps: WorkspaceDeps::new(ports).with_app_registry(Arc::clone(&app_registry)),
             handles: Mutex::new(HashMap::new()),
             relay: None,
+            app_registry,
         }
     }
 
@@ -40,10 +45,13 @@ impl ServiceState {
     /// `relay`. The desktop emits `er://revision` from it, so a flag-path
     /// change reaches the front end as an event instead of waiting for a poll.
     pub fn with_revision_relay(ports: Ports, relay: impl Fn(u64) + Send + Sync + 'static) -> Self {
-        Self {
-            relay: Some(Arc::new(relay)),
+        let relay: RevisionRelay = Arc::new(relay);
+        let service = Self {
+            relay: Some(Arc::clone(&relay)),
             ..Self::new(ports)
-        }
+        };
+        forward_tab_revisions(&service.app_registry, relay);
+        service
     }
 
     /// The actor for `key`, started on first use. The key is the repo root, or
@@ -81,6 +89,17 @@ impl ServiceState {
             .send_and_wait(Command::OpenTarget { target, replace })
     }
 
+    /// The app registry. Tab and open-cache commands go here, never to a
+    /// workspace actor picked from a tab.
+    pub fn app_registry(&self) -> &Arc<AppRegistry> {
+        &self.app_registry
+    }
+
+    /// Sends one command to the app registry.
+    pub fn send_app(&self, command: AppCommand) -> Result<Reply, WorkspaceError> {
+        self.app_registry.send(command)
+    }
+
     /// The last published view for `key`. Starts the actor if it is not up, so
     /// a reader never sees a missing handle as an error.
     pub fn view(&self, key: &str) -> Arc<WorkspaceView> {
@@ -97,6 +116,20 @@ fn forward_revisions(handle: &WorkspaceHandle, relay: RevisionRelay) {
         .spawn(move || {
             for event in events {
                 if let Event::ViewPublished { revision } = event {
+                    relay(revision);
+                }
+            }
+        });
+}
+
+/// Like [`forward_revisions`], for the app registry's tab list.
+fn forward_tab_revisions(registry: &AppRegistry, relay: RevisionRelay) {
+    let events = registry.subscribe();
+    let _ = std::thread::Builder::new()
+        .name("er-app-registry-relay".into())
+        .spawn(move || {
+            for event in events {
+                if let Event::TabsChanged { revision } = event {
                     relay(revision);
                 }
             }
@@ -134,5 +167,36 @@ mod tests {
         let opened = service.open_target("/repo", target, false);
         assert!(opened.is_ok(), "{opened:?}");
         assert_eq!(revisions.recv_timeout(Duration::from_secs(5)), Ok(1));
+    }
+
+    /// A tab command's new list reaches the relay the same way, so the tab
+    /// strip refreshes on the event rather than a poll.
+    #[test]
+    fn a_tab_revision_reaches_the_relay() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let (tx, revisions) = std::sync::mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            let service = ServiceState::with_revision_relay(Ports::for_test(), move |rev| {
+                if let Ok(tx) = tx.lock() {
+                    let _ = tx.send(rev);
+                }
+            });
+            let tab = er_engine::tabs_record::TabDescriptor {
+                kind: er_engine::tabs_record::TabKind::Working,
+                repo_root: "/repo".to_string(),
+                branch: None,
+                pr_owner: None,
+                pr_repo: None,
+                pr_number: None,
+                pr_head_ref: None,
+                base_ref: None,
+                browser_url: None,
+                browser_layout: None,
+            };
+            let added = service.send_app(er_service::AppCommand::NewTab { tab });
+            assert!(added.is_ok(), "{added:?}");
+            assert_eq!(revisions.recv_timeout(Duration::from_secs(5)), Ok(1));
+        });
     }
 }

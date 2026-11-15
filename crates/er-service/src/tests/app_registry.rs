@@ -148,7 +148,8 @@ fn a_tab_command_with_no_such_key_or_the_last_tab_is_refused() -> anyhow::Result
 
 /// `tabs.json` and `pr-open-cache.json` have one writer each in the app's
 /// code: the engine's record modules, called from the desktop's flag-off
-/// path and from this registry.
+/// path and from this registry. The desktop's calls are compiled out with
+/// `v1-service`, which its routing test checks.
 #[test]
 fn the_tabs_record_has_one_writer() -> anyhow::Result<()> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

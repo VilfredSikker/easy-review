@@ -102,7 +102,10 @@ staleness. `branch_diff_hash` exists as the always-SHA-256 sibling for that reas
 - Snapshots carry plain `text`. Never generate syntax spans in `build_snapshot`;
   Shiki runs in the frontend worker.
 - Call `persist_app_tabs` after any new path that mutates `app.tabs` or
-  `app.active_tab`. Never from `poll` / `get_snapshot`.
+  `app.active_tab`. Never from `poll` / `get_snapshot`. With `v1-service` it
+  saves nothing: the service's app registry is the one writer of `tabs.json` and
+  `pr-open-cache.json`, and the tab and prefetch commands go to it
+  (`crates/er-service/src/app_registry.rs`).
 - Pick `snap_from_confirmed` or `snap_from_command` by asking whether the frontend
   already holds this content — the choice sets the revision markers and so decides
   whether the next poll resends. It is invisible in the response body.
