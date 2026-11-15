@@ -451,6 +451,45 @@ fn an_estimate_answers_with_its_preview() {
     assert_eq!(preview.diff_bytes, RAW.len(), "priced over the tab's diff");
 }
 
+/// The default tab `er` opens has no branch view and no remote. Its diff comes
+/// from `diff_raw`, as `TabState::fetch_tab_raw_diff` fetches it.
+#[test]
+fn an_estimate_on_a_plain_tab_reads_the_working_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    let bucket = dir.path().to_string_lossy().into_owned();
+    let git = Arc::new(FakeGit::default().with_diff_raw(Ok(RAW.to_string())));
+    let ports = Ports {
+        git: git.clone(),
+        github: Arc::new(FakeGitHub::default()),
+    };
+    let mut arena = arena_context(&bucket);
+    arena.tab.local_branch_view = None;
+    let handle = spawn(WorkspaceDeps::new(ports));
+    let reply = handle.send_and_wait_with(
+        Command::Arena(ArenaCommand::Estimate {
+            arena,
+            scope: ArenaScope::Branch,
+            files: None,
+            reviewers: vec![fake_ref(), fake_ref()],
+            rounds: Some(1),
+            arbiter: None,
+        }),
+        DEADLINE,
+    );
+    let preview = match reply {
+        Ok(Reply::ArenaEstimate(preview)) => preview,
+        other => panic!("a plain tab must estimate: {other:?}"),
+    };
+    assert_eq!(preview.diff_bytes, RAW.len(), "priced over the tab's diff");
+    assert!(
+        git.calls().contains(&format!(
+            "diff_raw(mode=\"branch\", base=\"main\", repo_root={bucket:?}, head_ref=None)"
+        )),
+        "fetched through diff_raw: {:?}",
+        git.calls()
+    );
+}
+
 #[test]
 fn a_live_run_is_published_in_the_view() {
     let dir = tempfile::tempdir().unwrap();
