@@ -10,12 +10,15 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
+use er_engine::jobs::JobSink;
 use er_engine::ports::Ports;
 
 use crate::effect::resolve_target;
+use crate::github_sync::{Applied, Fetched};
 use crate::guard::{self, ActorThread};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError, WorkspaceHandle};
-use crate::protocol::{Command, Event, Reply};
+use crate::jobs::JobHost;
+use crate::protocol::{Command, Event, Reply, TabContext};
 use crate::workspace::{WorkspaceState, WorkspaceView};
 
 /// The actor's dependencies. This is the seam P45 extends: the actor takes
@@ -24,6 +27,7 @@ use crate::workspace::{WorkspaceState, WorkspaceView};
 #[derive(Clone)]
 pub struct WorkspaceDeps {
     ports: Ports,
+    jobs: Option<Arc<dyn JobSink>>,
     post_session: Arc<Mutex<er_engine::github_post_session::PostSession>>,
 }
 
@@ -31,10 +35,23 @@ impl WorkspaceDeps {
     pub fn new(ports: Ports) -> Self {
         Self {
             ports,
+            jobs: None,
             post_session: Arc::new(Mutex::new(
                 er_engine::github_post_session::PostSession::default(),
             )),
         }
+    }
+
+    /// Sends the workspace's agent jobs to `jobs` instead of the actor's own
+    /// sink. Tests record submissions with this.
+    #[must_use]
+    pub fn with_jobs(mut self, jobs: Arc<dyn JobSink>) -> Self {
+        self.jobs = Some(jobs);
+        self
+    }
+
+    pub(crate) fn jobs(&self) -> Option<Arc<dyn JobSink>> {
+        self.jobs.clone()
     }
 
     /// The retry state a GitHub comment create keeps between attempts. Effects
@@ -89,16 +106,71 @@ fn run(
 ) {
     let _actor = ActorThread::enter();
     let mut state = WorkspaceState::new();
+    let mut jobs = JobHost::new(&deps, &tx);
     while let Ok(message) = rx.recv() {
         match message {
             ActorMsg::Command { command, reply } => {
-                handle_command(&deps, &state, &tx, command, reply);
+                handle_command(&deps, &state, &mut jobs, &tx, command, reply);
             }
             ActorMsg::EffectDone { result, reply } => {
+                // An arena effect may have started, cancelled or removed a run;
+                // the revision it publishes carries the runs as they are now.
+                state.set_arena_runs(jobs.live_arena_runs());
                 apply(&mut state, result, reply, &subscribers, &view);
+            }
+            ActorMsg::JobProgress { job, line } => {
+                broadcast(&subscribers, Event::JobProgress { job, line });
+            }
+            ActorMsg::JobFinished { job, outcome } => {
+                jobs.finished(job);
+                broadcast(&subscribers, Event::JobFinished { job, outcome });
+            }
+            ActorMsg::ArenaChanged => {
+                state.set_arena_runs(jobs.live_arena_runs());
+                let revision = state.bump_revision();
+                publish(&view, &state);
+                broadcast(&subscribers, Event::ViewPublished { revision });
+            }
+            ActorMsg::Fetched { result, reply } => {
+                match result.and_then(crate::github_sync::apply) {
+                    Ok(Applied {
+                        reply: value,
+                        event,
+                    }) => {
+                        // A plain read changes nothing, so it publishes nothing.
+                        if let Some(event) = event {
+                            let revision = state.bump_revision();
+                            publish(&view, &state);
+                            broadcast(&subscribers, Event::ViewPublished { revision });
+                            broadcast(&subscribers, event);
+                        }
+                        let _ = reply.send(Ok(value));
+                    }
+                    Err(error) => apply(&mut state, Err(error), reply, &subscribers, &view),
+                }
             }
         }
     }
+}
+
+/// Runs one GitHub read for the tab off the actor thread and sends what it
+/// read back for the actor to apply. A tab the workspace has left is refused.
+fn spawn_fetch(
+    deps: &WorkspaceDeps,
+    state: &WorkspaceState,
+    tx: &Sender<ActorMsg>,
+    reply: ReplySender,
+    context: TabContext,
+    work: impl FnOnce(&WorkspaceDeps, TabContext) -> Result<Fetched, WorkspaceError> + Send + 'static,
+) {
+    if !context_matches(state, &context.repo_root) {
+        return refuse_stale(reply);
+    }
+    let (deps, tx) = (deps.clone(), tx.clone());
+    let _ = thread::Builder::new().spawn(move || {
+        let result = work(&deps, context);
+        let _ = tx.send(ActorMsg::Fetched { result, reply });
+    });
 }
 
 /// Runs one command's blocking work off the actor thread and sends the typed
@@ -142,6 +214,7 @@ fn refuse_stale(reply: ReplySender) {
 fn handle_command(
     deps: &WorkspaceDeps,
     state: &WorkspaceState,
+    jobs: &mut JobHost,
     tx: &Sender<ActorMsg>,
     command: Command,
     reply: ReplySender,
@@ -340,6 +413,29 @@ fn handle_command(
                 .map(|(root_id, reply_id)| Reply::FindingReplied { root_id, reply_id })
             });
         }
+        Command::StartJob {
+            job,
+            submission,
+            result,
+        } => jobs.start(tx, job, submission, result, reply),
+        Command::CancelJob { job } => match jobs.cancel(job) {
+            Some(kill) => spawn_effect(tx, reply, move || {
+                kill();
+                Ok(Reply::JobCancelled { job })
+            }),
+            None => crate::jobs::refuse_unknown(job, reply),
+        },
+        Command::Reconcile { buckets } => {
+            let arena = jobs.arena().clone();
+            spawn_effect(tx, reply, move || {
+                Ok(crate::arena::reconcile(&arena, &buckets))
+            });
+        }
+        Command::Arena(command) => {
+            let deps = deps.clone();
+            let arena = jobs.arena().clone();
+            spawn_effect(tx, reply, move || crate::arena::run(&deps, &arena, command));
+        }
         Command::AddComment {
             context,
             target,
@@ -402,6 +498,63 @@ fn handle_command(
                     body,
                 )
                 .map(|id| Reply::CommentPromoted { id })
+            });
+        }
+        Command::SyncGithubComments { context, source } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::github_sync::fetch_sync(deps, context, source)
+            });
+        }
+        Command::GetPendingReview { context } => {
+            spawn_fetch(deps, state, tx, reply, context, crate::pending_review::get);
+        }
+        Command::AddPendingReviewComment {
+            context,
+            target,
+            body,
+        } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pending_review::add_comment(deps, context, &target, &body)
+            });
+        }
+        Command::RemovePendingReviewComment {
+            context,
+            comment_node_id,
+        } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pending_review::remove_comment(deps, context, &comment_node_id)
+            });
+        }
+        Command::SubmitPendingReview {
+            context,
+            event,
+            summary,
+        } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pending_review::submit(deps, context, event, &summary)
+            });
+        }
+        Command::PostGithubPrComment { context, body } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pr_posts::post_pr_comment(deps, context, &body)
+            });
+        }
+        Command::PostGithubLineComment {
+            context,
+            target,
+            body,
+        } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pr_posts::post_line_comment(deps, context, &target, &body)
+            });
+        }
+        Command::SubmitGithubPrDecision {
+            context,
+            event,
+            summary,
+        } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pr_posts::submit_decision(deps, context, event, &summary)
             });
         }
         #[cfg(test)]

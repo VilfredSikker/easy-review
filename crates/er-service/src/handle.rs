@@ -8,7 +8,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use crate::protocol::{Command, Event, Reply};
+use er_agent::job::JobProgress;
+use er_engine::jobs::JobId;
+
+use crate::protocol::{Command, Event, JobOutcome, Reply};
 use crate::workspace::WorkspaceView;
 
 /// How long a caller waits for a reply before deciding the actor is stuck. The
@@ -25,6 +28,9 @@ pub enum WorkspaceError {
     Timeout(Duration),
     /// The effect failed; the message is the port's error.
     Failed(String),
+    /// A GitHub call failed. The variant is the port's own classification
+    /// (ADR 0055), so a caller matches it instead of reading text.
+    Github(er_github::GhError),
 }
 
 impl fmt::Display for WorkspaceError {
@@ -35,7 +41,14 @@ impl fmt::Display for WorkspaceError {
                 write!(f, "workspace actor did not reply within {timeout:?}")
             }
             Self::Failed(message) => write!(f, "{message}"),
+            Self::Github(error) => write!(f, "{error}"),
         }
+    }
+}
+
+impl From<er_github::GhError> for WorkspaceError {
+    fn from(error: er_github::GhError) -> Self {
+        Self::Github(error)
     }
 }
 
@@ -44,10 +57,6 @@ impl std::error::Error for WorkspaceError {}
 pub(crate) type ReplySender = Sender<Result<Reply, WorkspaceError>>;
 
 /// The actor's inbox.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one message per command; boxing would add an allocation on every send"
-)]
 pub(crate) enum ActorMsg {
     Command {
         command: Command,
@@ -58,6 +67,24 @@ pub(crate) enum ActorMsg {
         result: Result<Reply, WorkspaceError>,
         reply: ReplySender,
     },
+    /// An off-actor effect read GitHub; the actor applies what it read (and
+    /// writes it, for a sync) before answering.
+    Fetched {
+        result: Result<crate::github_sync::Fetched, WorkspaceError>,
+        reply: ReplySender,
+    },
+    JobProgress {
+        job: JobId,
+        line: JobProgress,
+    },
+    /// A job's effect returned; the actor drops its stop handle and tells
+    /// subscribers.
+    JobFinished {
+        job: JobId,
+        outcome: JobOutcome,
+    },
+    /// A live arena run wrote progress; readers refresh.
+    ArenaChanged,
 }
 
 /// A handle to one workspace actor.

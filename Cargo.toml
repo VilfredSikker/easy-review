@@ -154,6 +154,7 @@ comment-boundary = { allow = [
   "crates/er-engine/src/github_post_session.rs",
   "crates/er-engine/src/github_post.rs",
   "crates/er-desktop/src/github_comment_builders.rs",
+  "crates/er-github/src/review.rs",
 ] }
 
 # A program spawn outside the agent runtime: every `Command::new` in a crate's

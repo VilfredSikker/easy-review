@@ -6,10 +6,10 @@
 //! so a failure keeps the source and the next attempt adopts the post.
 
 use er_engine::ai::{self, PrivateAnnotation};
-use er_engine::git::parse_diff;
+use er_engine::git::{parse_diff, DiffFile};
 use er_engine::github_post::{
-    execute_comment_post, new_client_id, resolve_post_target_with, CommentPostContext,
-    GhCommentPoster, GitHubPostRequest,
+    execute_comment_post, new_client_id, resolve_post_target_with, GhCommentPoster,
+    GitHubPostRequest,
 };
 use er_engine::github_post_session::{NewGitHubComment, PostBegin};
 use er_engine::store_registry;
@@ -17,26 +17,18 @@ use er_store::{Loaded, Scope};
 
 use crate::actor::WorkspaceDeps;
 use crate::annotations::{failed, fetch_raw};
+use crate::github_sync::post_context;
 use crate::handle::WorkspaceError;
 use crate::protocol::{AnnotationTarget, TabContext};
 
 /// What one create left behind.
-struct PostedComment {
+pub(crate) struct PostedComment {
     /// The stored row's id, or the client id when the comment has no row.
     id: String,
     /// The request, so a failed source removal can be reconciled on retry.
-    request: GitHubPostRequest,
+    pub(crate) request: GitHubPostRequest,
     /// A retry adopted an earlier post whose body differs from this one.
     kept_earlier_body: bool,
-}
-
-fn post_context(ctx: &TabContext) -> CommentPostContext {
-    CommentPostContext {
-        repo_root: ctx.repo_root.clone(),
-        is_remote: ctx.is_remote,
-        remote_repo: ctx.remote_repo.clone(),
-        pr_number: ctx.pr_number,
-    }
 }
 
 fn comments_payload(ctx: &TabContext) -> Option<ai::ErGithubComments> {
@@ -47,14 +39,29 @@ fn comments_payload(ctx: &TabContext) -> Option<ai::ErGithubComments> {
     }
 }
 
-fn post(
+pub(crate) fn post(
     deps: &WorkspaceDeps,
     ctx: &TabContext,
     intent: NewGitHubComment,
     client_id: Option<String>,
 ) -> Result<PostedComment, WorkspaceError> {
-    let raw = fetch_raw(deps, ctx)?;
-    let files = parse_diff(&raw);
+    // Only a line comment anchors to the diff; a reply or a PR-wide comment
+    // posts even when the diff cannot be read.
+    let files = match &intent {
+        NewGitHubComment::Line { .. } => parse_diff(&fetch_raw(deps, ctx)?),
+        NewGitHubComment::Reply { .. } | NewGitHubComment::General { .. } => Vec::new(),
+    };
+    post_with(deps, ctx, intent, client_id, &files)
+}
+
+/// [`post`] against a diff the caller already parsed.
+pub(crate) fn post_with(
+    deps: &WorkspaceDeps,
+    ctx: &TabContext,
+    intent: NewGitHubComment,
+    client_id: Option<String>,
+    files: &[DiffFile],
+) -> Result<PostedComment, WorkspaceError> {
     let diff_file = match &intent {
         NewGitHubComment::Line { file, .. } => files.iter().find(|f| f.path == *file),
         NewGitHubComment::Reply { .. } | NewGitHubComment::General { .. } => None,
