@@ -96,15 +96,48 @@ impl ServiceState {
     }
 }
 
-/// Bumps the desktop revision for each view the actor publishes. The thread
-/// touches only the counter, and ends when the actor and its handles are gone.
+/// Bumps the desktop revision for each event that changes what the front end
+/// reads. The thread touches only the counter, and ends when the actor and its
+/// handles are gone.
 fn forward_views(handle: &WorkspaceHandle, desktop_revision: Arc<AtomicU64>) {
     let events = handle.subscribe();
     std::thread::spawn(move || {
         for event in events {
-            if let Event::ViewPublished { .. } = event {
+            if bumps_revision(&event) {
                 crate::profile_log::bump_desktop_revision(&desktop_revision, "service_view");
             }
         }
     });
+}
+
+/// A published view, a flow's record change, and a panel record the view does
+/// not carry all change what the page shows, so each makes it re-read.
+fn bumps_revision(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::ViewPublished { .. } | Event::WorkflowChanged { .. } | Event::PanelRunChanged { .. }
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The flow events reach the page through the same revision as a view,
+    /// with no poll of their own.
+    #[test]
+    fn flow_events_bump_the_desktop_revision() {
+        assert!(bumps_revision(&Event::WorkflowChanged {
+            er_dir: "bucket".into(),
+            revision: 3,
+        }));
+        assert!(bumps_revision(&Event::PanelRunChanged {
+            er_dir: "bucket".into(),
+            run_id: "run".into(),
+        }));
+        assert!(bumps_revision(&Event::ViewPublished { revision: 3 }));
+        assert!(!bumps_revision(&Event::CommandFailed {
+            message: "no".into(),
+        }));
+    }
 }

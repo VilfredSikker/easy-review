@@ -5511,6 +5511,9 @@ pub async fn run_standard_review_flow(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || crate::flow_service::run_standard(&state, er_dir)).await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         crate::arena_commands::validate_review_flow_bucket(&app, &er_dir)?;
