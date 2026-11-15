@@ -3,9 +3,10 @@
 use crate::commands::AppState;
 use crate::snapshot::{ArenaRunSnapshotWire, ArenaRunSummaryWire};
 use er_engine::app::App;
+#[cfg(not(feature = "v1-service"))]
+use er_engine::arena::{estimate_batch_cost_usd, ArenaBatchStartParams, ArenaStartParams};
 use er_engine::arena::{
-    estimate_batch_cost_usd, AgentGroupStart, ArenaBatchStartParams, ArenaDiffPreview,
-    ArenaProgressState, ArenaScope, ArenaStartParams, ReviewerRef, Verdict,
+    AgentGroupStart, ArenaDiffPreview, ArenaProgressState, ArenaScope, ReviewerRef, Verdict,
 };
 use serde::Deserialize;
 use std::sync::atomic::Ordering;
@@ -75,17 +76,19 @@ pub struct ArenaBatchEstimateRequest {
     pub groups: Vec<AgentGroupWire>,
 }
 
-fn wire_reviewers(req: &[ReviewerRefWire]) -> Vec<ReviewerRef> {
-    req.iter()
-        .map(|r| ReviewerRef {
-            provider_id: r.provider_id.clone(),
-            model_id: r.model_id.clone(),
-            agent_kind: r.agent_kind.clone(),
-        })
-        .collect()
+pub(crate) fn wire_reviewer(r: &ReviewerRefWire) -> ReviewerRef {
+    ReviewerRef {
+        provider_id: r.provider_id.clone(),
+        model_id: r.model_id.clone(),
+        agent_kind: r.agent_kind.clone(),
+    }
 }
 
-fn wire_groups(groups: &[AgentGroupWire]) -> Vec<AgentGroupStart> {
+pub(crate) fn wire_reviewers(req: &[ReviewerRefWire]) -> Vec<ReviewerRef> {
+    req.iter().map(wire_reviewer).collect()
+}
+
+pub(crate) fn wire_groups(groups: &[AgentGroupWire]) -> Vec<AgentGroupStart> {
     groups
         .iter()
         .map(|g| AgentGroupStart {
@@ -104,7 +107,7 @@ pub struct ArenaOverrideRequest {
     pub note: String,
 }
 
-fn parse_scope(s: &str) -> ArenaScope {
+pub(crate) fn parse_scope(s: &str) -> ArenaScope {
     match s {
         "unstaged" => ArenaScope::Unstaged,
         "staged" => ArenaScope::Staged,
@@ -112,7 +115,7 @@ fn parse_scope(s: &str) -> ArenaScope {
     }
 }
 
-fn parse_verdict(s: &str) -> Verdict {
+pub(crate) fn parse_verdict(s: &str) -> Verdict {
     match s.to_ascii_lowercase().as_str() {
         "kept" => Verdict::Kept,
         "escalated" => Verdict::Escalated,
@@ -130,6 +133,17 @@ pub const fn wire_snapshot(snap: er_engine::arena::ArenaRunSnapshot) -> ArenaRun
 
 #[tauri::command]
 pub fn arena_estimate(
+    req: ArenaEstimateRequest,
+    state: State<AppState>,
+) -> Result<ArenaDiffPreview, String> {
+    #[cfg(feature = "v1-service")]
+    return crate::arena_service::estimate(&state, req);
+    #[cfg(not(feature = "v1-service"))]
+    arena_estimate_local(req, state)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn arena_estimate_local(
     req: ArenaEstimateRequest,
     state: State<AppState>,
 ) -> Result<ArenaDiffPreview, String> {
@@ -153,6 +167,17 @@ pub fn arena_estimate(
 
 #[tauri::command]
 pub fn arena_estimate_batch(
+    req: ArenaBatchEstimateRequest,
+    state: State<AppState>,
+) -> Result<ArenaDiffPreview, String> {
+    #[cfg(feature = "v1-service")]
+    return crate::arena_service::estimate_batch(&state, req);
+    #[cfg(not(feature = "v1-service"))]
+    arena_estimate_batch_local(req, state)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn arena_estimate_batch_local(
     req: ArenaBatchEstimateRequest,
     state: State<AppState>,
 ) -> Result<ArenaDiffPreview, String> {
@@ -196,6 +221,20 @@ pub fn arena_estimate_batch(
 
 #[tauri::command]
 pub async fn arena_start(
+    req: ArenaStartRequest,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    #[cfg(feature = "v1-service")]
+    return {
+        let state = state.inner().clone();
+        crate::commands::run_blocking(move || crate::arena_service::start(&state, req)).await
+    };
+    #[cfg(not(feature = "v1-service"))]
+    arena_start_local(req, state).await
+}
+
+#[cfg(not(feature = "v1-service"))]
+async fn arena_start_local(
     req: ArenaStartRequest,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -402,6 +441,19 @@ pub async fn flow_get_run(
 /// main thread otherwise.
 #[tauri::command]
 pub async fn arena_validate_findings(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    #[cfg(feature = "v1-service")]
+    return {
+        let state = state.inner().clone();
+        crate::commands::run_blocking(move || crate::arena_service::validate_findings(&state)).await
+    };
+    #[cfg(not(feature = "v1-service"))]
+    arena_validate_findings_local(state).await
+}
+
+#[cfg(not(feature = "v1-service"))]
+async fn arena_validate_findings_local(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
     let app = state.app.clone();
     let revision = state.desktop_revision.clone();
     crate::commands::run_blocking(move || {
@@ -418,6 +470,20 @@ pub async fn arena_validate_findings(state: State<'_, AppState>) -> Result<Optio
 
 #[tauri::command]
 pub async fn arena_start_batch(
+    req: ArenaBatchStartRequest,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    #[cfg(feature = "v1-service")]
+    return {
+        let state = state.inner().clone();
+        crate::commands::run_blocking(move || crate::arena_service::start_batch(&state, req)).await
+    };
+    #[cfg(not(feature = "v1-service"))]
+    arena_start_batch_local(req, state).await
+}
+
+#[cfg(not(feature = "v1-service"))]
+async fn arena_start_batch_local(
     req: ArenaBatchStartRequest,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
@@ -452,6 +518,17 @@ pub fn arena_accept_findings(
     req: ArenaAcceptRequest,
     state: State<AppState>,
 ) -> Result<usize, String> {
+    #[cfg(feature = "v1-service")]
+    return crate::arena_service::accept_findings(&state, req);
+    #[cfg(not(feature = "v1-service"))]
+    arena_accept_findings_local(req, state)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn arena_accept_findings_local(
+    req: ArenaAcceptRequest,
+    state: State<AppState>,
+) -> Result<usize, String> {
     let n = {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.arena_accept_findings(&req.run_id, req.finding_ids)
@@ -466,12 +543,31 @@ pub fn arena_progress(
     run_id: String,
     state: State<AppState>,
 ) -> Result<ArenaProgressState, String> {
+    #[cfg(feature = "v1-service")]
+    return crate::arena_service::progress(&state, run_id);
+    #[cfg(not(feature = "v1-service"))]
+    arena_progress_local(run_id, state)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn arena_progress_local(
+    run_id: String,
+    state: State<AppState>,
+) -> Result<ArenaProgressState, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     app.arena_progress(&run_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn arena_get(run_id: String, state: State<AppState>) -> Result<ArenaRunSnapshotWire, String> {
+    #[cfg(feature = "v1-service")]
+    return crate::arena_service::get(&state, run_id);
+    #[cfg(not(feature = "v1-service"))]
+    arena_get_local(run_id, state)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn arena_get_local(run_id: String, state: State<AppState>) -> Result<ArenaRunSnapshotWire, String> {
     let snap = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
         app.arena_get_snapshot(&run_id).map_err(|e| e.to_string())?
@@ -481,6 +577,14 @@ pub fn arena_get(run_id: String, state: State<AppState>) -> Result<ArenaRunSnaps
 
 #[tauri::command]
 pub fn arena_list(state: State<AppState>) -> Result<Vec<ArenaRunSummaryWire>, String> {
+    #[cfg(feature = "v1-service")]
+    return crate::arena_service::list(&state);
+    #[cfg(not(feature = "v1-service"))]
+    arena_list_local(state)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn arena_list_local(state: State<AppState>) -> Result<Vec<ArenaRunSummaryWire>, String> {
     let summaries = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
         let branch = app.arena_branch_ref();
@@ -492,6 +596,14 @@ pub fn arena_list(state: State<AppState>) -> Result<Vec<ArenaRunSummaryWire>, St
 
 #[tauri::command]
 pub fn arena_delete(run_id: String, state: State<AppState>) -> Result<(), String> {
+    #[cfg(feature = "v1-service")]
+    return crate::arena_service::delete(&state, run_id);
+    #[cfg(not(feature = "v1-service"))]
+    arena_delete_local(run_id, state)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn arena_delete_local(run_id: String, state: State<AppState>) -> Result<(), String> {
     {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.arena_delete(&run_id).map_err(|e| e.to_string())?;
@@ -502,6 +614,14 @@ pub fn arena_delete(run_id: String, state: State<AppState>) -> Result<(), String
 
 #[tauri::command]
 pub fn arena_cancel(run_id: String, state: State<AppState>) -> Result<(), String> {
+    #[cfg(feature = "v1-service")]
+    return crate::arena_service::cancel(&state, run_id);
+    #[cfg(not(feature = "v1-service"))]
+    arena_cancel_local(run_id, state)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn arena_cancel_local(run_id: String, state: State<AppState>) -> Result<(), String> {
     {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.arena_cancel(&run_id).map_err(|e| e.to_string())?;
@@ -512,6 +632,17 @@ pub fn arena_cancel(run_id: String, state: State<AppState>) -> Result<(), String
 
 #[tauri::command]
 pub fn arena_override(
+    req: ArenaOverrideRequest,
+    state: State<AppState>,
+) -> Result<ArenaRunSnapshotWire, String> {
+    #[cfg(feature = "v1-service")]
+    return crate::arena_service::override_finding(&state, req);
+    #[cfg(not(feature = "v1-service"))]
+    arena_override_local(req, state)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn arena_override_local(
     req: ArenaOverrideRequest,
     state: State<AppState>,
 ) -> Result<ArenaRunSnapshotWire, String> {
@@ -560,5 +691,71 @@ mod review_flow_command_tests {
         assert!(validate_review_flow_bucket(&app, "/stale/managed/bucket").is_err());
         let current_bucket = app.tab().er_dir();
         assert!(validate_review_flow_bucket(&app, &current_bucket).is_ok());
+    }
+}
+
+#[cfg(all(test, feature = "v1-service"))]
+mod route_tests {
+    /// The text of `fn name(` in `source`, up to its closing brace.
+    fn body<'a>(source: &'a str, name: &str) -> &'a str {
+        let start = source
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("{name} is missing"));
+        let rest = source.get(start..).unwrap_or_default();
+        rest.split("\n}\n").next().unwrap_or(rest)
+    }
+
+    /// Each routed arena command sends through the service on the flag path.
+    /// The service tests drive the actor; this holds each desktop command to
+    /// its route instead of the flag-off body.
+    #[test]
+    fn the_arena_commands_route_with_the_feature_on() {
+        let source = include_str!("arena_commands.rs");
+        for (command, route) in [
+            ("arena_estimate", "arena_service::estimate("),
+            ("arena_estimate_batch", "arena_service::estimate_batch("),
+            ("arena_start", "arena_service::start("),
+            (
+                "arena_validate_findings",
+                "arena_service::validate_findings(",
+            ),
+            ("arena_start_batch", "arena_service::start_batch("),
+            ("arena_accept_findings", "arena_service::accept_findings("),
+            ("arena_progress", "arena_service::progress("),
+            ("arena_get", "arena_service::get("),
+            ("arena_list", "arena_service::list("),
+            ("arena_delete", "arena_service::delete("),
+            ("arena_cancel", "arena_service::cancel("),
+            ("arena_override", "arena_service::override_finding("),
+        ] {
+            assert!(
+                body(source, command).contains(route),
+                "{command} does not route through the service"
+            );
+        }
+        // A process-wide filter with no workspace state: deliberately unrouted.
+        assert!(!body(source, "dev_log_filter").contains("arena_service"));
+
+        let service = include_str!("arena_service.rs");
+        for sent in [
+            "ArenaCommand::StartRun",
+            "ArenaCommand::StartBatch",
+            "ArenaCommand::ValidateFindings",
+            "ArenaCommand::AcceptFindings",
+            "ArenaCommand::Delete",
+            "ArenaCommand::Cancel",
+            "ArenaCommand::Override",
+            "ArenaCommand::Estimate {",
+            "ArenaCommand::EstimateBatch",
+            // Reads take the published view and the store, never a round trip.
+            "arena::read_progress(",
+            "arena::read_run(",
+            "arena::read_runs(",
+        ] {
+            assert!(service.contains(sent), "{sent} is never used");
+        }
+        // The App's recovery must know the actors' runs, or a tab switch marks
+        // them stale.
+        assert!(include_str!("main.rs").contains("arena_service::attach("));
     }
 }

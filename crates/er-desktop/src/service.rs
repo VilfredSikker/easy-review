@@ -37,12 +37,19 @@ impl ServiceState {
     }
 
     /// Like [`Self::new`], with every actor's published revisions forwarded to
-    /// `relay`. The desktop emits `er://revision` from it, so a flag-path
-    /// change reaches the front end as an event instead of waiting for a poll.
+    /// `relay`. The desktop bumps its revision from it, so a flag-path change
+    /// reaches the front end as an `er://revision` event instead of waiting
+    /// for a poll; a live arena run's progress reaches the page this way.
     pub fn with_revision_relay(ports: Ports, relay: impl Fn(u64) + Send + Sync + 'static) -> Self {
+        Self::with_deps(WorkspaceDeps::new(ports), relay)
+    }
+
+    /// The same, over deps the caller built, such as a test's job sink.
+    pub fn with_deps(deps: WorkspaceDeps, relay: impl Fn(u64) + Send + Sync + 'static) -> Self {
         Self {
+            deps,
+            handles: Mutex::new(HashMap::new()),
             relay: Some(Arc::new(relay)),
-            ..Self::new(ports)
         }
     }
 
@@ -85,6 +92,18 @@ impl ServiceState {
     /// a reader never sees a missing handle as an error.
     pub fn view(&self, key: &str) -> Arc<WorkspaceView> {
         self.handle_for(key).view()
+    }
+
+    /// Whether any actor this process started is running `run_id`, from the
+    /// published views. The App asks before it marks a run stale.
+    pub fn arena_run_live(&self, run_id: &str) -> bool {
+        let handles: Vec<WorkspaceHandle> = match self.handles.lock() {
+            Ok(handles) => handles.values().cloned().collect(),
+            Err(poisoned) => poisoned.into_inner().values().cloned().collect(),
+        };
+        handles
+            .iter()
+            .any(|handle| handle.view().arena_run(run_id).is_some())
     }
 }
 

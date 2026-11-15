@@ -5855,6 +5855,12 @@ impl App {
         self.arena_runs.set_notify(notify);
     }
 
+    /// Names the arena runs the workspace actors are running, which recovery
+    /// here must leave alone.
+    pub fn set_arena_live_elsewhere(&self, live: crate::arena::LiveElsewhere) {
+        self.arena_runs.set_live_elsewhere(live);
+    }
+
     fn initial_ai_selection(config: &ErConfig) -> (Option<String>, Option<String>) {
         let selection = config.ai_hub.resolve_default_selection(&config.agent);
         (selection.provider_id, selection.model_id)

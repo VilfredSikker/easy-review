@@ -171,6 +171,9 @@ impl ArenaRunControl {
     }
 }
 
+/// Answers whether another host is running the named run.
+pub type LiveElsewhere = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// The App's live runs, keyed by run id. This is not a process-wide registry:
 /// it holds only what the host needs to show and stop a run it started.
 #[derive(Clone)]
@@ -179,6 +182,9 @@ pub struct ArenaRunControls {
     notify: Arc<Mutex<ArenaNotify>>,
     /// The host's job sink, handed to every run this registry starts.
     jobs: Arc<dyn JobSink>,
+    /// Names runs another host in this process is running, so recovery here
+    /// does not mark them stale. Unset outside the flag path.
+    live_elsewhere: Arc<Mutex<Option<LiveElsewhere>>>,
     /// Makes the next supervisor spawn fail. Test support for the launcher's
     /// failed-start path, which no normal build can reach.
     #[cfg(any(test, feature = "test-support"))]
@@ -200,6 +206,7 @@ impl ArenaRunControls {
             runs: Arc::new(Mutex::new(HashMap::new())),
             notify: Arc::new(Mutex::new(Arc::new(|| {}))),
             jobs,
+            live_elsewhere: Arc::new(Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
             fail_next_spawn: Arc::new(AtomicBool::new(false)),
         }
@@ -250,6 +257,29 @@ impl ArenaRunControls {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .contains_key(run_id)
+    }
+
+    /// Whether a host in this process owns the run: this registry, or the one
+    /// [`Self::set_live_elsewhere`] names. Recovery skips owned runs.
+    pub fn is_owned(&self, run_id: &str) -> bool {
+        if self.contains(run_id) {
+            return true;
+        }
+        let elsewhere = self
+            .live_elsewhere
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        elsewhere.is_some_and(|live| live(run_id))
+    }
+
+    /// Tells recovery which runs another host is running. On the flag path
+    /// the workspace actors run arena jobs the App's registry never sees.
+    pub fn set_live_elsewhere(&self, live: LiveElsewhere) {
+        *self
+            .live_elsewhere
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(live);
     }
 
     /// Is the run's supervisor still running?
