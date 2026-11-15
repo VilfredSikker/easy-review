@@ -150,3 +150,67 @@ fn a_refused_edit_changes_nothing() -> anyhow::Result<()> {
         Ok(())
     })
 }
+
+/// Breaks `file` after a good save, repairs it with `repaired` swapped in for
+/// `first`, and checks that reopening Settings adopts the repair and unlocks
+/// saves. The broken file is found by a save, not a load, so the actor's own
+/// load error stays empty throughout.
+fn recover_from_a_file_broken_mid_session(
+    dir: &Path,
+    file: &str,
+    key: &str,
+    first: &str,
+    repaired: &str,
+    adopted: impl Fn(&er_engine::config::ErConfig) -> String,
+) -> anyhow::Result<()> {
+    let handle = actor(dir);
+    patch(&handle, key, text(first))?;
+    let path = dir.join(file);
+    let good = std::fs::read_to_string(&path)?;
+    assert!(good.contains(first), "the first save landed in {file}");
+
+    std::fs::write(&path, "not = = toml")?;
+    let refused = patch(&handle, key, text("while-broken"));
+    assert!(refused.is_err(), "a save over a broken {file} is refused");
+    assert!(handle.view().load_error.is_none());
+
+    std::fs::write(&path, good.replace(first, repaired))?;
+    handle.send_and_wait_with(SettingsCommand::ReloadIfFailed, DEADLINE)?;
+    let view = handle.view();
+    assert!(view.load_error.is_none(), "the repaired file loads");
+    assert_eq!(adopted(&view.config), repaired, "the repair is adopted");
+
+    patch(&handle, key, text("after-repair"))?;
+    assert!(std::fs::read_to_string(&path)?.contains("after-repair"));
+    Ok(())
+}
+
+/// A config.toml that breaks mid-session is reloaded once repaired.
+#[test]
+fn a_config_file_broken_mid_session_recovers_on_reopen() -> anyhow::Result<()> {
+    in_temp_storage(|dir| {
+        recover_from_a_file_broken_mid_session(
+            dir,
+            "config.toml",
+            "display.theme",
+            "first-theme",
+            "repaired-theme",
+            |config| config.display.theme.clone(),
+        )
+    })
+}
+
+/// An agents.toml that breaks mid-session is reloaded once repaired.
+#[test]
+fn an_agents_file_broken_mid_session_recovers_on_reopen() -> anyhow::Result<()> {
+    in_temp_storage(|dir| {
+        recover_from_a_file_broken_mid_session(
+            dir,
+            "agents.toml",
+            "agent.command",
+            "first-agent",
+            "repaired-agent",
+            |config| config.agent.command.clone(),
+        )
+    })
+}
