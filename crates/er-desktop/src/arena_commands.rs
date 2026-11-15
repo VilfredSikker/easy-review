@@ -304,6 +304,12 @@ pub async fn start_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return crate::commands::run_blocking(move || {
+        crate::flow_service::start(&state, scope, er_dir)
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     crate::commands::run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         validate_review_flow_bucket(&app, &er_dir)?;
@@ -321,6 +327,10 @@ pub async fn confirm_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return crate::commands::run_blocking(move || crate::flow_service::confirm(&state, er_dir))
+        .await;
+    #[cfg(not(feature = "v1-service"))]
     crate::commands::run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         validate_review_flow_bucket(&app, &er_dir)?;
@@ -338,6 +348,10 @@ pub async fn decline_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return crate::commands::run_blocking(move || crate::flow_service::decline(&state, er_dir))
+        .await;
+    #[cfg(not(feature = "v1-service"))]
     crate::commands::run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         validate_review_flow_bucket(&app, &er_dir)?;
@@ -355,6 +369,9 @@ pub async fn rerun_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return crate::commands::run_blocking(move || crate::flow_service::rerun(&state, er_dir)).await;
+    #[cfg(not(feature = "v1-service"))]
     crate::commands::run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         validate_review_flow_bucket(&app, &er_dir)?;
@@ -371,6 +388,10 @@ pub async fn cancel_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return crate::commands::run_blocking(move || crate::flow_service::cancel(&state, er_dir))
+        .await;
+    #[cfg(not(feature = "v1-service"))]
     crate::commands::run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         validate_review_flow_bucket(&app, &er_dir)?;
@@ -394,6 +415,12 @@ pub async fn flow_accept_findings(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return crate::commands::run_blocking(move || {
+        crate::flow_service::accept(&state, er_dir, run_id, finding_ids)
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     crate::commands::run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.accept_review_flow_findings(&er_dir, &run_id, finding_ids)
@@ -413,6 +440,12 @@ pub async fn flow_get_run(
     state: State<'_, AppState>,
 ) -> Result<ArenaRunSnapshotWire, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return crate::commands::run_blocking(move || {
+        crate::flow_service::get_run(&state, er_dir, run_id)
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     crate::commands::run_blocking(move || {
         let app = state.app.lock().map_err(|e| e.to_string())?;
         // Validate both the flow's captured bucket and run id before reading
@@ -757,5 +790,66 @@ mod route_tests {
         // The App's recovery must know the actors' runs, or a tab switch marks
         // them stale.
         assert!(include_str!("main.rs").contains("arena_service::attach("));
+    }
+
+    /// Every review-flow command needs a flag-path route, or the flag path
+    /// silently runs the flow in the App the actor never sees.
+    #[test]
+    fn the_flow_commands_route_with_the_feature_on() {
+        let source = include_str!("arena_commands.rs");
+        for (command, route) in [
+            ("start_review_flow", "flow_service::start("),
+            ("confirm_review_flow", "flow_service::confirm("),
+            ("decline_review_flow", "flow_service::decline("),
+            ("rerun_review_flow", "flow_service::rerun("),
+            ("cancel_review_flow", "flow_service::cancel("),
+            ("flow_accept_findings", "flow_service::accept("),
+            ("flow_get_run", "flow_service::get_run("),
+        ] {
+            assert!(
+                body(source, command).contains(route),
+                "{command} does not route through the service"
+            );
+        }
+        assert!(
+            body(include_str!("commands.rs"), "run_standard_review_flow")
+                .contains("flow_service::run_standard("),
+            "run_standard_review_flow does not route through the service"
+        );
+
+        let service = include_str!("flow_service.rs");
+        for sent in [
+            "FlowCommand::Start {",
+            "FlowCommand::Confirm {",
+            "FlowCommand::Decline {",
+            "FlowCommand::Rerun {",
+            "FlowCommand::Cancel {",
+            "FlowCommand::RunStandard {",
+            "FlowCommand::AcceptFindings {",
+            // Acceptance hashes a fresh diff of the tab that shows the run's
+            // target, never the active view's cached one.
+            "<App as ReviewFlowHost>::current_review_diff(app, target)",
+            // A run read takes the published view and the store.
+            "er_service::read_flow_run(",
+        ] {
+            assert!(service.contains(sent), "{sent} is never used");
+        }
+        // A run is read and accepted in the actor that runs its flow, which
+        // the active tab names only while it shows that flow's project.
+        assert!(body(service, "route").contains("flow_key(&state.service, &app, er_dir)"));
+        let accept = body(service, "accept");
+        assert!(accept.contains("route(state, &er_dir.clone(), false,"));
+        assert!(
+            !accept.contains("key(app)"),
+            "accept reads the active tab's actor"
+        );
+        let get_run = body(service, "get_run");
+        assert!(get_run.contains("flow_key(&state.service, &app, &er_dir)"));
+        assert!(
+            !get_run.contains("key(&app)"),
+            "get_run reads the active tab's actor"
+        );
+        // A load recovers the flows in the actors, not only in the App.
+        assert!(include_str!("main.rs").contains("flow_service::reconcile_on_load("));
     }
 }
