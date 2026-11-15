@@ -1189,7 +1189,14 @@ fn main() {
             if let Ok(mut map) = pr_open_cache.lock() {
                 pr_open_cache::prune_pr_open_cache(&mut map, &pr_open_keep);
             }
+            #[cfg(not(feature = "v1-service"))]
             pr_open_cache::save_persisted_pr_open_cache(&pr_open_cache);
+            // The app registry owns the file on the flag path; it prunes its own copy.
+            #[cfg(feature = "v1-service")]
+            state
+                .service
+                .app_registry()
+                .prune_pr_open_cache(&pr_open_keep);
             if let Ok(mut map) = gh_status_cache.lock() {
                 gh_status_cache::prune_gh_status_cache(&mut map, &gh_status_keep);
             }

@@ -7,77 +7,9 @@
 //! — it's rederived on launch.
 
 use anyhow::{Context, Result};
-use er_store::{Artifact, Loaded};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+pub use er_engine::tabs_record::{load_tabs, save_tabs, TabDescriptor, TabKind, TabsFile};
 
 use crate::view_state::{BrowserLayout, DesktopViewState, TabBrowserState, ViewStateHandle};
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TabKind {
-    Working,
-    LocalBranch,
-    RemotePr,
-    /// Local clone + fetched PR ref; never runs `gh pr checkout`.
-    LocalPr,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
-pub struct TabDescriptor {
-    pub kind: TabKind,
-    pub repo_root: String,
-    #[serde(default)]
-    pub branch: Option<String>,
-    #[serde(default)]
-    pub pr_owner: Option<String>,
-    #[serde(default)]
-    pub pr_repo: Option<String>,
-    #[serde(default)]
-    pub pr_number: Option<u64>,
-    /// For `LocalPr` tabs: the fetched local ref (`refs/er/pr/<n>/head`).
-    #[serde(default)]
-    pub pr_head_ref: Option<String>,
-    /// For `LocalPr` tabs: the resolved base ref used for the diff.
-    #[serde(default)]
-    pub base_ref: Option<String>,
-    /// Last browser URL for this tab (desktop).
-    #[serde(default)]
-    pub browser_url: Option<String>,
-    /// Last browser layout: hidden | split | fullscreen (desktop).
-    #[serde(default)]
-    pub browser_layout: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
-pub struct TabsFile {
-    pub tabs: Vec<TabDescriptor>,
-    #[serde(default)]
-    pub active_idx: usize,
-}
-
-impl Artifact for TabsFile {
-    const KIND: &'static str = "tabs";
-    const VERSION: u32 = 1;
-    const FILE: &'static str = "tabs.json";
-    type Slot = ();
-}
-
-/// Register this record's kind beside the engine's kinds.
-pub(crate) fn register(registry: &mut er_store::Registry) -> Result<(), er_store::StoreError> {
-    registry.register::<TabsFile>()
-}
-
-/// Persist tab descriptors as the app's tabs record.
-pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
-    let key = er_engine::store_registry::app_key::<TabsFile>()?;
-    let file = TabsFile {
-        tabs: tabs.to_vec(),
-        active_idx,
-    };
-    er_engine::store_registry::store().write(&key, &file)?;
-    Ok(())
-}
 
 /// Serialize the live tab list and active index to disk. Each tab's browser URL
 /// and layout come from the desktop view state.
@@ -112,6 +44,9 @@ fn persisted_tabs(
 /// Best-effort [`save_app_tabs`]; logs a warning on failure. Called with the
 /// engine lock held after a tab-list change, so it also drops the browser
 /// state of tabs that are gone.
+///
+/// With `v1-service` the service's app registry is the record's one writer,
+/// so this only prunes the view state.
 pub fn persist_app_tabs(app: &er_engine::app::App, view: &ViewStateHandle) {
     let Ok(mut view) = view.lock() else {
         log::warn!("er-desktop: view state lock poisoned; tabs not persisted");
@@ -119,33 +54,33 @@ pub fn persist_app_tabs(app: &er_engine::app::App, view: &ViewStateHandle) {
     };
     let live: Vec<er_engine::TabKey> = app.tabs.iter().map(|t| t.key()).collect();
     view.retain_tabs(&live);
+    #[cfg(not(feature = "v1-service"))]
     if let Err(e) = save_app_tabs(app, &view) {
         log::warn!("er-desktop: failed to persist tabs: {e}");
     }
 }
 
-/// Load persisted tabs. Returns `None` if the record is missing or unreadable —
-/// callers fall back to the default single-tab launch.
-pub fn load_tabs() -> Option<TabsFile> {
-    let key = er_engine::store_registry::app_key::<TabsFile>().ok()?;
-    match er_engine::store_registry::store().read(&key).ok()? {
-        Loaded::Found(stored) => Some(stored.value),
-        Loaded::Absent | Loaded::Unreadable(_) => None,
-    }
-}
+/// The keys a tab's browser state is saved under. The engine keeps them in the
+/// descriptor's open map without reading them (ADR 0068).
+const BROWSER_URL_KEY: &str = "browser_url";
+const BROWSER_LAYOUT_KEY: &str = "browser_layout";
 
-fn browser_descriptor_fields(browser: &TabBrowserState) -> (Option<String>, Option<String>) {
-    let url = if browser.url.trim().is_empty() {
-        None
-    } else {
-        Some(browser.url.clone())
-    };
-    let layout = if browser.layout == BrowserLayout::Hidden {
-        None
-    } else {
-        Some(browser.layout.as_str().to_string())
-    };
-    (url, layout)
+/// A tab's browser URL and layout as descriptor keys. An empty URL and the
+/// hidden layout are left out, as they were when the record named them.
+fn browser_descriptor_fields(
+    browser: &TabBrowserState,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut fields = serde_json::Map::new();
+    if !browser.url.trim().is_empty() {
+        fields.insert(BROWSER_URL_KEY.to_string(), browser.url.clone().into());
+    }
+    if browser.layout != BrowserLayout::Hidden {
+        fields.insert(
+            BROWSER_LAYOUT_KEY.to_string(),
+            browser.layout.as_str().to_string().into(),
+        );
+    }
+    fields
 }
 
 /// Apply a saved descriptor's browser URL and layout to the restored tab's
@@ -156,10 +91,11 @@ pub fn apply_descriptor_browser(
     d: &TabDescriptor,
 ) {
     let browser = view.browser_mut(tab.key());
-    if let Some(url) = d.browser_url.clone() {
-        browser.url = url;
+    let saved = |key: &str| d.extra.get(key).and_then(serde_json::Value::as_str);
+    if let Some(url) = saved(BROWSER_URL_KEY) {
+        browser.url = url.to_string();
     }
-    if let Some(layout) = d.browser_layout.as_deref() {
+    if let Some(layout) = saved(BROWSER_LAYOUT_KEY) {
         browser.layout = BrowserLayout::from_label(layout);
     }
 }
@@ -169,7 +105,7 @@ pub fn descriptor_from_tab(
     tab: &er_engine::app::TabState,
     view: &DesktopViewState,
 ) -> TabDescriptor {
-    let (browser_url, browser_layout) = browser_descriptor_fields(&view.browser(tab.key()));
+    let extra = browser_descriptor_fields(&view.browser(tab.key()));
     // Remote-only PR (GitHub slug, no local-branch view / clone).
     if tab.is_remote() {
         let slug = tab.remote_repo.as_deref().unwrap_or("");
@@ -195,8 +131,7 @@ pub fn descriptor_from_tab(
             pr_number: tab.pr_number,
             pr_head_ref: None,
             base_ref,
-            browser_url,
-            browser_layout,
+            extra,
         };
     }
     // Local PR review (fetched head ref, no checkout)
@@ -215,8 +150,7 @@ pub fn descriptor_from_tab(
             pr_number: Some(num),
             pr_head_ref: tab.pr_head_ref.clone(),
             base_ref,
-            browser_url,
-            browser_layout,
+            extra,
         };
     }
     // Plain local branch view
@@ -235,8 +169,7 @@ pub fn descriptor_from_tab(
             pr_number: None,
             pr_head_ref: None,
             base_ref,
-            browser_url,
-            browser_layout,
+            extra,
         };
     }
     let base_ref = if tab.base_branch.is_empty() {
@@ -253,8 +186,7 @@ pub fn descriptor_from_tab(
         pr_number: None,
         pr_head_ref: None,
         base_ref,
-        browser_url,
-        browser_layout,
+        extra,
     }
 }
 
@@ -397,100 +329,6 @@ pub fn restore_tab(
 mod tests {
     use super::*;
 
-    /// Round-trip a few descriptors through `save_tabs` / `load_tabs`.
-    ///
-    /// We can't easily redirect `tabs_path()` for tests without adding a
-    /// `dirs` shim, so we exercise the serde plumbing directly via a temp
-    /// file — proves the wire format is stable.
-    #[test]
-    fn round_trip_serializes_and_deserializes() {
-        let tabs = vec![
-            TabDescriptor {
-                kind: TabKind::Working,
-                repo_root: "/tmp/repo-a".to_string(),
-                branch: None,
-                pr_owner: None,
-                pr_repo: None,
-                pr_number: None,
-                pr_head_ref: None,
-                base_ref: None,
-                browser_url: None,
-                browser_layout: None,
-            },
-            TabDescriptor {
-                kind: TabKind::LocalBranch,
-                repo_root: "/tmp/repo-a".to_string(),
-                branch: Some("feat/x".to_string()),
-                pr_owner: None,
-                pr_repo: None,
-                pr_number: None,
-                pr_head_ref: None,
-                base_ref: None,
-                browser_url: None,
-                browser_layout: None,
-            },
-            TabDescriptor {
-                kind: TabKind::RemotePr,
-                repo_root: String::new(),
-                branch: None,
-                pr_owner: Some("octo".to_string()),
-                pr_repo: Some("cat".to_string()),
-                pr_number: Some(42),
-                pr_head_ref: None,
-                base_ref: None,
-                browser_url: None,
-                browser_layout: None,
-            },
-            TabDescriptor {
-                kind: TabKind::LocalPr,
-                repo_root: "/tmp/repo-b".to_string(),
-                branch: Some("feat/no-checkout".to_string()),
-                pr_owner: None,
-                pr_repo: None,
-                pr_number: Some(1110),
-                pr_head_ref: Some("refs/er/pr/1110/head".to_string()),
-                base_ref: Some("origin/main".to_string()),
-                browser_url: None,
-                browser_layout: None,
-            },
-        ];
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        er_engine::storage::with_test_storage_root(dir.path(), || {
-            save_tabs(&tabs, 1).expect("save");
-
-            let loaded = load_tabs().expect("a saved record");
-
-            assert_eq!(loaded.tabs.len(), 4);
-            assert_eq!(loaded.tabs, tabs);
-            assert_eq!(loaded.active_idx, 1);
-        });
-    }
-
-    #[test]
-    fn tabs_round_trip_through_store() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        er_engine::storage::with_test_storage_root(dir.path(), || {
-            let tabs = vec![TabDescriptor {
-                kind: TabKind::RemotePr,
-                repo_root: String::new(),
-                branch: None,
-                pr_owner: Some("octo".to_string()),
-                pr_repo: Some("cat".to_string()),
-                pr_number: Some(42),
-                pr_head_ref: None,
-                base_ref: None,
-                browser_url: None,
-                browser_layout: None,
-            }];
-            save_tabs(&tabs, 0).expect("save");
-
-            let loaded = load_tabs().expect("a saved record");
-            assert_eq!(loaded.tabs, tabs);
-            assert_eq!(loaded.active_idx, 0);
-        });
-    }
-
     fn init_git_repo(path: &std::path::Path) {
         std::process::Command::new("git")
             .args(["init", "-b", "main"])
@@ -612,8 +450,7 @@ mod tests {
                 pr_number: Some(1425),
                 pr_head_ref: None,
                 base_ref: Some("main".to_string()),
-                browser_url: None,
-                browser_layout: None,
+                extra: serde_json::Map::new(),
             };
             let tab =
                 rebuild_remote_pr(&d, true, &er_engine::ports::Ports::for_test()).expect("stub");
@@ -622,6 +459,33 @@ mod tests {
             assert_eq!(tab.pr_number, Some(1425));
             assert!(tab.local_branch_view.is_none());
             assert!(tab.is_remote());
+        });
+    }
+
+    /// The browser state restores from and saves to the keys an older record
+    /// used, so a saved URL and layout survive a restart in both directions.
+    #[test]
+    fn the_browser_keys_restore_and_save_under_their_saved_names() {
+        let storage = tempfile::tempdir().expect("tempdir");
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let saved: TabDescriptor = serde_json::from_value(serde_json::json!({
+                "kind": "remote_pr",
+                "repo_root": "",
+                "pr_owner": "octo",
+                "pr_repo": "cat",
+                "pr_number": 42,
+                "browser_url": "http://localhost:5173/review",
+                "browser_layout": "split"
+            }))
+            .expect("descriptor");
+            let tab = rebuild_remote_pr(&saved, true, &er_engine::ports::Ports::for_test())
+                .expect("stub");
+            let mut view = DesktopViewState::default();
+            apply_descriptor_browser(&mut view, &tab, &saved);
+            let browser = view.browser(tab.key());
+            assert_eq!(browser.url, "http://localhost:5173/review");
+            assert_eq!(browser.layout, BrowserLayout::Split);
+            assert_eq!(descriptor_from_tab(&tab, &view).extra, saved.extra);
         });
     }
 
@@ -660,8 +524,7 @@ mod tests {
                 pr_number: Some(99),
                 pr_head_ref: None,
                 base_ref: Some("main".to_string()),
-                browser_url: None,
-                browser_layout: None,
+                extra: serde_json::Map::new(),
             };
             let tab = rebuild_local_pr(&d, true, &er_engine::ports::Ports::cli()).expect("stub");
             assert_eq!(
