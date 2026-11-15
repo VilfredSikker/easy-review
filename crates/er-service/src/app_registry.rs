@@ -293,7 +293,7 @@ impl AppRegistry {
         let (registry, release) = (Arc::clone(self), claim.clone());
         // Unnamed, like every effect thread (see `actor::spawn_effect`).
         let spawned = thread::Builder::new().spawn(move || {
-            match registry.fetch_local(&key, &freshness) {
+            match fetch_local(&registry.ports, &key, &freshness) {
                 Ok((raw_diff, commits)) => {
                     remember_pr_open_entry(
                         &mut lock(registry.pr_open()),
@@ -314,32 +314,6 @@ impl AppRegistry {
         }
     }
 
-    /// The local open inputs, through the ports: the diff, the base ref and
-    /// the commits in parallel. The comment bundle warms on its own thread.
-    fn fetch_local(
-        &self,
-        key: &PrOpenCacheKey,
-        freshness: &PrOpenFreshness,
-    ) -> Result<(String, Vec<er_engine::git::CommitInfo>), WorkspaceError> {
-        guard::assert_off_actor();
-        let (git, github) = (&*self.ports.git, &*self.ports.github);
-        let (root, number) = (key.repo_root.as_str(), key.pr_number);
-        self.warm_comment_bundle(Some(root.to_string()), None, number);
-        thread::scope(|s| {
-            let diff = s.spawn(|| github.pr_diff(git, number, root));
-            let base = s.spawn(|| {
-                er_engine::github::ensure_base_ref_available(git, root, &freshness.base_branch)
-                    .map_err(|e| GhError::Local {
-                        message: e.to_string(),
-                    })
-            });
-            let commits = s.spawn(|| github.pr_commits(root, number, PR_COMMIT_CACHE_LIMIT));
-            let raw_diff = joined(diff)?;
-            joined(base)?;
-            Ok((raw_diff, joined(commits).unwrap_or_default()))
-        })
-    }
-
     fn prefetch_remote(self: &Arc<Self>, owner: String, repo: String, number: u64) {
         if get_remote_pr_open_entry(&self.remote, &owner, &repo, number).is_some()
             || !claim_remote_pr_open(&self.remote_in_flight, &owner, &repo, number)
@@ -349,7 +323,7 @@ impl AppRegistry {
         let registry = Arc::clone(self);
         let (claim_owner, claim_repo) = (owner.clone(), repo.clone());
         let spawned = thread::Builder::new().spawn(move || {
-            match registry.fetch_remote(&owner, &repo, number) {
+            match fetch_remote(&registry.ports, &owner, &repo, number) {
                 Ok(entry) => {
                     insert_remote_pr_open_entry(&registry.remote, &owner, &repo, number, entry);
                 }
@@ -362,76 +336,105 @@ impl AppRegistry {
         }
     }
 
-    /// The remote open inputs, through the GitHub port. The diff is kept only
-    /// with the head oid it was fetched at, and only when the head did not
-    /// move during the fetch.
-    fn fetch_remote(
-        &self,
-        owner: &str,
-        repo: &str,
-        number: u64,
-    ) -> Result<RemotePrOpenEntry, WorkspaceError> {
-        guard::assert_off_actor();
-        let (git, github) = (&*self.ports.git, &*self.ports.github);
-        self.warm_comment_bundle(None, Some((owner.to_string(), repo.to_string())), number);
-        let head_before = github.pr_head_oid_remote(owner, repo, number).ok();
-        let (overview, diff, commits) = thread::scope(|s| {
-            let overview = s.spawn(|| github.overview_remote(owner, repo, number));
-            let diff = s.spawn(|| github.pr_diff_remote(git, owner, repo, number));
-            let commits =
-                s.spawn(|| github.commits_remote(owner, repo, number, PR_COMMIT_CACHE_LIMIT));
-            (joined(overview), joined(diff), joined(commits))
-        });
-        let overview = overview?.ok_or_else(|| {
-            WorkspaceError::Failed(format!("{owner}/{repo}#{number} returned no PR overview"))
-        })?;
-        let raw_diff = diff?;
-        let head_after = github.pr_head_oid_remote(owner, repo, number).ok();
-        Ok(RemotePrOpenEntry {
-            base_branch: overview.base_branch.clone(),
-            head_branch: overview.head_branch.clone(),
-            raw_diff,
-            pr_data: Some(overview),
-            pr_commits: commits.unwrap_or_default(),
-            head_oid: if head_before == head_after {
-                head_before
-            } else {
-                None
-            },
-            last_touched: 0,
-        })
-    }
-
-    /// Warms the PR comment cache the post-open sync reads, detached so the
-    /// prefetch claim releases as soon as its own inputs are cached.
-    fn warm_comment_bundle(
-        &self,
-        repo_root: Option<String>,
-        slug: Option<(String, String)>,
-        number: u64,
-    ) {
-        let ports = self.ports.clone();
-        let _ = thread::Builder::new().spawn(move || {
-            let slug = slug.or_else(|| {
-                let root = repo_root.as_deref()?;
-                ports.github.get_repo_info(&*ports.git, root).ok()
-            });
-            if let Some((owner, repo)) = slug {
-                let _ = ports.github.pr_comment_bundle_cached(
-                    &owner,
-                    &repo,
-                    number,
-                    repo_root.as_deref(),
-                );
-            }
-        });
-    }
-
     fn report(&self, error: &WorkspaceError) {
         self.broadcast(Event::CommandFailed {
             message: error.to_string(),
         });
     }
+}
+
+/// The local open inputs, through the ports: the diff, the base ref and the
+/// commits in parallel. The comment bundle warms on its own thread.
+fn fetch_local(
+    ports: &Ports,
+    key: &PrOpenCacheKey,
+    freshness: &PrOpenFreshness,
+) -> Result<(String, Vec<er_engine::git::CommitInfo>), WorkspaceError> {
+    guard::assert_off_actor();
+    let (git, github) = (&*ports.git, &*ports.github);
+    let (root, number) = (key.repo_root.as_str(), key.pr_number);
+    warm_comment_bundle(ports, Some(root.to_string()), None, number);
+    thread::scope(|s| {
+        let diff = s.spawn(|| github.pr_diff(git, number, root));
+        let base = s.spawn(|| {
+            er_engine::github::ensure_base_ref_available(git, root, &freshness.base_branch).map_err(
+                |e| GhError::Local {
+                    message: e.to_string(),
+                },
+            )
+        });
+        let commits = s.spawn(|| github.pr_commits(root, number, PR_COMMIT_CACHE_LIMIT));
+        let raw_diff = joined(diff)?;
+        joined(base)?;
+        Ok((raw_diff, joined(commits).unwrap_or_default()))
+    })
+}
+
+/// The remote open inputs, through the GitHub port. The diff is kept only with
+/// the head oid it was fetched at, and only when the head did not move during
+/// the fetch.
+fn fetch_remote(
+    ports: &Ports,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Result<RemotePrOpenEntry, WorkspaceError> {
+    guard::assert_off_actor();
+    let (git, github) = (&*ports.git, &*ports.github);
+    warm_comment_bundle(
+        ports,
+        None,
+        Some((owner.to_string(), repo.to_string())),
+        number,
+    );
+    let head_before = github.pr_head_oid_remote(owner, repo, number).ok();
+    let (overview, diff, commits) = thread::scope(|s| {
+        let overview = s.spawn(|| github.overview_remote(owner, repo, number));
+        let diff = s.spawn(|| github.pr_diff_remote(git, owner, repo, number));
+        let commits = s.spawn(|| github.commits_remote(owner, repo, number, PR_COMMIT_CACHE_LIMIT));
+        (joined(overview), joined(diff), joined(commits))
+    });
+    let overview = overview?.ok_or_else(|| {
+        WorkspaceError::Failed(format!("{owner}/{repo}#{number} returned no PR overview"))
+    })?;
+    let raw_diff = diff?;
+    let head_after = github.pr_head_oid_remote(owner, repo, number).ok();
+    Ok(RemotePrOpenEntry {
+        base_branch: overview.base_branch.clone(),
+        head_branch: overview.head_branch.clone(),
+        raw_diff,
+        pr_data: Some(overview),
+        pr_commits: commits.unwrap_or_default(),
+        head_oid: if head_before == head_after {
+            head_before
+        } else {
+            None
+        },
+        last_touched: 0,
+    })
+}
+
+/// Warms the PR comment cache the post-open sync reads, detached so the
+/// prefetch claim releases as soon as its own inputs are cached.
+fn warm_comment_bundle(
+    ports: &Ports,
+    repo_root: Option<String>,
+    slug: Option<(String, String)>,
+    number: u64,
+) {
+    let ports = ports.clone();
+    let _ = thread::Builder::new().spawn(move || {
+        let slug = slug.or_else(|| {
+            let root = repo_root.as_deref()?;
+            ports.github.get_repo_info(&*ports.git, root).ok()
+        });
+        if let Some((owner, repo)) = slug {
+            let _ =
+                ports
+                    .github
+                    .pr_comment_bundle_cached(&owner, &repo, number, repo_root.as_deref());
+        }
+    });
 }
 
 /// A loaded record with a fresh key per tab. Keys are never saved (ADR 0068).

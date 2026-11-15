@@ -43,6 +43,7 @@ impl WorkspaceDeps {
     }
 
     /// Shares the service's one app registry with the actors built from this.
+    #[must_use]
     pub fn with_app_registry(mut self, registry: Arc<crate::app_registry::AppRegistry>) -> Self {
         self.app_registry = Some(registry);
         self
