@@ -1,7 +1,5 @@
 use super::{App, CommandStatus};
 use anyhow::{bail, Context, Result};
-use er_store::StoreError;
-use std::time::Duration;
 
 /// Task kind and command name of a tour; both are the same string.
 pub(super) const TOUR_TASK_KIND: &str = "tour";
@@ -37,17 +35,7 @@ impl App {
     /// The probe does not wait: a held lease answers at once, and startup
     /// reconciliation can call this without stalling.
     pub fn check_review_bucket_admission(&self, er_dir: &str) -> Result<()> {
-        let scope = er_store::Scope::dir(er_dir)?;
-        match crate::store_registry::store().lease(&scope, Duration::ZERO, "admission") {
-            Ok(guard) => {
-                drop(guard);
-                Ok(())
-            }
-            Err(StoreError::LeaseHeld { .. } | StoreError::AlreadyLocked { .. }) => {
-                bail!("A review flow is already using this review bucket")
-            }
-            Err(error) => Err(error.into()),
-        }
+        crate::arena::check_bucket_admission(er_dir)
     }
 
     /// Take exclusive ownership after proving that no producer can still write
@@ -270,7 +258,7 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     let guard = crate::store_registry::store()
-                        .lease(&scope, Duration::from_secs(5), "other-process")
+                        .lease(&scope, std::time::Duration::from_secs(5), "other-process")
                         .unwrap();
                     barrier.wait();
                     barrier.wait();

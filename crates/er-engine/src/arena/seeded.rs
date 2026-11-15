@@ -236,7 +236,7 @@ pub fn build_seeded_run(
         base_branch: params.base_branch,
         scope: params.scope,
         diff_hash: params.diff_hash,
-        created_at: crate::app::chrono_now(),
+        created_at: crate::sync::chrono_now(),
         completed_at: None,
         status: RunStatus::Queued,
         config: ArenaConfig {
