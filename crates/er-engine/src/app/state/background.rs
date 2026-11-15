@@ -121,14 +121,7 @@ pub struct PendingBackgroundTask {
     pub staging: Option<std::sync::Arc<crate::app::job_staging::JobStaging>>,
 }
 
-/// Host-owned diagram write target — agent emits JSON; Easy Review persists it.
-#[derive(Debug, Clone)]
-pub struct HostWriteDiagram {
-    pub output_path: std::path::PathBuf,
-    pub kind: String,
-    pub diff_hash: String,
-    pub custom_prompt: Option<String>,
-}
+pub use crate::stage_job::HostWriteDiagram;
 
 /// In-flight + recently finished background task channels. The `App` owns
 /// this; one entry per task id.
