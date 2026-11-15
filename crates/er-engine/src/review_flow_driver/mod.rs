@@ -18,7 +18,7 @@ mod results;
 mod standard;
 
 pub use host::{ReviewFlowHost, ReviewFlowInputs, ReviewFlowLease, StageCompletion};
-pub use record::{flow_from_record, holder_of, task_from_stage};
+pub use record::{flow_from_record, holder_of, rerun_plan, task_from_stage};
 pub use results::{flow_run_results, ReviewFlowResultFinding, ReviewFlowResults};
 
 use crate::ai::flow_providers::{
@@ -104,10 +104,8 @@ impl ReviewFlows {
         self.start_review_flow_inner(host, scope, None)
     }
 
-    /// Re-run an interrupted workflow. A Quick or Standard record at the same
-    /// diff generation resumes only its unfinished stages; anything else starts
-    /// a new flow, which re-confirms Deep and re-runs the panel rather than
-    /// trusting a partial one.
+    /// Re-run an interrupted workflow by its [`rerun_plan`]: resume its
+    /// unfinished stages, or start a new flow.
     pub fn rerun_review_flow(&mut self, host: &mut dyn ReviewFlowHost, er_dir: &str) -> Result<()> {
         let store = crate::store_registry::store();
         let scope = er_store::Scope::dir(er_dir)?;
@@ -117,15 +115,10 @@ impl ReviewFlows {
             bail!("this review has no stage that can be resumed");
         }
         let current = crate::ai::prepared_diff::diff_tmp_hash(er_dir).unwrap_or_default();
-        let plan = record.plan_resume(&current);
-        let resumable = matches!(
-            record.kind,
-            Some(crate::ai::WorkflowKind::Quick | crate::ai::WorkflowKind::Standard)
-        );
-        if plan.restart || !resumable {
-            return self.start_review_flow(host, "branch");
+        match rerun_plan(&record, &current) {
+            Some(plan) => self.start_review_flow_inner(host, "branch", Some((&record, &plan))),
+            None => self.start_review_flow(host, "branch"),
         }
-        self.start_review_flow_inner(host, "branch", Some((&record, &plan)))
     }
 
     fn start_review_flow_inner(

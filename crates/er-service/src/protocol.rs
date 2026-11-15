@@ -15,6 +15,7 @@ use er_engine::arena::{
 use er_engine::config::ErConfig;
 use er_engine::jobs::{JobId, JobResult, JobSubmission};
 use er_engine::review_flow_driver::ReviewFlowInputs;
+use er_engine::task_target::BackgroundTaskTarget;
 
 use crate::workspace::WorkspaceTarget;
 
@@ -297,13 +298,14 @@ pub enum FlowCommand {
     Cancel {
         er_dir: String,
     },
-    /// Import selected findings from a flow's run. The run must still match
-    /// the view the context carries.
+    /// Import selected findings from a flow's run. The run's diff hash must
+    /// still match the diff `current` carries for the run's target; `None`
+    /// when the published flow names no target for the run.
     AcceptFindings {
-        context: FlowContext,
         er_dir: String,
         run_id: String,
         finding_ids: Vec<String>,
+        current: Option<AcceptanceDiff>,
     },
 }
 
@@ -316,9 +318,20 @@ pub struct FlowContext {
     pub config: Arc<ErConfig>,
     pub effort: Option<String>,
     /// The active view, read by the App's own rules for what a flow may
-    /// review, or why it cannot be reviewed. A start reviews it, and an
-    /// acceptance matches the run's captured target against it.
+    /// review, or why it cannot be reviewed. A start or a re-run reviews it.
+    /// It may hold the tab's cached diff, so acceptance never reads it.
     pub view: Result<ReviewFlowInputs, String>,
+}
+
+/// The diff acceptance checks a run against. The desktop finds the open tab
+/// that shows the run's captured target and fetches that tab's filtered diff
+/// fresh, by the App's own rules, so acceptance refuses a run whose code has
+/// moved on even before the tab's cached diff is refreshed.
+#[derive(Clone, Debug)]
+pub struct AcceptanceDiff {
+    pub target: BackgroundTaskTarget,
+    /// The fresh diff, or why no open tab shows the target.
+    pub diff: Result<String, String>,
 }
 
 /// An arena action. Each carries the [`ArenaContext`] its effect needs, except

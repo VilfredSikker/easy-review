@@ -31,15 +31,15 @@ use er_engine::config::{AiSelection, ErConfig};
 use er_engine::jobs::{JobLimits, JobSink};
 use er_engine::ports::Ports;
 use er_engine::review_flow_driver::{
-    flow_from_record, holder_of, ReviewFlowHost, ReviewFlowInputs, ReviewFlowLease, ReviewFlows,
-    StageCompletion,
+    flow_from_record, holder_of, rerun_plan, ReviewFlowHost, ReviewFlowInputs, ReviewFlowLease,
+    ReviewFlows, StageCompletion,
 };
 use er_engine::stage_job::{staging_for, StageJob, StageJobRequest};
 use er_engine::task_target::BackgroundTaskTarget;
 
 use crate::actor::WorkspaceDeps;
 use crate::handle::{ActorMsg, WorkspaceError};
-use crate::protocol::{FlowCommand, FlowContext, Reply};
+use crate::protocol::{AcceptanceDiff, FlowCommand, FlowContext, Reply};
 use crate::workspace::LiveReviewFlow;
 
 /// What one flow call changed, sent to the actor to publish.
@@ -79,6 +79,7 @@ impl FlowRunner {
             config: Arc::new(ErConfig::default()),
             effort: None,
             view: Err("no review view was sent".into()),
+            acceptance: None,
             leases: HashMap::new(),
             next_lease: 1,
             tasks: HashMap::new(),
@@ -141,15 +142,17 @@ impl FlowRunner {
                 }
             }
             FlowCommand::AcceptFindings {
-                context,
                 er_dir,
                 run_id,
                 finding_ids,
+                current,
             } => {
-                host.take_context(context);
-                flows
+                host.acceptance = current;
+                let accepted = flows
                     .accept_review_flow_findings(host, &er_dir, &run_id, finding_ids)
-                    .map(|accepted| Reply::FlowAccepted { accepted })
+                    .map(|accepted| Reply::FlowAccepted { accepted });
+                host.acceptance = None;
+                accepted
             }
         };
         self.send_update(flows, host);
@@ -246,11 +249,9 @@ fn resume_plan(er_dir: &str, flow: &ReviewFlow) -> Vec<String> {
         return Vec::new();
     };
     let current = er_engine::ai::prepared_diff::diff_tmp_hash(er_dir).unwrap_or_default();
-    let plan = record.plan_resume(&current);
-    if plan.restart {
-        return Vec::new();
-    }
-    plan.stage_ids().into_iter().map(str::to_owned).collect()
+    rerun_plan(&record, &current)
+        .map(|plan| plan.stage_ids().into_iter().map(str::to_owned).collect())
+        .unwrap_or_default()
 }
 
 /// A stage task the host launched and has not handed back.
@@ -270,6 +271,8 @@ struct ServiceFlowHost {
     config: Arc<ErConfig>,
     effort: Option<String>,
     view: Result<ReviewFlowInputs, String>,
+    /// Set for the length of one acceptance.
+    acceptance: Option<AcceptanceDiff>,
     leases: HashMap<String, er_store::LeaseGuard>,
     next_lease: u64,
     tasks: HashMap<String, StageTask>,
@@ -387,11 +390,13 @@ impl ReviewFlowHost for ServiceFlowHost {
         self.view.clone().map_err(|reason| anyhow!(reason))
     }
 
-    /// The view the command carried shows the target when the App's rules
-    /// built the same target from it.
+    /// The fresh diff the acceptance carried, when the desktop fetched it
+    /// for this target.
     fn current_review_diff(&self, target: &BackgroundTaskTarget) -> Result<String> {
-        match &self.view {
-            Ok(view) if view.target == *target => Ok(view.raw_diff.clone()),
+        match &self.acceptance {
+            Some(current) if current.target == *target => {
+                current.diff.clone().map_err(|reason| anyhow!(reason))
+            }
             _ => bail!("The captured review target is no longer open; start a new Review"),
         }
     }
