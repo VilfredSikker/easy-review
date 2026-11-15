@@ -48,8 +48,8 @@ pub use projections::{
 };
 pub use provenance::{normalized_raisers_for, providers_for};
 pub use runs::{
-    accept_findings, bucket_for_run, check_bucket_admission, list_summaries, override_finding,
-    run_snapshot,
+    accept_findings, bucket_for_run, bucket_for_run_in, check_bucket_admission, list_summaries,
+    override_finding, run_snapshot, run_snapshot_with_status,
 };
 pub use schema::{
     validate_round1_output, validate_round2_output, validate_round3_output, Round1Output,

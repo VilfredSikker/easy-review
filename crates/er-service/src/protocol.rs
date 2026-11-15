@@ -5,6 +5,16 @@
 //! remote before sending. That keeps the store on the caller's side of the
 //! seam and makes the service testable with a scripted port alone.
 
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
+
+use er_agent::job::{JobError, JobProgress};
+use er_engine::arena::{
+    ArenaBatchStartParams, ArenaDiffPreview, ArenaScope, ArenaStartParams, ReviewerRef, Verdict,
+};
+use er_engine::config::ErConfig;
+use er_engine::jobs::{JobId, JobResult, JobSubmission};
+
 use crate::workspace::WorkspaceTarget;
 
 /// A command sent to the workspace actor.
@@ -106,6 +116,23 @@ pub enum Command {
         ai_assist: bool,
         client_id: Option<String>,
     },
+
+    // ── Job and arena commands ──
+    /// Run one agent job on an effect thread. The actor keeps its stop handle
+    /// until it finishes, so `CancelJob` can reach the runner; the outcome goes
+    /// to `result` and out as `Event::JobFinished`.
+    StartJob {
+        job: JobId,
+        submission: JobSubmission,
+        result: Sender<JobResult>,
+    },
+    /// Stop a running job by killing the stop handle its runner watches.
+    CancelJob { job: JobId },
+    /// Load-time recovery of the named buckets: stale arena runs and a dead
+    /// owner's running workflow stages are marked. Nothing is started.
+    Reconcile { buckets: Vec<String> },
+    /// An arena action on the actor's live runs.
+    Arena(ArenaCommand),
 
     // ── GitHub comment commands (P41.2) ──
     /// Create a comment and post it to the tab's pull request.
@@ -238,6 +265,105 @@ pub struct PrRef {
     pub number: u64,
 }
 
+/// An arena action. Each carries the [`ArenaContext`] its effect needs, except
+/// a cancel, which acts on the live run alone.
+#[derive(Clone, Debug)]
+pub enum ArenaCommand {
+    /// Price a run before it starts. It reads the diff through the ports, so
+    /// it runs as an effect and answers with the preview; there is no state
+    /// to publish for it.
+    Estimate {
+        arena: ArenaContext,
+        scope: ArenaScope,
+        files: Option<Vec<String>>,
+        reviewers: Vec<ReviewerRef>,
+        rounds: Option<u8>,
+        arbiter: Option<ReviewerRef>,
+    },
+    EstimateBatch {
+        arena: ArenaContext,
+        params: ArenaBatchStartParams,
+    },
+    StartRun {
+        arena: ArenaContext,
+        params: ArenaStartParams,
+    },
+    StartBatch {
+        arena: ArenaContext,
+        params: ArenaBatchStartParams,
+    },
+    /// Dedupe the tab's expert findings and rule on them with one arbiter job.
+    ValidateFindings {
+        arena: ArenaContext,
+    },
+    AcceptFindings {
+        arena: ArenaContext,
+        run_id: String,
+        finding_ids: Option<Vec<String>>,
+    },
+    /// Delete a finished run's directory.
+    Delete {
+        arena: ArenaContext,
+        run_id: String,
+    },
+    Cancel {
+        run_id: String,
+    },
+    Override {
+        arena: ArenaContext,
+        run_id: String,
+        finding_id: String,
+        verdict: Verdict,
+        note: String,
+    },
+}
+
+/// What an arena effect reads from the tab and the App, resolved by the
+/// desktop before sending.
+#[derive(Clone, Debug)]
+pub struct ArenaContext {
+    /// The active tab: its bucket and the inputs its diff fetch needs.
+    pub tab: TabContext,
+    /// The branch a run is filed under.
+    pub branch_ref: String,
+    pub config: Arc<ErConfig>,
+    /// Every open tab's bucket, the active one first. A run id is looked up
+    /// here when no live control names its bucket.
+    pub buckets: Vec<String>,
+    /// The loaded review's diff hash, which seeded validation is checked
+    /// against. Empty when no review is loaded.
+    pub review_hash: String,
+}
+
+/// How a job ended, as subscribers see it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JobOutcome {
+    /// The provider exited; `success` is its exit status.
+    Completed {
+        success: bool,
+    },
+    Failed {
+        message: String,
+    },
+    Cancelled,
+    TimedOut,
+}
+
+impl JobOutcome {
+    pub fn of(result: &JobResult) -> Self {
+        match result {
+            Ok(output) => Self::Completed {
+                success: output.status.success(),
+            },
+            Err(JobError::Cancelled) => Self::Cancelled,
+            Err(JobError::TimedOut(_)) => Self::TimedOut,
+            Err(error) => Self::Failed {
+                message: error.to_string(),
+            },
+        }
+    }
+}
+
 /// The tab a command acts on, with every input its effect needs. The desktop
 /// resolves these from the tab before sending, so the actor never reads the
 /// front end's state.
@@ -317,8 +443,8 @@ impl OpenTarget {
     }
 }
 
-/// The actor's answer to one command.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The actor's answer to one command. No `Eq`: an estimate carries prices.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Reply {
     TargetOpened(WorkspaceTarget),
     /// The stored row's id, which is the painted id when one was supplied.
@@ -345,6 +471,30 @@ pub enum Reply {
     FindingReplied {
         root_id: String,
         reply_id: String,
+    },
+    JobStarted {
+        job: JobId,
+    },
+    JobCancelled {
+        job: JobId,
+    },
+    /// The buckets whose workflow record can be re-run.
+    Reconciled {
+        resumable: Vec<String>,
+    },
+    ArenaEstimate(ArenaDiffPreview),
+    ArenaStarted {
+        run_ids: Vec<String>,
+    },
+    /// The seeded run, or `None` when there were no expert findings.
+    ArenaValidating {
+        run_id: Option<String>,
+    },
+    ArenaAccepted {
+        accepted: usize,
+    },
+    ArenaChanged {
+        run_id: String,
     },
     /// What the sidecar holds after a sync.
     CommentsSynced {
@@ -382,6 +532,15 @@ pub enum Event {
     },
     CommandFailed {
         message: String,
+    },
+    /// One output line from a running job.
+    JobProgress {
+        job: JobId,
+        line: JobProgress,
+    },
+    JobFinished {
+        job: JobId,
+        outcome: JobOutcome,
     },
     /// A sync wrote the tab's comments sidecar.
     CommentsSynced {

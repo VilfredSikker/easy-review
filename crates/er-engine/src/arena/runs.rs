@@ -6,7 +6,7 @@ use super::control::ArenaRunControls;
 use super::storage::{list_run_ids, load_run, save_run, ArenaPaths};
 use super::{
     accepted_finding_rows, mark_accepted, ArenaFinding, ArenaRun, ArenaRunKind, ArenaRunSnapshot,
-    ArenaRunSummary, HumanOverride, PanelSummary, Verdict,
+    ArenaRunSummary, HumanOverride, PanelSummary, RunStatus, Verdict,
 };
 use crate::config::ErConfig;
 use anyhow::{bail, Context, Result};
@@ -40,8 +40,25 @@ pub fn bucket_for_run(
     active: &str,
     run_id: &str,
 ) -> PathBuf {
-    if let Some(control) = controls.get(run_id) {
-        return PathBuf::from(&control.er_dir);
+    let live = controls.get(run_id);
+    bucket_for_run_in(
+        live.as_ref().map(|control| control.er_dir.as_str()),
+        buckets,
+        active,
+        run_id,
+    )
+}
+
+/// [`bucket_for_run`] for a reader that holds the live run's bucket, if any,
+/// instead of the controls.
+pub fn bucket_for_run_in(
+    live: Option<&str>,
+    buckets: &[String],
+    active: &str,
+    run_id: &str,
+) -> PathBuf {
+    if let Some(er_dir) = live {
+        return PathBuf::from(er_dir);
     }
     buckets
         .iter()
@@ -160,13 +177,26 @@ pub fn run_snapshot(
     run_id: &str,
     is_flow_run: impl FnOnce(&ArenaRun) -> bool,
 ) -> Result<ArenaRunSnapshot> {
+    let live = controls.get(run_id).map(|control| control.status());
+    run_snapshot_with_status(config, live, er_dir, run_id, is_flow_run)
+}
+
+/// [`run_snapshot`] for a reader that holds the live status, if any, instead
+/// of the controls.
+pub fn run_snapshot_with_status(
+    config: &ErConfig,
+    live: Option<RunStatus>,
+    er_dir: &Path,
+    run_id: &str,
+    is_flow_run: impl FnOnce(&ArenaRun) -> bool,
+) -> Result<ArenaRunSnapshot> {
     let paths = ArenaPaths::for_run(er_dir, run_id);
     let mut run = load_run(&paths)?;
     if is_flow_run(&run) {
         run.config.run_kind = ArenaRunKind::ReviewFlow;
     }
-    if let Some(control) = controls.get(run_id) {
-        run.status = control.status();
+    if let Some(status) = live {
+        run.status = status;
     }
     // A bucket-rooted store reaches the same file the panel wrote, without
     // resolving the process storage root for a bucket the caller named.
