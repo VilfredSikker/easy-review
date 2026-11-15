@@ -3,6 +3,8 @@
 use super::{ReviewFlowHost, ReviewFlows};
 use crate::ai::accepted_findings::record_accepted;
 use crate::ai::review_flow::{FlowState, ReviewFlow};
+#[cfg(test)]
+use crate::app::{App, DiffMode};
 use crate::arena::{
     accepted_finding_rows, load_run, mark_accepted, save_run, ArenaPaths, ArenaRun, ArenaRunKind,
     RunStatus, Verdict,
@@ -13,8 +15,6 @@ use er_store::{ArtifactKey, ArtifactSnapshot, ArtifactStore, Loaded, RelPath, Sc
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(test)]
-use crate::app::{App, DiffMode};
 
 static ACCEPT_ARCHIVE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -179,7 +179,8 @@ impl ReviewFlows {
         if finding_ids.is_empty() {
             bail!("Select at least one finding to accept");
         }
-        let target = require_run_target(self.review_flow_run_target(er_dir, run_id), er_dir)?.clone();
+        let target =
+            require_run_target(self.review_flow_run_target(er_dir, run_id), er_dir)?.clone();
         crate::arena::check_bucket_admission(er_dir)?;
         host.recover_arena_bucket(er_dir)?;
         let lease = host.acquire_review_flow_lease(er_dir)?;
@@ -388,7 +389,6 @@ fn validate_current_flow_identity<'a>(
         _ => bail!("This review-flow result no longer matches the current flow"),
     }
 }
-
 
 fn validate_flow_result_run(run: &ArenaRun, run_id: &str) -> Result<()> {
     if run.id != run_id {

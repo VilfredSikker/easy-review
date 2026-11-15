@@ -14,9 +14,9 @@ use er_engine::jobs::JobSink;
 use er_engine::ports::Ports;
 
 use crate::effect::resolve_target;
+use crate::flows::{FlowRunner, FlowsUpdate};
 use crate::guard::{self, ActorThread};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError, WorkspaceHandle};
-use crate::flows::{FlowRunner, FlowsUpdate};
 use crate::jobs::JobHost;
 use crate::protocol::{Command, Event, Reply};
 use crate::workspace::{WorkspaceState, WorkspaceView};

@@ -75,8 +75,7 @@ fn deep_config(bucket: &str, gate: &Path) -> ErConfig {
         provider_id: provider_id.into(),
         model_id: "fake-model".into(),
     };
-    let mut config = ErConfig::default();
-    config.ai_hub = AiHubConfig {
+    let ai_hub = AiHubConfig {
         default_provider: Some("fake".into()),
         providers: [
             ("fake".into(), provider.clone()),
@@ -92,7 +91,10 @@ fn deep_config(bucket: &str, gate: &Path) -> ErConfig {
         max_concurrent_agents: 16,
         ..Default::default()
     };
-    config
+    ErConfig {
+        ai_hub,
+        ..Default::default()
+    }
 }
 
 /// The view the App's rules would build for a local branch tab.
@@ -230,12 +232,16 @@ fn run_deep_flow(dir: &Path) -> DeepRun {
         )
         .unwrap();
 
-    events.until(&handle, "the flow's arena run is live with progress", |view| {
-        view.review_flow(&bucket)
-            .and_then(|live| live.flow.arena_run_id.as_deref())
-            .and_then(|run_id| view.arena_run(run_id))
-            .is_some_and(|run| run.progress != ArenaProgressState::default())
-    });
+    events.until(
+        &handle,
+        "the flow's arena run is live with progress",
+        |view| {
+            view.review_flow(&bucket)
+                .and_then(|live| live.flow.arena_run_id.as_deref())
+                .and_then(|run_id| view.arena_run(run_id))
+                .is_some_and(|run| run.progress != ArenaProgressState::default())
+        },
+    );
     let run_id = handle
         .view()
         .review_flow(&bucket)
