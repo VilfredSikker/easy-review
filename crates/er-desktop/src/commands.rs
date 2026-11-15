@@ -12762,21 +12762,62 @@ mod tests {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
+            let seeded = state.service.app_registry().tabs_view();
+            let (Some(ka), Some(kb)) = (seeded.key_at(0), seeded.key_at(1)) else {
+                panic!("the registry loaded the seeded tabs: {seeded:?}");
+            };
             let (done_tx, done_rx) = std::sync::mpsc::channel();
             let calling = state.clone();
             std::thread::spawn(move || {
-                let routed = [
-                    service_select_tab(&calling, 1),
-                    service_reorder_tabs(&calling, 1, 0),
-                    service_new_tab(&calling),
-                    service_close_tab(&calling, 2),
+                // The registry's view after each command, so a command that
+                // resolves the wrong index fails at its own step.
+                let after = |routed: Result<AppSnapshot, String>| {
+                    routed.map(|_| calling.service.app_registry().tabs_view())
+                };
+                let steps = [
+                    after(service_select_tab(&calling, 1)),
+                    after(service_reorder_tabs(&calling, 1, 0)),
+                    after(service_new_tab(&calling)),
+                    after(service_close_tab(&calling, 2)),
                 ];
-                let _ = done_tx.send(routed.into_iter().collect::<Result<Vec<_>, _>>());
+                let _ = done_tx.send(steps.into_iter().collect::<Result<Vec<_>, _>>());
             });
-            let Ok(routed) = done_rx.recv_timeout(Duration::from_secs(5)) else {
+            let Ok(steps) = done_rx.recv_timeout(Duration::from_secs(5)) else {
                 panic!("a routed tab command blocked on the App lock");
             };
-            assert!(routed.is_ok(), "{routed:?}");
+            let steps = steps.expect("every routed command answered");
+            let keys = |step: &er_service::TabsView| -> Vec<er_engine::TabKey> {
+                step.tabs.iter().map(|tab| tab.key).collect()
+            };
+            assert_eq!(
+                (keys(&steps[0]), steps[0].active),
+                (vec![ka, kb], Some(kb)),
+                "select(1) makes the tab at index 1 active"
+            );
+            assert_eq!(
+                (keys(&steps[1]), steps[1].active),
+                (vec![kb, ka], Some(kb)),
+                "reorder(1, 0) moves the tab at index 1 to the front"
+            );
+            let Some(kn) = steps[2].key_at(2) else {
+                panic!("new_tab added a tab: {:?}", steps[2]);
+            };
+            assert_eq!(
+                (keys(&steps[2]), steps[2].active),
+                (vec![kb, ka, kn], Some(kn)),
+                "new_tab appends a tab and makes it active"
+            );
+            assert_eq!(
+                steps[2].tabs[2].descriptor.repo_root, "/b",
+                "the new tab opens on the active tab's repo"
+            );
+            assert_eq!(
+                (keys(&steps[3]), steps[3].active),
+                (vec![kb, ka], Some(ka)),
+                "close(2) closes the tab at index 2"
+            );
+            let revisions: Vec<u64> = steps.iter().map(|step| step.revision).collect();
+            assert_eq!(revisions, [1, 2, 3, 4], "each command published once");
 
             let view = state.service.app_registry().tabs_view();
             let roots: Vec<&str> = view
