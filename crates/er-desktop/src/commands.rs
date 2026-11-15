@@ -12399,6 +12399,24 @@ mod tests {
                 "{command} has no service route"
             );
         }
+        for body in [
+            "config_hub",
+            "apply_patch",
+            "save_global",
+            "uninstall_preview",
+            "uninstall",
+            "review_flow_models",
+            "refresh_models",
+            "provider_upsert",
+            "provider_delete",
+            "model_upsert",
+            "model_delete",
+        ] {
+            assert!(
+                source.contains(&format!("return service_route::{body}(&state.service")),
+                "{body} does not dispatch to the service with the feature on"
+            );
+        }
 
         let dir = ReviewFlowTestDir::new();
         let Ok(tmp) = tempfile::tempdir() else {
