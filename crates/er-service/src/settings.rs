@@ -293,7 +293,7 @@ pub fn spawn_settings(deps: WorkspaceDeps, config_path: PathBuf) -> SettingsHand
 /// The latest config to save, and what is on disk. Effects write whatever is
 /// latest under the lock, so two saves finishing out of order still leave the
 /// newest config on disk.
-struct SaveSlot {
+pub(crate) struct SaveSlot {
     latest: Mutex<Option<(u64, ErConfig)>>,
     written: Mutex<Written>,
 }
@@ -307,7 +307,7 @@ struct Written {
 }
 
 impl SaveSlot {
-    fn new(loaded: &ErConfig) -> Self {
+    pub(crate) fn new(loaded: &ErConfig) -> Self {
         Self {
             latest: Mutex::new(None),
             written: Mutex::new(Written {
@@ -318,7 +318,7 @@ impl SaveSlot {
         }
     }
 
-    fn stage(&self, generation: u64, config: &ErConfig) {
+    pub(crate) fn stage(&self, generation: u64, config: &ErConfig) {
         if let Ok(mut latest) = self.latest.lock() {
             *latest = Some((generation, config.clone()));
         }
@@ -326,7 +326,7 @@ impl SaveSlot {
 
     /// Writes the latest staged config unless a newer one is already written,
     /// then says whether `generation`'s write is on disk.
-    fn write_latest(&self, path: &Path, generation: u64) -> Result<(), String> {
+    pub(crate) fn write_latest(&self, path: &Path, generation: u64) -> Result<(), String> {
         let mut written = self
             .written
             .lock()
@@ -351,7 +351,7 @@ impl SaveSlot {
 
     /// Drops every staged write through `through` and returns the config on
     /// disk, replaced first by `reloaded` when the file was just re-read.
-    fn reset(&self, through: u64, reloaded: Option<&ErConfig>) -> Option<ErConfig> {
+    pub(crate) fn reset(&self, through: u64, reloaded: Option<&ErConfig>) -> Option<ErConfig> {
         let mut written = self.written.lock().ok()?;
         if let Ok(mut latest) = self.latest.lock() {
             *latest = None;
