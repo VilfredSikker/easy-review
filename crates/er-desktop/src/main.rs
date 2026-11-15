@@ -1096,6 +1096,7 @@ fn main() {
     #[cfg(feature = "v1-service")]
     if let Ok(app) = app_arc.lock() {
         er_desktop::arena_service::attach(&app, Arc::clone(&service));
+        er_desktop::flow_service::reconcile_on_load(&app, &service);
     }
     let state = AppState {
         ports: ports.clone(),
