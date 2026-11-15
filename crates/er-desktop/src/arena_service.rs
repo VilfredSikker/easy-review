@@ -282,8 +282,11 @@ diff --git a/src/lib.rs b/src/lib.rs
     /// lets go. A dropped answer fails its job; once released, the sink fails
     /// each new job at once, so the run ends whatever stage it had reached.
     struct HoldingSink {
-        held: Mutex<Option<Vec<(JobSubmission, Sender<JobResult>)>>>,
+        held: Mutex<Option<Vec<HeldJob>>>,
     }
+
+    /// A job and the answer the sink has not sent.
+    type HeldJob = (JobSubmission, Sender<JobResult>);
 
     impl Default for HoldingSink {
         fn default() -> Self {
