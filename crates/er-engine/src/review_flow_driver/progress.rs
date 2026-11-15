@@ -447,7 +447,8 @@ pub(super) fn set_task_status(
     changed
 }
 
-#[cfg(all(test, feature = "ui"))]
+#[cfg(test)]
+#[cfg(feature = "ui")]
 mod tests {
     use super::*;
     use crate::ai::flow_providers::ResolvedReviewModels;

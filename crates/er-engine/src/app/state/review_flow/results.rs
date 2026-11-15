@@ -161,11 +161,7 @@ impl App {
         self.validate_current_flow_identity(er_dir, run_id)?;
         let run = load_run(&ArenaPaths::for_run(Path::new(er_dir), run_id))?;
         validate_flow_result_run(&run, run_id)?;
-        validate_run_target(
-            &run,
-            target,
-            &self.review_flows.review_flows[er_dir].diff_hash,
-        )?;
+        validate_run_target(&run, target, &self.review_flows.flows[er_dir].diff_hash)?;
 
         let findings = run
             .findings
@@ -262,11 +258,7 @@ impl App {
         let paths = ArenaPaths::for_run(Path::new(er_dir), run_id);
         let mut run = load_run(&paths)?;
         validate_flow_result_run(&run, run_id)?;
-        validate_run_target(
-            &run,
-            target,
-            &self.review_flows.review_flows[er_dir].diff_hash,
-        )?;
+        validate_run_target(&run, target, &self.review_flows.flows[er_dir].diff_hash)?;
         if run.status != RunStatus::Complete {
             bail!("Only completed review-flow results can be accepted");
         }
@@ -1236,7 +1228,7 @@ mod tests {
             .unwrap();
             assert_eq!(run.accepted_finding_ids, vec!["kept"]);
             assert!(matches!(
-                &fixture.app.review_flows.review_flows[&fixture.er_dir].state,
+                &fixture.app.review_flows.flows[&fixture.er_dir].state,
                 FlowState::Done {
                     awaiting_accept: 0,
                     ..

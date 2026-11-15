@@ -149,9 +149,32 @@ impl App {
             self.review_flows.insert(er_dir, flow);
         }
     }
+}
 
-    /// The active view's review inputs for `scope`.
-    fn capture_review_flow_inputs(&self, scope: &str) -> Result<ReviewFlowInputs> {
+/// Stages queue as App background tasks, so they share the review cap, the
+/// task list and the log panel with every other review action.
+impl ReviewFlowHost for App {
+    fn config(&self) -> &ErConfig {
+        &self.config
+    }
+
+    fn current_ai_effort(&self) -> Option<&str> {
+        self.current_ai_effort.as_deref()
+    }
+
+    fn ports(&self) -> &Ports {
+        &self.ports
+    }
+
+    fn notify(&mut self, message: &str) {
+        App::notify(self, message);
+    }
+
+    fn notify_long(&mut self, message: &str) {
+        App::notify_long(self, message);
+    }
+
+    fn review_flow_inputs(&self, scope: &str) -> Result<ReviewFlowInputs> {
         let tab = self.tab();
         let arena_scope = match (scope, tab.mode) {
             ("branch", DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour) => ArenaScope::Branch,
@@ -213,34 +236,6 @@ impl App {
             owned_rules: tab.owned_repo_rules(),
             review_md_source: tab.review_md_source(),
         })
-    }
-}
-
-/// Stages queue as App background tasks, so they share the review cap, the
-/// task list and the log panel with every other review action.
-impl ReviewFlowHost for App {
-    fn config(&self) -> &ErConfig {
-        &self.config
-    }
-
-    fn current_ai_effort(&self) -> Option<&str> {
-        self.current_ai_effort.as_deref()
-    }
-
-    fn ports(&self) -> &Ports {
-        &self.ports
-    }
-
-    fn notify(&mut self, message: &str) {
-        App::notify(self, message);
-    }
-
-    fn notify_long(&mut self, message: &str) {
-        App::notify_long(self, message);
-    }
-
-    fn review_flow_inputs(&self, scope: &str) -> Result<ReviewFlowInputs> {
-        self.capture_review_flow_inputs(scope)
     }
 
     fn recover_arena_bucket(&self, er_dir: &str) -> Result<()> {

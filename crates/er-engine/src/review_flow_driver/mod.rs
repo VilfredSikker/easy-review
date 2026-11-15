@@ -87,12 +87,12 @@ pub struct ReviewFlowContext {
 /// target of each flow-owned arena run.
 #[derive(Default)]
 pub struct ReviewFlows {
-    pub(crate) review_flows: HashMap<String, ReviewFlow>,
-    pub(crate) review_flow_contexts: HashMap<String, ReviewFlowContext>,
-    review_flow_revision: u64,
+    pub(crate) flows: HashMap<String, ReviewFlow>,
+    pub(crate) contexts: HashMap<String, ReviewFlowContext>,
+    revision: u64,
     /// Acceptance must resolve its bucket and view identity from this
     /// capture, never the active tab.
-    review_flow_run_targets: HashMap<(String, String), BackgroundTaskTarget>,
+    run_targets: HashMap<(String, String), BackgroundTaskTarget>,
 }
 
 impl ReviewFlows {
@@ -295,13 +295,13 @@ impl ReviewFlows {
             flow.successful_finder_providers = context.successful_finder_providers.clone();
             flow.providers_used = flow.successful_finder_providers.clone();
             let key = target.er_dir.clone();
-            if let Err(error) = self.enqueue_finders(host, &mut context, &mut flow) {
+            if let Err(error) = Self::enqueue_finders(host, &mut context, &mut flow) {
                 let _ = host.release_review_flow_lease(&context.lease);
                 return Err(error);
             }
-            self.review_flows.insert(key.clone(), flow);
-            self.review_flow_contexts.insert(key.clone(), context);
-            if let Some(flow) = self.review_flows.get(&key) {
+            self.flows.insert(key.clone(), flow);
+            self.contexts.insert(key.clone(), context);
+            if let Some(flow) = self.flows.get(&key) {
                 Self::sync_workflow_record(&key, flow);
             }
             self.bump_review_flow_revision();
@@ -383,8 +383,8 @@ impl ReviewFlows {
         let mut backups = HashMap::new();
         backups.insert(archive_key, backup);
         let start_notice = flow_notification_message(&flow, &target, false);
-        self.review_flows.insert(key.clone(), flow);
-        self.review_flow_contexts.insert(
+        self.flows.insert(key.clone(), flow);
+        self.contexts.insert(
             key.clone(),
             ReviewFlowContext {
                 lease,
@@ -413,7 +413,7 @@ impl ReviewFlows {
                 draining: false,
             },
         );
-        if let Some(flow) = self.review_flows.get(&key) {
+        if let Some(flow) = self.flows.get(&key) {
             Self::sync_workflow_record(&key, flow);
         }
         host.notify(&start_notice);
@@ -424,18 +424,18 @@ impl ReviewFlows {
     /// Advance every flow using exact registered task completions and captured
     /// arena run IDs. Called by the background poll hook after queue dispatch.
     pub fn advance_review_flows(&mut self, host: &mut dyn ReviewFlowHost) {
-        let keys: Vec<String> = self.review_flow_contexts.keys().cloned().collect();
+        let keys: Vec<String> = self.contexts.keys().cloned().collect();
         for key in keys {
             self.advance_review_flow(host, &key);
         }
     }
 
     pub fn advance_review_flow(&mut self, host: &mut dyn ReviewFlowHost, key: &str) {
-        let Some(mut context) = self.review_flow_contexts.remove(key) else {
+        let Some(mut context) = self.contexts.remove(key) else {
             return;
         };
-        let Some(mut flow) = self.review_flows.remove(key) else {
-            self.review_flow_contexts.insert(key.to_owned(), context);
+        let Some(mut flow) = self.flows.remove(key) else {
+            self.contexts.insert(key.to_owned(), context);
             return;
         };
         let mut changed = progress::refresh_background_tasks(host, &mut flow);
@@ -600,7 +600,7 @@ impl ReviewFlows {
                         FlowEvent::TriageSucceeded { plan },
                     );
                     if flow.state == FlowState::Finding {
-                        if let Err(error) = self.enqueue_finders(host, &mut context, &mut flow) {
+                        if let Err(error) = Self::enqueue_finders(host, &mut context, &mut flow) {
                             host.apply_flow_event_notifying(
                                 &mut flow,
                                 &context.target,
@@ -775,19 +775,16 @@ impl ReviewFlows {
             }
             _ => {}
         }
-        self.review_flows.insert(key.to_owned(), flow);
+        self.flows.insert(key.to_owned(), flow);
         if changed {
             self.bump_review_flow_revision();
         }
-        if let Some(flow) = self.review_flows.get(key) {
+        if let Some(flow) = self.flows.get(key) {
             Self::sync_workflow_record(key, flow);
         }
-        let terminal = !self
-            .review_flows
-            .get(key)
-            .is_some_and(ReviewFlow::is_running);
+        let terminal = !self.flows.get(key).is_some_and(ReviewFlow::is_running);
         if terminal {
-            let outcome = match self.review_flows.get(key).map(|flow| &flow.state) {
+            let outcome = match self.flows.get(key).map(|flow| &flow.state) {
                 Some(FlowState::Done { .. } | FlowState::Skipped) => {
                     Some(crate::ai::workflow_record::WorkflowOutcome::Complete)
                 }
@@ -808,7 +805,7 @@ impl ReviewFlows {
         context.draining = terminal && has_producers;
         if context.draining && !was_draining {
             let notice = self
-                .review_flows
+                .flows
                 .get(key)
                 .map(|flow| flow_notification_message(flow, &context.target, true));
             if let Some(notice) = notice {
@@ -832,11 +829,11 @@ impl ReviewFlows {
                 Err(error) => {
                     host.notify_long(&format!("Review flow cleanup is still pending: {error}"));
                     context.draining = true;
-                    self.review_flow_contexts.insert(key.to_owned(), context);
+                    self.contexts.insert(key.to_owned(), context);
                 }
             }
         } else {
-            self.review_flow_contexts.insert(key.to_owned(), context);
+            self.contexts.insert(key.to_owned(), context);
         }
     }
 
@@ -879,7 +876,6 @@ impl ReviewFlows {
     }
 
     fn enqueue_finders(
-        &mut self,
         host: &mut dyn ReviewFlowHost,
         context: &mut ReviewFlowContext,
         flow: &mut ReviewFlow,
@@ -1084,13 +1080,13 @@ impl ReviewFlows {
     /// Cancel orchestration. Running finder processes drain naturally; queued
     /// owned tasks are retired with their exact completion records.
     pub fn cancel_review_flow(&mut self, host: &mut dyn ReviewFlowHost, er_dir: &str) -> bool {
-        let Some(flow) = self.review_flows.get(er_dir) else {
+        let Some(flow) = self.flows.get(er_dir) else {
             return false;
         };
         if !flow.is_running() {
             return false;
         }
-        let (ids, run_id) = self.review_flow_contexts.get(er_dir).map_or_else(
+        let (ids, run_id) = self.contexts.get(er_dir).map_or_else(
             || (Vec::new(), None),
             |context| {
                 (
@@ -1100,13 +1096,13 @@ impl ReviewFlows {
             },
         );
         let target = self
-            .review_flow_contexts
+            .contexts
             .get(er_dir)
             .map(|context| context.target.clone());
-        if let Some(context) = self.review_flow_contexts.get_mut(er_dir) {
+        if let Some(context) = self.contexts.get_mut(er_dir) {
             context.draining = true;
         }
-        let notice = if let Some(flow) = self.review_flows.get_mut(er_dir) {
+        let notice = if let Some(flow) = self.flows.get_mut(er_dir) {
             let previous = flow.state.clone();
             flow.apply(FlowEvent::Cancel);
             (flow.state != previous).then(|| {
@@ -1123,7 +1119,7 @@ impl ReviewFlows {
         }
         for id in ids {
             if host.cancel_queued_background_task(&id) {
-                if let Some(flow) = self.review_flows.get_mut(er_dir) {
+                if let Some(flow) = self.flows.get_mut(er_dir) {
                     progress::set_background_result(
                         flow,
                         &id,
@@ -1133,13 +1129,13 @@ impl ReviewFlows {
                 }
             }
         }
-        if let Some(flow) = self.review_flows.get_mut(er_dir) {
+        if let Some(flow) = self.flows.get_mut(er_dir) {
             progress::cancel_waiting_tasks(flow);
         }
         if let Some(run_id) = run_id {
             let _ = host.arena_cancel(&run_id);
         }
-        if let Some(flow) = self.review_flows.get(er_dir) {
+        if let Some(flow) = self.flows.get(er_dir) {
             Self::sync_workflow_record(er_dir, flow);
         }
         self.bump_review_flow_revision();
@@ -1147,23 +1143,23 @@ impl ReviewFlows {
     }
 
     pub fn review_flow_for(&self, er_dir: &str) -> Option<&ReviewFlow> {
-        self.review_flows.get(er_dir)
+        self.flows.get(er_dir)
     }
 
     /// Revision for host snapshot invalidation. It changes when a flow's
     /// visible projection changes, not on every poll.
     pub fn review_flow_revision(&self) -> u64 {
-        self.review_flow_revision
+        self.revision
     }
 
     /// True while terminal flow state still has a process or arena supervisor
     /// draining from the bucket.
     pub fn review_flow_is_draining(&self, er_dir: &str) -> bool {
-        self.review_flow_contexts
+        self.contexts
             .get(er_dir)
             .is_some_and(|context| context.draining)
             && self
-                .review_flows
+                .flows
                 .get(er_dir)
                 .is_some_and(|flow| !flow.is_running())
     }
@@ -1173,41 +1169,41 @@ impl ReviewFlows {
         er_dir: &str,
         run_id: &str,
     ) -> Option<&BackgroundTaskTarget> {
-        self.review_flow_run_targets
+        self.run_targets
             .get(&(er_dir.to_owned(), run_id.to_owned()))
     }
 
     pub fn remember_review_flow_run_target(&mut self, target: &BackgroundTaskTarget, run_id: &str) {
-        self.review_flow_run_targets
+        self.run_targets
             .insert((target.er_dir.clone(), run_id.to_owned()), target.clone());
     }
 
     /// Professor triage keeps its ordinary Quick review and exposes this
     /// follow-up suggestion to a later snapshot/UI layer.
     pub fn review_flow_professor_follow_up_suggested(&self, er_dir: &str) -> bool {
-        self.review_flows
+        self.flows
             .get(er_dir)
             .is_some_and(|flow| flow.professor_follow_up_suggested)
     }
 
     pub(crate) fn bump_review_flow_revision(&mut self) {
-        self.review_flow_revision = self.review_flow_revision.wrapping_add(1);
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// The flow for one bucket, the same answer as `review_flow_for`.
     pub fn get(&self, er_dir: &str) -> Option<&ReviewFlow> {
-        self.review_flows.get(er_dir)
+        self.flows.get(er_dir)
     }
 
     /// Acceptance updates a finished flow's pending count in place.
     pub(crate) fn get_mut(&mut self, er_dir: &str) -> Option<&mut ReviewFlow> {
-        self.review_flows.get_mut(er_dir)
+        self.flows.get_mut(er_dir)
     }
 
     /// Show a flow that no driver call started, such as the projection of a
     /// recovered workflow record. It owns no context, so nothing advances it.
     pub fn insert(&mut self, er_dir: String, flow: ReviewFlow) {
-        self.review_flows.insert(er_dir, flow);
+        self.flows.insert(er_dir, flow);
     }
 }
 
@@ -1395,7 +1391,8 @@ fn read_triage(er_dir: &str) -> Result<TriageReview> {
     }
 }
 
-#[cfg(all(test, feature = "ui"))]
+#[cfg(test)]
+#[cfg(feature = "ui")]
 mod tests {
     use super::*;
     use crate::app::state::background::BackgroundTask;
@@ -1658,7 +1655,7 @@ esac
                         },
                     );
                     app.start_review_flow("branch").unwrap();
-                    let context = &app.review_flows.review_flow_contexts[&bucket];
+                    let context = &app.review_flows.contexts[&bucket];
                     assert_eq!(context.target.repo_root, repo.to_string_lossy());
                     assert_eq!(context.target.er_dir, bucket);
                     assert_eq!(context.repo_root, checkout.to_string_lossy());
@@ -1773,7 +1770,7 @@ esac
 
                 app.start_review_flow("branch").unwrap();
                 assert_eq!(
-                    app.review_flows.review_flow_contexts[&bucket].repo_root,
+                    app.review_flows.contexts[&bucket].repo_root,
                     repo.to_string_lossy()
                 );
                 if deep {
@@ -1876,11 +1873,7 @@ esac
                 captured_task.model_label,
                 "task metadata remains tied to the captured model after settings change"
             );
-            let context = app
-                .review_flows
-                .review_flow_contexts
-                .get_mut(&bucket)
-                .unwrap();
+            let context = app.review_flows.contexts.get_mut(&bucket).unwrap();
             assert_eq!(context.model_pools.fast[0].model_id, "fast-model");
             assert_eq!(
                 selection_for_provider(context, &context.model_pools.fast[0])
@@ -2262,9 +2255,7 @@ esac
                 draining: false,
             };
             app.review_flows.insert(bucket.clone(), flow);
-            app.review_flows
-                .review_flow_contexts
-                .insert(bucket.clone(), context);
+            app.review_flows.contexts.insert(bucket.clone(), context);
 
             let paths = ArenaPaths::for_run(Path::new(&bucket), &run_id);
             let mut run: crate::arena::ArenaRun = serde_json::from_value(serde_json::json!({
@@ -2457,7 +2448,7 @@ esac
             );
             let bucket = app.tab().er_dir();
             app.start_review_flow("branch").unwrap();
-            let flow_task_id = app.review_flows.review_flow_contexts[&bucket]
+            let flow_task_id = app.review_flows.contexts[&bucket]
                 .owned_tasks
                 .keys()
                 .next()
@@ -2559,7 +2550,7 @@ esac
                 std::thread::sleep(Duration::from_millis(10));
             }
 
-            let finder_id = app.review_flows.review_flow_contexts[&bucket]
+            let finder_id = app.review_flows.contexts[&bucket]
                 .owned_tasks
                 .iter()
                 .find_map(|(id, task)| (task.stage == Stage::Finder).then(|| id.clone()))
@@ -2890,7 +2881,7 @@ esac
             );
             let context = app
                 .review_flows
-                .review_flow_contexts
+                .contexts
                 .get(&bucket)
                 .expect("the resume kept its execution context");
             assert!(

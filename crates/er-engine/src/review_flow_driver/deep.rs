@@ -51,7 +51,7 @@ impl ReviewFlows {
         host: &mut dyn ReviewFlowHost,
         er_dir: &str,
     ) -> Result<()> {
-        let Some(flow) = self.review_flows.get(er_dir) else {
+        let Some(flow) = self.flows.get(er_dir) else {
             bail!("no review flow exists for this bucket");
         };
         if flow.state != FlowState::AwaitingConfirmation || flow.depth != Some(FlowDepth::Deep) {
@@ -59,7 +59,7 @@ impl ReviewFlows {
         }
         let diff_hash = flow.diff_hash.clone();
         let (lease, target, inputs, config, reviewers, arbiter, scope, model_pools) = {
-            let Some(context) = self.review_flow_contexts.get(er_dir) else {
+            let Some(context) = self.contexts.get(er_dir) else {
                 bail!("Deep review execution context is missing");
             };
             if context.target.er_dir != er_dir {
@@ -109,7 +109,7 @@ impl ReviewFlows {
             Ok(())
         })();
         if let Err(error) = preflight {
-            let notice = if let Some(flow) = self.review_flows.get_mut(er_dir) {
+            let notice = if let Some(flow) = self.flows.get_mut(er_dir) {
                 let previous = flow.state.clone();
                 flow.apply(FlowEvent::DriverFailed {
                     reason: error.to_string(),
@@ -122,7 +122,7 @@ impl ReviewFlows {
             if let Some(notice) = notice {
                 host.notify(&notice);
             }
-            if let Some(flow) = self.review_flows.get_mut(er_dir) {
+            if let Some(flow) = self.flows.get_mut(er_dir) {
                 progress::fail_waiting_tasks(flow, &error.to_string());
             }
             self.bump_review_flow_revision();
@@ -145,7 +145,7 @@ impl ReviewFlows {
         let run_id = match host.arena_start_for(inputs, config, params, &lease) {
             Ok(run_id) => run_id,
             Err(error) => {
-                let notices = if let Some(flow) = self.review_flows.get_mut(er_dir) {
+                let notices = if let Some(flow) = self.flows.get_mut(er_dir) {
                     let previous = flow.state.clone();
                     flow.apply(FlowEvent::Confirmed);
                     let confirmed_notice = (flow.state != previous)
@@ -166,7 +166,7 @@ impl ReviewFlows {
                 for notice in notices {
                     host.notify(&notice);
                 }
-                if let Some(flow) = self.review_flows.get_mut(er_dir) {
+                if let Some(flow) = self.flows.get_mut(er_dir) {
                     progress::fail_waiting_tasks(flow, &error.to_string());
                 }
                 self.bump_review_flow_revision();
@@ -176,7 +176,7 @@ impl ReviewFlows {
 
         let notices = {
             let flow = self
-                .review_flows
+                .flows
                 .get_mut(er_dir)
                 .context("review flow disappeared while starting Deep arena")?;
             let previous = flow.state.clone();
@@ -201,14 +201,14 @@ impl ReviewFlows {
             host.notify(&notice);
         }
         let context = self
-            .review_flow_contexts
+            .contexts
             .get_mut(er_dir)
             .context("Deep review execution context disappeared")?;
         context.arena_run_id = Some(run_id.clone());
         context.arena_progress_round = 0;
-        self.review_flow_run_targets
+        self.run_targets
             .insert((er_dir.to_owned(), run_id.clone()), target);
-        if let Some(flow) = self.review_flows.get(er_dir) {
+        if let Some(flow) = self.flows.get(er_dir) {
             Self::sync_workflow_record(er_dir, flow);
         }
         self.bump_review_flow_revision();
@@ -223,15 +223,15 @@ impl ReviewFlows {
         er_dir: &str,
     ) -> Result<()> {
         let target = self
-            .review_flow_contexts
+            .contexts
             .get(er_dir)
             .map(|context| context.target.clone());
         let draining = self
-            .review_flow_contexts
+            .contexts
             .get(er_dir)
             .is_some_and(|context| Self::flow_context_has_producers(host, context));
         let flow = self
-            .review_flows
+            .flows
             .get_mut(er_dir)
             .context("no review flow exists for this bucket")?;
         if flow.state != FlowState::AwaitingConfirmation || flow.depth != Some(FlowDepth::Deep) {
@@ -249,7 +249,7 @@ impl ReviewFlows {
         if let Some(notice) = notice {
             host.notify(&notice);
         }
-        if let Some(flow) = self.review_flows.get(er_dir) {
+        if let Some(flow) = self.flows.get(er_dir) {
             Self::sync_workflow_record(er_dir, flow);
         }
         self.bump_review_flow_revision();

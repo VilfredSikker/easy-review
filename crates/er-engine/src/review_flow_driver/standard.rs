@@ -15,18 +15,18 @@ impl ReviewFlows {
         host: &mut dyn ReviewFlowHost,
         er_dir: &str,
     ) -> Result<()> {
-        let Some(flow) = self.review_flows.get(er_dir) else {
+        let Some(flow) = self.flows.get(er_dir) else {
             bail!("no review flow exists for this bucket");
         };
         if flow.state != FlowState::AwaitingConfirmation || flow.depth != Some(FlowDepth::Deep) {
             bail!("Deep review is not awaiting confirmation");
         }
         let mut context = self
-            .review_flow_contexts
+            .contexts
             .remove(er_dir)
             .context("Deep review execution context is missing")?;
-        let Some(mut flow) = self.review_flows.remove(er_dir) else {
-            self.review_flow_contexts.insert(er_dir.to_owned(), context);
+        let Some(mut flow) = self.flows.remove(er_dir) else {
+            self.contexts.insert(er_dir.to_owned(), context);
             bail!("no review flow exists for this bucket");
         };
 
@@ -67,7 +67,7 @@ impl ReviewFlows {
                     FlowEvent::StandardChosen,
                 );
                 if flow.state == FlowState::Finding {
-                    self.enqueue_finders(host, &mut context, &mut flow)
+                    Self::enqueue_finders(host, &mut context, &mut flow)
                 } else {
                     Err(anyhow::anyhow!("review flow could not start its finders"))
                 }
@@ -86,9 +86,9 @@ impl ReviewFlows {
             );
             progress::fail_waiting_tasks(&mut flow, &error.to_string());
         }
-        self.review_flows.insert(er_dir.to_owned(), flow);
-        self.review_flow_contexts.insert(er_dir.to_owned(), context);
-        if let Some(flow) = self.review_flows.get(er_dir) {
+        self.flows.insert(er_dir.to_owned(), flow);
+        self.contexts.insert(er_dir.to_owned(), context);
+        if let Some(flow) = self.flows.get(er_dir) {
             Self::sync_workflow_record(er_dir, flow);
         }
         self.bump_review_flow_revision();

@@ -140,7 +140,8 @@ pub fn task_from_stage(stage: &crate::ai::StageRecord) -> crate::ai::review_flow
     }
 }
 
-#[cfg(all(test, feature = "ui"))]
+#[cfg(test)]
+#[cfg(feature = "ui")]
 mod tests {
     use super::*;
     use crate::ai::review_flow::{FlowTaskProgress, FlowTaskStage, FlowTaskStatus, ReviewFlow};
