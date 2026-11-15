@@ -834,6 +834,21 @@ mod route_tests {
         ] {
             assert!(service.contains(sent), "{sent} is never used");
         }
+        // A run is read and accepted in the actor that runs its flow, which
+        // the active tab names only while it shows that flow's project.
+        assert!(body(service, "route").contains("flow_key(&state.service, &app, er_dir)"));
+        let accept = body(service, "accept");
+        assert!(accept.contains("route(state, &er_dir.clone(), false,"));
+        assert!(
+            !accept.contains("key(app)"),
+            "accept reads the active tab's actor"
+        );
+        let get_run = body(service, "get_run");
+        assert!(get_run.contains("flow_key(&state.service, &app, &er_dir)"));
+        assert!(
+            !get_run.contains("key(&app)"),
+            "get_run reads the active tab's actor"
+        );
         // A load recovers the flows in the actors, not only in the App.
         assert!(include_str!("main.rs").contains("flow_service::reconcile_on_load("));
     }

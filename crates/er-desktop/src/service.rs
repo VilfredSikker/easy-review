@@ -105,29 +105,52 @@ impl ServiceState {
             .iter()
             .any(|handle| handle.view().arena_run(run_id).is_some())
     }
+
+    /// The key of the started actor whose published view holds the review
+    /// flow on `er_dir`. Starts no actor.
+    pub fn flow_key(&self, er_dir: &str) -> Option<String> {
+        let handles: Vec<(String, WorkspaceHandle)> = match self.handles.lock() {
+            Ok(handles) => handles
+                .iter()
+                .map(|(k, h)| (k.clone(), h.clone()))
+                .collect(),
+            Err(poisoned) => {
+                let handles = poisoned.into_inner();
+                handles
+                    .iter()
+                    .map(|(k, h)| (k.clone(), h.clone()))
+                    .collect()
+            }
+        };
+        handles
+            .into_iter()
+            .find(|(_, handle)| handle.view().review_flow(er_dir).is_some())
+            .map(|(key, _)| key)
+    }
 }
 
-/// One thread per actor, alive as long as the actor: each event that changes
-/// what the front end reads goes to the relay with the revision to re-read.
-/// A panel record carries no revision of its own, so it re-sends the latest.
+/// One thread per actor, alive as long as the actor, relaying its events.
 fn forward_revisions(handle: &WorkspaceHandle, relay: RevisionRelay) {
     let events = handle.subscribe();
     let _ = std::thread::Builder::new()
         .name("er-workspace-relay".into())
-        .spawn(move || {
-            let mut latest = 0;
-            for event in events {
-                if !bumps_revision(&event) {
-                    continue;
-                }
-                if let Event::ViewPublished { revision } | Event::WorkflowChanged { revision, .. } =
-                    event
-                {
-                    latest = revision;
-                }
-                relay(latest);
-            }
-        });
+        .spawn(move || relay_events(events, relay.as_ref()));
+}
+
+/// Each event that changes what the front end reads goes to the relay with the
+/// revision to re-read. A panel record carries no revision of its own, so it
+/// re-sends the latest.
+fn relay_events(events: impl IntoIterator<Item = Event>, relay: &dyn Fn(u64)) {
+    let mut latest = 0;
+    for event in events {
+        if !bumps_revision(&event) {
+            continue;
+        }
+        if let Event::ViewPublished { revision } | Event::WorkflowChanged { revision, .. } = event {
+            latest = revision;
+        }
+        relay(latest);
+    }
 }
 
 /// A published view, a flow's record change, and a panel record the view does
@@ -149,7 +172,7 @@ mod tests {
 
     use er_service::Event;
 
-    use super::{bumps_revision, ServiceState};
+    use super::{bumps_revision, relay_events, ServiceState};
 
     /// A flag-path change reaches the relay as an event; nothing polls the
     /// desktop revision for it.
@@ -190,5 +213,36 @@ mod tests {
         assert!(!bumps_revision(&Event::CommandFailed {
             message: "no".into(),
         }));
+    }
+
+    fn relayed(events: Vec<Event>) -> Vec<u64> {
+        let seen = std::sync::Mutex::new(Vec::new());
+        relay_events(events, &|revision| {
+            if let Ok(mut seen) = seen.lock() {
+                seen.push(revision);
+            }
+        });
+        seen.into_inner().unwrap_or_default()
+    }
+
+    /// A panel record the view does not carry makes the page re-read on its
+    /// own, with no view published beside it, at the latest revision.
+    #[test]
+    fn a_lone_panel_record_reaches_the_relay() {
+        let panel = || Event::PanelRunChanged {
+            er_dir: "bucket".into(),
+            run_id: "run".into(),
+        };
+        assert_eq!(relayed(vec![panel()]), vec![0]);
+        assert_eq!(
+            relayed(vec![
+                Event::ViewPublished { revision: 5 },
+                Event::CommandFailed {
+                    message: "no".into(),
+                },
+                panel(),
+            ]),
+            vec![5, 5]
+        );
     }
 }
