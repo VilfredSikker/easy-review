@@ -4,7 +4,7 @@ pub mod filter;
 pub mod job_commit;
 mod job_merge;
 pub mod job_staging;
-mod state;
+pub(crate) mod state;
 pub use state::preview::{
     image_mime, FilePreviewRequest, ImagePreviewRequest, MAX_IMAGE_PREVIEW_BYTES, MAX_PREVIEW_BYTES,
 };

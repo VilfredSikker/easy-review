@@ -1,6 +1,6 @@
 //! Retained review-flow task metadata and incremental arena progress updates.
 
-use super::{App, ReviewFlowContext};
+use super::{ReviewFlowContext, ReviewFlowHost};
 use crate::ai::flow_providers::FlowProvider;
 use crate::ai::review_flow::{
     FlowDepth, FlowTaskProgress, FlowTaskStage, FlowTaskStatus, ReviewFlow,
@@ -140,26 +140,14 @@ pub(super) fn append_planned_tasks(
     }
 }
 
-pub(super) fn background_status(app: &App, task_id: &str) -> Option<FlowTaskStatus> {
-    if app
-        .pending_background_tasks
-        .iter()
-        .any(|task| task.task.id == task_id)
-    {
-        return Some(FlowTaskStatus::Queued);
-    }
-    if app.background_tasks.contains_key(task_id)
-        || app
-            .recent_background_tasks
-            .iter()
-            .any(|task| task.id == task_id)
-    {
-        return Some(FlowTaskStatus::Running);
-    }
-    None
+pub(super) fn background_status(
+    host: &dyn ReviewFlowHost,
+    task_id: &str,
+) -> Option<FlowTaskStatus> {
+    host.stage_status(task_id)
 }
 
-pub(super) fn refresh_background_tasks(app: &App, flow: &mut ReviewFlow) -> bool {
+pub(super) fn refresh_background_tasks(host: &dyn ReviewFlowHost, flow: &mut ReviewFlow) -> bool {
     let mut changed = false;
     for task in &mut flow.tasks {
         let Some(background_id) = task.background_task_id.as_deref() else {
@@ -171,7 +159,7 @@ pub(super) fn refresh_background_tasks(app: &App, flow: &mut ReviewFlow) -> bool
         ) {
             continue;
         }
-        let Some(status) = background_status(app, background_id) else {
+        let Some(status) = background_status(host, background_id) else {
             continue;
         };
         if status != task.status {
@@ -460,11 +448,13 @@ pub(super) fn set_task_status(
 }
 
 #[cfg(test)]
+#[cfg(feature = "ui")]
 mod tests {
     use super::*;
     use crate::ai::flow_providers::ResolvedReviewModels;
-    use crate::app::state::background::BackgroundTaskTarget;
+    use crate::app::App;
     use crate::arena::{ArenaScope, ProgressEvent};
+    use crate::task_target::BackgroundTaskTarget;
     use std::collections::{HashMap, HashSet};
 
     #[test]

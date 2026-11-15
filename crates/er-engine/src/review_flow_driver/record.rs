@@ -1,13 +1,13 @@
 //! Host wiring between the review flow and its durable workflow record.
 
-use super::App;
+use super::ReviewFlows;
 use crate::ai::review_flow::{FlowDepth, ReviewFlow};
 use crate::ai::workflow_record::{
     self, StageStatus, WorkflowHolder, WorkflowKind, WorkflowOutcome, WorkflowRecord,
 };
 use er_store::Scope;
 
-fn holder_of(guard: &er_store::LeaseGuard) -> WorkflowHolder {
+pub fn holder_of(guard: &er_store::LeaseGuard) -> WorkflowHolder {
     let holder = guard.holder();
     WorkflowHolder {
         pid: holder.pid,
@@ -23,12 +23,7 @@ fn kind_for(flow: &ReviewFlow) -> Option<WorkflowKind> {
     })
 }
 
-impl App {
-    /// The holder of the lease this process holds for `er_dir`, if any.
-    pub(super) fn workflow_holder(&self, er_dir: &str) -> Option<WorkflowHolder> {
-        self.workflow_leases.get(er_dir).map(holder_of)
-    }
-
+impl ReviewFlows {
     /// Write the bucket's record before any stage starts, so a crash at any
     /// point leaves a record naming the owner.
     pub(super) fn create_workflow_record(
@@ -44,7 +39,7 @@ impl App {
         let record = WorkflowRecord::new(
             kind,
             diff_hash,
-            crate::app::chrono_now(),
+            crate::sync::chrono_now(),
             holder,
             tasks,
             arena_run_id,
@@ -89,31 +84,9 @@ impl App {
             record.holder = None;
         });
     }
-
-    /// On load, mark a dead owner's running stages `Interrupted` and project
-    /// the record into the flow view so the user can re-run it. The lease probe
-    /// does not wait, and nothing is enqueued or spawned here.
-    pub fn reconcile_workflow_records(&mut self) {
-        let mut projections = Vec::new();
-        for tab in &self.tabs {
-            let er_dir = tab.er_dir();
-            if self.workflow_leases.contains_key(&er_dir) {
-                continue;
-            }
-            let Some(record) = crate::workflow_recovery::reconcile_workflow_record(&er_dir) else {
-                continue;
-            };
-            if record.resumable() {
-                projections.push((er_dir, flow_from_record(&record)));
-            }
-        }
-        for (er_dir, flow) in projections {
-            self.review_flows.insert(er_dir, flow);
-        }
-    }
 }
 
-pub(super) fn flow_from_record(record: &WorkflowRecord) -> ReviewFlow {
+pub fn flow_from_record(record: &WorkflowRecord) -> ReviewFlow {
     let mut flow = ReviewFlow::new(record.diff_hash.clone());
     flow.depth = match record.kind {
         Some(WorkflowKind::Quick) => Some(FlowDepth::Quick),
@@ -136,9 +109,7 @@ pub(super) fn flow_from_record(record: &WorkflowRecord) -> ReviewFlow {
     flow
 }
 
-pub(super) fn task_from_stage(
-    stage: &crate::ai::StageRecord,
-) -> crate::ai::review_flow::FlowTaskProgress {
+pub fn task_from_stage(stage: &crate::ai::StageRecord) -> crate::ai::review_flow::FlowTaskProgress {
     use crate::ai::review_flow::{FlowTaskProgress, FlowTaskStage, FlowTaskStatus};
     use crate::ai::StageKind;
     FlowTaskProgress {
@@ -170,9 +141,11 @@ pub(super) fn task_from_stage(
 }
 
 #[cfg(test)]
+#[cfg(feature = "ui")]
 mod tests {
     use super::*;
     use crate::ai::review_flow::{FlowTaskProgress, FlowTaskStage, FlowTaskStatus, ReviewFlow};
+    use crate::app::App;
 
     fn task(id: &str, stage: FlowTaskStage, status: FlowTaskStatus) -> FlowTaskProgress {
         FlowTaskProgress {
@@ -220,14 +193,14 @@ mod tests {
                 pid: holder.pid,
                 label: holder.label.clone(),
             };
-            App::create_workflow_record(&er_dir, None, "hash", &[], None, holder).unwrap();
+            ReviewFlows::create_workflow_record(&er_dir, None, "hash", &[], None, holder).unwrap();
 
             let mut flow = flow_with(vec![task(
                 "triage",
                 FlowTaskStage::Triage,
                 FlowTaskStatus::Running,
             )]);
-            App::sync_workflow_record(&er_dir, &flow);
+            ReviewFlows::sync_workflow_record(&er_dir, &flow);
             let store = crate::store_registry::store();
             let scope = Scope::dir(&er_dir).unwrap();
             let record = workflow_record::load(&store, &scope).unwrap().unwrap();
@@ -235,8 +208,8 @@ mod tests {
             assert_eq!(record.kind, None);
 
             flow.depth = Some(FlowDepth::Standard);
-            App::sync_workflow_record(&er_dir, &flow);
-            App::finish_workflow_record(&er_dir, WorkflowOutcome::Complete);
+            ReviewFlows::sync_workflow_record(&er_dir, &flow);
+            ReviewFlows::finish_workflow_record(&er_dir, WorkflowOutcome::Complete);
             let record = workflow_record::load(&store, &scope).unwrap().unwrap();
             assert_eq!(record.kind, Some(WorkflowKind::Standard));
             assert_eq!(record.outcome, Some(WorkflowOutcome::Complete));
@@ -265,7 +238,8 @@ mod tests {
                     FlowTaskStatus::Running,
                 ),
             ]);
-            App::create_workflow_record(&er_dir, None, "hash", &flow.tasks, None, holder).unwrap();
+            ReviewFlows::create_workflow_record(&er_dir, None, "hash", &flow.tasks, None, holder)
+                .unwrap();
             // No live lease: the owner is gone.
             app.release_review_flow_lease(&lease).unwrap();
 
@@ -311,7 +285,7 @@ mod tests {
                     FlowTaskStatus::Running,
                 ),
             ]);
-            App::create_workflow_record(
+            ReviewFlows::create_workflow_record(
                 &er_dir,
                 Some(WorkflowKind::Standard),
                 "hash",
@@ -322,7 +296,7 @@ mod tests {
             .unwrap();
             // The terminal poll records the cancel while the finder drains;
             // the process then dies before that finder finishes.
-            App::finish_workflow_record(&er_dir, WorkflowOutcome::Cancelled);
+            ReviewFlows::finish_workflow_record(&er_dir, WorkflowOutcome::Cancelled);
             app.release_review_flow_lease(&lease).unwrap();
 
             app.reconcile_workflow_records();
@@ -417,7 +391,7 @@ mod tests {
                         FlowTaskStatus::Running,
                     ),
                 ]);
-                App::create_workflow_record(
+                ReviewFlows::create_workflow_record(
                     &er_dir,
                     Some(WorkflowKind::Standard),
                     "hash",
@@ -426,7 +400,7 @@ mod tests {
                     holder,
                 )
                 .unwrap();
-                App::finish_workflow_record(&er_dir, outcome);
+                ReviewFlows::finish_workflow_record(&er_dir, outcome);
                 // The owner is gone: the finder is the stage that drained past
                 // the terminal write.
                 app.release_review_flow_lease(&lease).unwrap();

@@ -850,18 +850,6 @@ fn spawn_service_comment_sync(
     });
 }
 
-/// Emit `er://revision` for a revision a workspace actor published.
-#[cfg(feature = "v1-service")]
-fn emit_service_revision(handle: &Mutex<Option<tauri::AppHandle>>, revision: u64) {
-    use tauri::Emitter;
-    let app = handle.lock().ok().and_then(|app| app.clone());
-    if let Some(app) = app {
-        if let Err(e) = app.emit("er://revision", revision) {
-            log::warn!("service revision emit failed: {e}");
-        }
-    }
-}
-
 /// Emit `er://revision` whenever `desktop_revision` advances; see the call site.
 fn run_revision_watcher(watch_handle: &tauri::AppHandle, watch_rev: &std::sync::atomic::AtomicU64) {
     use tauri::Emitter;
@@ -1092,16 +1080,26 @@ fn main() {
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    #[cfg(feature = "v1-service")]
+    let service = Arc::new(er_desktop::service::ServiceState::with_revision_relay(
+        ports.clone(),
+        {
+            // The revision watcher emits `er://revision` for this bump, so the
+            // relay does not emit one of its own.
+            let desktop_revision = Arc::clone(&desktop_revision);
+            move |_| {
+                profile_log::bump_desktop_revision(&desktop_revision, "service_view");
+            }
+        },
+    ));
+    #[cfg(feature = "v1-service")]
+    if let Ok(app) = app_arc.lock() {
+        er_desktop::arena_service::attach(&app, Arc::clone(&service));
+    }
     let state = AppState {
         ports: ports.clone(),
         #[cfg(feature = "v1-service")]
-        service: Arc::new(er_desktop::service::ServiceState::with_revision_relay(
-            ports.clone(),
-            {
-                let handle = Arc::clone(&tauri_app_handle);
-                move |revision| emit_service_revision(&handle, revision)
-            },
-        )),
+        service: Arc::clone(&service),
         app: Arc::clone(&app_arc),
         view: Arc::clone(&view_arc),
         pr_cache: Arc::clone(&pr_cache),

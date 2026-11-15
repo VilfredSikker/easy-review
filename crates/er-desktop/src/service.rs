@@ -32,26 +32,39 @@ pub struct ServiceState {
 
 impl ServiceState {
     pub fn new(ports: Ports) -> Self {
-        let app_registry = Arc::new(AppRegistry::new(ports.clone()));
-        Self {
-            deps: WorkspaceDeps::new(ports).with_app_registry(Arc::clone(&app_registry)),
-            handles: Mutex::new(HashMap::new()),
-            relay: None,
-            app_registry,
-        }
+        Self::from_deps(WorkspaceDeps::new(ports), None)
     }
 
     /// Like [`Self::new`], with every actor's published revisions forwarded to
-    /// `relay`. The desktop emits `er://revision` from it, so a flag-path
-    /// change reaches the front end as an event instead of waiting for a poll.
+    /// `relay`. The desktop bumps its revision from it, so a flag-path change
+    /// reaches the front end as an `er://revision` event instead of waiting
+    /// for a poll; a live arena run's progress reaches the page this way.
     pub fn with_revision_relay(ports: Ports, relay: impl Fn(u64) + Send + Sync + 'static) -> Self {
+        Self::with_deps(WorkspaceDeps::new(ports), relay)
+    }
+
+    /// The same, over deps the caller built, such as a test's job sink. The
+    /// app registry's tab revisions reach `relay` too.
+    pub fn with_deps(deps: WorkspaceDeps, relay: impl Fn(u64) + Send + Sync + 'static) -> Self {
         let relay: RevisionRelay = Arc::new(relay);
-        let service = Self {
-            relay: Some(Arc::clone(&relay)),
-            ..Self::new(ports)
-        };
+        let service = Self::from_deps(deps, Some(Arc::clone(&relay)));
         forward_tab_revisions(&service.app_registry, relay);
         service
+    }
+
+    /// Gives `deps` the one app registry: the one it already carries, or a new
+    /// one over its ports.
+    fn from_deps(deps: WorkspaceDeps, relay: Option<RevisionRelay>) -> Self {
+        let app_registry = match deps.app_registry() {
+            Some(registry) => Arc::clone(registry),
+            None => Arc::new(AppRegistry::new(deps.ports().clone())),
+        };
+        Self {
+            deps: deps.with_app_registry(Arc::clone(&app_registry)),
+            handles: Mutex::new(HashMap::new()),
+            relay,
+            app_registry,
+        }
     }
 
     /// The actor for `key`, started on first use. The key is the repo root, or
@@ -104,6 +117,18 @@ impl ServiceState {
     /// a reader never sees a missing handle as an error.
     pub fn view(&self, key: &str) -> Arc<WorkspaceView> {
         self.handle_for(key).view()
+    }
+
+    /// Whether any actor this process started is running `run_id`, from the
+    /// published views. The App asks before it marks a run stale.
+    pub fn arena_run_live(&self, run_id: &str) -> bool {
+        let handles: Vec<WorkspaceHandle> = match self.handles.lock() {
+            Ok(handles) => handles.values().cloned().collect(),
+            Err(poisoned) => poisoned.into_inner().values().cloned().collect(),
+        };
+        handles
+            .iter()
+            .any(|handle| handle.view().arena_run(run_id).is_some())
     }
 }
 
