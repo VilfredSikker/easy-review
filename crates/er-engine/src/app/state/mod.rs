@@ -11,11 +11,9 @@ pub mod preview;
 mod promote;
 mod review_flow;
 mod review_flow_admission;
-mod review_flow_output;
 mod review_flow_progress;
 pub use crate::session_store::{self, SessionState};
 pub(super) mod tour_navigation;
-mod workflow;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, FileKindRepoConfig, RiskRules, WatchedConfig};
@@ -5804,18 +5802,12 @@ pub struct App {
     /// The OS leases this process holds, keyed by the managed review bucket.
     /// Admission reads the `.lease` file, so these guards keep local ownership
     /// alive rather than deciding it.
-    workflow_leases: std::collections::HashMap<String, er_store::LeaseGuard>,
+    pub(crate) workflow_leases: std::collections::HashMap<String, er_store::LeaseGuard>,
     next_review_flow_lease_sequence: u64,
 
-    /// Current review-flow projection and its captured execution context,
-    /// keyed by the exact review bucket path.
-    review_flows: std::collections::HashMap<String, crate::ai::review_flow::ReviewFlow>,
-    review_flow_contexts: std::collections::HashMap<String, review_flow::ReviewFlowContext>,
-    review_flow_revision: u64,
-    /// Original target for each flow-owned arena run. Acceptance must resolve
-    /// its bucket and view identity from this capture, never the active tab.
-    review_flow_run_targets:
-        std::collections::HashMap<(String, String), background::BackgroundTaskTarget>,
+    /// Every review flow and its captured execution context, keyed by the
+    /// exact review bucket path. The shared driver sequences them.
+    pub(crate) review_flows: crate::review_flow_driver::ReviewFlows,
 
     /// Optional host wake-up callback used when a background result arrives.
     /// It must only signal the host; it is called from the worker thread.
@@ -5853,6 +5845,12 @@ impl App {
     /// progress write. Called once by the desktop after the App is built.
     pub fn set_arena_notify(&self, notify: crate::arena::ArenaNotify) {
         self.arena_runs.set_notify(notify);
+    }
+
+    /// Names the arena runs the workspace actors are running, which recovery
+    /// here must leave alone.
+    pub fn set_arena_live_elsewhere(&self, live: crate::arena::LiveElsewhere) {
+        self.arena_runs.set_live_elsewhere(live);
     }
 
     fn initial_ai_selection(config: &ErConfig) -> (Option<String>, Option<String>) {
@@ -6006,10 +6004,7 @@ impl App {
             flow_task_completions: std::collections::HashMap::new(),
             workflow_leases: std::collections::HashMap::new(),
             next_review_flow_lease_sequence: 1,
-            review_flows: std::collections::HashMap::new(),
-            review_flow_contexts: std::collections::HashMap::new(),
-            review_flow_revision: 0,
-            review_flow_run_targets: std::collections::HashMap::new(),
+            review_flows: Default::default(),
             background_progress_notify: None,
             arena_runs,
             model_discovery_inflight: std::collections::HashSet::new(),
@@ -6072,10 +6067,7 @@ impl App {
             flow_task_completions: std::collections::HashMap::new(),
             workflow_leases: std::collections::HashMap::new(),
             next_review_flow_lease_sequence: 1,
-            review_flows: std::collections::HashMap::new(),
-            review_flow_contexts: std::collections::HashMap::new(),
-            review_flow_revision: 0,
-            review_flow_run_targets: std::collections::HashMap::new(),
+            review_flows: Default::default(),
             background_progress_notify: None,
             arena_runs: Default::default(),
             model_discovery_inflight: std::collections::HashSet::new(),
@@ -6133,10 +6125,7 @@ impl App {
             flow_task_completions: std::collections::HashMap::new(),
             workflow_leases: std::collections::HashMap::new(),
             next_review_flow_lease_sequence: 1,
-            review_flows: std::collections::HashMap::new(),
-            review_flow_contexts: std::collections::HashMap::new(),
-            review_flow_revision: 0,
-            review_flow_run_targets: std::collections::HashMap::new(),
+            review_flows: Default::default(),
             background_progress_notify: None,
             arena_runs: Default::default(),
             model_discovery_inflight: std::collections::HashSet::new(),
@@ -6197,10 +6186,7 @@ impl App {
             flow_task_completions: std::collections::HashMap::new(),
             workflow_leases: std::collections::HashMap::new(),
             next_review_flow_lease_sequence: 1,
-            review_flows: std::collections::HashMap::new(),
-            review_flow_contexts: std::collections::HashMap::new(),
-            review_flow_revision: 0,
-            review_flow_run_targets: std::collections::HashMap::new(),
+            review_flows: Default::default(),
             background_progress_notify: None,
             arena_runs: Default::default(),
             model_discovery_inflight: std::collections::HashSet::new(),
@@ -12822,10 +12808,7 @@ mod tests {
             flow_task_completions: std::collections::HashMap::new(),
             workflow_leases: std::collections::HashMap::new(),
             next_review_flow_lease_sequence: 1,
-            review_flows: std::collections::HashMap::new(),
-            review_flow_contexts: std::collections::HashMap::new(),
-            review_flow_revision: 0,
-            review_flow_run_targets: std::collections::HashMap::new(),
+            review_flows: Default::default(),
             background_progress_notify: None,
             arena_runs: Default::default(),
             model_discovery_inflight: std::collections::HashSet::new(),

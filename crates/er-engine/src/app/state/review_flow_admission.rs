@@ -1,33 +1,9 @@
 use super::{App, CommandStatus};
+use crate::review_flow_driver::ReviewFlowLease;
 use anyhow::{bail, Context, Result};
 
 /// Task kind and command name of a tour; both are the same string.
 pub(super) const TOUR_TASK_KIND: &str = "tour";
-
-/// Capability naming the one workflow that owns a bucket. The OS lease behind
-/// it is the authority across processes; the holder is its identity, so a
-/// token from a released flow never matches a later one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ReviewFlowLease {
-    bucket: String,
-    sequence: u64,
-    holder: er_store::HolderInfo,
-}
-
-impl ReviewFlowLease {
-    pub(super) fn bucket(&self) -> &str {
-        &self.bucket
-    }
-
-    /// Unique per flow within the process, for archive keys.
-    pub(super) fn sequence(&self) -> u64 {
-        self.sequence
-    }
-
-    pub(super) fn holder(&self) -> &er_store::HolderInfo {
-        &self.holder
-    }
-}
 
 impl App {
     /// Reject ordinary actions only while a workflow owns this exact bucket.
@@ -42,7 +18,7 @@ impl App {
     /// into this bucket. Ordinary manual lenses are not made mutually exclusive.
     /// The guard stays in `workflow_leases` so the OS lease is held for the
     /// flow's life, even across tab navigation.
-    pub(super) fn acquire_review_flow_lease(&mut self, er_dir: &str) -> Result<ReviewFlowLease> {
+    pub(crate) fn acquire_review_flow_lease(&mut self, er_dir: &str) -> Result<ReviewFlowLease> {
         self.check_review_bucket_admission(er_dir)?;
         if self.bucket_has_producers(er_dir)? {
             bail!("Review work is already queued or running in this review bucket");
@@ -54,11 +30,7 @@ impl App {
         let guard = crate::store_registry::store()
             .lease(&scope, er_store::DEFAULT_LOCK_TIMEOUT, &label)
             .with_context(|| format!("take the review flow lease for {er_dir}"))?;
-        let lease = ReviewFlowLease {
-            bucket: er_dir.to_string(),
-            sequence,
-            holder: guard.holder().clone(),
-        };
+        let lease = ReviewFlowLease::new(er_dir.to_string(), sequence, guard.holder().clone());
         self.workflow_leases.insert(er_dir.to_string(), guard);
         Ok(lease)
     }
@@ -95,7 +67,7 @@ impl App {
 
     /// Release only after all writers, including arena supervisors, have left.
     /// Dropping the guard releases the OS lease every process can see.
-    pub(super) fn release_review_flow_lease(&mut self, lease: &ReviewFlowLease) -> Result<()> {
+    pub(crate) fn release_review_flow_lease(&mut self, lease: &ReviewFlowLease) -> Result<()> {
         if !self.review_flow_lease_is_valid(lease) {
             bail!("Review flow lease is stale");
         }

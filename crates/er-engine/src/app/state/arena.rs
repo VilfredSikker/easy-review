@@ -8,9 +8,9 @@ use crate::git::filter_raw_diff_by_paths;
 use anyhow::Result;
 use std::path::Path;
 
-use super::review_flow_admission::ReviewFlowLease;
 use super::App;
 use super::TabState;
+use crate::review_flow_driver::ReviewFlowLease;
 
 /// The `diff_hash` a review's sidecars carry, which is what a verdict's hash has
 /// to match for the overlay to apply.
@@ -99,7 +99,7 @@ impl App {
     /// The one-instance-per-worktree contract makes unregistered historical
     /// writers interrupted. Live ownership is this process's control map.
     pub(super) fn recover_arena_bucket(&self, er_dir: &str) -> Result<()> {
-        reconcile_stale_runs_excluding(Path::new(er_dir), |run_id| self.arena_runs.contains(run_id))
+        reconcile_stale_runs_excluding(Path::new(er_dir), |run_id| self.arena_runs.is_owned(run_id))
     }
 
     pub fn arena_preview(
@@ -1262,6 +1262,41 @@ mod tests {
         // Active tab is A; before the fix this resolved A's er_dir and errored.
         let snap = app.arena_get_snapshot("arena-z").unwrap();
         assert_eq!(snap.run.id, "arena-z");
+    }
+
+    /// On the flag path a workspace actor runs arena runs the App never
+    /// registers. A tab switch reconciles the bucket, and must leave them be.
+    #[test]
+    fn a_tab_switch_leaves_a_run_another_host_owns() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        let running = crate::arena::RunStatus::Running { round: 1 };
+        for id in ["actor-run", "orphan-run"] {
+            let mut run = sample_run(id);
+            run.status = running.clone();
+            crate::arena::save_run(&ArenaPaths::for_run(Path::new(&er_b), id), &run).unwrap();
+        }
+        app.set_arena_live_elsewhere(std::sync::Arc::new(|run_id| run_id == "actor-run"));
+
+        app.select_tab(1);
+
+        let status = |id| {
+            crate::arena::load_run(&ArenaPaths::for_run(Path::new(&er_b), id))
+                .unwrap()
+                .status
+        };
+        assert_eq!(
+            status("actor-run"),
+            running,
+            "the actor's run is left alone"
+        );
+        assert_eq!(
+            status("orphan-run"),
+            crate::arena::RunStatus::Failed,
+            "an unowned run is still recovered"
+        );
     }
 
     #[test]
