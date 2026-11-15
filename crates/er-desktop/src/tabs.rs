@@ -462,6 +462,33 @@ mod tests {
         });
     }
 
+    /// The browser state restores from and saves to the keys an older record
+    /// used, so a saved URL and layout survive a restart in both directions.
+    #[test]
+    fn the_browser_keys_restore_and_save_under_their_saved_names() {
+        let storage = tempfile::tempdir().expect("tempdir");
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let saved: TabDescriptor = serde_json::from_value(serde_json::json!({
+                "kind": "remote_pr",
+                "repo_root": "",
+                "pr_owner": "octo",
+                "pr_repo": "cat",
+                "pr_number": 42,
+                "browser_url": "http://localhost:5173/review",
+                "browser_layout": "split"
+            }))
+            .expect("descriptor");
+            let tab = rebuild_remote_pr(&saved, true, &er_engine::ports::Ports::for_test())
+                .expect("stub");
+            let mut view = DesktopViewState::default();
+            apply_descriptor_browser(&mut view, &tab, &saved);
+            let browser = view.browser(tab.key());
+            assert_eq!(browser.url, "http://localhost:5173/review");
+            assert_eq!(browser.layout, BrowserLayout::Split);
+            assert_eq!(descriptor_from_tab(&tab, &view).extra, saved.extra);
+        });
+    }
+
     #[test]
     fn lazy_local_pr_stub_loads_ai_sidecars() {
         let tmp = tempfile::tempdir().expect("tempdir");
