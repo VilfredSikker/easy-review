@@ -12881,10 +12881,18 @@ mod tests {
                     .is_some()),
                 "the remote prefetch did not reach the registry"
             );
+            // Wait for the registry's save too, so it lands under this root.
+            let saved = || {
+                er_engine::pr_open_cache::load_persisted_pr_open_cache()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|map| map.contains_key(&key))
+            };
             assert!(
-                wait_for(&|| registry.pr_open_entry(&key).is_some()),
+                wait_for(&saved),
                 "the local prefetch did not reach the registry"
             );
+            assert!(registry.pr_open_entry(&key).is_some());
             let calls = github.calls();
             for sent in ["pr_diff_remote", "overview_remote", "pr_diff", "pr_commits"] {
                 assert!(
