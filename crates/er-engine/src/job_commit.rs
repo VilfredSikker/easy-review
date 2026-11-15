@@ -307,7 +307,7 @@ pub fn commit_contract(
 
 /// Commit a user-edited kind by merging the agent's rewrite into the stored
 /// copy, one id at a time. The base is the launch-time copy kept in staging.
-fn commit_merged<T: crate::app::job_merge::MergeById<Slot = ()>>(
+fn commit_merged<T: crate::job_merge::MergeById<Slot = ()>>(
     staging: &str,
     name: &str,
     expected_hash: Option<&str>,
@@ -334,8 +334,7 @@ fn commit_merged<T: crate::app::job_merge::MergeById<Slot = ()>>(
             anyhow::bail!("the stored {name} is unreadable ({reason:?}); refusing to replace it")
         }
     };
-    let (merged, dropped) =
-        crate::app::job_merge::merge_by_id(base.as_ref(), &theirs, current.as_ref());
+    let (merged, dropped) = crate::job_merge::merge_by_id(base.as_ref(), &theirs, current.as_ref());
     store
         .write_locked(guard, &key, &merged)
         .map_err(|error| anyhow::anyhow!("{error}"))?;

@@ -26,6 +26,7 @@ mod jobs;
 mod pending_review;
 mod pr_posts;
 mod protocol;
+mod settings;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
@@ -36,9 +37,12 @@ pub use protocol::{
     AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event, JobOutcome,
     OpenTarget, PrRef, Reply, ReviewEvent, ReviewLineTarget, SyncSource, TabContext,
 };
+pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
 pub use workspace::{LiveArenaRun, WorkspaceTarget, WorkspaceView};
 
 #[cfg(test)]
 mod job_tests;
+#[cfg(test)]
+mod settings_tests;
 #[cfg(test)]
 mod tests;

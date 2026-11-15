@@ -2,8 +2,15 @@ use super::*;
 
 use crate::annotations::ReplyAttribution;
 use crate::app::job_commit::commit_error;
+use crate::stage_job::{debug_agent_log_enabled, CLONE_DENY_RULE};
 use er_agent::job::{JobError, JobProgress, JobRun, JobRunner, JobSpec, OutputContract};
 use er_agent::provider::ProviderSpec;
+// The launch policy's tests stay beside the App path they guard.
+#[cfg(test)]
+use crate::stage_job::{
+    agent_stderr_snippet, background_job_kind, background_run_is_read_only, claude_allowed_tools,
+    validate_importance_launch, validate_importance_user_config, DIAGRAM_READ_ONLY_TOOLS,
+};
 
 /// Lines buffered ahead of the log drain. A stalled drain trips the provider
 /// timeout rather than blocking the job.
@@ -32,27 +39,6 @@ fn log_dropped_edits(
     });
 }
 
-/// How a background task kind maps to the runner's job kind. `general` is a
-/// review; `importance` and `diagram:<kind>` have no runner variant yet.
-fn background_job_kind(kind: &str) -> er_agent::job::JobKind {
-    match kind {
-        "" | "review" | "general" => er_agent::job::JobKind::Review,
-        "triage" => er_agent::job::JobKind::Triage,
-        "professor" => er_agent::job::JobKind::Professor,
-        "tour" => er_agent::job::JobKind::Tour {
-            filename: "tour.json".into(),
-        },
-        "questions" => er_agent::job::JobKind::Questions,
-        "summary" => er_agent::job::JobKind::Summary,
-        "validate" => er_agent::job::JobKind::ValidateReview,
-        "validate-comments" => er_agent::job::JobKind::ValidateComments,
-        other => match other.strip_prefix("expert:") {
-            Some(id) => er_agent::job::JobKind::Expert(id.to_string()),
-            None => er_agent::job::JobKind::Other(other.to_string()),
-        },
-    }
-}
-
 /// Read a registered text sidecar through the store. The raw text is what a
 /// caller copies or posts, so it is not parsed.
 fn stored_text(er_dir: &str, file: &str) -> Result<er_store::Loaded<String>> {
@@ -75,312 +61,6 @@ fn push_summary_to_pr(github: &dyn er_github::GitHub, er_dir: &str, repo_root: &
     github
         .edit_body(repo_root, &summary)
         .map_err(|error| anyhow::anyhow!("Failed to update PR body: {error}"))
-}
-
-/// Review agents never need a second checkout: they run inside the repo (or, for a remote PR
-/// whose repo is not checked out locally, work from the prepared diff plus `gh`). Cloning has
-/// only ever produced stray copies under `/tmp` that later runs then read stale code out of.
-/// A speed bump rather than a wall — `gh repo clone` and `cd x && git clone` slip past it.
-const CLONE_DENY_RULE: &str = "Bash(git clone*)";
-const IMPORTANCE_READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
-const MCP_DENY_RULE: &str = "mcp__*";
-
-const DIAGRAM_READ_ONLY_TOOLS: &[&str] = &[
-    "Read",
-    "Bash(grep *)",
-    "Bash(rg *)",
-    "Bash(git grep*)",
-    "Bash(git show*)",
-    "Bash(git log*)",
-];
-const WRITABLE_PREPARED_DIFF_TOOLS: &[&str] = &[
-    "Read",
-    "Write",
-    "Edit",
-    "Bash(grep *)",
-    "Bash(rg *)",
-    "Bash(git grep*)",
-    "Bash(git show*)",
-    "Bash(git fetch origin pull/*)",
-    "Bash(cp .er/*)",
-    "Bash(shasum*)",
-    "Bash(sha256sum*)",
-    "Bash(mkdir*)",
-    "Bash(awk*)",
-];
-const WRITABLE_TOOLS: &[&str] = &[
-    "Read",
-    "Write",
-    "Edit",
-    "Bash(gh pr *)",
-    "Bash(cp .er/*)",
-    "Bash(git diff*)",
-    "Bash(git grep*)",
-    "Bash(git show*)",
-    "Bash(git fetch origin pull/*)",
-    "Bash(shasum*)",
-    "Bash(sha256sum*)",
-    "Bash(mkdir*)",
-];
-
-fn background_run_is_read_only(task_kind: &str, host_write_diagram: bool) -> bool {
-    host_write_diagram || task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND
-}
-
-fn claude_allowed_tools(read_only: bool, prepared_diff: bool) -> &'static [&'static str] {
-    if read_only {
-        DIAGRAM_READ_ONLY_TOOLS
-    } else if prepared_diff {
-        WRITABLE_PREPARED_DIFF_TOOLS
-    } else {
-        WRITABLE_TOOLS
-    }
-}
-
-/// Check the final configured launch policy before prompt text is substituted.
-fn validate_importance_launch(
-    family: crate::config::CliFamily,
-    args: &[String],
-    opencode_env: Option<&(String, String)>,
-    trusted_codex_effort: Option<&str>,
-) -> Result<()> {
-    use crate::config::CliFamily;
-    let has = |flag: &str| {
-        args.iter()
-            .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
-    };
-    let has_split = |flag: &str| {
-        args.iter()
-            .enumerate()
-            .any(|(i, arg)| arg == flag && args.get(i + 1).is_some())
-    };
-    match family {
-        CliFamily::Other => anyhow::bail!(
-            "Importance is unavailable for custom CLI families because their read-only policy is unknown"
-        ),
-        CliFamily::Codex => {
-            let sandbox: Vec<_> = args
-                .iter()
-                .enumerate()
-                .filter_map(|(i, arg)| {
-                    if arg == "--sandbox" {
-                        args.get(i + 1).map(String::as_str)
-                    } else {
-                        arg.strip_prefix("--sandbox=")
-                    }
-                })
-                .collect();
-            if sandbox.as_slice() != ["read-only"]
-                || args.iter().any(|arg| arg.starts_with("-s"))
-                || has("--full-auto")
-                || has("--yolo")
-                || has("--dangerously-bypass-approvals-and-sandbox")
-                || has("--add-dir")
-            {
-                anyhow::bail!(
-                    "Importance requires one Codex --sandbox read-only option and no write grants or bypass flags"
-                );
-            }
-            if args
-                .iter()
-                .filter(|a| a.as_str() == "--ignore-user-config")
-                .count()
-                != 1
-            {
-                anyhow::bail!("Importance requires the engine's Codex --ignore-user-config option");
-            }
-            let codex_config: Vec<_> = args
-                .iter()
-                .enumerate()
-                .filter(|(_, arg)| arg.as_str() == "-c")
-                .collect();
-            if let Some(level) = trusted_codex_effort {
-                if codex_config.len() != 1
-                    || args.get(codex_config[0].0 + 1).map(String::as_str)
-                        != Some(format!("model_reasoning_effort={level}").as_str())
-                {
-                    anyhow::bail!(
-                        "Importance requires the engine's configured Codex effort override"
-                    );
-                }
-            } else if !codex_config.is_empty() {
-                anyhow::bail!("Importance rejects Codex config overrides");
-            }
-            if has("--config")
-                || has_split("--add-dir")
-                || args.iter().any(|a| a.starts_with("--add-dir="))
-            {
-                anyhow::bail!("Importance rejects Codex config overrides and --add-dir grants");
-            }
-        }
-        CliFamily::Cursor => {
-            let modes: Vec<_> = args
-                .iter()
-                .enumerate()
-                .filter_map(|(i, arg)| {
-                    if arg == "--mode" {
-                        args.get(i + 1).map(String::as_str)
-                    } else {
-                        arg.strip_prefix("--mode=")
-                    }
-                })
-                .collect();
-            if modes.as_slice() != ["plan"]
-                || has("--force")
-                || has("--yolo")
-                || has("--add-dir")
-                || has_split("--add-dir")
-                || has("--config")
-                || has("--settings")
-            {
-                anyhow::bail!(
-                    "Importance requires one Cursor --mode plan option and no force, yolo, or add-dir options"
-                );
-            }
-        }
-        CliFamily::Claude => {
-            let values = |flag: &str| -> Vec<&str> {
-                args.iter().enumerate().filter_map(|(i, arg)| {
-                    if arg == flag {
-                        args.get(i + 1).map(String::as_str)
-                    } else {
-                        arg.strip_prefix(&format!("{flag}="))
-                    }
-                }).collect()
-            };
-            let tools = values("--tools");
-            // Autoapproval rules are additive to inherited settings. Only the
-            // actual tool set prevents inherited Write/Edit/Bash grants from
-            // reopening writes. MCP tools require their own deny rule.
-            if tools.len() != 1 || tools[0] != IMPORTANCE_READ_ONLY_TOOLS.join(",")
-                || args.iter().filter(|arg| *arg == "--tools" || arg.starts_with("--tools=")).count() != 1
-                || !values("--disallowedTools").contains(&MCP_DENY_RULE)
-            {
-                anyhow::bail!("Importance requires the engine's Claude read-only tool ceiling and MCP denial");
-            }
-            for flag in ["--allowedTools", "--allowed-tools"] {
-                if values(flag).iter().any(|tool| !IMPORTANCE_READ_ONLY_TOOLS.contains(tool)) {
-                    anyhow::bail!("Importance rejects Claude tool autoapproval outside its read-only ceiling");
-                }
-            }
-            for flag in ["--disallowedTools", "--disallowed-tools"] {
-                if values(flag).iter().any(|rule| ![MCP_DENY_RULE, CLONE_DENY_RULE].contains(rule)) {
-                    anyhow::bail!("Importance rejects unexpected Claude tool-denial overrides");
-                }
-            }
-            let overrides = [
-                "--permission-mode",
-                "--dangerously-skip-permissions",
-                "--allow-dangerously-skip-permissions",
-                "--settings",
-                "--setting-sources",
-                "--plugin-dir",
-            ];
-            if overrides.iter().any(|flag| has(flag) || has_split(flag)) {
-                anyhow::bail!("Importance rejects Claude permission and tool-list overrides");
-            }
-        }
-        CliFamily::OpenCode => {
-            if has("--permission") || has("--config") || has("-c") || has("--agent") {
-                anyhow::bail!("Importance rejects OpenCode permission/config overrides");
-            }
-            let Some((key, value)) = opencode_env else {
-                anyhow::bail!(
-                    "Importance requires the engine-generated OpenCode read-only permission"
-                );
-            };
-            let parsed: serde_json::Value = serde_json::from_str(value)
-                .context("Importance received an invalid OpenCode permission policy")?;
-            if key != "OPENCODE_PERMISSION"
-                || parsed.get("edit").and_then(serde_json::Value::as_str) != Some("deny")
-                || parsed
-                    .pointer("/bash/*")
-                    .and_then(serde_json::Value::as_str)
-                    != Some("deny")
-            {
-                anyhow::bail!(
-                    "Importance requires the engine-generated OpenCode read-only permission"
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Reject permission and config overrides before trusted model flags are injected.
-fn validate_importance_user_config(
-    family: crate::config::CliFamily,
-    args: &[String],
-) -> Result<()> {
-    use crate::config::CliFamily;
-    let has = |flag: &str| {
-        args.iter()
-            .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
-    };
-    match family {
-        CliFamily::Other => anyhow::bail!(
-            "Importance is unavailable for custom CLI families because their read-only policy is unknown"
-        ),
-        CliFamily::Codex
-            if args
-                .iter()
-                .any(|arg| arg.starts_with("-c") || arg.starts_with("-s"))
-                || has("--config") =>
-        {
-            anyhow::bail!("Importance rejects configured Codex -c/-s and config overrides");
-        }
-        CliFamily::Codex => {
-            let sandboxes: Vec<_> = args
-                .iter()
-                .enumerate()
-                .filter_map(|(i, arg)| {
-                    if arg == "--sandbox" {
-                        args.get(i + 1).map(String::as_str)
-                    } else {
-                        arg.strip_prefix("--sandbox=")
-                    }
-                })
-                .collect();
-            if sandboxes.len() > 1 || sandboxes.iter().any(|value| *value != "read-only") {
-                anyhow::bail!("Importance rejects writable or duplicate Codex sandbox options");
-            }
-        }
-        CliFamily::Cursor
-            if ["--force", "--yolo", "--add-dir", "--config", "--settings"]
-                .iter()
-                .any(|flag| has(flag)) =>
-        {
-            anyhow::bail!("Importance rejects Cursor write and config overrides");
-        }
-        CliFamily::Claude
-            if [
-                "--permission-mode",
-                "--dangerously-skip-permissions",
-                "--allow-dangerously-skip-permissions",
-                "--allowedTools",
-                "--allowed-tools",
-                "--tools",
-                "--disallowedTools",
-                "--disallowed-tools",
-                "--settings",
-                "--setting-sources",
-                "--plugin-dir",
-            ]
-            .iter()
-            .any(|flag| has(flag)) =>
-        {
-            anyhow::bail!("Importance rejects Claude permission and tool-list overrides");
-        }
-        CliFamily::OpenCode
-            if ["--permission", "--config", "-c", "--agent"]
-                .iter()
-                .any(|flag| has(flag)) =>
-        {
-            anyhow::bail!("Importance rejects OpenCode permission/config overrides");
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 /// Wakes a host poll after the worker sends its result, including an
@@ -695,16 +375,6 @@ mod importance_launch_policy {
     }
 }
 
-/// Whether a completed agent run writes its full transcript to
-/// `debug-agent.log`.
-///
-/// Off by default. The write formatted the whole of stdout and stderr into a
-/// third copy of strings the reader threads already held, on every run, to
-/// produce a file nothing reads unless someone is debugging a spawn.
-fn debug_agent_log_enabled() -> bool {
-    std::env::var("ER_DEBUG").is_ok()
-}
-
 /// Delete GitHub comments in order on a background thread, discarding results.
 fn spawn_github_comment_deletes(
     github: std::sync::Arc<dyn er_github::GitHub>,
@@ -812,55 +482,6 @@ fn status_bar_failure(msg: String) -> String {
     }
     let boundary = msg.char_indices().nth(80).map_or(msg.len(), |(i, _)| i);
     format!("{}…", msg.get(..boundary).unwrap_or_default())
-}
-
-/// A failed agent's stderr, trimmed and capped at 280 chars for the error
-/// message. Char-safe: agent stderr often includes multi-byte text.
-fn agent_stderr_snippet(stderr_lines: &[String]) -> String {
-    const MAX_CHARS: usize = 280;
-    let lines: Vec<_> = stderr_lines
-        .iter()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
-        .collect();
-    let is_error = |line: &&str| {
-        line.trim_start()
-            .get(..6)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("error:"))
-    };
-    let is_auth_error = |line: &&str| {
-        let lower = line.to_ascii_lowercase();
-        [
-            "authentication",
-            "not logged in",
-            "not authenticated",
-            "unauthorized",
-        ]
-        .iter()
-        .any(|marker| lower.contains(marker))
-    };
-    let start = lines
-        .iter()
-        .rposition(is_error)
-        .or_else(|| lines.iter().rposition(is_auth_error));
-    let (snippet, keep_start) = if let Some(start) = start {
-        (lines[start..].join("\n"), true)
-    } else {
-        (lines.join("\n"), false)
-    };
-    let chars: Vec<_> = snippet.chars().collect();
-    if chars.len() <= MAX_CHARS {
-        return snippet;
-    }
-    if keep_start {
-        chars.iter().take(MAX_CHARS - 1).collect::<String>() + "…"
-    } else {
-        "…".to_string()
-            + &chars
-                .iter()
-                .skip(chars.len() - (MAX_CHARS - 1))
-                .collect::<String>()
-    }
 }
 
 /// The one-time notice that the previous version's data was left behind.
@@ -3844,16 +3465,7 @@ impl App {
 
         // File-writing jobs stage their output; the prompt is re-pointed at the
         // staging directory and the host commits from it after the run.
-        let staging = match crate::app::job_commit::job_contract(&kind) {
-            crate::agent_runtime::ArtifactContract::None => None,
-            _ => Some(std::sync::Arc::new(
-                crate::app::job_staging::JobStaging::create()?,
-            )),
-        };
-        let prompt = match &staging {
-            Some(staging) => staging.repoint_prompt(&prompt, &target.er_dir),
-            None => prompt,
-        };
+        let (staging, prompt) = crate::stage_job::staging_for(&kind, prompt, &target.er_dir)?;
 
         let mut task = BackgroundTask::new(kind, target);
         task.execution_root = execution_root;
@@ -3897,10 +3509,6 @@ impl App {
     /// Actually spawn the agent subprocess for an accepted task. Split from
     /// `spawn_background_agent_task` so the dispatch loop can launch queued
     /// tasks when capacity frees up.
-    #[expect(
-        clippy::literal_string_with_formatting_args,
-        reason = "{prompt} is a template placeholder substituted via .replace()"
-    )]
     fn launch_background_agent_task(
         &mut self,
         pending: super::background::PendingBackgroundTask,
@@ -3920,13 +3528,6 @@ impl App {
         } = pending;
         let command_name = command_name.as_str();
         let target = task.target.clone();
-        // Captured before the task moves into its handle: the worker recognises
-        // its own kind to know whose reply it is parsing, and which repo that
-        // reply's table belongs to.
-        let task_kind = task.kind.clone();
-        // Ranking is refused on remote-only tabs, so the clone names the repo
-        // here as it does in the prompt (`TabState::rules_key`).
-        let repo_for_worker = crate::storage::rules_key(&*self.ports.git, &target.repo_root, None);
         // The task may have waited in the queue; report runtime from launch.
         // The id (assigned at enqueue) stays stable so UI pills don't jump.
         task.started_at_ms = super::background::unix_now_ms();
@@ -3940,161 +3541,24 @@ impl App {
             }
         });
         let config = launch_config.as_ref().unwrap_or(&self.config);
-
-        let (
-            agent_cmd,
-            mut config_args,
-            is_claude_compatible,
-            is_codex,
-            is_stream_json,
-            resolved_provider_id,
-            resolved_model_id,
-            family,
-        ) = if let Some(provider_id) = config
-            .ai_hub
-            .resolve_provider_id(selection.provider_id.as_deref())
-        {
-            let provider = config
-                .ai_hub
-                .providers
-                .get(&provider_id)
-                .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
-            let mut args = provider.args.clone();
-            let resolved_model_id = config
-                .ai_hub
-                .resolve_model_id(&provider_id, selection.model_id.as_deref());
-            let family = provider.cli_family();
-            if let Some(model_id) = &resolved_model_id {
-                if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
-                    crate::config::extend_provider_model_args(family, &mut args, &model.args);
-                }
-            }
-            let is_claude = crate::config::agent_command_is_claude(&provider.command);
-            let is_codex = crate::config::agent_command_is_codex(&provider.command);
-            (
-                provider.command.clone(),
-                args,
-                is_claude,
-                is_codex,
-                provider.uses_stream_json_log(),
-                Some(provider_id),
-                resolved_model_id,
-                family,
-            )
-        } else {
-            let cmd = config.agent.command.clone();
-            let is_claude = crate::config::agent_command_is_claude(&cmd);
-            let is_codex = crate::config::agent_command_is_codex(&cmd);
-            let family = crate::config::CliFamily::detect(&cmd);
-            (
-                cmd.clone(),
-                config.agent.args.clone(),
-                is_claude,
-                is_codex,
-                crate::config::agent_command_uses_stream_json(&cmd),
-                None,
-                (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
-                family,
-            )
-        };
-
-        let effort_override = if task.kind == "triage" {
-            Some("low")
-        } else {
-            None
-        };
-        let effort = crate::config::resolve_effort_for_model(
-            &config.ai_hub,
-            &config.agent,
-            resolved_provider_id.as_deref(),
-            resolved_model_id.as_deref(),
-            selection.effort.as_deref(),
-            effort_override,
-        );
-        if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
-            validate_importance_user_config(family, &config_args)?;
-        }
-        crate::config::inject_provider_effort(
-            family,
-            &mut config_args,
-            resolved_model_id.as_deref(),
-            effort.as_deref(),
-        );
-        if is_codex {
-            crate::config::inject_codex_ignore_user_config(&mut config_args);
-        }
-        crate::config::inject_claude_startup_trim(family, &mut config_args);
-        // Diagrams and importance leave persistence to the host. Importance's
-        // Claude tool ceiling and OpenCode's permission env deny edits while
-        // retaining bucket access for reading diff-tmp. Codex and
-        // Cursor have no tool list, so for them the only write control is the
-        // sandbox, and `--add-dir` is documented as adding a *writable* directory
-        // — so a read-only run withholds it and narrows the sandbox instead.
-        let readonly_run = background_run_is_read_only(&task_kind, host_write_diagram.is_some());
-        // A staged job gets access to its staging directory; it no longer
-        // needs the review bucket. Jobs with no file output keep the bucket
-        // path they had.
-        let storage_dir = staging
-            .as_ref()
-            .map_or_else(|| target.er_dir.clone(), |staging| staging.path());
-        let storage_access = match family {
-            crate::config::CliFamily::Codex | crate::config::CliFamily::Cursor if readonly_run => {
-                None
-            }
-            _ => Some(storage_dir.as_str()),
-        };
-        crate::config::inject_agent_storage_access(family, &mut config_args, storage_access);
-        if readonly_run {
-            crate::config::apply_readonly_spawn(family, &mut config_args);
-        }
-        let opencode_env = if readonly_run {
-            crate::config::apply_opencode_readonly_storage_spawn(
-                family,
-                &mut config_args,
-                Some(storage_dir.as_str()),
-            )
-        } else {
-            crate::config::apply_opencode_spawn(
-                family,
-                &mut config_args,
-                Some(storage_dir.as_str()),
-            )
-        };
-        if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
-            if family == crate::config::CliFamily::Claude {
-                config_args.splice(
-                    0..0,
-                    [
-                        "--tools".to_string(),
-                        IMPORTANCE_READ_ONLY_TOOLS.join(","),
-                        "--disallowedTools".to_string(),
-                        MCP_DENY_RULE.to_string(),
-                    ],
-                );
-            }
-            validate_importance_launch(
-                family,
-                &config_args,
-                opencode_env.as_ref(),
-                (family == crate::config::CliFamily::Codex && resolved_model_id.is_some())
-                    .then_some(effort.as_deref())
-                    .flatten(),
-            )?;
-        }
-
-        super::local_files::ensure_dir(std::path::Path::new(&target.er_dir))?;
+        let job = crate::stage_job::StageJob::prepare(
+            crate::stage_job::StageJobRequest {
+                kind: &task.kind,
+                command_name,
+                target: &target,
+                execution_root: task.execution_root.clone(),
+                prompt,
+                prepared_diff,
+                host_write_diagram,
+                scoped_stamp,
+                staging,
+                config,
+                selection: &selection,
+            },
+            &self.ports,
+        )?;
 
         let task_id = task.id.clone();
-        let er_dir = target.er_dir.clone();
-        let repo_root = target.repo_root.clone();
-        let execution_root = task.execution_root.clone();
-        let remote_repo = target.remote_repo.clone();
-        let is_remote = target.remote_repo.is_some();
-        let managed_local = target.managed_local;
-        // For local-branch views (cache-dir er_dir) treat like remote — cwd is
-        // the cache dir so .er/* writes land where the loader reads them.
-        let is_cache_er_dir = !er_dir.starts_with(&repo_root);
-
         let (log_tx, log_rx) = std::sync::mpsc::channel::<AgentLogEntry>();
         let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<()>>();
 
@@ -4105,333 +3569,48 @@ impl App {
             text: format!("{command_name} started ({})", target.display_label()),
         });
 
-        let log_tx_thread = log_tx;
-        let command_name_stdout: std::sync::Arc<str> = std::sync::Arc::from(command_name);
-        let command_name_stderr: std::sync::Arc<str> = std::sync::Arc::from(command_name);
-        let command_name_fail: std::sync::Arc<str> = std::sync::Arc::from(command_name);
-        let command_name_emit: std::sync::Arc<str> = std::sync::Arc::from(command_name);
-        let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
-        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
-        let agent_timeout = config.ai_hub.effective_agent_timeout();
+        let command_name_log: std::sync::Arc<str> = std::sync::Arc::from(command_name);
+        let is_stream_json = job.is_stream_json();
+        // Resource limits stay live App policy; a flow task's frozen config
+        // only chooses its provider.
+        let limits = crate::jobs::JobLimits {
+            slot_cap: self.config.ai_hub.effective_max_concurrent_reviews(),
+            ceiling: self.config.ai_hub.effective_max_concurrent_agents(),
+            retry: er_agent::job::RetryPolicy::none(),
+        };
         // The worker owns one clone; the App keeps the other so a stop control
         // can reach the process. Built here, outside the thread, so the handle
         // exists before anything can try to stop it.
         let run = er_agent::agent_run::AgentRunHandle::new();
         let run_for_task = std::sync::Arc::clone(&run);
         let progress_notify = self.background_progress_notify.clone();
-        let git_handle = self.ports.git.clone();
-        let github_handle = self.ports.github.clone();
-        // Capture the store on the host thread: the worker then commits its
-        // overlay in the storage root the task was launched under.
-        let artifact_store = crate::store_registry::store();
         std::thread::spawn(move || {
             let mut progress_signal = NotifyBackgroundProgressOnDrop {
                 result_tx: Some(result_tx),
                 notify: progress_notify,
             };
-            let mut timer = er_agent::agent_timing::AgentRunTimer::start();
-            let result = (|| -> Result<()> {
-                let debug_path =
-                    std::path::Path::new(&er_dir).join(super::local_files::DEBUG_LOG_FILE);
-
-                // The argv still carries `{prompt}`; the runner substitutes the
-                // job prompt into it. The slot, the spawn and the stop verdicts
-                // are the runner's now.
-                let mut agent_args: Vec<String> = config_args.clone();
-
-                if is_stream_json {
-                    if !agent_args.iter().any(|a| a == "--output-format") {
-                        agent_args.push("--output-format".to_string());
-                        agent_args.push("stream-json".to_string());
-                    }
-                    let has_print = agent_args.iter().any(|a| a == "--print");
-                    let has_stream = agent_args.iter().any(|a| a == "stream-json");
-                    let has_verbose = agent_args.iter().any(|a| a == "--verbose");
-                    if is_claude_compatible && has_print && has_stream && !has_verbose {
-                        agent_args.push("--verbose".to_string());
-                    }
-                }
-
-                if is_claude_compatible {
-                    let allowed = if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
-                        IMPORTANCE_READ_ONLY_TOOLS
-                    } else {
-                        claude_allowed_tools(readonly_run, prepared_diff)
-                    };
-                    for rule in allowed.iter().rev() {
-                        agent_args.insert(0, rule.to_string());
-                        agent_args.insert(0, "--allowedTools".to_string());
-                    }
-                    agent_args.insert(0, CLONE_DENY_RULE.to_string());
-                    agent_args.insert(0, "--disallowedTools".to_string());
-                }
-
-                if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND
-                    && family == crate::config::CliFamily::Claude
-                {
-                    validate_importance_launch(family, &agent_args, None, None)?;
-                }
-
-                // Captured before `prompt` moves into the spec. The debug
-                // transcript shows the argv the provider actually saw.
-                let debug_args = debug_agent_log_enabled().then(|| {
-                    let mut args: Vec<String> = agent_args
-                        .iter()
-                        .map(|arg| arg.replace("{prompt}", &prompt))
-                        .collect();
-                    if !agent_args.iter().any(|arg| arg.contains("{prompt}")) && !prompt.is_empty()
-                    {
-                        args.push(prompt.clone());
-                    }
-                    args
-                });
-
-                // managed_local: er_dir is outside repo_root but git must run from repo_root.
-                // is_remote / is_cache_er_dir without managed_local: cwd = er_dir (cache-dir or remote).
-                // A remote PR whose repo *is* the local checkout runs there instead, so the
-                // agent can verify against real code rather than hunting the filesystem.
-                let remote_checkout = if execution_root.is_none() && is_remote {
-                    remote_repo.as_deref().and_then(|slug| {
-                        github_handle.local_checkout_for_repo(&*git_handle, &repo_root, slug)
-                    })
-                } else {
-                    None
-                };
-                let work_dir = if let Some(checkout) = &execution_root {
-                    checkout
-                } else if let Some(checkout) = &remote_checkout {
-                    checkout
-                } else if managed_local || (!is_remote && !is_cache_er_dir) {
-                    &repo_root
-                } else {
-                    &er_dir
-                };
-                let spec = JobSpec {
-                    kind: background_job_kind(&task_kind),
-                    provider: ProviderSpec {
-                        program: agent_cmd.clone(),
-                        args: agent_args,
-                        env: opencode_env
-                            .iter()
-                            .cloned()
-                            .chain(
-                                staging
-                                    .as_ref()
-                                    .map(|staging| ("ER_JOB_STAGING".to_string(), staging.path())),
-                            )
-                            .collect(),
-                        protocol: if is_stream_json {
-                            crate::agent_runtime::OutputProtocol::ClaudeStreamJson
-                        } else {
-                            crate::agent_runtime::OutputProtocol::Plain
-                        },
-                        timeout: agent_timeout,
-                    },
-                    prompt,
-                    work_dir: work_dir.clone(),
-                    workload: er_agent::agent_slots::Workload::Background,
-                    output: OutputContract::Stdout,
-                };
-
-                // The prompt and `--add-dir` point at staging; the inputs the
-                // prompt reads are copied in just before the run. The baseline
-                // records which files were absent, so a successful run must
-                // have written them.
-                let baseline = match staging.as_deref() {
-                    Some(staging) => {
-                        staging.stage_inputs(&er_dir).with_context(|| {
-                            format!("{command_name_fail}: failed to stage its inputs")
-                        })?;
-                        crate::app::job_commit::capture_baseline(
-                            &task_kind,
-                            scoped_stamp.is_some(),
-                            &staging.path(),
-                        )?
-                    }
-                    None => None,
-                };
-
-                // Log lines are drained off the job thread, so a slow UI
-                // cannot hold the runner's pipe readers.
-                let (progress_tx, progress_rx) =
-                    std::sync::mpsc::sync_channel::<JobProgress>(BACKGROUND_PROGRESS_CAPACITY);
-                let log_tx_drain = log_tx_thread.clone();
-                let name_out = command_name_stdout.clone();
-                let name_err = command_name_stderr.clone();
-                let drain = std::thread::spawn(move || {
-                    while let Ok(event) = progress_rx.recv() {
-                        log_job_progress(
-                            event,
-                            is_stream_json,
-                            &name_out,
-                            &name_err,
-                            &log_tx_drain,
-                        );
-                    }
-                });
-
-                let runner = JobRunner::new(slot_cap, ceiling);
-                let outcome = runner.run_controlled(
-                    &spec,
-                    JobRun {
-                        // The App keeps this handle for the stop control.
-                        handle: std::sync::Arc::clone(&run),
-                        progress: Some(progress_tx),
-                        timer: Some(&mut timer),
-                    },
-                );
-                let _ = drain.join();
-                let output = match outcome {
-                    Ok(output) => output,
-                    Err(JobError::TimedOut(limit)) => {
-                        return Err(er_agent::agent_run::timed_out(limit));
-                    }
-                    Err(JobError::Cancelled) => {
-                        return Err(er_agent::agent_run::cancelled());
-                    }
-                    Err(JobError::Spawn(error)) => {
-                        return Err(error)
-                            .with_context(|| format!("Failed to run review ({agent_cmd})"));
-                    }
-                };
-                let stdout_lines: Vec<String> = output.stdout.lines().map(str::to_string).collect();
-                let stderr_lines: Vec<String> = output.stderr.lines().map(str::to_string).collect();
-                let status = output.status;
-
-                if let Some(debug_args) = &debug_args {
-                    let debug_content = format!(
-                        "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
-                        agent_cmd,
-                        debug_args.join(" "),
-                        status
-                            .code()
-                            .map_or_else(|| "signal".to_string(), |c| c.to_string()),
-                        stdout_lines.join("\n"),
-                        stderr_lines.join("\n"),
-                    );
-                    super::local_files::write_debug_log(&debug_path, &debug_content);
-                }
-
-                if !status.success() {
-                    let stderr_snip = agent_stderr_snippet(&stderr_lines);
-                    if stderr_snip.to_lowercase().contains("not logged in")
-                        || stderr_snip.to_lowercase().contains("authentication")
-                        || stderr_snip.to_lowercase().contains("unauthorized")
-                        || stderr_snip.to_lowercase().contains("not authenticated")
-                    {
-                        anyhow::bail!(
-                            "{command_name_fail}: `{agent_cmd}` needs authentication. \
-                             Run `{agent_cmd}` in a terminal to sign in, then retry. {stderr_snip}"
-                        );
-                    }
-                    if stderr_snip.is_empty() {
-                        anyhow::bail!(
-                            "{command_name_fail} failed (exit {:?}). See Settings → AI Hub if the \
-                             provider CLI is missing or not signed in.",
-                            status.code()
-                        );
-                    }
-                    anyhow::bail!("{command_name_fail} failed: {stderr_snip}");
-                }
-                // Host-owned importance write: the agent printed a rule table
-                // and had no Write/Edit. Validate it and commit it as this
-                // repo's `risk-rules` artifact.
-                if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
-                    // The shared decoder's final text, not the raw stdout: a
-                    // stream-json run carries the table inside its result event.
-                    let proposal = crate::config::RiskRuleProposal::from_reply(&output.text)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "{command_name_fail}: the agent printed no importance table"
-                            )
-                        })?;
-                    proposal
-                        .commit_to_store(&repo_for_worker, &artifact_store)
-                        .with_context(|| {
-                            format!("{command_name_fail}: failed to commit the importance table")
-                        })?;
-                }
-                // Host-owned diagram write: agent had no Write/Edit; validate
-                // only the diagrams/<id>.json payload from stdout, then commit
-                // it through the store.
-                if let Some(hw) = &host_write_diagram {
-                    let diagram = crate::ai::validated_diagram_from_stdout(
-                        &output.stdout,
+            // Log lines are drained off the job thread, so a slow UI cannot
+            // hold the runner's pipe readers.
+            let (progress_tx, progress_rx) =
+                std::sync::mpsc::sync_channel::<JobProgress>(BACKGROUND_PROGRESS_CAPACITY);
+            let log_tx_drain = log_tx.clone();
+            let drain = std::thread::spawn(move || {
+                while let Ok(event) = progress_rx.recv() {
+                    log_job_progress(
+                        event,
                         is_stream_json,
-                        &hw.kind,
-                        &hw.diff_hash,
-                        hw.custom_prompt.as_deref(),
-                    )
-                    .with_context(|| {
-                        format!("{command_name_fail}: failed to validate its diagram sidecar")
-                    })?;
-                    let id = hw
-                        .output_path
-                        .file_stem()
-                        .and_then(|name| name.to_str())
-                        .context("diagram output file has no id")?;
-                    crate::app::job_commit::commit_diagram(&diagram, id, &er_dir, &artifact_store)
-                        .with_context(|| {
-                            format!("{command_name_fail}: failed to commit its diagram sidecar")
-                        })?;
+                        &command_name_log,
+                        &command_name_log,
+                        &log_tx_drain,
+                    );
                 }
-                // File outputs: validate the staged files, then commit them
-                // through the store. A malformed or stale output fails the
-                // job here, before anything in the bucket changes.
-                if let Some(staging) = staging.as_deref() {
-                    if scoped_stamp.is_some() {
-                        crate::app::job_commit::commit_staged_scoped(
-                            command_name_fail.as_ref(),
-                            &staging.path(),
-                            &er_dir,
-                            &artifact_store,
-                        )?;
-                    } else {
-                        crate::app::job_commit::commit_staged(
-                            &task_kind,
-                            &staging.path(),
-                            &er_dir,
-                            baseline.as_ref(),
-                            &artifact_store,
-                        )?;
-                    }
-                }
-                // A scoped run commits its own overlay; a successful full run
-                // clears its lens's old overlay and validation. A failed run
-                // never reaches here.
-                let scope = er_store::Scope::dir(&er_dir)
-                    .with_context(|| format!("{command_name_fail}: invalid bucket {er_dir}"))?;
-                if let Some(stamp) = &scoped_stamp {
-                    crate::ai::stamp_scoped_overlay(
-                        &artifact_store,
-                        &scope,
-                        &command_name_fail,
-                        stamp,
-                    )
-                    .with_context(|| {
-                        format!("{command_name_fail} failed to stamp its scoped overlay")
-                    })?;
-                } else if command_name_fail.as_ref() == "review"
-                    || command_name_fail.as_ref() == "professor"
-                    || command_name_fail.starts_with("expert-")
-                {
-                    crate::ai::clear_full_run_artifacts(
-                        &artifact_store,
-                        &scope,
-                        &command_name_fail,
-                    )
-                    .with_context(|| {
-                        format!("{command_name_fail} failed to clear its old artifacts")
-                    })?;
-                }
-                Ok(())
-            })();
-            let ok = result.is_ok();
-            // As above: the result receiver must not observe a live staging
-            // directory after the task reports completion.
-            drop(staging);
+            });
+            // `run` removes the staging directory before it returns, so the
+            // result receiver never sees it live after completion.
+            let result = job.run(&crate::jobs::LocalJobSink, limits, run, Some(progress_tx));
+            let _ = drain.join();
             progress_signal.send_result(result);
-            timer.emit("background", &command_name_emit, ok);
+            drop(log_tx);
         });
 
         self.background_tasks.insert(
