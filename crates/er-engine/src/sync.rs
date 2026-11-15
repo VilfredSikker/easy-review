@@ -5,8 +5,10 @@
 //! `app/state/github_sync.rs` (three-phase pattern: snapshot under the App
 //! lock → fetch/process here without the lock → apply under the lock).
 //! A headless consumer calls these directly with its own session state. The
-//! `er-api` server named in older notes is a deferred extraction, not a crate
-//! that exists — nothing implements it yet.
+//! workspace actor uses the two halves on their own: [`fetch_comment_sync`]
+//! reads GitHub on an effect thread and writes nothing, and
+//! [`apply_comment_sync`] writes the file on the actor's thread, so the actor
+//! stays the one writer.
 //!
 //! This module is always compiled — it must not depend on any feature-gated
 //! module (`app`, `arena`, `watch`, `highlight`).
@@ -289,13 +291,30 @@ pub fn write_pulled_comments(
     gh_comments: &[github::GitHubComment],
     thread_state: &std::collections::HashMap<u64, ReviewThreadState>,
 ) -> Result<ai::ErGithubComments> {
+    write_pulled_comments_in(
+        &crate::store_registry::store(),
+        ctx,
+        gh_comments,
+        thread_state,
+    )
+}
+
+/// [`write_pulled_comments`] into a store the caller resolved. The workspace
+/// actor writes on its own thread with a store its effect resolved.
+pub fn write_pulled_comments_in(
+    store: &er_store::ArtifactStore,
+    ctx: &CommentSyncContext,
+    gh_comments: &[github::GitHubComment],
+    thread_state: &std::collections::HashMap<u64, ReviewThreadState>,
+) -> Result<ai::ErGithubComments> {
     let comments_path = std::path::Path::new(&ctx.comments_path);
     let comments_dir = comments_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("invalid comments path: {}", ctx.comments_path))?;
-    let store = crate::store_registry::store();
+    #[cfg(any(test, feature = "test-support"))]
+    write_recorder::record(&ctx.comments_path);
     let scope = er_store::Scope::dir(comments_dir)?;
-    let updated = crate::ai::annotation_store::update_github_comments(&store, &scope, |current| {
+    let updated = crate::ai::annotation_store::update_github_comments(store, &scope, |current| {
         Ok::<_, std::convert::Infallible>(rebuild_comment_store(
             ctx,
             current.unwrap_or_else(|| ai::ErGithubComments {
@@ -339,6 +358,24 @@ fn fetch_comment_sync_data_with(
     ctx: &CommentSyncContext,
     use_cache: bool,
 ) -> Result<CommentSyncResult> {
+    let fetched = fetch_comment_sync(ctx, use_cache)?;
+    apply_comment_sync(&crate::store_registry::store(), ctx, fetched)
+}
+
+/// What one comment sync read from GitHub, before anything is written.
+pub struct FetchedCommentSync {
+    pub gh_comments: Vec<github::GitHubComment>,
+    pub thread_state: std::collections::HashMap<u64, ReviewThreadState>,
+    pub pr_data: Option<PrOverviewData>,
+}
+
+/// The read half of a comment sync: the comment bundle and the PR overview,
+/// fetched in parallel. Writes nothing, so a caller can apply the result on
+/// the thread that owns the store writes.
+pub fn fetch_comment_sync(
+    ctx: &CommentSyncContext,
+    use_cache: bool,
+) -> Result<FetchedCommentSync, er_github::GhError> {
     let repo_root = if ctx.is_remote {
         None
     } else {
@@ -385,16 +422,29 @@ fn fetch_comment_sync_data_with(
         (bundle, pr_data)
     });
     let (gh_comments, thread_state) = bundle?;
+    Ok(FetchedCommentSync {
+        gh_comments,
+        thread_state,
+        pr_data,
+    })
+}
 
-    // The fetch above ran outside every lock; rebuilding from `current` in the
+/// The write half of a comment sync: merge the fetched pull into the comments
+/// file and count what it holds.
+pub fn apply_comment_sync(
+    store: &er_store::ArtifactStore,
+    ctx: &CommentSyncContext,
+    fetched: FetchedCommentSync,
+) -> Result<CommentSyncResult> {
+    // The fetch ran outside every lock; rebuilding from `current` in the
     // shared write keeps a local reply written since the fetch.
-    let gc = write_pulled_comments(ctx, &gh_comments, &thread_state)?;
+    let gc = write_pulled_comments_in(store, ctx, &fetched.gh_comments, &fetched.thread_state)?;
     let github_count = gc.comments.iter().filter(|c| c.source == "github").count();
     let local_count = gc.comments.iter().filter(|c| keep_on_pull(c)).count();
 
     Ok(CommentSyncResult {
         gc,
-        pr_data,
+        pr_data: fetched.pr_data,
         github_count,
         local_count,
         is_remote: ctx.is_remote,
@@ -584,6 +634,36 @@ pub fn find_local_line_for_diff_hunk(
     }
 
     None
+}
+
+/// Test support: which thread wrote each pulled comments file. A caller that
+/// promises one writer asserts on the thread here instead of inferring it
+/// from the file. Global, so a test filters by its own unique path.
+#[cfg(any(test, feature = "test-support"))]
+pub mod write_recorder {
+    use std::sync::Mutex;
+
+    static WRITES: Mutex<Vec<(Option<String>, String)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn record(comments_path: &str) {
+        let thread = std::thread::current().name().map(str::to_string);
+        WRITES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((thread, comments_path.to_string()));
+    }
+
+    /// The thread name of every write to `comments_path`, in order; `None`
+    /// for an unnamed thread.
+    pub fn writers_of(comments_path: &str) -> Vec<Option<String>> {
+        WRITES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(_, path)| path == comments_path)
+            .map(|(thread, _)| thread.clone())
+            .collect()
+    }
 }
 
 /// Resolve (owner, repo, pr_number) for a local-mode tab, preferring an

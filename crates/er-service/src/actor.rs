@@ -14,10 +14,11 @@ use er_engine::jobs::JobSink;
 use er_engine::ports::Ports;
 
 use crate::effect::resolve_target;
+use crate::github_sync::{Applied, Fetched};
 use crate::guard::{self, ActorThread};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError, WorkspaceHandle};
 use crate::jobs::JobHost;
-use crate::protocol::{Command, Event, Reply};
+use crate::protocol::{Command, Event, Reply, TabContext};
 use crate::workspace::{WorkspaceState, WorkspaceView};
 
 /// The actor's dependencies. This is the seam P45 extends: the actor takes
@@ -130,8 +131,46 @@ fn run(
                 publish(&view, &state);
                 broadcast(&subscribers, Event::ViewPublished { revision });
             }
+            ActorMsg::Fetched { result, reply } => {
+                match result.and_then(crate::github_sync::apply) {
+                    Ok(Applied {
+                        reply: value,
+                        event,
+                    }) => {
+                        // A plain read changes nothing, so it publishes nothing.
+                        if let Some(event) = event {
+                            let revision = state.bump_revision();
+                            publish(&view, &state);
+                            broadcast(&subscribers, Event::ViewPublished { revision });
+                            broadcast(&subscribers, event);
+                        }
+                        let _ = reply.send(Ok(value));
+                    }
+                    Err(error) => apply(&mut state, Err(error), reply, &subscribers, &view),
+                }
+            }
         }
     }
+}
+
+/// Runs one GitHub read for the tab off the actor thread and sends what it
+/// read back for the actor to apply. A tab the workspace has left is refused.
+fn spawn_fetch(
+    deps: &WorkspaceDeps,
+    state: &WorkspaceState,
+    tx: &Sender<ActorMsg>,
+    reply: ReplySender,
+    context: TabContext,
+    work: impl FnOnce(&WorkspaceDeps, TabContext) -> Result<Fetched, WorkspaceError> + Send + 'static,
+) {
+    if !context_matches(state, &context.repo_root) {
+        return refuse_stale(reply);
+    }
+    let (deps, tx) = (deps.clone(), tx.clone());
+    let _ = thread::Builder::new().spawn(move || {
+        let result = work(&deps, context);
+        let _ = tx.send(ActorMsg::Fetched { result, reply });
+    });
 }
 
 /// Runs one command's blocking work off the actor thread and sends the typed
@@ -459,6 +498,40 @@ fn handle_command(
                     body,
                 )
                 .map(|id| Reply::CommentPromoted { id })
+            });
+        }
+        Command::SyncGithubComments { context, source } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::github_sync::fetch_sync(deps, context, source)
+            });
+        }
+        Command::GetPendingReview { context } => {
+            spawn_fetch(deps, state, tx, reply, context, crate::pending_review::get);
+        }
+        Command::AddPendingReviewComment {
+            context,
+            target,
+            body,
+        } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pending_review::add_comment(deps, context, &target, &body)
+            });
+        }
+        Command::RemovePendingReviewComment {
+            context,
+            comment_node_id,
+        } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pending_review::remove_comment(deps, context, &comment_node_id)
+            });
+        }
+        Command::SubmitPendingReview {
+            context,
+            event,
+            summary,
+        } => {
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pending_review::submit(deps, context, event, &summary)
             });
         }
         #[cfg(test)]
