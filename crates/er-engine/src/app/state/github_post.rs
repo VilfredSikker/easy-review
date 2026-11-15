@@ -7,85 +7,21 @@
 //! writes the record. A retry reuses the client id so the pending attempt is
 //! reconciled instead of posting twice.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::ai;
 use crate::github_post::{
-    claim_in_flight, new_client_id, CommentPostContext, GitHubCommentPoster, GitHubPostError,
-    GitHubPostExecution, GitHubPostOutcome, GitHubPostRequest, GitHubPostTarget, InFlightGuard,
-    PendingGitHubPost, PostedGitHubComment, PrPostTarget, RETRY_TOO_EARLY,
-    UNKNOWN_RETRY_NOT_BEFORE_SECS,
+    new_client_id, CommentPostContext, GitHubCommentPoster, GitHubPostError, GitHubPostExecution,
+    GitHubPostRequest, PostedGitHubComment, PrPostTarget,
 };
+use crate::github_post_session::{PostBegin, PostSession};
 
 use tui_textarea::TextArea;
 
-use super::{chrono_now, App, CommentType, InputMode, LineAnchor};
+use super::{App, CommentType, DiffMode, InputMode, LineAnchor, TabState};
 
-/// A comment the user just created, ready to become a GitHub request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NewGitHubComment {
-    Line {
-        file: String,
-        hunk_idx: usize,
-        line_start: Option<usize>,
-        line_end: Option<usize>,
-        side: Option<String>,
-        body: String,
-    },
-    Reply {
-        parent_id: String,
-        body: String,
-    },
-    General {
-        body: String,
-    },
-}
-
-impl From<crate::ai::promote::PromotedComment> for NewGitHubComment {
-    fn from(promoted: crate::ai::promote::PromotedComment) -> Self {
-        Self::Line {
-            file: promoted.path().to_string(),
-            hunk_idx: promoted.hunk_index().unwrap_or(0),
-            line_start: Some(promoted.line_start()),
-            line_end: promoted.line_end(),
-            side: Some(promoted.side().to_string()),
-            body: promoted.body().to_string(),
-        }
-    }
-}
-
-/// Where a posted comment belongs in `github-comments.json`.
-#[derive(Debug, Clone, Default)]
-pub struct PostedGitHubCommentLocation {
-    pub file: String,
-    pub hunk_index: Option<usize>,
-    pub line_start: Option<usize>,
-    pub line_end: Option<usize>,
-    pub line_content: String,
-    pub context_before: Vec<String>,
-    pub context_after: Vec<String>,
-    pub old_line_start: Option<usize>,
-    pub hunk_header: String,
-    pub side: String,
-    pub in_reply_to: Option<String>,
-}
-
-/// Everything one create needs between `begin` and `finish`. The in-flight
-/// guard is not `Clone`: cloning it would release the client id twice.
-#[derive(Debug)]
-pub struct GitHubPostTicket {
-    pub request: GitHubPostRequest,
-    pub pending: Option<PendingGitHubPost>,
-    pub tab: CommentPostContext,
-    pub comments_path: String,
-    pub branch_diff_hash: String,
-    pub diff_hash: String,
-    pub started_at: String,
-    pub known_ids: HashSet<u64>,
-    pub location: PostedGitHubCommentLocation,
-    _in_flight: InFlightGuard,
-}
+pub use crate::github_post_session::{
+    GitHubPostTicket, NewGitHubComment, PostedGitHubCommentLocation,
+};
 
 impl App {
     /// Identity of the active tab, captured before resolving the PR target.
@@ -115,107 +51,6 @@ impl App {
         ctx: CommentPostContext,
         client_id: Option<String>,
     ) -> Result<GitHubPostTicket, GitHubPostError> {
-        if self.comment_post_context() != ctx {
-            return Err(GitHubPostError::NotPosted(
-                "The active tab changed while the comment was being prepared".to_string(),
-            ));
-        }
-
-        let body = match &intent {
-            NewGitHubComment::Line { body, .. }
-            | NewGitHubComment::Reply { body, .. }
-            | NewGitHubComment::General { body } => body.trim().to_string(),
-        };
-        if body.is_empty() {
-            return Err(GitHubPostError::NotPosted(
-                "Comment body cannot be empty".to_string(),
-            ));
-        }
-
-        let (target, location) = match &intent {
-            NewGitHubComment::Line {
-                file,
-                hunk_idx,
-                line_start,
-                line_end,
-                side,
-                ..
-            } => {
-                let line = line_start.unwrap_or(1);
-                let end = line_end.filter(|end| *end > line).unwrap_or(line);
-                let side = side.clone().unwrap_or_else(|| "RIGHT".to_string());
-                if side != "LEFT" && side != "RIGHT" {
-                    return Err(GitHubPostError::NotPosted(format!(
-                        "Unsupported comment side: {side}"
-                    )));
-                }
-                let anchor = self.line_anchor_at(file, *hunk_idx, *line_start, Some(&side));
-                let location = PostedGitHubCommentLocation {
-                    file: file.clone(),
-                    hunk_index: Some(*hunk_idx),
-                    line_start: anchor.line_start,
-                    line_end: Self::normalize_line_end(anchor.line_start, *line_end),
-                    line_content: anchor.line_content,
-                    context_before: anchor.context_before,
-                    context_after: anchor.context_after,
-                    old_line_start: anchor.old_line_start,
-                    hunk_header: anchor.hunk_header,
-                    side: side.clone(),
-                    in_reply_to: None,
-                };
-                (
-                    GitHubPostTarget::Line {
-                        path: file.clone(),
-                        line_start: line,
-                        line_end: end,
-                        side,
-                    },
-                    location,
-                )
-            }
-            NewGitHubComment::Reply { parent_id, .. } => {
-                let parent = self
-                    .tab()
-                    .ai
-                    .github_comments
-                    .as_ref()
-                    .and_then(|gc| gc.comments.iter().find(|c| c.id == *parent_id))
-                    .cloned()
-                    .ok_or_else(|| {
-                        GitHubPostError::NotPosted("The reply target no longer exists".to_string())
-                    })?;
-                let parent_github = parent.github_id.ok_or_else(|| {
-                    GitHubPostError::NotPosted("The reply target is not on GitHub".to_string())
-                })?;
-                let location = PostedGitHubCommentLocation {
-                    file: parent.file.clone(),
-                    hunk_index: parent.hunk_index,
-                    line_start: parent.line_start,
-                    line_end: parent.line_end,
-                    line_content: parent.line_content.clone(),
-                    context_before: parent.context_before.clone(),
-                    context_after: parent.context_after.clone(),
-                    old_line_start: parent.old_line_start,
-                    hunk_header: parent.hunk_header.clone(),
-                    side: parent.side.clone(),
-                    in_reply_to: Some(format!("gh-{parent_github}")),
-                };
-                (
-                    GitHubPostTarget::Reply {
-                        in_reply_to: parent_github,
-                    },
-                    location,
-                )
-            }
-            NewGitHubComment::General { .. } => (
-                GitHubPostTarget::General,
-                PostedGitHubCommentLocation {
-                    side: "RIGHT".to_string(),
-                    ..Default::default()
-                },
-            ),
-        };
-
         let client_id = match client_id.filter(|id| !id.is_empty()) {
             Some(id) => id,
             None => match self.tab().comment_client_id.clone() {
@@ -227,47 +62,30 @@ impl App {
                 }
             },
         };
-
-        let pending = self.pending_github_posts.get(&client_id).cloned();
-        let known_ids = pending
-            .as_ref()
-            .map(|pending| pending.known_ids.clone())
-            .unwrap_or_else(|| self.known_github_ids());
-
-        let (comments_path, branch_diff_hash, diff_hash) = {
-            let tab = self.tab();
-            let store = crate::store_registry::store();
-            let comments_dir = tab.github_comments_dir();
-            let scope = er_store::Scope::dir(comments_dir.as_str())
-                .map_err(|e| GitHubPostError::NotPosted(format!("Invalid comments path: {e}")))?;
-            (
-                crate::ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &scope)
-                    .map_err(|e| GitHubPostError::NotPosted(format!("Invalid comments path: {e}")))?
-                    .to_string_lossy()
-                    .into_owned(),
-                tab.branch_diff_hash.clone(),
-                tab.diff_hash.clone(),
-            )
+        let mut session = PostSession::from_pending(std::mem::take(&mut self.pending_github_posts));
+        let active = self.comment_post_context();
+        let tab = self.tab();
+        let diff_file = match &intent {
+            NewGitHubComment::Line { file, .. } => Self::annotation_diff_file(tab, file),
+            NewGitHubComment::Reply { .. } | NewGitHubComment::General { .. } => None,
         };
-
-        let guard = claim_in_flight(&client_id)?;
-        Ok(GitHubPostTicket {
-            request: GitHubPostRequest {
-                client_id,
+        let comments_dir = tab.github_comments_dir();
+        let ticket = session.begin(
+            intent,
+            PostBegin {
+                active,
+                ctx,
                 pr,
-                target,
-                body,
+                comments: tab.ai.github_comments.as_ref(),
+                diff_file,
+                comments_dir: &comments_dir,
+                branch_diff_hash: tab.branch_diff_hash.clone(),
+                diff_hash: tab.diff_hash.clone(),
+                client_id,
             },
-            pending,
-            tab: ctx,
-            comments_path,
-            branch_diff_hash,
-            diff_hash,
-            started_at: chrono_now(),
-            known_ids,
-            location,
-            _in_flight: guard,
-        })
+        );
+        self.pending_github_posts = session.into_pending();
+        ticket
     }
 
     /// Record a create's outcome. A general comment is not recorded: the pull
@@ -277,40 +95,31 @@ impl App {
         ticket: GitHubPostTicket,
         execution: GitHubPostExecution,
     ) -> Result<PostedGitHubComment, GitHubPostError> {
-        match execution {
-            GitHubPostExecution::Post(GitHubPostOutcome::UnknownOutcome { error }) => {
-                if error != RETRY_TOO_EARLY {
-                    self.remember_unknown_outcome(&ticket);
+        let ticket_tab = ticket.tab.clone();
+        let client_id = ticket.request.client_id.clone();
+        let mut session = PostSession::from_pending(std::mem::take(&mut self.pending_github_posts));
+        let record = session.finish(ticket, execution);
+        self.pending_github_posts = session.into_pending();
+        let record = record?;
+        if let Some(comments) = record.comments {
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| {
+                tab.repo_root == ticket_tab.repo_root
+                    && tab.pr_number == ticket_tab.pr_number
+                    && tab.is_remote() == ticket_tab.is_remote
+            }) {
+                tab.ai.github_comments = Some(comments);
+                tab.ai.rebuild_comment_index();
+                if let Some(path) = record.comments_path.as_ref() {
+                    tab.mark_sidecar_written(path.to_string_lossy().as_ref());
                 }
-                Err(GitHubPostError::UnknownOutcome(error))
-            }
-            GitHubPostExecution::Post(GitHubPostOutcome::NotPosted { error }) => {
-                Err(GitHubPostError::NotPosted(error))
-            }
-            GitHubPostExecution::Post(GitHubPostOutcome::Posted {
-                github_id,
-                created_at,
-                author,
-            }) => self.record_posted_comment(
-                &ticket,
-                github_id,
-                created_at,
-                author,
-                ticket.request.body.clone(),
-                false,
-            ),
-            GitHubPostExecution::Adopted { comment } => {
-                let kept_earlier_body = comment.body.trim_end() != ticket.request.body.trim_end();
-                self.record_posted_comment(
-                    &ticket,
-                    comment.id,
-                    comment.created_at,
-                    comment.author,
-                    comment.body,
-                    kept_earlier_body,
-                )
+                if tab.comment_client_id.as_deref() == Some(client_id.as_str()) {
+                    tab.comment_client_id = None;
+                }
             }
         }
+        // The pull's comment list is stale whether or not a row was recorded.
+        self.ports.github.invalidate_comments();
+        Ok(record.posted)
     }
 
     /// The comment the open composer would post, if it is a GitHub-kind create
@@ -337,19 +146,19 @@ impl App {
                 .iter()
                 .find(|c| c.id == parent_id)?;
             parent.github_id?;
-            return Some(NewGitHubComment::Reply { parent_id, body });
+            return Some(NewGitHubComment::reply(parent_id, body));
         }
         if tab.comment_file.is_empty() {
-            return Some(NewGitHubComment::General { body });
+            return Some(NewGitHubComment::general(body));
         }
-        Some(NewGitHubComment::Line {
-            file: tab.comment_file.clone(),
-            hunk_idx: tab.comment_hunk,
-            line_start: tab.comment_line_num,
-            line_end: tab.comment_line_end,
-            side: tab.comment_side.clone(),
+        Some(NewGitHubComment::line(
+            tab.comment_file.clone(),
+            tab.comment_hunk,
+            tab.comment_line_num,
+            tab.comment_line_end,
+            tab.comment_side.clone(),
             body,
-        })
+        ))
     }
 
     /// TUI submit: post the open composer's comment now.
@@ -394,16 +203,9 @@ impl App {
     /// example a promote whose source deletion failed), so the next send
     /// adopts the comment instead of posting a second copy.
     pub fn remember_posted_for_retry(&mut self, request: GitHubPostRequest) {
-        self.pending_github_posts.insert(
-            request.client_id.clone(),
-            PendingGitHubPost {
-                started_at: chrono_now(),
-                not_before_epoch: 0,
-                known_ids: HashSet::new(),
-                bodies: vec![request.body.clone()],
-                request,
-            },
-        );
+        let mut session = PostSession::from_pending(std::mem::take(&mut self.pending_github_posts));
+        session.remember_posted_for_retry(request);
+        self.pending_github_posts = session.into_pending();
     }
 
     /// `get_line_anchor` with the location passed in; the composer fields are
@@ -416,214 +218,38 @@ impl App {
         side: Option<&str>,
     ) -> LineAnchor {
         let tab = self.tab();
-        let diff_file = if file.is_empty() {
+        crate::annotations::line_anchor_at(
+            Self::annotation_diff_file(tab, file),
+            hunk_idx,
+            line,
+            side,
+        )
+    }
+
+    /// The file an annotation targets: the selected file when the name is
+    /// empty, a history commit's file in History, else the tab's files.
+    fn annotation_diff_file<'a>(tab: &'a TabState, file: &str) -> Option<&'a crate::git::DiffFile> {
+        if file.is_empty() {
             tab.selected_diff_file()
-        } else if tab.mode == super::DiffMode::History {
+        } else if tab.mode == DiffMode::History {
             tab.history
                 .as_ref()
                 .and_then(|history| history.commit_files.iter().find(|f| f.path == file))
         } else {
             tab.files.iter().find(|f| f.path == file)
-        };
-
-        crate::annotations::line_anchor_at(diff_file, hunk_idx, line, side)
-    }
-
-    fn known_github_ids(&self) -> HashSet<u64> {
-        let tab = self.tab();
-        let comments_dir = tab.github_comments_dir();
-        let store = crate::store_registry::store();
-        let from_file = er_store::Scope::dir(comments_dir.as_str())
-            .ok()
-            .and_then(|scope| {
-                match crate::ai::annotation_store::load_github_comments(&store, &scope) {
-                    Ok(er_store::Loaded::Found(stored)) => Some(
-                        stored
-                            .value
-                            .comments
-                            .iter()
-                            .filter_map(|c| c.github_id)
-                            .collect(),
-                    ),
-                    _ => None,
-                }
-            });
-        if let Some(ids) = from_file {
-            return ids;
-        }
-        tab.ai
-            .github_comments
-            .as_ref()
-            .map(|gc| gc.comments.iter().filter_map(|c| c.github_id).collect())
-            .unwrap_or_default()
-    }
-
-    fn remember_unknown_outcome(&mut self, ticket: &GitHubPostTicket) {
-        let not_before_epoch = now_epoch_secs() + UNKNOWN_RETRY_NOT_BEFORE_SECS;
-        let client_id = ticket.request.client_id.clone();
-        match self.pending_github_posts.get_mut(&client_id) {
-            Some(pending) => {
-                if !pending
-                    .bodies
-                    .iter()
-                    .any(|body| body.trim_end() == ticket.request.body.trim_end())
-                {
-                    pending.bodies.push(ticket.request.body.clone());
-                }
-                pending.request = ticket.request.clone();
-                pending.not_before_epoch = not_before_epoch;
-            }
-            None => {
-                self.pending_github_posts.insert(
-                    client_id,
-                    PendingGitHubPost {
-                        started_at: ticket.started_at.clone(),
-                        not_before_epoch,
-                        known_ids: ticket.known_ids.clone(),
-                        bodies: vec![ticket.request.body.clone()],
-                        request: ticket.request.clone(),
-                    },
-                );
-            }
         }
     }
-
-    fn record_posted_comment(
-        &mut self,
-        ticket: &GitHubPostTicket,
-        github_id: u64,
-        created_at: String,
-        author: String,
-        body: String,
-        kept_earlier_body: bool,
-    ) -> Result<PostedGitHubComment, GitHubPostError> {
-        if matches!(ticket.request.target, GitHubPostTarget::General) {
-            self.pending_github_posts.remove(&ticket.request.client_id);
-            self.ports.github.invalidate_comments();
-            return Ok(PostedGitHubComment {
-                github_id,
-                store_id: None,
-                kept_earlier_body,
-            });
-        }
-
-        let store = crate::store_registry::store();
-        let Some(comments_dir) = std::path::Path::new(&ticket.comments_path).parent() else {
-            return Err(GitHubPostError::RecordFailed(format!(
-                "invalid comments path: {}",
-                ticket.comments_path
-            )));
-        };
-        let scope = er_store::Scope::dir(comments_dir)
-            .map_err(|e| GitHubPostError::RecordFailed(format!("{e}")))?;
-        let comments_path =
-            crate::ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &scope)
-                .map_err(|e| GitHubPostError::RecordFailed(format!("{e}")))?;
-        let store_id = format!("gh-{github_id}");
-        let location = &ticket.location;
-        let new_comment = ai::GithubComment {
-            id: store_id.clone(),
-            timestamp: created_at,
-            file: location.file.clone(),
-            hunk_index: location.hunk_index,
-            line_start: location.line_start,
-            line_end: location.line_end,
-            line_content: location.line_content.clone(),
-            comment: body,
-            in_reply_to: location.in_reply_to.clone(),
-            resolved: false,
-            source: "github".to_string(),
-            github_id: Some(github_id),
-            author,
-            outdated: false,
-            stale: false,
-            context_before: location.context_before.clone(),
-            context_after: location.context_after.clone(),
-            old_line_start: location.old_line_start,
-            hunk_header: location.hunk_header.clone(),
-            anchor_status: "original".to_string(),
-            relocated_at_hash: ticket.diff_hash.clone(),
-            finding_ref: None,
-            side: location.side.clone(),
-        };
-        let diff_hash_for_write = ticket.branch_diff_hash.clone();
-        let written =
-            crate::ai::annotation_store::update_github_comments(&store, &scope, move |current| {
-                let mut gc = current.unwrap_or_else(|| ai::ErGithubComments {
-                    version: 1,
-                    diff_hash: diff_hash_for_write.clone(),
-                    github: None,
-                    comments: Vec::new(),
-                });
-                gc.diff_hash = diff_hash_for_write;
-                if !gc.comments.iter().any(|c| c.github_id == Some(github_id)) {
-                    gc.comments.push(new_comment);
-                }
-                Ok::<_, std::convert::Infallible>(gc)
-            });
-        let gc = match written {
-            Ok(updated) => updated.value,
-            Err(e) => {
-                // GitHub holds the comment, so the retry must reconcile rather
-                // than post it again. Keep an existing record: replacing it would
-                // discard the first attempt's start time and bodies, and a later
-                // retry could miss the earlier comment. Only the wait is cleared,
-                // because the comment already exists.
-                match self.pending_github_posts.get_mut(&ticket.request.client_id) {
-                    Some(pending) => pending.not_before_epoch = 0,
-                    None => {
-                        self.pending_github_posts.insert(
-                            ticket.request.client_id.clone(),
-                            PendingGitHubPost {
-                                started_at: ticket.started_at.clone(),
-                                not_before_epoch: 0,
-                                known_ids: ticket.known_ids.clone(),
-                                bodies: vec![ticket.request.body.clone()],
-                                request: ticket.request.clone(),
-                            },
-                        );
-                    }
-                }
-                return Err(GitHubPostError::RecordFailed(format!("{e:#}")));
-            }
-        };
-
-        self.pending_github_posts.remove(&ticket.request.client_id);
-        if let Some(tab) = self.tabs.iter_mut().find(|t| {
-            t.repo_root == ticket.tab.repo_root
-                && t.pr_number == ticket.tab.pr_number
-                && t.is_remote() == ticket.tab.is_remote
-        }) {
-            tab.ai.github_comments = Some(gc);
-            tab.ai.rebuild_comment_index();
-            tab.mark_sidecar_written(comments_path.to_string_lossy().as_ref());
-            if tab.comment_client_id.as_deref() == Some(ticket.request.client_id.as_str()) {
-                tab.comment_client_id = None;
-            }
-        }
-        self.ports.github.invalidate_comments();
-        Ok(PostedGitHubComment {
-            github_id,
-            store_id: Some(store_id),
-            kept_earlier_body,
-        })
-    }
-}
-
-fn now_epoch_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai;
     use crate::github_post::{
         execute_comment_post, GitHubCommentPoster, GitHubPostOutcome, GitHubPostRequest,
         GitHubPostTarget, ListedGitHubComment, PrPostTarget, RETRY_TOO_EARLY,
     };
+    use crate::sync::chrono_now;
     use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::Mutex;

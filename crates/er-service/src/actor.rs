@@ -24,11 +24,23 @@ use crate::workspace::{WorkspaceState, WorkspaceView};
 #[derive(Clone)]
 pub struct WorkspaceDeps {
     ports: Ports,
+    post_session: Arc<Mutex<er_engine::github_post_session::PostSession>>,
 }
 
 impl WorkspaceDeps {
     pub fn new(ports: Ports) -> Self {
-        Self { ports }
+        Self {
+            ports,
+            post_session: Arc::new(Mutex::new(
+                er_engine::github_post_session::PostSession::default(),
+            )),
+        }
+    }
+
+    /// The retry state a GitHub comment create keeps between attempts. Effects
+    /// lock it only around begin and finish; the post itself runs unlocked.
+    pub(crate) fn post_session(&self) -> &Arc<Mutex<er_engine::github_post_session::PostSession>> {
+        &self.post_session
     }
 
     /// The ports, for use inside an off-actor effect. Every effect runs on its
@@ -326,6 +338,70 @@ fn handle_command(
                     client_id,
                 )
                 .map(|(root_id, reply_id)| Reply::FindingReplied { root_id, reply_id })
+            });
+        }
+        Command::AddComment {
+            context,
+            target,
+            body,
+            side,
+            client_id,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::github_comments::add_comment(
+                    &deps, &context, &target, &body, side, client_id,
+                )
+                .map(|id| Reply::AnnotationWritten { id })
+            });
+        }
+        Command::ReplyToGithubThread {
+            context,
+            parent_id,
+            body,
+            client_id,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::github_comments::reply_to_github_thread(
+                    &deps, &context, &parent_id, &body, client_id,
+                )
+                .map(|id| Reply::AnnotationWritten { id })
+            });
+        }
+        Command::PromoteToComment { context, id, body } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::github_comments::promote_to_comment(&deps, &context, &id, body)
+                    .map(|id| Reply::CommentPromoted { id })
+            });
+        }
+        Command::PromoteFindingToComment {
+            context,
+            finding_id,
+            body,
+        } => {
+            if !context_matches(state, &context.repo_root) {
+                return refuse_stale(reply);
+            }
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                crate::github_comments::promote_finding_to_comment(
+                    &deps,
+                    &context,
+                    &finding_id,
+                    body,
+                )
+                .map(|id| Reply::CommentPromoted { id })
             });
         }
         #[cfg(test)]

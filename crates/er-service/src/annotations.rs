@@ -19,17 +19,17 @@ use crate::actor::WorkspaceDeps;
 use crate::handle::WorkspaceError;
 use crate::protocol::{AnnotationKind, AnnotationTarget, TabContext};
 
-fn failed(context: &str, error: impl std::fmt::Display) -> WorkspaceError {
+pub(crate) fn failed(context: &str, error: impl std::fmt::Display) -> WorkspaceError {
     WorkspaceError::Failed(format!("{context}: {error:#}"))
 }
 
-fn bucket_scope(dir: &str) -> Result<Scope, WorkspaceError> {
+pub(crate) fn bucket_scope(dir: &str) -> Result<Scope, WorkspaceError> {
     Scope::dir(dir).map_err(|error| failed("open the bucket", error))
 }
 
 /// Fetch the tab's raw diff through the ports. Runs on an effect thread, never
 /// on the actor.
-fn fetch_raw(deps: &WorkspaceDeps, ctx: &TabContext) -> Result<String, WorkspaceError> {
+pub(crate) fn fetch_raw(deps: &WorkspaceDeps, ctx: &TabContext) -> Result<String, WorkspaceError> {
     let inputs = BranchScopeFetchInputs {
         ports: deps.ports().clone(),
         repo_root: ctx.repo_root.clone(),
