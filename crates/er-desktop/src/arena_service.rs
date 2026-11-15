@@ -241,3 +241,260 @@ pub fn override_finding(
 pub fn attach(app: &App, service: Arc<crate::service::ServiceState>) {
     app.set_arena_live_elsewhere(Arc::new(move |run_id| service.arena_run_live(run_id)));
 }
+
+/// The flag-on wiring between the desktop and an actor's live runs: progress
+/// reaches the front end through the desktop revision, and the App's
+/// recovery leaves a run an actor owns alone.
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::mpsc::{self, Sender};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use er_engine::app::TabState;
+    use er_engine::arena::{ArenaPaths, ArenaScope, ReviewerRef, RunStatus};
+    use er_engine::config::{AiModelConfig, AiProviderConfig, ErConfig};
+    use er_engine::jobs::{JobId, JobResult, JobSink, JobSubmission, JobTicket};
+    use er_engine::paths::ErRoot;
+    use er_engine::ports::Ports;
+    use er_git::FakeGit;
+    use er_service::{TabContext, WorkspaceDeps};
+
+    use super::*;
+    use crate::service::ServiceState;
+
+    const DEADLINE: Duration = Duration::from_secs(10);
+    const KEY: &str = "/repo";
+
+    const RAW: &str = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,3 @@
+ fn a() {}
++fn b() {}
+ fn c() {}
+";
+
+    /// Holds every job unanswered, so a run stays mid-round until the test
+    /// lets go. A dropped answer fails its job; once released, the sink fails
+    /// each new job at once, so the run ends whatever stage it had reached.
+    struct HoldingSink {
+        held: Mutex<Option<Vec<HeldJob>>>,
+    }
+
+    /// A job and the answer the sink has not sent.
+    type HeldJob = (JobSubmission, Sender<JobResult>);
+
+    impl Default for HoldingSink {
+        fn default() -> Self {
+            Self {
+                held: Mutex::new(Some(Vec::new())),
+            }
+        }
+    }
+
+    impl JobSink for HoldingSink {
+        fn submit(&self, job: JobSubmission) -> JobTicket {
+            let (answer, ticket) = mpsc::channel();
+            match self.held.lock().unwrap().as_mut() {
+                Some(held) => held.push((job, answer)),
+                None => job.handle.mark_finished(),
+            }
+            JobTicket::new(JobId::next(), ticket)
+        }
+    }
+
+    impl HoldingSink {
+        fn release(&self) {
+            for (job, _answer) in self.held.lock().unwrap().take().unwrap_or_default() {
+                job.handle.mark_finished();
+            }
+        }
+    }
+
+    fn service(sink: Arc<HoldingSink>, revision: Arc<AtomicU64>) -> Arc<ServiceState> {
+        let git: Arc<dyn er_git::Git> =
+            Arc::new(FakeGit::default().with_diff_against_branch(Ok(RAW.to_string())));
+        let deps = WorkspaceDeps::new(Ports::with_git(git)).with_jobs(sink);
+        Arc::new(ServiceState::with_deps(deps, revision))
+    }
+
+    fn fake_ref() -> ReviewerRef {
+        ReviewerRef {
+            provider_id: "fake".to_string(),
+            model_id: "fake-1".to_string(),
+            agent_kind: None,
+        }
+    }
+
+    fn context(bucket: &str) -> ArenaContext {
+        let mut config = ErConfig::default();
+        config.ai_hub.providers.insert(
+            "fake".to_string(),
+            AiProviderConfig {
+                command: "fake-provider".to_string(),
+                args: vec!["{prompt}".to_string()],
+                models: vec![AiModelConfig {
+                    id: "fake-1".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        ArenaContext {
+            tab: TabContext {
+                er_dir: bucket.to_string(),
+                comments_dir: bucket.to_string(),
+                is_remote: false,
+                repo_root: bucket.to_string(),
+                base_branch: "main".to_string(),
+                scope: "branch".to_string(),
+                remote_repo: None,
+                pr_number: None,
+                pr_head_ref: None,
+                local_branch_view: Some("feature".to_string()),
+                checkout_root: None,
+                branch_diff_hash: String::new(),
+                diff_hash: String::new(),
+            },
+            branch_ref: "feature".to_string(),
+            config: Arc::new(config),
+            buckets: vec![bucket.to_string()],
+            review_hash: String::new(),
+        }
+    }
+
+    /// Starts a run through the actor directly. `ServiceState::send` never
+    /// bumps the desktop revision itself, unlike the routed commands.
+    fn start_run(service: &ServiceState, bucket: &str) -> String {
+        let reply = service
+            .send(
+                KEY,
+                Command::Arena(ArenaCommand::StartRun {
+                    arena: context(bucket),
+                    params: ArenaStartParams {
+                        title: None,
+                        reviewers: vec![fake_ref(), fake_ref()],
+                        scope: ArenaScope::Branch,
+                        files: None,
+                        rounds: Some(1),
+                        arbiter: Some(fake_ref()),
+                        confirm: true,
+                        agent_kind: None,
+                        effort: None,
+                    },
+                }),
+            )
+            .unwrap();
+        let Reply::ArenaStarted { mut run_ids } = reply else {
+            panic!("unexpected reply {reply:?}");
+        };
+        run_ids.remove(0)
+    }
+
+    fn status(bucket: &str, run_id: &str) -> RunStatus {
+        er_engine::arena::load_run(&ArenaPaths::for_run(Path::new(bucket), run_id))
+            .unwrap()
+            .status
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + DEADLINE;
+        while !done() {
+            assert!(Instant::now() < deadline, "{what} within {DEADLINE:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn is_terminal(status: &RunStatus) -> bool {
+        matches!(
+            status,
+            RunStatus::Complete | RunStatus::Failed | RunStatus::Cancelled
+        )
+    }
+
+    fn bucket_in(dir: &Path) -> String {
+        let bucket = dir.join("bucket");
+        std::fs::create_dir_all(&bucket).unwrap();
+        bucket.to_string_lossy().into_owned()
+    }
+
+    /// The live arena page re-reads only on `er://revision`. A run's progress
+    /// and its end publish from the actor after the start command has
+    /// answered, so they reach the page only if a published view bumps the
+    /// desktop revision.
+    #[test]
+    fn a_published_arena_view_bumps_the_desktop_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = bucket_in(dir.path());
+        er_engine::storage::with_process_test_storage_root(dir.path(), || {
+            let sink = Arc::new(HoldingSink::default());
+            let revision = Arc::new(AtomicU64::new(0));
+            let service = service(Arc::clone(&sink), Arc::clone(&revision));
+            let run_id = start_run(&service, &bucket);
+
+            sink.release();
+            wait_until("the run's end reaches the view", || {
+                service
+                    .view(KEY)
+                    .arena_run(&run_id)
+                    .is_some_and(|live| is_terminal(&live.status))
+            });
+            let published = service.view(KEY).revision;
+            wait_until("the desktop revision follows the view", || {
+                revision.load(Ordering::Relaxed) >= published
+            });
+            wait_until("the run's record is terminal", || {
+                is_terminal(&status(&bucket, &run_id))
+            });
+        });
+    }
+
+    /// A tab switch runs the App's arena recovery over the bucket. With the
+    /// predicate `main.rs` attaches, the actor's mid-round run stays
+    /// `Running` while an unowned one is still marked `Failed`.
+    #[test]
+    fn a_tab_switch_leaves_an_actor_run_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = bucket_in(dir.path());
+        er_engine::storage::with_process_test_storage_root(dir.path(), || {
+            let sink = Arc::new(HoldingSink::default());
+            let service = service(Arc::clone(&sink), Arc::new(AtomicU64::new(0)));
+            let run_id = start_run(&service, &bucket);
+            wait_until("the run is live in the view", || {
+                service.view(KEY).arena_run(&run_id).is_some()
+            });
+            wait_until("the run's record is running", || {
+                matches!(status(&bucket, &run_id), RunStatus::Running { .. })
+            });
+            let orphan = ArenaPaths::for_run(Path::new(&bucket), "orphan-run");
+            let mut record =
+                er_engine::arena::load_run(&ArenaPaths::for_run(Path::new(&bucket), &run_id))
+                    .unwrap();
+            record.id = "orphan-run".to_string();
+            er_engine::arena::save_run(&orphan, &record).unwrap();
+
+            let mut app = App::new_for_test(Vec::new());
+            let mut tab = TabState::new_for_test(Vec::new());
+            tab.er_root = ErRoot::managed(bucket.clone());
+            app.tabs.push(tab);
+            attach(&app, Arc::clone(&service));
+            app.select_tab(1);
+
+            let left = status(&bucket, &run_id);
+            let orphaned = status(&bucket, "orphan-run");
+            sink.release();
+            wait_until("the run's record is terminal", || {
+                is_terminal(&status(&bucket, &run_id))
+            });
+            assert!(
+                matches!(left, RunStatus::Running { .. }),
+                "the actor's run is left alone: {left:?}"
+            );
+            assert_eq!(orphaned, RunStatus::Failed, "an unowned run is recovered");
+        });
+    }
+}

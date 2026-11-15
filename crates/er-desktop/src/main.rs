@@ -1035,7 +1035,10 @@ fn main() {
     let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
     #[cfg(feature = "v1-service")]
-    let service = Arc::new(er_desktop::service::ServiceState::new(ports.clone()));
+    let service = Arc::new(er_desktop::service::ServiceState::new(
+        ports.clone(),
+        Arc::clone(&desktop_revision),
+    ));
     #[cfg(feature = "v1-service")]
     if let Ok(app) = app_arc.lock() {
         er_desktop::arena_service::attach(&app, Arc::clone(&service));

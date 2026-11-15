@@ -1361,17 +1361,6 @@ impl App {
         )
     }
 
-    /// Inclusive end line for a multi-line anchor; `None` when single-line or invalid.
-    pub(crate) const fn normalize_line_end(
-        line_start: Option<usize>,
-        line_end: Option<usize>,
-    ) -> Option<usize> {
-        match (line_start, line_end) {
-            (Some(start), Some(end)) if end > start => Some(end),
-            _ => None,
-        }
-    }
-
     /// Submit a comment or question without going through InputMode flow.
     /// Used by the desktop app where there is no TextArea widget.
     pub fn submit_comment_text(

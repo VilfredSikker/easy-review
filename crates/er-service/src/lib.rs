@@ -17,6 +17,7 @@ mod actor;
 mod annotations;
 pub mod arena;
 mod effect;
+mod github_comments;
 mod guard;
 mod handle;
 mod jobs;

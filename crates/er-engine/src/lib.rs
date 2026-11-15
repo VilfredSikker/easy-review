@@ -25,6 +25,7 @@ pub mod gh_stack;
 pub mod git;
 pub mod github;
 pub mod github_post;
+pub mod github_post_session;
 #[cfg(feature = "highlight")]
 pub mod highlight;
 pub mod jobs;
