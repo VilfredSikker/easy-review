@@ -15,6 +15,7 @@
 
 mod actor;
 mod annotations;
+mod app_registry;
 mod effect;
 mod github_comments;
 mod github_sync;
@@ -26,6 +27,7 @@ mod protocol;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
+pub use app_registry::{AppCommand, AppRegistry, TabEntry, TabsView};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use pending_review::OWN_PR_APPROVAL_REFUSED;
 pub use protocol::{
