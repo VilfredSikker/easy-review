@@ -1,25 +1,13 @@
-import type { FileRiskSnapshot, MatchedRiskRule, RiskRuleSource, RiskTier } from "$lib/types";
+import type { FileRiskSnapshot, MatchedRiskRule, RiskRuleSnapshot, RiskRuleSource, RiskTier } from "$lib/types";
 
 export type { RiskRuleSource, RiskTier };
 
 /**
- * The rule table the tab lists under the files, from `get_config_hub`. The
+ * The rule table the tab lists under the files, from `get_risk_files`. The
  * per-file tier and matching rule are not here: they ride on each
- * `FileSnapshot` (ADR 0048), so only the table itself still needs the call.
+ * `FileSnapshot` (ADR 0048), so only the table itself needs the call.
  */
-export interface RiskRuleWire {
-  pattern: string;
-  /** Canonical tier, or the text as written when it does not read. */
-  tier: string;
-  readable: boolean;
-  label: string | null;
-  source: RiskRuleSource;
-  fileCount: number;
-}
-
-export interface RiskSettingsWire {
-  riskRules: RiskRuleWire[];
-}
+export type RiskRuleWire = RiskRuleSnapshot;
 
 export interface RiskRow {
   path: string;
