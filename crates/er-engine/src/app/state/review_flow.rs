@@ -29,14 +29,20 @@ use std::sync::Arc;
 impl App {
     /// Lend the driver this App as its host. The flows are out of `self`
     /// for the call, so no host method may read them; none does.
+    ///
+    /// A panic in the driver puts the flows back before it unwinds further:
+    /// they name the leases in `workflow_leases`, and nothing else would
+    /// release those.
     fn with_review_flows<T>(
         &mut self,
         drive: impl FnOnce(&mut ReviewFlows, &mut dyn ReviewFlowHost) -> T,
     ) -> T {
         let mut flows = std::mem::take(&mut self.review_flows);
-        let result = drive(&mut flows, self);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drive(&mut flows, &mut *self)
+        }));
         self.review_flows = flows;
-        result
+        result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
 
     /// Start a flow against the active local view. `scope` must identify that
@@ -347,5 +353,25 @@ impl ReviewFlowHost for App {
 
     fn arena_is_active(&self, run_id: &str) -> bool {
         self.arena_runs.is_active(run_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+    use crate::ai::review_flow::ReviewFlow;
+
+    #[test]
+    fn a_panicking_driver_call_keeps_the_flows() {
+        let mut app = App::new_for_test(Vec::new());
+        app.review_flows
+            .insert("bucket".to_owned(), ReviewFlow::new("hash"));
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.with_review_flows(|_, _| panic!("driver panicked"));
+        }));
+
+        assert!(unwound.is_err(), "the panic must still reach the caller");
+        assert!(app.review_flow_for("bucket").is_some());
     }
 }
