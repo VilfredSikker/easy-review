@@ -1,18 +1,19 @@
 //! Arena reviewer and arbiter calls as jobs on the shared runner.
 //!
-//! The arena builds a [`JobSpec`] and hands it to `er_agent::JobRunner`; the
-//! runner owns the slot, the process group, the deadline, the retry and the
-//! final-text decode. What stays here is arena-specific: the prompts' JSON
-//! extraction, the cancel bridge that maps the run's flag onto each job's
-//! handle, and the test hook that answers a round from a fixture directory.
+//! The arena builds a [`JobSpec`] and submits it to the host's job sink, which
+//! runs it through `er_agent::JobRunner`; the runner owns the slot, the process
+//! group, the deadline, the retry and the final-text decode. What stays here is
+//! arena-specific: the prompts' JSON extraction, the cancel bridge that maps
+//! the run's flag onto each job's handle, and the test hook that answers a
+//! round from a fixture directory.
 
 use crate::agent_runtime::provider_spec;
 use crate::config::ErConfig;
+use crate::jobs::{JobLimits, JobSink, JobSubmission};
 use anyhow::{Context, Result};
 use er_agent::agent_run::AgentRunHandle;
 use er_agent::agent_slots::Workload;
-use er_agent::agent_timing::AgentRunTimer;
-use er_agent::job::{JobError, JobKind, JobRun, JobRunner, JobSpec, OutputContract, RetryPolicy};
+use er_agent::job::{JobError, JobKind, JobSpec, OutputContract, RetryPolicy};
 use er_agent::provider::ProviderSpec;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,23 +67,24 @@ pub(crate) fn arena_job(
     })
 }
 
-/// A runner that retries a transient reviewer failure the way the arena always
-/// has. The runner releases the slot between attempts.
-pub(super) fn arena_runner(config: &ErConfig) -> JobRunner {
-    JobRunner::with_retry(
-        config.ai_hub.effective_max_concurrent_arena_reviews(),
-        config.ai_hub.effective_max_concurrent_agents(),
-        RetryPolicy {
+/// The runner limits that retry a transient reviewer failure the way the arena
+/// always has. The runner releases the slot between attempts.
+pub(super) fn arena_limits(config: &ErConfig) -> JobLimits {
+    JobLimits {
+        slot_cap: config.ai_hub.effective_max_concurrent_arena_reviews(),
+        ceiling: config.ai_hub.effective_max_concurrent_agents(),
+        retry: RetryPolicy {
             retries: RETRIES,
             backoff: RETRY_STEP,
         },
-    )
+    }
 }
 
-/// Run one arena job, honouring the run's cancel flag and returning the JSON
-/// the round's schema validates.
+/// Run one arena job through the host's sink, honouring the run's cancel flag
+/// and returning the JSON the round's schema validates.
 pub(super) fn run_arena_job(
-    runner: &JobRunner,
+    jobs: &dyn JobSink,
+    limits: JobLimits,
     spec: &JobSpec,
     bridge: &CancelBridge,
     label: &str,
@@ -93,20 +95,15 @@ pub(super) fn run_arena_job(
     }
     let handle = AgentRunHandle::new();
     bridge.register(&handle);
-    let mut timer = AgentRunTimer::start();
-    let output = runner.run_controlled(
-        spec,
-        JobRun {
+    let output = jobs
+        .submit(JobSubmission {
+            spec: spec.clone(),
+            limits,
             handle,
             progress: None,
-            timer: Some(&mut timer),
-        },
-    );
-    timer.emit(
-        label,
-        &spec.provider.program,
-        output.as_ref().is_ok_and(|output| output.status.success()),
-    );
+            label: label.to_string(),
+        })
+        .wait();
     match output {
         Ok(output) if !output.status.success() => Err(JobFailure::Failed(format!(
             "{} failed (code {:?}): {}",

@@ -136,7 +136,7 @@ impl ArenaProgress {
 }
 
 /// Latest reviewer activity for the running UI.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArenaProgressState {
     pub round: u8,
     pub total_rounds: u8,

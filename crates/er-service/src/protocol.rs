@@ -5,6 +5,16 @@
 //! remote before sending. That keeps the store on the caller's side of the
 //! seam and makes the service testable with a scripted port alone.
 
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
+
+use er_agent::job::{JobError, JobProgress};
+use er_engine::arena::{
+    ArenaBatchStartParams, ArenaDiffPreview, ArenaScope, ArenaStartParams, ReviewerRef, Verdict,
+};
+use er_engine::config::ErConfig;
+use er_engine::jobs::{JobId, JobResult, JobSubmission};
+
 use crate::workspace::WorkspaceTarget;
 
 /// A command sent to the workspace actor.
@@ -106,6 +116,252 @@ pub enum Command {
         ai_assist: bool,
         client_id: Option<String>,
     },
+
+    // ── Job and arena commands ──
+    /// Run one agent job on an effect thread. The actor keeps its stop handle
+    /// until it finishes, so `CancelJob` can reach the runner; the outcome goes
+    /// to `result` and out as `Event::JobFinished`.
+    StartJob {
+        job: JobId,
+        submission: JobSubmission,
+        result: Sender<JobResult>,
+    },
+    /// Stop a running job by killing the stop handle its runner watches.
+    CancelJob { job: JobId },
+    /// Load-time recovery of the named buckets: stale arena runs and a dead
+    /// owner's running workflow stages are marked. Nothing is started.
+    Reconcile { buckets: Vec<String> },
+    /// An arena action on the actor's live runs.
+    Arena(ArenaCommand),
+
+    // ── GitHub comment commands (P41.2) ──
+    /// Create a comment and post it to the tab's pull request.
+    AddComment {
+        context: TabContext,
+        target: AnnotationTarget,
+        body: String,
+        side: Option<String>,
+        client_id: Option<String>,
+    },
+    /// Reply to a thread that is already on GitHub.
+    ReplyToGithubThread {
+        context: TabContext,
+        parent_id: String,
+        body: String,
+        client_id: Option<String>,
+    },
+    /// Promote a question or note to a GitHub comment, then remove the source.
+    PromoteToComment {
+        context: TabContext,
+        id: String,
+        body: Option<String>,
+    },
+    /// Promote a finding to a GitHub comment, then remove the finding.
+    PromoteFindingToComment {
+        context: TabContext,
+        finding_id: String,
+        body: Option<String>,
+    },
+
+    // ── GitHub sync and the pending review ──
+    /// Pull the tab's PR comments into its comments sidecar. The fetch runs
+    /// off the actor; the actor writes the result.
+    SyncGithubComments {
+        context: TabContext,
+        source: SyncSource,
+    },
+    /// Read the viewer's pending review on the tab's PR.
+    GetPendingReview { context: TabContext },
+    /// Add one line comment to the viewer's pending review.
+    AddPendingReviewComment {
+        context: TabContext,
+        target: ReviewLineTarget,
+        body: String,
+    },
+    /// Remove one comment from the viewer's pending review.
+    RemovePendingReviewComment {
+        context: TabContext,
+        comment_node_id: String,
+    },
+    /// Submit the viewer's pending review with a decision.
+    SubmitPendingReview {
+        context: TabContext,
+        event: ReviewEvent,
+        summary: String,
+    },
+
+    // ── PR-level posts ──
+    /// Post a PR-wide comment.
+    PostGithubPrComment { context: TabContext, body: String },
+    /// Post one line comment outside any review. Refused while the viewer
+    /// has a pending review, which GitHub would attach it to.
+    PostGithubLineComment {
+        context: TabContext,
+        target: ReviewLineTarget,
+        body: String,
+    },
+    /// Submit a bare review decision with no inline comments.
+    SubmitGithubPrDecision {
+        context: TabContext,
+        event: ReviewEvent,
+        summary: String,
+    },
+}
+
+/// What started a comment sync, which decides how fresh the read must be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncSource {
+    /// The user asked. `force` skips the hover-prefetch bundle.
+    Manual { force: bool },
+    /// The periodic tick. Always reads GitHub, then drops the cached bundle so
+    /// a later manual pull cannot go back to an older one.
+    Background,
+}
+
+/// A line the composer selected for the pending review, in its side's numbering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewLineTarget {
+    pub file: String,
+    pub line_num: usize,
+    pub line_num_end: Option<usize>,
+    /// `LEFT` or `RIGHT`; `None` is the new side.
+    pub side: Option<String>,
+}
+
+/// A review decision, as GitHub's review API names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewEvent {
+    Approve,
+    RequestChanges,
+    Comment,
+}
+
+impl ReviewEvent {
+    /// Parses the desktop's mode string; `None` for anything else.
+    pub fn parse(mode: &str) -> Option<Self> {
+        match mode {
+            "APPROVE" => Some(Self::Approve),
+            "REQUEST_CHANGES" => Some(Self::RequestChanges),
+            "COMMENT" => Some(Self::Comment),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "APPROVE",
+            Self::RequestChanges => "REQUEST_CHANGES",
+            Self::Comment => "COMMENT",
+        }
+    }
+}
+
+/// The PR a GitHub command acted on, so the caller can refresh what it caches
+/// for that PR.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+}
+
+/// An arena action. Each carries the [`ArenaContext`] its effect needs, except
+/// a cancel, which acts on the live run alone.
+#[derive(Clone, Debug)]
+pub enum ArenaCommand {
+    /// Price a run before it starts. It reads the diff through the ports, so
+    /// it runs as an effect and answers with the preview; there is no state
+    /// to publish for it.
+    Estimate {
+        arena: ArenaContext,
+        scope: ArenaScope,
+        files: Option<Vec<String>>,
+        reviewers: Vec<ReviewerRef>,
+        rounds: Option<u8>,
+        arbiter: Option<ReviewerRef>,
+    },
+    EstimateBatch {
+        arena: ArenaContext,
+        params: ArenaBatchStartParams,
+    },
+    StartRun {
+        arena: ArenaContext,
+        params: ArenaStartParams,
+    },
+    StartBatch {
+        arena: ArenaContext,
+        params: ArenaBatchStartParams,
+    },
+    /// Dedupe the tab's expert findings and rule on them with one arbiter job.
+    ValidateFindings {
+        arena: ArenaContext,
+    },
+    AcceptFindings {
+        arena: ArenaContext,
+        run_id: String,
+        finding_ids: Option<Vec<String>>,
+    },
+    /// Delete a finished run's directory.
+    Delete {
+        arena: ArenaContext,
+        run_id: String,
+    },
+    Cancel {
+        run_id: String,
+    },
+    Override {
+        arena: ArenaContext,
+        run_id: String,
+        finding_id: String,
+        verdict: Verdict,
+        note: String,
+    },
+}
+
+/// What an arena effect reads from the tab and the App, resolved by the
+/// desktop before sending.
+#[derive(Clone, Debug)]
+pub struct ArenaContext {
+    /// The active tab: its bucket and the inputs its diff fetch needs.
+    pub tab: TabContext,
+    /// The branch a run is filed under.
+    pub branch_ref: String,
+    pub config: Arc<ErConfig>,
+    /// Every open tab's bucket, the active one first. A run id is looked up
+    /// here when no live control names its bucket.
+    pub buckets: Vec<String>,
+    /// The loaded review's diff hash, which seeded validation is checked
+    /// against. Empty when no review is loaded.
+    pub review_hash: String,
+}
+
+/// How a job ended, as subscribers see it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JobOutcome {
+    /// The provider exited; `success` is its exit status.
+    Completed {
+        success: bool,
+    },
+    Failed {
+        message: String,
+    },
+    Cancelled,
+    TimedOut,
+}
+
+impl JobOutcome {
+    pub fn of(result: &JobResult) -> Self {
+        match result {
+            Ok(output) => Self::Completed {
+                success: output.status.success(),
+            },
+            Err(JobError::Cancelled) => Self::Cancelled,
+            Err(JobError::TimedOut(_)) => Self::TimedOut,
+            Err(error) => Self::Failed {
+                message: error.to_string(),
+            },
+        }
+    }
 }
 
 /// The tab a command acts on, with every input its effect needs. The desktop
@@ -117,6 +373,8 @@ pub struct TabContext {
     pub er_dir: String,
     /// Bucket the GitHub comment sidecar lives in (the PR bucket for PR tabs).
     pub comments_dir: String,
+    /// Whether the tab is a remote PR tab, as `resolve_post_target` expects.
+    pub is_remote: bool,
     pub repo_root: String,
     pub base_branch: String,
     /// `branch`, `staged` or `unstaged`.
@@ -185,8 +443,8 @@ impl OpenTarget {
     }
 }
 
-/// The actor's answer to one command.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The actor's answer to one command. No `Eq`: an estimate carries prices.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Reply {
     TargetOpened(WorkspaceTarget),
     /// The stored row's id, which is the painted id when one was supplied.
@@ -205,10 +463,56 @@ pub enum Reply {
     NotePromoted {
         id: String,
     },
+    /// The GitHub comment a question, note or finding was promoted into.
+    CommentPromoted {
+        id: String,
+    },
     /// The finding thread a reply landed in.
     FindingReplied {
         root_id: String,
         reply_id: String,
+    },
+    JobStarted {
+        job: JobId,
+    },
+    JobCancelled {
+        job: JobId,
+    },
+    /// The buckets whose workflow record can be re-run.
+    Reconciled {
+        resumable: Vec<String>,
+    },
+    ArenaEstimate(ArenaDiffPreview),
+    ArenaStarted {
+        run_ids: Vec<String>,
+    },
+    /// The seeded run, or `None` when there were no expert findings.
+    ArenaValidating {
+        run_id: Option<String>,
+    },
+    ArenaAccepted {
+        accepted: usize,
+    },
+    ArenaChanged {
+        run_id: String,
+    },
+    /// What the sidecar holds after a sync.
+    CommentsSynced {
+        github_count: usize,
+        local_count: usize,
+    },
+    /// The viewer's pending review, read after any write.
+    PendingReview {
+        pr: PrRef,
+        review: er_github::PendingReview,
+    },
+    /// The pending review, or a bare decision, was submitted.
+    ReviewSubmitted {
+        pr: PrRef,
+    },
+    /// A PR-level comment was posted.
+    CommentPosted {
+        pr: PrRef,
     },
     #[cfg(test)]
     Pong,
@@ -228,5 +532,28 @@ pub enum Event {
     },
     CommandFailed {
         message: String,
+    },
+    /// One output line from a running job.
+    JobProgress {
+        job: JobId,
+        line: JobProgress,
+    },
+    JobFinished {
+        job: JobId,
+        outcome: JobOutcome,
+    },
+    /// A sync wrote the tab's comments sidecar.
+    CommentsSynced {
+        context: TabContext,
+        github_count: usize,
+        local_count: usize,
+    },
+    /// The viewer's pending review on the tab's PR changed or was submitted.
+    PendingReviewChanged {
+        context: TabContext,
+    },
+    /// A comment or a decision was posted to the tab's PR.
+    CommentPosted {
+        context: TabContext,
     },
 }

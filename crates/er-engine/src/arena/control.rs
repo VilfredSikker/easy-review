@@ -9,6 +9,7 @@
 use super::progress::{ArenaNotify, ArenaProgress, ArenaProgressState, ProgressEvent};
 use super::storage::{load_run, save_run, ArenaPaths};
 use super::RunStatus;
+use crate::jobs::{JobSink, LocalJobSink};
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
@@ -29,10 +30,16 @@ pub struct ArenaRunControl {
     finished_cv: Condvar,
     panic: Mutex<Option<String>>,
     notify: Arc<Mutex<ArenaNotify>>,
+    jobs: Arc<dyn JobSink>,
 }
 
 impl ArenaRunControl {
-    pub fn new(run_id: &str, er_dir: &str, notify: Arc<Mutex<ArenaNotify>>) -> Arc<Self> {
+    pub fn new(
+        run_id: &str,
+        er_dir: &str,
+        notify: Arc<Mutex<ArenaNotify>>,
+        jobs: Arc<dyn JobSink>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             run_id: run_id.to_string(),
             er_dir: er_dir.to_string(),
@@ -44,7 +51,13 @@ impl ArenaRunControl {
             finished_cv: Condvar::new(),
             panic: Mutex::new(None),
             notify,
+            jobs,
         })
+    }
+
+    /// Where this run's reviewer and arbiter jobs go: the host's sink.
+    pub fn jobs(&self) -> &dyn JobSink {
+        self.jobs.as_ref()
     }
 
     /// The run's stop flag. The job bridges watch it; setting it is the one
@@ -164,6 +177,8 @@ impl ArenaRunControl {
 pub struct ArenaRunControls {
     runs: Arc<Mutex<HashMap<String, Arc<ArenaRunControl>>>>,
     notify: Arc<Mutex<ArenaNotify>>,
+    /// The host's job sink, handed to every run this registry starts.
+    jobs: Arc<dyn JobSink>,
     /// Makes the next supervisor spawn fail. Test support for the launcher's
     /// failed-start path, which no normal build can reach.
     #[cfg(any(test, feature = "test-support"))]
@@ -172,9 +187,19 @@ pub struct ArenaRunControls {
 
 impl Default for ArenaRunControls {
     fn default() -> Self {
+        Self::with_jobs(Arc::new(LocalJobSink))
+    }
+}
+
+impl ArenaRunControls {
+    /// A registry whose runs submit their jobs to `jobs`. The App uses the
+    /// default, which runs them in process; the workspace service passes its
+    /// actor's sink.
+    pub fn with_jobs(jobs: Arc<dyn JobSink>) -> Self {
         Self {
             runs: Arc::new(Mutex::new(HashMap::new())),
             notify: Arc::new(Mutex::new(Arc::new(|| {}))),
+            jobs,
             #[cfg(any(test, feature = "test-support"))]
             fail_next_spawn: Arc::new(AtomicBool::new(false)),
         }
@@ -190,7 +215,12 @@ impl ArenaRunControls {
     }
 
     pub fn new_control(&self, run_id: &str, er_dir: &str) -> Arc<ArenaRunControl> {
-        ArenaRunControl::new(run_id, er_dir, Arc::clone(&self.notify))
+        ArenaRunControl::new(
+            run_id,
+            er_dir,
+            Arc::clone(&self.notify),
+            Arc::clone(&self.jobs),
+        )
     }
 
     pub fn insert(&self, control: &Arc<ArenaRunControl>) {
@@ -359,7 +389,7 @@ fn mark_run_failed(control: &ArenaRunControl) {
             RunStatus::Complete | RunStatus::Cancelled | RunStatus::Failed
         ) {
             run.status = RunStatus::Failed;
-            run.completed_at = Some(crate::app::chrono_now());
+            run.completed_at = Some(crate::sync::chrono_now());
             let _ = save_run(&paths, &run);
         }
     }

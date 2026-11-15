@@ -100,35 +100,9 @@ impl App {
             if self.workflow_leases.contains_key(&er_dir) {
                 continue;
             }
-            let store = crate::store_registry::store();
-            let Ok(scope) = Scope::dir(&er_dir) else {
+            let Some(record) = crate::workflow_recovery::reconcile_workflow_record(&er_dir) else {
                 continue;
             };
-            let Ok(Some(mut record)) = workflow_record::load(&store, &scope) else {
-                continue;
-            };
-            if record.has_running_stage() {
-                let Ok(Some(guard)) = workflow_record::try_lease(&store, &scope, "reconcile")
-                else {
-                    continue;
-                };
-                for stage in &mut record.stages {
-                    if stage.status == StageStatus::Running {
-                        stage.status = StageStatus::Interrupted;
-                    }
-                }
-                // A cancel writes `cancelled` while its finders are still
-                // draining, and a failure wrote `failed` before it stopped.
-                // Marking the stage interrupted must not rewrite either into
-                // an interrupted run the load then offers to finish.
-                record.outcome.get_or_insert(WorkflowOutcome::Interrupted);
-                record.holder = None;
-                let stored = record.clone();
-                let _ = workflow_record::update(&store, &scope, |record| {
-                    *record = stored;
-                });
-                drop(guard);
-            }
             if record.resumable() {
                 projections.push((er_dir, flow_from_record(&record)));
             }

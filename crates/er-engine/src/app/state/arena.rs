@@ -1,12 +1,11 @@
 use crate::arena::{
-    accepted_finding_rows, build_arena_diff_preview, delete_run_dir, load_run, mark_accepted,
-    reconcile_stale_runs_excluding, save_run, scope_git_mode, start_arena_batch, start_arena_run,
-    start_seeded_run, ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState,
-    ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride,
-    ReviewerRef, SeededStartParams, Verdict,
+    build_arena_diff_preview, delete_run_dir, load_run, reconcile_stale_runs_excluding,
+    scope_git_mode, start_arena_batch, start_arena_run, start_seeded_run, ArenaBatchStartParams,
+    ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRunInputs, ArenaRunKind,
+    ArenaRunSnapshot, ArenaScope, ArenaStartParams, ReviewerRef, SeededStartParams, Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::Path;
 
 use super::review_flow_admission::ReviewFlowLease;
@@ -342,16 +341,8 @@ impl App {
     ///     (history runs with no live control);
     /// (c) fall back to the active tab.
     fn arena_er_dir_for_run(&self, run_id: &str) -> std::path::PathBuf {
-        if let Some(control) = self.arena_runs.get(run_id) {
-            return std::path::PathBuf::from(&control.er_dir);
-        }
-        for tab in &self.tabs {
-            let er = tab.er_dir();
-            if ArenaPaths::for_run(Path::new(&er), run_id).root.is_dir() {
-                return std::path::PathBuf::from(er);
-            }
-        }
-        std::path::PathBuf::from(self.tab().er_dir())
+        let buckets: Vec<String> = self.tabs.iter().map(TabState::er_dir).collect();
+        crate::arena::bucket_for_run(&self.arena_runs, &buckets, &self.tab().er_dir(), run_id)
     }
 
     /// Live arena runs across ALL tabs (tab-independent background runs).
@@ -383,54 +374,15 @@ impl App {
     ) -> Result<usize> {
         let er_dir = self.arena_er_dir_for_run(run_id);
         let er_path = er_dir.to_string_lossy().into_owned();
-        self.check_review_bucket_admission(&er_path)?;
-        let paths = ArenaPaths::for_run(&er_dir, run_id);
-        let mut run = load_run(&paths)?;
-        // A seeded run's verdicts reach the review through `arbiter.json`, which
-        // merges at load; accepting them as rows would show each ruling twice.
-        if run.config.run_kind == ArenaRunKind::Seeded {
-            anyhow::bail!(
-                "a seeded run's verdicts are applied from arbiter.json on load; \
-                 there is nothing to accept as a finding"
-            );
-        }
-        if self.is_review_flow_arena_run(&er_path, &run) {
-            anyhow::bail!(
-                "Review flow findings require guarded flow acceptance. \
-                 Open the current flow result or start a new Review."
-            );
-        }
-        let ids: Vec<String> = match finding_ids {
-            Some(ids) => ids,
-            None => run
-                .findings
-                .iter()
-                .map(|finding| finding.id.clone())
-                .collect(),
-        };
-        let now = crate::app::chrono_now();
-        let rows = accepted_finding_rows(&run, &ids, &now);
-        if rows.is_empty() {
+        let accepted = crate::arena::accept_findings(&er_dir, run_id, finding_ids, |run| {
+            self.is_review_flow_arena_run(&er_path, run)
+        })?;
+        if accepted == 0 {
             return Ok(0);
         }
-        let store = crate::store_registry::store();
-        let scope = er_store::Scope::dir(&er_path)?;
-        let accepted = crate::ai::accepted_findings::record_accepted(&store, &scope, &rows)
-            .context("record the accepted findings")?;
-        mark_accepted(&mut run, &rows, &now);
-        if let Err(error) = save_run(&paths, &run) {
-            return match accepted.rollback(&store) {
-                Ok(()) => Err(error).context(
-                    "accepted IDs could not be saved to the run; accepted-findings.json was rolled back",
-                ),
-                Err(rollback) => Err(error).context(format!(
-                    "accepted IDs could not be saved to the run; accepted-findings.json rollback failed: {rollback}"
-                )),
-            };
-        }
         self.tab_mut().reload_ai_state();
-        self.notify(&format!("Accepted {} finding(s) into Review", rows.len()));
-        Ok(rows.len())
+        self.notify(&format!("Accepted {accepted} finding(s) into Review"));
+        Ok(accepted)
     }
 
     pub fn arena_cancel(&mut self, run_id: &str) -> Result<()> {
@@ -488,28 +440,10 @@ impl App {
 
     pub fn arena_get_snapshot(&self, run_id: &str) -> Result<ArenaRunSnapshot> {
         let er_dir = self.arena_er_dir_for_run(run_id);
-        let paths = ArenaPaths::for_run(&er_dir, run_id);
-        let mut run = load_run(&paths)?;
-        // Legacy Deep runs predate durable ownership. Keep their history read
-        // only unless the captured flow can supply its guarded acceptance path.
-        if self.is_review_flow_arena_run(&er_dir.to_string_lossy(), &run) {
-            run.config.run_kind = ArenaRunKind::ReviewFlow;
-        }
-        if let Some(control) = self.arena_runs.get(run_id) {
-            run.status = control.status();
-        }
-        // A bucket-rooted store reaches the same file the panel wrote, without
-        // resolving the process storage root for a bucket the caller named.
-        let panel = crate::ai::panel_run::load(
-            &er_store::ArtifactStore::new(&er_dir),
-            &er_store::Scope::dir(&er_dir)?,
-        )
-        .and_then(|record| crate::arena::PanelSummary::for_run(&record, &run.id));
-        Ok(crate::arena::build_snapshot_with_panel(
-            &self.config,
-            run,
-            panel,
-        ))
+        let er_path = er_dir.to_string_lossy().into_owned();
+        crate::arena::run_snapshot(&self.config, &self.arena_runs, &er_dir, run_id, |run| {
+            self.is_review_flow_arena_run(&er_path, run)
+        })
     }
 
     pub fn arena_branch_ref(&self) -> String {
@@ -523,20 +457,7 @@ impl App {
         &self,
         branch_ref: Option<&str>,
     ) -> Result<Vec<crate::arena::ArenaRunSummary>> {
-        let er_path = self.tab().er_dir();
-        let er_dir = Path::new(&er_path);
-        let mut out = Vec::new();
-        for id in crate::arena::list_run_ids(er_dir)? {
-            let paths = ArenaPaths::for_run(er_dir, &id);
-            if let Ok(run) = load_run(&paths) {
-                if branch_ref.is_some_and(|b| run.branch_ref != b) {
-                    continue;
-                }
-                out.push(run.summary());
-            }
-        }
-        out.sort_by_key(|run| std::cmp::Reverse(run.created_at.clone()));
-        Ok(out)
+        crate::arena::list_summaries(Path::new(&self.tab().er_dir()), branch_ref)
     }
 
     pub fn arena_delete(&mut self, run_id: &str) -> Result<()> {
@@ -562,21 +483,7 @@ impl App {
         note: String,
     ) -> Result<crate::arena::ArenaFinding> {
         let er_dir = self.arena_er_dir_for_run(run_id);
-        let paths = ArenaPaths::for_run(&er_dir, run_id);
-        let mut run = load_run(&paths)?;
-        let f = run
-            .findings
-            .iter_mut()
-            .find(|x| x.id == finding_id)
-            .ok_or_else(|| anyhow::anyhow!("finding not found"))?;
-        f.override_ = Some(HumanOverride {
-            verdict: verdict.clone(),
-            note,
-            at: super::chrono_now(),
-        });
-        f.verdict = verdict;
-        let updated = f.clone();
-        crate::arena::save_run(&paths, &run)?;
+        let updated = crate::arena::override_finding(&er_dir, run_id, finding_id, verdict, note)?;
         self.arena_runs.notify_progress();
         Ok(updated)
     }

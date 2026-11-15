@@ -5,7 +5,6 @@
 pub mod ai;
 #[cfg(feature = "ui")]
 pub mod app;
-#[cfg(feature = "ui")]
 pub mod arena;
 pub mod config;
 pub use config::{
@@ -26,8 +25,10 @@ pub mod gh_stack;
 pub mod git;
 pub mod github;
 pub mod github_post;
+pub mod github_post_session;
 #[cfg(feature = "highlight")]
 pub mod highlight;
+pub mod jobs;
 mod legacy_projects;
 pub mod model_discovery;
 pub mod os_launch;
@@ -50,6 +51,7 @@ pub use tab_key::TabKey;
 pub mod uninstall;
 #[cfg(feature = "watch")]
 pub mod watch;
+pub mod workflow_recovery;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

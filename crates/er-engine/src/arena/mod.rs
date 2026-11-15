@@ -15,6 +15,7 @@ mod panel;
 mod progress;
 mod projections;
 mod provenance;
+mod runs;
 mod schema;
 mod seeded;
 mod storage;
@@ -29,21 +30,27 @@ pub use control::{ArenaRunControl, ArenaRunControls};
 pub use identity::finding_id;
 pub use jobs::fake_arena_call_count;
 pub use model::{ARENA_ARBITER_ROUND, *};
+#[cfg(feature = "ui")]
+pub(crate) use orchestrator::start_review_flow_run;
 pub use orchestrator::{
     arbiter_display_label, build_arena_diff_preview, cross_model_arbiter, cross_provider_arbiter,
     default_arbiter_from_hub, effective_arena_rounds, estimate_batch_cost_usd, estimate_cost_usd,
-    estimate_latency_sec, min_survivors_required, reconcile_stale_runs, resolve_arbiter,
-    scope_git_mode, start_arena_batch, start_arena_run, start_seeded_run, AgentGroupStart,
-    ArenaBatchStartParams, ArenaDiffPreview, ArenaRunInputs, ArenaStartParams, SeededStartParams,
-    ARBITER_REVIEWER_ID, ARENA_ROUNDS_V1, DEFAULT_COST_LIMIT_USD, MIN_QUORUM,
+    estimate_latency_sec, min_survivors_required, reconcile_stale_runs,
+    reconcile_stale_runs_excluding, resolve_arbiter, scope_git_mode, start_arena_batch,
+    start_arena_run, start_seeded_run, AgentGroupStart, ArenaBatchStartParams, ArenaDiffPreview,
+    ArenaRunInputs, ArenaStartParams, SeededStartParams, ARBITER_REVIEWER_ID, ARENA_ROUNDS_V1,
+    DEFAULT_COST_LIMIT_USD, MIN_QUORUM,
 };
-pub(crate) use orchestrator::{reconcile_stale_runs_excluding, start_review_flow_run};
 pub use progress::{ArenaNotify, ArenaProgress, ArenaProgressState, ProgressEvent};
 pub use projections::{
     build_arbiter_view, build_funnel, build_matrix, build_snapshot, build_snapshot_with_config,
     build_snapshot_with_panel, ArenaRunSnapshot, PanelSummary,
 };
 pub use provenance::{normalized_raisers_for, providers_for};
+pub use runs::{
+    accept_findings, bucket_for_run, bucket_for_run_in, check_bucket_admission, list_summaries,
+    override_finding, run_snapshot, run_snapshot_with_status,
+};
 pub use schema::{
     validate_round1_output, validate_round2_output, validate_round3_output, Round1Output,
     Round2Output, Round3Output,
