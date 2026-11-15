@@ -149,8 +149,9 @@ impl AppRegistry {
         }
     }
 
-    /// Runs one command. Tab commands answer with the new [`TabsView`] once it
-    /// is saved; a prefetch answers at once and warms on its own thread.
+    /// Runs one command. Tab commands answer with the new [`TabsView`] after
+    /// the save is tried; a prefetch answers at once and warms on its own
+    /// thread.
     pub fn send(self: &Arc<Self>, command: AppCommand) -> Result<Reply, WorkspaceError> {
         match command {
             AppCommand::PrefetchOpenTarget {
@@ -224,6 +225,9 @@ impl AppRegistry {
         })
     }
 
+    /// A change that applied is published even when its save fails: the list
+    /// in memory already holds it, and the next save writes it. The failure
+    /// goes out as `CommandFailed`, as the flag-off path logs and carries on.
     fn apply_tabs(&self, command: AppCommand) -> Result<TabsView, WorkspaceError> {
         let view = {
             let mut state = lock(self.loaded_tabs());
@@ -231,7 +235,9 @@ impl AppRegistry {
             state.revision += 1;
             state.clone()
         };
-        self.save_tabs_record()?;
+        if let Err(error) = self.save_tabs_record() {
+            self.report(&error);
+        }
         self.publish(&view);
         self.broadcast(Event::TabsChanged {
             revision: view.revision,
