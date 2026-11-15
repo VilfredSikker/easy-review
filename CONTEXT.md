@@ -42,6 +42,12 @@ _Avoid_: view mode, screen
 One independent review target, with its own diff, selection, and artifacts.
 _Avoid_: session, workspace, pane
 
+**Tab key**:
+A tab's identity for the life of the process, given when the tab is built and
+never saved. Two open tabs on the same target have different keys, and a
+restored tab gets a new one.
+_Avoid_: tab id, tab index
+
 **Workspace**:
 The state one actor owns for a single repo/worktree: the PR targets opened in
 it and which one is active. The actor is its only writer; readers get an

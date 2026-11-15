@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use er_engine::app::{App, BrowserLayout};
+use er_engine::app::App;
+
+use crate::view_state::{BrowserLayout, TabBrowserState, ViewStateHandle};
 use tauri::webview::{PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, WebviewUrl};
 
@@ -24,7 +26,7 @@ pub struct BrowserWebviewState {
     /// tab_idx → child webview has been created
     created: Mutex<HashMap<usize, bool>>,
     active_tab: Mutex<usize>,
-    /// Per-tab annotate flag (mirrors TabState; used on page load before engine lock).
+    /// Per-tab annotate flag (mirrors the view state; used on page load before any lock).
     annotate_by_tab: Mutex<HashMap<usize, bool>>,
 }
 
@@ -222,31 +224,45 @@ fn finish_browser_navigate(
     Ok(())
 }
 
+/// The browser state of the tab at `tab_idx`, copied out so no lock is held
+/// while the webview is driven. Takes the view lock; the caller may hold the
+/// engine lock, never the view lock.
+pub fn tab_browser(
+    engine: &App,
+    view: &ViewStateHandle,
+    tab_idx: usize,
+) -> Result<TabBrowserState, String> {
+    let tab = engine
+        .tabs
+        .get(tab_idx)
+        .ok_or_else(|| format!("tab index {tab_idx} out of range"))?;
+    let view = view.lock().map_err(|e| e.to_string())?;
+    Ok(view.browser(tab.key()))
+}
+
 /// Annotate / tooltips / split-ratio updates — never reload the page.
 pub fn sync_tab_browser_chrome(
     app: &AppHandle,
     browser_state: &BrowserWebviewState,
     engine: &App,
+    view: &ViewStateHandle,
     tab_idx: usize,
     sync_annotate: bool,
 ) -> Result<(), String> {
     *browser_state.active_tab.lock().map_err(|e| e.to_string())? = tab_idx;
-    let tab = engine
-        .tabs
-        .get(tab_idx)
-        .ok_or_else(|| format!("tab index {tab_idx} out of range"))?;
-    if tab.browser_layout == BrowserLayout::Hidden {
+    let browser = tab_browser(engine, view, tab_idx)?;
+    if browser.layout == BrowserLayout::Hidden {
         return Ok(());
     }
-    browser_state.set_tab_annotate_mode(tab_idx, tab.browser_annotate_mode);
-    let url = tab.browser_url.trim();
+    browser_state.set_tab_annotate_mode(tab_idx, browser.annotate_mode);
+    let url = browser.url.trim();
     if url.is_empty() || url == "about:blank" {
         return Ok(());
     }
     show_tab_webview(app, browser_state, tab_idx)?;
     if sync_annotate {
         if let Some(wv) = tab_webview(app, tab_idx) {
-            sync_annotate_mode_to_page(&wv, tab.browser_annotate_mode)?;
+            sync_annotate_mode_to_page(&wv, browser.annotate_mode)?;
         }
     }
     Ok(())
@@ -328,22 +344,20 @@ pub fn on_tab_selected(
     app: &AppHandle,
     browser_state: &BrowserWebviewState,
     engine: &App,
+    view: &ViewStateHandle,
     tab_idx: usize,
 ) -> Result<(), String> {
     *browser_state.active_tab.lock().map_err(|e| e.to_string())? = tab_idx;
     hide_all_webviews(app, browser_state)?;
-    let tab = engine
-        .tabs
-        .get(tab_idx)
-        .ok_or_else(|| format!("tab index {tab_idx} out of range"))?;
-    if tab.browser_layout == BrowserLayout::Hidden {
+    let browser = tab_browser(engine, view, tab_idx)?;
+    if browser.layout == BrowserLayout::Hidden {
         return Ok(());
     }
-    let url = tab.browser_url.trim();
+    let url = browser.url.trim();
     if url.is_empty() || url == "about:blank" {
         return Ok(());
     }
-    browser_state.set_tab_annotate_mode(tab_idx, tab.browser_annotate_mode);
+    browser_state.set_tab_annotate_mode(tab_idx, browser.annotate_mode);
     let (wv, newly_created) = ensure_tab_webview(app, browser_state, tab_idx, url)?;
     finish_browser_navigate(app, browser_state, tab_idx, &wv, url, newly_created)
 }
@@ -509,6 +523,38 @@ pub fn browser_send_to_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_webview_uses_the_view_state() {
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), check_tab_browser);
+    }
+
+    fn check_tab_browser() {
+        use er_engine::app::TabState;
+        let mut app = App::new_remote(
+            TabState::new_for_test(vec![]),
+            None,
+            er_engine::ports::Ports::for_test(),
+        );
+        app.tabs.push(TabState::new_for_test(vec![]));
+        let view = ViewStateHandle::default();
+        {
+            let mut v = view.lock().unwrap();
+            let browser = v.browser_mut(app.tabs[1].key());
+            browser.url = "http://localhost:5173/".to_string();
+            browser.layout = BrowserLayout::Split;
+        }
+
+        let selected = tab_browser(&app, &view, 1).unwrap();
+        assert_eq!(selected.url, "http://localhost:5173/");
+        assert_eq!(selected.layout, BrowserLayout::Split);
+        assert_eq!(
+            tab_browser(&app, &view, 0).unwrap(),
+            TabBrowserState::default()
+        );
+        assert!(tab_browser(&app, &view, 2).is_err(), "out of range");
+    }
 
     #[test]
     fn parse_nav_url_adds_http_scheme() {

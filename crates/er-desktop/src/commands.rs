@@ -26,7 +26,7 @@ use er_engine::ai::CommentType;
 use er_engine::app::CardAiInvocation;
 use er_engine::app::{
     build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
-    BrowserLayout, CardAiContextParams, CommentTarget, DiffMode, InputMode,
+    CardAiContextParams, CommentTarget, DiffMode, InputMode,
 };
 use er_engine::config::InboxConfig;
 
@@ -159,6 +159,8 @@ pub struct AppState {
     #[cfg(feature = "v1-service")]
     pub service: Arc<crate::service::ServiceState>,
     pub app: Arc<Mutex<App>>,
+    /// Desktop-only view state (ADR 0068). Lock it after `app`, never before.
+    pub view: crate::view_state::ViewStateHandle,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     pub pr_cache_fetched_at: PrCacheFetchedAtMap,
     /// Background-probed remote oid of the active branch tab's base branch,
@@ -355,6 +357,7 @@ fn snapshot_sources(state: &AppState) -> crate::snapshot::SnapshotSources<'_> {
         inbox: Some(&state.inbox),
         sent_files: Some(&state.sent_files),
         branch_base_remote_oid: Some(&state.branch_base_remote_oid),
+        view: Some(&state.view),
     }
 }
 
@@ -1025,8 +1028,8 @@ pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 pub async fn toggle_panel(panel: String, state: State<'_, AppState>) -> Result<(), String> {
     let state = state.inner().clone();
     run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.toggle_panel(&panel);
+        let mut view = state.view.lock().map_err(|e| e.to_string())?;
+        view.toggle_panel(&panel);
         Ok(())
     })
     .await
@@ -1402,7 +1405,7 @@ pub async fn change_base(
         app.tab_mut()
             .set_base_branch(&branch)
             .map_err(|e| e.to_string())?;
-        crate::tabs::persist_app_tabs(&app);
+        crate::tabs::persist_app_tabs(&app, &state.view);
         Ok(snap_from_command(&app, &state))
     })
     .await
@@ -3358,7 +3361,7 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcom
                 }
             }
 
-            crate::tabs::persist_app_tabs(&app);
+            crate::tabs::persist_app_tabs(&app, &state.view);
             (repo_root, reviewed_cleared)
         };
         kick_meta_refresh(&state, root);
@@ -6115,6 +6118,7 @@ pub fn resolve_head_checkout(
 /// (Cmd-click / middle-click semantics), otherwise push a new tab.
 pub fn place_tab(
     app: &mut App,
+    view: &crate::view_state::ViewStateHandle,
     tab: er_engine::app::TabState,
     replace: bool,
     skip_storage_sync: bool,
@@ -6139,7 +6143,7 @@ pub fn place_tab(
     } else {
         app.open_tab(tab);
     }
-    crate::tabs::persist_app_tabs(app);
+    crate::tabs::persist_app_tabs(app, view);
     projects::sync_projects_from_tabs(&app.tabs);
 }
 
@@ -6404,7 +6408,7 @@ fn activate_or_open_remote_pr(
         kick_branch_preload(&app, state);
         return Ok(snap_from_command(&app, state));
     }
-    place_tab(&mut app, tab, replace, false);
+    place_tab(&mut app, &state.view, tab, replace, false);
     app.tab_mut().needs_initial_refresh = false;
     kick_meta_refresh(state, app.tab().repo_root.clone());
     kick_github_status_refresh(
@@ -6856,7 +6860,7 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.open_tab(new_tab);
-    crate::tabs::persist_app_tabs(&app);
+    crate::tabs::persist_app_tabs(&app, &state.view);
     let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path_str);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     Ok(snap_from(&app, &state))
@@ -7117,7 +7121,13 @@ fn open_local_branch_impl(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     log_branch_open_phase(&project_id, &branch_name, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
-    place_tab(&mut app, new_tab, replace.unwrap_or(false), false);
+    place_tab(
+        &mut app,
+        &state.view,
+        new_tab,
+        replace.unwrap_or(false),
+        false,
+    );
     log_branch_open_phase(&project_id, &branch_name, "tab_place", t_place_tab);
     let open_path_label = match open_path {
         LocalBranchOpenPath::LocalFirst => "local_first",
@@ -8009,7 +8019,13 @@ fn open_pr_review_impl(
     // Skip the storage sync: `enter_pr_diff_*` below performs the authoritative
     // apply_managed_root + AI reload for the PR bucket, so syncing here would
     // make three full reloads per open instead of one.
-    place_tab(&mut app, new_tab, replace.unwrap_or(false), true);
+    place_tab(
+        &mut app,
+        &state.view,
+        new_tab,
+        replace.unwrap_or(false),
+        true,
+    );
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
     // Attach the checkout root (if any) to the now-active tab before entering
     // PR Diff, so the first snapshot already reflects the working-tree views.
@@ -8151,7 +8167,7 @@ fn open_pr_review_miss_async(
     let app_lock_ms = t_app_lock.elapsed().as_millis();
     log_branch_open_phase(project_id, branch_label, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
-    place_tab(&mut app, stub, replace.unwrap_or(false), true);
+    place_tab(&mut app, &state.view, stub, replace.unwrap_or(false), true);
     let tab_place_ms = t_place_tab.elapsed().as_millis();
     log_branch_open_phase(project_id, branch_label, "tab_place", t_place_tab);
     log_branch_open_phase(
@@ -9221,7 +9237,13 @@ pub fn open_project_branch(
     refresh_branch_open_diff(&mut new_tab)?;
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    place_tab(&mut app, new_tab, replace.unwrap_or(false), false);
+    place_tab(
+        &mut app,
+        &state.view,
+        new_tab,
+        replace.unwrap_or(false),
+        false,
+    );
     projects::set_active(&project_id);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_active_gh_status(&app, &state);
@@ -9584,7 +9606,7 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
         .map_err(|e| format!("Failed to open {}: {e}", proj.root_path))?;
     app.open_tab(new_tab);
     app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
-    crate::tabs::persist_app_tabs(&app);
+    crate::tabs::persist_app_tabs(&app, &state.view);
     projects::set_active(&id);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_active_gh_status(&app, &state);
@@ -10218,7 +10240,7 @@ pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
         })
         .map_err(|e| format!("Failed to open new tab: {e}"))?;
     app.open_tab(tab);
-    crate::tabs::persist_app_tabs(&app);
+    crate::tabs::persist_app_tabs(&app, &state.view);
     kick_meta_refresh(&state, root);
     Ok(snap_from(&app, &state))
 }
@@ -10235,8 +10257,14 @@ pub fn close_tab(
     kick_deferred_tab_refresh(&mut app, &state);
     crate::browser_webview::reset_all_tab_webviews(&app_handle, &browser_state)?;
     let active = app.active_tab;
-    crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, active)?;
-    crate::tabs::persist_app_tabs(&app);
+    crate::browser_webview::on_tab_selected(
+        &app_handle,
+        &browser_state,
+        &app,
+        &state.view,
+        active,
+    )?;
+    crate::tabs::persist_app_tabs(&app, &state.view);
     kick_active_gh_status(&app, &state);
     Ok(snap_from(&app, &state))
 }
@@ -10261,10 +10289,16 @@ pub async fn select_tab(
         kick_deferred_tab_refresh(&mut app, &state);
         kick_active_gh_status(&app, &state);
         let t_webview = std::time::Instant::now();
-        crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, idx)?;
+        crate::browser_webview::on_tab_selected(
+            &app_handle,
+            &browser_state,
+            &app,
+            &state.view,
+            idx,
+        )?;
         let webview_ms = t_webview.elapsed().as_millis();
         let t_persist = std::time::Instant::now();
-        crate::tabs::persist_app_tabs(&app);
+        crate::tabs::persist_app_tabs(&app, &state.view);
         let persist_ms = t_persist.elapsed().as_millis();
         let t_snap = std::time::Instant::now();
         let snapshot = snap_from_command(&app, &state);
@@ -10887,39 +10921,54 @@ pub fn update_tab_browser(
     browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab_idx = app.active_tab;
-    let tab = app.tab_mut();
-    if let Some(l) = layout.as_deref() {
-        tab.browser_layout = BrowserLayout::from_label(l);
-    }
     let had_url = url.is_some();
-    if let Some(u) = url {
-        tab.browser_url = u;
-    }
     let url_nav_needed = layout.is_some() || navigate.unwrap_or(false);
-    if let Some(a) = annotate {
-        tab.browser_annotate_mode = a;
-    }
-    if let Some(t) = tooltips {
-        tab.browser_show_tooltips = t;
-    }
-    if let Some(r) = split_ratio {
-        tab.browser_split_ratio = r.clamp(0.35, 0.65);
-    }
+    let sync_annotate = annotate.is_some();
+    let update = crate::view_state::BrowserUpdate {
+        layout: layout.clone(),
+        url,
+        annotate,
+        tooltips,
+        split_ratio,
+    };
+    set_active_tab_browser(&app, &state.view, update)?;
     if url_nav_needed {
-        crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, tab_idx)?;
+        crate::browser_webview::on_tab_selected(
+            &app_handle,
+            &browser_state,
+            &app,
+            &state.view,
+            tab_idx,
+        )?;
     } else if layout.is_none() && !had_url {
         crate::browser_webview::sync_tab_browser_chrome(
             &app_handle,
             &browser_state,
             &app,
+            &state.view,
             tab_idx,
-            annotate.is_some(),
+            sync_annotate,
         )?;
     }
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &state))
+}
+
+/// Write a browser update into the active tab's view state. The view lock is
+/// released on return, before any snapshot build takes it again.
+fn set_active_tab_browser(
+    app: &App,
+    view: &crate::view_state::ViewStateHandle,
+    update: crate::view_state::BrowserUpdate,
+) -> Result<(), String> {
+    let key = app.tab().key();
+    view.lock()
+        .map_err(|e| e.to_string())?
+        .browser_mut(key)
+        .apply(update);
+    Ok(())
 }
 
 #[tauri::command]
@@ -10928,11 +10977,20 @@ pub fn cycle_tab_browser_layout(
     browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab_idx = app.active_tab;
-    let tab = app.tab_mut();
-    tab.browser_layout = tab.browser_layout.cycle();
-    crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, tab_idx)?;
+    {
+        let mut view = state.view.lock().map_err(|e| e.to_string())?;
+        let browser = view.browser_mut(app.tab().key());
+        browser.layout = browser.layout.cycle();
+    }
+    crate::browser_webview::on_tab_selected(
+        &app_handle,
+        &browser_state,
+        &app,
+        &state.view,
+        tab_idx,
+    )?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &state))
 }
@@ -10949,7 +11007,7 @@ pub fn reorder_tabs(
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.reorder_tabs(fromIdx, toIdx);
-    crate::tabs::persist_app_tabs(&app);
+    crate::tabs::persist_app_tabs(&app, &state.view);
     Ok(snap_from(&app, &state))
 }
 
@@ -12216,6 +12274,7 @@ mod tests {
                 dir.path().join("settings").join("config.toml"),
             )),
             app,
+            view: Default::default(),
             pr_cache: Arc::new(Mutex::new(HashMap::new())),
             pr_cache_fetched_at: Arc::new(Mutex::new(HashMap::new())),
             branch_base_remote_oid: Arc::new(Mutex::new(HashMap::new())),
@@ -13666,6 +13725,98 @@ mod tests {
         app
     }
 
+    fn browser_url_update(url: &str) -> crate::view_state::BrowserUpdate {
+        crate::view_state::BrowserUpdate {
+            url: Some(url.to_string()),
+            layout: Some("split".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn update_tab_browser_updates_the_view_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let mut app = make_app_with_n_tabs(2);
+            app.active_tab = 1;
+            let view = crate::view_state::ViewStateHandle::default();
+            set_active_tab_browser(&app, &view, browser_url_update("http://localhost:1/")).unwrap();
+
+            let view = view.lock().unwrap();
+            let active = view.browser(app.tabs[1].key());
+            assert_eq!(active.url, "http://localhost:1/");
+            assert_eq!(active.layout, crate::view_state::BrowserLayout::Split);
+            assert_eq!(
+                view.browser(app.tabs[0].key()),
+                crate::view_state::TabBrowserState::default(),
+                "the other tab is untouched"
+            );
+        });
+    }
+
+    /// Cmd-T and the tab strip "+" open a Working tab on the active repo, and
+    /// nothing dedupes it, so two open tabs can name the same target.
+    #[test]
+    fn two_tabs_on_one_repo_keep_separate_browser_state() {
+        use er_engine::app::TabState;
+
+        let tmp = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            // The snapshot asks git for the working tree's stat, so these tabs
+            // run real git against an empty directory.
+            let repo = tempfile::tempdir().unwrap();
+            let working_tab = || {
+                let mut tab =
+                    TabState::new_for_test_with_ports(vec![], er_engine::ports::Ports::cli());
+                tab.repo_root = repo.path().to_string_lossy().into_owned();
+                tab
+            };
+            let mut app = App::new_remote(working_tab(), None, er_engine::ports::Ports::cli());
+            let view = crate::view_state::ViewStateHandle::default();
+            set_active_tab_browser(&app, &view, browser_url_update("http://localhost:1/a"))
+                .unwrap();
+
+            app.open_tab(working_tab());
+            assert_eq!(app.active_tab, 1);
+            let sources = crate::snapshot::SnapshotSources {
+                view: Some(&view),
+                ..Default::default()
+            };
+            let snap = crate::snapshot::build_snapshot_with_delta(&app, &sources);
+            assert_eq!(snap.browser.url, "", "the new tab opens with no page");
+            assert_eq!(snap.browser.layout, "hidden");
+
+            set_active_tab_browser(&app, &view, browser_url_update("http://localhost:1/b"))
+                .unwrap();
+            let saved_urls = |app: &App| -> Vec<Option<String>> {
+                let view = view.lock().unwrap();
+                app.tabs
+                    .iter()
+                    .map(|t| crate::tabs::descriptor_from_tab(t, &view).browser_url)
+                    .collect()
+            };
+            let (a, b) = (
+                Some("http://localhost:1/a".to_string()),
+                Some("http://localhost:1/b".to_string()),
+            );
+            assert_eq!(saved_urls(&app), [a.clone(), b.clone()]);
+
+            assert!(app.reorder_tabs(1, 0));
+            assert_eq!(
+                saved_urls(&app),
+                [b, a.clone()],
+                "each page follows its tab"
+            );
+
+            app.close_tab_at(0);
+            assert_eq!(
+                saved_urls(&app),
+                [a],
+                "closing one tab leaves the other's page"
+            );
+        });
+    }
+
     /// `open_local_branch` with `replace = Some(true)` swaps the active tab's
     /// slot instead of pushing — `tabs.len()` stays constant. We exercise the
     /// shared placement helper (`place_tab`) used by the Tauri command, which
@@ -13681,7 +13832,7 @@ mod tests {
 
             let mut incoming = TabState::new_for_test(vec![]);
             incoming.repo_root = "new".into();
-            place_tab(&mut app, incoming, true, false);
+            place_tab(&mut app, &Default::default(), incoming, true, false);
 
             assert_eq!(app.tabs.len(), 2, "replace must not grow tabs");
             assert_eq!(app.active_tab, 1, "active stays on the replaced slot");
@@ -13714,7 +13865,7 @@ mod tests {
             let mut incoming = TabState::new_for_test(vec![]);
             incoming.repo_root = "/".into();
             incoming.remote_repo = Some("acme/my-service".into());
-            place_tab(&mut app, incoming, true, true);
+            place_tab(&mut app, &Default::default(), incoming, true, true);
 
             assert_eq!(app.tabs[0].file_kinds, table);
         });
@@ -13731,7 +13882,7 @@ mod tests {
 
             let mut incoming = TabState::new_for_test(vec![]);
             incoming.repo_root = "new".into();
-            place_tab(&mut app, incoming, false, false);
+            place_tab(&mut app, &Default::default(), incoming, false, false);
 
             assert_eq!(app.tabs.len(), 2, "append grows tabs by one");
             assert_eq!(app.active_tab, 1, "new tab is focused");
@@ -13753,7 +13904,7 @@ mod tests {
 
             let mut incoming = TabState::new_for_test(vec![]);
             incoming.repo_root = "new".into();
-            place_tab(&mut app, incoming, true, true);
+            place_tab(&mut app, &Default::default(), incoming, true, true);
 
             assert_eq!(app.tabs.len(), 1, "replace must not grow tabs");
             assert_eq!(app.active_tab, 0, "active stays on the replaced slot");
@@ -14491,6 +14642,10 @@ mod tests {
         assert!(
             !body.contains("snap_from"),
             "toggle_panel must not rebuild a snapshot"
+        );
+        assert!(
+            body.contains("state.view.lock()") && !body.contains("state.app.lock()"),
+            "toggle_panel writes the view state and does not wait on the engine lock"
         );
     }
 
