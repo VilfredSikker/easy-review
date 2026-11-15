@@ -516,6 +516,10 @@ pub enum Reply {
     },
     #[cfg(test)]
     Pong,
+    /// The app registry's tab list after a tab command, saved.
+    Tabs(crate::app_registry::TabsView),
+    /// A prefetch was taken; it warms its cache off the caller's thread.
+    Acknowledged,
 }
 
 /// Pushed to subscribers after the actor applies a change. An event names the
@@ -555,5 +559,9 @@ pub enum Event {
     /// A comment or a decision was posted to the tab's PR.
     CommentPosted {
         context: TabContext,
+    },
+    /// The app registry published a new tab list; readers fetch its view.
+    TabsChanged {
+        revision: u64,
     },
 }

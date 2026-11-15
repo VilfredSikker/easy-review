@@ -1,7 +1,7 @@
-//! The desktop's artifact registry: the engine's shared kinds plus the five
+//! The desktop's artifact registry: the engine's shared kinds plus the three
 //! app records this front end alone writes.
 //!
-//! The five are desktop-only state (D20), so they stay out of `er-engine` and
+//! The three are desktop-only state (D20), so they stay out of `er-engine` and
 //! out of the TUI and MCP compositions.
 
 use er_store::Registry;
@@ -12,8 +12,6 @@ pub const DESKTOP_KINDS: &[(&str, &str)] = &[
     ("gh-status-cache.json", "gh-status-cache"),
     ("inbox.json", "inbox"),
     ("pr-cache.json", "pr-cache"),
-    ("pr-open-cache.json", "pr-open-cache"),
-    ("tabs.json", "tabs"),
 ];
 
 /// The registry every desktop store read and write goes through.
@@ -33,8 +31,6 @@ fn register_desktop_kinds(registry: &mut Registry) -> Result<(), er_store::Store
     crate::gh_status_cache::register(registry)?;
     crate::inbox::register(registry)?;
     crate::pr_cache::register(registry)?;
-    crate::pr_open_cache::register(registry)?;
-    crate::tabs::register(registry)?;
     Ok(())
 }
 
@@ -42,10 +38,10 @@ fn register_desktop_kinds(registry: &mut Registry) -> Result<(), er_store::Store
 mod tests {
     use super::*;
 
-    /// The desktop composition is the shared table plus its five records, and
+    /// The desktop composition is the shared table plus its three records, and
     /// each kind resolves to its file.
     #[test]
-    fn the_desktop_composition_adds_its_five_records() {
+    fn the_desktop_composition_adds_its_three_records() {
         let registry = registry();
         for (file, kind) in er_engine::store_registry::expected_kinds() {
             assert_eq!(
