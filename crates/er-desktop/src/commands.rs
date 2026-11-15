@@ -225,36 +225,10 @@ pub struct AppState {
     pub line_commits_cache: line_commits::LineCommitsCache,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct PrOpenCacheKey {
-    pub(crate) project_id: String,
-    pub(crate) repo_root: String,
-    pub(crate) pr_number: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PrOpenFreshness {
-    pub(crate) base_branch: String,
-    pub(crate) head_branch: String,
-    pub(crate) head_oid: String,
-    pub(crate) updated_at: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PrOpenCacheEntry {
-    pub(crate) freshness: PrOpenFreshness,
-    pub(crate) raw_diff: String,
-    /// Cached PR overview so a click after a hover-prefetch can render the
-    /// right panel without re-running `gh pr view`.
-    pub(crate) pr_data: Option<er_engine::github::PrOverviewData>,
-    /// Cached GitHub PR commits, newest first, keyed by the same freshness.
-    pub(crate) pr_commits: Option<Vec<er_engine::git::CommitInfo>>,
-    /// Monotonic tick from `pr_open_clock()` recording the last read or write.
-    /// Drives LRU eviction (`evict_lru`) when the cache exceeds its entry cap.
-    /// Older persisted entries deserialize to 0 (treated as least-recent).
-    #[serde(default)]
-    pub(crate) last_touched: u64,
-}
+pub use er_engine::pr_open_entry::{
+    evict_lru, pr_open_clock, PrOpenCacheEntry, PrOpenCacheKey, PrOpenFreshness,
+    MAX_PR_OPEN_CACHE_ENTRIES, PR_COMMIT_CACHE_LIMIT,
+};
 
 /// In-flight PR-open prefetch claim. The open path (`load_pr_open_inputs`)
 ///
@@ -7590,8 +7564,6 @@ fn pr_open_cache_key(project_id: &str, repo_root: &str, pr_number: u64) -> PrOpe
     }
 }
 
-const PR_COMMIT_CACHE_LIMIT: usize = 250;
-
 fn cached_pr_open_diff(
     cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     key: &PrOpenCacheKey,
@@ -7659,36 +7631,6 @@ fn cached_pr_open_entry(
     Some(out)
 }
 
-/// Monotonic counter for `PrOpenCacheEntry::last_touched`. Strictly increasing
-/// per process; only relative ordering matters for LRU eviction, never the
-/// absolute value.
-fn pr_open_clock() -> u64 {
-    static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Per-process cap on the open-diff cache. Over this, the least-recently-touched
-/// entry is evicted (LRU) so a hot PR survives a churn of one-off opens.
-pub const MAX_PR_OPEN_CACHE_ENTRIES: usize = 32;
-
-/// Evict the least-recently-touched entry when the map exceeds `MAX_PR_OPEN_CACHE_ENTRIES`.
-/// Pure (operates on the borrowed map) so the LRU policy is unit-testable without a lock.
-pub fn evict_lru(map: &mut HashMap<PrOpenCacheKey, PrOpenCacheEntry>) {
-    if map.len() <= MAX_PR_OPEN_CACHE_ENTRIES {
-        return;
-    }
-    // Remove the entry with the smallest `last_touched`. Touch times from
-    // `pr_open_clock()` are process-unique and increasing, so there is a strict
-    // minimum; the `HashMap` iteration order does not affect which key is chosen.
-    let evict_key = map
-        .iter()
-        .min_by_key(|(_, e)| e.last_touched)
-        .map(|(k, _)| k.clone());
-    if let Some(key) = evict_key {
-        map.remove(&key);
-    }
-}
-
 fn remember_pr_open_entry(
     cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     key: PrOpenCacheKey,
@@ -7698,31 +7640,9 @@ fn remember_pr_open_entry(
     pr_commits: Option<Vec<er_engine::git::CommitInfo>>,
 ) {
     if let Ok(mut guard) = cache.lock() {
-        // Preserve existing metadata if the new entry doesn't bring it (lets a
-        // hint-based prefetch keep data fetched by an earlier full open).
-        let pr_data = pr_data.or_else(|| {
-            guard
-                .get(&key)
-                .filter(|e| e.freshness == freshness)
-                .and_then(|e| e.pr_data.clone())
-        });
-        let pr_commits = pr_commits.or_else(|| {
-            guard
-                .get(&key)
-                .filter(|e| e.freshness == freshness)
-                .and_then(|e| e.pr_commits.clone())
-        });
-        guard.insert(
-            key,
-            PrOpenCacheEntry {
-                freshness,
-                raw_diff,
-                pr_data,
-                pr_commits,
-                last_touched: pr_open_clock(),
-            },
+        er_engine::pr_open_entry::remember_pr_open_entry(
+            &mut guard, key, freshness, raw_diff, pr_data, pr_commits,
         );
-        evict_lru(&mut guard);
     }
     crate::pr_open_cache::save_persisted_pr_open_cache(cache);
 }

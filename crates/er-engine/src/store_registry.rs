@@ -30,6 +30,9 @@ pub fn registry() -> Registry {
             .expect("the projects kind registers once");
         crate::release_update::register(&mut registry)
             .expect("the update-check kind registers once");
+        crate::tabs_record::register(&mut registry).expect("the tabs kind registers once");
+        crate::pr_open_cache::register(&mut registry)
+            .expect("the pr-open-cache kind registers once");
     }
     registry
 }
@@ -134,7 +137,7 @@ pub(crate) fn audit_call_count() -> usize {
 /// Walk the managed scope directories under the storage root and report files
 /// no registered kind accounts for.
 ///
-/// The caller passes its own composition, so the desktop's five app records
+/// The caller passes its own composition, so the desktop's three app records
 /// count for the desktop and stay unaccounted for every other front end.
 pub fn audit(front_end: FrontEnd, registry: &Registry) -> AuditReport {
     #[cfg(test)]
@@ -273,12 +276,32 @@ pub fn expected_kinds() -> &'static [(&'static str, &'static str)] {
         ("summary.md", "summary"),
         ("projects.json", "projects"),
         ("update-check.json", "update-check"),
+        ("tabs.json", "tabs"),
+        ("pr-open-cache.json", "pr-open-cache"),
     ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tab list and the local PR open cache moved out of the desktop (P45),
+    /// so every front end's composition resolves them through this table.
+    #[test]
+    fn the_shared_registry_has_the_moved_kinds() {
+        let registry = registry();
+        for (file, kind) in [
+            ("tabs.json", "tabs"),
+            ("pr-open-cache.json", "pr-open-cache"),
+        ] {
+            assert!(expected_kinds().contains(&(file, kind)), "{file}");
+            assert_eq!(
+                registry.kind_for(std::path::Path::new(file)),
+                Some(kind),
+                "{file}"
+            );
+        }
+    }
 
     #[test]
     fn the_registry_registers_every_kind() {
