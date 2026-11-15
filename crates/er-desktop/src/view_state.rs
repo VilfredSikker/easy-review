@@ -20,6 +20,10 @@ pub type ViewStateHandle = Arc<Mutex<DesktopViewState>>;
 pub struct DesktopViewState {
     panels: PanelsVisible,
     tabs: HashMap<TabKey, TabBrowserState>,
+    /// Selection and scroll on the service path, keyed by the app registry's
+    /// tab keys. The default build keeps these on the engine tab until the
+    /// TUI's view state moves too, so it never writes here.
+    nav: HashMap<TabKey, TabNavState>,
 }
 
 impl DesktopViewState {
@@ -46,10 +50,36 @@ impl DesktopViewState {
         self.tabs.entry(key).or_default()
     }
 
-    /// Drop the entries of tabs that are gone.
+    /// Drop the entries of tabs that are gone. Nav entries are left alone:
+    /// their keys come from the app registry, a different key space.
     pub fn retain_tabs(&mut self, live: &[TabKey]) {
         self.tabs.retain(|key, _| live.contains(key));
     }
+
+    /// The tab's selection and scroll; a tab that never moved starts at the top.
+    pub fn nav(&self, key: TabKey) -> TabNavState {
+        self.nav.get(&key).copied().unwrap_or_default()
+    }
+
+    pub fn nav_mut(&mut self, key: TabKey) -> &mut TabNavState {
+        self.nav.entry(key).or_default()
+    }
+}
+
+/// One tab's selection and scroll positions. `selected_file` indexes the
+/// tab's diff files, the same index the snapshot translates into a position
+/// in the visible list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TabNavState {
+    pub selected_file: usize,
+    pub current_hunk: usize,
+    pub current_line: Option<usize>,
+    pub diff_scroll: u16,
+    pub h_scroll: u16,
+    /// The split view's two columns scroll on their own.
+    pub h_scroll_old: u16,
+    pub h_scroll_new: u16,
+    pub panel_scroll: u16,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -291,6 +321,19 @@ mod tests {
         });
         assert!(browser.annotate_mode && browser.show_tooltips);
         assert_eq!(browser.url, "http://localhost:5173/", "untouched");
+    }
+
+    /// Each tab keeps its own selection, and a tab that never moved starts
+    /// at the top.
+    #[test]
+    fn nav_state_is_kept_per_tab_key() {
+        let (a, b) = (TabKey::next(), TabKey::next());
+        let mut view = DesktopViewState::default();
+        view.nav_mut(a).selected_file = 3;
+        view.nav_mut(a).current_hunk = 2;
+        assert_eq!(view.nav(a).selected_file, 3);
+        assert_eq!(view.nav(a).current_hunk, 2);
+        assert_eq!(view.nav(b), TabNavState::default());
     }
 
     #[test]
