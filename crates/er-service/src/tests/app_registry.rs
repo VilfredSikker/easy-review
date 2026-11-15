@@ -146,6 +146,74 @@ fn a_tab_command_with_no_such_key_or_the_last_tab_is_refused() -> anyhow::Result
     })
 }
 
+/// Puts a directory's permissions back when dropped, so a failing assertion
+/// never leaves a read-only directory behind.
+#[cfg(unix)]
+struct RestorePermissions(std::path::PathBuf, std::fs::Permissions);
+
+#[cfg(unix)]
+impl Drop for RestorePermissions {
+    fn drop(&mut self) {
+        let _ = std::fs::set_permissions(&self.0, self.1.clone());
+    }
+}
+
+/// A change whose save fails still takes effect at once, and the failure is
+/// reported: holding it back until a later save let a retry close nothing or
+/// open a duplicate tab.
+#[cfg(unix)]
+#[test]
+fn a_tab_command_whose_save_fails_takes_effect_and_reports_it() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir()?;
+    er_engine::storage::with_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+        save_tabs(&[working("/a"), working("/b")], 0)?;
+        let (registry, _) = registry(FakeGitHub::default());
+        let keys: Vec<_> = registry.tabs_view().tabs.iter().map(|t| t.key).collect();
+        let events = registry.subscribe();
+
+        let record = er_engine::store_registry::app_path::<er_engine::tabs_record::TabsFile>()
+            .ok_or_else(|| anyhow::anyhow!("no tabs path"))?;
+        let app_dir = record
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("no app dir"))?
+            .to_path_buf();
+        let restore =
+            RestorePermissions(app_dir.clone(), std::fs::metadata(&app_dir)?.permissions());
+        std::fs::set_permissions(&app_dir, std::fs::Permissions::from_mode(0o555))?;
+
+        let reply = registry.send(AppCommand::CloseTab { key: keys[1] });
+        let Ok(Reply::Tabs(view)) = reply else {
+            anyhow::bail!("the close answered {reply:?}");
+        };
+        assert_eq!(view.tabs.len(), 1);
+        assert_eq!(*registry.tabs_view(), view, "the change is published now");
+        let events: Vec<Event> = events.try_iter().collect();
+        assert!(
+            events.contains(&Event::TabsChanged { revision: 1 }),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::CommandFailed { .. })),
+            "the failed save is reported: {events:?}"
+        );
+
+        drop(restore);
+        registry.send(AppCommand::SelectTab { key: keys[0] })?;
+        let saved = load_tabs().ok_or_else(|| anyhow::anyhow!("no saved record"))?;
+        let roots: Vec<&str> = saved
+            .tabs
+            .iter()
+            .map(|tab| tab.repo_root.as_str())
+            .collect();
+        assert_eq!(roots, ["/a"], "the next save writes the list as published");
+        Ok(())
+    })
+}
+
 /// `tabs.json` and `pr-open-cache.json` have one writer each in the app's
 /// code: the engine's record modules, called from the desktop's flag-off
 /// path and from this registry. The desktop's calls are compiled out with
