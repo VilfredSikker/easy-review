@@ -54,12 +54,15 @@ it.
 ## Consequences
 
 **Good.** A config field cannot be added without deciding how Settings shows
-it. One owner saves the config, so saves are ordered. Settings reads never wait
-on the actor.
+it. The settings commands save through one owner, so their saves are ordered.
+Settings reads never wait on the actor.
 
 **Costs.** Labels and descriptions are still written by hand, and the TUI's
 table is not covered by the fixture. A client that wants a machine-readable
 schema for validation would need a derive added beside the table; the wire
 rows would not change. On the flag path, side effects the flag-off App runs
 after a config write (refreshing watched files, resyncing the AI selection)
-wait for the service to own that state.
+wait for the service to own that state. The palette's `set_ai_model`,
+`set_ai_selection` and `set_ai_effort` still save the App's copy of the config,
+so until they are routed, the flag-on App and the settings actor can each save
+over the other's last write.
