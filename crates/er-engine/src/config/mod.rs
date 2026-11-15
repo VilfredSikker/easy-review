@@ -2,10 +2,15 @@ mod agents;
 pub mod desktop_settings;
 mod file_kinds;
 mod flow_models;
+pub mod hub_edits;
 pub mod inbox;
 mod path_rules;
+pub mod provider_view;
 mod risk_rules;
+pub mod risk_settings;
 pub mod settings;
+#[cfg(test)]
+mod settings_coverage;
 
 use anyhow::Result;
 
@@ -17,12 +22,17 @@ pub use desktop_settings::{
 };
 pub use file_kinds::{FileKindRepoConfig, FileKindsConfig};
 pub use flow_models::{ReviewModelGroups, ReviewModelRef, ReviewModelTier};
+pub use hub_edits::{HubEdit, ModelUpsert, ProviderUpsert};
 pub use inbox::{InboxConfig, InboxKindToggles};
+pub use provider_view::{
+    config_hub_view, map_ai_providers, AiModelInfo, AiProviderInfo, ConfigHubView,
+};
 pub use risk_rules::{
     apply_risk_rule_edit, load_risk_rules_table, merged_table, MatchedRiskRule, ResolvedRisk,
     RiskConfig, RiskRule, RiskRuleEdit, RiskRuleProposal, RiskRuleSource, RiskRuleTable, RiskRules,
     RiskRulesArtifact, RiskTier,
 };
+pub use risk_settings::{risk_rules_view, RiskFileDto, RiskFilesView, RiskRuleDto, RiskRulesView};
 use serde::{Deserialize, Serialize};
 pub use settings::{
     desktop_settings_fields_flat, desktop_settings_fields_for_scope, settings_fields_grouped,
@@ -2014,10 +2024,16 @@ pub fn persisted_config(config: &ErConfig) -> ErConfig {
 /// leaves neither file written. The agents file is checked and written before
 /// config.toml, so a bad agents.toml stops the pair without a partial save.
 pub fn save_config(config: &ErConfig) -> Result<()> {
-    let config_path = managed_config_path();
-    ensure_config_saveable(&config_path)?;
-    agents::save_agents_to(&agents::agents_path(&config_path), config)?;
-    save_config_to(&config_path, config)
+    save_config_pair_to(&managed_config_path(), config)
+}
+
+/// [`save_config`] against an explicit `config.toml` path, with `agents.toml`
+/// beside it. The settings actor owns its path rather than resolving the
+/// managed one per save, so a test can never reach the owner's files.
+pub fn save_config_pair_to(config_path: &std::path::Path, config: &ErConfig) -> Result<()> {
+    ensure_config_saveable(config_path)?;
+    agents::save_agents_to(&agents::agents_path(config_path), config)?;
+    save_config_to(config_path, config)
 }
 
 /// Refuse a save when `path` has a recorded failed load or does not parse,

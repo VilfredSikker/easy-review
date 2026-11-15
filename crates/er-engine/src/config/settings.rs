@@ -132,6 +132,28 @@ fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
             value: config.commands.security.clone().unwrap_or_default(),
             strict: true,
         },
+        ConfigHubFieldDto::Text {
+            key: "summary.command".into(),
+            label: "Summary command".into(),
+            description: "Command that writes the diff summary; empty uses the agent command"
+                .into(),
+            placeholder: "e.g. claude".into(),
+            value: config.summary.command.clone().unwrap_or_default(),
+            strict: true,
+        },
+        ConfigHubFieldDto::Text {
+            key: "summary.args".into(),
+            label: "Summary args".into(),
+            description: "Arguments for the summary command ({diff} is the raw diff)".into(),
+            placeholder: "e.g. --print {diff}".into(),
+            value: config
+                .summary
+                .args
+                .as_ref()
+                .map(|args| args.join(" "))
+                .unwrap_or_default(),
+            strict: true,
+        },
         ConfigHubFieldDto::Bool {
             key: "summary.push_to_pr".into(),
             label: "Push summary to PR body".into(),
@@ -156,6 +178,33 @@ fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
             placeholder: "e.g. --print -p {prompt}".into(),
             value: config.agent.args.join(" "),
             strict: true,
+        },
+        ConfigHubFieldDto::Text {
+            key: "agent.model".into(),
+            label: "Model".into(),
+            description: "Model the agent command runs with; empty uses its default".into(),
+            placeholder: "e.g. sonnet".into(),
+            value: config.agent.model.clone(),
+            strict: false,
+        },
+        ConfigHubFieldDto::Text {
+            key: "ai_hub.flow_providers".into(),
+            label: "Review flow providers".into(),
+            description:
+                "Provider ids review flows may use (space-separated); empty allows every installed provider"
+                    .into(),
+            placeholder: "e.g. claude codex".into(),
+            value: config.ai_hub.flow_providers.join(" "),
+            strict: false,
+        },
+        ConfigHubFieldDto::Text {
+            key: "ai_hub.agent_timeout_secs".into(),
+            label: "Agent timeout (seconds)".into(),
+            description: "A run past this is stopped and reported as timed out; 0 uses the default"
+                .into(),
+            placeholder: super::DEFAULT_AGENT_TIMEOUT_SECS.to_string(),
+            value: config.ai_hub.agent_timeout_secs.to_string(),
+            strict: false,
         },
         ConfigHubFieldDto::Cycle {
             key: "ai_hub.max_concurrent_reviews".into(),
@@ -260,6 +309,12 @@ fn terminal_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
             label: "Hidden files".into(),
             description: "Show hidden files mode (TUI tab 6)".into(),
             value: config.features.view_hidden,
+        },
+        ConfigHubFieldDto::Bool {
+            key: "features.view_tour".into(),
+            label: "Guided tour".into(),
+            description: "Show the guided tour mode when the branch has a tour".into(),
+            value: config.features.view_tour,
         },
         ConfigHubFieldDto::Section {
             title: "Display".into(),

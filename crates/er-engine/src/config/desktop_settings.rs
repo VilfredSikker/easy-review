@@ -1,9 +1,10 @@
 //! Serializable settings schema for the desktop app (excludes diff-view fields).
 
+use super::risk_settings::{risk_file_rows, risk_rule_rows, RiskFileDto, RiskRuleDto};
 use super::settings::settings_fields_grouped;
 use super::{
-    apply_risk_rule_edit, split_shell_args, ErConfig, ResolvedRisk, RiskRuleEdit, RiskRuleSource,
-    RiskRuleTable, RiskRules, RiskTier, MAX_CONCURRENT_REVIEWS_RANGE,
+    apply_risk_rule_edit, split_shell_args, ErConfig, RiskRuleEdit, RiskRuleSource, RiskRuleTable,
+    RiskTier, MAX_CONCURRENT_REVIEWS_RANGE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -59,34 +60,6 @@ pub enum ConfigHubFieldDto {
 /// JSON text: a rule is four fields, and the patch wire carries one scalar.
 pub const RISK_RULE_PATCH_KEY: &str = "risk.rule";
 
-/// One declared risk rule, for the Settings rule table.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RiskRuleDto {
-    pub pattern: String,
-    /// The canonical tier, or the text as written when it does not read — the
-    /// table must show a typo rather than hide the rule it broke.
-    pub tier: String,
-    /// Whether `tier` reads. A rule that does not is listed but claims nothing.
-    pub readable: bool,
-    pub label: Option<String>,
-    pub source: RiskRuleSource,
-    /// How many of the active tab's changed files this rule claims. Zero is an
-    /// idle rule, which the table dims.
-    pub file_count: usize,
-}
-
-/// One changed file's resolution: the tier it reads as, and the rule that said
-/// so. The rules list shows what was declared; this shows what a given file
-/// resolved to, which precedence and the defaults sit between.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RiskFileDto {
-    pub path: String,
-    #[serde(flatten)]
-    pub resolved: ResolvedRisk,
-}
-
 /// The `importance_*` shape of [`RiskRuleDto`], still read by the desktop's current
 /// Settings card; removed once that card reads `risk_rules`.
 #[derive(Debug, Clone, Serialize)]
@@ -126,47 +99,6 @@ pub struct DesktopSettingsSnapshot {
     pub importance_rules: Vec<ImportanceRuleDto>,
     pub importance_default: String,
     pub importance_files: Vec<ImportanceFileDto>,
-}
-
-/// Resolve the active tab's changed files against `rules`.
-///
-/// Split from the snapshot so the wire values are testable without shelling out
-/// to git for the repo slug.
-fn risk_file_rows(rules: &RiskRules, changed_paths: &[String]) -> Vec<RiskFileDto> {
-    if !rules.is_declared() {
-        return Vec::new();
-    }
-    changed_paths
-        .iter()
-        .map(|path| RiskFileDto {
-            path: path.clone(),
-            resolved: rules.resolve(path),
-        })
-        .collect()
-}
-
-fn risk_rule_rows(rules: &RiskRules, changed_paths: &[String]) -> Vec<RiskRuleDto> {
-    let counts = rules.claim_counts(changed_paths.iter().map(String::as_str));
-    [
-        (RiskRuleSource::Project, &rules.project),
-        (RiskRuleSource::User, &rules.user),
-    ]
-    .into_iter()
-    .flat_map(|(source, table)| {
-        let counts = &counts;
-        table.rules.iter().map(move |(pattern, rule)| {
-            let tier = rule.tier();
-            RiskRuleDto {
-                pattern: pattern.clone(),
-                tier: tier.map_or_else(|| rule.tier.clone(), |t| t.as_str().to_string()),
-                readable: tier.is_some(),
-                label: rule.label.clone(),
-                source,
-                file_count: counts.get(&(source, pattern.clone())).copied().unwrap_or(0),
-            }
-        })
-    })
-    .collect()
 }
 
 /// `repo_key` is the active tab's `TabState::rules_key`, so Settings shows the
@@ -384,6 +316,49 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
                 config.agent.args = split_shell_args(&v);
             }
         }
+        "agent.model" => {
+            if let ConfigFieldValue::String(v) = value {
+                config.agent.model = v.trim().to_string();
+            }
+        }
+        "summary.command" => {
+            if let ConfigFieldValue::String(v) = value {
+                let v = v.trim();
+                config.summary.command = (!v.is_empty()).then(|| v.to_string());
+            }
+        }
+        "summary.args" => {
+            if let ConfigFieldValue::String(v) = value {
+                let args = split_shell_args(&v);
+                config.summary.args = (!args.is_empty()).then_some(args);
+            }
+        }
+        "features.view_tour" => {
+            if let ConfigFieldValue::Bool(v) = value {
+                config.features.view_tour = v;
+            }
+        }
+        "ai_hub.flow_providers" => {
+            if let ConfigFieldValue::String(v) = value {
+                let mut ids: Vec<String> = Vec::new();
+                for id in v.split(|c: char| c.is_whitespace() || c == ',') {
+                    if !id.is_empty() && !ids.iter().any(|seen| seen == id) {
+                        ids.push(id.to_string());
+                    }
+                }
+                config.ai_hub.flow_providers = ids;
+            }
+        }
+        "ai_hub.agent_timeout_secs" => {
+            let parsed = match value {
+                ConfigFieldValue::Number(n) => Some(n),
+                ConfigFieldValue::String(v) => v.trim().parse::<u64>().ok(),
+                ConfigFieldValue::Bool(_) => None,
+            };
+            if let Some(secs) = parsed {
+                config.ai_hub.agent_timeout_secs = secs;
+            }
+        }
         "ai_hub.max_concurrent_reviews" => {
             let parsed = match value {
                 ConfigFieldValue::Number(n) => Some(n as usize),
@@ -449,6 +424,7 @@ mod tests {
     use super::*;
     use crate::config::test_support::risk_rules;
     use crate::config::ErConfig;
+    use crate::config::RiskRules;
 
     #[test]
     fn the_cap_picker_offers_exactly_what_the_setter_accepts() {
