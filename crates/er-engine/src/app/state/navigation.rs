@@ -1,4 +1,5 @@
 use super::*;
+use crate::navigation::{FileMove, LineCursor, LineMove};
 
 impl TabState {
     pub fn next_file(&mut self) {
@@ -8,87 +9,14 @@ impl TabState {
             self.history_next_file();
             return;
         }
-        if let Some(idx) = self.selected_watched {
-            // In watched section — move down within watched files
-            let visible_watched = self.visible_watched_files();
-            if let Some(pos) = visible_watched.iter().position(|(i, _)| *i == idx) {
-                if pos + 1 < visible_watched.len() {
-                    self.selected_watched = Some(visible_watched[pos + 1].0);
-                    self.diff_scroll = 0;
-                    self.h_scroll = 0;
-                } else {
-                    // At last watched file — wrap to first diff file
-                    self.selected_watched = None;
-                    let visible = self.visible_files();
-                    if !visible.is_empty() {
-                        self.selected_file = visible[0].0;
-                        self.current_hunk = 0;
-                        self.current_line = None;
-                        self.selection_anchor = None;
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                        self.panel_scroll = 0;
-                        self.ensure_file_parsed();
-                        self.rebuild_hunk_offsets();
-                    }
-                }
-            }
-        } else {
-            // In diff section
-            let visible = self.visible_files();
-            if visible.is_empty() {
-                // No diff files — jump to watched if available
-                let visible_watched = self.visible_watched_files();
-                if !visible_watched.is_empty() {
-                    self.selected_watched = Some(visible_watched[0].0);
-                    self.diff_scroll = 0;
-                    self.h_scroll = 0;
-                }
-                return;
-            }
-            if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
-                if pos + 1 < visible.len() {
-                    self.selected_file = visible[pos + 1].0;
-                    self.current_hunk = 0;
-                    self.current_line = None;
-                    self.selection_anchor = None;
-                    self.diff_scroll = 0;
-                    self.h_scroll = 0;
-                    self.panel_scroll = 0;
-                    self.ensure_file_parsed();
-                    self.rebuild_hunk_offsets();
-                } else {
-                    // At last diff file
-                    let visible_watched = self.visible_watched_files();
-                    if !visible_watched.is_empty() {
-                        // Transition to watched section
-                        self.selected_watched = Some(visible_watched[0].0);
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                    } else {
-                        // Wrap to first diff file
-                        self.selected_file = visible[0].0;
-                        self.current_hunk = 0;
-                        self.current_line = None;
-                        self.selection_anchor = None;
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                        self.panel_scroll = 0;
-                        self.ensure_file_parsed();
-                        self.rebuild_hunk_offsets();
-                    }
-                }
-            } else {
-                // Current selection not in visible set — snap to first
-                self.selected_file = visible[0].0;
-                self.current_hunk = 0;
-                self.diff_scroll = 0;
-                self.h_scroll = 0;
-                self.panel_scroll = 0;
-                self.ensure_file_parsed();
-                self.rebuild_hunk_offsets();
-            }
-        }
+        let (visible, watched) = self.file_move_inputs();
+        let to = crate::navigation::next_file(
+            self.selected_file,
+            self.selected_watched,
+            &visible,
+            &watched,
+        );
+        self.apply_file_move(to);
     }
 
     pub fn prev_file(&mut self) {
@@ -98,218 +26,134 @@ impl TabState {
             self.history_prev_file();
             return;
         }
-        if let Some(idx) = self.selected_watched {
-            // In watched section — move up within watched files
-            let visible_watched = self.visible_watched_files();
-            if let Some(pos) = visible_watched.iter().position(|(i, _)| *i == idx) {
-                if pos > 0 {
-                    self.selected_watched = Some(visible_watched[pos - 1].0);
-                    self.diff_scroll = 0;
-                    self.h_scroll = 0;
-                } else {
-                    // At first watched file — transition back to diff section
-                    self.selected_watched = None;
-                    let visible = self.visible_files();
-                    if let Some(&(last, _)) = visible.last() {
-                        self.selected_file = last;
-                        self.current_hunk = 0;
-                        self.current_line = None;
-                        self.selection_anchor = None;
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                        self.panel_scroll = 0;
-                        self.ensure_file_parsed();
-                        self.rebuild_hunk_offsets();
-                    }
-                }
-            }
-        } else {
-            // In diff section — normal navigation
-            let visible = self.visible_files();
-            if visible.is_empty() {
-                return;
-            }
-            if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
-                if pos > 0 {
-                    self.selected_file = visible[pos - 1].0;
-                    self.current_hunk = 0;
-                    self.current_line = None;
-                    self.selection_anchor = None;
-                    self.diff_scroll = 0;
-                    self.h_scroll = 0;
-                    self.panel_scroll = 0;
-                    self.ensure_file_parsed();
-                    self.rebuild_hunk_offsets();
-                } else {
-                    // At first diff file — wrap to last item
-                    let visible_watched = self.visible_watched_files();
-                    if let Some(&(last, _)) = visible_watched.last() {
-                        self.selected_watched = Some(last);
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                    } else if let Some(&(last, _)) = visible.last() {
-                        // Wrap to last diff file
-                        self.selected_file = last;
-                        self.current_hunk = 0;
-                        self.current_line = None;
-                        self.selection_anchor = None;
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                        self.panel_scroll = 0;
-                        self.ensure_file_parsed();
-                        self.rebuild_hunk_offsets();
-                    }
-                }
-            } else {
-                // Current selection not in visible set — snap to first
-                self.selected_file = visible[0].0;
-                self.current_hunk = 0;
+        let (visible, watched) = self.file_move_inputs();
+        let to = crate::navigation::prev_file(
+            self.selected_file,
+            self.selected_watched,
+            &visible,
+            &watched,
+        );
+        self.apply_file_move(to);
+    }
+
+    /// The visible diff and watched file indices, in display order.
+    fn file_move_inputs(&self) -> (Vec<usize>, Vec<usize>) {
+        let visible = self.visible_files().iter().map(|(idx, _)| *idx).collect();
+        let watched = self
+            .visible_watched_files()
+            .iter()
+            .map(|(idx, _)| *idx)
+            .collect();
+        (visible, watched)
+    }
+
+    fn apply_file_move(&mut self, to: FileMove) {
+        match to {
+            FileMove::Stay => {}
+            FileMove::Watched(idx) => {
+                self.selected_watched = Some(idx);
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
-                self.panel_scroll = 0;
-                self.ensure_file_parsed();
-                self.rebuild_hunk_offsets();
             }
+            FileMove::LeaveWatched => self.selected_watched = None,
+            FileMove::File(idx) => {
+                self.selected_watched = None;
+                self.current_line = None;
+                self.selection_anchor = None;
+                self.select_file_top(idx);
+            }
+            FileMove::Snap(idx) => self.select_file_top(idx),
         }
+    }
+
+    /// Selects the file at its first hunk, scrolled to the top.
+    fn select_file_top(&mut self, idx: usize) {
+        self.selected_file = idx;
+        self.current_hunk = 0;
+        self.diff_scroll = 0;
+        self.h_scroll = 0;
+        self.panel_scroll = 0;
+        self.ensure_file_parsed();
+        self.rebuild_hunk_offsets();
     }
 
     pub fn next_hunk(&mut self) {
         self.focused_comment_id = None;
         self.focused_finding_id = None;
-        let total = self.total_hunks();
-        if total > 0 && self.current_hunk < total - 1 {
-            self.current_hunk += 1;
-            self.current_line = None;
-            self.selection_anchor = None;
-            self.scroll_to_current_hunk();
+        if let Some(hunk) = crate::navigation::next_hunk(self.current_hunk, self.total_hunks()) {
+            self.move_to_hunk(hunk);
         }
     }
 
     pub fn prev_hunk(&mut self) {
         self.focused_comment_id = None;
         self.focused_finding_id = None;
-        if self.current_hunk > 0 {
-            self.current_hunk -= 1;
-            self.current_line = None;
-            self.selection_anchor = None;
-            self.scroll_to_current_hunk();
+        if let Some(hunk) = crate::navigation::prev_hunk(self.current_hunk) {
+            self.move_to_hunk(hunk);
         }
     }
 
-    /// Returns true if the line at `idx` in the current hunk is a Fold marker.
-    fn is_fold_line(&self, idx: usize) -> bool {
+    fn move_to_hunk(&mut self, hunk: usize) {
+        self.current_hunk = hunk;
+        self.current_line = None;
+        self.selection_anchor = None;
+        self.scroll_to_current_hunk();
+    }
+
+    /// Whether line `line` of hunk `hunk` in the selected file is a Fold marker.
+    fn is_fold_at(&self, hunk: usize, line: usize) -> bool {
         self.selected_diff_file()
-            .and_then(|f| f.hunks.get(self.current_hunk))
-            .and_then(|h| h.lines.get(idx))
-            .map(|l| matches!(l.line_type, crate::git::LineType::Fold(_)))
-            .unwrap_or(false)
+            .and_then(|f| f.hunks.get(hunk))
+            .and_then(|h| h.lines.get(line))
+            .is_some_and(|l| matches!(l.line_type, crate::git::LineType::Fold(_)))
+    }
+
+    /// The line count of each hunk in the selected file.
+    fn hunk_line_counts(&self) -> Vec<usize> {
+        self.selected_diff_file()
+            .map(|f| f.hunks.iter().map(|h| h.lines.len()).collect())
+            .unwrap_or_default()
+    }
+
+    fn line_cursor(&self) -> LineCursor {
+        LineCursor {
+            hunk: self.current_hunk,
+            line: self.current_line,
+        }
+    }
+
+    fn apply_line_move(&mut self, to: LineMove) {
+        match to {
+            LineMove::Stay => {}
+            LineMove::To(cursor) => {
+                self.current_hunk = cursor.hunk;
+                self.current_line = cursor.line;
+                self.scroll_to_current_hunk();
+            }
+            LineMove::Exit => self.current_line = None,
+        }
     }
 
     /// Move to the next line within the current hunk (arrow down)
     pub fn next_line(&mut self) {
         self.selection_anchor = None;
-        let total_lines = self.current_hunk_line_count();
-        if total_lines == 0 {
-            return;
-        }
-        match self.current_line {
-            None => {
-                // Find the first non-Fold line
-                let mut idx = 0;
-                while idx < total_lines && self.is_fold_line(idx) {
-                    idx += 1;
-                }
-                self.current_line = if idx < total_lines { Some(idx) } else { None };
-                self.scroll_to_current_hunk();
-            }
-            Some(line) => {
-                if line + 1 < total_lines {
-                    // Skip Fold lines forward
-                    let mut next = line + 1;
-                    while next < total_lines && self.is_fold_line(next) {
-                        next += 1;
-                    }
-                    if next < total_lines {
-                        self.current_line = Some(next);
-                        self.scroll_to_current_hunk();
-                    } else {
-                        // Reached end of hunk — move to next hunk
-                        let total_hunks = self.total_hunks();
-                        if self.current_hunk + 1 < total_hunks {
-                            self.current_hunk += 1;
-                            self.current_line = Some(0);
-                            self.scroll_to_current_hunk();
-                        }
-                    }
-                } else {
-                    let total_hunks = self.total_hunks();
-                    if self.current_hunk + 1 < total_hunks {
-                        self.current_hunk += 1;
-                        self.current_line = Some(0);
-                        self.scroll_to_current_hunk();
-                    }
-                }
-            }
-        }
+        let to = crate::navigation::next_line(
+            self.line_cursor(),
+            &self.hunk_line_counts(),
+            |hunk, line| self.is_fold_at(hunk, line),
+        );
+        self.apply_line_move(to);
     }
 
     /// Move to the previous line within the current hunk (arrow up)
     pub fn prev_line(&mut self) {
         self.selection_anchor = None;
-        match self.current_line {
-            None => {
-                // Enter line mode at the last non-Fold line of the current hunk
-                let count = self.current_hunk_line_count();
-                if count > 0 {
-                    let mut idx = count - 1;
-                    while idx > 0 && self.is_fold_line(idx) {
-                        idx -= 1;
-                    }
-                    self.current_line = if !self.is_fold_line(idx) {
-                        Some(idx)
-                    } else {
-                        None
-                    };
-                    self.scroll_to_current_hunk();
-                }
-            }
-            Some(0) => {
-                if self.current_hunk > 0 {
-                    self.current_hunk -= 1;
-                    let count = self.current_hunk_line_count();
-                    if count > 0 {
-                        let mut idx = count - 1;
-                        while idx > 0 && self.is_fold_line(idx) {
-                            idx -= 1;
-                        }
-                        self.current_line = if !self.is_fold_line(idx) {
-                            Some(idx)
-                        } else {
-                            None
-                        };
-                    } else {
-                        self.current_line = None;
-                    }
-                    self.scroll_to_current_hunk();
-                } else {
-                    self.current_line = None;
-                }
-            }
-            Some(line) => {
-                // Skip Fold lines backward
-                let mut prev = line - 1;
-                while prev > 0 && self.is_fold_line(prev) {
-                    prev -= 1;
-                }
-                self.current_line = if !self.is_fold_line(prev) {
-                    Some(prev)
-                } else {
-                    // All lines above are Folds — exit line mode
-                    None
-                };
-                self.scroll_to_current_hunk();
-            }
-        }
+        let to = crate::navigation::prev_line(
+            self.line_cursor(),
+            &self.hunk_line_counts(),
+            |hunk, line| self.is_fold_at(hunk, line),
+        );
+        self.apply_line_move(to);
     }
 
     /// Get the number of lines in the current hunk
