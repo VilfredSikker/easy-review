@@ -262,7 +262,7 @@ impl<'a> TabIdentity<'a> {
     /// Whether this tab's reviewed marks are saved. A remote tab outside the PR
     /// bucket has no managed dir of its own to write to.
     pub const fn persists_reviewed(&self) -> bool {
-        !(self.is_remote() && !matches!(self.review_bucket(), ReviewBucket::Pr))
+        !self.is_remote() || matches!(self.review_bucket(), ReviewBucket::Pr)
     }
 
     pub const fn tour_context_is_pr(&self) -> bool {
