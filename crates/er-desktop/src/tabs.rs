@@ -60,18 +60,27 @@ pub fn persist_app_tabs(app: &er_engine::app::App, view: &ViewStateHandle) {
     }
 }
 
-fn browser_descriptor_fields(browser: &TabBrowserState) -> (Option<String>, Option<String>) {
-    let url = if browser.url.trim().is_empty() {
-        None
-    } else {
-        Some(browser.url.clone())
-    };
-    let layout = if browser.layout == BrowserLayout::Hidden {
-        None
-    } else {
-        Some(browser.layout.as_str().to_string())
-    };
-    (url, layout)
+/// The keys a tab's browser state is saved under. The engine keeps them in the
+/// descriptor's open map without reading them (ADR 0068).
+const BROWSER_URL_KEY: &str = "browser_url";
+const BROWSER_LAYOUT_KEY: &str = "browser_layout";
+
+/// A tab's browser URL and layout as descriptor keys. An empty URL and the
+/// hidden layout are left out, as they were when the record named them.
+fn browser_descriptor_fields(
+    browser: &TabBrowserState,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut fields = serde_json::Map::new();
+    if !browser.url.trim().is_empty() {
+        fields.insert(BROWSER_URL_KEY.to_string(), browser.url.clone().into());
+    }
+    if browser.layout != BrowserLayout::Hidden {
+        fields.insert(
+            BROWSER_LAYOUT_KEY.to_string(),
+            browser.layout.as_str().to_string().into(),
+        );
+    }
+    fields
 }
 
 /// Apply a saved descriptor's browser URL and layout to the restored tab's
@@ -82,10 +91,11 @@ pub fn apply_descriptor_browser(
     d: &TabDescriptor,
 ) {
     let browser = view.browser_mut(tab.key());
-    if let Some(url) = d.browser_url.clone() {
-        browser.url = url;
+    let saved = |key: &str| d.extra.get(key).and_then(serde_json::Value::as_str);
+    if let Some(url) = saved(BROWSER_URL_KEY) {
+        browser.url = url.to_string();
     }
-    if let Some(layout) = d.browser_layout.as_deref() {
+    if let Some(layout) = saved(BROWSER_LAYOUT_KEY) {
         browser.layout = BrowserLayout::from_label(layout);
     }
 }
@@ -95,7 +105,7 @@ pub fn descriptor_from_tab(
     tab: &er_engine::app::TabState,
     view: &DesktopViewState,
 ) -> TabDescriptor {
-    let (browser_url, browser_layout) = browser_descriptor_fields(&view.browser(tab.key()));
+    let extra = browser_descriptor_fields(&view.browser(tab.key()));
     // Remote-only PR (GitHub slug, no local-branch view / clone).
     if tab.is_remote() {
         let slug = tab.remote_repo.as_deref().unwrap_or("");
@@ -121,8 +131,7 @@ pub fn descriptor_from_tab(
             pr_number: tab.pr_number,
             pr_head_ref: None,
             base_ref,
-            browser_url,
-            browser_layout,
+            extra,
         };
     }
     // Local PR review (fetched head ref, no checkout)
@@ -141,8 +150,7 @@ pub fn descriptor_from_tab(
             pr_number: Some(num),
             pr_head_ref: tab.pr_head_ref.clone(),
             base_ref,
-            browser_url,
-            browser_layout,
+            extra,
         };
     }
     // Plain local branch view
@@ -161,8 +169,7 @@ pub fn descriptor_from_tab(
             pr_number: None,
             pr_head_ref: None,
             base_ref,
-            browser_url,
-            browser_layout,
+            extra,
         };
     }
     let base_ref = if tab.base_branch.is_empty() {
@@ -179,8 +186,7 @@ pub fn descriptor_from_tab(
         pr_number: None,
         pr_head_ref: None,
         base_ref,
-        browser_url,
-        browser_layout,
+        extra,
     }
 }
 
@@ -444,8 +450,7 @@ mod tests {
                 pr_number: Some(1425),
                 pr_head_ref: None,
                 base_ref: Some("main".to_string()),
-                browser_url: None,
-                browser_layout: None,
+                extra: serde_json::Map::new(),
             };
             let tab =
                 rebuild_remote_pr(&d, true, &er_engine::ports::Ports::for_test()).expect("stub");
@@ -492,8 +497,7 @@ mod tests {
                 pr_number: Some(99),
                 pr_head_ref: None,
                 base_ref: Some("main".to_string()),
-                browser_url: None,
-                browser_layout: None,
+                extra: serde_json::Map::new(),
             };
             let tab = rebuild_local_pr(&d, true, &er_engine::ports::Ports::cli()).expect("stub");
             assert_eq!(

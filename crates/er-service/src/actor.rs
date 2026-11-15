@@ -10,12 +10,14 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
+use er_engine::jobs::JobSink;
 use er_engine::ports::Ports;
 
 use crate::effect::resolve_target;
 use crate::github_sync::{Applied, Fetched};
 use crate::guard::{self, ActorThread};
 use crate::handle::{ActorMsg, ReplySender, WorkspaceError, WorkspaceHandle};
+use crate::jobs::JobHost;
 use crate::protocol::{Command, Event, Reply, TabContext};
 use crate::workspace::{WorkspaceState, WorkspaceView};
 
@@ -25,6 +27,7 @@ use crate::workspace::{WorkspaceState, WorkspaceView};
 #[derive(Clone)]
 pub struct WorkspaceDeps {
     ports: Ports,
+    jobs: Option<Arc<dyn JobSink>>,
     post_session: Arc<Mutex<er_engine::github_post_session::PostSession>>,
     /// The process's app registry, shared by every workspace actor. Actors
     /// read or request through it; it alone writes the app records.
@@ -35,6 +38,7 @@ impl WorkspaceDeps {
     pub fn new(ports: Ports) -> Self {
         Self {
             ports,
+            jobs: None,
             post_session: Arc::new(Mutex::new(
                 er_engine::github_post_session::PostSession::default(),
             )),
@@ -52,6 +56,18 @@ impl WorkspaceDeps {
     /// The app registry, when the service gave one.
     pub fn app_registry(&self) -> Option<&Arc<crate::app_registry::AppRegistry>> {
         self.app_registry.as_ref()
+    }
+
+    /// Sends the workspace's agent jobs to `jobs` instead of the actor's own
+    /// sink. Tests record submissions with this.
+    #[must_use]
+    pub fn with_jobs(mut self, jobs: Arc<dyn JobSink>) -> Self {
+        self.jobs = Some(jobs);
+        self
+    }
+
+    pub(crate) fn jobs(&self) -> Option<Arc<dyn JobSink>> {
+        self.jobs.clone()
     }
 
     /// The retry state a GitHub comment create keeps between attempts. Effects
@@ -106,13 +122,30 @@ fn run(
 ) {
     let _actor = ActorThread::enter();
     let mut state = WorkspaceState::new();
+    let mut jobs = JobHost::new(&deps, &tx);
     while let Ok(message) = rx.recv() {
         match message {
             ActorMsg::Command { command, reply } => {
-                handle_command(&deps, &state, &tx, command, reply);
+                handle_command(&deps, &state, &mut jobs, &tx, command, reply);
             }
             ActorMsg::EffectDone { result, reply } => {
+                // An arena effect may have started, cancelled or removed a run;
+                // the revision it publishes carries the runs as they are now.
+                state.set_arena_runs(jobs.live_arena_runs());
                 apply(&mut state, result, reply, &subscribers, &view);
+            }
+            ActorMsg::JobProgress { job, line } => {
+                broadcast(&subscribers, Event::JobProgress { job, line });
+            }
+            ActorMsg::JobFinished { job, outcome } => {
+                jobs.finished(job);
+                broadcast(&subscribers, Event::JobFinished { job, outcome });
+            }
+            ActorMsg::ArenaChanged => {
+                state.set_arena_runs(jobs.live_arena_runs());
+                let revision = state.bump_revision();
+                publish(&view, &state);
+                broadcast(&subscribers, Event::ViewPublished { revision });
             }
             ActorMsg::Fetched { result, reply } => {
                 match result.and_then(crate::github_sync::apply) {
@@ -197,6 +230,7 @@ fn refuse_stale(reply: ReplySender) {
 fn handle_command(
     deps: &WorkspaceDeps,
     state: &WorkspaceState,
+    jobs: &mut JobHost,
     tx: &Sender<ActorMsg>,
     command: Command,
     reply: ReplySender,
@@ -394,6 +428,29 @@ fn handle_command(
                 )
                 .map(|(root_id, reply_id)| Reply::FindingReplied { root_id, reply_id })
             });
+        }
+        Command::StartJob {
+            job,
+            submission,
+            result,
+        } => jobs.start(tx, job, submission, result, reply),
+        Command::CancelJob { job } => match jobs.cancel(job) {
+            Some(kill) => spawn_effect(tx, reply, move || {
+                kill();
+                Ok(Reply::JobCancelled { job })
+            }),
+            None => crate::jobs::refuse_unknown(job, reply),
+        },
+        Command::Reconcile { buckets } => {
+            let arena = jobs.arena().clone();
+            spawn_effect(tx, reply, move || {
+                Ok(crate::arena::reconcile(&arena, &buckets))
+            });
+        }
+        Command::Arena(command) => {
+            let deps = deps.clone();
+            let arena = jobs.arena().clone();
+            spawn_effect(tx, reply, move || crate::arena::run(&deps, &arena, command));
         }
         Command::AddComment {
             context,

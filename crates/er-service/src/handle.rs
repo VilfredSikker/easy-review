@@ -8,7 +8,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use crate::protocol::{Command, Event, Reply};
+use er_agent::job::JobProgress;
+use er_engine::jobs::JobId;
+
+use crate::protocol::{Command, Event, JobOutcome, Reply};
 use crate::workspace::WorkspaceView;
 
 /// How long a caller waits for a reply before deciding the actor is stuck. The
@@ -70,6 +73,18 @@ pub(crate) enum ActorMsg {
         result: Result<crate::github_sync::Fetched, WorkspaceError>,
         reply: ReplySender,
     },
+    JobProgress {
+        job: JobId,
+        line: JobProgress,
+    },
+    /// A job's effect returned; the actor drops its stop handle and tells
+    /// subscribers.
+    JobFinished {
+        job: JobId,
+        outcome: JobOutcome,
+    },
+    /// A live arena run wrote progress; readers refresh.
+    ArenaChanged,
 }
 
 /// A handle to one workspace actor.

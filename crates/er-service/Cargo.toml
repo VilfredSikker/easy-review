@@ -8,6 +8,7 @@ description = "Workspace actor and use cases for easy-review"
 
 [dependencies]
 # P40's actor reads these types; declared here so P40 is manifest-free.
+er-agent = { path = "../er-agent" }
 er-core = { path = "../er-core" }
 er-engine = { path = "../er-engine", default-features = false }
 er-store = { path = "../er-store" }
@@ -18,6 +19,8 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# The slot test reads the process-wide pool under its serial guard.
+er-agent = { path = "../er-agent", features = ["test-support"] }
 # The thread-scoped storage root is behind this feature on the engine.
 er-engine = { path = "../er-engine", default-features = false, features = ["test-support"] }
 tempfile = "3"

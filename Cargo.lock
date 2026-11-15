@@ -1483,6 +1483,7 @@ name = "er-service"
 version = "0.6.5"
 dependencies = [
  "anyhow",
+ "er-agent",
  "er-core",
  "er-engine",
  "er-git",

@@ -29,8 +29,7 @@ fn working(root: &str) -> TabDescriptor {
         pr_number: None,
         pr_head_ref: None,
         base_ref: None,
-        browser_url: None,
-        browser_layout: None,
+        extra: serde_json::Map::new(),
     }
 }
 
@@ -61,8 +60,9 @@ fn tab_commands_edit_the_list_by_key_and_save_it() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     er_engine::storage::with_test_storage_root(dir.path(), || -> anyhow::Result<()> {
         let mut browsed = working("/b");
-        browsed.browser_url = Some("http://localhost:5173/review".to_string());
-        browsed.browser_layout = Some("split".to_string());
+        browsed
+            .extra
+            .insert("front_end_key".to_string(), serde_json::json!("kept"));
         save_tabs(&[working("/a"), browsed, working("/c")], 1)?;
         let (registry, _) = registry(FakeGitHub::default());
         let events = registry.subscribe();
@@ -107,10 +107,10 @@ fn tab_commands_edit_the_list_by_key_and_save_it() -> anyhow::Result<()> {
         assert_eq!(saved.tabs, descriptors);
         assert_eq!(saved.active_idx, 2);
         assert_eq!(
-            saved.tabs[1].browser_url.as_deref(),
-            Some("http://localhost:5173/review")
+            saved.tabs[1].extra.get("front_end_key"),
+            Some(&serde_json::json!("kept")),
+            "a front end's keys survive the service's save"
         );
-        assert_eq!(saved.tabs[1].browser_layout.as_deref(), Some("split"));
 
         let revisions: Vec<u64> = events
             .try_iter()
@@ -221,7 +221,9 @@ fn collect_rust(dir: &Path, out: &mut Vec<(std::path::PathBuf, String)>) -> anyh
     Ok(())
 }
 
-/// The service holds no front-end tab state: its tab list is the record.
+/// The service holds no front-end tab state: its tab list is the record. Doc
+/// comments may still cite the engine's tab methods, so comment lines are
+/// skipped.
 #[test]
 fn the_service_has_no_tabstate() -> anyhow::Result<()> {
     let mut sources = Vec::new();
@@ -229,13 +231,16 @@ fn the_service_has_no_tabstate() -> anyhow::Result<()> {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
         &mut sources,
     )?;
-    let probe = ["Tab", "State"].concat();
+    let probes = [["Tab", "State"].concat(), ["er_engine::", "app::"].concat()];
     for (path, text) in &sources {
-        assert!(
-            !text.contains(&probe) && !text.contains(&["er_engine::", "app::"].concat()),
-            "{} names the front end's tab state",
-            path.display()
-        );
+        let code = text.lines().filter(|line| !line.trim_start().starts_with("//"));
+        for (line, probe) in code.flat_map(|line| probes.iter().map(move |p| (line, p))) {
+            assert!(
+                !line.contains(probe.as_str()),
+                "{} names the front end's tab state: {line}",
+                path.display()
+            );
+        }
     }
     Ok(())
 }
