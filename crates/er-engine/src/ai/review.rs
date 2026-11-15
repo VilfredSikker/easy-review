@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::cell::{OnceCell, Ref, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 #[cfg(test)]
 use crate::git::DiffFile;
@@ -463,7 +463,9 @@ pub struct AiState {
     pub validation_effect: super::validation::ValidationEffect,
     /// Lazily-built comment index for O(1) lookups.
     /// An empty cell means unbuilt; rebuilt on first query after invalidation.
-    comment_index: RefCell<OnceCell<CommentIndexData>>,
+    /// A `OnceLock` rather than a `RefCell` so the state is `Sync` and can be
+    /// published behind an `Arc` to readers on other threads.
+    comment_index: OnceLock<CommentIndexData>,
 }
 
 impl Default for AiState {
@@ -487,10 +489,45 @@ impl Default for AiState {
             arbiter_graded_keys: HashSet::new(),
             arbiter_verdicts: HashMap::new(),
             validation_effect: super::validation::ValidationEffect::default(),
-            comment_index: RefCell::new(OnceCell::new()),
+            comment_index: OnceLock::new(),
         }
     }
 }
+
+/// The index is dropped rather than copied: it is derived, so the clone
+/// rebuilds it from its own data on first query.
+impl Clone for AiState {
+    fn clone(&self) -> Self {
+        Self {
+            review: self.review.clone(),
+            order: self.order.clone(),
+            tour: self.tour.clone(),
+            summary: self.summary.clone(),
+            agent_summaries: self.agent_summaries.clone(),
+            checklist: self.checklist.clone(),
+            questions: self.questions.clone(),
+            notes: self.notes.clone(),
+            github_comments: self.github_comments.clone(),
+            triage: self.triage.clone(),
+            diagrams: self.diagrams.clone(),
+            is_stale: self.is_stale,
+            tour_stale: self.tour_stale,
+            stale_files: self.stale_files.clone(),
+            arbiter_effect: self.arbiter_effect.clone(),
+            arbiter_graded_keys: self.arbiter_graded_keys.clone(),
+            arbiter_verdicts: self.arbiter_verdicts.clone(),
+            validation_effect: self.validation_effect.clone(),
+            comment_index: OnceLock::new(),
+        }
+    }
+}
+
+// A tab's AI state is published to readers on other threads behind an `Arc`,
+// and copied when one of its sidecars changes.
+const _: () = {
+    const fn shareable<T: Send + Sync + Clone>() {}
+    shareable::<AiState>();
+};
 
 /// A navigable hint: `(file, hunk_index, line_start, id, hint_type)`.
 pub type OrderedHint = (String, Option<usize>, Option<usize>, String, HintType);
@@ -498,15 +535,14 @@ pub type OrderedHint = (String, Option<usize>, Option<usize>, String, HintType);
 impl AiState {
     /// Invalidate the comment index (forces rebuild on next query).
     /// Call this after mutating `questions` or `github_comments` in-place.
-    pub fn rebuild_comment_index(&self) {
-        *self.comment_index.borrow_mut() = OnceCell::new();
+    pub fn rebuild_comment_index(&mut self) {
+        self.comment_index = OnceLock::new();
     }
 
     /// The comment index, built from current data on first use after invalidation.
-    fn comment_index(&self) -> Ref<'_, CommentIndexData> {
-        Ref::map(self.comment_index.borrow(), |cell| {
-            cell.get_or_init(|| self.build_comment_index())
-        })
+    fn comment_index(&self) -> &CommentIndexData {
+        self.comment_index
+            .get_or_init(|| self.build_comment_index())
     }
 
     /// The comment an index entry points at, or `None` when that source is no
@@ -2387,6 +2423,30 @@ mod tests {
             1,
             "rebuilt index should match updated line_start"
         );
+    }
+
+    #[test]
+    fn clone_rebuilds_its_own_comment_index() {
+        let mut state = AiState::default();
+        let mut q = make_question("q1", "a.rs", Some(0));
+        q.line_start = Some(42);
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![q],
+        });
+        assert_eq!(state.comments_for_line("a.rs", 0, 42).len(), 1);
+
+        let mut copy = state.clone();
+        assert!(
+            copy.comment_index.get().is_none(),
+            "a clone must not carry the source's index"
+        );
+        if let Some(qs) = copy.questions.as_mut() {
+            qs.questions[0].line_start = Some(50);
+        }
+        assert_eq!(copy.comments_for_line("a.rs", 0, 50).len(), 1);
+        assert_eq!(state.comments_for_line("a.rs", 0, 42).len(), 1);
     }
 
     #[test]
