@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { tick, untrack } from "svelte";
+  import { getRiskFiles, riskTarget } from "$lib/riskRequests";
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
@@ -12,7 +12,7 @@
     tierCounts,
     tierHeading,
     unreviewedHigh,
-    type RiskSettingsWire,
+    type RiskRuleWire,
     type RiskTier,
   } from "./risksPanel";
   import PanelActions from "./PanelActions.svelte";
@@ -38,20 +38,29 @@
   };
 
   // Per-file tier and matching rule ride on the snapshot's files (ADR 0048);
-  // the settings snapshot is read only for the rule table and its file counts.
-  let settings = $state<RiskSettingsWire | null>(null);
+  // `get_risk_files` is read only for the rule table and its file counts.
+  let ruleTable = $state<RiskRuleWire[] | null>(null);
   let loadError = $state<string | null>(null);
 
   const files = $derived(app.snapshot?.files ?? []);
   const fileKey = $derived(files.map((f) => f.path).join("\n"));
+  const target = $derived(riskTarget(app.snapshot));
+  const targetKey = $derived(target ? `${target.repoRoot}\n${target.remoteRepo ?? ""}` : "");
 
   $effect(() => {
     void fileKey;
+    void targetKey;
+    const current = untrack(() => target);
+    if (!current) {
+      ruleTable = null;
+      return;
+    }
+    const paths = untrack(() => files.map((f) => f.path));
     let cancelled = false;
-    invoke<{ settings: RiskSettingsWire }>("get_config_hub", {})
+    getRiskFiles(current, paths)
       .then((res) => {
         if (cancelled) return;
-        settings = res.settings;
+        ruleTable = res.rules;
         loadError = null;
       })
       .catch((e) => {
@@ -66,7 +75,7 @@
   const groups = $derived(groupRiskRows(rows));
   const counts = $derived(tierCounts(rows));
   const toRead = $derived(unreviewedHigh(rows));
-  const rules = $derived(settings?.riskRules ?? []);
+  const rules = $derived(ruleTable ?? []);
   const declared = $derived(rules.length > 0);
 
   async function jump(path: string) {

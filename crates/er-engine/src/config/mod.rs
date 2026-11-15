@@ -17,8 +17,8 @@ use anyhow::Result;
 pub(crate) use agents::managed_agents_load_failed;
 pub use agents::{agents_path, load_agents_from, save_agents_to, AgentsConfig};
 pub use desktop_settings::{
-    apply_config_field, desktop_settings_snapshot, validate_config_text_field, ConfigFieldValue,
-    ConfigHubFieldDto, DesktopSettingsSnapshot, RISK_RULE_PATCH_KEY,
+    apply_config_field, validate_config_text_field, ConfigFieldValue, ConfigHubFieldDto,
+    RISK_RULE_PATCH_KEY,
 };
 pub use file_kinds::{FileKindRepoConfig, FileKindsConfig};
 pub use flow_models::{ReviewModelGroups, ReviewModelRef, ReviewModelTier};

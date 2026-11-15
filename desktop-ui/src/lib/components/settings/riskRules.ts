@@ -1,37 +1,15 @@
 /**
- * The settings payload's risk-rule fields (ADR 0048) and the `risk.rule` patch
- * this page writes. Kept here until the shared types mirror them.
+ * The risk rule table's rows and the `risk.rule` patch this page writes
+ * (ADR 0048). The rows are the shared `get_risk_rules`/`get_risk_files` types.
  */
 
-export type RiskTier = "high" | "med" | "low" | "ai";
-export type RiskRuleSource = "project" | "user";
+import type { RiskFileSnapshot, RiskRuleSnapshot, RiskRuleSource, RiskTier } from "$lib/types";
+
+export type { RiskRuleSource, RiskTier };
+export type RiskRuleRow = RiskRuleSnapshot;
+export type RiskFileRow = RiskFileSnapshot;
 
 export const RISK_TIERS: readonly RiskTier[] = ["high", "med", "low", "ai"];
-
-export interface RiskRuleRow {
-  pattern: string;
-  /** The canonical tier, or the text as written when it does not read. */
-  tier: string;
-  readable: boolean;
-  label: string | null;
-  source: RiskRuleSource;
-  /** Changed files of the active tab this rule claims. Zero is an idle rule. */
-  fileCount: number;
-}
-
-export interface RiskFileRow {
-  path: string;
-  tier: RiskTier;
-  rule: { key: string; label: string | null; source: RiskRuleSource } | null;
-}
-
-/** The risk fields of the settings snapshot; absent on an engine that predates them. */
-export interface RiskSettingsPayload {
-  riskRepo?: string;
-  riskRules?: RiskRuleRow[];
-  riskDefault?: RiskTier;
-  riskFiles?: RiskFileRow[];
-}
 
 export const RISK_RULE_PATCH_KEY = "risk.rule";
 

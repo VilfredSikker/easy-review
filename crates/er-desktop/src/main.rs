@@ -12,7 +12,8 @@ use er_desktop::snapshot::{
 use er_desktop::{
     arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
     gh_pr_actions, gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache,
-    pr_open_cache, profile_log, projects, snapshot, tabs, terminal, window_placement,
+    pr_open_cache, profile_log, projects, risk_commands, snapshot, tabs, terminal,
+    window_placement,
 };
 use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
 use er_engine::app::App;
@@ -2089,6 +2090,8 @@ fn main() {
             config_commands::delete_ai_provider,
             config_commands::upsert_ai_model,
             config_commands::delete_ai_model,
+            risk_commands::get_risk_rules,
+            risk_commands::get_risk_files,
             commands::set_ai_effort,
             commands::promote_to_comment,
             commands::promote_to_note,
