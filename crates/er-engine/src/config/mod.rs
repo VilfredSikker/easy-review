@@ -1768,6 +1768,14 @@ pub(crate) fn managed_config_load_failed() -> bool {
     config_load_failed(&managed_config_path())
 }
 
+/// Whether `config_path`, or the `agents.toml` beside it, has a recorded
+/// failed load. A save that finds either file broken records the mark without
+/// any load reporting an error, so an owner that keeps its own load error must
+/// also ask this before it skips a reload.
+pub fn config_pair_load_failed(config_path: &std::path::Path) -> bool {
+    config_load_failed(config_path) || agents::agents_load_failed(&agents_path(config_path))
+}
+
 /// Why a config file could not be loaded.
 ///
 /// The file is left untouched. [`save_config_to`] refuses to overwrite it
