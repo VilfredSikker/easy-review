@@ -12211,8 +12211,9 @@ mod tests {
         AppState {
             ports: er_engine::ports::Ports::cli(),
             #[cfg(feature = "v1-service")]
-            service: Arc::new(crate::service::ServiceState::new(
+            service: Arc::new(crate::service::ServiceState::with_settings_path(
                 er_engine::ports::Ports::for_test(),
+                dir.path().join("settings").join("config.toml"),
             )),
             app,
             pr_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -12289,6 +12290,307 @@ mod tests {
                 github.calls(),
                 vec!["pr_state(owner=\"acme\", repo=\"widgets\", number=7)"]
             );
+        });
+    }
+
+    /// Runs `body` on another thread while this one holds the App lock. A body
+    /// that waits on the lock trips the deadline instead of hanging the suite.
+    #[cfg(feature = "v1-service")]
+    fn while_the_app_is_locked<T: Send + 'static>(
+        state: &AppState,
+        what: &str,
+        body: impl FnOnce(&AppState) -> T + Send + 'static,
+    ) -> T {
+        use std::time::Duration;
+
+        let held = match state.app.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let calling_state = state.clone();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(body(&calling_state));
+        });
+        let Ok(result) = done_rx.recv_timeout(Duration::from_secs(10)) else {
+            panic!("{what} waited on the App lock");
+        };
+        drop(held);
+        result
+    }
+
+    #[cfg(feature = "v1-service")]
+    fn theme_row(response: &crate::settings::GetConfigHubResponse) -> Option<String> {
+        response
+            .settings
+            .general
+            .iter()
+            .find_map(|field| match field {
+                er_engine::config::ConfigHubFieldDto::Cycle { key, value, .. }
+                    if key == "display.theme" =>
+                {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+    }
+
+    /// A flag-on settings write reaches the settings actor without the App
+    /// lock: it returns while the lock is held, the service copy changes, and
+    /// the App's copy does not.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn a_flag_on_settings_write_does_not_lock_the_app() {
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            let before = state.app.lock().map(|app| app.config.display.theme.clone());
+            let result = while_the_app_is_locked(&state, "apply_config_patch", |state| {
+                crate::config_commands::apply_patch(
+                    state,
+                    crate::config_commands::ConfigPatch {
+                        key: "display.theme".to_string(),
+                        value: er_engine::config::ConfigFieldValue::String("paper".to_string()),
+                    },
+                )
+            });
+            let Ok(response) = result else {
+                panic!("the routed patch failed: {result:?}");
+            };
+            assert_eq!(theme_row(&response).as_deref(), Some("paper"));
+            assert_eq!(
+                state.service.settings().view().config.display.theme,
+                "paper"
+            );
+            let after = state.app.lock().map(|app| app.config.display.theme.clone());
+            assert_eq!(after.ok(), before.ok(), "the App's copy was written");
+        });
+    }
+
+    /// Every config command but `run_uninstall` runs for real against a held
+    /// App lock and leaves its mark on the settings actor. `run_uninstall`
+    /// deletes files, so only its route is checked, by the source scan.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_config_commands_route_with_the_feature_on() {
+        use crate::config_commands as cc;
+        use er_engine::config::{ModelUpsert, ProviderUpsert};
+        use er_engine::uninstall::UninstallOptions;
+
+        let source = include_str!("config_commands.rs");
+        for command in [
+            "ReloadIfFailed",
+            "ApplyConfigPatch",
+            "SaveConfig",
+            "PreviewUninstall",
+            "RunUninstall",
+            "SetReviewFlowModels",
+            "RefreshAiModels",
+            "UpsertAiProvider",
+            "DeleteAiProvider",
+            "UpsertAiModel",
+            "DeleteAiModel",
+        ] {
+            assert!(
+                source.contains(&format!("SettingsCommand::{command}")),
+                "{command} has no service route"
+            );
+        }
+
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            let settings = state.service.settings();
+            let locked = |what: &str, body: fn(&AppState) -> Result<(), String>| {
+                let result = while_the_app_is_locked(&state, what, body);
+                assert!(result.is_ok(), "{what} failed: {result:?}");
+            };
+
+            locked("get_config_hub", |s| cc::config_hub(s).map(drop));
+            locked("save_config_global_cmd", |s| cc::save_global(s).map(drop));
+            assert!(dir.path().join("settings").join("config.toml").exists());
+
+            locked("preview_uninstall", |s| {
+                let none = UninstallOptions {
+                    remove_config: false,
+                    remove_data: false,
+                    remove_cache: false,
+                    remove_binaries: false,
+                    remove_desktop_app: false,
+                };
+                cc::uninstall_preview(s, none).map(drop)
+            });
+            assert!(settings.view().uninstall_preview.is_some());
+
+            locked("upsert_ai_provider", |s| {
+                let provider = ProviderUpsert {
+                    id: "fixture-cli".into(),
+                    original_id: None,
+                    label: None,
+                    command: "fixture-cli".into(),
+                    args: "-p {prompt}".into(),
+                    family: None,
+                    models_command: None,
+                };
+                cc::provider_upsert(s, provider).map(drop)
+            });
+            assert!(settings
+                .view()
+                .config
+                .ai_hub
+                .providers
+                .contains_key("fixture-cli"));
+
+            locked("upsert_ai_model", |s| {
+                let model = ModelUpsert {
+                    id: "fixture-model".into(),
+                    original_id: None,
+                    label: None,
+                    description: None,
+                    args: String::new(),
+                    effort_levels: Vec::new(),
+                    cost_per_1k_in: None,
+                    cost_per_1k_out: None,
+                    avg_latency_ms: None,
+                };
+                cc::model_upsert(s, "fixture-cli".into(), model).map(drop)
+            });
+            let has_model = |view: &er_service::SettingsView| {
+                view.config.ai_hub.providers["fixture-cli"]
+                    .models
+                    .iter()
+                    .any(|m| m.id == "fixture-model")
+            };
+            assert!(has_model(&settings.view()));
+
+            locked("delete_ai_model", |s| {
+                cc::model_delete(s, "fixture-cli".into(), "fixture-model".into()).map(drop)
+            });
+            assert!(!has_model(&settings.view()));
+
+            locked("delete_ai_provider", |s| {
+                cc::provider_delete(s, "fixture-cli".into()).map(drop)
+            });
+            assert!(!settings
+                .view()
+                .config
+                .ai_hub
+                .providers
+                .contains_key("fixture-cli"));
+
+            locked("set_review_flow_models", |s| {
+                let mut groups = s
+                    .service
+                    .settings()
+                    .view()
+                    .config
+                    .ai_hub
+                    .review_models
+                    .clone();
+                groups.fast.reverse();
+                cc::review_flow_models(s, groups).map(drop)
+            });
+
+            // An unknown provider has no models command, so nothing shells out.
+            let before = settings.view().revision;
+            locked("refresh_ai_models", |s| {
+                cc::refresh_models(s, Some("no-such-provider".into()), true).map(drop)
+            });
+            assert!(settings.view().revision >= before);
+        });
+    }
+
+    /// The risk view answers for the paths the caller passes, with the
+    /// default tier for a path no rule claims.
+    #[test]
+    fn risk_files_answer_for_the_query_paths() {
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            // Not a clone, so the rules key is the directory's name.
+            let repo_root = dir.path().join("risk-repo").to_string_lossy().into_owned();
+            let edit = r#"{"source":"project","repo":"risk-repo","pattern":"db/**","tier":"high"}"#;
+            let patched = crate::config_commands::apply_patch(
+                &state,
+                crate::config_commands::ConfigPatch {
+                    key: er_engine::config::RISK_RULE_PATCH_KEY.to_string(),
+                    value: er_engine::config::ConfigFieldValue::String(edit.to_string()),
+                },
+            );
+            assert!(patched.is_ok(), "the rule edit failed: {patched:?}");
+
+            let paths = ["db/0001.sql", "README.md"].map(str::to_string);
+            let result = crate::risk_commands::risk_files(&state, repo_root, None, &paths);
+            let Ok(view) = result else {
+                panic!("the risk files failed: {result:?}");
+            };
+            let answered: Vec<&str> = view.files.iter().map(|f| f.path.as_str()).collect();
+            assert_eq!(answered, ["db/0001.sql", "README.md"]);
+            assert_eq!(
+                view.files[0].resolved.tier,
+                er_engine::config::RiskTier::High
+            );
+            assert_eq!(
+                view.files[0].resolved.rule.as_ref().map(|r| r.key.as_str()),
+                Some("db/**")
+            );
+            assert_eq!(view.files[1].resolved.tier, er_engine::config::RiskTier::Ai);
+            assert!(view.files[1].resolved.rule.is_none());
+            let rule = view.rules.iter().find(|r| r.pattern == "db/**");
+            assert_eq!(rule.map(|r| r.file_count), Some(1));
+        });
+    }
+
+    /// The `importance_*` fields are gone from the Settings payload.
+    #[test]
+    fn the_settings_payload_has_no_importance_keys() {
+        fn keys(value: &serde_json::Value, out: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map {
+                        out.push(key.clone());
+                        keys(child, out);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        keys(item, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            let result = crate::config_commands::config_hub(&state);
+            let Ok(response) = result else {
+                panic!("get_config_hub failed: {result:?}");
+            };
+            let Ok(json) = serde_json::to_value(&response) else {
+                panic!("the hub response does not serialize");
+            };
+            let mut found = Vec::new();
+            keys(&json, &mut found);
+            assert!(found.iter().any(|key| key == "general"));
+            let importance: Vec<&String> = found
+                .iter()
+                .filter(|key| key.to_lowercase().contains("importance"))
+                .collect();
+            assert!(importance.is_empty(), "importance keys: {importance:?}");
         });
     }
 

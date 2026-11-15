@@ -1,26 +1,32 @@
 //! The desktop side of the workspace seam (ADR 0067).
 //!
-//! One actor per repo root, started on first use. The desktop resolves
-//! app-scoped records — the project list — to a repo root and a remote before
-//! sending, so the service never reads the store: those records stay on the
-//! caller's side for now.
+//! One actor per repo root, started on first use, plus one settings actor for
+//! the whole process (ADR 0069). The desktop resolves app-scoped records — the
+//! project list — to a repo root and a remote before sending, so the service
+//! never reads the store: those records stay on the caller's side for now.
 //!
 //! Only compiled with `v1-service`. The default build keeps the existing
 //! command path untouched.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use er_engine::ports::Ports;
 use er_service::{
-    spawn, Command, OpenTarget, Reply, WorkspaceDeps, WorkspaceError, WorkspaceHandle,
-    WorkspaceView,
+    spawn, spawn_settings, Command, OpenTarget, Reply, SettingsHandle, WorkspaceDeps,
+    WorkspaceError, WorkspaceHandle, WorkspaceView,
 };
 
 /// The actors this desktop process has started.
 pub struct ServiceState {
     deps: WorkspaceDeps,
     handles: Mutex<HashMap<String, WorkspaceHandle>>,
+    /// The one settings actor. A fixed slot, never keyed by a tab: the config
+    /// is app-scoped, so a per-repo owner would race its saves.
+    settings: OnceLock<SettingsHandle>,
+    /// `config.toml` for the settings actor; the managed path when unset.
+    settings_path: Option<PathBuf>,
 }
 
 impl ServiceState {
@@ -28,6 +34,17 @@ impl ServiceState {
         Self {
             deps: WorkspaceDeps::new(ports),
             handles: Mutex::new(HashMap::new()),
+            settings: OnceLock::new(),
+            settings_path: None,
+        }
+    }
+
+    /// A service whose settings actor owns `config_path` instead of the
+    /// managed config, so a test never reaches the owner's files.
+    pub fn with_settings_path(ports: Ports, config_path: PathBuf) -> Self {
+        Self {
+            settings_path: Some(config_path),
+            ..Self::new(ports)
         }
     }
 
@@ -41,6 +58,20 @@ impl ServiceState {
         handles
             .entry(key.to_string())
             .or_insert_with(|| spawn(self.deps.clone()))
+            .clone()
+    }
+
+    /// The settings actor, started on first use. It loads the config before
+    /// its loop starts, so the first settings command pays that read.
+    pub fn settings(&self) -> SettingsHandle {
+        self.settings
+            .get_or_init(|| {
+                let path = self
+                    .settings_path
+                    .clone()
+                    .unwrap_or_else(er_engine::config::managed_config_path);
+                spawn_settings(self.deps.clone(), path)
+            })
             .clone()
     }
 

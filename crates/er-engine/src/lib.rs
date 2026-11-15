@@ -9,8 +9,8 @@ pub mod app;
 pub mod arena;
 pub mod config;
 pub use config::{
-    apply_config_field, config_hub_items_for_scope, desktop_settings_snapshot, ConfigFieldValue,
-    ConfigHubFieldDto, DesktopSettingsSnapshot, SettingsScope,
+    apply_config_field, config_hub_items_for_scope, ConfigFieldValue, ConfigHubFieldDto,
+    SettingsScope,
 };
 pub mod agent_runtime;
 pub mod annotations;

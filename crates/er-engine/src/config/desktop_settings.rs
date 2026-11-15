@@ -1,10 +1,7 @@
 //! Serializable settings schema for the desktop app (excludes diff-view fields).
 
-use super::risk_settings::{risk_file_rows, risk_rule_rows, RiskFileDto, RiskRuleDto};
-use super::settings::settings_fields_grouped;
 use super::{
-    apply_risk_rule_edit, split_shell_args, ErConfig, RiskRuleEdit, RiskRuleSource, RiskRuleTable,
-    RiskTier, MAX_CONCURRENT_REVIEWS_RANGE,
+    apply_risk_rule_edit, split_shell_args, ErConfig, RiskRuleEdit, MAX_CONCURRENT_REVIEWS_RANGE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -59,96 +56,6 @@ pub enum ConfigHubFieldDto {
 /// The patch key that edits one risk rule. Its value is a [`RiskRuleEdit`] as
 /// JSON text: a rule is four fields, and the patch wire carries one scalar.
 pub const RISK_RULE_PATCH_KEY: &str = "risk.rule";
-
-/// The `importance_*` shape of [`RiskRuleDto`], still read by the desktop's current
-/// Settings card; removed once that card reads `risk_rules`.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportanceRuleDto {
-    pub matcher: String,
-    pub tier: String,
-}
-
-/// The `importance_*` shape of [`RiskFileDto`]; see [`ImportanceRuleDto`].
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportanceFileDto {
-    pub path: String,
-    pub tier: String,
-    pub matched_rule: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DesktopSettingsSnapshot {
-    pub general: Vec<ConfigHubFieldDto>,
-    pub app: Vec<ConfigHubFieldDto>,
-    pub terminal: Vec<ConfigHubFieldDto>,
-    pub repo_root: String,
-    /// The rules key a project rule edit names (`TabState::rules_key`), so the
-    /// edit lands in the table this tab resolves against.
-    pub risk_repo: String,
-    /// The active repo's project rules, then the user's.
-    pub risk_rules: Vec<RiskRuleDto>,
-    /// What a path no rule claims resolves to.
-    pub risk_default: RiskTier,
-    /// The active tab's changed files, resolved. Empty when nothing is
-    /// declared: there is nothing to explain about a path that reads as `ai`
-    /// because nobody wrote a rule.
-    pub risk_files: Vec<RiskFileDto>,
-    pub importance_rules: Vec<ImportanceRuleDto>,
-    pub importance_default: String,
-    pub importance_files: Vec<ImportanceFileDto>,
-}
-
-/// `repo_key` is the active tab's `TabState::rules_key`, so Settings shows the
-/// rules the tab's filter and header resolve against.
-pub fn desktop_settings_snapshot(
-    config: &ErConfig,
-    repo_root: &str,
-    repo_key: &str,
-    changed_paths: &[String],
-    artifact: Option<RiskRuleTable>,
-) -> DesktopSettingsSnapshot {
-    let grouped = settings_fields_grouped(config);
-    let rules = config.risk_rules_merged(repo_key, artifact);
-    let risk_rules = risk_rule_rows(&rules, changed_paths);
-    let risk_files = risk_file_rows(&rules, changed_paths);
-    // The default as it resolves, not as it was written: the view has to say
-    // what the resolver will do rather than repeat a typo back.
-    let risk_default = rules.default_tier();
-
-    DesktopSettingsSnapshot {
-        general: grouped.general,
-        app: grouped.app,
-        terminal: grouped.terminal,
-        repo_root: repo_root.to_string(),
-        risk_repo: repo_key.to_string(),
-        // The pre-merge card keys its list by pattern and only knows this
-        // repo's table, so it gets the project rows alone: a user rule with the
-        // same pattern would duplicate a key and show a shadowed rule as live.
-        importance_rules: risk_rules
-            .iter()
-            .filter(|r| r.source == RiskRuleSource::Project)
-            .map(|r| ImportanceRuleDto {
-                matcher: r.pattern.clone(),
-                tier: r.tier.clone(),
-            })
-            .collect(),
-        importance_default: risk_default.as_str().to_string(),
-        importance_files: risk_files
-            .iter()
-            .map(|f| ImportanceFileDto {
-                path: f.path.clone(),
-                tier: f.resolved.tier.as_str().to_string(),
-                matched_rule: f.resolved.rule.as_ref().map(|r| r.key.clone()),
-            })
-            .collect(),
-        risk_rules,
-        risk_default,
-        risk_files,
-    }
-}
 
 pub fn validate_config_text_field(key: &str, value: &str) -> Option<String> {
     match key {
@@ -422,9 +329,10 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::risk_settings::risk_file_rows;
     use crate::config::test_support::risk_rules;
     use crate::config::ErConfig;
-    use crate::config::RiskRules;
+    use crate::config::{risk_rules_view, RiskRuleSource, RiskRules, RiskTier};
 
     #[test]
     fn the_cap_picker_offers_exactly_what_the_setter_accepts() {
@@ -560,9 +468,9 @@ mod tests {
         assert!(validate_config_text_field("agent.args", "-p {prompt}").is_none());
     }
 
-    /// A remote-only tab's `repo_root` is the process's working directory;
-    /// Settings must list the table under the tab's key, not one derived from
-    /// that directory.
+    /// A remote-only tab's `repo_root` is the process's working directory, so
+    /// the view lists the table under the rules key it is given, never one
+    /// derived from a directory.
     #[test]
     fn settings_read_risk_rules_under_the_tabs_key() {
         let mut config = ErConfig::default();
@@ -570,10 +478,9 @@ mod tests {
             "my-service".to_string(),
             risk_rules(&[("src/**", "high")], None).project,
         );
-        let snap = desktop_settings_snapshot(&config, "/", "my-service", &[], None);
-        assert_eq!(snap.risk_rules.len(), 1);
-        assert_eq!(snap.risk_repo, "my-service");
-        assert_eq!(snap.repo_root, "/");
+        let view = risk_rules_view(&config, "my-service", None);
+        assert_eq!(view.rules.len(), 1);
+        assert_eq!(view.repo, "my-service");
     }
 
     /// Settings shows the committed artifact's rules, and a config entry for
@@ -586,12 +493,12 @@ mod tests {
             risk_rules(&[("src/**", "low")], None).project,
         );
         let artifact = risk_rules(&[("src/**", "high"), ("db/**", "med")], None).project;
-        let snap = desktop_settings_snapshot(&config, "/repo", "er", &[], Some(artifact));
+        let view = risk_rules_view(&config, "er", Some(artifact));
 
-        let row = |p: &str| snap.risk_rules.iter().find(|r| r.pattern == p).unwrap();
+        let row = |p: &str| view.rules.iter().find(|r| r.pattern == p).unwrap();
         assert_eq!(row("src/**").tier, "low", "the user's config wins");
         assert_eq!(row("db/**").tier, "med", "the artifact fills the gap");
-        assert_eq!(snap.risk_rules.len(), 2);
+        assert_eq!(view.rules.len(), 2);
     }
 
     #[test]
@@ -641,9 +548,9 @@ mod tests {
         );
         config.user_risk = risk_rules(&[("*.lock", "low")], None).project;
         let changed = ["src/a.rs", "src/b.rs", "Cargo.lock"].map(str::to_string);
-        let snap = desktop_settings_snapshot(&config, "/repo", "er", &changed, None);
+        let resolved = risk_rules_view(&config, "er", None).resolve(&changed);
 
-        let row = |p: &str| snap.risk_rules.iter().find(|r| r.pattern == p).unwrap();
+        let row = |p: &str| resolved.rules.iter().find(|r| r.pattern == p).unwrap();
         assert_eq!(
             (row("src/**").file_count, row("src/**").source),
             (2, RiskRuleSource::Project)
@@ -654,30 +561,7 @@ mod tests {
         );
         assert_eq!(row("docs/**").tier, "critical");
         assert!(!row("docs/**").readable);
-        assert_eq!(snap.risk_files.len(), 3);
-    }
-
-    #[test]
-    fn the_importance_shim_lists_project_rules_once_per_pattern() {
-        let mut config = ErConfig::default();
-        config.risk.items.insert(
-            "er".into(),
-            risk_rules(&[("*.lock", "high"), ("src/**", "med")], None).project,
-        );
-        config.user_risk = risk_rules(&[("*.lock", "low"), ("*.md", "low")], None).project;
-        let snap = desktop_settings_snapshot(&config, "/repo", "er", &[], None);
-
-        let matchers: Vec<&str> = snap
-            .importance_rules
-            .iter()
-            .map(|r| r.matcher.as_str())
-            .collect();
-        assert_eq!(matchers, ["*.lock", "src/**"], "unique, project only");
-        assert_eq!(
-            snap.importance_rules[0].tier, "high",
-            "the project row wins"
-        );
-        assert_eq!(snap.risk_rules.len(), 4, "the full list keeps both sources");
+        assert_eq!(resolved.files.len(), 3);
     }
 
     #[test]
