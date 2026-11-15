@@ -16,13 +16,7 @@ fn the_tui_registry_has_every_shared_kind_including_session() {
 #[test]
 fn the_tui_registry_does_not_claim_desktop_kinds() {
     let registry = er_engine::store_registry::registry();
-    for file in [
-        "gh-status-cache.json",
-        "inbox.json",
-        "pr-cache.json",
-        "pr-open-cache.json",
-        "tabs.json",
-    ] {
+    for file in ["gh-status-cache.json", "inbox.json", "pr-cache.json"] {
         assert_eq!(registry.kind_for(Path::new(file)), None, "{file}");
     }
 }

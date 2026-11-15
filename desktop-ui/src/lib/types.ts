@@ -1122,45 +1122,35 @@ export interface RiskFileSnapshot {
   rule: MatchedRiskRule | null;
 }
 
-/** One declared importance rule, as written. */
-export interface ImportanceRuleSnapshot {
-  matcher: string;
-  tier: string;
+/** One repo's declared risk rules (`get_risk_rules`), with no files counted. */
+export interface RiskRulesView {
+  /** The rules key a project rule edit names. */
+  repo: string;
+  /** Rises each time these rules change. */
+  version: number;
+  /** The repo's project rules, then the user's. */
+  rules: RiskRuleSnapshot[];
+  /** What a path no rule claims resolves to. */
+  default: RiskTier;
 }
 
-/** One changed file resolved against those rules: the tier it reads as, and the
- *  rule that claimed it. `matchedRule` is null when no rule did, which leaves
- *  the default to answer. */
-export interface ImportanceFileSnapshot {
-  path: string;
-  tier: string;
-  matchedRule: string | null;
+/** The caller's paths resolved against one repo's rules (`get_risk_files`). */
+export interface RiskFilesView {
+  /** The rules, with `fileCount` counted over the paths. */
+  rules: RiskRuleSnapshot[];
+  /** Each path's resolution. Empty when nothing is declared. */
+  files: RiskFileSnapshot[];
 }
 
-export interface DesktopSettingsSnapshot {
+/** The Settings form rows by page section. Risk rules are their own commands. */
+export interface SettingsSnapshot {
   general: ConfigHubField[];
   app: ConfigHubField[];
   terminal: ConfigHubField[];
-  repoRoot: string;
-  /** The rules key a project rule edit names, so it lands in the table this tab reads. */
-  riskRepo: string;
-  /** The active repo's project rules, then the user's. */
-  riskRules: RiskRuleSnapshot[];
-  /** What a path no rule claims resolves to. */
-  riskDefault: RiskTier;
-  /** The active tab's changed files, resolved. Empty when nothing is declared. */
-  riskFiles: RiskFileSnapshot[];
-  /** The pre-merge shape of `riskRules` (project rows only), read by the
-   *  current Settings card until it moves to `riskRules`. */
-  importanceRules: ImportanceRuleSnapshot[];
-  importanceDefault: string;
-  /** The active tab's changed files, resolved. Empty when the repo declares no
-   *  rules, since then there is nothing to explain. */
-  importanceFiles: ImportanceFileSnapshot[];
 }
 
 export interface GetConfigHubResponse {
-  settings: DesktopSettingsSnapshot;
+  settings: SettingsSnapshot;
   providers: AiProviderInfo[];
   /** Models eligible for each Review flow stage. */
   reviewModels: ReviewModelGroups;

@@ -30,6 +30,9 @@ pub struct WorkspaceDeps {
     ports: Ports,
     jobs: Option<Arc<dyn JobSink>>,
     post_session: Arc<Mutex<er_engine::github_post_session::PostSession>>,
+    /// The process's app registry, shared by every workspace actor. Actors
+    /// read or request through it; it alone writes the app records.
+    app_registry: Option<Arc<crate::app_registry::AppRegistry>>,
 }
 
 impl WorkspaceDeps {
@@ -40,7 +43,20 @@ impl WorkspaceDeps {
             post_session: Arc::new(Mutex::new(
                 er_engine::github_post_session::PostSession::default(),
             )),
+            app_registry: None,
         }
+    }
+
+    /// Shares the service's one app registry with the actors built from this.
+    #[must_use]
+    pub fn with_app_registry(mut self, registry: Arc<crate::app_registry::AppRegistry>) -> Self {
+        self.app_registry = Some(registry);
+        self
+    }
+
+    /// The app registry, when the service gave one.
+    pub fn app_registry(&self) -> Option<&Arc<crate::app_registry::AppRegistry>> {
+        self.app_registry.as_ref()
     }
 
     /// Sends the workspace's agent jobs to `jobs` instead of the actor's own

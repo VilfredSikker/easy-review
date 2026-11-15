@@ -24,8 +24,10 @@ pub mod pr_open_cache;
 pub mod profile_log;
 pub mod projects;
 pub mod remote_pr_open_cache;
+pub mod risk_commands;
 #[cfg(feature = "v1-service")]
 pub mod service;
+pub mod settings;
 pub mod snapshot;
 pub mod store_registry;
 pub mod tabs;

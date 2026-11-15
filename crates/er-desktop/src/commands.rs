@@ -225,36 +225,10 @@ pub struct AppState {
     pub line_commits_cache: line_commits::LineCommitsCache,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct PrOpenCacheKey {
-    pub(crate) project_id: String,
-    pub(crate) repo_root: String,
-    pub(crate) pr_number: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PrOpenFreshness {
-    pub(crate) base_branch: String,
-    pub(crate) head_branch: String,
-    pub(crate) head_oid: String,
-    pub(crate) updated_at: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PrOpenCacheEntry {
-    pub(crate) freshness: PrOpenFreshness,
-    pub(crate) raw_diff: String,
-    /// Cached PR overview so a click after a hover-prefetch can render the
-    /// right panel without re-running `gh pr view`.
-    pub(crate) pr_data: Option<er_engine::github::PrOverviewData>,
-    /// Cached GitHub PR commits, newest first, keyed by the same freshness.
-    pub(crate) pr_commits: Option<Vec<er_engine::git::CommitInfo>>,
-    /// Monotonic tick from `pr_open_clock()` recording the last read or write.
-    /// Drives LRU eviction (`evict_lru`) when the cache exceeds its entry cap.
-    /// Older persisted entries deserialize to 0 (treated as least-recent).
-    #[serde(default)]
-    pub(crate) last_touched: u64,
-}
+pub use er_engine::pr_open_entry::{
+    evict_lru, pr_open_clock, PrOpenCacheEntry, PrOpenCacheKey, PrOpenFreshness,
+    MAX_PR_OPEN_CACHE_ENTRIES, PR_COMMIT_CACHE_LIMIT,
+};
 
 /// In-flight PR-open prefetch claim. The open path (`load_pr_open_inputs`)
 ///
@@ -7514,8 +7488,6 @@ fn pr_open_cache_key(project_id: &str, repo_root: &str, pr_number: u64) -> PrOpe
     }
 }
 
-const PR_COMMIT_CACHE_LIMIT: usize = 250;
-
 fn cached_pr_open_diff(
     cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     key: &PrOpenCacheKey,
@@ -7583,36 +7555,6 @@ fn cached_pr_open_entry(
     Some(out)
 }
 
-/// Monotonic counter for `PrOpenCacheEntry::last_touched`. Strictly increasing
-/// per process; only relative ordering matters for LRU eviction, never the
-/// absolute value.
-fn pr_open_clock() -> u64 {
-    static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Per-process cap on the open-diff cache. Over this, the least-recently-touched
-/// entry is evicted (LRU) so a hot PR survives a churn of one-off opens.
-pub const MAX_PR_OPEN_CACHE_ENTRIES: usize = 32;
-
-/// Evict the least-recently-touched entry when the map exceeds `MAX_PR_OPEN_CACHE_ENTRIES`.
-/// Pure (operates on the borrowed map) so the LRU policy is unit-testable without a lock.
-pub fn evict_lru(map: &mut HashMap<PrOpenCacheKey, PrOpenCacheEntry>) {
-    if map.len() <= MAX_PR_OPEN_CACHE_ENTRIES {
-        return;
-    }
-    // Remove the entry with the smallest `last_touched`. Touch times from
-    // `pr_open_clock()` are process-unique and increasing, so there is a strict
-    // minimum; the `HashMap` iteration order does not affect which key is chosen.
-    let evict_key = map
-        .iter()
-        .min_by_key(|(_, e)| e.last_touched)
-        .map(|(k, _)| k.clone());
-    if let Some(key) = evict_key {
-        map.remove(&key);
-    }
-}
-
 fn remember_pr_open_entry(
     cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     key: PrOpenCacheKey,
@@ -7622,32 +7564,12 @@ fn remember_pr_open_entry(
     pr_commits: Option<Vec<er_engine::git::CommitInfo>>,
 ) {
     if let Ok(mut guard) = cache.lock() {
-        // Preserve existing metadata if the new entry doesn't bring it (lets a
-        // hint-based prefetch keep data fetched by an earlier full open).
-        let pr_data = pr_data.or_else(|| {
-            guard
-                .get(&key)
-                .filter(|e| e.freshness == freshness)
-                .and_then(|e| e.pr_data.clone())
-        });
-        let pr_commits = pr_commits.or_else(|| {
-            guard
-                .get(&key)
-                .filter(|e| e.freshness == freshness)
-                .and_then(|e| e.pr_commits.clone())
-        });
-        guard.insert(
-            key,
-            PrOpenCacheEntry {
-                freshness,
-                raw_diff,
-                pr_data,
-                pr_commits,
-                last_touched: pr_open_clock(),
-            },
+        er_engine::pr_open_entry::remember_pr_open_entry(
+            &mut guard, key, freshness, raw_diff, pr_data, pr_commits,
         );
-        evict_lru(&mut guard);
     }
+    // With `v1-service` the service's app registry is the file's one writer.
+    #[cfg(not(feature = "v1-service"))]
     crate::pr_open_cache::save_persisted_pr_open_cache(cache);
 }
 
@@ -8725,6 +8647,32 @@ pub fn prefetch_pr_open(
     prefetch_pr_open_impl(project_id, pr_number, hint, state.inner())
 }
 
+/// With `v1-service` the app registry warms its own cache through the ports.
+#[cfg(feature = "v1-service")]
+fn prefetch_pr_open_impl(
+    project_id: String,
+    pr_number: u64,
+    hint: PrOpenHint,
+    state: &AppState,
+) -> Result<(), String> {
+    let file = projects::load();
+    let Some(proj) = file.projects.iter().find(|p| p.id == project_id) else {
+        return Ok(());
+    };
+    let command = er_service::AppCommand::PrefetchOpenTarget {
+        repo_root: proj.root_path.clone(),
+        project_id,
+        pr_number,
+        freshness: freshness_from_hint(&hint),
+    };
+    state
+        .service
+        .send_app(command)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(feature = "v1-service"))]
 fn prefetch_pr_open_impl(
     project_id: String,
     pr_number: u64,
@@ -8867,6 +8815,26 @@ pub fn prefetch_remote_pr_open(
     prefetch_remote_pr_open_impl(owner, repo, number, state.inner())
 }
 
+#[cfg(feature = "v1-service")]
+fn prefetch_remote_pr_open_impl(
+    owner: String,
+    repo: String,
+    number: u64,
+    state: &AppState,
+) -> Result<(), String> {
+    let command = er_service::AppCommand::PrefetchRemoteOpenTarget {
+        owner,
+        repo,
+        number,
+    };
+    state
+        .service
+        .send_app(command)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(feature = "v1-service"))]
 fn prefetch_remote_pr_open_impl(
     owner: String,
     repo: String,
@@ -10589,6 +10557,105 @@ pub async fn exit_history(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 
 // ── Tab management ──────────────────────────────────────────────────────────
 
+// With `v1-service` the four tab commands go to the app registry, the tab
+// record's one writer. The desktop maps the strip's index to the registry's
+// tab key here. The App keeps its own tab list and keys until the service
+// builds the desktop's snapshot; the flag-on desktop does not render from the
+// registry yet, so each command answers with an empty snapshot.
+
+#[cfg(feature = "v1-service")]
+fn service_tab_key(state: &AppState, idx: usize) -> Result<er_engine::TabKey, String> {
+    let view = state.service.app_registry().tabs_view();
+    view.key_at(idx)
+        .ok_or_else(|| format!("no tab at position {idx}"))
+}
+
+#[cfg(feature = "v1-service")]
+fn service_tab_command(
+    state: &AppState,
+    command: er_service::AppCommand,
+) -> Result<AppSnapshot, String> {
+    state.service.send_app(command).map_err(|e| e.to_string())?;
+    Ok(AppSnapshot::default())
+}
+
+/// A Working tab on the active tab's repo, read from the registry's view
+/// rather than the App, so the command never waits on the App lock.
+#[cfg(feature = "v1-service")]
+fn service_new_tab(state: &AppState) -> Result<AppSnapshot, String> {
+    let view = state.service.app_registry().tabs_view();
+    let Some(root) = view.active_entry().or(view.tabs.first()) else {
+        return Err("Failed to open new tab: no open tab names a repo".to_string());
+    };
+    let tab = crate::tabs::TabDescriptor {
+        kind: crate::tabs::TabKind::Working,
+        repo_root: root.descriptor.repo_root.clone(),
+        branch: None,
+        pr_owner: None,
+        pr_repo: None,
+        pr_number: None,
+        pr_head_ref: None,
+        base_ref: None,
+        extra: serde_json::Map::new(),
+    };
+    service_tab_command(state, er_service::AppCommand::NewTab { tab })
+}
+
+#[cfg(feature = "v1-service")]
+fn service_close_tab(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
+    let key = service_tab_key(state, idx)?;
+    service_tab_command(state, er_service::AppCommand::CloseTab { key })
+}
+
+#[cfg(feature = "v1-service")]
+fn service_select_tab(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
+    let key = service_tab_key(state, idx)?;
+    service_tab_command(state, er_service::AppCommand::SelectTab { key })
+}
+
+#[cfg(feature = "v1-service")]
+fn service_reorder_tabs(state: &AppState, from: usize, to: usize) -> Result<AppSnapshot, String> {
+    let key = service_tab_key(state, from)?;
+    service_tab_command(
+        state,
+        er_service::AppCommand::ReorderTabs { key, to_idx: to },
+    )
+}
+
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
+    service_new_tab(&state)
+}
+
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub fn close_tab(idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
+    service_close_tab(&state, idx)
+}
+
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+pub async fn select_tab(idx: usize, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || service_select_tab(&state, idx)).await
+}
+
+#[cfg(feature = "v1-service")]
+#[tauri::command]
+#[expect(
+    non_snake_case,
+    reason = "camelCase parameters match the keys of the JS IPC payload"
+)]
+pub fn reorder_tabs(
+    fromIdx: usize,
+    toIdx: usize,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    service_reorder_tabs(&state, fromIdx, toIdx)
+}
+
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -10606,6 +10673,7 @@ pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
     Ok(snap_from(&app, &state))
 }
 
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub fn close_tab(
     idx: usize,
@@ -10630,6 +10698,7 @@ pub fn close_tab(
     Ok(snap_from(&app, &state))
 }
 
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub async fn select_tab(
     idx: usize,
@@ -11356,6 +11425,7 @@ pub fn cycle_tab_browser_layout(
     Ok(snap_from(&app, &state))
 }
 
+#[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 #[expect(
     non_snake_case,
@@ -12630,8 +12700,9 @@ mod tests {
         AppState {
             ports: er_engine::ports::Ports::cli(),
             #[cfg(feature = "v1-service")]
-            service: Arc::new(crate::service::ServiceState::new(
+            service: Arc::new(crate::service::ServiceState::with_settings_path(
                 er_engine::ports::Ports::for_test(),
+                dir.path().join("settings").join("config.toml"),
             )),
             app,
             view: Default::default(),
@@ -12662,6 +12733,223 @@ mod tests {
             sent_files: Arc::new(Mutex::new(Default::default())),
             line_commits_cache: Arc::default(),
         }
+    }
+
+    /// With the feature on, the four tab commands edit the app registry's list,
+    /// mapping the strip's index to its key, without taking the App lock; the
+    /// registry saves `tabs.json`, and the App's own save writes nothing.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_tab_commands_route_with_the_feature_on() {
+        use crate::tabs::{TabDescriptor, TabKind};
+        use std::time::Duration;
+
+        let working = |root: &str| TabDescriptor {
+            kind: TabKind::Working,
+            repo_root: root.to_string(),
+            branch: None,
+            pr_owner: None,
+            pr_repo: None,
+            pr_number: None,
+            pr_head_ref: None,
+            base_ref: None,
+            extra: serde_json::Map::new(),
+        };
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            crate::tabs::save_tabs(&[working("/a"), working("/b")], 0).expect("seed tabs");
+            let state = review_flow_test_state(&dir);
+            let held = match state.app.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let seeded = state.service.app_registry().tabs_view();
+            let (Some(ka), Some(kb)) = (seeded.key_at(0), seeded.key_at(1)) else {
+                panic!("the registry loaded the seeded tabs: {seeded:?}");
+            };
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let calling = state.clone();
+            std::thread::spawn(move || {
+                // The registry's view after each command, so a command that
+                // resolves the wrong index fails at its own step.
+                let after = |routed: Result<AppSnapshot, String>| {
+                    routed.map(|_| calling.service.app_registry().tabs_view())
+                };
+                let steps = [
+                    after(service_select_tab(&calling, 1)),
+                    after(service_reorder_tabs(&calling, 1, 0)),
+                    after(service_new_tab(&calling)),
+                    after(service_close_tab(&calling, 2)),
+                ];
+                let _ = done_tx.send(steps.into_iter().collect::<Result<Vec<_>, _>>());
+            });
+            let Ok(steps) = done_rx.recv_timeout(Duration::from_secs(5)) else {
+                panic!("a routed tab command blocked on the App lock");
+            };
+            let steps = steps.expect("every routed command answered");
+            let keys = |step: &er_service::TabsView| -> Vec<er_engine::TabKey> {
+                step.tabs.iter().map(|tab| tab.key).collect()
+            };
+            assert_eq!(
+                (keys(&steps[0]), steps[0].active),
+                (vec![ka, kb], Some(kb)),
+                "select(1) makes the tab at index 1 active"
+            );
+            assert_eq!(
+                (keys(&steps[1]), steps[1].active),
+                (vec![kb, ka], Some(kb)),
+                "reorder(1, 0) moves the tab at index 1 to the front"
+            );
+            let Some(kn) = steps[2].key_at(2) else {
+                panic!("new_tab added a tab: {:?}", steps[2]);
+            };
+            assert_eq!(
+                (keys(&steps[2]), steps[2].active),
+                (vec![kb, ka, kn], Some(kn)),
+                "new_tab appends a tab and makes it active"
+            );
+            assert_eq!(
+                steps[2].tabs[2].descriptor.repo_root, "/b",
+                "the new tab opens on the active tab's repo"
+            );
+            assert_eq!(
+                (keys(&steps[3]), steps[3].active),
+                (vec![kb, ka], Some(ka)),
+                "close(2) closes the tab at index 2"
+            );
+            let revisions: Vec<u64> = steps.iter().map(|step| step.revision).collect();
+            assert_eq!(revisions, [1, 2, 3, 4], "each command published once");
+
+            let view = state.service.app_registry().tabs_view();
+            let roots: Vec<&str> = view
+                .tabs
+                .iter()
+                .map(|tab| tab.descriptor.repo_root.as_str())
+                .collect();
+            assert_eq!(
+                roots,
+                ["/b", "/a"],
+                "select, reorder, new and close all routed"
+            );
+            assert_eq!(view.revision, 4);
+            let saved = crate::tabs::load_tabs().expect("the registry saved");
+            assert_eq!((saved.tabs.len(), saved.active_idx), (2, 1));
+
+            // The App's tab list differs from the registry's; its save must not
+            // write over the registry's record on the flag path.
+            crate::tabs::persist_app_tabs(&held, &state.view);
+            drop(held);
+            assert_eq!(crate::tabs::load_tabs(), Some(saved));
+            // Nor does the desktop's own open cache save.
+            let freshness = PrOpenFreshness {
+                base_branch: "main".to_string(),
+                head_branch: "feature".to_string(),
+                head_oid: "oid".to_string(),
+                updated_at: String::new(),
+            };
+            let key = pr_open_cache_key("proj", "/a", 7);
+            remember_pr_open_entry(&state.pr_open_cache, key, freshness, "d".into(), None, None);
+            let on_disk = er_engine::pr_open_cache::load_persisted_pr_open_cache();
+            assert!(
+                matches!(on_disk, Ok(None)),
+                "the desktop saved the open cache"
+            );
+        });
+    }
+
+    /// With the feature on, both prefetch commands go to the app registry,
+    /// which warms its caches through the service's ports; the desktop's own
+    /// caches stay empty.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_prefetch_commands_route_with_the_feature_on() {
+        use er_engine::github::FakeGitHub;
+        use std::time::{Duration, Instant};
+
+        let wait_for = |ready: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            ready()
+        };
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let hint = PrOpenHint {
+                base_ref: "main".to_string(),
+                head_ref: "feature".to_string(),
+                head_oid: "head-1".to_string(),
+                updated_at: "2026-11-15T00:00:00Z".to_string(),
+                title: "T".to_string(),
+                author: "octo".to_string(),
+            };
+            let github = Arc::new(
+                FakeGitHub::default()
+                    .with_pr_diff(Ok("diff --git a/y b/y\n".to_string()))
+                    .with_pr_commits(Ok(Vec::new()))
+                    .with_pr_head_oid_remote(Ok("head-1".to_string()))
+                    .with_overview_remote(Ok(Some(pr_overview_from_hint(&hint, 7, None))))
+                    .with_pr_diff_remote(Ok("diff --git a/x b/x\n".to_string()))
+                    .with_commits_remote(Ok(Vec::new())),
+            );
+            let ports = er_engine::ports::Ports {
+                git: Arc::new(
+                    er_git::FakeGit::default().with_rev_parse_verify(Ok(Some("base".to_string()))),
+                ),
+                github: github.clone(),
+            };
+            let mut state = review_flow_test_state(&dir);
+            state.service = Arc::new(crate::service::ServiceState::new(ports));
+            let project_id = projects::ensure_remote_project("acme/widgets").expect("project");
+            let repo_root = projects::load()
+                .projects
+                .iter()
+                .find(|p| p.id == project_id)
+                .map(|p| p.root_path.clone())
+                .expect("the project is saved");
+
+            prefetch_remote_pr_open_impl("acme".into(), "widgets".into(), 7, &state)
+                .expect("remote prefetch");
+            prefetch_pr_open_impl(project_id.clone(), 7, hint, &state).expect("local prefetch");
+
+            let registry = state.service.app_registry();
+            let key = pr_open_cache_key(&project_id, &repo_root, 7);
+            assert!(
+                wait_for(&|| registry
+                    .remote_pr_open_entry("acme", "widgets", 7)
+                    .is_some()),
+                "the remote prefetch did not reach the registry"
+            );
+            // Wait for the registry's save too, so it lands under this root.
+            let saved = || {
+                er_engine::pr_open_cache::load_persisted_pr_open_cache()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|map| map.contains_key(&key))
+            };
+            assert!(
+                wait_for(&saved),
+                "the local prefetch did not reach the registry"
+            );
+            assert!(registry.pr_open_entry(&key).is_some());
+            let calls = github.calls();
+            for sent in ["pr_diff_remote", "overview_remote", "pr_diff", "pr_commits"] {
+                assert!(
+                    calls
+                        .iter()
+                        .any(|call| call.split('(').next() == Some(sent)),
+                    "{sent} did not go through the port: {calls:?}"
+                );
+            }
+            assert!(state.remote_pr_open_cache.lock().unwrap().is_empty());
+            assert!(state.pr_open_cache.lock().unwrap().is_empty());
+        });
     }
 
     /// The flag-on open path must not take the App lock: it resolves the
@@ -12709,6 +12997,359 @@ mod tests {
                 github.calls(),
                 vec!["pr_state(owner=\"acme\", repo=\"widgets\", number=7)"]
             );
+        });
+    }
+
+    /// Runs `body` on another thread while this one holds the App lock. A body
+    /// that waits on the lock trips the deadline instead of hanging the suite.
+    #[cfg(feature = "v1-service")]
+    fn while_the_app_is_locked<T: Send + 'static>(
+        state: &AppState,
+        what: &str,
+        body: impl FnOnce(&AppState) -> T + Send + 'static,
+    ) -> T {
+        use std::time::Duration;
+
+        let held = match state.app.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let calling_state = state.clone();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(body(&calling_state));
+        });
+        let Ok(result) = done_rx.recv_timeout(Duration::from_secs(10)) else {
+            panic!("{what} waited on the App lock");
+        };
+        drop(held);
+        result
+    }
+
+    #[cfg(feature = "v1-service")]
+    fn theme_row(response: &crate::settings::GetConfigHubResponse) -> Option<String> {
+        response
+            .settings
+            .general
+            .iter()
+            .find_map(|field| match field {
+                er_engine::config::ConfigHubFieldDto::Cycle { key, value, .. }
+                    if key == "display.theme" =>
+                {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+    }
+
+    /// A flag-on settings write reaches the settings actor without the App
+    /// lock: it returns while the lock is held, the service copy changes, and
+    /// the App's copy does not.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn a_flag_on_settings_write_does_not_lock_the_app() {
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            let before = state.app.lock().map(|app| app.config.display.theme.clone());
+            let result = while_the_app_is_locked(&state, "apply_config_patch", |state| {
+                crate::config_commands::apply_patch(
+                    state,
+                    crate::config_commands::ConfigPatch {
+                        key: "display.theme".to_string(),
+                        value: er_engine::config::ConfigFieldValue::String("paper".to_string()),
+                    },
+                )
+            });
+            let Ok(response) = result else {
+                panic!("the routed patch failed: {result:?}");
+            };
+            assert_eq!(theme_row(&response).as_deref(), Some("paper"));
+            assert_eq!(
+                state.service.settings().view().config.display.theme,
+                "paper"
+            );
+            let after = state.app.lock().map(|app| app.config.display.theme.clone());
+            assert_eq!(after.ok(), before.ok(), "the App's copy was written");
+        });
+    }
+
+    /// Every config command but `run_uninstall` runs for real against a held
+    /// App lock, and each is checked by an effect only the settings actor
+    /// produces: a reload of a file repaired mid-session, a save, a preview,
+    /// an edit, a reordered model group, a raised revision. `run_uninstall`
+    /// deletes files, so only its route is checked, by the source scan.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_config_commands_route_with_the_feature_on() {
+        use crate::config_commands as cc;
+        use er_engine::config::{ModelUpsert, ProviderUpsert};
+        use er_engine::uninstall::UninstallOptions;
+
+        let source = include_str!("config_commands.rs");
+        for command in [
+            "ReloadIfFailed",
+            "ApplyConfigPatch",
+            "SaveConfig",
+            "PreviewUninstall",
+            "RunUninstall",
+            "SetReviewFlowModels",
+            "RefreshAiModels",
+            "UpsertAiProvider",
+            "DeleteAiProvider",
+            "UpsertAiModel",
+            "DeleteAiModel",
+        ] {
+            assert!(
+                source.contains(&format!("SettingsCommand::{command}")),
+                "{command} has no service route"
+            );
+        }
+        for body in [
+            "config_hub",
+            "apply_patch",
+            "save_global",
+            "uninstall_preview",
+            "uninstall",
+            "review_flow_models",
+            "refresh_models",
+            "provider_upsert",
+            "provider_delete",
+            "model_upsert",
+            "model_delete",
+        ] {
+            assert!(
+                source.contains(&format!("return service_route::{body}(&state.service")),
+                "{body} does not dispatch to the service with the feature on"
+            );
+        }
+
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            let settings = state.service.settings();
+            let locked = |what: &str, body: fn(&AppState) -> Result<(), String>| {
+                let result = while_the_app_is_locked(&state, what, body);
+                assert!(result.is_ok(), "{what} failed: {result:?}");
+            };
+
+            // Break the file mid-session and repair it: only the actor's
+            // reload, sent when Settings reopens, adopts the repaired theme.
+            let config_path = dir.path().join("settings").join("config.toml");
+            let theme = |value: &str| {
+                settings.send_and_wait(er_service::SettingsCommand::ApplyConfigPatch {
+                    key: "display.theme".to_string(),
+                    value: er_engine::config::ConfigFieldValue::String(value.to_string()),
+                })
+            };
+            assert!(theme("first-theme").is_ok(), "the first save failed");
+            let Ok(good) = std::fs::read_to_string(&config_path) else {
+                panic!("the first save wrote no config.toml");
+            };
+            assert!(std::fs::write(&config_path, "not = = toml").is_ok());
+            assert!(theme("while-broken").is_err(), "a save over a broken file");
+            let repaired = good.replace("first-theme", "repaired-theme");
+            assert!(std::fs::write(&config_path, repaired).is_ok());
+            let reopened = while_the_app_is_locked(&state, "get_config_hub", cc::config_hub);
+            let Ok(reopened) = reopened else {
+                panic!("get_config_hub failed: {reopened:?}");
+            };
+            assert_eq!(theme_row(&reopened).as_deref(), Some("repaired-theme"));
+            assert_eq!(settings.view().config.display.theme, "repaired-theme");
+
+            assert!(std::fs::remove_file(&config_path).is_ok());
+            locked("save_config_global_cmd", |s| cc::save_global(s).map(drop));
+            assert!(config_path.exists());
+
+            locked("preview_uninstall", |s| {
+                let none = UninstallOptions {
+                    remove_config: false,
+                    remove_data: false,
+                    remove_cache: false,
+                    remove_binaries: false,
+                    remove_desktop_app: false,
+                };
+                cc::uninstall_preview(s, none).map(drop)
+            });
+            assert!(settings.view().uninstall_preview.is_some());
+
+            locked("upsert_ai_provider", |s| {
+                let provider = ProviderUpsert {
+                    id: "fixture-cli".into(),
+                    original_id: None,
+                    label: None,
+                    command: "fixture-cli".into(),
+                    args: "-p {prompt}".into(),
+                    family: None,
+                    models_command: None,
+                };
+                cc::provider_upsert(s, provider).map(drop)
+            });
+            assert!(settings
+                .view()
+                .config
+                .ai_hub
+                .providers
+                .contains_key("fixture-cli"));
+
+            locked("upsert_ai_model", |s| {
+                let model = ModelUpsert {
+                    id: "fixture-model".into(),
+                    original_id: None,
+                    label: None,
+                    description: None,
+                    args: String::new(),
+                    effort_levels: Vec::new(),
+                    cost_per_1k_in: None,
+                    cost_per_1k_out: None,
+                    avg_latency_ms: None,
+                };
+                cc::model_upsert(s, "fixture-cli".into(), model).map(drop)
+            });
+            let has_model = |view: &er_service::SettingsView| {
+                view.config.ai_hub.providers["fixture-cli"]
+                    .models
+                    .iter()
+                    .any(|m| m.id == "fixture-model")
+            };
+            assert!(has_model(&settings.view()));
+
+            locked("delete_ai_model", |s| {
+                cc::model_delete(s, "fixture-cli".into(), "fixture-model".into()).map(drop)
+            });
+            assert!(!has_model(&settings.view()));
+
+            locked("delete_ai_provider", |s| {
+                cc::provider_delete(s, "fixture-cli".into()).map(drop)
+            });
+            assert!(!settings
+                .view()
+                .config
+                .ai_hub
+                .providers
+                .contains_key("fixture-cli"));
+
+            let mut fast = settings.view().config.ai_hub.review_models.fast.clone();
+            assert!(
+                fast.len() >= 2 && fast[0] != fast[1],
+                "the reorder needs two distinct fast models: {fast:?}"
+            );
+            locked("set_review_flow_models", |s| {
+                let mut groups = s
+                    .service
+                    .settings()
+                    .view()
+                    .config
+                    .ai_hub
+                    .review_models
+                    .clone();
+                groups.fast.reverse();
+                cc::review_flow_models(s, groups).map(drop)
+            });
+            fast.reverse();
+            assert_eq!(settings.view().config.ai_hub.review_models.fast, fast);
+
+            // An unknown provider has no models command, so nothing shells
+            // out; the actor still publishes the empty discovery.
+            let before = settings.view().revision;
+            locked("refresh_ai_models", |s| {
+                cc::refresh_models(s, Some("no-such-provider".into()), true).map(drop)
+            });
+            assert!(settings.view().revision > before);
+        });
+    }
+
+    /// The risk view answers for the paths the caller passes, with the
+    /// default tier for a path no rule claims.
+    #[test]
+    fn risk_files_answer_for_the_query_paths() {
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            // Not a clone, so the rules key is the directory's name.
+            let repo_root = dir.path().join("risk-repo").to_string_lossy().into_owned();
+            let edit = r#"{"source":"project","repo":"risk-repo","pattern":"db/**","tier":"high"}"#;
+            let patched = crate::config_commands::apply_patch(
+                &state,
+                crate::config_commands::ConfigPatch {
+                    key: er_engine::config::RISK_RULE_PATCH_KEY.to_string(),
+                    value: er_engine::config::ConfigFieldValue::String(edit.to_string()),
+                },
+            );
+            assert!(patched.is_ok(), "the rule edit failed: {patched:?}");
+
+            let paths = ["db/0001.sql", "README.md"].map(str::to_string);
+            let result = crate::risk_commands::risk_files(&state, repo_root, None, &paths);
+            let Ok(view) = result else {
+                panic!("the risk files failed: {result:?}");
+            };
+            let answered: Vec<&str> = view.files.iter().map(|f| f.path.as_str()).collect();
+            assert_eq!(answered, ["db/0001.sql", "README.md"]);
+            assert_eq!(
+                view.files[0].resolved.tier,
+                er_engine::config::RiskTier::High
+            );
+            assert_eq!(
+                view.files[0].resolved.rule.as_ref().map(|r| r.key.as_str()),
+                Some("db/**")
+            );
+            assert_eq!(view.files[1].resolved.tier, er_engine::config::RiskTier::Ai);
+            assert!(view.files[1].resolved.rule.is_none());
+            let rule = view.rules.iter().find(|r| r.pattern == "db/**");
+            assert_eq!(rule.map(|r| r.file_count), Some(1));
+        });
+    }
+
+    /// The `importance_*` fields are gone from the Settings payload.
+    #[test]
+    fn the_settings_payload_has_no_importance_keys() {
+        fn keys(value: &serde_json::Value, out: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map {
+                        out.push(key.clone());
+                        keys(child, out);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        keys(item, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            let result = crate::config_commands::config_hub(&state);
+            let Ok(response) = result else {
+                panic!("get_config_hub failed: {result:?}");
+            };
+            let Ok(json) = serde_json::to_value(&response) else {
+                panic!("the hub response does not serialize");
+            };
+            let mut found = Vec::new();
+            keys(&json, &mut found);
+            assert!(found.iter().any(|key| key == "general"));
+            let importance: Vec<&String> = found
+                .iter()
+                .filter(|key| key.to_lowercase().contains("importance"))
+                .collect();
+            assert!(importance.is_empty(), "importance keys: {importance:?}");
         });
     }
 
@@ -13976,7 +14617,10 @@ mod tests {
                 let view = view.lock().unwrap();
                 app.tabs
                     .iter()
-                    .map(|t| crate::tabs::descriptor_from_tab(t, &view).browser_url)
+                    .map(|t| {
+                        let saved = crate::tabs::descriptor_from_tab(t, &view);
+                        saved.extra.get("browser_url")?.as_str().map(String::from)
+                    })
                     .collect()
             };
             let (a, b) = (
