@@ -430,10 +430,9 @@ fn handle_command(
     let edit = |state: &mut SettingsState,
                 change: &dyn Fn(&mut ErConfig) -> Result<Vec<String>, String>| {
         let mut next = state.config.clone();
-        change(&mut next).map(|warnings| {
-            state.config = next;
-            warnings
-        })
+        let warnings = change(&mut next)?;
+        state.config = next;
+        Ok(warnings)
     };
     let warnings = match command {
         SettingsCommand::ApplyConfigPatch { key, value } => edit(state, &|config| {
