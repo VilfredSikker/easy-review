@@ -29,8 +29,11 @@ pub struct RefreshAiModelsResponse {
 }
 
 #[tauri::command]
-pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, String> {
-    config_hub(&state)
+pub async fn get_config_hub(state: State<'_, AppState>) -> Result<GetConfigHubResponse, String> {
+    let state = state.inner().clone();
+    // Off the main thread: the flag path waits on the settings actor, which
+    // loads the config on first use (ADR 0015, ADR 0067).
+    run_blocking(move || config_hub(&state)).await
 }
 
 #[tauri::command]
