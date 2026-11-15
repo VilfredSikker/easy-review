@@ -4,7 +4,9 @@
 //! the revision, and swaps the `Arc`; a reader that grabbed the previous view
 //! keeps rendering it until it asks again.
 
+use er_engine::ai::review_flow::ReviewFlow;
 use er_engine::arena::{ArenaProgressState, RunStatus};
+use er_engine::task_target::BackgroundTaskTarget;
 
 /// One PR the workspace has open.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,7 +26,7 @@ pub struct WorkspaceTarget {
 }
 
 /// The whole read side of one workspace, published per revision.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorkspaceView {
     pub revision: u64,
     pub targets: Vec<WorkspaceTarget>,
@@ -35,12 +37,33 @@ pub struct WorkspaceView {
     /// The arena runs this actor started, by run id order. Run records stay
     /// on disk; this section carries what only the live run knows.
     pub arena_runs: Vec<LiveArenaRun>,
+    /// The review flows this actor runs or recovered, by bucket.
+    pub review_flows: Vec<LiveReviewFlow>,
 }
 
 impl WorkspaceView {
     pub fn arena_run(&self, run_id: &str) -> Option<&LiveArenaRun> {
         self.arena_runs.iter().find(|run| run.run_id == run_id)
     }
+
+    pub fn review_flow(&self, er_dir: &str) -> Option<&LiveReviewFlow> {
+        self.review_flows.iter().find(|flow| flow.er_dir == er_dir)
+    }
+}
+
+/// One review flow as the view shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveReviewFlow {
+    pub er_dir: String,
+    pub flow: ReviewFlow,
+    /// The flow is over but a stage or an arena run still writes the bucket.
+    pub draining: bool,
+    /// The target each flow-owned arena run captured, by run id. A run is read
+    /// or accepted only against the target it started for.
+    pub run_targets: Vec<(String, BackgroundTaskTarget)>,
+    /// For an interrupted flow, the stages a re-run would run again; empty when
+    /// it would start over.
+    pub rerun_stages: Vec<String>,
 }
 
 /// One arena run's live state, copied from its control when the actor
@@ -110,6 +133,25 @@ impl WorkspaceState {
     /// next revision.
     pub(crate) fn set_arena_runs(&mut self, runs: Vec<LiveArenaRun>) {
         self.view.arena_runs = runs;
+    }
+
+    /// Replaces the flow section and answers the buckets whose flow changed,
+    /// including one that left. The caller publishes the next revision.
+    pub(crate) fn set_review_flows(&mut self, flows: Vec<LiveReviewFlow>) -> Vec<String> {
+        let mut changed: Vec<String> = flows
+            .iter()
+            .filter(|flow| self.view.review_flow(&flow.er_dir) != Some(*flow))
+            .map(|flow| flow.er_dir.clone())
+            .collect();
+        changed.extend(
+            self.view
+                .review_flows
+                .iter()
+                .filter(|old| !flows.iter().any(|flow| flow.er_dir == old.er_dir))
+                .map(|old| old.er_dir.clone()),
+        );
+        self.view.review_flows = flows;
+        changed
     }
 
     fn bump(&mut self) -> u64 {

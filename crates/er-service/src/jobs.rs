@@ -61,6 +61,7 @@ impl JobSink for ActorJobSink {
 /// The actor's running jobs and its live arena runs.
 pub(crate) struct JobHost {
     running: HashMap<JobId, Arc<AgentRunHandle>>,
+    sink: Arc<dyn JobSink>,
     arena: ArenaRunControls,
     /// Set while an arena wake-up is queued and not yet published.
     pending: Arc<AtomicBool>,
@@ -73,7 +74,7 @@ impl JobHost {
         let sink = deps
             .jobs()
             .unwrap_or_else(|| Arc::new(ActorJobSink::new(tx.clone())));
-        let arena = ArenaRunControls::with_jobs(sink);
+        let arena = ArenaRunControls::with_jobs(Arc::clone(&sink));
         let notify = tx.clone();
         let pending = Arc::new(AtomicBool::new(false));
         let raised = Arc::clone(&pending);
@@ -86,6 +87,7 @@ impl JobHost {
         }));
         Self {
             running: HashMap::new(),
+            sink,
             arena,
             pending,
         }
@@ -93,6 +95,11 @@ impl JobHost {
 
     pub(crate) fn arena(&self) -> &ArenaRunControls {
         &self.arena
+    }
+
+    /// The one sink every job of this workspace goes through.
+    pub(crate) fn sink(&self) -> Arc<dyn JobSink> {
+        Arc::clone(&self.sink)
     }
 
     /// The live arena section of the view. Reads the controls' in-memory
