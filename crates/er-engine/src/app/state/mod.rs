@@ -16806,6 +16806,105 @@ mod tests {
     }
 
     #[test]
+    fn fetch_tab_raw_diff_shows_the_last_commit_while_nothing_new_is_staged() {
+        let last_commit =
+            "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let fake = std::sync::Arc::new(
+            er_git::FakeGit::default()
+                .with_diff_raw(Ok(String::new()))
+                .with_diff_raw_range(Ok(last_commit.to_string())),
+        );
+        let mut tab = TabState::new_for_test_with_ports(Vec::new(), Ports::with_git(fake.clone()));
+        tab.mode = DiffMode::Staged;
+        tab.committed_unpushed = true;
+
+        let raw = tab
+            .fetch_tab_raw_diff("staged")
+            .expect("fetch through the fake");
+
+        assert_eq!(raw, last_commit);
+    }
+
+    #[test]
+    fn remote_refresh_keeps_the_preview_head_the_diff_was_taken_at() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+            let github = std::sync::Arc::new(
+                er_github::FakeGitHub::default()
+                    .with_pr_diff_remote(Ok(raw.to_string()))
+                    .with_pr_head_oid_remote(Ok("abc123".to_string())),
+            );
+            let mut tab = TabState::new_for_test_with_ports(Vec::new(), Ports::with_github(github));
+            tab.remote_repo = Some("acme/widgets".to_string());
+            tab.pr_number = Some(7);
+            tab.mode = DiffMode::PrDiff;
+
+            tab.refresh_diff().expect("refresh through the fakes");
+
+            assert_eq!(tab.files.len(), 1);
+            assert_eq!(tab.preview_head_oid.as_deref(), Some("abc123"));
+        });
+    }
+
+    #[test]
+    fn refresh_compacts_a_lock_file_in_a_small_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let raw = "diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1 +1 @@\n-old\n+new\n";
+            let fake = std::sync::Arc::new(
+                er_git::FakeGit::default()
+                    .with_current_branch(Ok("feature".into()))
+                    .with_is_merge_in_progress(false)
+                    .with_diff_raw(Ok(raw.to_string())),
+            );
+            let mut tab = TabState::new_for_test_with_ports(Vec::new(), Ports::with_git(fake));
+
+            tab.refresh_diff().expect("refresh through the fake");
+
+            assert!(!tab.lazy_mode);
+            assert_eq!(tab.files.len(), 1);
+            assert!(tab.files[0].compacted, "a lock file is compacted on load");
+        });
+    }
+
+    #[test]
+    fn a_full_refresh_stores_the_sha256_the_sidecars_compare_against() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+            let fake = std::sync::Arc::new(
+                er_git::FakeGit::default()
+                    .with_current_branch(Ok("feature".into()))
+                    .with_is_merge_in_progress(false)
+                    .with_diff_raw(Ok(raw.to_string())),
+            );
+            let mut tab = TabState::new_for_test_with_ports(Vec::new(), Ports::with_git(fake));
+
+            tab.refresh_diff().expect("refresh through the fake");
+
+            assert_eq!(tab.diff_hash, crate::ai::compute_diff_hash(raw));
+            assert_eq!(tab.branch_diff_hash, tab.diff_hash);
+        });
+    }
+
+    #[test]
+    fn ensure_file_parsed_at_fills_a_lazy_stub_from_the_raw_diff() {
+        let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut files = crate::git::parse_diff(raw);
+        files[0].hunks.clear();
+        let fake = std::sync::Arc::new(er_git::FakeGit::default());
+        let mut tab = TabState::new_for_test_with_ports(files, Ports::with_git(fake));
+        tab.lazy_mode = true;
+        tab.file_headers = crate::git::parse_diff_headers(raw);
+        tab.raw_diff = Some(raw.to_string());
+
+        tab.ensure_file_parsed_at(0);
+
+        assert_eq!(tab.files[0].hunks.len(), 1);
+    }
+
+    #[test]
     fn refresh_diff_surfaces_a_git_error_from_the_fake() {
         let fake = std::sync::Arc::new(
             er_git::FakeGit::default()
