@@ -2515,6 +2515,25 @@ pub async fn add_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::AddComment {
+                context,
+                target: er_service::AnnotationTarget {
+                    file,
+                    hunk_idx,
+                    line_num,
+                    line_num_end,
+                },
+                body: text,
+                side,
+                client_id: id,
+            }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         add_comment_impl(
             file,
@@ -2531,6 +2550,7 @@ pub async fn add_comment(
     .await
 }
 
+#[cfg(not(feature = "v1-service"))]
 #[expect(
     clippy::too_many_arguments,
     reason = "the parameters are the JS IPC payload; a params struct would change the command contract"
@@ -2930,6 +2950,19 @@ pub async fn reply_to_github_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, None, |context| {
+            er_service::Command::ReplyToGithubThread {
+                context,
+                parent_id,
+                body: text,
+                client_id: Some(id),
+            }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let posted = post_github_comment_flow(
             &state,
@@ -3734,6 +3767,7 @@ fn active_pr_or_err(state: &AppState) -> Result<(String, String, u64), String> {
 }
 
 /// What a posted create landed on.
+#[cfg(not(feature = "v1-service"))]
 struct PostedTo {
     owner: String,
     repo: String,
@@ -3743,6 +3777,7 @@ struct PostedTo {
     request: er_engine::github_post::GitHubPostRequest,
 }
 
+#[cfg(not(feature = "v1-service"))]
 impl PostedTo {
     /// Refresh the data a posted comment changes, and record the write cost.
     fn finish(self, state: &AppState) {
@@ -3757,6 +3792,7 @@ impl PostedTo {
 /// Post a comment in three phases so no `gh` call holds the App lock:
 /// context under the lock, resolve outside, begin under, execute outside,
 /// finish under. Then refresh the status card.
+#[cfg(not(feature = "v1-service"))]
 fn post_github_comment_flow(
     state: &AppState,
     intent: er_engine::app::NewGitHubComment,
@@ -5177,9 +5213,18 @@ pub async fn promote_to_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::PromoteToComment { context, id, body }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || promote_to_comment_impl(id, body, view, &state)).await
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn promote_to_comment_impl(
     id: String,
     body: Option<String>,
@@ -5285,25 +5330,15 @@ pub async fn promote_to_note(
 // Map of `finding_id -> comment_id`. Stored alongside `.er/review.json` so
 // `er` does not have to write into AI-owned files.
 
-fn finding_promotions_path(er_dir: &str) -> String {
-    format!("{er_dir}/finding-promotions.json")
-}
-
 pub fn load_finding_promotions(er_dir: &str) -> std::collections::HashMap<String, String> {
-    let path = finding_promotions_path(er_dir);
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    er_engine::ai::load_finding_promotions(er_dir)
 }
 
 fn save_finding_promotions(
     er_dir: &str,
     map: &std::collections::HashMap<String, String>,
 ) -> std::io::Result<()> {
-    let path = finding_promotions_path(er_dir);
-    let json = serde_json::to_string_pretty(map).unwrap_or_else(|_| "{}".to_string());
-    er_store::atomic::write_atomic(std::path::Path::new(&path), json.as_bytes())
+    er_engine::ai::save_finding_promotions(er_dir, map)
 }
 
 // ── Ask AI ──────────────────────────────────────────────────────────────────
@@ -6711,6 +6746,7 @@ fn tab_context(app: &er_engine::app::App) -> er_service::TabContext {
     er_service::TabContext {
         er_dir: tab.er_dir(),
         comments_dir: tab.github_comments_dir(),
+        is_remote: tab.is_remote(),
         repo_root: tab.repo_root.clone(),
         base_branch: tab.base_branch.clone(),
         scope: match tab.mode {
@@ -9844,9 +9880,22 @@ pub async fn promote_finding_to_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        route_annotation(&state, view.as_ref(), |context| {
+            er_service::Command::PromoteFindingToComment {
+                context,
+                finding_id,
+                body,
+            }
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || promote_finding_to_comment_impl(finding_id, body, view, &state)).await
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn promote_finding_to_comment_impl(
     finding_id: String,
     body: Option<String>,
@@ -14523,8 +14572,10 @@ mod tests {
         ));
     }
 
+    #[cfg(not(feature = "v1-service"))]
     struct RefusingCommentPoster;
 
+    #[cfg(not(feature = "v1-service"))]
     impl er_engine::github_post::GitHubCommentPoster for RefusingCommentPoster {
         fn post(
             &self,
@@ -14550,6 +14601,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn add_comment_failure_returns_the_error_and_writes_nothing() {
         use std::sync::Arc;
@@ -14627,8 +14679,10 @@ mod tests {
         });
     }
 
+    #[cfg(not(feature = "v1-service"))]
     struct PostingCommentPoster;
 
+    #[cfg(not(feature = "v1-service"))]
     impl er_engine::github_post::GitHubCommentPoster for PostingCommentPoster {
         fn post(
             &self,
@@ -14656,6 +14710,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn promote_to_comment_deletes_the_source_question() {
         use std::sync::Arc;
@@ -14866,6 +14921,10 @@ mod route_tests {
             "Command::ResolveThread",
             "Command::PromoteToNote",
             "Command::ReplyToFinding",
+            "Command::AddComment",
+            "Command::ReplyToGithubThread",
+            "Command::PromoteToComment",
+            "Command::PromoteFindingToComment",
         ] {
             assert!(
                 source.contains(&format!("er_service::{command}")),

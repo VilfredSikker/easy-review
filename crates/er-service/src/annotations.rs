@@ -19,11 +19,11 @@ use crate::actor::WorkspaceDeps;
 use crate::handle::WorkspaceError;
 use crate::protocol::{AnnotationKind, AnnotationTarget, TabContext};
 
-fn failed(context: &str, error: impl std::fmt::Display) -> WorkspaceError {
+pub(crate) fn failed(context: &str, error: impl std::fmt::Display) -> WorkspaceError {
     WorkspaceError::Failed(format!("{context}: {error:#}"))
 }
 
-fn bucket_scope(dir: &str) -> Result<Scope, WorkspaceError> {
+pub(crate) fn bucket_scope(dir: &str) -> Result<Scope, WorkspaceError> {
     Scope::dir(dir).map_err(|error| failed("open the bucket", error))
 }
 

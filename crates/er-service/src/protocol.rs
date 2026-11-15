@@ -133,6 +133,35 @@ pub enum Command {
     Reconcile { buckets: Vec<String> },
     /// An arena action on the actor's live runs.
     Arena(ArenaCommand),
+
+    // ── GitHub comment commands (P41.2) ──
+    /// Create a comment and post it to the tab's pull request.
+    AddComment {
+        context: TabContext,
+        target: AnnotationTarget,
+        body: String,
+        side: Option<String>,
+        client_id: Option<String>,
+    },
+    /// Reply to a thread that is already on GitHub.
+    ReplyToGithubThread {
+        context: TabContext,
+        parent_id: String,
+        body: String,
+        client_id: Option<String>,
+    },
+    /// Promote a question or note to a GitHub comment, then remove the source.
+    PromoteToComment {
+        context: TabContext,
+        id: String,
+        body: Option<String>,
+    },
+    /// Promote a finding to a GitHub comment, then remove the finding.
+    PromoteFindingToComment {
+        context: TabContext,
+        finding_id: String,
+        body: Option<String>,
+    },
 }
 
 /// An arena action. Each carries the [`ArenaContext`] its effect needs, except
@@ -243,6 +272,8 @@ pub struct TabContext {
     pub er_dir: String,
     /// Bucket the GitHub comment sidecar lives in (the PR bucket for PR tabs).
     pub comments_dir: String,
+    /// Whether the tab is a remote PR tab, as `resolve_post_target` expects.
+    pub is_remote: bool,
     pub repo_root: String,
     pub base_branch: String,
     /// `branch`, `staged` or `unstaged`.
@@ -329,6 +360,10 @@ pub enum Reply {
     },
     /// The note a question was promoted into.
     NotePromoted {
+        id: String,
+    },
+    /// The GitHub comment a question, note or finding was promoted into.
+    CommentPromoted {
         id: String,
     },
     /// The finding thread a reply landed in.
