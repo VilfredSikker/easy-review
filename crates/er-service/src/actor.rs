@@ -478,12 +478,8 @@ fn handle_command(
             });
         }
         Command::PostGithubPrComment { context, body } => {
-            if !context_matches(state, &context.repo_root) {
-                return refuse_stale(reply);
-            }
-            let deps = deps.clone();
-            spawn_fetch(tx, reply, move || {
-                crate::pr_posts::post_pr_comment(&deps, context, &body)
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pr_posts::post_pr_comment(deps, context, &body)
             });
         }
         Command::PostGithubLineComment {
@@ -491,12 +487,8 @@ fn handle_command(
             target,
             body,
         } => {
-            if !context_matches(state, &context.repo_root) {
-                return refuse_stale(reply);
-            }
-            let deps = deps.clone();
-            spawn_fetch(tx, reply, move || {
-                crate::pr_posts::post_line_comment(&deps, context, &target, &body)
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pr_posts::post_line_comment(deps, context, &target, &body)
             });
         }
         Command::SubmitGithubPrDecision {
@@ -504,12 +496,8 @@ fn handle_command(
             event,
             summary,
         } => {
-            if !context_matches(state, &context.repo_root) {
-                return refuse_stale(reply);
-            }
-            let deps = deps.clone();
-            spawn_fetch(tx, reply, move || {
-                crate::pr_posts::submit_decision(&deps, context, event, &summary)
+            spawn_fetch(deps, state, tx, reply, context, move |deps, context| {
+                crate::pr_posts::submit_decision(deps, context, event, &summary)
             });
         }
         #[cfg(test)]
