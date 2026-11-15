@@ -1,9 +1,11 @@
 //! The PR-level posts: a PR-wide comment, a line comment outside any review,
 //! and a bare review decision, run as actor effects.
 //!
-//! The two comments go through the shared post session, so a retry is
-//! reconciled the way a comment create's is, and the line poster's own
-//! pending-review check refuses a line comment GitHub would attach to a draft.
+//! The two comments go through the shared post session, and the line poster's
+//! own pending-review check refuses a line comment GitHub would attach to a
+//! draft. The commands carry no client id, so each call takes a fresh one and a
+//! resend after an unknown outcome can post a second copy, as the flag-off
+//! desktop can.
 
 use er_engine::git::{parse_diff, DiffFile};
 use er_engine::github_post::PrPostTarget;
