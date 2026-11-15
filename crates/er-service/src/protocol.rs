@@ -14,6 +14,8 @@ use er_engine::arena::{
 };
 use er_engine::config::ErConfig;
 use er_engine::jobs::{JobId, JobResult, JobSubmission};
+use er_engine::review_flow_driver::ReviewFlowInputs;
+use er_engine::task_target::BackgroundTaskTarget;
 
 use crate::workspace::WorkspaceTarget;
 
@@ -133,6 +135,8 @@ pub enum Command {
     Reconcile { buckets: Vec<String> },
     /// An arena action on the actor's live runs.
     Arena(ArenaCommand),
+    /// A review-flow action on the actor's flows.
+    Flow(FlowCommand),
 
     // ── GitHub comment commands (P41.2) ──
     /// Create a comment and post it to the tab's pull request.
@@ -263,6 +267,71 @@ pub struct PrRef {
     pub owner: String,
     pub repo: String,
     pub number: u64,
+}
+
+/// A review-flow action. Each names the flow by its bucket, except a start,
+/// which reviews the view its context carries.
+#[derive(Clone, Debug)]
+pub enum FlowCommand {
+    Start {
+        context: FlowContext,
+        scope: String,
+    },
+    /// Re-run an interrupted flow from its workflow record.
+    Rerun {
+        context: FlowContext,
+        er_dir: String,
+    },
+    /// Start a Deep plan the user approved.
+    Confirm {
+        context: FlowContext,
+        er_dir: String,
+    },
+    Decline {
+        er_dir: String,
+    },
+    /// Run the lenses triage chose as Standard finders instead of Deep.
+    RunStandard {
+        context: FlowContext,
+        er_dir: String,
+    },
+    Cancel {
+        er_dir: String,
+    },
+    /// Import selected findings from a flow's run. The run's diff hash must
+    /// still match the diff `current` carries for the run's target; `None`
+    /// when the published flow names no target for the run.
+    AcceptFindings {
+        er_dir: String,
+        run_id: String,
+        finding_ids: Vec<String>,
+        current: Option<AcceptanceDiff>,
+    },
+}
+
+/// What a flow command reads from the App, resolved by the desktop before
+/// sending.
+#[derive(Clone, Debug)]
+pub struct FlowContext {
+    /// Live settings: a confirm or a switch to Standard rechecks its model
+    /// groups against these.
+    pub config: Arc<ErConfig>,
+    pub effort: Option<String>,
+    /// The active view, read by the App's own rules for what a flow may
+    /// review, or why it cannot be reviewed. A start or a re-run reviews it.
+    /// It may hold the tab's cached diff, so acceptance never reads it.
+    pub view: Result<ReviewFlowInputs, String>,
+}
+
+/// The diff acceptance checks a run against. The desktop finds the open tab
+/// that shows the run's captured target and fetches that tab's filtered diff
+/// fresh, by the App's own rules, so acceptance refuses a run whose code has
+/// moved on even before the tab's cached diff is refreshed.
+#[derive(Clone, Debug)]
+pub struct AcceptanceDiff {
+    pub target: BackgroundTaskTarget,
+    /// The fresh diff, or why no open tab shows the target.
+    pub diff: Result<String, String>,
 }
 
 /// An arena action. Each carries the [`ArenaContext`] its effect needs, except
@@ -514,6 +583,13 @@ pub enum Reply {
     CommentPosted {
         pr: PrRef,
     },
+    /// The bucket of the flow the command changed.
+    FlowChanged {
+        er_dir: String,
+    },
+    FlowAccepted {
+        accepted: usize,
+    },
     #[cfg(test)]
     Pong,
     /// The app registry's tab list after a tab command, saved.
@@ -559,6 +635,18 @@ pub enum Event {
     /// A comment or a decision was posted to the tab's PR.
     CommentPosted {
         context: TabContext,
+    },
+    /// A flow's projection changed, and with it its workflow record's stage
+    /// rows. `revision` is the view revision that carries it.
+    WorkflowChanged {
+        er_dir: String,
+        revision: u64,
+    },
+    /// A flow's panel run wrote its record. The record is on disk, not in the
+    /// view, so no view revision comes with it.
+    PanelRunChanged {
+        er_dir: String,
+        run_id: String,
     },
     /// The app registry published a new tab list; readers fetch its view.
     TabsChanged {

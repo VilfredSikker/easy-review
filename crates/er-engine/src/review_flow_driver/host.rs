@@ -57,6 +57,7 @@ impl ReviewFlowLease {
 
 /// The view a flow reviews, captured once when it starts. A later view switch
 /// in the host must not retarget accepted work.
+#[derive(Debug, Clone)]
 pub struct ReviewFlowInputs {
     pub target: BackgroundTaskTarget,
     pub arena_scope: ArenaScope,
@@ -95,6 +96,9 @@ pub trait ReviewFlowHost {
 
     /// The view to review for `scope`, or why it cannot be reviewed.
     fn review_flow_inputs(&self, scope: &str) -> Result<ReviewFlowInputs>;
+    /// The filtered diff the open view of `target` shows now, or why no open
+    /// view shows it. Acceptance checks a run against it.
+    fn current_review_diff(&self, target: &BackgroundTaskTarget) -> Result<String>;
 
     /// Mark stale arena runs in the bucket before a flow takes it.
     fn recover_arena_bucket(&self, er_dir: &str) -> Result<()>;

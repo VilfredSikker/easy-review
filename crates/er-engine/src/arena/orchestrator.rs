@@ -440,8 +440,7 @@ pub fn start_arena_run(
 }
 
 /// Flow ownership is written with the first run record, before the supervisor starts.
-#[cfg(feature = "ui")]
-pub(crate) fn start_review_flow_run(
+pub fn start_review_flow_run(
     controls: &ArenaRunControls,
     config: ErConfig,
     inputs: ArenaRunInputs,
