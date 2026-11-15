@@ -368,7 +368,7 @@ mod tests {
             .insert("bucket".to_owned(), ReviewFlow::new("hash"));
 
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            app.with_review_flows(|_, _| panic!("driver panicked"))
+            app.with_review_flows(|_, _| panic!("driver panicked"));
         }));
 
         assert!(unwound.is_err(), "the panic must still reach the caller");
