@@ -19,9 +19,10 @@ use std::thread;
 use std::time::Duration;
 
 use er_engine::config::{
-    adopt_config_from, apply_config_field, config_hub_view, hub_edits, overlay_discovered_models,
-    risk_rules_view, save_config_pair_to, ConfigFieldValue, ConfigHubView, ErConfig, ModelUpsert,
-    ProviderUpsert, ReviewModelGroups, RiskRuleTable, RiskRulesView,
+    adopt_config_from, apply_config_field, config_hub_view, config_pair_load_failed, hub_edits,
+    overlay_discovered_models, risk_rules_view, save_config_pair_to, ConfigFieldValue,
+    ConfigHubView, ErConfig, ModelUpsert, ProviderUpsert, ReviewModelGroups, RiskRuleTable,
+    RiskRulesView,
 };
 use er_engine::model_discovery::DiscoveredModel;
 use er_engine::uninstall::{UninstallOptions, UninstallPreview, UninstallResult};
@@ -501,7 +502,10 @@ fn handle_command(
             });
         }
         SettingsCommand::ReloadIfFailed => {
-            if state.load_error.is_none() {
+            // A save that finds a file broken mid-session records only the
+            // engine's mark, so `load_error` alone would skip the reload and
+            // leave every later save refused.
+            if state.load_error.is_none() && !config_pair_load_failed(&state.config_path) {
                 let _ = reply.send(Ok(SettingsReply::ConfigChanged {
                     revision: state.revision,
                     warnings: Vec::new(),
