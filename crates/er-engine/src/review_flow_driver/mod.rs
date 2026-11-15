@@ -14,10 +14,12 @@ mod host;
 mod output;
 mod progress;
 mod record;
+mod results;
 mod standard;
 
 pub use host::{ReviewFlowHost, ReviewFlowInputs, ReviewFlowLease, StageCompletion};
 pub use record::{flow_from_record, holder_of, task_from_stage};
+pub use results::{flow_run_results, ReviewFlowResultFinding, ReviewFlowResults};
 
 use crate::ai::flow_providers::{
     assign_lenses_to_models, resolve_review_models, FlowLensAssignment, FlowProvider,
@@ -1173,6 +1175,20 @@ impl ReviewFlows {
             .get(&(er_dir.to_owned(), run_id.to_owned()))
     }
 
+    /// Every bucket with a flow, for a host that publishes them all.
+    pub fn buckets(&self) -> impl Iterator<Item = &str> {
+        self.flows.keys().map(String::as_str)
+    }
+
+    /// The captured target of each flow-owned run in `er_dir`, by run id.
+    pub fn run_targets_in(&self, er_dir: &str) -> Vec<(String, BackgroundTaskTarget)> {
+        self.run_targets
+            .iter()
+            .filter(|((bucket, _), _)| bucket == er_dir)
+            .map(|((_, run_id), target)| (run_id.clone(), target.clone()))
+            .collect()
+    }
+
     pub fn remember_review_flow_run_target(&mut self, target: &BackgroundTaskTarget, run_id: &str) {
         self.run_targets
             .insert((target.er_dir.clone(), run_id.to_owned()), target.clone());
@@ -1195,7 +1211,8 @@ impl ReviewFlows {
         self.flows.get(er_dir)
     }
 
-    /// Acceptance updates a finished flow's pending count in place.
+    /// Tests set a flow's state in place.
+    #[cfg(test)]
     pub(crate) fn get_mut(&mut self, er_dir: &str) -> Option<&mut ReviewFlow> {
         self.flows.get_mut(er_dir)
     }

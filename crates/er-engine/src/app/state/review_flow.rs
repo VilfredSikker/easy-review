@@ -113,7 +113,7 @@ impl App {
     }
 
     #[cfg(test)]
-    pub(super) fn remember_review_flow_run_target(
+    pub(crate) fn remember_review_flow_run_target(
         &mut self,
         target: &BackgroundTaskTarget,
         run_id: &str,
@@ -242,6 +242,10 @@ impl ReviewFlowHost for App {
             owned_rules: tab.owned_repo_rules(),
             review_md_source: tab.review_md_source(),
         })
+    }
+
+    fn current_review_diff(&self, target: &BackgroundTaskTarget) -> Result<String> {
+        App::current_review_diff(self, target)
     }
 
     fn recover_arena_bucket(&self, er_dir: &str) -> Result<()> {
