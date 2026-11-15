@@ -216,6 +216,10 @@ fn run_deep_flow(dir: &Path) -> DeepRun {
     events.until(&handle, "Deep triage asks for confirmation", |view| {
         flow_state(view, &bucket) == Some(FlowState::AwaitingConfirmation)
     });
+    // Only the triage stage has run so far.
+    events.event("the triage stage ran as an actor job", |event| {
+        matches!(event, Event::JobFinished { .. })
+    });
     handle
         .send_and_wait_with(
             Command::Flow(FlowCommand::Confirm {
@@ -266,13 +270,6 @@ fn a_deep_flow_runs_on_the_actor_with_live_progress_and_events() {
         let bucket = run.bucket.clone();
         let run_id = run.run_id.clone();
 
-        assert!(
-            run.events
-                .seen
-                .iter()
-                .any(|event| matches!(event, Event::JobFinished { .. })),
-            "the flow's stages ran as actor jobs"
-        );
         assert!(
             run.events.seen.iter().any(
                 |event| matches!(event, Event::WorkflowChanged { er_dir, .. } if *er_dir == bucket)
