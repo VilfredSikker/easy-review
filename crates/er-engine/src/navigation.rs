@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn line_moves_skip_folds_and_cross_hunks() {
         let hunks = [4, 3];
-        let fold = |hunk: usize, line: usize| matches!((hunk, line), (0, 1) | (0, 3) | (1, 0));
+        let fold = |hunk: usize, line: usize| matches!((hunk, line), (0, 1 | 3) | (1, 0));
         let at = |hunk, line| LineCursor { hunk, line };
         let to = |hunk, line| LineMove::To(LineCursor { hunk, line });
         let cases = [
