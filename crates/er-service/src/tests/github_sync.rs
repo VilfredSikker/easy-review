@@ -172,15 +172,11 @@ fn the_sync_fetch_runs_off_the_actor_thread() -> anyhow::Result<()> {
         while calls_named(&github, &bundle).is_empty() && Instant::now() < deadline {
             std::thread::yield_now();
         }
-        let read = handle.send(Command::GetPendingReview {
-            context: pr_tab(&bucket),
-        });
+        let context = pr_tab(&bucket);
+        let read = handle.send(Command::GetPendingReview { context });
         let answered = read.recv_timeout(WAIT);
         drop(hold);
-        assert!(
-            matches!(answered, Ok(Ok(_))),
-            "the actor stalled: {answered:?}"
-        );
+        assert!(matches!(answered, Ok(Ok(_))), "stalled: {answered:?}");
         let reply = synced.recv_timeout(WAIT)?;
         assert!(
             matches!(reply, Ok(Reply::CommentsSynced { .. })),
