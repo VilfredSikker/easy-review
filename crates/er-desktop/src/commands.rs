@@ -13893,7 +13893,10 @@ mod tests {
                 let view = view.lock().unwrap();
                 app.tabs
                     .iter()
-                    .map(|t| crate::tabs::descriptor_from_tab(t, &view).browser_url)
+                    .map(|t| {
+                        let saved = crate::tabs::descriptor_from_tab(t, &view);
+                        saved.extra.get("browser_url")?.as_str().map(String::from)
+                    })
                     .collect()
             };
             let (a, b) = (

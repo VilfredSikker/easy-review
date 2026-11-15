@@ -42,12 +42,12 @@ pub struct TabDescriptor {
     /// For `LocalPr` tabs: the resolved base ref used for the diff.
     #[serde(default)]
     pub base_ref: Option<String>,
-    /// Last browser URL for this tab (desktop).
-    #[serde(default)]
-    pub browser_url: Option<String>,
-    /// Last browser layout: hidden | split | fullscreen (desktop).
-    #[serde(default)]
-    pub browser_layout: Option<String>,
+    /// Keys a front end keeps on the tab that the engine does not read, such as
+    /// the desktop's browser state (ADR 0068). They load and save untouched, so
+    /// a save from the service keeps them, and so does any key a newer build
+    /// added.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -111,8 +111,7 @@ mod tests {
                 pr_number: None,
                 pr_head_ref: None,
                 base_ref: None,
-                browser_url: None,
-                browser_layout: None,
+                extra: serde_json::Map::new(),
             },
             TabDescriptor {
                 kind: TabKind::LocalBranch,
@@ -123,8 +122,7 @@ mod tests {
                 pr_number: None,
                 pr_head_ref: None,
                 base_ref: None,
-                browser_url: None,
-                browser_layout: None,
+                extra: serde_json::Map::new(),
             },
             TabDescriptor {
                 kind: TabKind::RemotePr,
@@ -135,8 +133,7 @@ mod tests {
                 pr_number: Some(42),
                 pr_head_ref: None,
                 base_ref: None,
-                browser_url: None,
-                browser_layout: None,
+                extra: serde_json::Map::new(),
             },
             TabDescriptor {
                 kind: TabKind::LocalPr,
@@ -147,8 +144,7 @@ mod tests {
                 pr_number: Some(1110),
                 pr_head_ref: Some("refs/er/pr/1110/head".to_string()),
                 base_ref: Some("origin/main".to_string()),
-                browser_url: None,
-                browser_layout: None,
+                extra: serde_json::Map::new(),
             },
         ];
 
@@ -177,8 +173,7 @@ mod tests {
                 pr_number: Some(42),
                 pr_head_ref: None,
                 base_ref: None,
-                browser_url: None,
-                browser_layout: None,
+                extra: serde_json::Map::new(),
             }];
             save_tabs(&tabs, 0).expect("save");
 
@@ -188,9 +183,10 @@ mod tests {
         });
     }
 
-    /// P46 keeps each tab's browser URL and layout in `tabs.json`. A record
-    /// written before the move loads and saves back with the same payload, and
-    /// descriptors carrying both fields come back equal.
+    /// The desktop keeps each tab's browser URL and layout in `tabs.json`, in
+    /// keys the engine does not read. A record written before the move loads
+    /// and saves back with the same payload (key order aside), those keys and
+    /// any unknown key included, and the reloaded descriptors come back equal.
     #[test]
     fn the_tabs_record_round_trips_a_pre_p46_file() {
         let payload = serde_json::json!({
@@ -204,7 +200,8 @@ mod tests {
                 "pr_head_ref": null,
                 "base_ref": "main",
                 "browser_url": "http://localhost:5173/review",
-                "browser_layout": "split"
+                "browser_layout": "split",
+                "written_by_a_newer_build": true
             }],
             "active_idx": 0
         });
@@ -219,6 +216,11 @@ mod tests {
             std::fs::write(&path, record.to_string()).expect("write record");
 
             let file = load_tabs().expect("the pre-P46 record loads");
+            assert_eq!(
+                file.tabs[0].extra.get("browser_layout"),
+                Some(&serde_json::json!("split")),
+                "the desktop's keys load into the open map"
+            );
             save_tabs(&file.tabs, file.active_idx).expect("save");
             let saved: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("json");
