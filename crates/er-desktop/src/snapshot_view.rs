@@ -29,6 +29,9 @@ pub struct ViewRead {
     settings: Arc<SettingsView>,
     tabs: Arc<TabsView>,
     nav: TabNavState,
+    /// The active tab's review bucket, which picks its flow out of the
+    /// workspace view. `None` shows no flow.
+    bucket: Option<String>,
 }
 
 impl ViewRead {
@@ -37,6 +40,7 @@ impl ViewRead {
         settings: Arc<SettingsView>,
         tabs: Arc<TabsView>,
         view: &DesktopViewState,
+        bucket: Option<String>,
     ) -> Self {
         let nav = tabs.active.map(|key| view.nav(key)).unwrap_or_default();
         Self {
@@ -44,6 +48,7 @@ impl ViewRead {
             settings,
             tabs,
             nav,
+            bucket,
         }
     }
 }
@@ -110,7 +115,8 @@ impl SnapshotRead for ViewRead {
     }
 
     fn review_flow(&self) -> Option<ReviewFlowSnapshot> {
-        None
+        let live = self.workspace.review_flow(self.bucket.as_deref()?)?;
+        Some(ReviewFlowSnapshot::from_flow(&live.flow, live.draining))
     }
 
     /// The actor's live runs. Title, start time and counts are in the run
@@ -184,11 +190,12 @@ fn tab_label(tab: &TabDescriptor, branch: Option<&str>) -> String {
 mod tests {
     use std::sync::Arc;
 
+    use er_engine::ai::review_flow::ReviewFlow;
     use er_engine::arena::{ArenaProgressState, RunStatus};
     use er_engine::ports::Ports;
     use er_engine::tabs_record::{TabDescriptor, TabKind};
     use er_engine::TabKey;
-    use er_service::{LiveArenaRun, TabEntry, TabsView, WorkspaceView};
+    use er_service::{LiveArenaRun, LiveReviewFlow, TabEntry, TabsView, WorkspaceView};
 
     use super::ViewRead;
     use crate::snapshot::{build_snapshot_from, SnapshotSources};
@@ -320,6 +327,16 @@ mod tests {
                     progress: ArenaProgressState::default(),
                 },
             ],
+            review_flows: ["/other", "/bucket"]
+                .into_iter()
+                .map(|er_dir| LiveReviewFlow {
+                    er_dir: er_dir.to_string(),
+                    flow: ReviewFlow::new(format!("hash{er_dir}")),
+                    draining: er_dir == "/bucket",
+                    run_targets: Vec::new(),
+                    rerun_stages: Vec::new(),
+                })
+                .collect(),
             ..WorkspaceView::default()
         };
         let mut view = DesktopViewState::default();
@@ -327,7 +344,13 @@ mod tests {
         view.nav_mut(second).current_hunk = 3;
         view.nav_mut(first).current_hunk = 9;
 
-        let source = ViewRead::new(Arc::new(workspace), settings, Arc::new(tabs), &view);
+        let source = ViewRead::new(
+            Arc::new(workspace),
+            settings,
+            Arc::new(tabs),
+            &view,
+            Some("/bucket".to_string()),
+        );
         let snap = build_snapshot_from(&source, &SnapshotSources::default(), false);
 
         assert_eq!(
@@ -353,6 +376,12 @@ mod tests {
             .map(|run| run.id.as_str())
             .collect();
         assert_eq!(live, ["run-2"], "only a run still going is live");
+        let flow = snap.review_flow.expect("the active bucket's flow");
+        assert_eq!(
+            (flow.diff_hash.as_str(), flow.draining),
+            ("hash/bucket", true),
+            "the flow is the active bucket's"
+        );
         assert_eq!(snap.input_mode, "normal");
         assert!(snap.files.is_empty(), "no tab content is published");
     }

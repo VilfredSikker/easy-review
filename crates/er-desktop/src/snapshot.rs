@@ -651,7 +651,7 @@ impl ReviewFlowSnapshot {
         Some(Self::from_flow(flow, app.review_flow_is_draining(er_dir)))
     }
 
-    fn from_flow(flow: &er_engine::ai::review_flow::ReviewFlow, draining: bool) -> Self {
+    pub(crate) fn from_flow(flow: &er_engine::ai::review_flow::ReviewFlow, draining: bool) -> Self {
         use er_engine::ai::review_flow::{FlowDepth, FlowState};
 
         let (state, kept, dropped, awaiting_accept, reason) = match &flow.state {
