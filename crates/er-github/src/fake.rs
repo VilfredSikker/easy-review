@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[derive(Debug, Default)]
 pub struct FakeGitHub {
     state: Mutex<FakeState>,
+    /// Held by a test to keep a bundle read in flight.
+    bundle_hold: Mutex<()>,
 }
 
 #[expect(
@@ -125,6 +127,13 @@ impl FakeGitHub {
     /// Every call made so far, in order.
     pub fn calls(&self) -> Vec<String> {
         self.lock().calls.clone()
+    }
+
+    /// Holds every `pr_comment_bundle_cached` call, once recorded, until the guard drops.
+    pub fn hold_pr_comment_bundle(&self) -> MutexGuard<'_, ()> {
+        self.bundle_hold
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     #[must_use]
@@ -1152,12 +1161,17 @@ impl GitHub for FakeGitHub {
         pr: u64,
         repo_root: Option<&str>,
     ) -> Result<Arc<PrCommentBundle>, GhError> {
-        self.record(format!(
+        let answer = self.record(format!(
             "pr_comment_bundle_cached(owner={owner:?}, repo={repo:?}, pr={pr:?}, repo_root={repo_root:?})"
         ))
         .pr_comment_bundle_cached
-        .clone()
-        .unwrap_or_else(|| Err(unscripted("pr_comment_bundle_cached")))
+        .clone();
+        drop(
+            self.bundle_hold
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        answer.unwrap_or_else(|| Err(unscripted("pr_comment_bundle_cached")))
     }
 
     fn invalidate_comments(&self) {

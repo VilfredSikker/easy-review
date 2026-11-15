@@ -17,15 +17,19 @@ mod actor;
 mod annotations;
 mod effect;
 mod github_comments;
+mod github_sync;
 mod guard;
 mod handle;
+mod pending_review;
 mod protocol;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
+pub use pending_review::OWN_PR_APPROVAL_REFUSED;
 pub use protocol::{
-    AnnotationKind, AnnotationTarget, Command, Event, OpenTarget, Reply, TabContext,
+    AnnotationKind, AnnotationTarget, Command, Event, OpenTarget, PrRef, Reply, ReviewEvent,
+    ReviewLineTarget, SyncSource, TabContext,
 };
 pub use workspace::{WorkspaceTarget, WorkspaceView};
 
