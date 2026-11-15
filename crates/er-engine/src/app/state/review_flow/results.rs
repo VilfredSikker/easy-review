@@ -161,7 +161,11 @@ impl App {
         self.validate_current_flow_identity(er_dir, run_id)?;
         let run = load_run(&ArenaPaths::for_run(Path::new(er_dir), run_id))?;
         validate_flow_result_run(&run, run_id)?;
-        validate_run_target(&run, target, &self.review_flows[er_dir].diff_hash)?;
+        validate_run_target(
+            &run,
+            target,
+            &self.review_flows.review_flows[er_dir].diff_hash,
+        )?;
 
         let findings = run
             .findings
@@ -258,7 +262,11 @@ impl App {
         let paths = ArenaPaths::for_run(Path::new(er_dir), run_id);
         let mut run = load_run(&paths)?;
         validate_flow_result_run(&run, run_id)?;
-        validate_run_target(&run, target, &self.review_flows[er_dir].diff_hash)?;
+        validate_run_target(
+            &run,
+            target,
+            &self.review_flows.review_flows[er_dir].diff_hash,
+        )?;
         if run.status != RunStatus::Complete {
             bail!("Only completed review-flow results can be accepted");
         }
@@ -355,7 +363,7 @@ impl App {
                 *awaiting_accept = remaining;
             }
         }
-        self.bump_review_flow_revision();
+        self.review_flows.bump_review_flow_revision();
         self.notify(&format!("Accepted {} finding(s) into Review", rows.len()));
         Ok(rows.len())
     }
@@ -915,8 +923,7 @@ mod tests {
             let mut run = load_run(&paths).unwrap();
             run.config.run_kind = ArenaRunKind::ReviewFlow;
             save_run(&paths, &run).unwrap();
-            fixture.app.review_flow_run_targets.clear();
-            fixture.app.review_flows.clear();
+            fixture.app.review_flows = Default::default();
             let run_before = std::fs::read(paths.run_json()).unwrap();
 
             let result = fixture
@@ -1229,7 +1236,7 @@ mod tests {
             .unwrap();
             assert_eq!(run.accepted_finding_ids, vec!["kept"]);
             assert!(matches!(
-                &fixture.app.review_flows[&fixture.er_dir].state,
+                &fixture.app.review_flows.review_flows[&fixture.er_dir].state,
                 FlowState::Done {
                     awaiting_accept: 0,
                     ..

@@ -38,6 +38,7 @@ pub mod pr_review_feedback;
 pub mod projects_pins;
 pub mod release_install;
 pub mod release_update;
+pub mod review_flow_driver;
 pub mod review_queue;
 pub mod session_store;
 pub mod sidecar_summary;
@@ -45,6 +46,7 @@ pub mod sidecar_upload;
 pub mod storage;
 pub mod store_registry;
 pub mod sync;
+pub mod task_target;
 pub mod uninstall;
 #[cfg(feature = "watch")]
 pub mod watch;
