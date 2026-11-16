@@ -5,6 +5,7 @@
 //! the effect, so the actor is the one writer of the pulled comments.
 
 use er_engine::ai;
+use er_engine::annotations::WrittenPayload;
 use er_engine::git::parse_diff;
 use er_engine::github_post::{resolve_post_target_with, CommentPostContext, GitHubPostError};
 use er_engine::store_registry;
@@ -15,6 +16,7 @@ use er_store::{ArtifactStore, Scope};
 
 use crate::actor::WorkspaceDeps;
 use crate::annotations::{failed, fetch_raw};
+use crate::content::ContentPatch;
 use crate::handle::WorkspaceError;
 use crate::protocol::{Event, PrRef, Reply, SyncSource, TabContext};
 
@@ -50,10 +52,12 @@ pub(crate) struct FetchedSync {
     store: ArtifactStore,
 }
 
-/// The reply to send, and the event to publish when the workspace changed.
+/// The reply to send, the event to publish when the workspace changed, and
+/// what changed in the tabs' content.
 pub(crate) struct Applied {
     pub(crate) reply: Reply,
     pub(crate) event: Option<Event>,
+    pub(crate) patch: Option<ContentPatch>,
 }
 
 /// Applies a fetch on the actor thread. A sync writes the sidecar here.
@@ -68,6 +72,10 @@ pub(crate) fn apply(fetched: Fetched) -> Result<Applied, WorkspaceError> {
             } = *sync;
             let result = apply_comment_sync(&store, &sync, fetched)
                 .map_err(|error| failed("write the pulled comments", error))?;
+            let patch = ContentPatch::Sidecar {
+                dir: context.comments_dir.clone(),
+                payload: WrittenPayload::Comments(result.gc),
+            };
             Ok(Applied {
                 reply: Reply::CommentsSynced {
                     github_count: result.github_count,
@@ -78,6 +86,7 @@ pub(crate) fn apply(fetched: Fetched) -> Result<Applied, WorkspaceError> {
                     github_count: result.github_count,
                     local_count: result.local_count,
                 }),
+                patch: Some(patch),
             })
         }
         Fetched::PendingReview {
@@ -88,10 +97,12 @@ pub(crate) fn apply(fetched: Fetched) -> Result<Applied, WorkspaceError> {
         } => Ok(Applied {
             reply: Reply::PendingReview { pr, review },
             event: changed.then_some(Event::PendingReviewChanged { context }),
+            patch: None,
         }),
         Fetched::ReviewSubmitted { context, pr } => Ok(Applied {
             reply: Reply::ReviewSubmitted { pr },
             event: Some(Event::PendingReviewChanged { context }),
+            patch: None,
         }),
         Fetched::Posted {
             context,
@@ -104,6 +115,7 @@ pub(crate) fn apply(fetched: Fetched) -> Result<Applied, WorkspaceError> {
                 Reply::CommentPosted { pr }
             },
             event: Some(Event::CommentPosted { context }),
+            patch: None,
         }),
     }
 }

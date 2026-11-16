@@ -336,8 +336,8 @@ fn flow_acceptance_checks_the_fresh_diff_for_the_run_target() {
 
 /// Counts submissions; a load must make none.
 #[derive(Default)]
-struct CountingSink {
-    submitted: Mutex<usize>,
+pub(crate) struct CountingSink {
+    pub(crate) submitted: Mutex<usize>,
 }
 
 impl JobSink for CountingSink {

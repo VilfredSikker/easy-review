@@ -227,9 +227,18 @@ pub enum Command {
     /// and base refs first, as a sync does.
     RefreshDiff { key: TabKey, force: bool },
     /// Show a loaded tab in another mode. Its reviewed marks are kept.
-    SetDiffMode { key: TabKey, mode: DiffMode },
+    /// `pr_number` seeds a PR the front end detected onto a tab that has
+    /// none, so entering the PR diff can fetch its refs.
+    SetDiffMode {
+        key: TabKey,
+        mode: DiffMode,
+        pr_number: Option<u64>,
+    },
     /// Parse the named lazy files of a loaded tab's diff.
     ParseFiles { key: TabKey, paths: Vec<String> },
+    /// Forget a closed tab's content. A key the actor never loaded answers
+    /// at once and publishes nothing.
+    DropTab { key: TabKey },
 }
 
 /// What started a comment sync, which decides how fresh the read must be.
@@ -626,6 +635,10 @@ pub enum Reply {
     FilesParsed {
         key: TabKey,
         parsed: usize,
+    },
+    /// A closed tab's content left the view.
+    ContentDropped {
+        key: TabKey,
     },
 }
 

@@ -261,6 +261,7 @@ fn a_tab_command_for_a_key_never_loaded_is_refused_before_any_effect() -> anyhow
             Command::SetDiffMode {
                 key: TabKey::next(),
                 mode: er_engine::tab_identity::DiffMode::Unstaged,
+                pr_number: None,
             },
             Command::ParseFiles {
                 key: TabKey::next(),
@@ -318,6 +319,32 @@ fn a_load_clears_moved_and_orphaned_marks_and_saves_them() -> anyhow::Result<()>
         assert_eq!(saved.get("src/b.rs"), Some(&b_hash));
         let content = content_of(&handle.view(), key)?;
         assert_eq!(content.reviewed.marks, saved);
+        Ok(())
+    })
+}
+
+/// Loading, refreshing and closing a tab read the diff and the sidecars; none
+/// of them may submit an agent job.
+#[test]
+fn a_tab_load_submits_no_job() -> anyhow::Result<()> {
+    with_root(|repo| {
+        let sink = Arc::new(crate::flow_tests::CountingSink::default());
+        let git: Arc<dyn er_git::Git> = git(RAW);
+        let github: Arc<dyn er_github::GitHub> = Arc::new(FakeGitHub::default());
+        let jobs: Arc<dyn er_engine::jobs::JobSink> = sink.clone();
+        let handle = spawn(WorkspaceDeps::new(Ports { git, github }).with_jobs(jobs));
+        let key = TabKey::next();
+
+        load(&handle, key, repo)?;
+        handle.send_and_wait_with(Command::RefreshDiff { key, force: false }, WAIT)?;
+        handle.send_and_wait_with(Command::DropTab { key }, WAIT)?;
+
+        let submitted = sink.submitted.lock().map(|n| *n).unwrap_or(usize::MAX);
+        assert_eq!(submitted, 0, "a tab command submitted a job");
+        assert!(
+            handle.view().tab(key).is_none(),
+            "the drop kept the content"
+        );
         Ok(())
     })
 }
