@@ -10,6 +10,10 @@
 //! command can apply to a default config and save it over the user's file.
 //! Saves, risk-artifact reads, model discovery and uninstall run on effect
 //! threads; the loop only mutates the config in memory and republishes.
+//!
+//! A write is published before its save lands. A save the file refuses rolls
+//! the config back to what was last written, so once the reply arrives the
+//! view matches the disk.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -20,9 +24,9 @@ use std::time::Duration;
 
 use er_engine::config::{
     adopt_config_from, apply_config_field, config_hub_view, config_pair_load_failed, hub_edits,
-    overlay_discovered_models, risk_rules_view, save_config_pair_to, ConfigFieldValue,
-    ConfigHubView, ErConfig, ModelUpsert, ProviderUpsert, ReviewModelGroups, RiskRuleTable,
-    RiskRulesView,
+    normalize_effort, overlay_discovered_models, risk_rules_view, save_config_pair_to, AiSelection,
+    ConfigFieldValue, ConfigHubView, ErConfig, ModelUpsert, ProviderUpsert, ReviewModelGroups,
+    RiskRuleTable, RiskRulesView,
 };
 use er_engine::model_discovery::DiscoveredModel;
 use er_engine::uninstall::{UninstallOptions, UninstallPreview, UninstallResult};
@@ -44,6 +48,18 @@ pub enum SettingsCommand {
     SaveConfig,
     SetReviewFlowModels {
         groups: ReviewModelGroups,
+    },
+    /// The palette's or AI Settings' default provider and model, resolved
+    /// against the actor's config. Answers `AiSelectionSaved`.
+    SetDefaultAiSelection {
+        provider_id: String,
+        model_id: Option<String>,
+        effort: Option<String>,
+    },
+    /// The default effort, normalized for the default selection. `None` is
+    /// Auto. Answers `AiSelectionSaved`.
+    SetDefaultAiEffort {
+        effort: Option<String>,
     },
     /// List models from provider CLIs and overlay them; never saved.
     RefreshAiModels {
@@ -90,6 +106,11 @@ pub enum SettingsReply {
         revision: u64,
         /// The editor's soft validation messages (e.g. a missing `{prompt}`).
         warnings: Vec<String>,
+    },
+    /// The default AI selection is saved; the caller's session follows it.
+    AiSelectionSaved {
+        revision: u64,
+        selection: AiSelection,
     },
     ModelsRefreshed {
         revision: u64,
@@ -159,6 +180,11 @@ enum SettingsMsg {
 enum Outcome {
     Saved {
         warnings: Vec<String>,
+        selection: Option<AiSelection>,
+    },
+    /// The file refused the save, or an earlier refusal dropped this write.
+    SaveRefused {
+        message: String,
     },
     ModelsDiscovered {
         found: Vec<(String, Vec<DiscoveredModel>)>,
@@ -231,6 +257,7 @@ impl SettingsHandle {
 /// beside it.
 pub fn spawn_settings(deps: WorkspaceDeps, config_path: PathBuf) -> SettingsHandle {
     let (config, error) = adopt_config_from(&config_path);
+    let saves = Arc::new(SaveSlot::new(&config));
     let state = SettingsState {
         config,
         config_path,
@@ -242,7 +269,7 @@ pub fn spawn_settings(deps: WorkspaceDeps, config_path: PathBuf) -> SettingsHand
         load_error: error.map(|e| e.to_string()),
         last_error: None,
         discovery_inflight: HashSet::new(),
-        saves: Arc::new(SaveSlot::default()),
+        saves,
     };
     let (tx, rx) = mpsc::channel();
     let subscribers = Arc::new(Mutex::new(Vec::new()));
@@ -263,38 +290,78 @@ pub fn spawn_settings(deps: WorkspaceDeps, config_path: PathBuf) -> SettingsHand
     handle
 }
 
-/// The latest config to save, and the generation last written. Effects write
-/// whatever is latest under the lock, so two saves finishing out of order
-/// still leave the newest config on disk.
-#[derive(Default)]
-struct SaveSlot {
+/// The latest config to save, and what is on disk. Effects write whatever is
+/// latest under the lock, so two saves finishing out of order still leave the
+/// newest config on disk.
+pub(crate) struct SaveSlot {
     latest: Mutex<Option<(u64, ErConfig)>>,
-    written: Mutex<u64>,
+    written: Mutex<Written>,
+}
+
+/// The config on disk and the generation that wrote it.
+struct Written {
+    generation: u64,
+    config: ErConfig,
+    /// Generation ranges `(on disk, staged]` a rollback dropped unwritten.
+    dropped: Vec<(u64, u64)>,
 }
 
 impl SaveSlot {
-    fn stage(&self, generation: u64, config: &ErConfig) {
+    pub(crate) fn new(loaded: &ErConfig) -> Self {
+        Self {
+            latest: Mutex::new(None),
+            written: Mutex::new(Written {
+                generation: 0,
+                config: loaded.clone(),
+                dropped: Vec::new(),
+            }),
+        }
+    }
+
+    pub(crate) fn stage(&self, generation: u64, config: &ErConfig) {
         if let Ok(mut latest) = self.latest.lock() {
             *latest = Some((generation, config.clone()));
         }
     }
 
-    /// Writes the latest staged config unless a newer one is already written.
-    fn write_latest(&self, path: &Path) -> Result<(), WorkspaceError> {
+    /// Writes the latest staged config unless a newer one is already written,
+    /// then says whether `generation`'s write is on disk.
+    pub(crate) fn write_latest(&self, path: &Path, generation: u64) -> Result<(), String> {
         let mut written = self
             .written
             .lock()
-            .map_err(|_| WorkspaceError::Failed("the save lock is poisoned".into()))?;
+            .map_err(|_| "the save lock is poisoned".to_string())?;
         let latest = self.latest.lock().ok().and_then(|slot| slot.clone());
-        let Some((generation, config)) = latest else {
-            return Ok(());
-        };
-        if generation <= *written {
-            return Ok(());
+        if let Some((staged, config)) = latest {
+            if staged > written.generation {
+                save_config_pair_to(path, &config).map_err(|e| e.to_string())?;
+                written.generation = staged;
+                written.config = config;
+            }
         }
-        save_config_pair_to(path, &config).map_err(|e| WorkspaceError::Failed(e.to_string()))?;
-        *written = generation;
+        let dropped = written
+            .dropped
+            .iter()
+            .any(|&(on_disk, staged)| generation > on_disk && generation <= staged);
+        if dropped || written.generation < generation {
+            return Err("An earlier settings save was refused, so this change was undone.".into());
+        }
         Ok(())
+    }
+
+    /// Drops every staged write through `through` and returns the config on
+    /// disk, replaced first by `reloaded` when the file was just re-read.
+    pub(crate) fn reset(&self, through: u64, reloaded: Option<&ErConfig>) -> Option<ErConfig> {
+        let mut written = self.written.lock().ok()?;
+        if let Ok(mut latest) = self.latest.lock() {
+            *latest = None;
+        }
+        let on_disk = written.generation;
+        written.dropped.push((on_disk, through));
+        if let Some(config) = reloaded {
+            written.config = config.clone();
+        }
+        Some(written.config.clone())
     }
 }
 
@@ -395,7 +462,7 @@ fn write_and_save(
     state: &mut SettingsState,
     tx: &Sender<SettingsMsg>,
     reply: SettingsReplySender,
-    warnings: Vec<String>,
+    saved: Outcome,
     subscribers: &Mutex<Vec<Sender<Event>>>,
     view: &RwLock<Arc<SettingsView>>,
 ) {
@@ -410,11 +477,38 @@ fn write_and_save(
     );
     let saves = Arc::clone(&state.saves);
     let path = state.config_path.clone();
+    let generation = state.revision;
     spawn_effect(tx, reply, move || {
-        saves
-            .write_latest(&path)
-            .map(|()| Outcome::Saved { warnings })
+        Ok(match saves.write_latest(&path, generation) {
+            Ok(()) => saved,
+            Err(message) => Outcome::SaveRefused { message },
+        })
     });
+}
+
+/// Runs a default-selection edit on a copy and saves it when it resolves.
+fn save_selection(
+    state: &mut SettingsState,
+    tx: &Sender<SettingsMsg>,
+    reply: SettingsReplySender,
+    subscribers: &Mutex<Vec<Sender<Event>>>,
+    view: &RwLock<Arc<SettingsView>>,
+    change: impl FnOnce(&mut ErConfig) -> Result<AiSelection, String>,
+) {
+    let mut next = state.config.clone();
+    match change(&mut next) {
+        Ok(selection) => {
+            state.config = next;
+            let saved = Outcome::Saved {
+                warnings: Vec::new(),
+                selection: Some(selection),
+            };
+            write_and_save(state, tx, reply, saved, subscribers, view);
+        }
+        Err(message) => {
+            let _ = reply.send(Err(WorkspaceError::Failed(message)));
+        }
+    }
 }
 
 /// Dispatches one command on the actor thread. It edits the config in memory
@@ -449,6 +543,43 @@ fn handle_command(
             config.ai_hub.review_models = groups.clone();
             Ok(Vec::new())
         }),
+        SettingsCommand::SetDefaultAiSelection {
+            provider_id,
+            model_id,
+            effort,
+        } => {
+            return save_selection(state, tx, reply, subscribers, view, |config| {
+                let agent = config.agent.clone();
+                config
+                    .ai_hub
+                    .set_default_selection_with_effort(
+                        &provider_id,
+                        model_id.as_deref(),
+                        effort.as_deref(),
+                        &agent,
+                    )
+                    .map_err(|e| e.to_string())
+            });
+        }
+        SettingsCommand::SetDefaultAiEffort { effort } => {
+            return save_selection(state, tx, reply, subscribers, view, |config| {
+                let default = config.ai_hub.resolve_default_selection(&config.agent);
+                let normalized = normalize_effort(
+                    &config.ai_hub,
+                    default.provider_id.as_deref(),
+                    default.model_id.as_deref(),
+                    effort.as_deref(),
+                );
+                if effort.is_some() && normalized.is_none() {
+                    return Err("Effort is unsupported for the selected model".into());
+                }
+                config.ai_hub.default_effort.clone_from(&normalized);
+                Ok(AiSelection {
+                    effort: normalized,
+                    ..default
+                })
+            });
+        }
         SettingsCommand::UpsertAiProvider { provider } => edit(state, &|config| {
             hub_edits::upsert_provider(config, provider.clone()).map(|edit| edit.warnings)
         }),
@@ -523,7 +654,13 @@ fn handle_command(
         }
     };
     match warnings {
-        Ok(warnings) => write_and_save(state, tx, reply, warnings, subscribers, view),
+        Ok(warnings) => {
+            let saved = Outcome::Saved {
+                warnings,
+                selection: None,
+            };
+            write_and_save(state, tx, reply, saved, subscribers, view);
+        }
         // A refused edit changes nothing, so nothing is published or saved.
         Err(message) => {
             let _ = reply.send(Err(WorkspaceError::Failed(message)));
@@ -605,15 +742,34 @@ fn apply(
     view: &RwLock<Arc<SettingsView>>,
 ) {
     let answer = match outcome {
-        Ok(Outcome::Saved { warnings }) => {
+        Ok(Outcome::Saved {
+            warnings,
+            selection,
+        }) => {
             state.last_error = None;
             // The view already carries the change; the save adds nothing to
             // show, so the revision stays.
-            let _ = reply.send(Ok(SettingsReply::ConfigChanged {
-                revision: state.revision,
-                warnings,
+            let revision = state.revision;
+            let _ = reply.send(Ok(match selection {
+                Some(selection) => SettingsReply::AiSelectionSaved {
+                    revision,
+                    selection,
+                },
+                None => SettingsReply::ConfigChanged { revision, warnings },
             }));
             return;
+        }
+        Ok(Outcome::SaveRefused { message }) => {
+            // The view must match the disk, so the refused edit, and any
+            // write staged after it, is undone. Discovered models added since
+            // the last save drop with it until the next refresh.
+            if let Some(on_disk) = state.saves.reset(state.revision, None) {
+                state.config = on_disk;
+                state.rebuild_all_risk();
+            }
+            state.last_error = Some(message.clone());
+            state.revision += 1;
+            Err(WorkspaceError::Failed(message))
         }
         Ok(Outcome::ModelsDiscovered {
             found,
@@ -657,6 +813,7 @@ fn apply(
         }
         Ok(Outcome::Reloaded { config, load_error }) => {
             if load_error.is_none() {
+                state.saves.reset(state.revision, Some(&*config));
                 state.config = *config;
                 state.rebuild_all_risk();
             }
