@@ -6757,7 +6757,7 @@ fn service_open(
     // The PR becomes a registry tab whose content the actor loads. The
     // flag-on desktop does not render from the service yet, so the command
     // acknowledges the open without moving the view.
-    content_routes::open(state, tab)
+    content_routes::open(state, tab, replace.unwrap_or(false))
 }
 
 /// The tab a routed annotation command acts on, with every field its effect
@@ -6793,30 +6793,30 @@ pub(crate) fn tab_context(app: &er_engine::app::App) -> er_service::TabContext {
 /// The flag-on desktop does not render from the service yet (D21), so the
 /// returned snapshot is empty; the open commands are tab changes and blank
 /// until the next poll, while annotation commands keep the painted row
-/// (ADR 0017). The view is checked before the context is read, so a write
-/// painted on a tab switch is refused.
+/// (ADR 0017).
+///
+/// The context and the key come from the app registry's active tab and its
+/// published content. The view the user painted on is still checked on the
+/// App, which renders it; the App's tabs carry the registry's keys, so a
+/// paint on another tab than the registry's active one is refused too.
 #[cfg(feature = "v1-service")]
 fn route_annotation(
     state: &AppState,
     view: Option<&crate::snapshot::OptimisticView>,
     build: impl FnOnce(er_service::TabContext) -> er_service::Command,
 ) -> Result<AppSnapshot, String> {
-    let (key, command) = {
+    let active = state.service.app_registry().tabs_view().active;
+    {
         let app = state.app.lock().map_err(|e| e.to_string())?;
         // The flag-on desktop does not render the service snapshot (D21), so a
         // wrong-view snapshot would read as success and leave the paint in
         // place. Err is what makes the frontend roll the paint back.
-        if abort_wrong_view(&app, state, view).is_some() {
+        let moved = view.is_some() && active != Some(app.tab().key());
+        if moved || abort_wrong_view(&app, state, view).is_some() {
             return Err("The active view changed; the annotation was not written".to_string());
         }
-        let context = tab_context(&app);
-        let key = context.workspace_key();
-        (key, build(context))
-    };
-    state
-        .service
-        .send(&key, command)
-        .map_err(|error| error.to_string())?;
+    }
+    content_routes::annotate(state, build)?;
     Ok(AppSnapshot::default())
 }
 
@@ -7232,7 +7232,7 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
     return {
         let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path_str);
-        content_routes::open(&state, content_routes::working_tab(path_str))
+        content_routes::open(&state, content_routes::working_tab(path_str), false)
     };
     #[cfg(not(feature = "v1-service"))]
     return open_worktree_tab(&state, path_str);
@@ -7492,11 +7492,10 @@ pub async fn open_local_branch(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    // Flag-on, the registry appends the tab; it has no in-place replace yet.
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        let _ = replace;
-        content_routes::open(&state, content_routes::branch_tab(&project_id, name)?)
+        let tab = content_routes::branch_tab(&project_id, name)?;
+        content_routes::open(&state, tab, replace.unwrap_or(false))
     })
     .await;
     #[cfg(not(feature = "v1-service"))]
@@ -8704,7 +8703,12 @@ pub async fn open_pr_branch(
 ) -> Result<AppSnapshot, String> {
     let _ = head_ref; // ignored; PR head is fetched directly from origin
     let state = state.inner().clone();
-    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, None, &state)).await
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || service_open_pr_review(&state, project_id, pr_number, replace))
+        .await;
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, None, &state))
+        .await;
 }
 
 /// Fire-and-forget background warmup of the PR-open cache. Invoked from the
@@ -9414,6 +9418,13 @@ fn open_inbox_item_impl(
     crate::inbox::save_inbox_state(&state.inbox);
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
+    #[cfg(feature = "v1-service")]
+    if let Some(target) = target
+        .clone()
+        .and_then(|t| resolve_inbox_open_target(t, state))
+    {
+        return service_open_inbox_target(state, target, replace);
+    }
     match target.and_then(|t| resolve_inbox_open_target(t, state)) {
         Some(InboxOpenTarget::LocalPr {
             project_id,
@@ -9437,6 +9448,31 @@ fn open_inbox_item_impl(
         );
     }
     snap!(state)
+}
+
+/// An inbox open through the same flag-on helpers as a sidebar click.
+#[cfg(feature = "v1-service")]
+fn service_open_inbox_target(
+    state: &AppState,
+    target: InboxOpenTarget,
+    replace: Option<bool>,
+) -> Result<AppSnapshot, String> {
+    match target {
+        InboxOpenTarget::LocalPr {
+            project_id,
+            pr_number,
+            ..
+        } => service_open_pr_review(state, project_id, pr_number, replace),
+        InboxOpenTarget::RemotePr {
+            owner,
+            repo,
+            number,
+        } => service_open_remote_pr(state, owner, repo, number, replace),
+        InboxOpenTarget::Branch { project_id, branch } => {
+            let tab = content_routes::branch_tab(&project_id, branch)?;
+            content_routes::open(state, tab, replace.unwrap_or(false))
+        }
+    }
 }
 
 #[tauri::command]
@@ -9606,9 +9642,8 @@ pub fn open_project_branch(
 ) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
     return {
-        let _ = replace;
         let tab = content_routes::branch_tab(&project_id, branch)?;
-        content_routes::open(&state, tab)?;
+        content_routes::open(&state, tab, replace.unwrap_or(false))?;
         projects::set_active(&project_id);
         Ok(AppSnapshot::default())
     };
@@ -10004,6 +10039,29 @@ pub fn list_available_prs(
 
 #[tauri::command]
 pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    #[cfg(feature = "v1-service")]
+    return service_set_active_project(&state, &id);
+    #[cfg(not(feature = "v1-service"))]
+    return set_active_project_impl(&id, &state);
+}
+
+/// Opens a Working tab on the project's root through the registry, as the
+/// other flag-on opens do.
+#[cfg(feature = "v1-service")]
+fn service_set_active_project(state: &AppState, id: &str) -> Result<AppSnapshot, String> {
+    let root = projects::load()
+        .projects
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.root_path.clone())
+        .ok_or_else(|| format!("Project not found: {id}"))?;
+    content_routes::open(state, content_routes::working_tab(root), false)?;
+    projects::set_active(id);
+    Ok(AppSnapshot::default())
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn set_active_project_impl(id: &str, state: &AppState) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let file = projects::load();
     let proj = file
@@ -12533,6 +12591,8 @@ mod tests {
 
     #[cfg(feature = "v1-service")]
     mod content_route_tests;
+    #[cfg(feature = "v1-service")]
+    mod tab_key_tests;
     #[cfg(feature = "v1-service")]
     mod workspace_key_tests;
     #[cfg(not(feature = "v1-service"))]

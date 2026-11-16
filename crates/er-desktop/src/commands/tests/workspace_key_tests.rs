@@ -90,7 +90,7 @@ fn remote_tab(tab: &mut TabState) {
 /// tab and context name, after checking it sits on the actor of that key.
 fn loaded_key(state: &AppState, sent: TabDescriptor) -> String {
     let opened = while_the_app_is_locked(state, "open", move |state| {
-        content_routes::open(state, sent).map(drop)
+        content_routes::open(state, sent, false).map(drop)
     });
     assert!(opened.is_ok(), "{opened:?}");
     let view = state.service.app_registry().tabs_view();
