@@ -431,4 +431,35 @@ mod tests {
             assert_eq!(revisions.recv_timeout(Duration::from_secs(5)), Ok(1));
         });
     }
+
+    /// A tab change runs the follower on its own thread, which is how the
+    /// flag-on App follows the registry without a tab command waiting on it.
+    #[test]
+    fn a_tab_change_runs_the_follower() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let service = ServiceState::new(Ports::for_test());
+            let (tx, followed) = std::sync::mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            service.follow_tabs(move || {
+                if let Ok(tx) = tx.lock() {
+                    let _ = tx.send(());
+                }
+            });
+            let tab = er_engine::tabs_record::TabDescriptor {
+                kind: er_engine::tabs_record::TabKind::Working,
+                repo_root: "/repo".to_string(),
+                branch: None,
+                pr_owner: None,
+                pr_repo: None,
+                pr_number: None,
+                pr_head_ref: None,
+                base_ref: None,
+                extra: serde_json::Map::new(),
+            };
+            let added = service.send_app(er_service::AppCommand::NewTab { tab });
+            assert!(added.is_ok(), "{added:?}");
+            assert_eq!(followed.recv_timeout(Duration::from_secs(5)), Ok(()));
+        });
+    }
 }

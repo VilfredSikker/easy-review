@@ -239,6 +239,62 @@ fn a_restore_follows_the_registry_and_closes_a_broken_tab() {
     });
 }
 
+/// A launch with no saved tabs: the App's startup tab joins the registry
+/// under the key the registry gives it.
+#[test]
+fn a_restore_with_no_saved_tabs_keys_the_startup_tab_in_the_registry() {
+    with_storage(|dir| {
+        let state = state(dir);
+        if let Ok(mut app) = state.app.lock() {
+            app.tab_mut().placeholder = false;
+        }
+        crate::tabs::restore(
+            &state.app,
+            &state.view,
+            state.service.app_registry(),
+            &ports(),
+        );
+        let view = state.service.app_registry().tabs_view();
+        let registry: Vec<TabKey> = view.tabs.iter().map(|entry| entry.key).collect();
+        let (app, app_active) = app_keys(&state);
+        assert_eq!(registry.len(), 1, "the startup tab did not join");
+        assert_eq!(app, registry, "the App's keys");
+        assert_eq!(Some(app_active), view.active);
+    });
+}
+
+/// Opening a PR that is already open selects its tab, as the flag-off open
+/// does, instead of adding a second tab for it.
+#[test]
+fn opening_an_open_pr_selects_its_tab() {
+    with_storage(|dir| {
+        let state = state(dir);
+        let pr = content_routes::pr_tab(&OpenTarget::RemotePr {
+            owner: "acme".to_string(),
+            repo: "widgets".to_string(),
+            number: 7,
+            repo_root: String::new(),
+        })
+        .expect("remote PR tab");
+        let first = content_routes::open(&state, pr.clone(), false);
+        assert!(first.is_ok(), "{first:?}");
+        let key = state.service.app_registry().tabs_view().active;
+        let other = content_routes::open(
+            &state,
+            content_routes::working_tab(dir_in(dir, "repo")),
+            false,
+        );
+        assert!(other.is_ok(), "{other:?}");
+
+        let again = content_routes::open(&state, pr, false);
+
+        assert!(again.is_ok(), "{again:?}");
+        let view = state.service.app_registry().tabs_view();
+        assert_eq!(view.tabs.len(), 2, "the PR opened a second tab");
+        assert_eq!(view.active, key, "the open PR's tab is not active");
+    });
+}
+
 /// An annotation takes its context from the registry's active tab and its
 /// published content, loading it first when it never loaded, whatever the
 /// App's own tab holds.
