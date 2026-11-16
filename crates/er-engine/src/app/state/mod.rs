@@ -71,103 +71,11 @@ pub fn apply_pr_commit_refresh(existing: &mut Vec<CommitInfo>, fetched: Vec<Comm
     }
 }
 
-/// Decide whether a loaded guided tour is stale relative to the diff it is
-/// scoped to.
-///
-/// - Branch-scoped tours (`want_pr == false`) baseline against `branch_diff_hash`,
-///   which is always a SHA-256 of the branch diff and is valid in every
-///   working-tree mode. In Unstaged/Staged/History `diff_hash` is a *different*
-///   scope's diff, so using it would mark a fresh branch tour stale.
-/// - PR-scoped tours baseline against the current `diff_hash` (the PR diff's
-///   SHA-256 after a full refresh). On a fast-hash refresh (`diff_hash` is the
-///   16-char non-cryptographic hash) keep the previous result rather than
-///   compare against an incompatible hash.
-fn tour_stale_for(
-    tour_hash: &str,
-    want_pr: bool,
-    diff_hash: &str,
-    branch_diff_hash: &str,
-    prev: bool,
-) -> bool {
-    if !want_pr {
-        return tour_hash != branch_diff_hash;
-    }
-    if diff_hash.len() == 64 {
-        return tour_hash != diff_hash;
-    }
-    prev
-}
-
 pub use crate::annotations::{CommentTarget, LineAnchor};
 
 // ── Enums ──
 
-/// Which set of changes we're viewing
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffMode {
-    Branch,
-    Unstaged,
-    Staged,
-    History,
-    Conflicts,
-    Hidden,
-    PrDiff,
-    /// AI guided walkthrough — branch diff reordered/grouped into pillars.
-    Tour,
-}
-
-impl DiffMode {
-    #[cfg(test)]
-    pub const fn label(&self) -> &'static str {
-        match self {
-            Self::Branch => "BRANCH DIFF",
-            Self::Unstaged => "UNSTAGED",
-            Self::Staged => "STAGED",
-            Self::History => "HISTORY",
-            Self::Conflicts => "CONFLICTS",
-            Self::Hidden => "HIDDEN",
-            Self::PrDiff => "PR DIFF",
-            Self::Tour => "TOUR",
-        }
-    }
-
-    pub const fn git_mode(&self) -> &'static str {
-        match self {
-            Self::Branch => "branch",
-            Self::Unstaged => "unstaged",
-            Self::Staged => "staged",
-            Self::History => "history",
-            Self::Conflicts => "conflicts",
-            Self::Hidden => "hidden",
-            // PrDiff uses branch-style git diff under the hood (PR head vs base).
-            // "pr" is used as the session-persistence key and bucket identifier only.
-            Self::PrDiff => "pr",
-            // Tour reorders the branch diff; it shares the branch git scope/bucket.
-            Self::Tour => "tour",
-        }
-    }
-
-    /// The scope string passed to `git_diff_raw` / `fetch_tab_raw_diff`.
-    /// PrDiff diffs against a PR head ref — same git mechanics as `branch`.
-    /// Tour walks the branch diff, so it fetches with branch mechanics too.
-    pub const fn fetch_scope(&self) -> &'static str {
-        match self {
-            Self::PrDiff | Self::Tour => "branch",
-            other => other.git_mode(),
-        }
-    }
-}
-
-/// Which isolated review bucket a tab's diff belongs to.
-/// Each bucket gets its own storage directory so review notes never bleed across views.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReviewBucket {
-    Branch,
-    Unstaged,
-    Staged,
-    History,
-    Pr,
-}
+pub use crate::tab_identity::{DiffMode, ReviewBucket, TabIdentity};
 
 /// State for History mode — commit list + selected commit's diff
 pub struct HistoryState {
@@ -1128,6 +1036,22 @@ impl TabState {
     /// This tab's identity for the rest of the process.
     pub fn key(&self) -> crate::TabKey {
         self.key
+    }
+
+    /// The fields that decide this tab's storage buckets and diff fetch.
+    pub fn identity(&self) -> TabIdentity<'_> {
+        TabIdentity {
+            repo_root: &self.repo_root,
+            current_branch: &self.current_branch,
+            base_branch: &self.base_branch,
+            mode: self.mode,
+            tour_is_pr: self.tour_is_pr,
+            remote_repo: self.remote_repo.as_deref(),
+            pr_number: self.pr_number,
+            local_branch_view: self.local_branch_view.as_deref(),
+            pr_head_ref: self.pr_head_ref.as_deref(),
+            checkout_root: self.local_branch_checkout_root.as_deref(),
+        }
     }
 
     /// Get the comment text from the textarea, joined and trimmed
@@ -2145,34 +2069,7 @@ impl TabState {
     /// same `review.json` as PR Diff / Local Branch (does not swap onto a stale
     /// branch-bucket review when opened from PR Diff).
     pub const fn review_bucket(&self) -> ReviewBucket {
-        if self.remote_repo.is_some() {
-            return ReviewBucket::Pr;
-        }
-        match self.mode {
-            DiffMode::PrDiff => ReviewBucket::Pr,
-            DiffMode::Tour => {
-                if self.tour_is_pr {
-                    ReviewBucket::Pr
-                } else {
-                    ReviewBucket::Branch
-                }
-            }
-            DiffMode::Unstaged => ReviewBucket::Unstaged,
-            DiffMode::Staged => ReviewBucket::Staged,
-            DiffMode::History => ReviewBucket::History,
-            _ => ReviewBucket::Branch,
-        }
-    }
-
-    /// Sub-directory name for local view buckets (branch/unstaged/staged/history).
-    /// Not used for the `Pr` bucket (which lives under `prs/pr-<N>/`).
-    const fn review_bucket_name(&self) -> &'static str {
-        match self.review_bucket() {
-            ReviewBucket::Unstaged => "unstaged",
-            ReviewBucket::Staged => "staged",
-            ReviewBucket::History => "history",
-            ReviewBucket::Branch | ReviewBucket::Pr => "branch",
-        }
+        crate::tab_identity::review_bucket(self.remote_repo.is_some(), self.mode, self.tour_is_pr)
     }
 
     /// Return the list of DiffMode tabs currently visible, based on feature flags,
@@ -2254,21 +2151,7 @@ impl TabState {
     /// `None` when the tab has no PR. Mirrors the `Pr`-bucket arm of
     /// `apply_managed_root()`; needs a resolvable owner/repo for local clones.
     fn pr_bucket_er_dir(&self) -> Option<String> {
-        let pr_num = self.pr_number?;
-        let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
-            crate::storage::repo_storage_slug_for(
-                &*self.ports.git,
-                &self.repo_root,
-                Some(remote_repo),
-            )
-        } else {
-            crate::github::canonical_owner_repo_slug(&*self.ports.git, &self.repo_root)?
-        };
-        Some(
-            crate::storage::pr_bucket_dir(&owner_repo_slug, pr_num)
-                .to_string_lossy()
-                .into_owned(),
-        )
+        self.identity().pr_bucket_er_dir(&*self.ports.git)
     }
 
     /// Directory for `github-comments.json`. GitHub PR comments belong to the PR
@@ -2289,88 +2172,15 @@ impl TabState {
     /// `None` when storage can't be resolved (empty repo/branch). Uses pure path
     /// helpers (no dir creation).
     pub fn branch_bucket_er_dir(&self) -> Option<String> {
-        // Remote tabs have no local working tree — the PR bucket is their only bucket.
-        if let Some(ref remote_repo) = self.remote_repo {
-            let pr_num = self.pr_number?;
-            let owner_repo_slug = crate::storage::repo_storage_slug_for(
-                &*self.ports.git,
-                &self.repo_root,
-                Some(remote_repo),
-            );
-            return Some(
-                crate::storage::pr_bucket_dir(&owner_repo_slug, pr_num)
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-        }
-        // Local tabs (including local PR tabs) keep the tour with the branch.
-        let branch = self
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| self.current_branch.clone());
-        if branch.is_empty() || self.repo_root.is_empty() {
-            return None;
-        }
-        let repo_slug =
-            crate::storage::repo_storage_slug_from_root(&*self.ports.git, &self.repo_root);
-        let branch_slug = crate::storage::slug_branch(&branch);
-        Some(
-            crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch")
-                .to_string_lossy()
-                .into_owned(),
-        )
+        self.identity().branch_bucket_er_dir(&*self.ports.git)
     }
 
     /// Point this tab at managed storage (shared by TUI and Desktop).
     /// Routes to a per-bucket directory so review notes are isolated per view.
     pub fn apply_managed_root(&mut self) {
-        // Only the PR Diff view (head-vs-base) uses the shared PR bucket
-        // (prs/pr-<N>/). Its review artifacts — triage, review.json, questions,
-        // reviewed — stay separate from the local working-tree views. Remote tabs
-        // are always PrDiff (review_bucket() == Pr). Branch/Unstaged/Staged/History
-        // fall through to per-branch view buckets even on a local PR tab: the local
-        // branch diff is a different diff than the PR head-vs-base diff, so it is
-        // reviewed independently.
-        if let Some(pr_num) = self.pr_number {
-            if self.review_bucket() == ReviewBucket::Pr {
-                let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
-                    Some(crate::storage::repo_storage_slug_for(
-                        &*self.ports.git,
-                        &self.repo_root,
-                        Some(remote_repo),
-                    ))
-                } else {
-                    crate::github::canonical_owner_repo_slug(&*self.ports.git, &self.repo_root)
-                };
-                // Only the PR bucket needs the owner/repo slug. If it can't be resolved
-                // (no usable git remote), fall through to the local view bucket rather
-                // than leaving er_root pointing at a previous mode's bucket.
-                if let Some(slug) = owner_repo_slug {
-                    self.er_root =
-                        crate::storage::resolve_managed_root_for_pr_bucket(&slug, pr_num);
-                    return;
-                }
-            }
+        if let Some(root) = self.identity().managed_root(&*self.ports.git) {
+            self.er_root = root;
         }
-
-        // Local view buckets (branch/unstaged/staged/history)
-        let branch = self
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| self.current_branch.clone());
-        if branch.is_empty() || self.repo_root.is_empty() {
-            return;
-        }
-        let repo_slug =
-            crate::storage::repo_storage_slug_from_root(&*self.ports.git, &self.repo_root);
-        let branch_slug = crate::storage::slug_branch(&branch);
-        let bucket = self.review_bucket_name();
-
-        self.er_root =
-            crate::storage::resolve_managed_root_for_view_bucket(&repo_slug, &branch_slug, bucket);
-        // Per-bucket dirs start clean — no migration from repo `.er/` or legacy cache.
-        // Migrating here would copy the same data into every bucket (branch/unstaged/
-        // staged/history) and break isolation between them.
     }
 
     /// Apply managed storage, migrate legacy paths, and load reviewed markers.
@@ -2435,14 +2245,7 @@ impl TabState {
     /// does not make Branch/Unstaged/Staged PR-scoped. All other modes are
     /// branch-scoped.
     pub const fn tour_context_is_pr(&self) -> bool {
-        if self.is_remote() {
-            return true;
-        }
-        match self.mode {
-            DiffMode::PrDiff => true,
-            DiffMode::Tour => self.tour_is_pr,
-            _ => false,
-        }
+        crate::tab_identity::tour_context_is_pr(self.is_remote(), self.mode, self.tour_is_pr)
     }
 
     /// Branch name used to resolve managed storage for this tab (for sidecar validation).
@@ -2453,20 +2256,7 @@ impl TabState {
     /// discard every sidecar whose `head_branch` named the real PR head, and
     /// the review card showed "No findings" / "fresh" over a complete review.
     pub fn storage_branch_scope(&self) -> Option<&str> {
-        if let Some(view) = self.local_branch_view.as_deref() {
-            if self.pr_number.is_some() && crate::storage::is_pr_placeholder_branch(view) {
-                return None;
-            }
-            return Some(view);
-        }
-        if self.remote_repo.is_some() {
-            // PR storage is keyed by pr-{n}; path isolation is enough.
-            None
-        } else if self.current_branch.is_empty() {
-            None
-        } else {
-            Some(&self.current_branch)
-        }
+        self.identity().storage_branch_scope()
     }
 
     /// Path to github-comments.json — PR-scoped (the shared PR bucket for PR tabs),
@@ -3041,122 +2831,21 @@ impl TabState {
     /// Tour still use `gh pr diff` — PrDiff is the head-vs-base parity view by
     /// design, and Tour walks the branch/PR diff (its cached raw_diff is the
     /// parity diff).
+    #[cfg(test)]
     fn fetch_pr_diff_for_review(&self, _scope: &str) -> Option<Result<String>> {
-        let pr_number = self.pr_number?;
-        // Checked-out PR tab: Branch/Unstaged/Staged review the working tree,
-        // not the PR parity diff. PrDiff/Tour keep the parity diff.
-        if self.local_branch_checkout_root.is_some()
-            && matches!(
-                self.mode,
-                DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged
-            )
-        {
-            return None;
-        }
-        // Remote-only tabs (`gh pr diff --repo`). Local PR tabs also store a
-        // GitHub slug for status keys; they still have a clone, so they use
-        // local `gh pr diff` below. Using the remote path here made Branch
-        // and PR Diff load the same network diff.
-        if self.is_remote() {
-            if let Some(ref repo_slug) = self.remote_repo {
-                let parts: Vec<&str> = repo_slug.split('/').collect();
-                if parts.len() == 2 {
-                    return Some(
-                        self.ports
-                            .github
-                            .pr_diff_remote(&*self.ports.git, parts[0], parts[1], pr_number)
-                            .map_err(anyhow::Error::from),
-                    );
-                }
-            }
-            return Some(Err(anyhow::anyhow!(
-                "Remote tab missing owner/repo for PR diff"
-            )));
-        }
-        if self.repo_root.is_empty() {
-            return None;
-        }
-        Some(
-            self.ports
-                .github
-                .pr_diff(&*self.ports.git, pr_number, &self.repo_root)
-                .map_err(anyhow::Error::from),
-        )
+        crate::diff_load::fetch_pr_diff(&self.ports, &self.identity())
     }
 
     /// Fetch raw unified-diff text using the same subprocess rules as `refresh_diff`.
     ///
     /// Extracts only the git/gh calls — no parsing, hashing, or selection restore.
     pub fn fetch_tab_raw_diff(&self, scope: &str) -> Result<String> {
-        if self.mode == DiffMode::History || self.mode == DiffMode::Conflicts {
-            anyhow::bail!("Cannot fetch diff in {:?} mode", self.mode);
-        }
-        if self.mode == DiffMode::Hidden {
-            return Ok(String::new());
-        }
-
-        if let Some(result) = self.fetch_pr_diff_for_review(scope) {
-            return result;
-        }
-
-        if let Some(ref branch) = self.local_branch_view {
-            let inputs = preload::BranchScopeFetchInputs {
-                ports: self.ports.clone(),
-                repo_root: self.repo_root.clone(),
-                base_branch: self.base_branch.clone(),
-                local_branch_view: Some(branch.clone()),
-                pr_head_ref: self.pr_head_ref.clone(),
-                pr_number: self.pr_number,
-                checkout_root: self.local_branch_checkout_root.clone(),
-                remote_repo: self.remote_repo.clone(),
-            };
-            return preload::fetch_branch_scope_raw(scope, &inputs);
-        }
-
-        if let Some(ref repo_slug) = self.remote_repo {
-            let inputs = preload::BranchScopeFetchInputs {
-                ports: self.ports.clone(),
-                repo_root: self.repo_root.clone(),
-                base_branch: self.base_branch.clone(),
-                local_branch_view: None,
-                pr_head_ref: self.pr_head_ref.clone(),
-                pr_number: self.pr_number,
-                checkout_root: None,
-                remote_repo: Some(repo_slug.clone()),
-            };
-            return preload::fetch_branch_scope_raw(scope, &inputs);
-        }
-
-        let head_ref_owned = self.pr_head_ref.clone();
-        if scope == "staged" && self.committed_unpushed {
-            let staged_raw = self.ports.git.diff_raw(
-                "staged",
-                &self.base_branch,
-                &self.repo_root,
-                head_ref_owned.as_deref(),
-            )?;
-            if !staged_raw.is_empty() {
-                return Ok(staged_raw);
-            }
-            match self
-                .ports
-                .git
-                .diff_raw_range("HEAD~1", "HEAD", &self.repo_root)
-            {
-                Ok(raw) => return Ok(raw),
-                Err(_) => return Ok(String::new()),
-            }
-        }
-
-        self.ports
-            .git
-            .diff_raw(
-                scope,
-                &self.base_branch,
-                &self.repo_root,
-                head_ref_owned.as_deref(),
-            )
-            .map_err(anyhow::Error::from)
+        crate::diff_load::fetch_raw(
+            &self.ports,
+            &self.identity(),
+            scope,
+            self.committed_unpushed,
+        )
     }
 
     /// Raw diff for AI review: prefer the cached UI diff when fresh, else refetch.
@@ -3234,28 +2923,14 @@ impl TabState {
             let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
 
             let t_parse = Instant::now();
-            if raw.len() > 200_000 {
-                let headers = crate::git::parse_diff_headers(&raw);
-                let compaction_config = self.compaction_config.clone();
-                let files = crate::git::lazy_files_with_compaction(
-                    &raw,
-                    &headers,
-                    &compaction_config,
-                    |p| self.user_expanded.contains(p),
-                );
-                self.files = files;
-                self.file_headers = headers;
-                self.raw_diff = Some(raw.clone());
-                self.preview_head_oid = fetched_preview_head_oid.clone();
-                self.lazy_mode = true;
-            } else {
-                self.file_headers = crate::git::parse_diff_headers(&raw);
-                self.raw_diff = Some(raw.clone());
-                self.preview_head_oid = fetched_preview_head_oid.clone();
-                self.files = crate::git::parse_diff(&raw);
-                self.lazy_mode = false;
-                crate::git::compact_files(&mut self.files, &self.compaction_config);
-            }
+            let parsed = crate::diff_load::parse_raw(&raw, &self.compaction_config, |p| {
+                self.user_expanded.contains(p)
+            });
+            self.files = parsed.files;
+            self.file_headers = parsed.headers;
+            self.lazy_mode = parsed.lazy;
+            self.raw_diff = Some(raw.clone());
+            self.preview_head_oid = fetched_preview_head_oid.clone();
             log_branch_profile_phase(self, "local_branch_parse", t_parse);
 
             let t_diff_hash = Instant::now();
@@ -3328,34 +3003,20 @@ impl TabState {
 
                 let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
 
-                if raw.len() > 200_000 {
-                    let headers = crate::git::parse_diff_headers(&raw);
-                    let compaction_config = self.compaction_config.clone();
-                    let files = crate::git::lazy_files_with_compaction(
-                        &raw,
-                        &headers,
-                        &compaction_config,
-                        |p| self.user_expanded.contains(p),
-                    );
-                    self.files = files;
-                    self.file_headers = headers;
-                    self.lazy_mode = true;
-                } else {
-                    self.files = crate::git::parse_diff(&raw);
-                    self.file_headers = crate::git::parse_diff_headers(&raw);
-                    self.lazy_mode = false;
-                    crate::git::compact_files(&mut self.files, &self.compaction_config);
-                }
+                let parsed = crate::diff_load::parse_raw(&raw, &self.compaction_config, |p| {
+                    self.user_expanded.contains(p)
+                });
+                self.files = parsed.files;
+                self.file_headers = parsed.headers;
+                self.lazy_mode = parsed.lazy;
                 // Same as local-branch refresh: keep the bytes so AI review can
                 // prepare diff-tmp without the sandboxed agent calling `gh`.
                 self.raw_diff = Some(raw.clone());
                 self.preview_head_oid = fetched_preview_head_oid.clone();
 
+                self.diff_hash = crate::diff_load::diff_hash(&raw, recompute_branch_hash);
                 if recompute_branch_hash {
-                    self.diff_hash = crate::ai::compute_diff_hash(&raw);
                     self.branch_diff_hash = self.diff_hash.clone();
-                } else {
-                    self.diff_hash = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
                 }
 
                 // Restore selection
@@ -3437,39 +3098,20 @@ impl TabState {
                 self.load_diff_with_preview_head(self.mode.fetch_scope(), false)?
             };
 
-        // Decide parsing strategy based on diff size.
-        // Use byte-length heuristic (O(1)) instead of counting newlines (O(n)).
-        // 200_000 bytes ≈ ~5000 lines (at ~40 bytes/line), equivalent to LAZY_PARSE_THRESHOLD.
-        if raw.len() > 200_000 {
-            // Lazy mode: header-only parse; large/pattern files become compacted stubs,
-            // small files are parsed eagerly so they render without a lazy round-trip.
-            let headers = git::parse_diff_headers(&raw);
-            let compaction_config = self.compaction_config.clone();
-            let files =
-                crate::git::lazy_files_with_compaction(&raw, &headers, &compaction_config, |p| {
-                    self.user_expanded.contains(p)
-                });
-            self.files = files;
-            self.file_headers = headers;
-            self.raw_diff = Some(raw.clone());
-            self.preview_head_oid = fetched_preview_head_oid.clone();
-            self.lazy_mode = true;
-        } else {
-            // Eager mode: full parse (fast enough for smaller diffs)
-            self.files = git::parse_diff(&raw);
-            self.file_headers = crate::git::parse_diff_headers(&raw);
-            // Retained even though eager parsing has no re-parse use for it:
-            // `per_file_hash` resolves a file's hash from here whenever the
-            // cached map misses, which is every newly-marked file. Dropping it
-            // silently disabled auto-unmark for files marked after a refresh.
-            // Bounded by the lazy threshold that selected this branch.
-            self.raw_diff = Some(raw.clone());
-            self.preview_head_oid = fetched_preview_head_oid.clone();
-            self.lazy_mode = false;
-
-            // Apply auto-compaction to low-value files
-            git::compact_files(&mut self.files, &self.compaction_config);
-
+        let parsed = crate::diff_load::parse_raw(&raw, &self.compaction_config, |p| {
+            self.user_expanded.contains(p)
+        });
+        self.files = parsed.files;
+        self.file_headers = parsed.headers;
+        self.lazy_mode = parsed.lazy;
+        // Retained even though eager parsing has no re-parse use for it:
+        // `per_file_hash` resolves a file's hash from here whenever the
+        // cached map misses, which is every newly-marked file. Dropping it
+        // silently disabled auto-unmark for files marked after a refresh.
+        // Bounded by the lazy threshold that selected the eager parse.
+        self.raw_diff = Some(raw.clone());
+        self.preview_head_oid = fetched_preview_head_oid.clone();
+        if !self.lazy_mode {
             // Re-expand any files the user explicitly opened (fresh parse means hunks are available)
             let to_expand: Vec<String> = self
                 .files
@@ -3514,13 +3156,7 @@ impl TabState {
         // Compute diff hash for the current mode.
         // Use fast hash for quick refreshes (watch events), SHA-256 for full refreshes
         // (AI staleness needs SHA-256 to compare with .er-review.json).
-        if recompute_branch_hash {
-            // Full refresh: compute SHA-256 for AI compatibility
-            self.diff_hash = ai::compute_diff_hash(&raw);
-        } else {
-            // Quick refresh: use fast hash (skip expensive SHA-256)
-            self.diff_hash = format!("{:016x}", ai::compute_diff_hash_fast(&raw));
-        }
+        self.diff_hash = crate::diff_load::diff_hash(&raw, recompute_branch_hash);
 
         // Branch diff hash for AI staleness detection (and tour freshness).
         // In Branch mode, and in a Tour entered from it (whose `raw` is the
@@ -3639,11 +3275,6 @@ impl TabState {
         Ok(())
     }
 
-    /// Parse the per-view `tour.json` from a bucket directory, if present and valid.
-    fn load_tour_from_dir(dir: &str) -> Option<ai::ErTour> {
-        ai::load_tour_sidecar(dir, "tour.json")
-    }
-
     /// Storage bucket for the tour attached to the current view context: the PR bucket
     /// when the active context is the PR diff (PrDiff, remote, or a Guide tab opened from
     /// the PR view — see `tour_context_is_pr`), otherwise the branch bucket. Both
@@ -3651,153 +3282,10 @@ impl TabState {
     /// tour is always written where it will be read — including when "Re-run guide" is
     /// clicked from inside the Guide (Tour mode), where the active mode alone is ambiguous.
     pub fn tour_bucket_er_dir(&self) -> Option<String> {
-        if self.tour_context_is_pr() {
-            self.pr_bucket_er_dir()
-        } else {
-            self.branch_bucket_er_dir()
-        }
-    }
-
-    /// Pick the tour to show in the active view (option C).
-    ///
-    /// The Local branch tour lives in the branch bucket, the PR Diff tour in the PR
-    /// bucket. The active *context* — branch vs PR, including which view the Guide tab
-    /// was opened from (`tour_context_is_pr`) — selects the view's own bucket. Prefer a
-    /// tour whose `diff_hash` matches the active diff (own bucket first, then the other
-    /// bucket, so an identical-diff tour is reused across the two without copying). When
-    /// neither is fresh, keep a stale tour (own bucket first) so the Regenerate
-    /// affordance shows. Returns `None` only when no tour exists in either bucket.
-    fn resolve_view_tour(&self) -> Option<ai::ErTour> {
-        let want_pr = self.tour_context_is_pr();
-        let own_dir = self.tour_bucket_er_dir();
-        let cross_dir = if want_pr {
-            self.branch_bucket_er_dir()
-        } else {
-            self.pr_bucket_er_dir()
-        };
-        let own = own_dir.as_deref().and_then(Self::load_tour_from_dir);
-        // Avoid re-reading the same file when both buckets resolve to one dir.
-        let cross = match (&own_dir, &cross_dir) {
-            (Some(o), Some(c)) if o == c => None,
-            _ => cross_dir.as_deref().and_then(Self::load_tour_from_dir),
-        };
-        // "Fresh for the active view" reuses the same per-context staleness rule, so a
-        // tour generated against the matching diff is reused even from the other bucket.
-        let is_fresh = |t: &ai::ErTour| {
-            !tour_stale_for(
-                &t.diff_hash,
-                want_pr,
-                &self.diff_hash,
-                &self.branch_diff_hash,
-                false,
-            )
-        };
-        let own_fresh = own.as_ref().is_some_and(is_fresh);
-        let cross_fresh = cross.as_ref().is_some_and(is_fresh);
-        if own_fresh {
-            own
-        } else if cross_fresh {
-            cross
-        } else {
-            own.or(cross)
-        }
+        self.identity().tour_bucket_er_dir(&*self.ports.git)
     }
 
     /// Reload AI state from .er-* files (preserving current nav state)
-    /// Merge orphaned local GitHub comments (written to the branch bucket while a
-    /// tab had no `pr_number`) into the now-authoritative PR-bucket comments.
-    ///
-    /// Only `local` comments absent from the PR bucket (by id) are carried over;
-    /// `github`-sourced entries re-sync from GitHub and are never migrated.
-    /// Returns `true` when at least one comment was migrated, signalling the
-    /// caller to persist `pr_comments` and remove the orphan file.
-    fn migrate_orphaned_github_comments(
-        orphaned: Option<ai::ErGithubComments>,
-        pr_comments: &mut Option<ai::ErGithubComments>,
-    ) -> bool {
-        let orphaned = match orphaned {
-            Some(o) => o,
-            None => return false,
-        };
-        let to_migrate: Vec<ai::GithubComment> = orphaned
-            .comments
-            .into_iter()
-            .filter(|c| c.source == "local")
-            .collect();
-        if to_migrate.is_empty() {
-            return false;
-        }
-
-        let target = pr_comments.get_or_insert_with(|| ai::ErGithubComments {
-            version: 1,
-            diff_hash: orphaned.diff_hash.clone(),
-            github: None,
-            comments: Vec::new(),
-        });
-
-        let mut migrated = false;
-        for comment in to_migrate {
-            if target.comments.iter().any(|c| c.id == comment.id) {
-                continue;
-            }
-            target.comments.push(comment);
-            migrated = true;
-        }
-        migrated
-    }
-
-    /// Adopt the PR bucket's github comments after a tab gains its PR number.
-    ///
-    /// `orphaned` came from the active bucket (written while the tab had no
-    /// PR). Local comments in it are merged into the PR bucket's `current`
-    /// under the store lock, so a comment written there since the tab opened
-    /// is kept; the orphan file is then deleted. Without local orphans this
-    /// only reads the PR bucket.
-    fn adopt_pr_bucket_comments(
-        orphaned: Option<ai::ErGithubComments>,
-        gh_dir: &str,
-        er_dir: &str,
-    ) -> Option<ai::ErGithubComments> {
-        let store = crate::store_registry::store();
-        let scope = er_store::Scope::dir(gh_dir).ok()?;
-        let has_local_orphans = orphaned
-            .as_ref()
-            .is_some_and(|gc| gc.comments.iter().any(|c| c.source == "local"));
-        let mut migrated = false;
-        let mut adopted = None;
-        if has_local_orphans {
-            if let Ok(updated) =
-                ai::annotation_store::update_github_comments(&store, &scope, |current| {
-                    let mut pr_comments = current;
-                    migrated = Self::migrate_orphaned_github_comments(orphaned, &mut pr_comments);
-                    Ok::<_, std::convert::Infallible>(pr_comments.unwrap_or_else(|| {
-                        ai::ErGithubComments {
-                            version: 1,
-                            diff_hash: String::new(),
-                            github: None,
-                            comments: Vec::new(),
-                        }
-                    }))
-                })
-            {
-                adopted = Some(updated.value);
-            }
-            if adopted.is_some() && migrated {
-                // Drop the orphan file only after the merged write succeeded.
-                if let Ok(orphan_scope) = er_store::Scope::dir(er_dir) {
-                    let _ =
-                        ai::annotation_store::delete::<ai::ErGithubComments>(&store, &orphan_scope);
-                }
-            }
-        }
-        adopted.or_else(
-            || match ai::annotation_store::load_github_comments(&store, &scope) {
-                Ok(er_store::Loaded::Found(stored)) => Some(stored.value),
-                _ => None,
-            },
-        )
-    }
-
     pub fn reload_ai_state(&mut self) {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         let er_dir = self.er_dir();
@@ -3837,55 +3325,19 @@ impl TabState {
         prev_stale_files: std::collections::HashSet<String>,
         prev_tour_stale: bool,
     ) {
-        // GitHub PR comments are PR-scoped: stored in the shared PR bucket and shown
-        // only in the Local branch (Branch) and PR Diff views — hidden in Unstaged/
-        // Staged/History, where PR-line comments don't apply.
-        if self.pr_number.is_some() {
-            if matches!(
-                self.review_bucket(),
-                ReviewBucket::Branch | ReviewBucket::Pr
-            ) {
-                let gh_dir = self.github_comments_dir();
-                if gh_dir != er_dir {
-                    // `load_ai_state(er_dir)` may have loaded github comments from the
-                    // active (branch) bucket — these are orphans written while this tab
-                    // still had no `pr_number` (github_comments_dir() fell back to
-                    // er_dir then). The PR bucket is now authoritative, so migrate any
-                    // such local comments into it instead of discarding them.
-                    let orphaned = self.ai.github_comments.take();
-                    self.ai.github_comments =
-                        Self::adopt_pr_bucket_comments(orphaned, &gh_dir, er_dir);
-                    self.ai.rebuild_comment_index();
-                }
-            } else if self.ai.github_comments.take().is_some() {
-                self.ai.rebuild_comment_index();
-            }
-        }
-
-        // Guided tour (per-view buckets): the Local branch tour lives in the branch
-        // bucket, the PR Diff tour in the PR bucket. The active context (branch vs PR —
-        // including which view the Guide tab was opened from, via `tour_context_is_pr`)
-        // selects the bucket, and a tour whose diff_hash matches the active diff is
-        // reused across the two when the branch and PR diffs are identical. Staleness is
-        // computed per-context with `tour_stale_for`.
-        self.ai.tour = self.resolve_view_tour();
-        let want_pr = self.tour_context_is_pr();
-        self.ai.tour_stale = match self.ai.tour.as_ref() {
-            None => false,
-            Some(t) => tour_stale_for(
-                &t.diff_hash,
-                want_pr,
-                &self.diff_hash,
-                &self.branch_diff_hash,
-                prev_tour_stale,
-            ),
+        // Taken out so the load can borrow the rest of the tab beside it.
+        let mut ai_state = std::mem::take(&mut self.ai);
+        let load = ai::tab_ai::TabAiLoad {
+            identity: self.identity(),
+            git: &*self.ports.git,
+            er_dir,
+            diff_hash: &self.diff_hash,
+            branch_diff_hash: &self.branch_diff_hash,
         };
+        ai::tab_ai::assemble_tab_ai(&mut ai_state, &load, prev_tour_stale, prev_stale_files);
+        self.ai = ai_state;
         // Finding IDs may change after review reload — clear stale reference
         self.focused_finding_id = None;
-        // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
-        if self.ai.is_stale {
-            self.ai.stale_files = prev_stale_files;
-        }
         // Clamp cursor to valid range after reload (item count may have decreased)
         let item_count = match self.review_focus {
             ReviewFocus::Files => self.ai.review_file_count(),
@@ -5456,8 +4908,7 @@ impl TabState {
     /// because diff content legitimately differs per mode. The result is stored
     /// in `pending_unmark_count` for the caller to surface.
     fn refresh_per_file_hashes_and_unmark(&mut self, raw: &str, auto_unmark: bool) {
-        let wanted: HashSet<String> = self.reviewed.keys().cloned().collect();
-        self.reviewed_file_hashes = ai::compute_per_file_hashes_for(raw, &wanted);
+        self.reviewed_file_hashes = crate::diff_load::reviewed_file_hashes(raw, &self.reviewed);
         if auto_unmark {
             self.pending_unmark_count = self.auto_unmark_changed_reviewed();
         }
@@ -5503,20 +4954,7 @@ impl TabState {
     fn auto_unmark_changed_reviewed(&mut self) -> usize {
         let orphan_count = self.prune_reviewed_not_in_diff();
 
-        let stale: Vec<String> = self
-            .reviewed
-            .iter()
-            .filter_map(|(path, stored_hash)| {
-                if stored_hash.is_empty() {
-                    return None;
-                }
-                let current_hash = self.reviewed_file_hashes.get(path);
-                match current_hash {
-                    Some(h) if h == stored_hash => None,
-                    _ => Some(path.clone()),
-                }
-            })
-            .collect();
+        let stale = crate::diff_load::changed_reviewed(&self.reviewed, &self.reviewed_file_hashes);
 
         if !stale.is_empty() {
             for path in &stale {
@@ -10948,7 +10386,7 @@ mod tests {
             perms.set_mode(0o555);
             std::fs::set_permissions(&gh_dir, perms).unwrap();
 
-            let adopted = TabState::adopt_pr_bucket_comments(
+            let adopted = crate::ai::tab_ai::adopt_pr_bucket_comments(
                 Some(orphan),
                 gh_dir.to_str().unwrap(),
                 er_dir.to_str().unwrap(),
@@ -16077,6 +15515,7 @@ mod tests {
     /// different scope's diff), spuriously surfacing "Re-run guide".
     #[test]
     fn tour_stale_for_branch_uses_branch_hash() {
+        use crate::ai::tab_ai::tour_stale_for;
         let branch_hash = "b".repeat(64);
         let unstaged_hash = "u".repeat(64); // a full SHA-256 of a *different* diff
 
@@ -17364,6 +16803,105 @@ mod tests {
                 fake.calls()
             );
         });
+    }
+
+    #[test]
+    fn fetch_tab_raw_diff_shows_the_last_commit_while_nothing_new_is_staged() {
+        let last_commit =
+            "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let fake = std::sync::Arc::new(
+            er_git::FakeGit::default()
+                .with_diff_raw(Ok(String::new()))
+                .with_diff_raw_range(Ok(last_commit.to_string())),
+        );
+        let mut tab = TabState::new_for_test_with_ports(Vec::new(), Ports::with_git(fake.clone()));
+        tab.mode = DiffMode::Staged;
+        tab.committed_unpushed = true;
+
+        let raw = tab
+            .fetch_tab_raw_diff("staged")
+            .expect("fetch through the fake");
+
+        assert_eq!(raw, last_commit);
+    }
+
+    #[test]
+    fn remote_refresh_keeps_the_preview_head_the_diff_was_taken_at() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+            let github = std::sync::Arc::new(
+                er_github::FakeGitHub::default()
+                    .with_pr_diff_remote(Ok(raw.to_string()))
+                    .with_pr_head_oid_remote(Ok("abc123".to_string())),
+            );
+            let mut tab = TabState::new_for_test_with_ports(Vec::new(), Ports::with_github(github));
+            tab.remote_repo = Some("acme/widgets".to_string());
+            tab.pr_number = Some(7);
+            tab.mode = DiffMode::PrDiff;
+
+            tab.refresh_diff().expect("refresh through the fakes");
+
+            assert_eq!(tab.files.len(), 1);
+            assert_eq!(tab.preview_head_oid.as_deref(), Some("abc123"));
+        });
+    }
+
+    #[test]
+    fn refresh_compacts_a_lock_file_in_a_small_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let raw = "diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1 +1 @@\n-old\n+new\n";
+            let fake = std::sync::Arc::new(
+                er_git::FakeGit::default()
+                    .with_current_branch(Ok("feature".into()))
+                    .with_is_merge_in_progress(false)
+                    .with_diff_raw(Ok(raw.to_string())),
+            );
+            let mut tab = TabState::new_for_test_with_ports(Vec::new(), Ports::with_git(fake));
+
+            tab.refresh_diff().expect("refresh through the fake");
+
+            assert!(!tab.lazy_mode);
+            assert_eq!(tab.files.len(), 1);
+            assert!(tab.files[0].compacted, "a lock file is compacted on load");
+        });
+    }
+
+    #[test]
+    fn a_full_refresh_stores_the_sha256_the_sidecars_compare_against() {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::storage::with_test_storage_root(tmp.path(), || {
+            let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+            let fake = std::sync::Arc::new(
+                er_git::FakeGit::default()
+                    .with_current_branch(Ok("feature".into()))
+                    .with_is_merge_in_progress(false)
+                    .with_diff_raw(Ok(raw.to_string())),
+            );
+            let mut tab = TabState::new_for_test_with_ports(Vec::new(), Ports::with_git(fake));
+
+            tab.refresh_diff().expect("refresh through the fake");
+
+            assert_eq!(tab.diff_hash, crate::ai::compute_diff_hash(raw));
+            assert_eq!(tab.branch_diff_hash, tab.diff_hash);
+        });
+    }
+
+    #[test]
+    fn ensure_file_parsed_at_fills_a_lazy_stub_from_the_raw_diff() {
+        let raw = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut files = crate::git::parse_diff(raw);
+        files[0].hunks.clear();
+        let fake = std::sync::Arc::new(er_git::FakeGit::default());
+        let mut tab = TabState::new_for_test_with_ports(files, Ports::with_git(fake));
+        tab.lazy_mode = true;
+        tab.file_headers = crate::git::parse_diff_headers(raw);
+        tab.raw_diff = Some(raw.to_string());
+
+        tab.ensure_file_parsed_at(0);
+
+        assert_eq!(tab.files[0].hunks.len(), 1);
     }
 
     #[test]
