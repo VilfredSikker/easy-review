@@ -13192,14 +13192,14 @@ mod tests {
             drop(held);
             assert!(result.is_ok(), "the service open path failed: {result:?}");
             // The open resolves the target, then loads the new tab's diff.
-            let calls = github.calls();
             assert_eq!(
-                calls.first().map(String::as_str),
-                Some("pr_state(owner=\"acme\", repo=\"widgets\", number=7)")
-            );
-            assert!(
-                calls.iter().any(|call| call.starts_with("pr_diff_remote(")),
-                "{calls:?}"
+                github.calls(),
+                vec![
+                    "pr_state(owner=\"acme\", repo=\"widgets\", number=7)",
+                    "pr_head_oid_remote(owner=\"acme\", repo=\"widgets\", pr=7)",
+                    "pr_diff_remote(owner=\"acme\", repo=\"widgets\", number=7)",
+                    "pr_head_oid_remote(owner=\"acme\", repo=\"widgets\", pr=7)",
+                ]
             );
         });
     }
@@ -16340,8 +16340,27 @@ mod route_tests {
         // Built at run time, so this test's own text never matches.
         let source = include_str!("commands.rs");
         let call = |route: &str| format!("content_routes::{route}");
+        // Each open command calls the open route in its own body, which ends
+        // at the first closing brace in column zero.
+        for command in [
+            "service_open",
+            "open_worktree",
+            "open_local_branch",
+            "open_project_branch",
+        ] {
+            let body = source
+                .split_once(&format!("fn {command}("))
+                .and_then(|(_, rest)| rest.split_once("\n}\n"))
+                .map(|(body, _)| body);
+            let Some(body) = body else {
+                panic!("no {command}");
+            };
+            assert!(
+                body.contains(&call("open(")),
+                "{command} does not call its route"
+            );
+        }
         for route in [
-            "open(",
             "close(",
             "refresh(&state, false)",
             "refresh(&state, true)",
