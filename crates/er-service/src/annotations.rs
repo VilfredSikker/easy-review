@@ -5,10 +5,10 @@
 //! nothing here: the sidecars are the state, and the reply tells the caller
 //! which row landed.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use er_engine::ai::{self, CommentType};
-use er_engine::annotations::{self, AnnotationInput, LineAnchor, ReplyAttribution};
+use er_engine::annotations::{self, AnnotationInput, LineAnchor, ReplyAttribution, WrittenPayload};
 use er_engine::diff_fetch::{fetch_branch_scope_raw, BranchScopeFetchInputs};
 use er_engine::git::{parse_diff, parse_diff_headers, DiffFile};
 use er_engine::session_store;
@@ -16,8 +16,32 @@ use er_engine::store_registry;
 use er_store::{Loaded, Scope};
 
 use crate::actor::WorkspaceDeps;
+use crate::content::ContentPatch;
 use crate::handle::WorkspaceError;
 use crate::protocol::{AnnotationKind, AnnotationTarget, TabContext};
+
+/// A write's answer and what it stored, for the actor to patch the tabs that
+/// read the same bucket.
+pub(crate) type Written<T> = Result<(T, ContentPatch), WorkspaceError>;
+
+fn sidecar(dir: &str, payload: WrittenPayload) -> ContentPatch {
+    ContentPatch::Sidecar {
+        dir: dir.to_string(),
+        payload,
+    }
+}
+
+/// The saved marks when a write changed them; nothing otherwise.
+fn marks_patch(ctx: &TabContext, changed: bool, marks: HashMap<String, String>) -> ContentPatch {
+    if changed {
+        ContentPatch::Reviewed {
+            er_dir: ctx.er_dir.clone(),
+            marks,
+        }
+    } else {
+        ContentPatch::Several(Vec::new())
+    }
+}
 
 pub(crate) fn failed(context: &str, error: impl std::fmt::Display) -> WorkspaceError {
     WorkspaceError::Failed(format!("{context}: {error:#}"))
@@ -121,7 +145,7 @@ fn add_private(
     reply_to: Option<String>,
     finding_ref: Option<String>,
     document_anchor: Option<LineAnchor>,
-) -> Result<String, WorkspaceError> {
+) -> Written<String> {
     if body.trim().is_empty() {
         return Err(WorkspaceError::Failed(
             "The annotation body is empty".to_string(),
@@ -155,7 +179,11 @@ fn add_private(
     };
     let written = annotations::write_annotation(&store, &input)
         .map_err(|error| failed("write the annotation", error))?;
-    Ok(written.id)
+    let dir = match written.payload {
+        WrittenPayload::Comments(_) => &ctx.comments_dir,
+        WrittenPayload::Questions(_) | WrittenPayload::Notes(_) => &ctx.er_dir,
+    };
+    Ok((written.id, sidecar(dir, written.payload)))
 }
 
 #[expect(
@@ -171,7 +199,7 @@ pub(crate) fn add_question(
     client_id: Option<String>,
     reply_to: Option<String>,
     finding_ref: Option<String>,
-) -> Result<String, WorkspaceError> {
+) -> Written<String> {
     add_private(
         deps,
         ctx,
@@ -199,7 +227,7 @@ pub(crate) fn add_note(
     client_id: Option<String>,
     reply_to: Option<String>,
     finding_ref: Option<String>,
-) -> Result<String, WorkspaceError> {
+) -> Written<String> {
     add_private(
         deps,
         ctx,
@@ -227,7 +255,7 @@ pub(crate) fn add_document_thread(
     kind: AnnotationKind,
     body: &str,
     source: &str,
-) -> Result<String, WorkspaceError> {
+) -> Written<String> {
     let anchor = annotations::document_line_anchor(source, line)
         .ok_or_else(|| WorkspaceError::Failed(format!("Line {line} is past the end of {file}")))?;
     let target = AnnotationTarget {
@@ -315,7 +343,7 @@ pub(crate) fn reply_to_thread(
     parent_id: &str,
     body: &str,
     client_id: Option<String>,
-) -> Result<String, WorkspaceError> {
+) -> Written<String> {
     let state = ai::load_ai_state(&ctx.er_dir, &ctx.diff_hash, None);
     let (target, kind) = thread_placement(&state, parent_id)?;
     add_private(
@@ -332,11 +360,7 @@ pub(crate) fn reply_to_thread(
     )
 }
 
-pub(crate) fn update_thread_message(
-    ctx: &TabContext,
-    id: &str,
-    body: &str,
-) -> Result<String, WorkspaceError> {
+pub(crate) fn update_thread_message(ctx: &TabContext, id: &str, body: &str) -> Written<String> {
     let text = body.trim().to_string();
     if text.is_empty() {
         return Err(WorkspaceError::Failed("Message cannot be empty".into()));
@@ -365,8 +389,10 @@ pub(crate) fn update_thread_message(
         .map_err(|error| failed("update the question", error))?;
         let path = ai::annotation_store::path_of::<ai::ErQuestions>(&store, &scope)
             .map_err(|error| failed("resolve the questions path", error))?;
-        let _ = updated;
-        Ok(path.to_string_lossy().into_owned())
+        Ok((
+            path.to_string_lossy().into_owned(),
+            sidecar(&ctx.er_dir, WrittenPayload::Questions(updated.value)),
+        ))
     } else if id.starts_with("n-") {
         let updated = ai::annotation_store::update_notes(&store, &scope, move |current| {
             let mut notes = current.ok_or_else(|| anyhow::anyhow!("the notes file is missing"))?;
@@ -387,8 +413,10 @@ pub(crate) fn update_thread_message(
         .map_err(|error| failed("update the note", error))?;
         let path = ai::annotation_store::path_of::<ai::ErNotes>(&store, &scope)
             .map_err(|error| failed("resolve the notes path", error))?;
-        let _ = updated;
-        Ok(path.to_string_lossy().into_owned())
+        Ok((
+            path.to_string_lossy().into_owned(),
+            sidecar(&ctx.er_dir, WrittenPayload::Notes(updated.value)),
+        ))
     } else {
         let scope = bucket_scope(&ctx.comments_dir)?;
         let updated =
@@ -412,17 +440,19 @@ pub(crate) fn update_thread_message(
             .map_err(|error| failed("update the comment", error))?;
         let path = ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &scope)
             .map_err(|error| failed("resolve the comments path", error))?;
-        let _ = updated;
-        Ok(path.to_string_lossy().into_owned())
+        Ok((
+            path.to_string_lossy().into_owned(),
+            sidecar(&ctx.comments_dir, WrittenPayload::Comments(updated.value)),
+        ))
     }
 }
 
-pub(crate) fn delete_thread(ctx: &TabContext, id: &str) -> Result<String, WorkspaceError> {
+pub(crate) fn delete_thread(ctx: &TabContext, id: &str) -> Written<String> {
     let store = store_registry::store();
     let id_owned = id.to_string();
     if id.starts_with("q-") {
         let scope = bucket_scope(&ctx.er_dir)?;
-        ai::annotation_store::update_questions(&store, &scope, move |current| {
+        let updated = ai::annotation_store::update_questions(&store, &scope, move |current| {
             let mut questions =
                 current.ok_or_else(|| anyhow::anyhow!("the questions file is missing"))?;
             questions.questions.retain(|q| {
@@ -433,10 +463,13 @@ pub(crate) fn delete_thread(ctx: &TabContext, id: &str) -> Result<String, Worksp
         .map_err(|error| failed("delete the question", error))?;
         let path = ai::annotation_store::path_of::<ai::ErQuestions>(&store, &scope)
             .map_err(|error| failed("resolve the questions path", error))?;
-        Ok(path.to_string_lossy().into_owned())
+        Ok((
+            path.to_string_lossy().into_owned(),
+            sidecar(&ctx.er_dir, WrittenPayload::Questions(updated.value)),
+        ))
     } else if id.starts_with("n-") {
         let scope = bucket_scope(&ctx.er_dir)?;
-        ai::annotation_store::update_notes(&store, &scope, move |current| {
+        let updated = ai::annotation_store::update_notes(&store, &scope, move |current| {
             let mut notes = current.ok_or_else(|| anyhow::anyhow!("the notes file is missing"))?;
             notes.notes.retain(|n| {
                 n.id != id_owned && n.in_reply_to.as_deref() != Some(id_owned.as_str())
@@ -446,92 +479,112 @@ pub(crate) fn delete_thread(ctx: &TabContext, id: &str) -> Result<String, Worksp
         .map_err(|error| failed("delete the note", error))?;
         let path = ai::annotation_store::path_of::<ai::ErNotes>(&store, &scope)
             .map_err(|error| failed("resolve the notes path", error))?;
-        Ok(path.to_string_lossy().into_owned())
+        Ok((
+            path.to_string_lossy().into_owned(),
+            sidecar(&ctx.er_dir, WrittenPayload::Notes(updated.value)),
+        ))
     } else {
         let scope = bucket_scope(&ctx.comments_dir)?;
-        ai::annotation_store::update_github_comments(&store, &scope, move |current| {
-            let mut comments =
-                current.ok_or_else(|| anyhow::anyhow!("the comments file is missing"))?;
-            comments.comments.retain(|c| {
-                c.id != id_owned && c.in_reply_to.as_deref() != Some(id_owned.as_str())
-            });
-            Ok::<_, anyhow::Error>(comments)
-        })
-        .map_err(|error| failed("delete the comment", error))?;
+        let updated =
+            ai::annotation_store::update_github_comments(&store, &scope, move |current| {
+                let mut comments =
+                    current.ok_or_else(|| anyhow::anyhow!("the comments file is missing"))?;
+                comments.comments.retain(|c| {
+                    c.id != id_owned && c.in_reply_to.as_deref() != Some(id_owned.as_str())
+                });
+                Ok::<_, anyhow::Error>(comments)
+            })
+            .map_err(|error| failed("delete the comment", error))?;
         let path = ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &scope)
             .map_err(|error| failed("resolve the comments path", error))?;
-        Ok(path.to_string_lossy().into_owned())
+        Ok((
+            path.to_string_lossy().into_owned(),
+            sidecar(&ctx.comments_dir, WrittenPayload::Comments(updated.value)),
+        ))
     }
 }
 
-pub(crate) fn resolve_thread(ctx: &TabContext, id: &str) -> Result<String, WorkspaceError> {
+pub(crate) fn resolve_thread(ctx: &TabContext, id: &str) -> Written<String> {
     let store = store_registry::store();
     let id_owned = id.to_string();
     let q_scope = bucket_scope(&ctx.er_dir)?;
     if let Ok(Loaded::Found(stored)) = ai::annotation_store::load_questions(&store, &q_scope) {
         if stored.value.questions.iter().any(|q| q.id == id) {
+            let mut patch = ContentPatch::Several(Vec::new());
             if stored
                 .value
                 .questions
                 .iter()
                 .any(|q| q.id == id && !q.resolved)
             {
-                ai::annotation_store::update_questions(&store, &q_scope, move |current| {
-                    let mut questions =
-                        current.ok_or_else(|| anyhow::anyhow!("the questions file vanished"))?;
-                    if let Some(row) = questions.questions.iter_mut().find(|q| q.id == id_owned) {
-                        row.resolved = true;
-                    }
-                    Ok::<_, anyhow::Error>(questions)
-                })
-                .map_err(|error| failed("resolve the question", error))?;
+                let updated =
+                    ai::annotation_store::update_questions(&store, &q_scope, move |current| {
+                        let mut questions = current
+                            .ok_or_else(|| anyhow::anyhow!("the questions file vanished"))?;
+                        if let Some(row) = questions.questions.iter_mut().find(|q| q.id == id_owned)
+                        {
+                            row.resolved = true;
+                        }
+                        Ok::<_, anyhow::Error>(questions)
+                    })
+                    .map_err(|error| failed("resolve the question", error))?;
+                patch = sidecar(&ctx.er_dir, WrittenPayload::Questions(updated.value));
             }
             let path = ai::annotation_store::path_of::<ai::ErQuestions>(&store, &q_scope)
                 .map_err(|error| failed("resolve the questions path", error))?;
-            return Ok(path.to_string_lossy().into_owned());
+            return Ok((path.to_string_lossy().into_owned(), patch));
         }
     }
     if let Ok(Loaded::Found(stored)) = ai::annotation_store::load_notes(&store, &q_scope) {
         if stored.value.notes.iter().any(|n| n.id == id) {
+            let mut patch = ContentPatch::Several(Vec::new());
             if stored.value.notes.iter().any(|n| n.id == id && !n.resolved) {
-                ai::annotation_store::update_notes(&store, &q_scope, move |current| {
-                    let mut notes =
-                        current.ok_or_else(|| anyhow::anyhow!("the notes file vanished"))?;
-                    if let Some(row) = notes.notes.iter_mut().find(|n| n.id == id_owned) {
-                        row.resolved = true;
-                    }
-                    Ok::<_, anyhow::Error>(notes)
-                })
-                .map_err(|error| failed("resolve the note", error))?;
+                let updated =
+                    ai::annotation_store::update_notes(&store, &q_scope, move |current| {
+                        let mut notes =
+                            current.ok_or_else(|| anyhow::anyhow!("the notes file vanished"))?;
+                        if let Some(row) = notes.notes.iter_mut().find(|n| n.id == id_owned) {
+                            row.resolved = true;
+                        }
+                        Ok::<_, anyhow::Error>(notes)
+                    })
+                    .map_err(|error| failed("resolve the note", error))?;
+                patch = sidecar(&ctx.er_dir, WrittenPayload::Notes(updated.value));
             }
             let path = ai::annotation_store::path_of::<ai::ErNotes>(&store, &q_scope)
                 .map_err(|error| failed("resolve the notes path", error))?;
-            return Ok(path.to_string_lossy().into_owned());
+            return Ok((path.to_string_lossy().into_owned(), patch));
         }
     }
     let gc_scope = bucket_scope(&ctx.comments_dir)?;
     if let Ok(Loaded::Found(stored)) = ai::annotation_store::load_github_comments(&store, &gc_scope)
     {
         if stored.value.comments.iter().any(|c| c.id == id) {
+            let mut patch = ContentPatch::Several(Vec::new());
             if stored
                 .value
                 .comments
                 .iter()
                 .any(|c| c.id == id && !c.resolved)
             {
-                ai::annotation_store::update_github_comments(&store, &gc_scope, move |current| {
-                    let mut comments =
-                        current.ok_or_else(|| anyhow::anyhow!("the comments file vanished"))?;
-                    if let Some(row) = comments.comments.iter_mut().find(|c| c.id == id_owned) {
-                        row.resolved = true;
-                    }
-                    Ok::<_, anyhow::Error>(comments)
-                })
+                let updated = ai::annotation_store::update_github_comments(
+                    &store,
+                    &gc_scope,
+                    move |current| {
+                        let mut comments =
+                            current.ok_or_else(|| anyhow::anyhow!("the comments file vanished"))?;
+                        if let Some(row) = comments.comments.iter_mut().find(|c| c.id == id_owned) {
+                            row.resolved = true;
+                        }
+                        Ok::<_, anyhow::Error>(comments)
+                    },
+                )
                 .map_err(|error| failed("resolve the comment", error))?;
+                patch = sidecar(&ctx.comments_dir, WrittenPayload::Comments(updated.value));
             }
             let path = ai::annotation_store::path_of::<ai::ErGithubComments>(&store, &gc_scope)
                 .map_err(|error| failed("resolve the comments path", error))?;
-            return Ok(path.to_string_lossy().into_owned());
+            return Ok((path.to_string_lossy().into_owned(), patch));
         }
     }
     Err(WorkspaceError::Failed(format!("Thread not found: {id}")))
@@ -542,7 +595,7 @@ pub(crate) fn promote_to_note(
     ctx: &TabContext,
     question_id: &str,
     body: Option<String>,
-) -> Result<String, WorkspaceError> {
+) -> Written<String> {
     let store = store_registry::store();
     let q_scope = bucket_scope(&ctx.er_dir)?;
     let questions = match ai::annotation_store::load_questions(&store, &q_scope) {
@@ -591,7 +644,7 @@ pub(crate) fn promote_to_note(
         ai::promote::promote_to_note(&source, &thread, body, file, anchor, ctx.diff_hash.clone());
     let note_id = note.id.clone();
     let branch_hash = ctx.branch_diff_hash.clone();
-    ai::annotation_store::update_notes(&store, &q_scope, move |current| {
+    let notes = ai::annotation_store::update_notes(&store, &q_scope, move |current| {
         let mut notes = current.unwrap_or_else(|| ai::ErNotes {
             version: 1,
             diff_hash: branch_hash.clone(),
@@ -603,7 +656,7 @@ pub(crate) fn promote_to_note(
     })
     .map_err(|error| failed("write the note", error))?;
     let source_id = question_id.to_string();
-    ai::annotation_store::update_questions(&store, &q_scope, move |current| {
+    let questions = ai::annotation_store::update_questions(&store, &q_scope, move |current| {
         let mut questions =
             current.ok_or_else(|| anyhow::anyhow!("the questions file is missing"))?;
         questions
@@ -612,7 +665,13 @@ pub(crate) fn promote_to_note(
         Ok::<_, anyhow::Error>(questions)
     })
     .map_err(|error| failed("remove the promoted question", error))?;
-    Ok(note_id)
+    Ok((
+        note_id,
+        ContentPatch::Several(vec![
+            sidecar(&ctx.er_dir, WrittenPayload::Notes(notes.value)),
+            sidecar(&ctx.er_dir, WrittenPayload::Questions(questions.value)),
+        ]),
+    ))
 }
 
 pub(crate) fn reply_to_finding(
@@ -622,7 +681,7 @@ pub(crate) fn reply_to_finding(
     body: &str,
     ai_assist: bool,
     client_id: Option<String>,
-) -> Result<(String, String), WorkspaceError> {
+) -> Written<(String, String)> {
     if ai_assist {
         return Err(WorkspaceError::Failed(
             "AI-assisted finding replies stay on the flag-off path".into(),
@@ -653,7 +712,7 @@ pub(crate) fn reply_to_finding(
         line_num_end: None,
     };
     if let Some(root_id) = ai::find_finding_thread_root(&state, finding_id) {
-        let reply_id = add_private(
+        let (reply_id, patch) = add_private(
             deps,
             ctx,
             CommentType::GitHubComment,
@@ -665,9 +724,9 @@ pub(crate) fn reply_to_finding(
             None,
             None,
         )?;
-        return Ok((root_id, reply_id));
+        return Ok(((root_id, reply_id), patch));
     }
-    let root_id = add_private(
+    let (root_id, root_patch) = add_private(
         deps,
         ctx,
         CommentType::GitHubComment,
@@ -679,7 +738,7 @@ pub(crate) fn reply_to_finding(
         Some(finding_id.to_string()),
         None,
     )?;
-    let reply_id = add_private(
+    let (reply_id, reply_patch) = add_private(
         deps,
         ctx,
         CommentType::GitHubComment,
@@ -691,7 +750,10 @@ pub(crate) fn reply_to_finding(
         None,
         None,
     )?;
-    Ok((root_id, reply_id))
+    Ok((
+        (root_id, reply_id),
+        ContentPatch::Several(vec![root_patch, reply_patch]),
+    ))
 }
 
 fn reviewed_paths(diff_paths: &HashSet<String>, pillar_paths: Vec<String>) -> Vec<String> {
@@ -706,12 +768,12 @@ pub(crate) fn bulk_review_pillar(
     ctx: &TabContext,
     pillar_id: &str,
     reviewed: bool,
-) -> Result<usize, WorkspaceError> {
+) -> Written<usize> {
     let raw = fetch_raw(deps, ctx)?;
     let headers = parse_diff_headers(&raw);
     let diff_paths: HashSet<String> = headers.iter().map(|header| header.path.clone()).collect();
     let Some(tour) = ai::load_tour_sidecar(&ctx.er_dir, "tour.json") else {
-        return Ok(0);
+        return Ok((0, ContentPatch::Several(Vec::new())));
     };
     let ownership = tour.pillar_ownership(|path| diff_paths.contains(path));
     let paths = if pillar_id == "__other__" {
@@ -747,14 +809,14 @@ pub(crate) fn bulk_review_pillar(
         session_store::save_reviewed(&store, &scope, &map)
             .map_err(|error| failed("save the reviewed marks", error))?;
     }
-    Ok(changed)
+    Ok((changed, marks_patch(ctx, changed > 0, map)))
 }
 
 pub(crate) fn toggle_reviewed(
     deps: &WorkspaceDeps,
     ctx: &TabContext,
     path: &str,
-) -> Result<usize, WorkspaceError> {
+) -> Written<usize> {
     let raw = fetch_raw(deps, ctx)?;
     let headers = parse_diff_headers(&raw);
     if !headers.iter().any(|header| header.path == path) {
@@ -773,7 +835,7 @@ pub(crate) fn toggle_reviewed(
         session_store::save_reviewed(&store, &scope, &map)
             .map_err(|error| failed("save the reviewed marks", error))?;
     }
-    Ok(usize::from(changed))
+    Ok((usize::from(changed), marks_patch(ctx, changed, map)))
 }
 
 pub(crate) fn mark_reviewed(
@@ -781,11 +843,11 @@ pub(crate) fn mark_reviewed(
     ctx: &TabContext,
     path: &str,
     reviewed: bool,
-) -> Result<usize, WorkspaceError> {
+) -> Written<usize> {
     let raw = fetch_raw(deps, ctx)?;
     let headers = parse_diff_headers(&raw);
     if !headers.iter().any(|header| header.path == path) {
-        return Ok(0);
+        return Ok((0, ContentPatch::Several(Vec::new())));
     }
     let store = store_registry::store();
     let scope = bucket_scope(&ctx.er_dir)?;
@@ -797,5 +859,5 @@ pub(crate) fn mark_reviewed(
         session_store::save_reviewed(&store, &scope, &map)
             .map_err(|error| failed("save the reviewed marks", error))?;
     }
-    Ok(usize::from(changed))
+    Ok((usize::from(changed), marks_patch(ctx, changed, map)))
 }

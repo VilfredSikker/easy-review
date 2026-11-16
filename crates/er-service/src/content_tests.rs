@@ -1,5 +1,6 @@
-//! Tab content: a load publishes the sections, a tick shares them, and a key
-//! the actor never loaded is refused before any effect.
+//! Tab content: a load publishes the sections, a write patches every tab on
+//! its bucket, a tick shares the sections, and a key the actor never loaded
+//! is refused before any effect.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use er_github::FakeGitHub;
 use crate::actor::WorkspaceDeps;
 use crate::guard::TRIPS;
 use crate::handle::{ActorMsg, WorkspaceError};
-use crate::protocol::{Command, Reply};
+use crate::protocol::{AnnotationTarget, Command, Reply};
 use crate::workspace::WorkspaceView;
 use crate::{spawn, WorkspaceHandle};
 
@@ -130,6 +131,83 @@ fn a_loaded_tab_publishes_its_diff_and_context() -> anyhow::Result<()> {
     })
 }
 
+#[test]
+fn a_mark_moves_the_reviewed_section_of_every_tab_on_its_bucket() -> anyhow::Result<()> {
+    with_root(|repo| {
+        let handle = actor_over(git(RAW));
+        let (first, second) = (TabKey::next(), TabKey::next());
+        load(&handle, first, repo)?;
+        load(&handle, second, repo)?;
+        let before = handle.view();
+        let context = content_of(&before, first)?.context.clone();
+
+        let reply = handle.send_and_wait_with(
+            Command::MarkReviewed {
+                context,
+                path: "src/b.rs".to_string(),
+                reviewed: true,
+            },
+            WAIT,
+        )?;
+
+        assert_eq!(reply, Reply::ReviewedChanged { changed: 1 });
+        let after = handle.view();
+        for key in [first, second] {
+            let (old, new) = (content_of(&before, key)?, content_of(&after, key)?);
+            assert!(
+                new.reviewed.marks.contains_key("src/b.rs"),
+                "{key:?} missed the mark"
+            );
+            assert!(new.reviewed.revision > old.reviewed.revision);
+            assert!(
+                Arc::ptr_eq(&old.diff, &new.diff),
+                "a mark rebuilt the diff section"
+            );
+            assert!(Arc::ptr_eq(&old.ai, &new.ai));
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn a_question_lands_in_the_ai_section_with_its_painted_id() -> anyhow::Result<()> {
+    with_root(|repo| {
+        let handle = actor_over(git(RAW));
+        let key = TabKey::next();
+        load(&handle, key, repo)?;
+        let context = content_of(&handle.view(), key)?.context.clone();
+
+        handle.send_and_wait_with(
+            Command::AddQuestion {
+                context,
+                target: AnnotationTarget {
+                    file: "src/b.rs".to_string(),
+                    hunk_idx: 0,
+                    line_num: Some(2),
+                    line_num_end: None,
+                },
+                body: "why?".to_string(),
+                side: Some("RIGHT".to_string()),
+                client_id: Some("q-painted".to_string()),
+                reply_to: None,
+                finding_ref: None,
+            },
+            WAIT,
+        )?;
+
+        let content = content_of(&handle.view(), key)?;
+        let ids: Vec<&str> = content
+            .ai
+            .state
+            .questions
+            .iter()
+            .flat_map(|questions| questions.questions.iter().map(|q| q.id.as_str()))
+            .collect();
+        assert_eq!(ids, vec!["q-painted"]);
+        Ok(())
+    })
+}
+
 /// An arena tick republishes the view; the sections behind it must be the
 /// same allocations, or every tick would copy every open diff.
 #[test]
@@ -230,6 +308,98 @@ fn a_load_clears_moved_and_orphaned_marks_and_saves_them() -> anyhow::Result<()>
         assert_eq!(saved.get("src/b.rs"), Some(&b_hash));
         let content = content_of(&handle.view(), key)?;
         assert_eq!(content.reviewed.marks, saved);
+        Ok(())
+    })
+}
+
+/// A diff of `lines` changed lines, a hundred to a file.
+fn large_diff(lines: usize) -> String {
+    let mut raw = String::new();
+    for file in 0..lines.div_ceil(100) {
+        let path = format!("src/f{file}.rs");
+        raw.push_str(&format!(
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,100 +1,100 @@\n"
+        ));
+        for line in 0..100 {
+            raw.push_str(&format!("-old {file} {line}\n+new {file} {line}\n"));
+        }
+    }
+    raw
+}
+
+fn median(
+    runs: usize,
+    mut operation: impl FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<Duration> {
+    let mut samples = Vec::with_capacity(runs);
+    for _ in 0..runs {
+        let started = Instant::now();
+        operation()?;
+        samples.push(started.elapsed());
+    }
+    samples.sort_unstable();
+    Ok(samples[runs / 2])
+}
+
+/// Times a tab load and a reviewed mark through the actor over a 5,000-line
+/// diff, against the same effects called directly with the same ports.
+#[test]
+#[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]
+fn the_content_routes_stay_within_the_latency_budget() -> anyhow::Result<()> {
+    const RUNS: usize = 30;
+    let raw = large_diff(5_000);
+    with_root(|repo| {
+        let github: Arc<dyn er_github::GitHub> = Arc::new(FakeGitHub::default());
+        let git: Arc<dyn er_git::Git> = git(&raw);
+        let deps = WorkspaceDeps::new(Ports { git, github });
+        let tab = working_tab(repo);
+
+        let direct_open = median(RUNS, || {
+            let input = crate::effect::first_load(&deps, &tab, None)?;
+            crate::effect::load_tab(&deps, input)?;
+            Ok(())
+        })?;
+        let handle = spawn(deps.clone());
+        let key = TabKey::next();
+        let routed_open = median(RUNS, || load(&handle, key, repo).map(|_| ()))?;
+
+        let context = content_of(&handle.view(), key)?.context.clone();
+        let mut reviewed = false;
+        let direct_mark = median(RUNS, || {
+            reviewed = !reviewed;
+            crate::annotations::mark_reviewed(&deps, &context, "src/f0.rs", reviewed)?;
+            Ok(())
+        })?;
+        let routed_mark = median(RUNS, || {
+            reviewed = !reviewed;
+            handle.send_and_wait_with(
+                Command::MarkReviewed {
+                    context: context.clone(),
+                    path: "src/f0.rs".to_string(),
+                    reviewed,
+                },
+                WAIT,
+            )?;
+            Ok(())
+        })?;
+
+        println!(
+            "open: direct median {direct_open:?}, actor median {routed_open:?}; \
+             mark reviewed: direct median {direct_mark:?}, actor median {routed_mark:?}; \
+             {RUNS} runs over {} bytes",
+            raw.len()
+        );
+        for (name, direct, routed) in [
+            ("open", direct_open, routed_open),
+            ("mark reviewed", direct_mark, routed_mark),
+        ] {
+            // 10% or 2 ms over the direct median, whichever is larger.
+            let budget = (direct * 11 / 10).max(direct + Duration::from_millis(2));
+            assert!(
+                routed <= budget,
+                "{name} through the actor cost {routed:?}, over the {budget:?} budget"
+            );
+        }
         Ok(())
     })
 }
