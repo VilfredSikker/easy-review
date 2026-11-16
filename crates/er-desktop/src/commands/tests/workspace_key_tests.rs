@@ -93,6 +93,12 @@ fn loaded_key(state: &AppState, sent: TabDescriptor) -> String {
         content_routes::open(state, sent).map(drop)
     });
     assert!(opened.is_ok(), "{opened:?}");
+    active_content_key(state)
+}
+
+/// The key the active tab's content names in its tab and its context, after
+/// checking the content sits on the actor of that key.
+fn active_content_key(state: &AppState) -> String {
     let view = state.service.app_registry().tabs_view();
     let entry = view.active_entry().expect("the opened tab is active");
     let content = state
@@ -200,16 +206,46 @@ fn every_view_of_a_tab_names_one_workspace() {
             );
         }
 
-        // A tracked remote still opens as a remote tab, on the remote's actor.
+        // A tracked remote still opens as a remote tab, on the remote's actor:
+        // the open's descriptor, its loaded content and an App tab on either
+        // the cwd or the project's root all name the remote's key.
         track_remote(&root);
         let opened = while_the_app_is_locked(&state, "open_remote_pr", |state| {
             service_open_remote_pr(state, "acme".into(), "widgets".into(), 7, None).map(drop)
         });
         assert!(opened.is_ok(), "{opened:?}");
-        let view = state.service.app_registry().tabs_view();
-        let entry = view.active_entry().expect("the opened tab is active");
-        assert_eq!(entry.descriptor.kind, TabKind::RemotePr);
-        assert_eq!(entry.descriptor.workspace_key(), remote_key);
+        let tabs = state.service.app_registry().tabs_view();
+        let entry = tabs.active_entry().expect("the opened tab is active");
+        assert_eq!(
+            entry.descriptor.kind,
+            TabKind::RemotePr,
+            "tracked: open kind"
+        );
+        assert_eq!(
+            entry.descriptor.workspace_key(),
+            remote_key,
+            "tracked: open descriptor"
+        );
+        assert_eq!(active_content_key(&state), remote_key, "tracked: content");
+        for app_root in [&cwd, &root] {
+            let app = app_tab(app_root, remote_tab);
+            let saved = descriptor_from_tab(&app, &view);
+            assert_eq!(
+                app.identity().workspace_key(),
+                remote_key,
+                "tracked, App on {app_root}: App tab"
+            );
+            assert_eq!(
+                saved.workspace_key(),
+                remote_key,
+                "tracked, App on {app_root}: saved descriptor"
+            );
+            assert_eq!(
+                loaded_key(&state, saved),
+                remote_key,
+                "tracked, App on {app_root}: restored content"
+            );
+        }
     });
 }
 
