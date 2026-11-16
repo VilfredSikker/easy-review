@@ -1322,11 +1322,15 @@ pub async fn set_mode(
     let state = state.inner().clone();
     run_blocking(move || {
         // The modes the workspace loads go to the active tab's actor; History,
-        // Conflicts, Hidden and Tour stay on the App until the snapshot reads
-        // the content.
+        // Conflicts and Hidden are recorded there and stay on the App until
+        // the snapshot reads the content.
         #[cfg(feature = "v1-service")]
         if let Some(diff_mode) = content_routes::routed_mode(&mode) {
             return content_routes::set_mode(&state, &mode, diff_mode, pr_number, tab_idx);
+        }
+        #[cfg(feature = "v1-service")]
+        if let Some(diff_mode) = content_routes::recorded_mode(&mode) {
+            content_routes::record_mode(&state, &mode, diff_mode, tab_idx);
         }
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
@@ -11879,6 +11883,10 @@ pub async fn poll(state: State<'_, AppState>) -> Result<PollResponse, String> {
 
 fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     let t0 = std::time::Instant::now();
+    // Flag-on, the active tab's actor reads its sidecars again when an outside
+    // writer moved them. Sent before the App lock and never awaited.
+    #[cfg(feature = "v1-service")]
+    content_routes::reload_sidecars(state);
 
     // Pass one: the calls that mutate. A short lock, released before the
     // snapshot re-takes it — so a `select_file` or `set_mode` arriving

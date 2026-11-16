@@ -174,6 +174,14 @@ impl ServiceState {
         Some(self.started(key)?.send_and_wait(command))
     }
 
+    /// Sends `command` to `key`'s actor when it is up, without waiting for
+    /// the reply. Answers whether it was sent.
+    pub fn post_if_started(&self, key: &str, command: Command) -> bool {
+        self.started(key)
+            .map(|handle| drop(handle.send(command)))
+            .is_some()
+    }
+
     fn started(&self, key: &str) -> Option<WorkspaceHandle> {
         let handles = match self.handles.lock() {
             Ok(handles) => handles,
