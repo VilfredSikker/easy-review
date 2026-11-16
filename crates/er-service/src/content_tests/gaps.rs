@@ -6,11 +6,12 @@ use std::path::Path;
 use std::sync::mpsc::channel;
 use std::sync::{Mutex, RwLock};
 
+use er_engine::annotations::WrittenPayload;
 use er_engine::preview_key::file_preview_key;
 
 use super::*;
 use crate::app_registry::AppRegistry;
-use crate::content::SidecarStamp;
+use crate::content::{ReloadedAi, SidecarStamp};
 use crate::sidecar_reload::SidecarReloads;
 use crate::AppCommand;
 
@@ -274,6 +275,37 @@ fn a_load_from_before_a_recorded_mode_is_refused() -> anyhow::Result<()> {
 
     assert_eq!(stale.err(), Some(PatchRefused::Moved));
     assert_eq!(content_of(state.view(), key)?.tab.mode, DiffMode::History);
+    Ok(())
+}
+
+/// A tick's sidecar reload that lands while a load runs lets the load apply;
+/// a sidecar the workspace wrote meanwhile still refuses it.
+#[test]
+fn a_load_applies_over_a_reload_but_not_over_a_write() -> Result<(), PatchRefused> {
+    let mut state = WorkspaceState::new();
+    let key = TabKey::next();
+    let loaded = |since| ContentPatch::Loaded {
+        key,
+        since,
+        loaded: loaded_tab("/repo"),
+    };
+    let (since, _) = state.apply_patch(loaded(None))?;
+    let ai = Box::new(ReloadedAi {
+        state: AiState::default(),
+        stamp: SidecarStamp::default(),
+    });
+    state.apply_patch(ContentPatch::Ai { key, since, ai })?;
+    let (since, _) = state.apply_patch(loaded(Some(since)))?;
+
+    let payload = WrittenPayload::Questions(er_engine::ai::ErQuestions {
+        version: 1,
+        diff_hash: String::new(),
+        questions: Vec::new(),
+    });
+    let dir = String::new();
+    state.apply_patch(ContentPatch::Sidecar { dir, payload })?;
+    let stale = state.apply_patch(loaded(Some(since)));
+    assert_eq!(stale.err(), Some(PatchRefused::Moved));
     Ok(())
 }
 

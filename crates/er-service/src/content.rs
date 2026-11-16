@@ -54,12 +54,13 @@ pub fn loads(mode: DiffMode) -> bool {
 
 impl TabContent {
     /// The latest revision of any section. A load is applied only over the
-    /// content it started from, so a write that landed meanwhile survives.
+    /// content it started from, so a write that landed meanwhile survives. A
+    /// sidecar reload is no write: the load reads the sidecars too.
     pub fn generation(&self) -> u64 {
         self.diff
             .revision
             .max(self.reviewed.revision)
-            .max(self.ai.revision)
+            .max(self.ai.written)
             .max(self.pr.revision)
             .max(self.mode_revision)
     }
@@ -103,6 +104,7 @@ impl TabContent {
             }),
             ai: Arc::new(AiSection {
                 revision,
+                written: revision,
                 state: loaded.ai,
                 stamp: loaded.ai_stamp,
             }),
@@ -129,6 +131,7 @@ impl TabContent {
         Self {
             ai: Arc::new(AiSection {
                 revision,
+                written: self.ai.written,
                 state: ai.state,
                 stamp: ai.stamp,
             }),
@@ -153,6 +156,7 @@ impl TabContent {
         Some(Self {
             ai: Arc::new(AiSection {
                 revision,
+                written: revision,
                 state,
                 stamp,
             }),
@@ -262,6 +266,8 @@ pub struct ReviewedSection {
 /// The tab's AI state, assembled from its sidecars.
 pub struct AiSection {
     pub revision: u64,
+    /// The revision of the last load or write, which a reload keeps.
+    pub written: u64,
     pub state: AiState,
     /// The sidecars as they stood when `state` was read.
     pub stamp: SidecarStamp,
