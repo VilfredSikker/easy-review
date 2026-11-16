@@ -7271,8 +7271,8 @@ fn open_worktree_tab(state: &AppState, path_str: String) -> Result<AppSnapshot, 
     app.open_tab(new_tab);
     crate::tabs::persist_app_tabs(&app, &state.view);
     let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path_str);
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
-    Ok(snap_from(&app, &state))
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    Ok(snap_from(&app, state))
 }
 
 // ── Project commands ─────────────────────────────────────────────────────────
@@ -9676,9 +9676,9 @@ fn open_project_branch_tab(
         false,
     );
     projects::set_active(&project_id);
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, &state);
-    Ok(snap_from(&app, &state))
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    kick_active_gh_status(&app, state);
+    Ok(snap_from(&app, state))
 }
 
 #[tauri::command]

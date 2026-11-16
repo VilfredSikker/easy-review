@@ -16,15 +16,18 @@ use crate::service::{actor_key, ServiceState};
 /// Over the lazy-parse size, with more files than a lazy diff parses up
 /// front, so every file starts as a stub.
 fn lazy_raw() -> String {
+    use std::fmt::Write as _;
+
     let filler = "x".repeat(120);
-    (0..600)
-        .map(|n| {
-            format!(
-                "diff --git a/src/f{n}.rs b/src/f{n}.rs\n--- a/src/f{n}.rs\n+++ b/src/f{n}.rs\n\
-                 @@ -1,2 +1,2 @@\n-old {filler}\n+new {filler}\n {filler}\n"
-            )
-        })
-        .collect()
+    let mut raw = String::new();
+    for n in 0..600 {
+        let _ = write!(
+            raw,
+            "diff --git a/src/f{n}.rs b/src/f{n}.rs\n--- a/src/f{n}.rs\n+++ b/src/f{n}.rs\n\
+             @@ -1,2 +1,2 @@\n-old {filler}\n+new {filler}\n {filler}\n"
+        );
+    }
+    raw
 }
 
 fn ports() -> er_engine::ports::Ports {
