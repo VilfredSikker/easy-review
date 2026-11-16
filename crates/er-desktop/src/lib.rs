@@ -35,3 +35,6 @@ pub mod terminal;
 pub mod triage_update;
 pub mod view_state;
 pub mod window_placement;
+
+#[cfg(all(test, feature = "v1-service"))]
+mod content_parity_tests;
