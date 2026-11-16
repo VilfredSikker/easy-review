@@ -2763,32 +2763,25 @@ pub async fn add_document_thread(
             return Err("The document changed before the comment was saved".to_string());
         }
         let source = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
-        let (key, command) = {
+        // The preview stays on the App, which renders it; the context comes
+        // from the registry's active tab, as every annotation route's does.
+        {
             let app = state.app.lock().map_err(|e| e.to_string())?;
             if app.active_tab != active_tab
                 || app.tab().file_preview_key(&file) != request.preview_key
             {
                 return Err("The document changed before the comment was saved".to_string());
             }
-            let context = tab_context(&app);
-            let key = context.workspace_key();
-            (
-                key,
-                er_service::Command::AddDocumentThread {
-                    context,
-                    file,
-                    line: line_num,
-                    line_end: line_num_end,
-                    kind,
-                    body: text,
-                    source,
-                },
-            )
-        };
-        state
-            .service
-            .send(&key, command)
-            .map_err(|error| error.to_string())?;
+        }
+        content_routes::annotate(&state, |context| er_service::Command::AddDocumentThread {
+            context,
+            file,
+            line: line_num,
+            line_end: line_num_end,
+            kind,
+            body: text,
+            source,
+        })?;
         Ok(AppSnapshot::default())
     })
     .await;
