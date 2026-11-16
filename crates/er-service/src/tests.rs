@@ -1288,5 +1288,6 @@ diff --git a/src/b.rs b/src/b.rs
 }
 
 mod app_registry;
+mod comment_patches;
 mod github_sync;
 mod pr_posts;
