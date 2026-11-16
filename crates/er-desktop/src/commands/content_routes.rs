@@ -354,7 +354,11 @@ fn parse(
     }
     let key = active.key;
     let expand = false;
-    send(state, &active.tab, Command::ParseFiles { key, paths, expand })?;
+    send(
+        state,
+        &active.tab,
+        Command::ParseFiles { key, paths, expand },
+    )?;
     Ok(())
 }
 

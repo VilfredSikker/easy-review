@@ -112,7 +112,7 @@ pub(crate) enum ActorMsg {
     /// A flow call finished; the actor publishes what it changed.
     FlowsChanged(crate::flows::FlowsUpdate),
     /// A sidecar reload read the disk; the actor applies what moved.
-    Reloaded(crate::sidecar_reload::Reloaded),
+    Reloaded(Box<crate::sidecar_reload::Reloaded>),
     /// A flow stage finished; the flows advance.
     FlowTick,
 }

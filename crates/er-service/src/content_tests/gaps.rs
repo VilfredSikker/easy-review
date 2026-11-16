@@ -190,7 +190,10 @@ fn a_pr_section_comes_from_the_open_cache_when_a_prefetch_warmed_it() -> anyhow:
             number: 7,
         })?;
         let deadline = Instant::now() + WAIT;
-        while registry.remote_pr_open_entry("acme", "widgets", 7).is_none() {
+        while registry
+            .remote_pr_open_entry("acme", "widgets", 7)
+            .is_none()
+        {
             anyhow::ensure!(Instant::now() < deadline, "the prefetch never landed");
             std::thread::yield_now();
         }
@@ -296,7 +299,10 @@ diff --git a/src/a.rs b/src/a.rs
 #[test]
 fn an_expanded_file_stays_expanded_across_a_refresh() -> anyhow::Result<()> {
     with_root(|repo| {
-        let lock = WITH_LOCK.split("diff --git a/src").next().unwrap_or_default();
+        let lock = WITH_LOCK
+            .split("diff --git a/src")
+            .next()
+            .unwrap_or_default();
         let git = Arc::new(
             FakeGit::default()
                 .with_current_branch(Ok("feature".to_string()))
@@ -306,12 +312,17 @@ fn an_expanded_file_stays_expanded_across_a_refresh() -> anyhow::Result<()> {
         let handle = actor_over(git);
         let key = TabKey::next();
         load(&handle, key, repo)?;
-        let lock_file = |handle: &WorkspaceHandle| -> anyhow::Result<Arc<er_engine::git::DiffFile>> {
-            let content = content_of(&handle.view(), key)?;
-            let file = content.diff.files.iter().find(|f| f.path == "Cargo.lock");
-            file.cloned().ok_or_else(|| anyhow::anyhow!("no Cargo.lock"))
-        };
-        assert!(lock_file(&handle)?.compacted, "the lock file was not compacted");
+        let lock_file =
+            |handle: &WorkspaceHandle| -> anyhow::Result<Arc<er_engine::git::DiffFile>> {
+                let content = content_of(&handle.view(), key)?;
+                let file = content.diff.files.iter().find(|f| f.path == "Cargo.lock");
+                file.cloned()
+                    .ok_or_else(|| anyhow::anyhow!("no Cargo.lock"))
+            };
+        assert!(
+            lock_file(&handle)?.compacted,
+            "the lock file was not compacted"
+        );
         let parse = |expand| Command::ParseFiles {
             key,
             paths: vec!["Cargo.lock".to_string()],

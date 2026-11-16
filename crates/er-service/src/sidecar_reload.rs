@@ -63,12 +63,12 @@ impl SidecarReloads {
         let _ = thread::Builder::new().spawn(move || {
             let ai = crate::effect::reload_ai(&deps, &content, false);
             let since = content.ai.revision;
-            let _ = tx.send(ActorMsg::Reloaded(Reloaded {
+            let _ = tx.send(ActorMsg::Reloaded(Box::new(Reloaded {
                 key,
                 since,
                 ai,
                 reply,
-            }));
+            })));
         });
     }
 
@@ -77,7 +77,7 @@ impl SidecarReloads {
     pub(crate) fn finish(
         &mut self,
         state: &mut WorkspaceState,
-        done: Reloaded,
+        done: Box<Reloaded>,
         subscribers: &Mutex<Vec<Sender<Event>>>,
         view: &RwLock<Arc<WorkspaceView>>,
     ) {
@@ -86,7 +86,7 @@ impl SidecarReloads {
             since,
             ai,
             reply,
-        } = done;
+        } = *done;
         self.running.remove(&key);
         let current = state.view().tabs.get(&key).map(|c| c.ai.revision);
         let reloaded = match ai {

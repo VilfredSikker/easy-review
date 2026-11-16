@@ -24,9 +24,9 @@ use crate::content::{
     AiSection, DiffMeta, DiffSection, LoadedDiff, LoadedTab, PrSection, ReloadedAi, SidecarStamp,
     TabContent,
 };
-use crate::tab_pr::{load_pr, PrLoad};
 use crate::handle::WorkspaceError;
 use crate::protocol::{OpenTarget, TabContext};
+use crate::tab_pr::{load_pr, PrLoad};
 use crate::workspace::WorkspaceTarget;
 
 /// Resolves what to open: parse the target, ask GitHub for the PR state, and

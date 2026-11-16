@@ -225,7 +225,10 @@ fn the_poll_tick_brings_an_outside_write_into_the_active_content() {
         assert!(sent, "the tick sent nothing");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while content(&state, &active).ai.state.total_findings() == 0 {
-            assert!(std::time::Instant::now() < deadline, "the write never arrived");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the write never arrived"
+            );
             std::thread::yield_now();
         }
     });
@@ -247,7 +250,8 @@ fn every_mode_reaches_the_active_content() {
         }
 
         for (name, mode) in [("hidden", DiffMode::Hidden), ("history", DiffMode::History)] {
-            let route = move |state: &AppState| content_routes::record_mode(state, name, mode, None);
+            let route =
+                move |state: &AppState| content_routes::record_mode(state, name, mode, None);
             while_the_app_is_locked(&state, name, route);
             assert_eq!(content(&state, &active).tab.mode, mode);
         }

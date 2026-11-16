@@ -183,7 +183,12 @@ impl TabContent {
     /// This content with lazy files parsed. Only the parsed files get new
     /// `Arc`s; the rest are shared with the previous section. An expanded
     /// file stays expanded across the next loads.
-    fn with_parsed(&self, parsed: Vec<(usize, DiffFile)>, expanded: &[String], revision: u64) -> Self {
+    fn with_parsed(
+        &self,
+        parsed: Vec<(usize, DiffFile)>,
+        expanded: &[String],
+        revision: u64,
+    ) -> Self {
         let mut files = self.diff.files.clone();
         for (index, file) in parsed {
             if let Some(slot) = files.get_mut(index) {
