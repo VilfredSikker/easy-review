@@ -11,7 +11,7 @@ use er_engine::config::{ConfigFieldValue, ConfigHubFieldDto, RISK_RULE_PATCH_KEY
 use er_engine::ports::Ports;
 
 use crate::actor::WorkspaceDeps;
-use crate::settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply};
+use crate::settings::{spawn_settings, SaveSlot, SettingsCommand, SettingsHandle, SettingsReply};
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -212,5 +212,74 @@ fn an_agents_file_broken_mid_session_recovers_on_reopen() -> anyhow::Result<()> 
             "repaired-agent",
             |config| config.agent.command.clone(),
         )
+    })
+}
+
+fn theme_row(handle: &SettingsHandle) -> Option<String> {
+    handle
+        .view()
+        .hub
+        .fields
+        .general
+        .iter()
+        .find_map(|field| match field {
+            ConfigHubFieldDto::Cycle { key, value, .. } if key == "display.theme" => {
+                Some(value.clone())
+            }
+            _ => None,
+        })
+}
+
+/// A save the file refuses leaves the published view equal to the disk: the
+/// refused edit is undone, and the failure is shown.
+#[test]
+fn a_refused_save_leaves_the_view_as_saved() -> anyhow::Result<()> {
+    in_temp_storage(|dir| {
+        let handle = actor(dir);
+        patch(&handle, "display.theme", text("first-theme"))?;
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "not = = toml")?;
+
+        let refused = patch(&handle, "display.theme", text("while-broken"));
+        assert!(refused.is_err(), "a save over a broken file is refused");
+        let view = handle.view();
+        assert_eq!(view.config.display.theme, "first-theme");
+        assert_eq!(theme_row(&handle).as_deref(), Some("first-theme"));
+        assert!(view.last_error.is_some(), "the refusal is shown");
+        assert_eq!(std::fs::read_to_string(&path)?, "not = = toml");
+        Ok(())
+    })
+}
+
+fn themed(theme: &str) -> er_engine::config::ErConfig {
+    let mut config = er_engine::config::ErConfig::default();
+    config.display.theme = theme.to_string();
+    config
+}
+
+/// A write still in flight when a rollback dropped it reports an error once it
+/// runs, even after a later save reached the disk.
+#[test]
+fn a_write_in_flight_during_a_rollback_reports_an_error() -> anyhow::Result<()> {
+    in_temp_storage(|dir| {
+        let path = dir.join("config.toml");
+        let slot = SaveSlot::new(&themed("loaded"));
+        slot.stage(1, &themed("one"));
+        slot.stage(2, &themed("two"));
+
+        let on_disk = slot.reset(2, None);
+        assert_eq!(on_disk.map(|c| c.display.theme).as_deref(), Some("loaded"));
+
+        slot.stage(4, &themed("four"));
+        assert_eq!(slot.write_latest(&path, 4), Ok(()));
+        assert!(
+            slot.write_latest(&path, 2).is_err(),
+            "the dropped write must not report success"
+        );
+        assert!(slot.write_latest(&path, 1).is_err());
+        let (saved, error) = er_engine::config::adopt_config_from(&path);
+        assert!(error.is_none());
+        assert_eq!(saved.display.theme, "four");
+        Ok(())
     })
 }
