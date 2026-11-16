@@ -3745,34 +3745,19 @@ impl TabState {
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
     /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {
-        let mut visible: Vec<(usize, &DiffFile)> =
-            self.active_diff_files().iter().enumerate().collect();
+        crate::visible_files::visible_files(self.active_diff_files(), &self.file_list_view())
+    }
 
-        // Phase 1: Apply filter rules
-        if !self.filter_rules.is_empty() {
-            let review = self.ai.review.as_ref();
-            visible.retain(|(_, f)| {
-                super::filter::apply_filter_with_kinds(
-                    &self.filter_rules,
-                    f,
-                    review,
-                    Some(&self.risk_rules),
-                    Some(&self.file_kinds),
-                )
-            });
+    fn file_list_view(&self) -> crate::visible_files::FileListView<'_> {
+        crate::visible_files::FileListView {
+            rules: &self.filter_rules,
+            review: self.ai.review.as_ref(),
+            risk_rules: &self.risk_rules,
+            file_kinds: &self.file_kinds,
+            search_lower: &self.search_query_lower,
+            unreviewed_only: self.show_unreviewed_only,
+            reviewed: &self.reviewed,
         }
-
-        // Phase 2: Apply search query (uses pre-lowercased query to avoid per-call allocation)
-        if !self.search_query_lower.is_empty() {
-            visible.retain(|(_, f)| f.path.to_lowercase().contains(&self.search_query_lower));
-        }
-
-        // Phase 3: Apply unreviewed-only toggle
-        if self.show_unreviewed_only {
-            visible.retain(|(_, f)| !self.reviewed.contains_key(&f.path));
-        }
-
-        visible
     }
 
     /// Get the list of watched files, filtered by search query
@@ -4383,26 +4368,7 @@ impl TabState {
     /// Count of reviewed files vs total among filtered files only.
     /// Returns None if no filter is active.
     pub fn filtered_reviewed_count(&self) -> Option<(usize, usize)> {
-        if self.filter_rules.is_empty() {
-            return None;
-        }
-        let (mut total, mut reviewed) = (0, 0);
-        let review = self.ai.review.as_ref();
-        for f in &self.files {
-            if super::filter::apply_filter_with_kinds(
-                &self.filter_rules,
-                f,
-                review,
-                Some(&self.risk_rules),
-                Some(&self.file_kinds),
-            ) {
-                total += 1;
-                if self.reviewed.contains_key(&f.path) {
-                    reviewed += 1;
-                }
-            }
-        }
-        Some((reviewed, total))
+        crate::visible_files::filtered_reviewed_count(&self.files, &self.file_list_view())
     }
 
     /// Reload the reviewed marks for this tab's current bucket.

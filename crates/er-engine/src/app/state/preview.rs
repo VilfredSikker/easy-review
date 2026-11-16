@@ -929,6 +929,51 @@ mod tests {
         assert_ne!(key, t.file_preview_key("readme.md"));
     }
 
+    /// A tab with every key input fixed, so its keys never depend on the disk.
+    pub(crate) fn keyed_tab(mode: DiffMode) -> TabState {
+        let raw = "diff --git a/readme.md b/readme.md\nindex abcdef0..1234567 100644\n--- a/readme.md\n+++ b/readme.md\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut t = super::super::tests::make_test_tab(git::parse_diff(raw));
+        t.repo_root = "/keyed/repo".into();
+        t.remote_repo = Some("owner/repo".into());
+        t.mode = mode;
+        t.raw_diff = Some(raw.to_string());
+        t.file_headers = git::parse_diff_headers(raw);
+        t.diff_hash = "diff-hash".into();
+        t.preview_head_oid = Some("c".repeat(40));
+        t.local_branch_checkout_root = Some("/keyed/checkout".into());
+        t.preview_blob_ids = [("readme.md".to_string(), "d".repeat(40))].into();
+        t.mtime_cache = [(
+            "readme.md".to_string(),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+        )]
+        .into();
+        t
+    }
+
+    /// The keys a fixed tab gives, recorded before the key steps moved out of
+    /// `TabState`. A change here changes every key the desktop compares.
+    #[test]
+    fn preview_keys_stay_byte_identical() {
+        let unstaged = keyed_tab(DiffMode::Unstaged);
+        let history = keyed_tab(DiffMode::History);
+        assert_eq!(
+            [
+                unstaged.preview_context_key(),
+                unstaged.file_preview_key("readme.md"),
+                history.preview_context_key(),
+                history.file_preview_key("readme.md"),
+                unstaged.file_preview_key("src/main.rs"),
+            ],
+            [
+                "7b8ab87aa2d52f42",
+                "61ef0459ef1d3eb0",
+                "fb19f6ab31b58428",
+                "3eef7decc2ae9e35",
+                "",
+            ].map(str::to_string)
+        );
+    }
+
     #[test]
     fn preview_extensions_are_case_insensitive_and_pr_reads_are_immutable() {
         for path in [

@@ -63,6 +63,7 @@ pub use tab_key::TabKey;
 pub mod tabs_record;
 pub mod task_target;
 pub mod uninstall;
+pub mod visible_files;
 #[cfg(feature = "watch")]
 pub mod watch;
 pub mod workflow_recovery;
