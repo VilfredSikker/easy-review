@@ -13,9 +13,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use er_engine::ports::Ports;
+use er_engine::tabs_record::TabDescriptor;
+use er_engine::TabKey;
 use er_service::{
     spawn, spawn_settings, AppCommand, AppRegistry, Command, Event, OpenTarget, Reply,
-    SettingsHandle, WorkspaceDeps, WorkspaceError, WorkspaceHandle, WorkspaceView,
+    SettingsHandle, TabContent, WorkspaceDeps, WorkspaceError, WorkspaceHandle, WorkspaceView,
 };
 
 /// Told the revision of every view an actor publishes.
@@ -153,11 +155,40 @@ impl ServiceState {
     /// The last published view for `key` when its actor is up. Never starts
     /// one, so the poll can read it under the engine lock.
     pub fn published_view(&self, key: &str) -> Option<Arc<WorkspaceView>> {
+        self.started(key).as_ref().map(WorkspaceHandle::view)
+    }
+
+    /// The content `key` holds on `tab`'s actor, when that actor is up and has
+    /// loaded it. Never starts an actor.
+    pub fn content(&self, key: TabKey, tab: &TabDescriptor) -> Option<Arc<TabContent>> {
+        self.published_view(&actor_key(tab))?.tab(key).cloned()
+    }
+
+    /// Sends `command` to `key`'s actor when it is up; `None` when it is not,
+    /// so a command with nothing to act on starts no actor.
+    pub fn send_if_started(
+        &self,
+        key: &str,
+        command: Command,
+    ) -> Option<Result<Reply, WorkspaceError>> {
+        Some(self.started(key)?.send_and_wait(command))
+    }
+
+    fn started(&self, key: &str) -> Option<WorkspaceHandle> {
         let handles = match self.handles.lock() {
             Ok(handles) => handles,
             Err(poisoned) => poisoned.into_inner(),
         };
-        handles.get(key).map(WorkspaceHandle::view)
+        handles.get(key).cloned()
+    }
+
+    /// How many workspace actors this process has started.
+    #[cfg(test)]
+    pub(crate) fn started_actors(&self) -> usize {
+        match self.handles.lock() {
+            Ok(handles) => handles.len(),
+            Err(poisoned) => poisoned.into_inner().len(),
+        }
     }
 
     /// Whether any actor this process started is running `run_id`, from the
@@ -193,6 +224,16 @@ impl ServiceState {
             .find(|(_, handle)| handle.view().review_flow(er_dir).is_some())
             .map(|(key, _)| key)
     }
+}
+
+/// The actor a tab's content lives on: the tab's repo root, or its PR's remote
+/// when it has no local root. The open routes follow the same rule.
+pub fn actor_key(tab: &TabDescriptor) -> String {
+    let remote = match (&tab.pr_owner, &tab.pr_repo) {
+        (Some(owner), Some(repo)) => format!("{owner}/{repo}"),
+        _ => String::new(),
+    };
+    crate::commands::service_key(&tab.repo_root, &remote)
 }
 
 /// One thread per actor, alive as long as the actor, relaying its events.
@@ -324,6 +365,31 @@ mod tests {
             ]),
             vec![5, 5]
         );
+    }
+
+    /// Reading a tab's content, or dropping it, for a repo with no actor
+    /// starts none: a reader must never pay an actor's start.
+    #[test]
+    fn reading_content_starts_no_actor() {
+        let service = ServiceState::new(Ports::for_test());
+        let tab = er_engine::tabs_record::TabDescriptor {
+            kind: er_engine::tabs_record::TabKind::Working,
+            repo_root: "/nowhere".to_string(),
+            branch: None,
+            pr_owner: None,
+            pr_repo: None,
+            pr_number: None,
+            pr_head_ref: None,
+            base_ref: None,
+            extra: serde_json::Map::new(),
+        };
+        let key = er_engine::TabKey::next();
+
+        assert!(service.content(key, &tab).is_none());
+        let dropped = service.send_if_started("/nowhere", er_service::Command::DropTab { key });
+
+        assert!(dropped.is_none());
+        assert_eq!(service.started_actors(), 0, "a read started an actor");
     }
 
     /// A tab command's new list reaches the relay the same way, so the tab
