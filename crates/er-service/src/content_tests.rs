@@ -169,12 +169,14 @@ fn a_mark_moves_the_reviewed_section_of_every_tab_on_its_bucket() -> anyhow::Res
 }
 
 #[test]
-fn a_question_lands_in_the_ai_section_with_its_painted_id() -> anyhow::Result<()> {
+fn a_question_lands_in_the_ai_section_of_every_tab_on_its_bucket() -> anyhow::Result<()> {
     with_root(|repo| {
         let handle = actor_over(git(RAW));
-        let key = TabKey::next();
-        load(&handle, key, repo)?;
-        let context = content_of(&handle.view(), key)?.context.clone();
+        let (first, second) = (TabKey::next(), TabKey::next());
+        load(&handle, first, repo)?;
+        load(&handle, second, repo)?;
+        let before = handle.view();
+        let context = content_of(&before, first)?.context.clone();
 
         handle.send_and_wait_with(
             Command::AddQuestion {
@@ -194,15 +196,24 @@ fn a_question_lands_in_the_ai_section_with_its_painted_id() -> anyhow::Result<()
             WAIT,
         )?;
 
-        let content = content_of(&handle.view(), key)?;
-        let ids: Vec<&str> = content
-            .ai
-            .state
-            .questions
-            .iter()
-            .flat_map(|questions| questions.questions.iter().map(|q| q.id.as_str()))
-            .collect();
-        assert_eq!(ids, vec!["q-painted"]);
+        let after = handle.view();
+        for key in [first, second] {
+            let (old, new) = (content_of(&before, key)?, content_of(&after, key)?);
+            let ids: Vec<&str> = new
+                .ai
+                .state
+                .questions
+                .iter()
+                .flat_map(|questions| questions.questions.iter().map(|q| q.id.as_str()))
+                .collect();
+            assert_eq!(ids, vec!["q-painted"], "{key:?} missed the question");
+            assert!(new.ai.revision > old.ai.revision);
+            assert!(
+                Arc::ptr_eq(&old.diff, &new.diff),
+                "a question rebuilt the diff section"
+            );
+            assert!(Arc::ptr_eq(&old.reviewed, &new.reviewed));
+        }
         Ok(())
     })
 }
