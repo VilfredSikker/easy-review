@@ -2771,10 +2771,7 @@ pub async fn add_document_thread(
                 return Err("The document changed before the comment was saved".to_string());
             }
             let context = tab_context(&app);
-            let key = service_key(
-                &context.repo_root,
-                context.remote_repo.as_deref().unwrap_or(""),
-            );
+            let key = context.workspace_key();
             (
                 key,
                 er_service::Command::AddDocumentThread {
@@ -6723,18 +6720,9 @@ fn record_remote_recent_pr(
     Ok(project_id)
 }
 
-/// The desktop side of the `v1-service` open path. App-scoped records are
-/// resolved here, where they live, so the actor's command carries the repo
-/// root and the remote and the service never reads the store.
-#[cfg(feature = "v1-service")]
-pub(crate) fn service_key(repo_root: &str, remote: &str) -> String {
-    if repo_root.is_empty() {
-        format!("remote:{remote}")
-    } else {
-        repo_root.to_string()
-    }
-}
-
+/// The local project for `remote`, which decides whether a PR URL opens as a
+/// local review or a remote PR. It never picks an actor: the opened tab's own
+/// descriptor does.
 #[cfg(feature = "v1-service")]
 fn project_root_for_remote(remote: &str) -> String {
     let file = projects::load();
@@ -6748,17 +6736,20 @@ fn project_root_for_remote(remote: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The desktop side of the `v1-service` open path. App-scoped records are
+/// resolved here, where they live, so the actor's command carries the repo
+/// root and the remote and the service never reads the store. The actor is
+/// the one the opened tab keys, so the open and the tab's content meet there.
 #[cfg(feature = "v1-service")]
 fn service_open(
     state: &AppState,
-    key: &str,
     target: er_service::OpenTarget,
     replace: Option<bool>,
 ) -> Result<AppSnapshot, String> {
     let tab = content_routes::pr_tab(&target)?;
     let reply = state
         .service
-        .open_target(key, target, replace.unwrap_or(false))
+        .open_target(&tab.workspace_key(), target, replace.unwrap_or(false))
         .map_err(|error| error.to_string())?;
     // The open path answers with the opened target; the other replies belong
     // to the annotation commands.
@@ -6819,10 +6810,7 @@ fn route_annotation(
             return Err("The active view changed; the annotation was not written".to_string());
         }
         let context = tab_context(&app);
-        let key = service_key(
-            &context.repo_root,
-            context.remote_repo.as_deref().unwrap_or(""),
-        );
+        let key = context.workspace_key();
         (key, build(context))
     };
     state
@@ -6837,10 +6825,7 @@ fn route_annotation(
 #[cfg(feature = "v1-service")]
 pub fn active_tab_command(app: &App) -> (String, er_service::TabContext) {
     let context = tab_context(app);
-    let key = service_key(
-        &context.repo_root,
-        context.remote_repo.as_deref().unwrap_or(""),
-    );
+    let key = context.workspace_key();
     (key, context)
 }
 
@@ -7090,10 +7075,8 @@ fn service_open_pr_url(
         .ok_or_else(|| format!("Not a valid GitHub PR URL: {url}"))?;
     let remote = format!("{}/{}", pr_ref.owner, pr_ref.repo);
     let repo_root = project_root_for_remote(&remote);
-    let key = service_key(&repo_root, &remote);
     service_open(
         state,
-        &key,
         er_service::OpenTarget::PrUrl { url, repo_root },
         replace,
     )
@@ -7107,17 +7090,15 @@ fn service_open_remote_pr(
     number: u64,
     replace: Option<bool>,
 ) -> Result<AppSnapshot, String> {
-    let remote = format!("{owner}/{repo}");
-    let repo_root = project_root_for_remote(&remote);
-    let key = service_key(&repo_root, &remote);
+    // A remote PR opens as a remote tab even when a project tracks its repo,
+    // as the flag-off path does, so it carries no local root.
     service_open(
         state,
-        &key,
         er_service::OpenTarget::RemotePr {
             owner,
             repo,
             number,
-            repo_root,
+            repo_root: String::new(),
         },
         replace,
     )
@@ -7141,10 +7122,8 @@ fn service_open_pr_review(
     let remote = project
         .and_then(|project| project.remote.clone())
         .unwrap_or_default();
-    let key = service_key(&repo_root, &remote);
     service_open(
         state,
-        &key,
         er_service::OpenTarget::PrReview {
             project_id,
             remote,
@@ -12116,8 +12095,7 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
 #[cfg(feature = "v1-service")]
 fn with_service_view(state: &AppState, app: &App, content: u64) -> u64 {
     use std::hash::{Hash, Hasher};
-    let tab = app.tab();
-    let key = service_key(&tab.repo_root, tab.remote_repo.as_deref().unwrap_or(""));
+    let key = app.tab().identity().workspace_key();
     let Some(view) = state.service.published_view(&key) else {
         return content;
     };
@@ -12555,6 +12533,8 @@ mod tests {
 
     #[cfg(feature = "v1-service")]
     mod content_route_tests;
+    #[cfg(feature = "v1-service")]
+    mod workspace_key_tests;
     #[cfg(not(feature = "v1-service"))]
     use er_engine::ai::{ErGithubComments, ErQuestions, GithubComment, PrivateAnnotation};
 
@@ -12888,19 +12868,53 @@ mod tests {
     #[cfg(feature = "v1-service")]
     #[test]
     fn a_published_workspace_view_refreshes_the_content() {
+        publish_refreshes_the_content(|_| None);
+    }
+
+    /// The same for a remote PR tab, whose root is the directory it was opened
+    /// from: the view its own actor publishes, keyed on the remote, refreshes
+    /// the content.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn a_remote_tab_view_refreshes_the_content() {
+        publish_refreshes_the_content(|tab| {
+            tab.remote_repo = Some("acme/widgets".to_string());
+            tab.pr_number = Some(7);
+            tab.local_branch_view = None;
+            assert!(!tab.repo_root.is_empty(), "the tab keeps its opening root");
+            Some(er_engine::tab_identity::workspace_key(None, "acme/widgets"))
+        });
+    }
+
+    /// Shapes the active tab, which names the key it expects, then publishes a
+    /// view on the tab's actor and polls.
+    #[cfg(feature = "v1-service")]
+    fn publish_refreshes_the_content(
+        shape: impl FnOnce(&mut er_engine::app::TabState) -> Option<String>,
+    ) {
         use std::time::{Duration, Instant};
 
         let dir = ReviewFlowTestDir::new();
         let tmp = tempfile::tempdir().expect("temp dir");
         er_engine::storage::with_test_storage_root(tmp.path(), || {
             let state = review_flow_test_state(&dir);
-            let key = {
+            let (key, root) = {
                 let mut app = state.app.lock().unwrap();
                 let tab = app.tab_mut();
                 tab.files = er_engine::git::parse_diff(
                     "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
                 );
-                service_key(&tab.repo_root, "")
+                let expected = shape(tab);
+                let key = tab.identity().workspace_key();
+                if let Some(expected) = expected {
+                    assert_eq!(key, expected);
+                }
+                let root = if tab.is_remote() {
+                    String::new()
+                } else {
+                    tab.repo_root.clone()
+                };
+                (key, root)
             };
             // Start the actor at revision 0 before the poll settles.
             assert_eq!(state.service.view(&key).revision, 0);
@@ -12914,7 +12928,7 @@ mod tests {
                 owner: "acme".to_string(),
                 repo: "widgets".to_string(),
                 number: 7,
-                repo_root: key.clone(),
+                repo_root: root,
             };
             // Success or failure, the actor publishes a new view.
             let _ = state.service.open_target(&key, target, false);

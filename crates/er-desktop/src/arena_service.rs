@@ -20,7 +20,7 @@ use crate::arena_commands::{
     ArenaBatchEstimateRequest, ArenaBatchStartRequest, ArenaEstimateRequest, ArenaOverrideRequest,
     ArenaStartRequest,
 };
-use crate::commands::{service_key, tab_context, AppState};
+use crate::commands::{tab_context, AppState};
 use crate::snapshot::{ArenaRunSnapshotWire, ArenaRunSummaryWire};
 
 fn arena_context(app: &App) -> ArenaContext {
@@ -58,10 +58,7 @@ fn resolve<T>(
 ) -> Result<(String, T), String> {
     let app = state.app.lock().map_err(|error| error.to_string())?;
     let arena = arena_context(&app);
-    let key = service_key(
-        &arena.tab.repo_root,
-        arena.tab.remote_repo.as_deref().unwrap_or(""),
-    );
+    let key = arena.tab.workspace_key();
     Ok((key, prepare(&app, arena)))
 }
 
