@@ -11,6 +11,7 @@ use std::time::Duration;
 use er_agent::job::JobProgress;
 use er_engine::jobs::JobId;
 
+use crate::content::ContentPatch;
 use crate::protocol::{Command, Event, JobOutcome, Reply};
 use crate::workspace::WorkspaceView;
 
@@ -56,6 +57,29 @@ impl std::error::Error for WorkspaceError {}
 
 pub(crate) type ReplySender = Sender<Result<Reply, WorkspaceError>>;
 
+/// What an effect hands back: the caller's reply, and what it changed in the
+/// tabs' content for the actor to apply first. The patch never reaches the
+/// caller, so the public replies keep their shapes.
+pub(crate) struct Effected {
+    pub reply: Reply,
+    pub patch: Option<ContentPatch>,
+}
+
+impl From<Reply> for Effected {
+    fn from(reply: Reply) -> Self {
+        Self { reply, patch: None }
+    }
+}
+
+impl Effected {
+    pub(crate) fn patched(reply: Reply, patch: ContentPatch) -> Self {
+        Self {
+            reply,
+            patch: Some(patch),
+        }
+    }
+}
+
 /// The actor's inbox.
 pub(crate) enum ActorMsg {
     Command {
@@ -64,7 +88,7 @@ pub(crate) enum ActorMsg {
     },
     /// An off-actor effect finished; the actor applies it and answers.
     EffectDone {
-        result: Result<Reply, WorkspaceError>,
+        result: Result<Effected, WorkspaceError>,
         reply: ReplySender,
     },
     /// An off-actor effect read GitHub; the actor applies what it read (and

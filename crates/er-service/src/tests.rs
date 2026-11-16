@@ -180,13 +180,20 @@ fn the_actor_refuses_a_port_call_on_its_own_thread() -> anyhow::Result<()> {
 
 #[test]
 fn the_actor_loop_never_dereferences_a_port() {
-    let source = include_str!("actor.rs");
-    for forbidden in [".github", ".git", "CliGit", "CliGitHub"] {
-        assert!(
-            !source.contains(forbidden),
-            "the actor loop reached a port through `{forbidden}`"
-        );
+    // The loop, and the content types and patches it applies on its thread.
+    for (file, source) in [
+        ("actor.rs", include_str!("actor.rs")),
+        ("content.rs", include_str!("content.rs")),
+        ("workspace.rs", include_str!("workspace.rs")),
+    ] {
+        for forbidden in [".github", ".git", "CliGit", "CliGitHub"] {
+            assert!(
+                !source.contains(forbidden),
+                "{file} reached a port through `{forbidden}`"
+            );
+        }
     }
+    let source = include_str!("actor.rs");
     assert!(
         source.contains("resolve_target(&deps"),
         "the effect call moved out of the loop"
