@@ -1,21 +1,24 @@
-//! Tab content: a load publishes the sections, a tick shares them, and a key
-//! the actor never loaded is refused before any effect.
+//! Tab content: a load publishes the sections, a tick shares them, a key the
+//! actor never loaded is refused before any effect, and a patch from a stale
+//! load is refused with nothing moved.
 
-use std::sync::atomic::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use er_engine::ai::AiState;
 use er_engine::ports::Ports;
+use er_engine::tab_identity::{DiffMode, ResolvedTab};
 use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_engine::TabKey;
 use er_git::FakeGit;
 use er_github::FakeGitHub;
 
 use crate::actor::WorkspaceDeps;
-use crate::guard::TRIPS;
+use crate::content::{ContentPatch, DiffMeta, LoadedDiff, LoadedTab, PatchRefused};
 use crate::handle::{ActorMsg, WorkspaceError};
-use crate::protocol::{Command, Reply};
-use crate::workspace::WorkspaceView;
+use crate::protocol::{Command, Reply, TabContext};
+use crate::workspace::{WorkspaceState, WorkspaceView};
 use crate::{spawn, WorkspaceHandle};
 
 const RAW: &str = "\
@@ -95,12 +98,13 @@ fn content_of(view: &WorkspaceView, key: TabKey) -> anyhow::Result<Arc<crate::Ta
         .ok_or_else(|| anyhow::anyhow!("no content under {key:?}"))
 }
 
+/// A load that ran on the actor thread would trip the guard there, and the
+/// reply would never arrive.
 #[test]
 fn a_loaded_tab_publishes_its_diff_and_context() -> anyhow::Result<()> {
     with_root(|repo| {
         let handle = actor_over(git(RAW));
         let key = TabKey::next();
-        let trips = TRIPS.load(Ordering::SeqCst);
 
         let reply = load(&handle, key, repo)?;
 
@@ -110,11 +114,6 @@ fn a_loaded_tab_publishes_its_diff_and_context() -> anyhow::Result<()> {
                 key,
                 reviewed_cleared: 0
             }
-        );
-        assert_eq!(
-            TRIPS.load(Ordering::SeqCst),
-            trips,
-            "the load reached a port on the actor thread"
         );
         let content = content_of(&handle.view(), key)?;
         let paths: Vec<&str> = content.diff.files.iter().map(|f| f.path.as_str()).collect();
@@ -232,4 +231,113 @@ fn a_load_clears_moved_and_orphaned_marks_and_saves_them() -> anyhow::Result<()>
         assert_eq!(content.reviewed.marks, saved);
         Ok(())
     })
+}
+
+/// What a load effect would hand back for a tab with no files, built without
+/// an actor so the patch steps run on their own.
+fn loaded_tab(repo: &str) -> Box<LoadedTab> {
+    Box::new(LoadedTab {
+        tab: ResolvedTab {
+            repo_root: repo.to_string(),
+            current_branch: "feature".to_string(),
+            base_branch: "main".to_string(),
+            mode: DiffMode::Branch,
+            tour_is_pr: false,
+            remote_repo: None,
+            pr_number: None,
+            local_branch_view: None,
+            pr_head_ref: None,
+            checkout_root: None,
+        },
+        context: TabContext {
+            er_dir: String::new(),
+            comments_dir: String::new(),
+            is_remote: false,
+            repo_root: repo.to_string(),
+            base_branch: "main".to_string(),
+            scope: "branch".to_string(),
+            remote_repo: None,
+            pr_number: None,
+            pr_head_ref: None,
+            local_branch_view: None,
+            checkout_root: None,
+            branch_diff_hash: String::new(),
+            diff_hash: String::new(),
+        },
+        pr_refs_fetched: false,
+        diff: LoadedDiff {
+            files: Vec::new(),
+            meta: DiffMeta {
+                headers: Vec::new(),
+                raw: String::new(),
+                lazy: false,
+                diff_hash: String::new(),
+                branch_diff_hash: String::new(),
+                preview_head_oid: None,
+            },
+        },
+        marks: HashMap::new(),
+        file_hashes: HashMap::new(),
+        ai: AiState::default(),
+        cleared: 0,
+    })
+}
+
+/// A load or parse that started before the tab moved must not overwrite what
+/// landed meanwhile: the patch is refused, and no section or revision moves.
+#[test]
+fn a_patch_from_before_the_tab_moved_is_refused_with_nothing_moved() -> anyhow::Result<()> {
+    let mut state = WorkspaceState::new();
+    let key = TabKey::next();
+    let first = ContentPatch::Loaded {
+        key,
+        since: None,
+        loaded: loaded_tab("/repo"),
+    };
+    let (started_at, _) = state
+        .apply_patch(first)
+        .map_err(|refused| anyhow::anyhow!("{refused}"))?;
+    let refresh = ContentPatch::Loaded {
+        key,
+        since: Some(started_at),
+        loaded: loaded_tab("/repo"),
+    };
+    let (revision, _) = state
+        .apply_patch(refresh)
+        .map_err(|refused| anyhow::anyhow!("{refused}"))?;
+    let before = content_of(state.view(), key)?;
+
+    for (name, stale) in [
+        (
+            "a load",
+            ContentPatch::Loaded {
+                key,
+                since: Some(started_at),
+                loaded: loaded_tab("/repo"),
+            },
+        ),
+        (
+            "a parse",
+            ContentPatch::Parsed {
+                key,
+                since: started_at,
+                files: Vec::new(),
+            },
+        ),
+    ] {
+        assert_eq!(
+            state.apply_patch(stale),
+            Err(PatchRefused::Moved),
+            "{name} from a moved tab applied"
+        );
+        let after = content_of(state.view(), key)?;
+        assert_eq!(state.view().revision, revision, "{name} moved the revision");
+        assert!(
+            Arc::ptr_eq(&before.diff, &after.diff),
+            "{name} replaced the diff"
+        );
+        assert!(Arc::ptr_eq(&before.reviewed, &after.reviewed));
+        assert!(Arc::ptr_eq(&before.ai, &after.ai));
+    }
+    Ok(())
 }
