@@ -221,6 +221,10 @@ pub(crate) enum ContentPatch {
         er_dir: String,
         marks: HashMap<String, String>,
     },
+    /// The tab closed: its content leaves the view.
+    Dropped {
+        key: TabKey,
+    },
     Several(Vec<ContentPatch>),
 }
 
@@ -257,7 +261,9 @@ pub(crate) fn check(
             _ => Err(PatchRefused::Moved),
         },
         ContentPatch::Several(patches) => patches.iter().try_for_each(|patch| check(tabs, patch)),
-        ContentPatch::Sidecar { .. } | ContentPatch::Reviewed { .. } => Ok(()),
+        ContentPatch::Sidecar { .. }
+        | ContentPatch::Reviewed { .. }
+        | ContentPatch::Dropped { .. } => Ok(()),
     }
 }
 
@@ -298,6 +304,10 @@ pub(crate) fn apply(
                     *content = Arc::new(next);
                 }
             }
+            0
+        }
+        ContentPatch::Dropped { key } => {
+            tabs.remove(&key);
             0
         }
         ContentPatch::Several(patches) => patches

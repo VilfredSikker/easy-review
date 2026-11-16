@@ -275,6 +275,74 @@ fn a_sync_publishes_an_event_the_relay_hears() -> anyhow::Result<()> {
     })
 }
 
+/// The pulled comments reach the AI section of a loaded tab that reads the
+/// synced bucket, so the published content follows a sync without a reload.
+#[test]
+fn a_sync_patches_the_ai_section_of_the_tab_on_its_bucket() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo)?;
+    let github = syncing_github()?;
+    let storage = dir.path().join("storage");
+    er_engine::storage::with_process_test_storage_root(storage, || -> anyhow::Result<()> {
+        let git: Arc<dyn er_git::Git> = Arc::new(
+            FakeGit::default()
+                .with_current_branch(Ok("feature".to_string()))
+                .with_diff_raw(Ok(RAW.to_string())),
+        );
+        let github_port: Arc<dyn er_github::GitHub> = github.clone();
+        let handle = spawn(WorkspaceDeps::new(Ports {
+            git,
+            github: github_port,
+        }));
+        let key = er_engine::TabKey::next();
+        let tab = er_engine::tabs_record::TabDescriptor {
+            kind: er_engine::tabs_record::TabKind::Working,
+            repo_root: repo.to_string_lossy().into_owned(),
+            branch: None,
+            pr_owner: None,
+            pr_repo: None,
+            pr_number: None,
+            pr_head_ref: None,
+            base_ref: Some("main".to_string()),
+            extra: serde_json::Map::new(),
+        };
+        let mode = None;
+        handle.send_and_wait_with(Command::LoadTab { key, tab, mode }, WAIT)?;
+        let loaded = handle.view().tab(key).cloned();
+        let before = loaded.ok_or_else(|| anyhow::anyhow!("the tab did not load"))?;
+        let context = TabContext {
+            is_remote: true,
+            remote_repo: Some("acme/widgets".to_string()),
+            pr_number: Some(7),
+            ..before.context.clone()
+        };
+        let source = SyncSource::Manual { force: false };
+
+        handle.send_and_wait_with(Command::SyncGithubComments { context, source }, WAIT)?;
+
+        let after = handle.view().tab(key).cloned();
+        let after = after.ok_or_else(|| anyhow::anyhow!("the sync dropped the tab"))?;
+        assert!(
+            after.ai.revision > before.ai.revision,
+            "the AI section kept"
+        );
+        let ids: Vec<String> = after
+            .ai
+            .state
+            .github_comments
+            .iter()
+            .flat_map(|stored| stored.comments.iter().map(|c| c.id.clone()))
+            .collect();
+        assert!(ids.contains(&"gh-42".to_string()), "{ids:?}");
+        assert!(
+            Arc::ptr_eq(&before.diff, &after.diff),
+            "the sync moved the diff"
+        );
+        Ok(())
+    })
+}
+
 /// A pending review holding one draft comment, `PRRC_0`.
 pub(super) fn pending() -> PendingReview {
     let draft = PendingReviewComment {

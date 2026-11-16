@@ -261,6 +261,7 @@ fn a_tab_command_for_a_key_never_loaded_is_refused_before_any_effect() -> anyhow
             Command::SetDiffMode {
                 key: TabKey::next(),
                 mode: er_engine::tab_identity::DiffMode::Unstaged,
+                pr_number: None,
             },
             Command::ParseFiles {
                 key: TabKey::next(),
@@ -318,6 +319,95 @@ fn a_load_clears_moved_and_orphaned_marks_and_saves_them() -> anyhow::Result<()>
         assert_eq!(saved.get("src/b.rs"), Some(&b_hash));
         let content = content_of(&handle.view(), key)?;
         assert_eq!(content.reviewed.marks, saved);
+        Ok(())
+    })
+}
+
+/// Loading, refreshing and closing a tab read the diff and the sidecars; none
+/// of them may submit an agent job.
+#[test]
+fn a_tab_load_submits_no_job() -> anyhow::Result<()> {
+    with_root(|repo| {
+        let sink = Arc::new(crate::flow_tests::CountingSink::default());
+        let git: Arc<dyn er_git::Git> = git(RAW);
+        let github: Arc<dyn er_github::GitHub> = Arc::new(FakeGitHub::default());
+        let jobs: Arc<dyn er_engine::jobs::JobSink> = sink.clone();
+        let handle = spawn(WorkspaceDeps::new(Ports { git, github }).with_jobs(jobs));
+        let key = TabKey::next();
+
+        load(&handle, key, repo)?;
+        handle.send_and_wait_with(Command::RefreshDiff { key, force: false }, WAIT)?;
+        handle.send_and_wait_with(Command::DropTab { key }, WAIT)?;
+
+        let submitted = sink.submitted.lock().map(|n| *n).unwrap_or(usize::MAX);
+        assert_eq!(submitted, 0, "a tab command submitted a job");
+        assert!(
+            handle.view().tab(key).is_none(),
+            "the drop kept the content"
+        );
+        Ok(())
+    })
+}
+
+/// The PR the header detected seeds a tab that has none, so entering the PR
+/// diff fetches that PR's refs, as the App path does before `enter_pr_diff`.
+/// A tab that already has a PR keeps its own.
+#[test]
+fn a_mode_switch_seeds_the_detected_pr_only_onto_a_tab_without_one() -> anyhow::Result<()> {
+    with_root(|repo| {
+        let git = Arc::new(
+            FakeGit::default()
+                .with_current_branch(Ok("feature".to_string()))
+                .with_diff_raw(Ok(RAW.to_string()))
+                .with_fetch(Ok(())),
+        );
+        let github = Arc::new(
+            FakeGitHub::default()
+                .with_pr_base_branch_and_commits(Ok(("main".to_string(), Vec::new())))
+                .with_fetch_pr_base_ref(Ok("origin/main".to_string()))
+                .with_pr_diff(Ok(RAW.to_string())),
+        );
+        let git_port: Arc<dyn er_git::Git> = git.clone();
+        let github_port: Arc<dyn er_github::GitHub> = github.clone();
+        let handle = spawn(WorkspaceDeps::new(Ports {
+            git: git_port,
+            github: github_port,
+        }));
+        let key = TabKey::next();
+        load(&handle, key, repo)?;
+        assert_eq!(content_of(&handle.view(), key)?.tab.pr_number, None);
+
+        let to_pr = |pr_number| Command::SetDiffMode {
+            key,
+            mode: DiffMode::PrDiff,
+            pr_number: Some(pr_number),
+        };
+        handle.send_and_wait_with(to_pr(9), WAIT)?;
+
+        let content = content_of(&handle.view(), key)?;
+        assert_eq!(content.tab.pr_number, Some(9));
+        assert!(content.pr_refs_fetched, "the PR refs were not fetched");
+        let head =
+            format!(r#"fetch(root={repo:?}, args=["origin", "+pull/9/head:refs/er/pr/9/head"])"#);
+        assert!(git.calls().contains(&head), "{:?}", git.calls());
+        let base = github.calls().into_iter().any(|call| {
+            call.starts_with("pr_base_branch_and_commits(") && call.contains("number=9,")
+        });
+        assert!(base, "{:?}", github.calls());
+
+        let to_branch = Command::SetDiffMode {
+            key,
+            mode: DiffMode::Branch,
+            pr_number: None,
+        };
+        handle.send_and_wait_with(to_branch, WAIT)?;
+        handle.send_and_wait_with(to_pr(11), WAIT)?;
+        let content = content_of(&handle.view(), key)?;
+        assert_eq!(
+            content.tab.pr_number,
+            Some(9),
+            "the detected PR replaced the tab's"
+        );
         Ok(())
     })
 }

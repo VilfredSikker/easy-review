@@ -7,6 +7,8 @@ use tauri::State;
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
 
+#[cfg(feature = "v1-service")]
+mod content_routes;
 pub mod line_commits;
 
 use crate::inbox::{
@@ -17,9 +19,9 @@ use crate::inbox::{
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects::{self, normalize_remote_slug};
 use crate::snapshot::{
-    build_chrome_snapshot, build_file_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary,
-    FileSnapshot, GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot,
-    LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
+    build_chrome_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary, FileSnapshot,
+    GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState,
+    MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
 };
 use er_engine::ai::CommentType;
 #[cfg(test)]
@@ -1035,7 +1037,15 @@ pub async fn request_file_content(
     state: State<'_, AppState>,
 ) -> Result<Vec<FileSnapshot>, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
+    // Flag-on, the parsed files reach the page with the snapshot that reads
+    // the content, so this answers no files.
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        content_routes::request_file_content(&state, &source_indices).map(|()| Vec::new())
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if app.tab().mode == er_engine::app::DiffMode::History {
             return Ok(vec![]);
@@ -1053,9 +1063,9 @@ pub async fn request_file_content(
         let out: Vec<FileSnapshot> = source_indices
             .iter()
             .filter_map(|&source_index| {
-                tab.files
-                    .get(source_index)
-                    .map(|f| build_file_snapshot(source_index, f, tab, pending_ai, true))
+                tab.files.get(source_index).map(|f| {
+                    crate::snapshot::build_file_snapshot(source_index, f, tab, pending_ai, true)
+                })
             })
             .collect();
         // These hunks bypass build_snapshot — record them so later polls can
@@ -1065,13 +1075,16 @@ pub async fn request_file_content(
         }
         Ok(out)
     })
-    .await
+    .await;
 }
 
 #[tauri::command]
 pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || content_routes::select_file(&state, idx)).await;
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         {
             let tab = app.tab_mut();
@@ -1089,7 +1102,7 @@ pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSn
         }
         Ok(snap_from(&app, &state))
     })
-    .await
+    .await;
 }
 
 #[derive(serde::Serialize)]
@@ -1308,6 +1321,13 @@ pub async fn set_mode(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
+        // The modes the workspace loads go to the active tab's actor; History,
+        // Conflicts, Hidden and Tour stay on the App until the snapshot reads
+        // the content.
+        #[cfg(feature = "v1-service")]
+        if let Some(diff_mode) = content_routes::routed_mode(&mode) {
+            return content_routes::set_mode(&state, &mode, diff_mode, pr_number, tab_idx);
+        }
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
             return Err(format!("'{mode}' view is disabled in settings"));
@@ -1404,8 +1424,9 @@ pub async fn toggle_reviewed(
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        route_annotation(&state, None, |context| {
-            er_service::Command::ToggleReviewed { context, path }
+        content_routes::write_reviewed(&state, |context| er_service::Command::ToggleReviewed {
+            context,
+            path,
         })
     })
     .await;
@@ -1431,7 +1452,7 @@ pub async fn mark_reviewed(
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        route_annotation(&state, None, |context| er_service::Command::MarkReviewed {
+        content_routes::write_reviewed(&state, |context| er_service::Command::MarkReviewed {
             context,
             path,
             reviewed: true,
@@ -3237,12 +3258,18 @@ pub async fn resolve_thread(
 #[tauri::command]
 pub async fn refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        content_routes::refresh(&state, false).map(|_| AppSnapshot::default())
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
         Ok(snap_from(&app, &state))
     })
-    .await
+    .await;
 }
 
 /// Fetch the `gh stack` (github/gh-stack) stack for the active tab's branch and
@@ -3335,9 +3362,21 @@ pub struct SyncOutcome {
 #[tauri::command]
 pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcome, String> {
     let state = state.inner().clone();
+    // Flag-on, the active tab's actor refetches; the stale pill and the merge
+    // status stay with the App's poll until the snapshot reads the content.
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        let reviewed_cleared = content_routes::refresh(&state, true)?;
+        Ok(SyncOutcome {
+            snapshot: AppSnapshot::default(),
+            reviewed_cleared,
+        })
+    })
+    .await;
     // Heavy: shells out to git/gh fetches. Run off the main thread so the
     // window stays responsive for the whole fetch.
-    run_blocking(move || {
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || {
         let (root, reviewed_cleared) = {
             let mut app = state.app.lock().map_err(|e| e.to_string())?;
             let reviewed_cleared = app
@@ -3388,7 +3427,7 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcom
             reviewed_cleared,
         })
     })
-    .await
+    .await;
 }
 
 /// A Sync moves the diff on screen to a newer PR head, but the cached status
@@ -6716,6 +6755,7 @@ fn service_open(
     target: er_service::OpenTarget,
     replace: Option<bool>,
 ) -> Result<AppSnapshot, String> {
+    let tab = content_routes::pr_tab(&target)?;
     let reply = state
         .service
         .open_target(key, target, replace.unwrap_or(false))
@@ -6723,9 +6763,10 @@ fn service_open(
     // The open path answers with the opened target; the other replies belong
     // to the annotation commands.
     if let er_service::Reply::TargetOpened(_) = reply {}
-    // The flag-on desktop does not render from the service yet, so the
-    // command acknowledges the open without moving the view.
-    Ok(AppSnapshot::default())
+    // The PR becomes a registry tab whose content the actor loads. The
+    // flag-on desktop does not render from the service yet, so the command
+    // acknowledges the open without moving the view.
+    content_routes::open(state, tab)
 }
 
 /// The tab a routed annotation command acts on, with every field its effect
@@ -7202,10 +7243,24 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
         .pick_folder();
     let Some(path) = picked else {
         // User cancelled — return current snapshot, no-op.
+        #[cfg(feature = "v1-service")]
+        return Ok(AppSnapshot::default());
+        #[cfg(not(feature = "v1-service"))]
         return snap!(state);
     };
     let path_str = path.to_string_lossy().to_string();
+    // The picked folder is the only input the workspace needs.
+    #[cfg(feature = "v1-service")]
+    return {
+        let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path_str);
+        content_routes::open(&state, content_routes::working_tab(path_str))
+    };
+    #[cfg(not(feature = "v1-service"))]
+    return open_worktree_tab(&state, path_str);
+}
 
+#[cfg(not(feature = "v1-service"))]
+fn open_worktree_tab(state: &AppState, path_str: String) -> Result<AppSnapshot, String> {
     let mut new_tab = er_engine::app::TabState::new(path_str.clone(), state.ports.clone())
         .map_err(|e| format!("Failed to open {path_str}: {e}"))?;
     new_tab
@@ -7216,8 +7271,8 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
     app.open_tab(new_tab);
     crate::tabs::persist_app_tabs(&app, &state.view);
     let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path_str);
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
-    Ok(snap_from(&app, &state))
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    Ok(snap_from(&app, state))
 }
 
 // ── Project commands ─────────────────────────────────────────────────────────
@@ -7311,6 +7366,7 @@ fn build_local_branch_tab_for_repo(
     Ok(tab)
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn refresh_branch_open_diff(tab: &mut er_engine::app::TabState) -> Result<(), String> {
     match tab.refetch_and_refresh_diff() {
         Ok(()) => Ok(()),
@@ -7457,7 +7513,15 @@ pub async fn open_local_branch(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || open_local_branch_impl(project_id, name, replace, &state)).await
+    // Flag-on, the registry appends the tab; it has no in-place replace yet.
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        let _ = replace;
+        content_routes::open(&state, content_routes::branch_tab(&project_id, name)?)
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || open_local_branch_impl(project_id, name, replace, &state)).await;
 }
 
 fn open_local_branch_impl(
@@ -9561,6 +9625,25 @@ pub fn open_project_branch(
     replace: Option<bool>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
+    #[cfg(feature = "v1-service")]
+    return {
+        let _ = replace;
+        let tab = content_routes::branch_tab(&project_id, branch)?;
+        content_routes::open(&state, tab)?;
+        projects::set_active(&project_id);
+        Ok(AppSnapshot::default())
+    };
+    #[cfg(not(feature = "v1-service"))]
+    return open_project_branch_tab(project_id, branch, replace, &state);
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn open_project_branch_tab(
+    project_id: String,
+    branch: String,
+    replace: Option<bool>,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
     // Read-only: same logic as open_local_branch. We also mark the project active.
     let file = projects::load();
     let proj = file
@@ -9593,9 +9676,9 @@ pub fn open_project_branch(
         false,
     );
     projects::set_active(&project_id);
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, &state);
-    Ok(snap_from(&app, &state))
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    kick_active_gh_status(&app, state);
+    Ok(snap_from(&app, state))
 }
 
 #[tauri::command]
@@ -10633,10 +10716,10 @@ fn service_new_tab(state: &AppState) -> Result<AppSnapshot, String> {
     service_tab_command(state, er_service::AppCommand::NewTab { tab })
 }
 
+/// Closing a tab also drops its content on the actor that loaded it.
 #[cfg(feature = "v1-service")]
 fn service_close_tab(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
-    let key = service_tab_key(state, idx)?;
-    service_tab_command(state, er_service::AppCommand::CloseTab { key })
+    content_routes::close(state, idx)
 }
 
 #[cfg(feature = "v1-service")]
@@ -12469,6 +12552,9 @@ pub fn get_background_task_log(
 mod tests {
     use super::*;
     use er_engine::ai::{load_ui_annotations, save_ui_annotations, UiAnnotation};
+
+    #[cfg(feature = "v1-service")]
+    mod content_route_tests;
     #[cfg(not(feature = "v1-service"))]
     use er_engine::ai::{ErGithubComments, ErQuestions, GithubComment, PrivateAnnotation};
 
@@ -13075,8 +13161,11 @@ mod tests {
             panic!("temp dir");
         };
         er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-a\n+b\n";
             let github = Arc::new(
-                er_engine::github::FakeGitHub::default().with_pr_state(Ok("OPEN".to_string())),
+                er_engine::github::FakeGitHub::default()
+                    .with_pr_state(Ok("OPEN".to_string()))
+                    .with_pr_diff_remote(Ok(diff.to_string())),
             );
             let github_port: Arc<dyn er_engine::github::GitHub> = github.clone();
             let mut state = review_flow_test_state(&dir);
@@ -13102,9 +13191,15 @@ mod tests {
             };
             drop(held);
             assert!(result.is_ok(), "the service open path failed: {result:?}");
+            // The open resolves the target, then loads the new tab's diff.
             assert_eq!(
                 github.calls(),
-                vec!["pr_state(owner=\"acme\", repo=\"widgets\", number=7)"]
+                vec![
+                    "pr_state(owner=\"acme\", repo=\"widgets\", number=7)",
+                    "pr_head_oid_remote(owner=\"acme\", repo=\"widgets\", pr=7)",
+                    "pr_diff_remote(owner=\"acme\", repo=\"widgets\", number=7)",
+                    "pr_head_oid_remote(owner=\"acme\", repo=\"widgets\", pr=7)",
+                ]
             );
         });
     }
@@ -16236,5 +16331,48 @@ mod route_tests {
                 "{command} has no service route"
             );
         }
+    }
+
+    /// The content commands call their route; the route tests drive the
+    /// routes themselves, so this holds each Tauri command to calling one.
+    #[test]
+    fn every_content_command_calls_its_route() {
+        // Built at run time, so this test's own text never matches.
+        let source = include_str!("commands.rs");
+        let call = |route: &str| format!("content_routes::{route}");
+        // Each open command calls the open route in its own body, which ends
+        // at the first closing brace in column zero.
+        for command in [
+            "service_open",
+            "open_worktree",
+            "open_local_branch",
+            "open_project_branch",
+        ] {
+            let body = source
+                .split_once(&format!("fn {command}("))
+                .and_then(|(_, rest)| rest.split_once("\n}\n"))
+                .map(|(body, _)| body);
+            let Some(body) = body else {
+                panic!("no {command}");
+            };
+            assert!(
+                body.contains(&call("open(")),
+                "{command} does not call its route"
+            );
+        }
+        for route in [
+            "close(",
+            "refresh(&state, false)",
+            "refresh(&state, true)",
+            "set_mode(",
+            "select_file(",
+            "request_file_content(",
+        ] {
+            let route = call(route);
+            assert!(source.contains(&route), "no command calls {route}");
+        }
+        // toggle_reviewed and mark_reviewed.
+        let reviewed = source.matches(&call("write_reviewed(")).count();
+        assert_eq!(reviewed, 2, "a reviewed command lost its route");
     }
 }

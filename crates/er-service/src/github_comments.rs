@@ -6,6 +6,7 @@
 //! so a failure keeps the source and the next attempt adopts the post.
 
 use er_engine::ai::{self, PrivateAnnotation};
+use er_engine::annotations::WrittenPayload;
 use er_engine::git::{parse_diff, DiffFile};
 use er_engine::github_post::{
     execute_comment_post, new_client_id, resolve_post_target_with, GhCommentPoster,
@@ -16,7 +17,8 @@ use er_engine::store_registry;
 use er_store::{Loaded, Scope};
 
 use crate::actor::WorkspaceDeps;
-use crate::annotations::{failed, fetch_raw};
+use crate::annotations::{failed, fetch_raw, Written};
+use crate::content::ContentPatch;
 use crate::github_sync::post_context;
 use crate::handle::WorkspaceError;
 use crate::protocol::{AnnotationTarget, TabContext};
@@ -37,6 +39,38 @@ fn comments_payload(ctx: &TabContext) -> Option<ai::ErGithubComments> {
         Ok(Loaded::Found(stored)) => Some(stored.value),
         _ => None,
     }
+}
+
+/// The comments sidecar as a post left it, for the tabs that read it.
+fn stored_comments(ctx: &TabContext) -> ContentPatch {
+    comments_payload(ctx).map_or(ContentPatch::Several(Vec::new()), |comments| {
+        ContentPatch::Sidecar {
+            dir: ctx.comments_dir.clone(),
+            payload: WrittenPayload::Comments(comments),
+        }
+    })
+}
+
+/// The questions, notes and comments as stored, after a write that may have
+/// changed any of them.
+fn stored_threads(ctx: &TabContext) -> ContentPatch {
+    let store = store_registry::store();
+    let mut patches = vec![stored_comments(ctx)];
+    if let Ok(scope) = Scope::dir(&ctx.er_dir) {
+        if let Ok(Loaded::Found(stored)) = ai::annotation_store::load_questions(&store, &scope) {
+            patches.push(ContentPatch::Sidecar {
+                dir: ctx.er_dir.clone(),
+                payload: WrittenPayload::Questions(stored.value),
+            });
+        }
+        if let Ok(Loaded::Found(stored)) = ai::annotation_store::load_notes(&store, &scope) {
+            patches.push(ContentPatch::Sidecar {
+                dir: ctx.er_dir.clone(),
+                payload: WrittenPayload::Notes(stored.value),
+            });
+        }
+    }
+    ContentPatch::Several(patches)
 }
 
 pub(crate) fn post(
@@ -140,7 +174,7 @@ pub(crate) fn add_comment(
     body: &str,
     side: Option<String>,
     client_id: Option<String>,
-) -> Result<String, WorkspaceError> {
+) -> Written<String> {
     let intent = NewGitHubComment::line(
         target.file.clone(),
         target.hunk_idx,
@@ -149,7 +183,8 @@ pub(crate) fn add_comment(
         side,
         body.to_string(),
     );
-    post(deps, ctx, intent, client_id).and_then(created_id)
+    let id = post(deps, ctx, intent, client_id).and_then(created_id)?;
+    Ok((id, stored_comments(ctx)))
 }
 
 pub(crate) fn reply_to_github_thread(
@@ -158,9 +193,10 @@ pub(crate) fn reply_to_github_thread(
     parent_id: &str,
     body: &str,
     client_id: Option<String>,
-) -> Result<String, WorkspaceError> {
+) -> Written<String> {
     let intent = NewGitHubComment::reply(parent_id.to_string(), body.to_string());
-    post(deps, ctx, intent, client_id).and_then(created_id)
+    let id = post(deps, ctx, intent, client_id).and_then(created_id)?;
+    Ok((id, stored_comments(ctx)))
 }
 
 fn private_items<'a>(
@@ -197,7 +233,7 @@ pub(crate) fn promote_to_comment(
     ctx: &TabContext,
     id: &str,
     body: Option<String>,
-) -> Result<String, WorkspaceError> {
+) -> Written<String> {
     let state = ai::load_ai_state(&ctx.er_dir, &ctx.diff_hash, None);
     let (items, item) = private_items(&state, id)?;
     let promoted = ai::promote::promote_to_github(item, items, body)
@@ -210,11 +246,17 @@ pub(crate) fn promote_to_comment(
     )?;
     // The source is replaced only once GitHub holds the comment, so a failure
     // keeps it and a retry adopts the post.
-    if let Err(error) = crate::annotations::delete_thread(ctx, id) {
-        remember_for_retry(deps, posted.request);
-        return Err(error);
-    }
-    Ok(posted.id)
+    let removed = match crate::annotations::delete_thread(ctx, id) {
+        Ok((_, removed)) => removed,
+        Err(error) => {
+            remember_for_retry(deps, posted.request);
+            return Err(error);
+        }
+    };
+    Ok((
+        posted.id,
+        ContentPatch::Several(vec![removed, stored_comments(ctx)]),
+    ))
 }
 
 pub(crate) fn promote_finding_to_comment(
@@ -222,7 +264,7 @@ pub(crate) fn promote_finding_to_comment(
     ctx: &TabContext,
     finding_id: &str,
     body: Option<String>,
-) -> Result<String, WorkspaceError> {
+) -> Written<String> {
     let state = ai::load_ai_state(&ctx.er_dir, &ctx.diff_hash, None);
     let review = state
         .review
@@ -260,7 +302,8 @@ pub(crate) fn promote_finding_to_comment(
     if promotions.remove(finding_id).is_some() {
         let _ = ai::save_finding_promotions(&ctx.er_dir, &promotions);
     }
-    Ok(posted.id)
+    // The review sidecar the finding left has no patch; the next load reads it.
+    Ok((posted.id, stored_threads(ctx)))
 }
 
 fn remember_for_retry(deps: &WorkspaceDeps, request: GitHubPostRequest) {

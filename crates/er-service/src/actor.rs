@@ -167,10 +167,16 @@ fn run(
                     Ok(Applied {
                         reply: value,
                         event,
+                        patch,
                     }) => {
                         // A plain read changes nothing, so it publishes nothing.
                         if let Some(event) = event {
-                            let revision = state.bump_revision();
+                            // A sync's sidecar reaches the tabs that read it
+                            // in the same revision as its event.
+                            let revision = match patch.map(|patch| state.apply_patch(patch)) {
+                                Some(Ok((revision, _))) => revision,
+                                Some(Err(_)) | None => state.bump_revision(),
+                            };
                             publish(&view, &state);
                             broadcast(&subscribers, Event::ViewPublished { revision });
                             broadcast(&subscribers, event);
@@ -578,7 +584,7 @@ fn handle_command(
                 crate::github_comments::add_comment(
                     &deps, &context, &target, &body, side, client_id,
                 )
-                .map(|id| Reply::AnnotationWritten { id })
+                .map(|(id, patch)| Effected::patched(Reply::AnnotationWritten { id }, patch))
             });
         }
         Command::ReplyToGithubThread {
@@ -595,7 +601,7 @@ fn handle_command(
                 crate::github_comments::reply_to_github_thread(
                     &deps, &context, &parent_id, &body, client_id,
                 )
-                .map(|id| Reply::AnnotationWritten { id })
+                .map(|(id, patch)| Effected::patched(Reply::AnnotationWritten { id }, patch))
             });
         }
         Command::PromoteToComment { context, id, body } => {
@@ -605,7 +611,7 @@ fn handle_command(
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
                 crate::github_comments::promote_to_comment(&deps, &context, &id, body)
-                    .map(|id| Reply::CommentPromoted { id })
+                    .map(|(id, patch)| Effected::patched(Reply::CommentPromoted { id }, patch))
             });
         }
         Command::PromoteFindingToComment {
@@ -624,7 +630,7 @@ fn handle_command(
                     &finding_id,
                     body,
                 )
-                .map(|id| Reply::CommentPromoted { id })
+                .map(|(id, patch)| Effected::patched(Reply::CommentPromoted { id }, patch))
             });
         }
         Command::SyncGithubComments { context, source } => {
@@ -701,7 +707,11 @@ fn handle_command(
                 Ok(input)
             });
         }
-        Command::SetDiffMode { key, mode } => {
+        Command::SetDiffMode {
+            key,
+            mode,
+            pr_number,
+        } => {
             if !key_loaded(state, key) {
                 return refuse_unknown_tab(reply);
             }
@@ -709,6 +719,7 @@ fn handle_command(
                 let content = content
                     .ok_or_else(|| WorkspaceError::Failed("no loaded tab has that key".into()))?;
                 let mut input = reload_input(content, mode);
+                input.tab.pr_number = input.tab.pr_number.or(pr_number);
                 // The views show different diffs, so a mark whose hash differs
                 // in the new view still holds.
                 input.auto_unmark = false;
@@ -735,6 +746,18 @@ fn handle_command(
                         since: content.diff.revision,
                         files,
                     },
+                ))
+            });
+        }
+        Command::DropTab { key } => {
+            if !key_loaded(state, key) {
+                let _ = reply.send(Ok(Reply::ContentDropped { key }));
+                return;
+            }
+            spawn_effect(tx, reply, move || {
+                Ok(Effected::patched(
+                    Reply::ContentDropped { key },
+                    ContentPatch::Dropped { key },
                 ))
             });
         }
