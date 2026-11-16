@@ -59,7 +59,7 @@ impl TabState {
         } else {
             DiffRoute::Branch
         };
-        // Mirrors `fetch_preview_head`.
+        // Mirrors `diff_load::fetch_preview_head`.
         let pairs_preview_head = self.pr_number.is_some()
             && (self.is_remote()
                 || mode == DiffMode::PrDiff
