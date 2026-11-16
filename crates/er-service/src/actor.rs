@@ -13,11 +13,15 @@ use std::thread;
 use er_engine::jobs::JobSink;
 use er_engine::ports::Ports;
 
-use crate::effect::resolve_target;
+use er_engine::tab_identity::DiffMode;
+use er_engine::TabKey;
+
+use crate::content::{ContentPatch, TabContent};
+use crate::effect::{resolve_target, LoadInput};
 use crate::flows::{FlowRunner, FlowsUpdate};
 use crate::github_sync::{Applied, Fetched};
 use crate::guard::{self, ActorThread};
-use crate::handle::{ActorMsg, ReplySender, WorkspaceError, WorkspaceHandle};
+use crate::handle::{ActorMsg, Effected, ReplySender, WorkspaceError, WorkspaceHandle};
 use crate::jobs::JobHost;
 use crate::protocol::{Command, Event, Reply, TabContext};
 use crate::workspace::{WorkspaceState, WorkspaceView};
@@ -228,18 +232,80 @@ fn spawn_fetch(
 
 /// Runs one command's blocking work off the actor thread and sends the typed
 /// result back.
-fn spawn_effect(
+fn spawn_effect<R: Into<Effected>>(
     tx: &Sender<ActorMsg>,
     reply: ReplySender,
-    work: impl FnOnce() -> Result<Reply, WorkspaceError> + Send + 'static,
+    work: impl FnOnce() -> Result<R, WorkspaceError> + Send + 'static,
 ) {
     let tx = tx.clone();
     // Unnamed on purpose: the storage guard lets only unnamed worker threads
     // use a process-wide test root, and production spawns unnamed threads too.
     let _ = thread::Builder::new().spawn(move || {
-        let result = work();
+        let result = work().map(Into::into);
         let _ = tx.send(ActorMsg::EffectDone { result, reply });
     });
+}
+
+/// Whether a tab command names a tab this actor has loaded. A key the actor
+/// does not hold is a tab that closed or never loaded here; the command is
+/// refused before any effect runs.
+fn key_loaded(state: &WorkspaceState, key: TabKey) -> bool {
+    state.view().tabs.contains_key(&key)
+}
+
+/// Answers a tab command whose key this actor has not loaded.
+fn refuse_unknown_tab(reply: ReplySender) {
+    let _ = reply.send(Err(WorkspaceError::Failed(
+        "no loaded tab has that key".into(),
+    )));
+}
+
+/// Loads `key`'s content off the actor. A refresh or a mode switch starts
+/// from the content the key holds now, and is applied only over it.
+fn spawn_load(
+    deps: &WorkspaceDeps,
+    state: &WorkspaceState,
+    tx: &Sender<ActorMsg>,
+    reply: ReplySender,
+    key: TabKey,
+    load: impl FnOnce(&WorkspaceDeps, Option<&TabContent>) -> Result<LoadInput, WorkspaceError>
+        + Send
+        + 'static,
+) {
+    let current = state.view().tabs.get(&key).cloned();
+    let since = current.as_ref().map(|content| content.generation());
+    let deps = deps.clone();
+    spawn_effect(tx, reply, move || {
+        let input = load(&deps, current.as_deref())?;
+        let loaded = crate::effect::load_tab(&deps, input)?;
+        let reviewed_cleared = loaded.cleared;
+        Ok(Effected::patched(
+            Reply::ContentLoaded {
+                key,
+                reviewed_cleared,
+            },
+            ContentPatch::Loaded {
+                key,
+                since,
+                loaded: Box::new(loaded),
+            },
+        ))
+    });
+}
+
+/// The input that reloads loaded content as it is, in `mode`.
+fn reload_input(content: &TabContent, mode: DiffMode) -> LoadInput {
+    let mut tab = content.tab.clone();
+    tab.mode = mode;
+    LoadInput {
+        tab,
+        auto_unmark: true,
+        recheck_branch: true,
+        fetch_pr_refs: false,
+        pr_refs_fetched: content.pr_refs_fetched,
+        prev_ai: Some(Arc::clone(&content.ai)),
+        prev_branch_diff_hash: content.diff.meta.branch_diff_hash.clone(),
+    }
 }
 
 /// Whether an annotation command names the repo the actor is showing.
@@ -613,6 +679,60 @@ fn handle_command(
                 crate::pr_posts::submit_decision(deps, context, event, &summary)
             });
         }
+        Command::LoadTab { key, tab, mode } => {
+            spawn_load(deps, state, tx, reply, key, move |deps, _| {
+                crate::effect::first_load(deps, &tab, mode)
+            });
+        }
+        Command::RefreshDiff { key, force } => {
+            if !key_loaded(state, key) {
+                return refuse_unknown_tab(reply);
+            }
+            spawn_load(deps, state, tx, reply, key, move |_, content| {
+                let content = content
+                    .ok_or_else(|| WorkspaceError::Failed("no loaded tab has that key".into()))?;
+                let mut input = reload_input(content, content.tab.mode);
+                input.fetch_pr_refs = force;
+                Ok(input)
+            });
+        }
+        Command::SetDiffMode { key, mode } => {
+            if !key_loaded(state, key) {
+                return refuse_unknown_tab(reply);
+            }
+            spawn_load(deps, state, tx, reply, key, move |_, content| {
+                let content = content
+                    .ok_or_else(|| WorkspaceError::Failed("no loaded tab has that key".into()))?;
+                let mut input = reload_input(content, mode);
+                // The views show different diffs, so a mark whose hash differs
+                // in the new view still holds.
+                input.auto_unmark = false;
+                input.recheck_branch = false;
+                // The first entry into a local PR's diff fetches its refs.
+                input.fetch_pr_refs = mode == DiffMode::PrDiff
+                    && content.tab.mode != DiffMode::PrDiff
+                    && !content.pr_refs_fetched;
+                Ok(input)
+            });
+        }
+        Command::ParseFiles { key, paths } => {
+            let Some(content) = state.view().tabs.get(&key).cloned() else {
+                return refuse_unknown_tab(reply);
+            };
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                let files = crate::effect::parse_files(&deps, &content.tab, &content.diff, &paths);
+                let parsed = files.len();
+                Ok(Effected::patched(
+                    Reply::FilesParsed { key, parsed },
+                    ContentPatch::Parsed {
+                        key,
+                        since: content.diff.revision,
+                        files,
+                    },
+                ))
+            });
+        }
         #[cfg(test)]
         Command::Ping => {
             let _ = reply.send(Ok(Reply::Pong));
@@ -635,18 +755,28 @@ fn handle_command(
 /// tells subscribers and the caller.
 fn apply(
     state: &mut WorkspaceState,
-    result: Result<Reply, WorkspaceError>,
+    result: Result<Effected, WorkspaceError>,
     reply: ReplySender,
     subscribers: &Mutex<Vec<Sender<Event>>>,
     view: &RwLock<Arc<WorkspaceView>>,
 ) {
+    // A content patch lands before the reply, so a caller that reads the view
+    // after its reply sees the change. A refused patch answers with why.
+    let result = result.and_then(|Effected { reply, patch }| match patch {
+        None => Ok((reply, None)),
+        Some(patch) => state
+            .apply_patch(patch)
+            .map(|(revision, _)| (reply, Some(revision)))
+            .map_err(|refused| WorkspaceError::Failed(refused.to_string())),
+    });
     match result {
-        Ok(reply_value) => {
-            let revision = match &reply_value {
-                Reply::TargetOpened(target) => state.apply_opened(target.clone()),
+        Ok((reply_value, patched)) => {
+            let revision = match (&reply_value, patched) {
+                (Reply::TargetOpened(target), _) => state.apply_opened(target.clone()),
+                (_, Some(revision)) => revision,
                 // An annotation write does not change the workspace view, but
                 // readers still need a revision to refresh on.
-                _ => state.bump_revision(),
+                (_, None) => state.bump_revision(),
             };
             publish(view, state);
             broadcast(subscribers, Event::ViewPublished { revision });

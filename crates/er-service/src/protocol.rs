@@ -15,7 +15,10 @@ use er_engine::arena::{
 use er_engine::config::ErConfig;
 use er_engine::jobs::{JobId, JobResult, JobSubmission};
 use er_engine::review_flow_driver::ReviewFlowInputs;
+use er_engine::tab_identity::DiffMode;
+use er_engine::tabs_record::TabDescriptor;
 use er_engine::task_target::BackgroundTaskTarget;
+use er_engine::TabKey;
 
 use crate::workspace::WorkspaceTarget;
 
@@ -210,6 +213,23 @@ pub enum Command {
         event: ReviewEvent,
         summary: String,
     },
+
+    // ── Tab content ──
+    /// Load a tab's content under `key`, replacing what the key held. `mode`
+    /// overrides the view the descriptor opens on. The caller owns the key;
+    /// the actor never makes one.
+    LoadTab {
+        key: TabKey,
+        tab: TabDescriptor,
+        mode: Option<DiffMode>,
+    },
+    /// Refresh a loaded tab's diff. `force` also fetches a local PR's head
+    /// and base refs first, as a sync does.
+    RefreshDiff { key: TabKey, force: bool },
+    /// Show a loaded tab in another mode. Its reviewed marks are kept.
+    SetDiffMode { key: TabKey, mode: DiffMode },
+    /// Parse the named lazy files of a loaded tab's diff.
+    ParseFiles { key: TabKey, paths: Vec<String> },
 }
 
 /// What started a comment sync, which decides how fresh the read must be.
@@ -596,6 +616,17 @@ pub enum Reply {
     Tabs(crate::app_registry::TabsView),
     /// A prefetch was taken; it warms its cache off the caller's thread.
     Acknowledged,
+    /// A tab's content was loaded or refreshed; `reviewed_cleared` marks were
+    /// dropped because their file moved or left the diff.
+    ContentLoaded {
+        key: TabKey,
+        reviewed_cleared: usize,
+    },
+    /// How many of the named files a parse filled.
+    FilesParsed {
+        key: TabKey,
+        parsed: usize,
+    },
 }
 
 /// Pushed to subscribers after the actor applies a change. An event names the

@@ -1,12 +1,27 @@
 //! Off-actor effects: the code that may block.
 //!
-//! This module is the only place in the crate that calls a port. It runs on an
-//! effect thread, never on the actor loop, so its `deps.ports()` call passes
-//! the guard.
+//! This module runs on an effect thread, never on the actor loop, so its
+//! `deps.ports()` call passes the guard. It resolves open targets and loads
+//! each tab's content; the actor applies what a load returns.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use er_engine::ai::tab_ai::{assemble_tab_ai, TabAiLoad};
+use er_engine::ai::{self, tab_refresh};
+use er_engine::diff_load::{self, PrRefreshInputs};
+use er_engine::git::{CompactionConfig, DiffFile};
+use er_engine::paths::ErRoot;
+use er_engine::session_store;
+use er_engine::store_registry;
+use er_engine::tab_identity::{resolve_descriptor, DiffMode, ResolvedTab};
+use er_engine::tabs_record::TabDescriptor;
 
 use crate::actor::WorkspaceDeps;
+use crate::annotations::failed;
+use crate::content::{AiSection, DiffMeta, DiffSection, LoadedDiff, LoadedTab};
 use crate::handle::WorkspaceError;
-use crate::protocol::OpenTarget;
+use crate::protocol::{OpenTarget, TabContext};
 use crate::workspace::WorkspaceTarget;
 
 /// Resolves what to open: parse the target, ask GitHub for the PR state, and
@@ -87,4 +102,323 @@ fn label(parts: &PrParts) -> String {
     } else {
         format!("{}/{}#{}", parts.owner, parts.repo, parts.number)
     }
+}
+
+/// The input of a tab's first load: its descriptor resolved as a restore
+/// does, shown in `mode` when one is given.
+pub(crate) fn first_load(
+    deps: &WorkspaceDeps,
+    tab: &TabDescriptor,
+    mode: Option<DiffMode>,
+) -> Result<LoadInput, WorkspaceError> {
+    let mut resolved = resolve_descriptor(&*deps.ports().git, tab)
+        .map_err(|error| failed("resolve the tab", error))?;
+    if let Some(mode) = mode {
+        resolved.mode = mode;
+    }
+    Ok(LoadInput {
+        tab: resolved,
+        auto_unmark: true,
+        recheck_branch: false,
+        fetch_pr_refs: false,
+        pr_refs_fetched: false,
+        prev_ai: None,
+        prev_branch_diff_hash: String::new(),
+    })
+}
+
+/// What a tab load starts from.
+pub(crate) struct LoadInput {
+    pub tab: ResolvedTab,
+    /// Clear reviewed marks whose file moved. A mode switch keeps them: the
+    /// views show different diffs, so a different hash is not a change.
+    pub auto_unmark: bool,
+    /// Re-read the checkout's branch first, as a refresh of a plain tab does.
+    pub recheck_branch: bool,
+    /// Fetch the PR head and base refs first, as a sync or a first entry into
+    /// the PR diff does.
+    pub fetch_pr_refs: bool,
+    pub pr_refs_fetched: bool,
+    /// The AI state the tab held, `None` for a tab not loaded yet. A plain
+    /// tab's non-branch view fetches the branch diff only when it held data,
+    /// and a reload keeps its staleness.
+    pub prev_ai: Option<Arc<AiSection>>,
+    pub prev_branch_diff_hash: String,
+}
+
+/// Loads one tab's content in its mode, by the steps a full diff refresh
+/// runs on a `TabState`: fetch and parse the diff, hash it, load and assemble
+/// the AI sidecars, follow moved comments, mark stale findings, and clear the
+/// reviewed marks that no longer hold.
+pub(crate) fn load_tab(
+    deps: &WorkspaceDeps,
+    input: LoadInput,
+) -> Result<LoadedTab, WorkspaceError> {
+    let ports = deps.ports();
+    let git = &*ports.git;
+    let mut tab = input.tab;
+    if input.recheck_branch && tab.remote_repo.is_none() && tab.local_branch_view.is_none() {
+        tab.current_branch = git
+            .current_branch(&tab.repo_root)
+            .map_err(|error| failed("read the checkout's branch", error))?;
+    }
+    let mut pr_refs_fetched = input.pr_refs_fetched;
+    if input.fetch_pr_refs && !tab.identity().is_remote() {
+        if let Some(pr_number) = tab.pr_number {
+            let fetched = diff_load::fetch_pr_refresh_with(
+                &*ports.github,
+                git,
+                &PrRefreshInputs {
+                    repo_root: tab.repo_root.clone(),
+                    pr_number,
+                },
+            )
+            .map_err(|error| failed("fetch the PR refs", error))?;
+            tab.pr_head_ref = Some(fetched.head_ref);
+            tab.base_branch = fetched.resolved_base;
+            pr_refs_fetched = true;
+        }
+    }
+    if matches!(
+        tab.mode,
+        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::Tour
+    ) {
+        return Err(WorkspaceError::Failed(format!(
+            "the workspace does not load the {:?} view",
+            tab.mode
+        )));
+    }
+    if tab.mode == DiffMode::PrDiff && tab.pr_number.is_none() {
+        return Err(WorkspaceError::Failed(
+            "No PR number set for this tab".into(),
+        ));
+    }
+
+    let id = tab.identity();
+    let er_dir = id
+        .managed_root(git)
+        .unwrap_or_else(|| ErRoot::unresolved(&tab.repo_root, git))
+        .er_dir();
+    let comments_dir = id.pr_bucket_er_dir(git).unwrap_or_else(|| er_dir.clone());
+    let store = store_registry::store();
+    let scope = crate::annotations::bucket_scope(&er_dir)?;
+    let mut marks = session_store::load_reviewed(&store, &scope).unwrap_or_default();
+    let (prev_tour_stale, prev_stale_files) = input
+        .prev_ai
+        .as_ref()
+        .map(|ai| (ai.state.tour_stale, ai.state.stale_files.clone()))
+        .unwrap_or_default();
+    let held_ai = input
+        .prev_ai
+        .as_ref()
+        .is_some_and(|ai| ai.state.has_data() || ai.state.has_questions() || ai.state.has_tour());
+    let reload = |diff_hash: &str, branch_diff_hash: &str| {
+        let stamp = ai::arbiter_overlay_stamp(&er_dir);
+        let mut state = ai::load_ai_state_with_arbiter(
+            &er_dir,
+            branch_diff_hash,
+            id.storage_branch_scope(),
+            stamp.as_deref(),
+        );
+        let load = TabAiLoad {
+            identity: id,
+            git,
+            er_dir: &er_dir,
+            diff_hash,
+            branch_diff_hash,
+        };
+        assemble_tab_ai(&mut state, &load, prev_tour_stale, prev_stale_files.clone());
+        state
+    };
+
+    let is_remote_pr = tab.pr_number.is_some()
+        && tab
+            .remote_repo
+            .as_deref()
+            .is_some_and(|slug| slug.split('/').count() == 2);
+    let fetch = |scope: &str| {
+        diff_load::fetch_raw_with_preview_head(ports, &id, scope, false)
+            .map_err(|error| failed("fetch the diff", error))
+    };
+    let branch_view = tab.local_branch_view.is_some();
+    // A branch view takes its working tree's diffs only when the branch is
+    // checked out; otherwise every view reads the branch diff, as a remote PR
+    // does.
+    let diff_scope = if branch_view && tab.checkout_root.is_some() {
+        tab.mode.git_mode()
+    } else if branch_view || is_remote_pr {
+        "branch"
+    } else {
+        tab.mode.fetch_scope()
+    };
+    let (raw, preview_head_oid) = fetch(diff_scope)?;
+    let parsed = diff_load::parse_raw(&raw, &CompactionConfig::default(), |_| false);
+    let diff_hash = ai::compute_diff_hash(&raw);
+    // A plain tab's other views need a second git call for the branch diff,
+    // which only AI data, questions or a tour consume.
+    let fetched_branch = if !branch_view && !is_remote_pr && tab.mode != DiffMode::Branch && held_ai
+    {
+        Some(
+            git.diff_raw(
+                "branch",
+                &tab.base_branch,
+                &tab.repo_root,
+                tab.pr_head_ref.as_deref(),
+            )
+            .map_err(|error| failed("fetch the branch diff", error))?,
+        )
+    } else {
+        None
+    };
+    let branch_raw = if branch_view {
+        None
+    } else if is_remote_pr || tab.mode == DiffMode::Branch {
+        Some(raw.as_str())
+    } else {
+        fetched_branch.as_deref()
+    };
+    let branch_diff_hash = match (branch_view, branch_raw) {
+        (true, _) => diff_hash.clone(),
+        (false, Some(branch)) if fetched_branch.is_some() => ai::compute_diff_hash(branch),
+        (false, Some(_)) => diff_hash.clone(),
+        (false, None) => input.prev_branch_diff_hash,
+    };
+    let mut state = reload(&diff_hash, &branch_diff_hash);
+    // A branch view's refresh follows neither comments nor findings.
+    if !branch_view {
+        tab_refresh::relocate_all_comments(
+            &mut state,
+            &parsed.files,
+            parsed.lazy,
+            &diff_hash,
+            &er_dir,
+            || comments_dir.clone(),
+        );
+        tab_refresh::refresh_finding_staleness(&mut state, &parsed.files, parsed.lazy);
+        if state.is_stale {
+            if let Some(branch_raw) = branch_raw {
+                tab_refresh::compute_stale_files(&mut state, branch_raw);
+            }
+        }
+    }
+
+    let file_hashes = diff_load::reviewed_file_hashes(&raw, &marks);
+    let cleared = if input.auto_unmark {
+        clear_moved_marks(
+            &mut marks,
+            &file_hashes,
+            &parsed.files,
+            id.persists_reviewed(),
+            &store,
+            &scope,
+        )
+    } else {
+        0
+    };
+
+    let context = TabContext {
+        er_dir,
+        comments_dir,
+        is_remote: id.is_remote(),
+        repo_root: tab.repo_root.clone(),
+        base_branch: tab.base_branch.clone(),
+        scope: match tab.mode {
+            DiffMode::Unstaged => "unstaged",
+            DiffMode::Staged => "staged",
+            _ => "branch",
+        }
+        .to_string(),
+        remote_repo: tab.remote_repo.clone(),
+        pr_number: tab.pr_number,
+        pr_head_ref: tab.pr_head_ref.clone(),
+        local_branch_view: tab.local_branch_view.clone(),
+        checkout_root: tab.checkout_root.clone(),
+        branch_diff_hash: branch_diff_hash.clone(),
+        diff_hash: diff_hash.clone(),
+    };
+    Ok(LoadedTab {
+        tab,
+        context,
+        pr_refs_fetched,
+        diff: LoadedDiff {
+            files: parsed.files,
+            meta: DiffMeta {
+                headers: parsed.headers,
+                raw,
+                lazy: parsed.lazy,
+                diff_hash,
+                branch_diff_hash,
+                preview_head_oid,
+            },
+        },
+        marks,
+        file_hashes,
+        ai: state,
+        cleared,
+    })
+}
+
+/// Drops the marks whose file left the diff or changed since it was marked,
+/// and saves what is left when any were dropped. Answers how many.
+fn clear_moved_marks(
+    marks: &mut HashMap<String, String>,
+    file_hashes: &HashMap<String, String>,
+    files: &[DiffFile],
+    persists: bool,
+    store: &er_store::ArtifactStore,
+    scope: &er_store::Scope,
+) -> usize {
+    let save = |marks: &HashMap<String, String>| {
+        if persists {
+            let _ = session_store::save_reviewed(store, scope, marks);
+        }
+    };
+    let orphans = if files.is_empty() {
+        Vec::new()
+    } else {
+        diff_load::orphaned_reviewed(marks, files)
+    };
+    for path in &orphans {
+        marks.remove(path);
+    }
+    if !orphans.is_empty() {
+        save(marks);
+    }
+    let moved = diff_load::changed_reviewed(marks, file_hashes);
+    for path in &moved {
+        marks.remove(path);
+    }
+    if !moved.is_empty() {
+        save(marks);
+    }
+    orphans.len() + moved.len()
+}
+
+/// Parses the named lazy files of a loaded diff, each on its own copy, and
+/// answers the ones a parse filled with their index in the section.
+pub(crate) fn parse_files(
+    deps: &WorkspaceDeps,
+    tab: &ResolvedTab,
+    diff: &DiffSection,
+    paths: &[String],
+) -> Vec<(usize, DiffFile)> {
+    let ports = deps.ports();
+    let id = tab.identity();
+    paths
+        .iter()
+        .filter_map(|path| {
+            let index = diff.files.iter().position(|file| &file.path == path)?;
+            let mut one = [(*diff.files[index]).clone()];
+            let parsed = diff_load::parse_lazy_file(
+                ports,
+                &id,
+                &mut one,
+                &diff.meta.headers,
+                Some(&diff.meta.raw),
+                0,
+            );
+            let [file] = one;
+            parsed.then_some((index, file))
+        })
+        .collect()
 }

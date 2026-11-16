@@ -1,12 +1,20 @@
-//! What a reader can see: the workspace targets and the active one.
+//! What a reader can see: the workspace targets, the active one, and each
+//! loaded tab's content (ADR 0071).
 //!
 //! The view is immutable once published. The actor builds the next one, bumps
 //! the revision, and swaps the `Arc`; a reader that grabbed the previous view
 //! keeps rendering it until it asks again.
 
+use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::Arc;
+
 use er_engine::ai::review_flow::ReviewFlow;
 use er_engine::arena::{ArenaProgressState, RunStatus};
 use er_engine::task_target::BackgroundTaskTarget;
+use er_engine::TabKey;
+
+use crate::content::{self, ContentPatch, PatchRefused, TabContent};
 
 /// One PR the workspace has open.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +34,7 @@ pub struct WorkspaceTarget {
 }
 
 /// The whole read side of one workspace, published per revision.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Default)]
 pub struct WorkspaceView {
     pub revision: u64,
     pub targets: Vec<WorkspaceTarget>,
@@ -39,9 +47,58 @@ pub struct WorkspaceView {
     pub arena_runs: Vec<LiveArenaRun>,
     /// The review flows this actor runs or recovered, by bucket.
     pub review_flows: Vec<LiveReviewFlow>,
+    /// Each loaded tab's content, by the key its caller gave. A publish
+    /// copies these pointers; the sections behind them are shared.
+    pub tabs: BTreeMap<TabKey, Arc<TabContent>>,
+}
+
+/// Content compares by its section revisions: a section is replaced, never
+/// changed in place, so equal revisions are equal content.
+impl PartialEq for WorkspaceView {
+    fn eq(&self, other: &Self) -> bool {
+        let revisions = |view: &Self| {
+            view.tabs
+                .iter()
+                .map(|(key, content)| {
+                    (
+                        *key,
+                        content.diff.revision,
+                        content.reviewed.revision,
+                        content.ai.revision,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        self.revision == other.revision
+            && self.targets == other.targets
+            && self.active == other.active
+            && self.last_error == other.last_error
+            && self.arena_runs == other.arena_runs
+            && self.review_flows == other.review_flows
+            && revisions(self) == revisions(other)
+    }
+}
+
+impl fmt::Debug for WorkspaceView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkspaceView")
+            .field("revision", &self.revision)
+            .field("targets", &self.targets)
+            .field("active", &self.active)
+            .field("last_error", &self.last_error)
+            .field("arena_runs", &self.arena_runs)
+            .field("review_flows", &self.review_flows)
+            .field("tabs", &self.tabs.values().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl WorkspaceView {
+    /// The content loaded under `key`.
+    pub fn tab(&self, key: TabKey) -> Option<&Arc<TabContent>> {
+        self.tabs.get(&key)
+    }
+
     pub fn arena_run(&self, run_id: &str) -> Option<&LiveArenaRun> {
         self.arena_runs.iter().find(|run| run.run_id == run_id)
     }
@@ -152,6 +209,19 @@ impl WorkspaceState {
         );
         self.view.review_flows = flows;
         changed
+    }
+
+    /// Applies an effect's content patch with a new revision, or refuses it
+    /// with nothing moved when the tab changed since the effect started.
+    /// Answers the revision and how many reviewed marks a load cleared.
+    pub(crate) fn apply_patch(
+        &mut self,
+        patch: ContentPatch,
+    ) -> Result<(u64, usize), PatchRefused> {
+        content::check(&self.view.tabs, &patch)?;
+        let revision = self.bump();
+        let cleared = content::apply(&mut self.view.tabs, patch, revision);
+        Ok((revision, cleared))
     }
 
     fn bump(&mut self) -> u64 {
