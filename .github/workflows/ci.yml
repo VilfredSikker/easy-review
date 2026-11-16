@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, master, 'release/**', 'release-*']
   pull_request:
-    branches: [main, master, 'release/**', 'release-*']
+    branches: [main, master, staging, 'release/**', 'release-*']
 
 # Agent sessions push often; a run for a commit that has been superseded on the
 # same PR is wasted. Each push gets its own group: a shared one would drop
