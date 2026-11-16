@@ -35,6 +35,7 @@ pub mod job_staging;
 pub mod jobs;
 mod legacy_projects;
 pub mod model_discovery;
+pub mod navigation;
 pub mod os_launch;
 pub mod paths;
 pub mod ports;

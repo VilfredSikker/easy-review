@@ -8829,50 +8829,34 @@ impl App {
 
     /// Jump to the next unreviewed file (wraps around). Reports if all reviewed.
     pub fn next_unreviewed_file(&mut self) {
-        // Collect the data we need before any mutable borrow.
-        let (current_pos, targets): (usize, Vec<(usize, bool)>) = {
+        let (selected, targets): (usize, Vec<(usize, bool)>) = {
             let tab = self.tab();
-            let visible = tab.visible_files();
-            if visible.is_empty() {
-                return;
-            }
-            let pos = visible
-                .iter()
-                .position(|(i, _)| *i == tab.selected_file)
-                .unwrap_or(0);
-            let targets: Vec<(usize, bool)> = visible
+            let targets = tab
+                .visible_files()
                 .iter()
                 .map(|(i, f)| (*i, tab.reviewed.contains_key(&f.path)))
                 .collect();
-            (pos, targets)
+            (tab.selected_file, targets)
         };
-
         if targets.is_empty() {
             return;
         }
-
-        let len = targets.len();
-        // Scan forward (wrapping) starting one past current position.
-        for offset in 1..=len {
-            let idx = (current_pos + offset) % len;
-            let (raw_idx, is_reviewed) = targets[idx];
-            if !is_reviewed {
-                let tab = self.tab_mut();
-                tab.selected_file = raw_idx;
-                tab.current_hunk = 0;
-                tab.current_line = None;
-                tab.diff_scroll = 0;
-                tab.h_scroll = 0;
-                tab.ensure_file_parsed();
-                tab.rebuild_hunk_offsets();
-                // Borrow the path for the notification after releasing tab_mut.
-                let path = self.tab().files[raw_idx].path.clone();
-                self.notify(&format!("Jumped to: {}", path));
-                return;
-            }
-        }
-
-        self.notify("All visible files reviewed");
+        let Some(raw_idx) = crate::navigation::next_unreviewed_file(selected, &targets) else {
+            self.notify("All visible files reviewed");
+            return;
+        };
+        // The jump keeps the line anchor and the panel scroll, unlike a file move.
+        let tab = self.tab_mut();
+        tab.selected_file = raw_idx;
+        tab.current_hunk = 0;
+        tab.current_line = None;
+        tab.diff_scroll = 0;
+        tab.h_scroll = 0;
+        tab.ensure_file_parsed();
+        tab.rebuild_hunk_offsets();
+        // Borrow the path for the notification after releasing tab_mut.
+        let path = self.tab().files[raw_idx].path.clone();
+        self.notify(&format!("Jumped to: {}", path));
     }
 }
 
@@ -11241,6 +11225,152 @@ mod tests {
         assert_eq!(tab.selected_file, 1);
     }
 
+    /// The tab applies each file move with the resets its branch had: a
+    /// snap keeps the line and anchor, a watched move keeps the diff file.
+    #[test]
+    fn file_moves_reset_what_their_branch_resets() {
+        let files = vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.selected_file = 9;
+        tab.current_hunk = 2;
+        tab.current_line = Some(3);
+        tab.selection_anchor = Some(1);
+        tab.next_file();
+        assert_eq!(
+            (
+                tab.selected_file,
+                tab.current_hunk,
+                tab.current_line,
+                tab.selection_anchor
+            ),
+            (0, 0, Some(3), Some(1)),
+            "a filtered-out selection snaps to the first file"
+        );
+
+        tab.show_watched = true;
+        tab.watched_files = vec![WatchedFile {
+            path: "notes.md".to_string(),
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            size: 0,
+        }];
+        tab.selected_file = 1;
+        tab.current_hunk = 2;
+        tab.current_line = Some(3);
+        tab.selection_anchor = Some(1);
+        tab.panel_scroll = 5;
+        tab.diff_scroll = 4;
+        tab.h_scroll = 6;
+        tab.next_file();
+        assert_eq!(
+            (
+                tab.selected_watched,
+                tab.selected_file,
+                tab.current_hunk,
+                tab.current_line,
+                tab.selection_anchor,
+                tab.panel_scroll,
+            ),
+            (Some(0), 1, 2, Some(3), Some(1), 5),
+            "past the last diff file the watched section is next, keeping the diff position"
+        );
+        assert_eq!(
+            (tab.diff_scroll, tab.h_scroll),
+            (0, 0),
+            "a watched move resets the diff and horizontal scroll"
+        );
+        tab.next_file();
+        assert_eq!(
+            (tab.selected_watched, tab.selected_file, tab.current_line),
+            (None, 0, None),
+            "past the last watched file the first diff file is next"
+        );
+    }
+
+    /// With no diff file to go to, leaving the watched section clears the
+    /// watched selection and touches nothing else, the scrolls included.
+    #[test]
+    fn leaving_watched_with_no_diff_file_keeps_the_rest() {
+        let mut tab = make_test_tab(vec![]);
+        tab.show_watched = true;
+        tab.watched_files = vec![WatchedFile {
+            path: "notes.md".to_string(),
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            size: 0,
+        }];
+        let step: [fn(&mut TabState); 2] = [TabState::next_file, TabState::prev_file];
+        for (dir, step) in ["next", "prev"].into_iter().zip(step) {
+            tab.selected_watched = Some(0);
+            tab.selected_file = 1;
+            tab.current_hunk = 2;
+            tab.current_line = Some(3);
+            tab.selection_anchor = Some(1);
+            tab.panel_scroll = 5;
+            tab.diff_scroll = 4;
+            tab.h_scroll = 6;
+            step(&mut tab);
+            assert_eq!(
+                (
+                    tab.selected_watched,
+                    tab.selected_file,
+                    tab.current_hunk,
+                    tab.current_line,
+                    tab.selection_anchor,
+                    tab.panel_scroll,
+                    tab.diff_scroll,
+                    tab.h_scroll,
+                ),
+                (None, 1, 2, Some(3), Some(1), 5, 4, 6),
+                "{dir}_file out of the watched section"
+            );
+        }
+    }
+
+    /// The unreviewed jump scans forward and wraps, keeps the line anchor and
+    /// panel scroll, and says when every visible file is reviewed.
+    #[test]
+    fn next_unreviewed_file_jumps_and_reports() {
+        let files = vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+            make_file("c.rs", vec![], 1, 0),
+        ];
+        let mut app = App::new_for_test(files);
+        {
+            let tab = app.tab_mut();
+            tab.reviewed.insert("b.rs".to_string(), String::new());
+            tab.selected_file = 0;
+            tab.selection_anchor = Some(4);
+            tab.panel_scroll = 7;
+        }
+        app.next_unreviewed_file();
+        let tab = app.tab();
+        assert_eq!(
+            (tab.selected_file, tab.selection_anchor, tab.panel_scroll),
+            (2, Some(4), 7)
+        );
+        app.next_unreviewed_file();
+        assert_eq!(app.tab().selected_file, 0, "wraps past the end");
+        assert_eq!(
+            app.notification.as_ref().map(|n| n.message.as_str()),
+            Some("Jumped to: a.rs")
+        );
+
+        for path in ["a.rs", "c.rs"] {
+            app.tab_mut()
+                .reviewed
+                .insert(path.to_string(), String::new());
+        }
+        app.next_unreviewed_file();
+        assert_eq!(app.tab().selected_file, 0, "nothing to jump to");
+        assert_eq!(
+            app.notification.as_ref().map(|n| n.message.as_str()),
+            Some("All visible files reviewed")
+        );
+    }
+
     #[test]
     fn next_file_with_no_visible_files_no_crash() {
         let files = vec![make_file("a.rs", vec![], 1, 0)];
@@ -11384,6 +11514,23 @@ mod tests {
         tab.prev_line();
         assert_eq!(tab.current_line, None);
         assert_eq!(tab.current_hunk, 0);
+    }
+
+    /// Leaving line mode from the file's first line does not scroll.
+    #[test]
+    fn exiting_line_mode_keeps_the_scroll() {
+        let lines = vec![make_line(LineType::Add, "x", Some(1))];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 0;
+        tab.current_line = Some(0);
+        tab.diff_scroll = 7;
+        tab.h_scroll = 3;
+        tab.prev_line();
+        assert_eq!(
+            (tab.current_line, tab.diff_scroll, tab.h_scroll),
+            (None, 7, 3)
+        );
     }
 
     #[test]
