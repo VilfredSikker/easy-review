@@ -162,7 +162,7 @@ jobs:
       - run: cargo build -p er-engine --no-default-features
       - run: cargo build -p er-engine --no-default-features --features highlight
 
-  # Runs only on the release PR into main. The report is not a gate, and it
+  # Runs only on the release PR into main (from release/* or staging). The report is not a gate, and it
   # repeats the engine and TUI tests under instrumentation, so once per release
   # is enough.
   crap:
@@ -170,7 +170,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request'
       && github.base_ref == 'main'
-      && startsWith(github.head_ref, 'release/')
+      && (startsWith(github.head_ref, 'release/') || github.head_ref == 'staging')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
