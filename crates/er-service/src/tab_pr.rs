@@ -63,18 +63,16 @@ pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>)
         Some(fetched) if !fetched.is_empty() => fetched,
         _ => commits,
     };
+    // The head this load's diff was taken at comes first. The cache's head
+    // describes the cached diff, which this load did not read, so it is the
+    // last resort.
     let head_oid = load
         .adopt_head_oid
         .or(load.fetched_head)
-        .or_else(|| {
-            tab.identity()
-                .is_remote()
-                .then(|| load.preview_head_oid.map(str::to_string))
-                .flatten()
-        })
+        .or_else(|| load.preview_head_oid.map(str::to_string))
         .or_else(|| prev.and_then(|prev| prev.head_oid.clone()))
-        .or(cached_head)
-        .or_else(|| local_head(deps, tab, number));
+        .or_else(|| local_head(deps, tab, number))
+        .or(cached_head);
     LoadedPr {
         overview,
         commits,
