@@ -230,9 +230,9 @@ fn a_restore_follows_the_registry_and_closes_a_broken_tab() {
 
         let view = state.service.app_registry().tabs_view();
         let registry: Vec<TabKey> = view.tabs.iter().map(|entry| entry.key).collect();
-        assert_eq!(registry.len(), 2, "the broken tab stayed open");
         let (app, app_active) = app_keys(&state);
-        assert_eq!(app, registry);
+        assert_eq!(app, registry, "the App's keys");
+        assert_eq!(registry.len(), 2, "the broken tab stayed open");
         assert_eq!(Some(app_active), view.active);
         let active = view.active_entry().expect("an active tab");
         assert_eq!(active.descriptor.repo_root, last.repo_root);
