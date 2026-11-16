@@ -17,7 +17,8 @@ use crate::view_state::ViewStateHandle;
 
 /// The tabs a view lists that `have` lacks, built under the registry's keys,
 /// and the keys whose descriptor failed to build. Only `eager` loads its diff
-/// now; the rest load when they gain focus.
+/// now; the rest stay lazy stubs, since nothing on the flag path loads a
+/// stub's diff yet.
 fn build_missing(
     have: &[TabKey],
     view: &TabsView,
@@ -118,7 +119,9 @@ pub fn follow(
 
 /// The flag-on restore, run once the service is built. The registry loads
 /// `tabs.json` and issues the keys; the App gives up its startup tab and
-/// follows, loading the active tab's diff now and the rest on focus. With no
+/// follows, loading the active tab's diff now. The other tabs stay lazy
+/// stubs: on the flag path a select only sends `SelectTab`, and nothing calls
+/// `kick_deferred_tab_refresh` for them, so they show no diff until 2c. With no
 /// saved tab, the App's startup tab joins the registry under the key the
 /// registry gives it.
 pub fn restore(

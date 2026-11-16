@@ -1018,7 +1018,8 @@ fn main() {
     // when its tab gains focus (see `commands::kick_deferred_tab_refresh`).
     //
     // With `v1-service` the app registry issues the keys, so the restore runs
-    // once the service is built (`tabs::restore`).
+    // once the service is built (`tabs::restore`). Focus does not upgrade a
+    // stub there: the flag-on select never calls `kick_deferred_tab_refresh`.
     let (deferred_tab_indices, view_state) = restore_app_tabs(&mut app, &ports);
 
     app.announce_legacy_root();
