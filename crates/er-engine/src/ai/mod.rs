@@ -22,6 +22,7 @@ mod review;
 pub mod review_flow;
 pub mod review_md;
 pub mod scoped_overlay;
+pub mod tab_ai;
 pub mod triage;
 pub mod ui_annotations;
 pub mod validation;

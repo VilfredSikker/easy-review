@@ -16,6 +16,7 @@ pub mod annotations;
 pub mod dev_log;
 pub mod diagram_upload;
 pub mod diff_fetch;
+pub mod diff_load;
 pub mod env_path;
 #[cfg(feature = "ui")]
 pub mod export;
@@ -55,6 +56,7 @@ pub mod stage_job;
 pub mod storage;
 pub mod store_registry;
 pub mod sync;
+pub mod tab_identity;
 pub mod tab_key;
 pub use tab_key::TabKey;
 pub mod tabs_record;

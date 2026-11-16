@@ -374,66 +374,21 @@ impl TabState {
         if !self.lazy_mode {
             return;
         }
-        if let Some(file) = self.files.get(index) {
-            // Already parsed (has hunks) or is compacted — skip
-            if !file.hunks.is_empty() || file.compacted {
-                return;
-            }
+        // Taken out so the parse can borrow the rest of the tab beside it.
+        let mut files = std::mem::take(&mut self.files);
+        let attempted = crate::diff_load::parse_lazy_file(
+            &self.ports,
+            &self.identity(),
+            &mut files,
+            &self.file_headers,
+            self.raw_diff.as_deref(),
+            index,
+        );
+        self.files = files;
+        if attempted {
+            self.rebuild_hunk_offsets();
+            self.update_mem_budget();
         }
-        // Parse on demand from raw diff — look up header by path (not index) to handle mtime sort
-        let path = self.files.get(index).map(|f| f.path.clone());
-        let header_idx = path
-            .as_ref()
-            .and_then(|p| self.file_headers.iter().position(|h| h.path == *p));
-        if let (Some(ref raw), Some(idx)) = (&self.raw_diff, header_idx) {
-            let header = &self.file_headers[idx];
-            let parsed = git::parse_file_at_offset(raw, header);
-            if !parsed.hunks.is_empty() {
-                if let Some(file) = self.files.get_mut(index) {
-                    file.hunks = parsed.hunks;
-                    file.adds = parsed.adds;
-                    file.dels = parsed.dels;
-                }
-                self.rebuild_hunk_offsets();
-                self.update_mem_budget();
-                return;
-            }
-        }
-        // Fallback: offset parse returned no hunks but file has changes — fetch from git directly
-        // Skip git fallback in remote mode — raw_diff is our only source
-        let fallback_path = if self.is_remote() {
-            None
-        } else {
-            self.files
-                .get(index)
-                .filter(|file| file.adds + file.dels > 0)
-                .map(|file| file.path.clone())
-        };
-        if let Some(path) = fallback_path {
-            let repo_root = self.repo_root.clone();
-            let mode = self.mode.git_mode().to_string();
-            let base = self.base_branch.clone();
-            let head_ref_owned = self.pr_head_ref.clone();
-            if let Ok(raw) = self.ports.git.diff_raw_file(
-                &mode,
-                &base,
-                &repo_root,
-                &path,
-                None,
-                head_ref_owned.as_deref(),
-            ) {
-                let parsed = git::parse_diff(&raw);
-                if let Some(p) = parsed.into_iter().next() {
-                    if let Some(file) = self.files.get_mut(index) {
-                        file.hunks = p.hunks;
-                        file.adds = p.adds;
-                        file.dels = p.dels;
-                    }
-                }
-            }
-        }
-        self.rebuild_hunk_offsets();
-        self.update_mem_budget();
     }
 
     /// Toggle expand/compact for the currently selected file.
