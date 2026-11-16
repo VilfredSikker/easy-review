@@ -45,7 +45,9 @@ lock, which is the wait the service exists to remove.
 versioned view (the rows, the provider lists, and one risk-rules view per
 rules key); writes are commands. A risk-rules view's own version rises only
 when that repo's rules change. Resolving changed paths against it runs on the
-caller's side until the service holds the diff.
+caller's side until the service holds the diff. The view shows what is on disk:
+a save the file refuses undoes the edit, and any write staged after it, in the
+actor's config.
 
 **`apply_config_field` stays the one writer of a config field**, in the
 engine's non-`ui` config, so the flag-off desktop and the settings actor share
@@ -63,6 +65,8 @@ schema for validation would need a derive added beside the table; the wire
 rows would not change. On the flag path, side effects the flag-off App runs
 after a config write (refreshing watched files, resyncing the AI selection)
 wait for the service to own that state. The palette's `set_ai_model`,
-`set_ai_selection` and `set_ai_effort` still save the App's copy of the config,
-so until they are routed, the flag-on App and the settings actor can each save
-over the other's last write.
+`set_ai_selection` and `set_ai_effort` save through the actor too; the App only
+takes the saved selection as its session selection, because the palette still
+reads it there. A write is published before its save lands, so a reader can
+see an edit the file then refuses; the actor rolls it back when the refusal
+arrives, and the view matches the disk again.
