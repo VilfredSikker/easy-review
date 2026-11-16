@@ -121,6 +121,19 @@ pub const fn tour_context_is_pr(is_remote: bool, mode: DiffMode, tour_is_pr: boo
     }
 }
 
+/// The key of the workspace actor a tab belongs to: its local root, or
+/// `remote:<owner/repo>` when it has none. An empty root counts as none.
+///
+/// Every sender keys its actor through this one function, from the tab's own
+/// identity. It never reads the project list, so a project added or removed
+/// later cannot move a tab to another actor.
+pub fn workspace_key(local_root: Option<&str>, remote: &str) -> String {
+    match local_root.filter(|root| !root.is_empty()) {
+        Some(root) => root.to_string(),
+        None => format!("remote:{remote}"),
+    }
+}
+
 /// What a saved tab resolves to before its first diff: the owned fields of a
 /// [`TabIdentity`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,6 +266,13 @@ impl<'a> TabIdentity<'a> {
     /// Whether this tab is reviewing a remote-only PR (no local clone).
     pub const fn is_remote(&self) -> bool {
         self.remote_repo.is_some() && self.local_branch_view.is_none()
+    }
+
+    /// The actor this tab's commands go to. A remote tab has no local root:
+    /// the directory it was opened from is not its repo.
+    pub fn workspace_key(&self) -> String {
+        let root = (!self.is_remote()).then_some(self.repo_root);
+        workspace_key(root, self.remote_repo.unwrap_or(""))
     }
 
     pub const fn review_bucket(&self) -> ReviewBucket {
@@ -562,5 +582,88 @@ mod tests {
         assert!(resolved(Some("a/b"), Some("feature"), DiffMode::Staged)
             .identity()
             .persists_reviewed());
+    }
+    /// A remote PR descriptor keys on its remote whatever root a restore
+    /// saved beside it; a local tab keys on its root, a local PR too.
+    #[test]
+    fn a_descriptor_keys_a_remote_pr_on_its_remote() {
+        let remote = TabDescriptor {
+            pr_owner: Some("acme".to_string()),
+            pr_repo: Some("widgets".to_string()),
+            pr_number: Some(7),
+            ..descriptor(TabKind::RemotePr)
+        };
+        assert_eq!(remote.workspace_key(), workspace_key(None, "acme/widgets"));
+        assert_ne!(remote.workspace_key(), "/repo");
+        let opened = TabDescriptor {
+            repo_root: String::new(),
+            ..remote.clone()
+        };
+        assert_eq!(opened.workspace_key(), remote.workspace_key());
+        let local = TabDescriptor {
+            pr_number: Some(7),
+            ..descriptor(TabKind::LocalPr)
+        };
+        assert_eq!(local.workspace_key(), "/repo");
+        assert_eq!(descriptor(TabKind::Working).workspace_key(), "/repo");
+    }
+
+    /// The identity of a remote tab resolved from its descriptor keys the same
+    /// actor as the descriptor; a local PR tab carrying its slug keys its root.
+    #[test]
+    fn an_identity_keys_the_same_actor_as_its_descriptor() -> anyhow::Result<()> {
+        let remote = TabDescriptor {
+            pr_owner: Some("acme".to_string()),
+            pr_repo: Some("widgets".to_string()),
+            pr_number: Some(7),
+            ..descriptor(TabKind::RemotePr)
+        };
+        let tab = resolve_descriptor(&git(), &remote)?;
+        assert!(!tab.repo_root.is_empty());
+        assert_eq!(tab.identity().workspace_key(), remote.workspace_key());
+        let local_pr = ResolvedTab {
+            remote_repo: Some("acme/widgets".to_string()),
+            local_branch_view: Some("pr/7".to_string()),
+            ..resolve_descriptor(&git(), &descriptor(TabKind::Working))?
+        };
+        assert_eq!(local_pr.identity().workspace_key(), "/repo");
+        Ok(())
+    }
+
+    /// One key function: no crate builds an actor key by hand, and the old
+    /// helper is gone. The needles are built at run time so this text never
+    /// matches itself.
+    #[test]
+    fn no_actor_key_is_built_outside_workspace_key() {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let old = ["service", "_key"].concat();
+        let by_hand = ["\"remote", ":"].concat();
+        let mut found = Vec::new();
+        let mut dirs = vec![crates];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|name| name != "target") {
+                        dirs.push(path);
+                    }
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "rs") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let allowed = usize::from(path.ends_with("er-engine/src/tab_identity.rs"));
+                if text.matches(&old).count() > 0 || text.matches(&by_hand).count() > allowed {
+                    found.push(path.display().to_string());
+                }
+            }
+        }
+        assert!(found.is_empty(), "actor keys built by hand in {found:?}");
     }
 }

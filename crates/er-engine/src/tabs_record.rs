@@ -50,6 +50,19 @@ pub struct TabDescriptor {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+impl TabDescriptor {
+    /// The actor this tab's content lives on. A remote PR has no local root,
+    /// whatever directory a restore saved beside it.
+    pub fn workspace_key(&self) -> String {
+        let remote = match (&self.pr_owner, &self.pr_repo) {
+            (Some(owner), Some(repo)) => format!("{owner}/{repo}"),
+            _ => String::new(),
+        };
+        let root = (self.kind != TabKind::RemotePr).then_some(self.repo_root.as_str());
+        crate::tab_identity::workspace_key(root, &remote)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct TabsFile {
     pub tabs: Vec<TabDescriptor>,

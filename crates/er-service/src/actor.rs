@@ -226,7 +226,7 @@ fn spawn_fetch(
     context: TabContext,
     work: impl FnOnce(&WorkspaceDeps, TabContext) -> Result<Fetched, WorkspaceError> + Send + 'static,
 ) {
-    if !context_matches(state, &context.repo_root) {
+    if !context_matches(state, &context) {
         return refuse_stale(reply);
     }
     let (deps, tx) = (deps.clone(), tx.clone());
@@ -314,17 +314,18 @@ fn reload_input(content: &TabContent, mode: DiffMode) -> LoadInput {
     }
 }
 
-/// Whether an annotation command names the repo the actor is showing.
+/// Whether an annotation command's tab belongs to the workspace the actor is
+/// showing: both name the same workspace key.
 ///
-/// A command for another repo is a stale view: the user switched tabs between
-/// the paint and the write (ADR 0017). An actor with no opened target accepts
-/// any repo, since annotations do not require the workspace view.
-fn context_matches(state: &WorkspaceState, repo_root: &str) -> bool {
+/// A command for another workspace is a stale view: the user switched tabs
+/// between the paint and the write (ADR 0017). An actor with no opened target
+/// accepts any tab, since annotations do not require the workspace view.
+fn context_matches(state: &WorkspaceState, context: &TabContext) -> bool {
     let view = state.view();
     let Some(target) = view.active.and_then(|index| view.targets.get(index)) else {
         return true;
     };
-    repo_root.is_empty() || target.repo_root == repo_root
+    target.workspace_key() == context.workspace_key()
 }
 
 /// Answers a command whose view has moved on, without running its effect.
@@ -353,7 +354,7 @@ fn handle_command(
             });
         }
         Command::ToggleReviewed { context, path } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -368,7 +369,7 @@ fn handle_command(
             path,
             reviewed,
         } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -383,7 +384,7 @@ fn handle_command(
             pillar_id,
             reviewed,
         } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -402,7 +403,7 @@ fn handle_command(
             reply_to,
             finding_ref,
         } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -429,7 +430,7 @@ fn handle_command(
             reply_to,
             finding_ref,
         } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -456,7 +457,7 @@ fn handle_command(
             body,
             source,
         } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -473,7 +474,7 @@ fn handle_command(
             body,
             client_id,
         } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -483,7 +484,7 @@ fn handle_command(
             });
         }
         Command::UpdateThreadMessage { context, id, body } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             spawn_effect(tx, reply, move || {
@@ -492,7 +493,7 @@ fn handle_command(
             });
         }
         Command::DeleteThread { context, id } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             spawn_effect(tx, reply, move || {
@@ -501,7 +502,7 @@ fn handle_command(
             });
         }
         Command::ResolveThread { context, id } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             spawn_effect(tx, reply, move || {
@@ -510,7 +511,7 @@ fn handle_command(
             });
         }
         Command::PromoteToNote { context, id, body } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -526,7 +527,7 @@ fn handle_command(
             ai_assist,
             client_id,
         } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -576,7 +577,7 @@ fn handle_command(
             side,
             client_id,
         } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -593,7 +594,7 @@ fn handle_command(
             body,
             client_id,
         } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -605,7 +606,7 @@ fn handle_command(
             });
         }
         Command::PromoteToComment { context, id, body } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
@@ -619,7 +620,7 @@ fn handle_command(
             finding_id,
             body,
         } => {
-            if !context_matches(state, &context.repo_root) {
+            if !context_matches(state, &context) {
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
