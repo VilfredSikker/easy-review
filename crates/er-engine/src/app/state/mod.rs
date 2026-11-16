@@ -11257,12 +11257,29 @@ mod tests {
             size: 0,
         }];
         tab.selected_file = 1;
+        tab.current_hunk = 2;
         tab.current_line = Some(3);
+        tab.selection_anchor = Some(1);
+        tab.panel_scroll = 5;
+        tab.diff_scroll = 4;
+        tab.h_scroll = 6;
         tab.next_file();
         assert_eq!(
-            (tab.selected_watched, tab.selected_file, tab.current_line),
-            (Some(0), 1, Some(3)),
-            "past the last diff file the watched section is next"
+            (
+                tab.selected_watched,
+                tab.selected_file,
+                tab.current_hunk,
+                tab.current_line,
+                tab.selection_anchor,
+                tab.panel_scroll,
+            ),
+            (Some(0), 1, 2, Some(3), Some(1), 5),
+            "past the last diff file the watched section is next, keeping the diff position"
+        );
+        assert_eq!(
+            (tab.diff_scroll, tab.h_scroll),
+            (0, 0),
+            "a watched move resets the diff and horizontal scroll"
         );
         tab.next_file();
         assert_eq!(
@@ -11270,6 +11287,45 @@ mod tests {
             (None, 0, None),
             "past the last watched file the first diff file is next"
         );
+    }
+
+    /// With no diff file to go to, leaving the watched section clears the
+    /// watched selection and touches nothing else, the scrolls included.
+    #[test]
+    fn leaving_watched_with_no_diff_file_keeps_the_rest() {
+        let mut tab = make_test_tab(vec![]);
+        tab.show_watched = true;
+        tab.watched_files = vec![WatchedFile {
+            path: "notes.md".to_string(),
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            size: 0,
+        }];
+        let step: [fn(&mut TabState); 2] = [TabState::next_file, TabState::prev_file];
+        for (dir, step) in ["next", "prev"].into_iter().zip(step) {
+            tab.selected_watched = Some(0);
+            tab.selected_file = 1;
+            tab.current_hunk = 2;
+            tab.current_line = Some(3);
+            tab.selection_anchor = Some(1);
+            tab.panel_scroll = 5;
+            tab.diff_scroll = 4;
+            tab.h_scroll = 6;
+            step(&mut tab);
+            assert_eq!(
+                (
+                    tab.selected_watched,
+                    tab.selected_file,
+                    tab.current_hunk,
+                    tab.current_line,
+                    tab.selection_anchor,
+                    tab.panel_scroll,
+                    tab.diff_scroll,
+                    tab.h_scroll,
+                ),
+                (None, 1, 2, Some(3), Some(1), 5, 4, 6),
+                "{dir}_file out of the watched section"
+            );
+        }
     }
 
     /// The unreviewed jump scans forward and wraps, keeps the line anchor and
@@ -11458,6 +11514,23 @@ mod tests {
         tab.prev_line();
         assert_eq!(tab.current_line, None);
         assert_eq!(tab.current_hunk, 0);
+    }
+
+    /// Leaving line mode from the file's first line does not scroll.
+    #[test]
+    fn exiting_line_mode_keeps_the_scroll() {
+        let lines = vec![make_line(LineType::Add, "x", Some(1))];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 0;
+        tab.current_line = Some(0);
+        tab.diff_scroll = 7;
+        tab.h_scroll = 3;
+        tab.prev_line();
+        assert_eq!(
+            (tab.current_line, tab.diff_scroll, tab.h_scroll),
+            (None, 7, 3)
+        );
     }
 
     #[test]
