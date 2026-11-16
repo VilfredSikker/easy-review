@@ -3,12 +3,15 @@
 //! writer moved.
 
 use std::path::Path;
+use std::sync::mpsc::channel;
+use std::sync::{Mutex, RwLock};
 
 use er_engine::preview_key::file_preview_key;
 
 use super::*;
 use crate::app_registry::AppRegistry;
 use crate::content::SidecarStamp;
+use crate::sidecar_reload::SidecarReloads;
 use crate::AppCommand;
 
 fn calls_to(github: &FakeGitHub, method: &str) -> usize {
@@ -375,27 +378,52 @@ fn a_reload_takes_an_outside_write_and_publishes_nothing_when_idle() -> anyhow::
     })
 }
 
-/// A reload sent while one runs for the same tab is answered at once.
+/// A reload sent while one runs for the same tab is answered at once, and a
+/// reload after the last one finished reads again. The gate is driven by
+/// hand, so no actor decides when the read lands.
 #[test]
-fn reloads_sent_together_read_once() -> anyhow::Result<()> {
-    with_root(|repo| {
-        let handle = actor_over(git(RAW));
-        let key = TabKey::next();
-        load(&handle, key, repo)?;
-        let loaded = content_of(&handle.view(), key)?;
-        write_review(&loaded.context.er_dir, &loaded.context.branch_diff_hash);
+fn a_reload_sent_while_one_runs_is_answered_at_once() -> anyhow::Result<()> {
+    let mut state = WorkspaceState::new();
+    let key = TabKey::next();
+    let first_load = ContentPatch::Loaded {
+        key,
+        since: None,
+        loaded: loaded_tab("/repo"),
+    };
+    state
+        .apply_patch(first_load)
+        .map_err(|refused| anyhow::anyhow!("{refused}"))?;
+    let github: Arc<dyn er_github::GitHub> = Arc::new(FakeGitHub::default());
+    let deps = WorkspaceDeps::new(Ports {
+        git: git(RAW),
+        github,
+    });
+    let (tx, done) = channel();
+    let mut reloads = SidecarReloads::default();
+    let start = |reloads: &mut SidecarReloads, state: &WorkspaceState| {
+        let (reply, replies) = channel();
+        reloads.start(&deps, state, &tx, key, reply);
+        replies
+    };
 
-        let first = handle.send(Command::ReloadSidecars { key });
-        let second = handle.send(Command::ReloadSidecars { key });
-        let mut reads = 0;
-        for replies in [first, second] {
-            if reloaded(replies.recv_timeout(WAIT)??)? {
-                reads += 1;
-            }
-        }
-        assert_eq!(reads, 1);
-        Ok(())
-    })
+    let first = start(&mut reloads, &state);
+    let second = start(&mut reloads, &state);
+    let coalesced = Reply::SidecarsReloaded {
+        key,
+        reloaded: false,
+    };
+    assert_eq!(second.try_recv().ok(), Some(Ok(coalesced)));
+    assert!(first.try_recv().is_err(), "the first read answered early");
+
+    let Ok(ActorMsg::Reloaded(read)) = done.recv_timeout(WAIT) else {
+        anyhow::bail!("the first read never finished");
+    };
+    let view = RwLock::new(Arc::new(WorkspaceView::default()));
+    reloads.finish(&mut state, read, &Mutex::new(Vec::new()), &view);
+    assert!(first.try_recv().is_ok(), "the first read was not answered");
+    let third = start(&mut reloads, &state);
+    assert!(third.try_recv().is_err(), "a later reload was coalesced");
+    Ok(())
 }
 
 #[test]

@@ -237,6 +237,14 @@ fn the_poll_tick_brings_an_outside_write_into_the_active_content() {
 fn every_mode_reaches_the_active_content() {
     with_storage(|dir| {
         let Fixture { state, active, .. } = fixture(dir);
+        for name in ["branch", "unstaged", "staged", "pr", "tour"] {
+            assert!(content_routes::routed_mode(name).is_some(), "{name}");
+            assert_eq!(content_routes::recorded_mode(name), None, "{name}");
+        }
+        for name in ["history", "conflicts", "hidden"] {
+            assert_eq!(content_routes::routed_mode(name), None, "{name}");
+            assert!(content_routes::recorded_mode(name).is_some(), "{name}");
+        }
 
         for (name, mode) in [("hidden", DiffMode::Hidden), ("history", DiffMode::History)] {
             let route = move |state: &AppState| content_routes::record_mode(state, name, mode, None);
