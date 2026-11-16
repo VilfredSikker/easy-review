@@ -612,3 +612,30 @@ fn a_patch_from_before_the_tab_moved_is_refused_with_nothing_moved() -> anyhow::
     }
     Ok(())
 }
+
+/// A tab closed while its first load is still running: the drop reaches the
+/// actor first, and the load that lands after it must not bring the closed
+/// tab's content back.
+#[test]
+fn a_first_load_landing_after_its_tab_closed_is_refused() -> anyhow::Result<()> {
+    with_root(|repo| {
+        let handle = actor_over(git(RAW));
+        let key = TabKey::next();
+
+        handle.send_and_wait_with(Command::DropTab { key }, WAIT)?;
+        let late = load(&handle, key, repo);
+
+        assert!(late.is_err(), "the late load answered {late:?}");
+        assert!(
+            handle.view().tab(key).is_none(),
+            "the closed tab's content came back"
+        );
+        let other = TabKey::next();
+        load(&handle, other, repo)?;
+        assert!(
+            handle.view().tab(other).is_some(),
+            "an open tab still loads"
+        );
+        Ok(())
+    })
+}

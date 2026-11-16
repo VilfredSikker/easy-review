@@ -751,10 +751,8 @@ fn handle_command(
             });
         }
         Command::DropTab { key } => {
-            if !key_loaded(state, key) {
-                let _ = reply.send(Ok(Reply::ContentDropped { key }));
-                return;
-            }
+            // A key not loaded yet may have a first load in flight; the patch
+            // records the close, so that load is refused when it lands.
             spawn_effect(tx, reply, move || {
                 Ok(Effected::patched(
                     Reply::ContentDropped { key },

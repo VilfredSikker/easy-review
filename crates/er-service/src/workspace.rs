@@ -5,7 +5,7 @@
 //! the revision, and swaps the `Arc`; a reader that grabbed the previous view
 //! keeps rendering it until it asks again.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -146,6 +146,9 @@ pub struct LiveArenaRun {
 pub(crate) struct WorkspaceState {
     view: WorkspaceView,
     revision: u64,
+    /// Keys whose tab closed. A key is never issued twice, so a load that
+    /// lands for one after its drop belongs to a tab that is gone.
+    closed: HashSet<TabKey>,
 }
 
 impl WorkspaceState {
@@ -153,6 +156,7 @@ impl WorkspaceState {
         Self {
             view: WorkspaceView::default(),
             revision: 0,
+            closed: HashSet::new(),
         }
     }
 
@@ -225,7 +229,13 @@ impl WorkspaceState {
         &mut self,
         patch: ContentPatch,
     ) -> Result<(u64, usize), PatchRefused> {
+        let (mut loads, mut drops) = (Vec::new(), Vec::new());
+        content::lifecycle_keys(&patch, &mut loads, &mut drops);
+        if loads.iter().any(|key| self.closed.contains(key)) {
+            return Err(PatchRefused::Moved);
+        }
         content::check(&self.view.tabs, &patch)?;
+        self.closed.extend(drops);
         let revision = self.bump();
         let cleared = content::apply(&mut self.view.tabs, patch, revision);
         Ok((revision, cleared))
