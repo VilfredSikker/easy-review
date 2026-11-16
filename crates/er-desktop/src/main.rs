@@ -891,6 +891,58 @@ fn v1_service_enabled() -> bool {
     cfg!(feature = "v1-service")
 }
 
+/// Rebuilds the saved tabs into the App, the active one with its diff and the
+/// rest as stubs. Answers the stubs' indices and the view state the saved
+/// browser fields went into.
+#[cfg(not(feature = "v1-service"))]
+fn restore_app_tabs(
+    app: &mut App,
+    ports: &er_engine::ports::Ports,
+) -> (Vec<usize>, er_desktop::view_state::DesktopViewState) {
+    let mut deferred_tab_indices: Vec<usize> = Vec::new();
+    let mut view_state = er_desktop::view_state::DesktopViewState::default();
+    if let Some(file) = tabs::load_tabs() {
+        let active_idx = file.active_idx.min(file.tabs.len().saturating_sub(1));
+        let mut rebuilt: Vec<er_engine::app::TabState> = Vec::new();
+        for (i, d) in file.tabs.iter().enumerate() {
+            let eager = i == active_idx;
+            match tabs::restore_tab(d, !eager, ports, &mut view_state) {
+                Ok(t) => {
+                    if !eager {
+                        deferred_tab_indices.push(rebuilt.len());
+                    }
+                    rebuilt.push(t);
+                }
+                Err(e) => log::warn!(
+                    "er-desktop: skipping persisted tab {:?} ({}): {e}",
+                    d.kind,
+                    d.repo_root
+                ),
+            }
+        }
+        if !rebuilt.is_empty() {
+            app.tabs = rebuilt;
+            app.active_tab = active_idx.min(app.tabs.len() - 1);
+            // Restored tabs bypass `push_tab`, so hand them their rule tables.
+            app.sync_repo_rules_to_tabs();
+        }
+    }
+    (deferred_tab_indices, view_state)
+}
+
+/// The App keeps its startup tab until the service is built; then
+/// `tabs::restore` replaces it with the registry's tabs under their keys.
+#[cfg(feature = "v1-service")]
+fn restore_app_tabs(
+    _app: &mut App,
+    _ports: &er_engine::ports::Ports,
+) -> (Vec<usize>, er_desktop::view_state::DesktopViewState) {
+    (
+        Vec::new(),
+        er_desktop::view_state::DesktopViewState::default(),
+    )
+}
+
 fn main() {
     er_engine::env_path::init_cli_path();
     dev_log::init();
@@ -964,34 +1016,10 @@ fn main() {
     // set) so a fresh launch with many tabs across many repos doesn't pay N
     // cold `git diff` calls before the window appears. Each stub is upgraded
     // when its tab gains focus (see `commands::kick_deferred_tab_refresh`).
-    let mut deferred_tab_indices: Vec<usize> = Vec::new();
-    let mut view_state = er_desktop::view_state::DesktopViewState::default();
-    if let Some(file) = tabs::load_tabs() {
-        let active_idx = file.active_idx.min(file.tabs.len().saturating_sub(1));
-        let mut rebuilt: Vec<er_engine::app::TabState> = Vec::new();
-        for (i, d) in file.tabs.iter().enumerate() {
-            let eager = i == active_idx;
-            match tabs::restore_tab(d, !eager, &ports, &mut view_state) {
-                Ok(t) => {
-                    if !eager {
-                        deferred_tab_indices.push(rebuilt.len());
-                    }
-                    rebuilt.push(t);
-                }
-                Err(e) => log::warn!(
-                    "er-desktop: skipping persisted tab {:?} ({}): {e}",
-                    d.kind,
-                    d.repo_root
-                ),
-            }
-        }
-        if !rebuilt.is_empty() {
-            app.tabs = rebuilt;
-            app.active_tab = active_idx.min(app.tabs.len() - 1);
-            // Restored tabs bypass `push_tab`, so hand them their rule tables.
-            app.sync_repo_rules_to_tabs();
-        }
-    }
+    //
+    // With `v1-service` the app registry issues the keys, so the restore runs
+    // once the service is built (`tabs::restore`).
+    let (deferred_tab_indices, view_state) = restore_app_tabs(&mut app, &ports);
 
     app.announce_legacy_root();
     // Register every unique repo root / remote referenced by open tabs.
@@ -1093,6 +1121,18 @@ fn main() {
             }
         },
     ));
+    // The registry issues every tab key on this path: the App restores from
+    // its list, then follows each change to it.
+    #[cfg(feature = "v1-service")]
+    {
+        let registry = Arc::clone(service.app_registry());
+        tabs::restore(&app_arc, &view_arc, &registry, &ports);
+        if let Ok(app) = app_arc.lock() {
+            projects::sync_projects_from_tabs(&app.tabs);
+        }
+        let (app, view, ports) = (Arc::clone(&app_arc), Arc::clone(&view_arc), ports.clone());
+        service.follow_tabs(move || tabs::follow(&app, &view, &registry, &ports));
+    }
     #[cfg(feature = "v1-service")]
     if let Ok(app) = app_arc.lock() {
         er_desktop::arena_service::attach(&app, Arc::clone(&service));

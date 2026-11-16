@@ -11,6 +11,11 @@ pub use er_engine::tabs_record::{load_tabs, save_tabs, TabDescriptor, TabKind, T
 
 use crate::view_state::{BrowserLayout, DesktopViewState, TabBrowserState, ViewStateHandle};
 
+#[cfg(feature = "v1-service")]
+mod follow;
+#[cfg(feature = "v1-service")]
+pub use follow::{follow, follow_registry, restore};
+
 /// Serialize the live tab list and active index to disk. Each tab's browser URL
 /// and layout come from the desktop view state.
 pub fn save_app_tabs(app: &er_engine::app::App, view: &DesktopViewState) -> Result<()> {

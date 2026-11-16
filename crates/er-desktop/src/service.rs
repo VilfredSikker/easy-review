@@ -141,6 +141,21 @@ impl ServiceState {
         &self.app_registry
     }
 
+    /// Runs `follow` on its own thread after each tab-list change, so the App
+    /// follows the registry without a tab command waiting on the App lock.
+    pub fn follow_tabs(&self, follow: impl Fn() + Send + 'static) {
+        let events = self.app_registry.subscribe();
+        let _ = std::thread::Builder::new()
+            .name("er-tab-follower".into())
+            .spawn(move || {
+                for event in events {
+                    if matches!(event, Event::TabsChanged { .. }) {
+                        follow();
+                    }
+                }
+            });
+    }
+
     /// Sends one command to the app registry.
     pub fn send_app(&self, command: AppCommand) -> Result<Reply, WorkspaceError> {
         self.app_registry.send(command)
