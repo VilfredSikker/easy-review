@@ -860,7 +860,8 @@ mod tests {
                 "fb19f6ab31b58428",
                 "3eef7decc2ae9e35",
                 "",
-            ].map(str::to_string)
+            ]
+            .map(str::to_string)
         );
     }
 
