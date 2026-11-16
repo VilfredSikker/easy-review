@@ -180,11 +180,12 @@ fn the_actor_refuses_a_port_call_on_its_own_thread() -> anyhow::Result<()> {
 
 #[test]
 fn the_actor_loop_never_dereferences_a_port() {
-    // The loop, and the content types and patches it applies on its thread.
+    // The loop, its reload gate, and the content patches it applies.
     for (file, source) in [
         ("actor.rs", include_str!("actor.rs")),
         ("content.rs", include_str!("content.rs")),
         ("workspace.rs", include_str!("workspace.rs")),
+        ("sidecar_reload.rs", include_str!("sidecar_reload.rs")),
     ] {
         for forbidden in [".github", ".git", "CliGit", "CliGitHub"] {
             assert!(
