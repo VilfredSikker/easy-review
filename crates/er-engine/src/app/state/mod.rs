@@ -4283,21 +4283,20 @@ impl TabState {
     /// Populate `mtime_cache` with one `fs::metadata` call per diff file.
     /// Called after the diff is loaded so rendering never touches the filesystem directly.
     pub fn refresh_mtime_cache(&mut self) {
-        use std::fs;
-        use std::time::SystemTime;
-        self.mtime_cache.clear();
-        self.preview_blob_ids.clear();
-        for file in &self.files {
-            let root = self
-                .local_branch_checkout_root
+        let source = crate::preview_key::StampSource {
+            repo_root: &self.repo_root,
+            checkout_root: self.local_branch_checkout_root.as_deref(),
+            is_remote: self.is_remote(),
+            mode: self.mode,
+            committed_unpushed: self.committed_unpushed,
+            revision: self
+                .local_branch_view
                 .as_deref()
-                .unwrap_or(&self.repo_root);
-            let mtime = fs::metadata(format!("{}/{}", root, file.path))
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            self.mtime_cache.insert(file.path.clone(), mtime);
-        }
-        self.capture_preview_rename_blobs();
+                .or(self.pr_head_ref.as_deref()),
+        };
+        let stamps = crate::preview_key::capture_stamps(&*self.ports.git, &self.files, &source);
+        self.mtime_cache = stamps.mtimes;
+        self.preview_blob_ids = stamps.blob_ids;
     }
 
     fn clamp_hunk(&mut self) {

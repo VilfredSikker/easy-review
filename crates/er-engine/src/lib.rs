@@ -40,6 +40,7 @@ pub mod navigation;
 pub mod os_launch;
 pub mod paths;
 pub mod ports;
+pub mod preview_key;
 pub mod pr_open_cache;
 pub mod pr_open_entry;
 pub mod pr_resolve;
