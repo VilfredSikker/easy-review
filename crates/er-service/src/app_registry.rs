@@ -91,6 +91,12 @@ pub enum AppCommand {
     CloseTab {
         key: TabKey,
     },
+    /// Put `tab` in `key`'s place and make it active. It gets a new key, so
+    /// content loaded for the old tab is never read as the new one's.
+    ReplaceTab {
+        key: TabKey,
+        tab: TabDescriptor,
+    },
     SelectTab {
         key: TabKey,
     },
@@ -484,6 +490,15 @@ fn apply_tab_command(state: &mut TabsView, command: AppCommand) -> Result<(), Wo
             if state.active == Some(key) {
                 state.active = state.key_at(idx.saturating_sub(1));
             }
+        }
+        AppCommand::ReplaceTab { key, tab } => {
+            let idx = state.position(key)?;
+            let new = TabKey::next();
+            state.tabs[idx] = TabEntry {
+                key: new,
+                descriptor: tab,
+            };
+            state.active = Some(new);
         }
         AppCommand::SelectTab { key } => {
             state.position(key)?;
