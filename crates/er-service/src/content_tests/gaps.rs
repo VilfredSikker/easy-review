@@ -244,6 +244,33 @@ fn a_recorded_mode_loads_nothing() -> anyhow::Result<()> {
     })
 }
 
+/// A load that started before a view was recorded must not put the old view
+/// back.
+#[test]
+fn a_load_from_before_a_recorded_mode_is_refused() -> anyhow::Result<()> {
+    let mut state = WorkspaceState::new();
+    let key = TabKey::next();
+    let loaded = |since| ContentPatch::Loaded {
+        key,
+        since,
+        loaded: loaded_tab("/repo"),
+    };
+    let refused = |error| anyhow::anyhow!("{error}");
+    let (started_at, _) = state.apply_patch(loaded(None)).map_err(refused)?;
+    let record = ContentPatch::Mode {
+        key,
+        since: started_at,
+        mode: DiffMode::History,
+    };
+    state.apply_patch(record).map_err(refused)?;
+
+    let stale = state.apply_patch(loaded(Some(started_at)));
+
+    assert_eq!(stale.err(), Some(PatchRefused::Moved));
+    assert_eq!(content_of(state.view(), key)?.tab.mode, DiffMode::History);
+    Ok(())
+}
+
 const WITH_LOCK: &str = "\
 diff --git a/Cargo.lock b/Cargo.lock
 --- a/Cargo.lock
