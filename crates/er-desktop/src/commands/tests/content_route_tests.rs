@@ -200,3 +200,56 @@ fn closing_a_tab_drops_its_content() {
         assert!(state.service.content(first.0, &first.1).is_some());
     });
 }
+
+/// A review an outside writer leaves in the active tab's bucket reaches its
+/// content through the poll tick's reload, which takes no App lock.
+#[test]
+fn the_poll_tick_brings_an_outside_write_into_the_active_content() {
+    with_storage(|dir| {
+        let Fixture { state, active, .. } = fixture(dir);
+        let loaded = content(&state, &active);
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+            std::path::Path::new(&loaded.context.er_dir),
+            serde_json::json!({
+                "version": 1,
+                "diff_hash": loaded.context.branch_diff_hash,
+                "files": { "src/f0.rs": { "risk": "low", "findings": [{
+                    "id": "f-1", "severity": "low", "title": "A defect",
+                    "description": "desc", "hunk_index": 0, "line_start": 1
+                }] } }
+            }),
+        );
+
+        let sent = while_the_app_is_locked(&state, "poll tick", content_routes::reload_sidecars);
+
+        assert!(sent, "the tick sent nothing");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while content(&state, &active).ai.state.total_findings() == 0 {
+            assert!(std::time::Instant::now() < deadline, "the write never arrived");
+            std::thread::yield_now();
+        }
+    });
+}
+
+/// The views the App still shows are recorded on the active content; Tour
+/// loads there.
+#[test]
+fn every_mode_reaches_the_active_content() {
+    with_storage(|dir| {
+        let Fixture { state, active, .. } = fixture(dir);
+
+        for (name, mode) in [("hidden", DiffMode::Hidden), ("history", DiffMode::History)] {
+            let route = move |state: &AppState| content_routes::record_mode(state, name, mode, None);
+            while_the_app_is_locked(&state, name, route);
+            assert_eq!(content(&state, &active).tab.mode, mode);
+        }
+        let tour = while_the_app_is_locked(&state, "tour", |state| {
+            content_routes::set_mode(state, "tour", DiffMode::Tour, None, None).map(drop)
+        });
+
+        assert!(tour.is_ok(), "{tour:?}");
+        let toured = content(&state, &active);
+        assert_eq!(toured.tab.mode, DiffMode::Tour);
+        assert!(!toured.diff.files.is_empty(), "the tour loaded no diff");
+    });
+}

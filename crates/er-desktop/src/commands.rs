@@ -13199,7 +13199,8 @@ mod tests {
             };
             drop(held);
             assert!(result.is_ok(), "the service open path failed: {result:?}");
-            // The open resolves the target, then loads the new tab's diff.
+            // The open resolves the target, then loads the new tab's diff and
+            // fills its PR section, which no prefetch warmed.
             assert_eq!(
                 github.calls(),
                 vec![
@@ -13207,6 +13208,8 @@ mod tests {
                     "pr_head_oid_remote(owner=\"acme\", repo=\"widgets\", pr=7)",
                     "pr_diff_remote(owner=\"acme\", repo=\"widgets\", number=7)",
                     "pr_head_oid_remote(owner=\"acme\", repo=\"widgets\", pr=7)",
+                    "overview_remote(owner=\"acme\", repo=\"widgets\", number=7)",
+                    "commits_remote(owner=\"acme\", repo=\"widgets\", number=7, limit=250)",
                 ]
             );
         });
@@ -16373,6 +16376,8 @@ mod route_tests {
             "refresh(&state, false)",
             "refresh(&state, true)",
             "set_mode(",
+            "record_mode(&state, &mode, diff_mode, tab_idx)",
+            "reload_sidecars(state)",
             "select_file(",
             "request_file_content(",
         ] {
