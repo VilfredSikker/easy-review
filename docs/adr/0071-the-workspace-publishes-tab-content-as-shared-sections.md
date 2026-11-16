@@ -32,7 +32,8 @@ the sections that moved.
   actor beside its reply, and the actor patches every tab that reads that
   bucket, duplicate tabs included. The public reply shapes do not change.
 - A load is applied only over the content it started from. A write that
-  landed while it ran wins, and the load answers that the tab moved.
+  landed while it ran wins, and the load answers that the tab moved. A
+  sidecar reload does not count, since the load reads the sidecars too.
 - A lazy parse replaces the parsed files' `Arc`s and shares the rest.
 
 ## Consequences
