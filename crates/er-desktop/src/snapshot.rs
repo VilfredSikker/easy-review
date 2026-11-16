@@ -146,7 +146,7 @@ fn file_delta_key(lines_key: u64, threads_by_hunk: &[Vec<ThreadSnapshot>]) -> u6
     h.finish()
 }
 
-const fn mode_str(mode: DiffMode) -> &'static str {
+pub(crate) const fn mode_str(mode: DiffMode) -> &'static str {
     match mode {
         DiffMode::Branch => "branch",
         DiffMode::Unstaged => "unstaged",

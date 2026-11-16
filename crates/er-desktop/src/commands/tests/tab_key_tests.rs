@@ -6,10 +6,14 @@ use std::sync::Arc;
 
 use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_engine::TabKey;
-use er_service::{Command, OpenTarget};
+use er_service::{AppCommand, Command, OpenTarget};
 
 use super::{review_flow_test_state, ReviewFlowTestDir};
-use crate::commands::{content_routes, route_annotation, service_new_tab, AppState};
+use crate::commands::{
+    content_routes, route_annotation, service_add_document_thread, service_new_tab, AppState,
+    DocumentThread,
+};
+use crate::snapshot::OptimisticView;
 use crate::service::ServiceState;
 
 const REMOTE: &str = "acme/widgets";
@@ -332,6 +336,170 @@ fn an_annotation_writes_through_the_registry_tab_content() {
     });
 }
 
+fn app(state: &AppState) -> std::sync::MutexGuard<'_, er_engine::app::App> {
+    state.app.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Opens `tab` in the registry alone, as a tab command does before the
+/// follower thread runs, and answers its key.
+fn open_unfollowed(state: &AppState, tab: &TabDescriptor) -> TabKey {
+    let opened = state
+        .service
+        .send_app(AppCommand::NewTab { tab: tab.clone() });
+    assert!(opened.is_ok(), "{opened:?}");
+    state
+        .service
+        .app_registry()
+        .tabs_view()
+        .active
+        .expect("the new tab")
+}
+
+/// The view the page paints for the App's active tab.
+fn painted(state: &AppState) -> OptimisticView {
+    let app = app(state);
+    let tab = app.tab();
+    OptimisticView {
+        active_tab: app.active_tab,
+        repo_root: tab.repo_root.clone(),
+        pr_number: tab.pr_number,
+        branch: tab.local_branch_view.clone().unwrap_or_default(),
+        mode: crate::snapshot::mode_str(tab.mode).to_string(),
+    }
+}
+
+/// A follow keeps the App tabs it holds as they are: a tab's loaded diff and
+/// selected file survive another tab opening.
+#[test]
+fn a_follow_keeps_the_state_of_a_tab_the_app_holds() {
+    with_storage(|dir| {
+        let state = state(dir);
+        let first = content_routes::working_tab(dir_in(dir, "one"));
+        let opened = content_routes::open(&state, first, false);
+        assert!(opened.is_ok(), "{opened:?}");
+        follow(&state);
+        let held = {
+            let mut app = app(&state);
+            let tab = app.tab_mut();
+            tab.files = er_engine::git::parse_diff(&diff());
+            tab.selected_file = 1;
+            tab.key()
+        };
+
+        let second = content_routes::working_tab(dir_in(dir, "two"));
+        let opened = content_routes::open(&state, second, false);
+        assert!(opened.is_ok(), "{opened:?}");
+        follow(&state);
+
+        let app = app(&state);
+        assert_eq!(app.tabs.len(), 2);
+        let tab = app
+            .tabs
+            .iter()
+            .find(|tab| tab.key() == held)
+            .expect("the held tab");
+        assert_eq!(tab.files.len(), 2, "the held tab's diff was dropped");
+        assert_eq!(tab.selected_file, 1, "the held tab's selection was reset");
+    });
+}
+
+/// While the App still shows the tab the registry left, a paint on the App's
+/// tab is refused and nothing lands on the registry's new tab. Once the App
+/// follows, the same paint is written there.
+#[test]
+fn a_paint_is_refused_while_the_app_lags_the_registry() {
+    with_storage(|dir| {
+        let state = state(dir);
+        let first = content_routes::working_tab(dir_in(dir, "one"));
+        let opened = content_routes::open(&state, first, false);
+        assert!(opened.is_ok(), "{opened:?}");
+        follow(&state);
+        let second = content_routes::working_tab(dir_in(dir, "two"));
+        let key = open_unfollowed(&state, &second);
+        let mark = |view: OptimisticView| {
+            route_annotation(&state, Some(&view), |context| Command::MarkReviewed {
+                context,
+                path: "src/a.rs".to_string(),
+                reviewed: true,
+            })
+        };
+        let marked = || {
+            state
+                .service
+                .content(key, &second)
+                .is_some_and(|content| content.reviewed.marks.contains_key("src/a.rs"))
+        };
+
+        let refused = mark(painted(&state));
+
+        assert!(refused.is_err(), "a lagging paint was written: {refused:?}");
+        assert!(!marked(), "the mark landed on the registry's other tab");
+        follow(&state);
+        let written = mark(painted(&state));
+        assert!(written.is_ok(), "{written:?}");
+        assert!(marked(), "the followed paint was not written");
+    });
+}
+
+/// An added README the preview rebuilds from the diff.
+const README: &str = "diff --git a/README.md b/README.md\nnew file mode 100644\n--- /dev/null\n+++ b/README.md\n@@ -0,0 +1,3 @@\n+# Title\n+\n+alpha\n";
+
+/// Gives the App's active tab the README and answers its preview key.
+fn seed_readme(state: &AppState) -> String {
+    let mut app = app(state);
+    let tab = app.tab_mut();
+    tab.set_raw_diff_for_test(README);
+    tab.file_headers = er_engine::git::parse_diff_headers(README);
+    tab.files = er_engine::git::parse_diff(README);
+    tab.file_preview_key("README.md")
+}
+
+fn document_note(preview_key: String) -> DocumentThread {
+    DocumentThread {
+        file: "README.md".to_string(),
+        kind: "note".to_string(),
+        line_num: 3,
+        line_num_end: None,
+        text: "Why alpha?".to_string(),
+        preview_key,
+    }
+}
+
+fn notes(state: &AppState, key: TabKey, tab: &TabDescriptor) -> usize {
+    state
+        .service
+        .content(key, tab)
+        .and_then(|content| content.ai.state.notes.as_ref().map(|n| n.notes.len()))
+        .unwrap_or(0)
+}
+
+/// A document thread carries the App tab's text, so while the App still
+/// shows the tab the registry left it is refused, and the registry's new tab
+/// gets no thread. Once the App follows, the thread is written there.
+#[test]
+fn a_document_thread_is_refused_while_the_app_lags_the_registry() {
+    with_storage(|dir| {
+        let state = state(dir);
+        let first = content_routes::working_tab(dir_in(dir, "one"));
+        let opened = content_routes::open(&state, first, false);
+        assert!(opened.is_ok(), "{opened:?}");
+        follow(&state);
+        let preview_key = seed_readme(&state);
+        let second = content_routes::working_tab(dir_in(dir, "two"));
+        let key = open_unfollowed(&state, &second);
+
+        let refused = service_add_document_thread(&state, document_note(preview_key));
+
+        assert!(refused.is_err(), "a lagging thread was written: {refused:?}");
+        assert_eq!(notes(&state, key, &second), 0, "the thread moved tabs");
+        follow(&state);
+        let preview_key = seed_readme(&state);
+        let written = service_add_document_thread(&state, document_note(preview_key));
+        assert!(written.is_ok(), "{written:?}");
+        assert_eq!(notes(&state, key, &second), 1, "the thread was not written");
+    });
+}
+
 /// `adopt_key` and the App's follow exist for the flag path only: every
 /// file that calls them is a module compiled with `v1-service` alone.
 #[test]
@@ -382,7 +550,8 @@ fn collect_rust(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 
 /// Whether `path` is a module whose declaration is gated on `v1-service`: the
 /// `mod` line in its parent file follows a `cfg(feature = "v1-service")`
-/// line. A module declared inline in a parent is found in the file above it.
+/// line with no `not(` in it. A module declared inline in a parent is found
+/// in the file above it.
 fn gated(path: &std::path::Path) -> bool {
     let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
         return false;
@@ -404,7 +573,11 @@ fn gated(path: &std::path::Path) -> bool {
                 .iter()
                 .position(|line| line.trim_start().trim_start_matches("pub ") == declaration);
             if let Some(idx) = found {
-                return idx > 0 && lines[idx - 1].contains("feature = \"v1-service\"");
+                // `not(feature = "v1-service")` names the flag too, and
+                // gates the module on the flag-off path.
+                return idx > 0
+                    && lines[idx - 1].contains("feature = \"v1-service\"")
+                    && !lines[idx - 1].contains("not(");
             }
         }
         if parent.ends_with("src") {

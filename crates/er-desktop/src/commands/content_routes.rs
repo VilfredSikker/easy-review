@@ -357,18 +357,32 @@ pub(super) fn write_reviewed(
     state: &AppState,
     build: impl FnOnce(TabContext) -> Command,
 ) -> Result<AppSnapshot, String> {
-    annotate(state, build)?;
+    annotate(state, None, build)?;
     Ok(AppSnapshot::default())
 }
 
 /// Sends an annotation command built from the active tab's published
 /// context, loading the content first when it never loaded. Answers the key
 /// it acted on.
+///
+/// `expected` is the App tab the caller read under the App lock, when the
+/// command carries something taken from it: a painted view, or a document's
+/// text. The App follows the registry on another thread, so while it lags
+/// the registry's active tab is another one, and the command is refused
+/// rather than written to that tab.
 pub(super) fn annotate(
     state: &AppState,
+    expected: Option<TabKey>,
     build: impl FnOnce(TabContext) -> Command,
 ) -> Result<TabKey, String> {
     let (active, content) = active_content(state)?;
+    if expected.is_some_and(|key| key != active.key) {
+        return Err(MOVED.to_string());
+    }
     send(state, &active.tab, build(content.context.clone()))?;
     Ok(active.key)
 }
+
+/// The refusal for an annotation whose App tab is no longer the registry's
+/// active one.
+pub(super) const MOVED: &str = "The active view changed; the annotation was not written";

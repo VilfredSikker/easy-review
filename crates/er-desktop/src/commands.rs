@@ -2745,44 +2745,17 @@ pub async fn add_document_thread(
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        let kind = match kind.as_str() {
-            "question" => er_service::AnnotationKind::Question,
-            "note" => er_service::AnnotationKind::Note,
-            other => return Err(format!("A document anchor cannot hold a {other}")),
-        };
-        let (active_tab, request) = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            (
-                app.active_tab,
-                app.tab()
-                    .capture_file_preview(&file)
-                    .map_err(|e| e.to_string())?,
-            )
-        };
-        if request.preview_key != preview_key {
-            return Err("The document changed before the comment was saved".to_string());
-        }
-        let source = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
-        // The preview stays on the App, which renders it; the context comes
-        // from the registry's active tab, as every annotation route's does.
-        {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            if app.active_tab != active_tab
-                || app.tab().file_preview_key(&file) != request.preview_key
-            {
-                return Err("The document changed before the comment was saved".to_string());
-            }
-        }
-        content_routes::annotate(&state, |context| er_service::Command::AddDocumentThread {
-            context,
-            file,
-            line: line_num,
-            line_end: line_num_end,
-            kind,
-            body: text,
-            source,
-        })?;
-        Ok(AppSnapshot::default())
+        service_add_document_thread(
+            &state,
+            DocumentThread {
+                file,
+                kind,
+                line_num,
+                line_num_end,
+                text,
+                preview_key,
+            },
+        )
     })
     .await;
     #[cfg(not(feature = "v1-service"))]
@@ -2826,6 +2799,78 @@ pub async fn add_document_thread(
         Ok(snap_from_confirmed(&app, &state))
     })
     .await
+}
+
+/// A document thread as the preview sends it.
+#[cfg(feature = "v1-service")]
+pub(crate) struct DocumentThread {
+    pub file: String,
+    pub kind: String,
+    pub line_num: usize,
+    pub line_num_end: Option<usize>,
+    pub text: String,
+    pub preview_key: String,
+}
+
+/// The flag path of `add_document_thread`. The preview and its text come from
+/// the App's tab, which renders it; the context comes from the registry's
+/// active tab, as every annotation route's does. The App's tab key is read
+/// with the preview, so while the App lags the registry the text is refused
+/// rather than written to the registry's other tab.
+#[cfg(feature = "v1-service")]
+pub(crate) fn service_add_document_thread(
+    state: &AppState,
+    thread: DocumentThread,
+) -> Result<AppSnapshot, String> {
+    let DocumentThread {
+        file,
+        kind,
+        line_num,
+        line_num_end,
+        text,
+        preview_key,
+    } = thread;
+    let kind = match kind.as_str() {
+        "question" => er_service::AnnotationKind::Question,
+        "note" => er_service::AnnotationKind::Note,
+        other => return Err(format!("A document anchor cannot hold a {other}")),
+    };
+    let changed = || "The document changed before the comment was saved".to_string();
+    let (active_tab, key, request) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        (
+            app.active_tab,
+            app.tab().key(),
+            app.tab()
+                .capture_file_preview(&file)
+                .map_err(|e| e.to_string())?,
+        )
+    };
+    if request.preview_key != preview_key {
+        return Err(changed());
+    }
+    let source = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
+    {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if app.active_tab != active_tab
+            || app.tab().key() != key
+            || app.tab().file_preview_key(&file) != request.preview_key
+        {
+            return Err(changed());
+        }
+    }
+    content_routes::annotate(state, Some(key), |context| {
+        er_service::Command::AddDocumentThread {
+            context,
+            file,
+            line: line_num,
+            line_end: line_num_end,
+            kind,
+            body: text,
+            source,
+        }
+    })?;
+    Ok(AppSnapshot::default())
 }
 
 #[tauri::command]
@@ -6790,26 +6835,26 @@ pub(crate) fn tab_context(app: &er_engine::app::App) -> er_service::TabContext {
 ///
 /// The context and the key come from the app registry's active tab and its
 /// published content. The view the user painted on is still checked on the
-/// App, which renders it; the App's tabs carry the registry's keys, so a
-/// paint on another tab than the registry's active one is refused too.
+/// App, which renders it, and the App tab's key read with it goes to
+/// `annotate`, which refuses the paint when the registry's active tab is
+/// another one.
 #[cfg(feature = "v1-service")]
 fn route_annotation(
     state: &AppState,
     view: Option<&crate::snapshot::OptimisticView>,
     build: impl FnOnce(er_service::TabContext) -> er_service::Command,
 ) -> Result<AppSnapshot, String> {
-    let active = state.service.app_registry().tabs_view().active;
-    {
+    let expected = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
         // The flag-on desktop does not render the service snapshot (D21), so a
         // wrong-view snapshot would read as success and leave the paint in
         // place. Err is what makes the frontend roll the paint back.
-        let moved = view.is_some() && active != Some(app.tab().key());
-        if moved || abort_wrong_view(&app, state, view).is_some() {
-            return Err("The active view changed; the annotation was not written".to_string());
+        if abort_wrong_view(&app, state, view).is_some() {
+            return Err(content_routes::MOVED.to_string());
         }
-    }
-    content_routes::annotate(state, build)?;
+        view.map(|_| app.tab().key())
+    };
+    content_routes::annotate(state, expected, build)?;
     Ok(AppSnapshot::default())
 }
 
