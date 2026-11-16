@@ -651,7 +651,7 @@ impl ReviewFlowSnapshot {
         Some(Self::from_flow(flow, app.review_flow_is_draining(er_dir)))
     }
 
-    fn from_flow(flow: &er_engine::ai::review_flow::ReviewFlow, draining: bool) -> Self {
+    pub(crate) fn from_flow(flow: &er_engine::ai::review_flow::ReviewFlow, draining: bool) -> Self {
         use er_engine::ai::review_flow::{FlowDepth, FlowState};
 
         let (state, kept, dropped, awaiting_accept, reason) = match &flow.state {
@@ -3078,13 +3078,13 @@ pub struct SnapshotSources<'a> {
 /// `sources.sent_files` is provided, files whose hunk content the frontend
 /// already holds are sent with `hunks_omitted = true` and no hunk payload.
 pub fn build_snapshot_with_delta(app: &App, sources: &SnapshotSources<'_>) -> AppSnapshot {
-    build_snapshot_inner(app, sources, false)
+    build_snapshot_from(&AppRead(app), sources, false)
 }
 
 /// Chrome-only snapshot: no diff files, so `sources.sent_files` is ignored.
 pub fn build_chrome_snapshot(app: &App, sources: &SnapshotSources<'_>) -> AppSnapshot {
-    build_snapshot_inner(
-        app,
+    build_snapshot_from(
+        &AppRead(app),
         &SnapshotSources {
             sent_files: None,
             ..*sources
@@ -3093,11 +3093,304 @@ pub fn build_chrome_snapshot(app: &App, sources: &SnapshotSources<'_>) -> AppSna
     )
 }
 
-fn build_snapshot_inner(
-    app: &App,
+/// The reads the snapshot builder makes, one accessor per section, so one
+/// builder body serves every source. The desktop-owned caches in
+/// [`SnapshotSources`] are read beside it whatever the source.
+pub trait SnapshotRead {
+    /// The active tab's key, which files its desktop view state.
+    fn tab_key(&self) -> Option<er_engine::TabKey>;
+    /// The active tab's own rows: files, AI state, PR, history, filters,
+    /// freshness and its arena runs. Every section the other accessors answer
+    /// is left at its default. `None` when the source publishes no tab
+    /// content, and the snapshot then carries empty tab rows.
+    fn tab_content(&self, sources: &SnapshotSources<'_>, chrome_only: bool) -> Option<AppSnapshot>;
+    fn view_rows(&self) -> ViewRows;
+    /// The tab strip and the active tab's position in it. The active tab's
+    /// `stale` flag is set by the builder from the tab's diff freshness.
+    fn tab_strip(&self, pr_cache: Option<&PrCache>) -> (Vec<TabSummary>, usize);
+    fn config(&self) -> &er_engine::config::ErConfig;
+    fn config_load_error(&self) -> Option<String>;
+    fn session(&self) -> SessionRows;
+    fn review_flow(&self) -> Option<ReviewFlowSnapshot>;
+    /// Live arena runs across every tab, newest first.
+    fn background_arena_runs(&self) -> Vec<ArenaRunSummaryWire>;
+}
+
+/// The active tab's selection, as the snapshot carries it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ViewRows {
+    /// A position in the visible file list, not a diff file index.
+    pub selected_file: usize,
+    pub current_hunk: Option<usize>,
+}
+
+/// The process-wide rows that belong to no tab and no service view.
+#[derive(Debug, Clone)]
+pub struct SessionRows {
+    pub input_mode: &'static str,
+    pub notification: Option<er_engine::app::Notification>,
+    pub watching: bool,
+    pub active_ai_label: String,
+    pub active_ai_provider_label: Option<String>,
+    pub active_ai_model_label: Option<String>,
+    pub active_ai_effort: Option<String>,
+    pub background_tasks: Vec<BackgroundTaskSnapshotWire>,
+}
+
+/// The default build's source: the engine `App` and its active tab, which
+/// keeps its own selection and scroll.
+pub struct AppRead<'a>(pub &'a App);
+
+impl SnapshotRead for AppRead<'_> {
+    fn tab_key(&self) -> Option<er_engine::TabKey> {
+        Some(self.0.tab().key())
+    }
+
+    fn tab_content(&self, sources: &SnapshotSources<'_>, chrome_only: bool) -> Option<AppSnapshot> {
+        Some(app_tab_content(self.0, sources, chrome_only))
+    }
+
+    fn view_rows(&self) -> ViewRows {
+        let tab = self.0.tab();
+        // The selection is an index into the diff files; the snapshot carries
+        // its position in the visible list, or 0 when it is filtered out.
+        let active = tab.active_selected_file_index();
+        ViewRows {
+            selected_file: tab
+                .visible_files()
+                .iter()
+                .position(|(idx, _)| *idx == active)
+                .unwrap_or(0),
+            current_hunk: Some(tab.current_hunk),
+        }
+    }
+
+    fn tab_strip(&self, pr_cache: Option<&PrCache>) -> (Vec<TabSummary>, usize) {
+        let app = self.0;
+        let active_tab = app.active_tab;
+        let pr_cache_guard = pr_cache.and_then(|pc| pc.lock().ok());
+        let tabs = app
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let kind = if t.is_remote() {
+                    "remote_pr"
+                } else if t.is_local_branch_view() {
+                    "local_branch"
+                } else {
+                    "working"
+                };
+                TabSummary {
+                    idx: i,
+                    label: t.tab_name(),
+                    kind: kind.to_string(),
+                    branch: t.local_branch_view.clone(),
+                    pr_number: t.pr_number,
+                    remote: t.remote_repo.clone(),
+                    repo_root: t.repo_root.clone(),
+                    is_active: i == active_tab,
+                    change_token: t.branch_diff_hash.clone(),
+                    stale: i != active_tab && pr_tab_is_stale(t, pr_cache_guard.as_deref()),
+                }
+            })
+            .collect();
+        (tabs, active_tab)
+    }
+
+    fn config(&self) -> &er_engine::config::ErConfig {
+        &self.0.config
+    }
+
+    fn config_load_error(&self) -> Option<String> {
+        self.0.config_load_error.clone()
+    }
+
+    fn session(&self) -> SessionRows {
+        let app = self.0;
+        SessionRows {
+            input_mode: match &app.input_mode {
+                InputMode::Normal => "normal",
+                InputMode::Search => "search",
+                InputMode::Comment => "comment",
+                InputMode::Filter => "filter",
+                InputMode::Commit => "commit",
+                InputMode::Confirm(_) => "confirm",
+                InputMode::RemoteUrl => "remoteurl",
+                InputMode::BaseBranch => "basebranch",
+            },
+            notification: app.notification.clone(),
+            watching: app.watching,
+            active_ai_label: app.active_ai_selection_label(),
+            active_ai_provider_label: app.active_ai_provider_label(),
+            active_ai_model_label: app.active_ai_model_label(),
+            active_ai_effort: app.current_ai_effort.clone(),
+            background_tasks: app
+                .background_task_snapshots()
+                .into_iter()
+                .map(|t| BackgroundTaskSnapshotWire {
+                    recent_log: t
+                        .recent_log
+                        .iter()
+                        .map(|e| AgentLogSnapshot {
+                            command_name: e.command_name.to_string(),
+                            source: match &e.source {
+                                AgentLogSource::Stdout => "stdout".to_string(),
+                                AgentLogSource::Stderr => "stderr".to_string(),
+                                AgentLogSource::Status => "status".to_string(),
+                            },
+                            text: e.text.clone(),
+                        })
+                        .collect(),
+                    debug_log_path: None,
+                    id: t.id,
+                    kind: t.kind,
+                    label: t.label,
+                    target_label: t.target_label,
+                    scope: t.scope,
+                    repo_root: t.repo_root,
+                    branch_label: t.branch_label,
+                    pr_number: t.pr_number,
+                    remote_repo: t.remote_repo,
+                    status: t.status,
+                    error: t.error,
+                    started_at_ms: t.started_at_ms,
+                    finished_at_ms: t.finished_at_ms,
+                })
+                .collect(),
+        }
+    }
+
+    fn review_flow(&self) -> Option<ReviewFlowSnapshot> {
+        ReviewFlowSnapshot::from_app(self.0, &self.0.tab().er_dir())
+    }
+
+    fn background_arena_runs(&self) -> Vec<ArenaRunSummaryWire> {
+        self.0.background_arena_runs()
+    }
+}
+
+/// The one snapshot builder body. Every section comes through `source`.
+pub fn build_snapshot_from<R: SnapshotRead>(
+    source: &R,
     sources: &SnapshotSources<'_>,
     chrome_only: bool,
 ) -> AppSnapshot {
+    let t0 = std::time::Instant::now();
+    // Copied out so the view lock is not held while the rest is built.
+    let (browser, panels) = match sources.view.and_then(|v| v.lock().ok()) {
+        Some(v) => (
+            source
+                .tab_key()
+                .map(|key| v.browser(key))
+                .unwrap_or_default(),
+            v.panels().clone(),
+        ),
+        None => Default::default(),
+    };
+    let content = source.tab_content(sources, chrome_only).unwrap_or_default();
+    let view = source.view_rows();
+    let (mut tabs, active_tab) = source.tab_strip(sources.pr_cache);
+    if let Some(summary) = tabs.get_mut(active_tab) {
+        summary.stale = content.diff_stale.is_some();
+    }
+    let config = source.config();
+    let (inbox_items, inbox_unread_count, inbox_last_refresh_ms) =
+        snapshot_inbox(sources.inbox, &config.inbox);
+    let session = source.session();
+    let watch_status = sources
+        .watch_status
+        .and_then(|w| w.lock().ok().map(|g| g.clone()))
+        .unwrap_or_default();
+    let out = AppSnapshot {
+        review_flow: source.review_flow(),
+        input_mode: session.input_mode.to_string(),
+        selected_file: view.selected_file,
+        current_hunk: view.current_hunk,
+        panels: Panels {
+            left: panels.left,
+            tree: panels.tree,
+            right: panels.right,
+        },
+        theme: config.display.theme.clone(),
+        features: FeatureFlagsSnapshot::from(&config.features),
+        display: DisplayConfigSnapshot::from(&config.display),
+        watch_active: watch_status.active || session.watching,
+        watch_status,
+        notification: session.notification,
+        config_load_error: source.config_load_error(),
+        tabs,
+        active_tab,
+        browser: browser_snapshot(&browser),
+        bg_loading: sources
+            .loading
+            .and_then(|l| l.lock().ok().map(|g| g.clone()))
+            .unwrap_or_default(),
+        active_ai_label: session.active_ai_label,
+        active_ai_provider_label: session.active_ai_provider_label,
+        active_ai_model_label: session.active_ai_model_label,
+        active_ai_effort: session.active_ai_effort,
+        background_tasks: session.background_tasks,
+        inbox_items,
+        inbox_unread_count,
+        inbox_last_refresh_ms,
+        arena_enabled: true,
+        background_arena_runs: source.background_arena_runs(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        ..content
+    };
+    if crate::profile_log::profile_enabled() {
+        log_snapshot_build(&out, sources.meta_cache, t0, chrome_only);
+    }
+    out
+}
+
+fn log_snapshot_build(
+    out: &AppSnapshot,
+    meta_cache: Option<&MetaCache>,
+    t0: std::time::Instant,
+    chrome_only: bool,
+) {
+    let total_lines: usize = out
+        .files
+        .iter()
+        .flat_map(|f| f.hunks.iter())
+        .map(|h| h.lines.len())
+        .sum();
+    let max_file_lines: usize = out
+        .files
+        .iter()
+        .map(|f| f.hunks.iter().map(|h| h.lines.len()).sum::<usize>())
+        .max()
+        .unwrap_or(0);
+    let budget_omitted = out
+        .files
+        .iter()
+        .filter(|f| f.is_lazy_stub && !f.compacted)
+        .count();
+    let rendered_hunks = out.files.iter().map(|f| f.hunks.len()).sum::<usize>();
+    let meta_fp = meta_cache.map(meta_cache_fingerprint).unwrap_or(0);
+    crate::profile_log::profile_log(
+        "build_snapshot",
+        &[
+            ("build_ms", t0.elapsed().as_millis().to_string()),
+            ("files", out.files.len().to_string()),
+            ("rendered_hunks", rendered_hunks.to_string()),
+            ("lines_in_ipc", total_lines.to_string()),
+            ("max_file_lines", max_file_lines.to_string()),
+            ("budget_omitted", budget_omitted.to_string()),
+            ("meta_fp", meta_fp.to_string()),
+            (
+                "chrome_only",
+                if chrome_only { "1" } else { "0" }.to_string(),
+            ),
+        ],
+    );
+}
+
+/// The active tab's rows, read from the engine tab. See
+/// [`SnapshotRead::tab_content`].
+fn app_tab_content(app: &App, sources: &SnapshotSources<'_>, chrome_only: bool) -> AppSnapshot {
     let SnapshotSources {
         other_bucket_arbiter,
         pr_cache,
@@ -3106,35 +3399,14 @@ fn build_snapshot_inner(
         gh_user,
         pending_ai,
         gh_status_cache,
-        loading,
-        watch_status,
-        inbox,
         sent_files,
         branch_base_remote_oid,
-        view,
+        ..
     } = *sources;
-    let t0 = std::time::Instant::now();
     let tab = app.tab();
-    // Copied out so the view lock is not held while the rest is built.
-    let (browser, panels) = match view.and_then(|v| v.lock().ok()) {
-        Some(v) => (v.browser(tab.key()), v.panels().clone()),
-        None => Default::default(),
-    };
     let review_bucket_er_dir = tab.er_dir();
-    let review_flow = ReviewFlowSnapshot::from_app(app, &review_bucket_er_dir);
 
     let mode = mode_str(tab.mode);
-
-    let input_mode = match &app.input_mode {
-        InputMode::Normal => "normal",
-        InputMode::Search => "search",
-        InputMode::Comment => "comment",
-        InputMode::Filter => "filter",
-        InputMode::Commit => "commit",
-        InputMode::Confirm(_) => "confirm",
-        InputMode::RemoteUrl => "remoteurl",
-        InputMode::BaseBranch => "basebranch",
-    };
 
     let (reviewed_count, total_count) = tab.active_reviewed_count();
     let active_selected = tab.active_selected_file_index();
@@ -3215,13 +3487,6 @@ fn build_snapshot_inner(
             .collect()
     };
 
-    // Translate backend selection (index into active diff files) into a
-    // visible-list index. If the selected file is filtered out, fall back to 0.
-    let selected_file = visible
-        .iter()
-        .position(|(idx, _)| *idx == active_selected)
-        .unwrap_or(0);
-
     let filter_suggestions: Vec<FilterSuggestionSnapshot> = {
         use er_engine::app::filter::FILTER_PRESETS;
         // One `kind:` entry per kind the diff has, counted with the repo's
@@ -3282,37 +3547,6 @@ fn build_snapshot_inner(
     } else {
         None
     };
-
-    let active_tab = app.active_tab;
-    let pr_cache_guard = pr_cache.and_then(|pc| pc.lock().ok());
-    let mut tabs: Vec<TabSummary> = app
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let kind = if t.is_remote() {
-                "remote_pr"
-            } else if t.is_local_branch_view() {
-                "local_branch"
-            } else {
-                "working"
-            };
-            TabSummary {
-                idx: i,
-                label: t.tab_name(),
-                kind: kind.to_string(),
-                branch: t.local_branch_view.clone(),
-                pr_number: t.pr_number,
-                remote: t.remote_repo.clone(),
-                repo_root: t.repo_root.clone(),
-                is_active: i == active_tab,
-                change_token: t.branch_diff_hash.clone(),
-                // The active tab's flag is overwritten from `diff_stale` below.
-                stale: i != active_tab && pr_tab_is_stale(t, pr_cache_guard.as_deref()),
-            }
-        })
-        .collect();
-    drop(pr_cache_guard);
 
     let filter = if tab.filter_expr.is_empty() {
         None
@@ -3463,9 +3697,6 @@ fn build_snapshot_inner(
         }
         stale
     });
-    if let Some(summary) = tabs.get_mut(active_tab) {
-        summary.stale = diff_stale.is_some();
-    }
 
     // Per-scope +/- counters for the scope selector. Only meaningful for a live
     // local checkout (working tree or checked-out branch view); skipped on remote
@@ -3492,9 +3723,6 @@ fn build_snapshot_inner(
         local_branch_divergence_for(tab, pr_head, (!chrome_only).then_some(&unstaged_stat))
     });
 
-    let (inbox_items, inbox_unread_count, inbox_last_refresh_ms) =
-        snapshot_inbox(inbox, &app.config.inbox);
-
     let stack = snapshot_stack(tab).map(|mut s| {
         let branch = tab
             .local_branch_view
@@ -3506,40 +3734,19 @@ fn build_snapshot_inner(
         s
     });
 
-    let out = AppSnapshot {
+    AppSnapshot {
         preview_context_key: tab.preview_context_key(),
         review_bucket_er_dir,
-        review_flow,
         mode: mode.to_string(),
         branch,
         base,
-        input_mode: input_mode.to_string(),
         files,
-        selected_file,
-        current_hunk: Some(tab.current_hunk),
         filter,
         reviewed_count,
         total_count,
         diff_stats: DiffLineStatsSnapshot::from(&tab.diff_line_stats()),
         ai,
         pr,
-        panels: Panels {
-            left: panels.left,
-            tree: panels.tree,
-            right: panels.right,
-        },
-        theme: app.config.display.theme.clone(),
-        features: FeatureFlagsSnapshot::from(&app.config.features),
-        display: DisplayConfigSnapshot::from(&app.config.display),
-        watch_active: {
-            let ws = watch_status
-                .and_then(|w| w.lock().ok().map(|g| g.clone()))
-                .unwrap_or_default();
-            ws.active || app.watching
-        },
-        watch_status: watch_status
-            .and_then(|w| w.lock().ok().map(|g| g.clone()))
-            .unwrap_or_default(),
         worktrees: if chrome_only {
             Vec::new()
         } else {
@@ -3552,71 +3759,22 @@ fn build_snapshot_inner(
             )
         },
         projects: build_projects(tab, pr_cache, pr_cache_fetched_at, meta_cache, gh_user),
-        notification: app.notification.clone(),
-        config_load_error: app.config_load_error.clone(),
         local_branch: tab.local_branch_view.clone(),
         local_branch_checked_out: tab.local_branch_checkout_root.is_some(),
         unstaged_stat,
         staged_stat,
-        tabs,
-        active_tab,
         ui_annotations,
-        browser: browser_snapshot(&browser),
         github,
         stack,
         detected_pr_number,
         diff_stale,
         pr_diff_head_oid: pr_diff_head_oid(tab),
         local_branch_divergence,
-        bg_loading: loading
-            .and_then(|l| l.lock().ok().map(|g| g.clone()))
-            .unwrap_or_default(),
         agent_commands: build_agent_commands(app, tab),
         agent_log: build_agent_log(tab),
-        active_ai_label: app.active_ai_selection_label(),
-        active_ai_provider_label: app.active_ai_provider_label(),
-        active_ai_model_label: app.active_ai_model_label(),
-        active_ai_effort: app.current_ai_effort.clone(),
         filter_suggestions,
         commits,
         selected_commit_sha,
-        background_tasks: app
-            .background_task_snapshots()
-            .into_iter()
-            .map(|t| BackgroundTaskSnapshotWire {
-                recent_log: t
-                    .recent_log
-                    .iter()
-                    .map(|e| AgentLogSnapshot {
-                        command_name: e.command_name.to_string(),
-                        source: match &e.source {
-                            AgentLogSource::Stdout => "stdout".to_string(),
-                            AgentLogSource::Stderr => "stderr".to_string(),
-                            AgentLogSource::Status => "status".to_string(),
-                        },
-                        text: e.text.clone(),
-                    })
-                    .collect(),
-                debug_log_path: None,
-                id: t.id,
-                kind: t.kind,
-                label: t.label,
-                target_label: t.target_label,
-                scope: t.scope,
-                repo_root: t.repo_root,
-                branch_label: t.branch_label,
-                pr_number: t.pr_number,
-                remote_repo: t.remote_repo,
-                status: t.status,
-                error: t.error,
-                started_at_ms: t.started_at_ms,
-                finished_at_ms: t.finished_at_ms,
-            })
-            .collect(),
-        inbox_items,
-        inbox_unread_count,
-        inbox_last_refresh_ms,
-        arena_enabled: true,
         active_arena_run: app.active_arena_run(),
         arena_runs: {
             let branch = app.arena_branch_ref();
@@ -3628,47 +3786,8 @@ fn build_snapshot_inner(
         } else {
             build_other_bucket_snapshot(tab, other_bucket_arbiter)
         },
-        background_arena_runs: app.background_arena_runs(),
-        app_version: env!("CARGO_PKG_VERSION").to_string(),
-    };
-    if crate::profile_log::profile_enabled() {
-        let total_lines: usize = out
-            .files
-            .iter()
-            .flat_map(|f| f.hunks.iter())
-            .map(|h| h.lines.len())
-            .sum();
-        let max_file_lines: usize = out
-            .files
-            .iter()
-            .map(|f| f.hunks.iter().map(|h| h.lines.len()).sum::<usize>())
-            .max()
-            .unwrap_or(0);
-        let budget_omitted = out
-            .files
-            .iter()
-            .filter(|f| f.is_lazy_stub && !f.compacted)
-            .count();
-        let rendered_hunks = out.files.iter().map(|f| f.hunks.len()).sum::<usize>();
-        let meta_fp = meta_cache.map(meta_cache_fingerprint).unwrap_or(0);
-        crate::profile_log::profile_log(
-            "build_snapshot",
-            &[
-                ("build_ms", t0.elapsed().as_millis().to_string()),
-                ("files", out.files.len().to_string()),
-                ("rendered_hunks", rendered_hunks.to_string()),
-                ("lines_in_ipc", total_lines.to_string()),
-                ("max_file_lines", max_file_lines.to_string()),
-                ("budget_omitted", budget_omitted.to_string()),
-                ("meta_fp", meta_fp.to_string()),
-                (
-                    "chrome_only",
-                    if chrome_only { "1" } else { "0" }.to_string(),
-                ),
-            ],
-        );
+        ..AppSnapshot::default()
     }
-    out
 }
 
 fn empty_ai_snapshot() -> AiSnapshot {
@@ -6399,6 +6518,25 @@ mod tests {
             assert_eq!(stale.latest_oid, "head2");
             // "/tmp/test" is no repository, so there is nothing to count in.
             assert_eq!(stale.commits_behind, None);
+        });
+    }
+
+    /// The default build's view rows are the engine tab's own selection, the
+    /// selected file given as its position in the visible list.
+    #[test]
+    fn the_default_build_reads_the_view_rows_from_the_tab() {
+        let raw = "\
+diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-a\n+A\n\
+diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-b\n+B\n\
+diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut app = App::new_for_test(er_engine::git::parse_diff(raw));
+            use_cli_ports(&mut app);
+            app.tab_mut().selected_file = 2;
+            app.tab_mut().current_hunk = 1;
+            let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
+            assert_eq!((snap.selected_file, snap.current_hunk), (2, Some(1)));
         });
     }
 

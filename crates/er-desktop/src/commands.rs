@@ -356,7 +356,7 @@ fn abort_wrong_view(
 /// new view (does not merely align to the current revision).
 pub fn snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
     let snap = snap_from(app, state);
-    let content = compute_content_revision(app);
+    let content = with_service_view(state, app, compute_content_revision(app));
     let chrome = compute_chrome_revision(state);
     // wrapping_add(1) guarantees content != last_sent on the next poll even
     // when the hash is unchanged, forcing a full content snapshot.
@@ -381,7 +381,11 @@ pub fn snap_from_confirmed(app: &App, state: &AppState) -> AppSnapshot {
     let overlay = other_bucket_arbiter(app);
     let snap = snap_from_with_arbiter(app, state, overlay.as_deref());
     state.last_sent_content_revision.store(
-        compute_content_revision_with_arbiter(app, overlay.as_deref()),
+        with_service_view(
+            state,
+            app,
+            compute_content_revision_with_arbiter(app, overlay.as_deref()),
+        ),
         Ordering::Relaxed,
     );
     state
@@ -417,7 +421,7 @@ pub fn lite_snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
 }
 
 fn snap_from_command_invalidate(app: &App, state: &AppState) {
-    let content = compute_content_revision(app);
+    let content = with_service_view(state, app, compute_content_revision(app));
     let chrome = compute_chrome_revision(state);
     state
         .last_sent_content_revision
@@ -11841,7 +11845,11 @@ fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let desktop_rev = state.desktop_revision.load(Ordering::Relaxed);
     let overlay = other_bucket_arbiter(&app);
-    let content_revision = compute_content_revision_with_arbiter(&app, overlay.as_deref());
+    let content_revision = with_service_view(
+        state,
+        &app,
+        compute_content_revision_with_arbiter(&app, overlay.as_deref()),
+    );
     let chrome_revision = compute_chrome_revision(state);
     let reviewed_revision = app.tab().reviewed_revision;
     let revision = content_revision.max(chrome_revision);
@@ -12015,6 +12023,30 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
     }
     state.desktop_revision.load(Ordering::Relaxed).hash(&mut h);
     crate::profile_log::finish_hash(h)
+}
+
+/// On the service path the active tab's workspace view rides on the content
+/// revision, so a view its actor publishes rebuilds the content. The relay
+/// bumps the desktop revision too, which wakes the poll but moves only the
+/// chrome revision. Every writer of `last_sent_content_revision` goes through
+/// here, or a confirmed write's follow-up poll would resend the content.
+#[cfg(feature = "v1-service")]
+fn with_service_view(state: &AppState, app: &App, content: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let tab = app.tab();
+    let key = service_key(&tab.repo_root, tab.remote_repo.as_deref().unwrap_or(""));
+    let Some(view) = state.service.published_view(&key) else {
+        return content;
+    };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut h);
+    view.revision.hash(&mut h);
+    h.finish()
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn with_service_view(_: &AppState, _: &App, content: u64) -> u64 {
+    content
 }
 
 fn compute_content_revision(app: &App) -> u64 {
@@ -12761,6 +12793,55 @@ mod tests {
             sent_files: Arc::new(Mutex::new(Default::default())),
             line_commits_cache: Arc::default(),
         }
+    }
+
+    /// A view the active tab's actor publishes rebuilds the content on the
+    /// next poll. The relay's desktop bump alone moves only the chrome
+    /// revision, so this test leaves the relay out: the content revision has
+    /// to move by itself.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn a_published_workspace_view_refreshes_the_content() {
+        use std::time::{Duration, Instant};
+
+        let dir = ReviewFlowTestDir::new();
+        let tmp = tempfile::tempdir().expect("temp dir");
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let state = review_flow_test_state(&dir);
+            let key = {
+                let mut app = state.app.lock().unwrap();
+                let tab = app.tab_mut();
+                tab.files = er_engine::git::parse_diff(
+                    "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+                );
+                service_key(&tab.repo_root, "")
+            };
+            // Start the actor at revision 0 before the poll settles.
+            assert_eq!(state.service.view(&key).revision, 0);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while poll_impl(&state).unwrap().snapshot.is_some() {
+                assert!(Instant::now() < deadline, "the poll settles");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+
+            let target = er_service::OpenTarget::RemotePr {
+                owner: "acme".to_string(),
+                repo: "widgets".to_string(),
+                number: 7,
+                repo_root: key.clone(),
+            };
+            // Success or failure, the actor publishes a new view.
+            let _ = state.service.open_target(&key, target, false);
+            assert!(state.service.view(&key).revision > 0, "the actor published");
+
+            let polled = poll_impl(&state).unwrap();
+            assert!(!polled.chrome_only, "the poll rebuilds the content");
+            let snapshot = polled.snapshot.expect("a snapshot follows the view");
+            assert!(
+                !snapshot.files.is_empty(),
+                "a content snapshot carries the tab's files"
+            );
+        });
     }
 
     /// With the feature on, the four tab commands edit the app registry's list,

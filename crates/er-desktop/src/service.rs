@@ -150,6 +150,16 @@ impl ServiceState {
         self.handle_for(key).view()
     }
 
+    /// The last published view for `key` when its actor is up. Never starts
+    /// one, so the poll can read it under the engine lock.
+    pub fn published_view(&self, key: &str) -> Option<Arc<WorkspaceView>> {
+        let handles = match self.handles.lock() {
+            Ok(handles) => handles,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        handles.get(key).map(WorkspaceHandle::view)
+    }
+
     /// Whether any actor this process started is running `run_id`, from the
     /// published views. The App asks before it marks a run stale.
     pub fn arena_run_live(&self, run_id: &str) -> bool {
