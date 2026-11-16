@@ -188,3 +188,40 @@ fn a_promote_moves_the_thread_from_questions_to_comments_in_the_tab() -> anyhow:
         Ok(())
     })
 }
+
+/// The promoted finding leaves the review in the tab, not only on disk.
+#[test]
+fn a_promoted_finding_leaves_the_review_in_the_tab() -> anyhow::Result<()> {
+    let github = FakeGitHub::default()
+        .with_pr_diff_remote(Ok(RAW.to_string()))
+        .with_pr_head_oid(Ok("abc123".to_string()))
+        .with_post_line_comment(Ok(created(88)));
+    with_loaded_tab(github, |handle, key| {
+        let loaded = content(handle, key)?;
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+            std::path::Path::new(&loaded.context.er_dir),
+            serde_json::json!({
+                "version": 1,
+                "diff_hash": loaded.context.branch_diff_hash,
+                "files": { "src/b.rs": { "risk": "low", "findings": [{
+                    "id": "f-1", "severity": "low", "title": "A defect",
+                    "description": "desc", "hunk_index": 0, "line_start": 2
+                }] } }
+            }),
+        );
+        handle.send_and_wait_with(Command::ReloadSidecars { key }, WAIT)?;
+        assert_eq!(content(handle, key)?.ai.state.total_findings(), 1);
+
+        let promote = Command::PromoteFindingToComment {
+            context: on_pr(&loaded),
+            finding_id: "f-1".to_string(),
+            body: None,
+        };
+        handle.send_and_wait_with(promote, WAIT)?;
+
+        let promoted = content(handle, key)?;
+        assert_eq!(promoted.ai.state.total_findings(), 0, "the finding stayed");
+        assert_eq!(comment_ids(&promoted), ["gh-88"]);
+        Ok(())
+    })
+}

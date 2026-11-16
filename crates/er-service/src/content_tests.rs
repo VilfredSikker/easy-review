@@ -22,6 +22,8 @@ use crate::protocol::{AnnotationTarget, Command, Reply, TabContext};
 use crate::workspace::{WorkspaceState, WorkspaceView};
 use crate::{spawn, WorkspaceHandle};
 
+mod gaps;
+
 const RAW: &str = "\
 diff --git a/src/a.rs b/src/a.rs
 --- a/src/a.rs

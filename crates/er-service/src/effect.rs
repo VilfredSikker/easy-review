@@ -10,7 +10,7 @@ use std::sync::Arc;
 use er_engine::ai::tab_ai::{assemble_tab_ai, TabAiLoad};
 use er_engine::ai::{self, tab_refresh};
 use er_engine::diff_load::{self, PrRefreshInputs};
-use er_engine::git::{CompactionConfig, DiffFile};
+use er_engine::git::{CompactionConfig, DiffFile, DiffFileHeader};
 use er_engine::paths::ErRoot;
 use er_engine::preview_key::{capture_stamps, StampSource};
 use er_engine::session_store;
@@ -272,9 +272,19 @@ pub(crate) fn load_tab(
     };
     let (raw, preview_head_oid) = fetch(diff_scope)?;
     let expanded = input.expanded;
-    let parsed = diff_load::parse_raw(&raw, &CompactionConfig::default(), |path| {
+    let mut parsed = diff_load::parse_raw(&raw, &CompactionConfig::default(), |path| {
         expanded.contains(path)
     });
+    // An eager parse compacts by pattern alone; the files the user expanded
+    // are parsed in full again, as the App's refresh does.
+    if !parsed.lazy {
+        for file in &mut parsed.files {
+            if file.compacted && expanded.contains(&file.path) {
+                expand_file(deps, &tab, &raw, &parsed.headers, file)
+                    .map_err(|error| failed("expand a file", error))?;
+            }
+        }
+    }
     let stamps = capture_stamps(
         git,
         &parsed.files,
@@ -504,7 +514,7 @@ pub(crate) fn parse_files(
             let mut one = [(*diff.files[index]).clone()];
             if expand && one[0].compacted {
                 let [mut file] = one;
-                expand_file(deps, tab, diff, &mut file).ok()?;
+                expand_file(deps, tab, &diff.meta.raw, &diff.meta.headers, &mut file).ok()?;
                 expanded.push(file.path.clone());
                 return Some((index, file));
             }
@@ -529,17 +539,16 @@ pub(crate) fn parse_files(
 fn expand_file(
     deps: &WorkspaceDeps,
     tab: &ResolvedTab,
-    diff: &DiffSection,
+    raw: &str,
+    headers: &[DiffFileHeader],
     file: &mut DiffFile,
 ) -> anyhow::Result<()> {
     if tab.identity().is_remote() || tab.pr_number.is_some() {
-        let header = diff
-            .meta
-            .headers
+        let header = headers
             .iter()
             .find(|header| header.path == file.path)
             .ok_or_else(|| anyhow::anyhow!("{} is not in the diff", file.path))?;
-        let parsed = er_engine::git::parse_file_at_offset(&diff.meta.raw, header);
+        let parsed = er_engine::git::parse_file_at_offset(raw, header);
         file.hunks = parsed.hunks;
         file.adds = parsed.adds;
         file.dels = parsed.dels;
@@ -548,7 +557,7 @@ fn expand_file(
             file,
             &*deps.ports().git,
             &tab.repo_root,
-            tab.mode.git_mode(),
+            tab.mode.fetch_scope(),
             &tab.base_branch,
             tab.pr_head_ref.as_deref(),
         )?;
