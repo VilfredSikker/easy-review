@@ -191,10 +191,24 @@ pub struct AnnotationInput<'a> {
 }
 
 /// The stored payload after one write, for the caller to adopt in memory.
+#[derive(Clone)]
 pub enum WrittenPayload {
     Questions(ai::ErQuestions),
     Notes(ai::ErNotes),
     Comments(ai::ErGithubComments),
+}
+
+impl WrittenPayload {
+    /// Put the stored sidecar in place of the loaded one and rebuild the
+    /// comment index over it.
+    pub fn adopt(self, state: &mut ai::AiState) {
+        match self {
+            Self::Questions(questions) => state.questions = Some(questions),
+            Self::Notes(notes) => state.notes = Some(notes),
+            Self::Comments(comments) => state.github_comments = Some(comments),
+        }
+        state.rebuild_comment_index();
+    }
 }
 
 pub struct WrittenAnnotation {

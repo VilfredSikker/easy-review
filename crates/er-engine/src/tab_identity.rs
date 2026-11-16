@@ -121,6 +121,116 @@ pub const fn tour_context_is_pr(is_remote: bool, mode: DiffMode, tour_is_pr: boo
     }
 }
 
+/// What a saved tab resolves to before its first diff: the owned fields of a
+/// [`TabIdentity`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTab {
+    pub repo_root: String,
+    pub current_branch: String,
+    pub base_branch: String,
+    pub mode: DiffMode,
+    pub tour_is_pr: bool,
+    pub remote_repo: Option<String>,
+    pub pr_number: Option<u64>,
+    pub local_branch_view: Option<String>,
+    pub pr_head_ref: Option<String>,
+    pub checkout_root: Option<String>,
+}
+
+impl ResolvedTab {
+    pub fn identity(&self) -> TabIdentity<'_> {
+        TabIdentity {
+            repo_root: &self.repo_root,
+            current_branch: &self.current_branch,
+            base_branch: &self.base_branch,
+            mode: self.mode,
+            tour_is_pr: self.tour_is_pr,
+            remote_repo: self.remote_repo.as_deref(),
+            pr_number: self.pr_number,
+            local_branch_view: self.local_branch_view.as_deref(),
+            pr_head_ref: self.pr_head_ref.as_deref(),
+            checkout_root: self.checkout_root.as_deref(),
+        }
+    }
+}
+
+/// Resolve a saved tab the way a restore does: the git reads a tab makes
+/// before its first refresh, and no network call. A local PR tab opens on PR
+/// Diff and a plain or branch tab on Branch; the checkout root is left unset.
+///
+/// A remote PR tab has no clone, so it roots at the process's directory, as
+/// its constructor does.
+pub fn resolve_descriptor(
+    git: &dyn er_git::Git,
+    d: &crate::tabs_record::TabDescriptor,
+) -> anyhow::Result<ResolvedTab> {
+    use crate::tabs_record::TabKind;
+    use anyhow::Context;
+
+    let non_empty = |value: &Option<String>| value.clone().filter(|s| !s.is_empty());
+    if d.kind == TabKind::RemotePr {
+        let owner = d.pr_owner.clone().context("remote_pr missing owner")?;
+        let repo = d.pr_repo.clone().context("remote_pr missing repo")?;
+        let number = d.pr_number.context("remote_pr missing number")?;
+        let repo_root = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+        return Ok(ResolvedTab {
+            repo_root,
+            current_branch: non_empty(&d.branch).unwrap_or_default(),
+            base_branch: non_empty(&d.base_ref).unwrap_or_default(),
+            mode: DiffMode::PrDiff,
+            tour_is_pr: false,
+            remote_repo: Some(format!("{owner}/{repo}")),
+            pr_number: Some(number),
+            local_branch_view: None,
+            pr_head_ref: None,
+            checkout_root: None,
+        });
+    }
+
+    let (local_branch_view, pr_number, pr_head_ref, mode) = match d.kind {
+        TabKind::LocalBranch => {
+            let branch = d
+                .branch
+                .clone()
+                .context("local_branch descriptor missing branch")?;
+            (Some(branch), None, None, DiffMode::Branch)
+        }
+        TabKind::LocalPr => {
+            let number = d
+                .pr_number
+                .context("local_pr descriptor missing pr_number")?;
+            let view = d.branch.clone().unwrap_or_else(|| format!("pr/{number}"));
+            (
+                Some(view),
+                Some(number),
+                d.pr_head_ref.clone(),
+                DiffMode::PrDiff,
+            )
+        }
+        TabKind::Working | TabKind::RemotePr => (None, None, None, DiffMode::Branch),
+    };
+    // Prefer the persisted (user-chosen) base; fall back to auto-detection.
+    let base_branch = match non_empty(&d.base_ref) {
+        Some(base) => base,
+        None => git.detect_base_branch(&d.repo_root)?,
+    };
+    let current_branch = git.current_branch(&d.repo_root)?;
+    Ok(ResolvedTab {
+        repo_root: d.repo_root.clone(),
+        current_branch,
+        base_branch,
+        mode,
+        tour_is_pr: false,
+        remote_repo: None,
+        pr_number,
+        local_branch_view,
+        pr_head_ref,
+        checkout_root: None,
+    })
+}
+
 /// The fields of one tab that decide its buckets and its diff fetch, borrowed
 /// from whoever owns the tab.
 #[derive(Debug, Clone, Copy)]
@@ -147,6 +257,12 @@ impl<'a> TabIdentity<'a> {
 
     pub const fn review_bucket(&self) -> ReviewBucket {
         review_bucket(self.remote_repo.is_some(), self.mode, self.tour_is_pr)
+    }
+
+    /// Whether this tab's reviewed marks are saved. A remote tab outside the PR
+    /// bucket has no managed dir of its own to write to.
+    pub const fn persists_reviewed(&self) -> bool {
+        !self.is_remote() || matches!(self.review_bucket(), ReviewBucket::Pr)
     }
 
     pub const fn tour_context_is_pr(&self) -> bool {
@@ -318,5 +434,133 @@ impl<'a> TabIdentity<'a> {
         } else {
             Some(self.current_branch)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tabs_record::{TabDescriptor, TabKind};
+    use er_git::FakeGit;
+
+    fn descriptor(kind: TabKind) -> TabDescriptor {
+        TabDescriptor {
+            kind,
+            repo_root: "/repo".to_string(),
+            branch: None,
+            pr_owner: None,
+            pr_repo: None,
+            pr_number: None,
+            pr_head_ref: None,
+            base_ref: None,
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    fn git() -> FakeGit {
+        FakeGit::default()
+            .with_current_branch(Ok("checkout".to_string()))
+            .with_detect_base_branch(Ok("detected".to_string()))
+    }
+
+    #[test]
+    fn a_plain_tab_reads_its_checkout_and_detects_its_base() -> anyhow::Result<()> {
+        let git = git();
+        let resolved = resolve_descriptor(&git, &descriptor(TabKind::Working))?;
+        assert_eq!(resolved.current_branch, "checkout");
+        assert_eq!(resolved.base_branch, "detected");
+        assert_eq!(resolved.mode, DiffMode::Branch);
+        assert_eq!(resolved.local_branch_view, None);
+        assert_eq!(resolved.identity().review_bucket(), ReviewBucket::Branch);
+        assert_eq!(
+            git.calls(),
+            vec![
+                "detect_base_branch(repo_root=\"/repo\")",
+                "current_branch(repo_root=\"/repo\")"
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_saved_base_skips_detection() -> anyhow::Result<()> {
+        let git = git();
+        let mut d = descriptor(TabKind::LocalBranch);
+        d.branch = Some("feature".to_string());
+        d.base_ref = Some("origin/main".to_string());
+        let resolved = resolve_descriptor(&git, &d)?;
+        assert_eq!(resolved.base_branch, "origin/main");
+        assert_eq!(resolved.local_branch_view.as_deref(), Some("feature"));
+        assert_eq!(resolved.mode, DiffMode::Branch);
+        assert_eq!(git.calls(), vec!["current_branch(repo_root=\"/repo\")"]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_local_pr_tab_opens_on_its_pr_diff() -> anyhow::Result<()> {
+        let mut d = descriptor(TabKind::LocalPr);
+        d.pr_number = Some(12);
+        d.pr_head_ref = Some("refs/er/pr/12/head".to_string());
+        let resolved = resolve_descriptor(&git(), &d)?;
+        assert_eq!(resolved.mode, DiffMode::PrDiff);
+        assert_eq!(resolved.pr_number, Some(12));
+        assert_eq!(resolved.local_branch_view.as_deref(), Some("pr/12"));
+        assert_eq!(resolved.pr_head_ref.as_deref(), Some("refs/er/pr/12/head"));
+        assert_eq!(resolved.remote_repo, None);
+        assert_eq!(resolved.identity().review_bucket(), ReviewBucket::Pr);
+        Ok(())
+    }
+
+    #[test]
+    fn a_remote_pr_tab_touches_no_git() -> anyhow::Result<()> {
+        let git = git();
+        let mut d = descriptor(TabKind::RemotePr);
+        d.pr_owner = Some("acme".to_string());
+        d.pr_repo = Some("widgets".to_string());
+        d.pr_number = Some(7);
+        d.branch = Some("head".to_string());
+        d.base_ref = Some(String::new());
+        let resolved = resolve_descriptor(&git, &d)?;
+        assert!(resolved.identity().is_remote());
+        assert_eq!(resolved.remote_repo.as_deref(), Some("acme/widgets"));
+        assert_eq!(resolved.current_branch, "head");
+        assert_eq!(resolved.base_branch, "");
+        assert_eq!(resolved.mode, DiffMode::PrDiff);
+        assert!(git.calls().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_descriptor_missing_its_kind_fields_is_refused() {
+        let git = git();
+        assert!(resolve_descriptor(&git, &descriptor(TabKind::LocalBranch)).is_err());
+        assert!(resolve_descriptor(&git, &descriptor(TabKind::LocalPr)).is_err());
+        assert!(resolve_descriptor(&git, &descriptor(TabKind::RemotePr)).is_err());
+        assert!(git.calls().is_empty(), "a refused descriptor ran git");
+    }
+
+    #[test]
+    fn only_a_remote_tab_outside_the_pr_bucket_skips_saving_reviewed() {
+        let resolved = |remote: Option<&str>, view: Option<&str>, mode| ResolvedTab {
+            repo_root: "/repo".into(),
+            current_branch: "main".into(),
+            base_branch: "main".into(),
+            mode,
+            tour_is_pr: false,
+            remote_repo: remote.map(str::to_string),
+            pr_number: Some(1),
+            local_branch_view: view.map(str::to_string),
+            pr_head_ref: None,
+            checkout_root: None,
+        };
+        assert!(resolved(None, None, DiffMode::Unstaged)
+            .identity()
+            .persists_reviewed());
+        assert!(resolved(Some("a/b"), None, DiffMode::PrDiff)
+            .identity()
+            .persists_reviewed());
+        assert!(resolved(Some("a/b"), Some("feature"), DiffMode::Staged)
+            .identity()
+            .persists_reviewed());
     }
 }
