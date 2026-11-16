@@ -83,6 +83,15 @@ fn load(handle: &WorkspaceHandle, key: TabKey, repo: &str) -> anyhow::Result<Rep
     )?)
 }
 
+/// A plain refresh of `key`.
+pub(crate) fn refresh(key: TabKey) -> Command {
+    Command::RefreshDiff {
+        key,
+        force: false,
+        adopt_head_oid: None,
+    }
+}
+
 /// Runs `test` with a storage root every effect thread sees, and a repo dir
 /// under it.
 fn with_root(test: impl FnOnce(&str) -> anyhow::Result<()>) -> anyhow::Result<()> {
@@ -257,6 +266,7 @@ fn a_tab_command_for_a_key_never_loaded_is_refused_before_any_effect() -> anyhow
             Command::RefreshDiff {
                 key: TabKey::next(),
                 force: false,
+                adopt_head_oid: None,
             },
             Command::SetDiffMode {
                 key: TabKey::next(),
@@ -266,6 +276,10 @@ fn a_tab_command_for_a_key_never_loaded_is_refused_before_any_effect() -> anyhow
             Command::ParseFiles {
                 key: TabKey::next(),
                 paths: vec!["src/a.rs".to_string()],
+                expand: false,
+            },
+            Command::ReloadSidecars {
+                key: TabKey::next(),
             },
         ] {
             let result = handle.send_and_wait_with(command, WAIT);
@@ -305,7 +319,7 @@ fn a_load_clears_moved_and_orphaned_marks_and_saves_them() -> anyhow::Result<()>
         .collect();
         er_engine::session_store::save_reviewed(&store, &scope, &marks)?;
 
-        let reply = handle.send_and_wait_with(Command::RefreshDiff { key, force: false }, WAIT)?;
+        let reply = handle.send_and_wait_with(refresh(key), WAIT)?;
 
         assert_eq!(
             reply,
@@ -336,7 +350,7 @@ fn a_tab_load_submits_no_job() -> anyhow::Result<()> {
         let key = TabKey::next();
 
         load(&handle, key, repo)?;
-        handle.send_and_wait_with(Command::RefreshDiff { key, force: false }, WAIT)?;
+        handle.send_and_wait_with(refresh(key), WAIT)?;
         handle.send_and_wait_with(Command::DropTab { key }, WAIT)?;
 
         let submitted = sink.submitted.lock().map(|n| *n).unwrap_or(usize::MAX);
@@ -545,11 +559,15 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
                 diff_hash: String::new(),
                 branch_diff_hash: String::new(),
                 preview_head_oid: None,
+                stamps: Default::default(),
             },
+            expanded: Default::default(),
         },
         marks: HashMap::new(),
         file_hashes: HashMap::new(),
         ai: AiState::default(),
+        ai_stamp: Default::default(),
+        pr: Default::default(),
         cleared: 0,
     })
 }
@@ -593,6 +611,15 @@ fn a_patch_from_before_the_tab_moved_is_refused_with_nothing_moved() -> anyhow::
                 key,
                 since: started_at,
                 files: Vec::new(),
+                expanded: Vec::new(),
+            },
+        ),
+        (
+            "a recorded mode",
+            ContentPatch::Mode {
+                key,
+                since: started_at,
+                mode: DiffMode::History,
             },
         ),
     ] {

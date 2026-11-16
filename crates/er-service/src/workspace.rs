@@ -65,6 +65,8 @@ impl PartialEq for WorkspaceView {
                         content.diff.revision,
                         content.reviewed.revision,
                         content.ai.revision,
+                        content.pr.revision,
+                        content.mode_revision,
                     )
                 })
                 .collect::<Vec<_>>()
