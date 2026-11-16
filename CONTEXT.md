@@ -50,8 +50,9 @@ _Avoid_: tab id, tab index
 
 **Workspace**:
 The state one actor owns for a single repo/worktree: the PR targets opened in
-it and which one is active. The actor is its only writer; readers get an
-immutable view published per revision.
+it, which one is active, and the content of each tab loaded in it, by tab key.
+The actor is its only writer; readers get an immutable view published per
+revision.
 _Avoid_: tab (a tab is a review target), project, session
 
 **Finding**:
