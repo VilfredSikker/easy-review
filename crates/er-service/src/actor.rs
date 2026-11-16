@@ -352,8 +352,9 @@ fn handle_command(
             }
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
-                crate::annotations::toggle_reviewed(&deps, &context, &path)
-                    .map(|changed| Reply::ReviewedChanged { changed })
+                crate::annotations::toggle_reviewed(&deps, &context, &path).map(
+                    |(changed, patch)| Effected::patched(Reply::ReviewedChanged { changed }, patch),
+                )
             });
         }
         Command::MarkReviewed {
@@ -366,8 +367,9 @@ fn handle_command(
             }
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
-                crate::annotations::mark_reviewed(&deps, &context, &path, reviewed)
-                    .map(|changed| Reply::ReviewedChanged { changed })
+                crate::annotations::mark_reviewed(&deps, &context, &path, reviewed).map(
+                    |(changed, patch)| Effected::patched(Reply::ReviewedChanged { changed }, patch),
+                )
             });
         }
         Command::BulkReviewPillar {
@@ -380,8 +382,9 @@ fn handle_command(
             }
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
-                crate::annotations::bulk_review_pillar(&deps, &context, &pillar_id, reviewed)
-                    .map(|changed| Reply::ReviewedChanged { changed })
+                crate::annotations::bulk_review_pillar(&deps, &context, &pillar_id, reviewed).map(
+                    |(changed, patch)| Effected::patched(Reply::ReviewedChanged { changed }, patch),
+                )
             });
         }
         Command::AddQuestion {
@@ -408,7 +411,7 @@ fn handle_command(
                     reply_to,
                     finding_ref,
                 )
-                .map(|id| Reply::AnnotationWritten { id })
+                .map(|(id, patch)| Effected::patched(Reply::AnnotationWritten { id }, patch))
             });
         }
         Command::AddNote {
@@ -435,7 +438,7 @@ fn handle_command(
                     reply_to,
                     finding_ref,
                 )
-                .map(|id| Reply::AnnotationWritten { id })
+                .map(|(id, patch)| Effected::patched(Reply::AnnotationWritten { id }, patch))
             });
         }
         Command::AddDocumentThread {
@@ -455,7 +458,7 @@ fn handle_command(
                 crate::annotations::add_document_thread(
                     &deps, &context, &file, line, line_end, kind, &body, &source,
                 )
-                .map(|id| Reply::AnnotationWritten { id })
+                .map(|(id, patch)| Effected::patched(Reply::AnnotationWritten { id }, patch))
             });
         }
         Command::ReplyToThread {
@@ -470,7 +473,7 @@ fn handle_command(
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
                 crate::annotations::reply_to_thread(&deps, &context, &parent_id, &body, client_id)
-                    .map(|id| Reply::AnnotationWritten { id })
+                    .map(|(id, patch)| Effected::patched(Reply::AnnotationWritten { id }, patch))
             });
         }
         Command::UpdateThreadMessage { context, id, body } => {
@@ -479,7 +482,7 @@ fn handle_command(
             }
             spawn_effect(tx, reply, move || {
                 crate::annotations::update_thread_message(&context, &id, &body)
-                    .map(|path| Reply::ThreadChanged { path })
+                    .map(|(path, patch)| Effected::patched(Reply::ThreadChanged { path }, patch))
             });
         }
         Command::DeleteThread { context, id } => {
@@ -488,7 +491,7 @@ fn handle_command(
             }
             spawn_effect(tx, reply, move || {
                 crate::annotations::delete_thread(&context, &id)
-                    .map(|path| Reply::ThreadChanged { path })
+                    .map(|(path, patch)| Effected::patched(Reply::ThreadChanged { path }, patch))
             });
         }
         Command::ResolveThread { context, id } => {
@@ -497,7 +500,7 @@ fn handle_command(
             }
             spawn_effect(tx, reply, move || {
                 crate::annotations::resolve_thread(&context, &id)
-                    .map(|path| Reply::ThreadChanged { path })
+                    .map(|(path, patch)| Effected::patched(Reply::ThreadChanged { path }, patch))
             });
         }
         Command::PromoteToNote { context, id, body } => {
@@ -507,7 +510,7 @@ fn handle_command(
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
                 crate::annotations::promote_to_note(&deps, &context, &id, body)
-                    .map(|id| Reply::NotePromoted { id })
+                    .map(|(id, patch)| Effected::patched(Reply::NotePromoted { id }, patch))
             });
         }
         Command::ReplyToFinding {
@@ -530,7 +533,9 @@ fn handle_command(
                     ai_assist,
                     client_id,
                 )
-                .map(|(root_id, reply_id)| Reply::FindingReplied { root_id, reply_id })
+                .map(|((root_id, reply_id), patch)| {
+                    Effected::patched(Reply::FindingReplied { root_id, reply_id }, patch)
+                })
             });
         }
         Command::StartJob {

@@ -13,6 +13,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use er_engine::ai::AiState;
+use er_engine::annotations::WrittenPayload;
 use er_engine::git::{DiffFile, DiffFileHeader};
 use er_engine::tab_identity::ResolvedTab;
 use er_engine::TabKey;
@@ -66,6 +67,44 @@ impl TabContent {
                 state: loaded.ai,
             }),
         }
+    }
+
+    /// This content with one stored sidecar adopted, when it reads that
+    /// sidecar's bucket.
+    fn with_sidecar(&self, dir: &str, payload: &WrittenPayload, revision: u64) -> Option<Self> {
+        let reads = match payload {
+            WrittenPayload::Questions(_) | WrittenPayload::Notes(_) => self.context.er_dir == dir,
+            WrittenPayload::Comments(_) => self.context.comments_dir == dir,
+        };
+        if !reads {
+            return None;
+        }
+        let mut state = self.ai.state.clone();
+        payload.clone().adopt(&mut state);
+        Some(Self {
+            ai: Arc::new(AiSection { revision, state }),
+            ..self.clone()
+        })
+    }
+
+    /// This content with the saved reviewed marks, when it reads `er_dir`.
+    fn with_marks(
+        &self,
+        er_dir: &str,
+        marks: &HashMap<String, String>,
+        revision: u64,
+    ) -> Option<Self> {
+        if self.context.er_dir != er_dir {
+            return None;
+        }
+        Some(Self {
+            reviewed: Arc::new(ReviewedSection {
+                revision,
+                marks: marks.clone(),
+                file_hashes: self.reviewed.file_hashes.clone(),
+            }),
+            ..self.clone()
+        })
     }
 
     /// This content with lazy files parsed. Only the parsed files get new
@@ -172,6 +211,17 @@ pub(crate) enum ContentPatch {
         since: u64,
         files: Vec<(usize, DiffFile)>,
     },
+    /// A sidecar a write stored in `dir`.
+    Sidecar {
+        dir: String,
+        payload: WrittenPayload,
+    },
+    /// The reviewed marks a write saved in `er_dir`.
+    Reviewed {
+        er_dir: String,
+        marks: HashMap<String, String>,
+    },
+    Several(Vec<ContentPatch>),
 }
 
 /// Why a patch was not applied.
@@ -206,11 +256,14 @@ pub(crate) fn check(
             Some(content) if content.diff.revision == *since => Ok(()),
             _ => Err(PatchRefused::Moved),
         },
+        ContentPatch::Several(patches) => patches.iter().try_for_each(|patch| check(tabs, patch)),
+        ContentPatch::Sidecar { .. } | ContentPatch::Reviewed { .. } => Ok(()),
     }
 }
 
-/// Applies a checked patch at `revision`. Answers how many reviewed marks a
-/// load cleared.
+/// Applies a checked patch at `revision`. A sidecar or reviewed patch reaches
+/// every tab that reads its bucket, duplicate tabs included. Answers how many
+/// reviewed marks a load cleared.
 pub(crate) fn apply(
     tabs: &mut BTreeMap<TabKey, Arc<TabContent>>,
     patch: ContentPatch,
@@ -231,5 +284,25 @@ pub(crate) fn apply(
             }
             0
         }
+        ContentPatch::Sidecar { dir, payload } => {
+            for content in tabs.values_mut() {
+                if let Some(next) = content.with_sidecar(&dir, &payload, revision) {
+                    *content = Arc::new(next);
+                }
+            }
+            0
+        }
+        ContentPatch::Reviewed { er_dir, marks } => {
+            for content in tabs.values_mut() {
+                if let Some(next) = content.with_marks(&er_dir, &marks, revision) {
+                    *content = Arc::new(next);
+                }
+            }
+            0
+        }
+        ContentPatch::Several(patches) => patches
+            .into_iter()
+            .map(|patch| apply(tabs, patch, revision))
+            .sum(),
     }
 }
