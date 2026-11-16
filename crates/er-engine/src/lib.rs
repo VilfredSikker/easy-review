@@ -18,6 +18,7 @@ pub mod diagram_upload;
 pub mod diff_fetch;
 pub mod diff_load;
 pub mod env_path;
+pub mod filter;
 #[cfg(feature = "ui")]
 pub mod export;
 pub use er_github::actions as gh_pr_actions;
