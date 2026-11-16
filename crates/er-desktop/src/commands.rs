@@ -5009,16 +5009,24 @@ pub async fn set_ai_model(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
+    run_blocking(move || ai_model(&state, model)).await
+}
+
+/// With `v1-service` the AI picker's saves go to the settings actor, the one
+/// writer of the config files (ADR 0069); the flag-off bodies save the App's.
+pub(crate) fn ai_model(state: &AppState, model: String) -> Result<AppSnapshot, String> {
+    #[cfg(feature = "v1-service")]
+    return crate::ai_selection_service::ai_model(state, model);
+    #[cfg(not(feature = "v1-service"))]
+    {
         let app = state.app.lock().map_err(|e| e.to_string())?;
 
         let mut cfg = er_engine::config::load_global_config();
         cfg.agent.model = model;
         er_engine::config::save_config(&cfg).map_err(|e| e.to_string())?;
 
-        Ok(snap_from(&app, &state))
-    })
-    .await
+        Ok(snap_from(&app, state))
+    }
 }
 
 // ── AI provider / model selection ───────────────────────────────────────────
@@ -5057,50 +5065,61 @@ pub async fn set_ai_selection(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        // Palette and title-bar picks are the user's default. Settings also
-        // passes true. Session-only remains available via persist: false.
-        let persist = persist.unwrap_or(true);
-        let agent = app.config.agent.clone();
+    run_blocking(move || ai_selection(&state, provider_id, model_id, persist, effort)).await
+}
 
-        let selection = if persist {
-            let selection = app
-                .config
-                .ai_hub
-                .set_default_selection_with_effort(
-                    &provider_id,
-                    model_id.as_deref(),
-                    effort.as_deref(),
-                    &agent,
-                )
-                .map_err(|e| e.to_string())?;
-            er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
-            selection
-        } else {
-            // Session-only: keep current effort when the new model still supports
-            // it, unless the picker supplied an explicit level.
-            let runtime_effort = effort.clone().or_else(|| app.current_ai_effort.clone());
-            app.config
-                .ai_hub
-                .resolve_selection(
-                    &provider_id,
-                    model_id.as_deref(),
-                    &agent,
-                    runtime_effort.as_deref(),
-                )
-                .map_err(|e| e.to_string())?
-        };
-        app.current_ai_provider = selection.provider_id;
-        app.current_ai_model = selection.model_id;
-        app.current_ai_effort = selection.effort;
+pub(crate) fn ai_selection(
+    state: &AppState,
+    provider_id: String,
+    model_id: Option<String>,
+    persist: Option<bool>,
+    effort: Option<String>,
+) -> Result<AppSnapshot, String> {
+    // Palette and title-bar picks are the user's default. Settings also
+    // passes true. Session-only remains available via persist: false.
+    let persist = persist.unwrap_or(true);
+    #[cfg(feature = "v1-service")]
+    if persist {
+        return crate::ai_selection_service::ai_selection(state, provider_id, model_id, effort);
+    }
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let agent = app.config.agent.clone();
 
-        state
-            .desktop_revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
-    })
-    .await
+    let selection = if persist {
+        let selection = app
+            .config
+            .ai_hub
+            .set_default_selection_with_effort(
+                &provider_id,
+                model_id.as_deref(),
+                effort.as_deref(),
+                &agent,
+            )
+            .map_err(|e| e.to_string())?;
+        er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+        selection
+    } else {
+        // Session-only: keep current effort when the new model still supports
+        // it, unless the picker supplied an explicit level.
+        let runtime_effort = effort.clone().or_else(|| app.current_ai_effort.clone());
+        app.config
+            .ai_hub
+            .resolve_selection(
+                &provider_id,
+                model_id.as_deref(),
+                &agent,
+                runtime_effort.as_deref(),
+            )
+            .map_err(|e| e.to_string())?
+    };
+    app.current_ai_provider = selection.provider_id;
+    app.current_ai_model = selection.model_id;
+    app.current_ai_effort = selection.effort;
+
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(snap_from(&app, state))
 }
 
 #[tauri::command]
@@ -5110,53 +5129,62 @@ pub async fn set_ai_effort(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let persist = persist.unwrap_or(false);
-        let default_selection = app
-            .config
-            .ai_hub
-            .resolve_default_selection(&app.config.agent);
+    run_blocking(move || ai_effort(&state, effort, persist)).await
+}
 
-        let (provider_id, model_id) = if persist {
-            // Settings: normalize against persisted defaults, not a session palette pick.
-            (default_selection.provider_id, default_selection.model_id)
-        } else {
-            (
-                app.current_ai_provider
-                    .clone()
-                    .or(default_selection.provider_id),
-                app.current_ai_model.clone().or(default_selection.model_id),
-            )
-        };
+pub(crate) fn ai_effort(
+    state: &AppState,
+    effort: Option<String>,
+    persist: Option<bool>,
+) -> Result<AppSnapshot, String> {
+    let persist = persist.unwrap_or(false);
+    #[cfg(feature = "v1-service")]
+    if persist {
+        return crate::ai_selection_service::ai_effort(state, effort);
+    }
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let default_selection = app
+        .config
+        .ai_hub
+        .resolve_default_selection(&app.config.agent);
 
-        let normalized = er_engine::config::normalize_effort(
-            &app.config.ai_hub,
-            provider_id.as_deref(),
-            model_id.as_deref(),
-            effort.as_deref(),
-        );
-        if effort.is_some() && normalized.is_none() {
-            return Err("Effort is unsupported for the selected model".into());
-        }
+    let (provider_id, model_id) = if persist {
+        // Settings: normalize against persisted defaults, not a session palette pick.
+        (default_selection.provider_id, default_selection.model_id)
+    } else {
+        (
+            app.current_ai_provider
+                .clone()
+                .or(default_selection.provider_id),
+            app.current_ai_model.clone().or(default_selection.model_id),
+        )
+    };
 
-        if persist {
-            app.config.ai_hub.default_effort = normalized.clone();
-            // Keep session aligned with the defaults being edited in Settings.
-            app.current_ai_provider = provider_id;
-            app.current_ai_model = model_id;
-            app.current_ai_effort = normalized;
-            er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
-        } else {
-            app.current_ai_effort = normalized;
-        }
+    let normalized = er_engine::config::normalize_effort(
+        &app.config.ai_hub,
+        provider_id.as_deref(),
+        model_id.as_deref(),
+        effort.as_deref(),
+    );
+    if effort.is_some() && normalized.is_none() {
+        return Err("Effort is unsupported for the selected model".into());
+    }
 
-        state
-            .desktop_revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
-    })
-    .await
+    if persist {
+        app.config.ai_hub.default_effort = normalized.clone();
+        // Keep session aligned with the defaults being edited in Settings.
+        app.current_ai_provider = provider_id;
+        app.current_ai_model = model_id;
+        app.current_ai_effort = normalized;
+        er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+    } else {
+        app.current_ai_effort = normalized;
+    }
+
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(snap_from(&app, state))
 }
 
 // ── Promote question to GitHub comment ──────────────────────────────────────
@@ -13262,6 +13290,174 @@ mod tests {
                 cc::refresh_models(s, Some("no-such-provider".into()), true).map(drop)
             });
             assert!(settings.view().revision > before);
+        });
+    }
+
+    /// A state whose settings actor owns the managed config, the file the
+    /// flag-off App saves to, so a save from either side lands in one place.
+    /// The App's config is on disk first and the actor is started over it,
+    /// as an open Settings page would have started it. `fake-model` offers
+    /// two effort levels.
+    #[cfg(feature = "v1-service")]
+    fn shared_config_state(dir: &ReviewFlowTestDir) -> AppState {
+        let mut state = review_flow_test_state(dir);
+        let path = er_engine::config::managed_config_path();
+        {
+            let Ok(mut app) = state.app.lock() else {
+                panic!("the App lock is poisoned");
+            };
+            if let Some(provider) = app.config.ai_hub.providers.get_mut("fake") {
+                provider.models[0].effort_levels = vec!["low".into(), "high".into()];
+            }
+            assert!(er_engine::config::save_config_pair_to(&path, &app.config).is_ok());
+        }
+        state.service = std::sync::Arc::new(crate::service::ServiceState::with_settings_path(
+            er_engine::ports::Ports::for_test(),
+            path,
+        ));
+        let _ = state.service.settings().view();
+        state
+    }
+
+    /// Runs `body` while this thread holds the App lock and waits for the
+    /// settings actor to show the write before releasing it.
+    #[cfg(feature = "v1-service")]
+    fn saved_while_locked(
+        state: &AppState,
+        what: &str,
+        body: fn(&AppState) -> Result<AppSnapshot, String>,
+        saved: fn(&er_service::SettingsView) -> bool,
+    ) {
+        use std::time::{Duration, Instant};
+
+        let held = match state.app.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let calling_state = state.clone();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(body(&calling_state).map(drop));
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !saved(&state.service.settings().view()) {
+            assert!(
+                Instant::now() < deadline,
+                "{what} did not reach the settings actor while the App was locked"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(held);
+        let Ok(result) = done_rx.recv_timeout(Duration::from_secs(10)) else {
+            panic!("{what} never returned");
+        };
+        assert!(result.is_ok(), "{what} failed: {result:?}");
+    }
+
+    /// With the feature on, the AI picker's three saves reach the settings
+    /// actor before the App lock is taken, and the App only follows the saved
+    /// selection: its own copy of the config is never written.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_ai_picker_saves_route_with_the_feature_on() {
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = shared_config_state(&dir);
+            saved_while_locked(
+                &state,
+                "set_ai_model",
+                |s| ai_model(s, "fixture-agent-model".into()),
+                |view| view.config.agent.model == "fixture-agent-model",
+            );
+            saved_while_locked(
+                &state,
+                "set_ai_selection",
+                |s| {
+                    ai_selection(
+                        s,
+                        "fake".into(),
+                        Some("fake-model".into()),
+                        Some(true),
+                        None,
+                    )
+                },
+                |view| view.config.ai_hub.default_model.as_deref() == Some("fake-model"),
+            );
+            saved_while_locked(
+                &state,
+                "set_ai_effort",
+                |s| ai_effort(s, Some("high".into()), Some(true)),
+                |view| view.config.ai_hub.default_effort.as_deref() == Some("high"),
+            );
+
+            let Ok(app) = state.app.lock() else {
+                panic!("the App lock is poisoned");
+            };
+            assert_eq!(app.current_ai_provider.as_deref(), Some("fake"));
+            assert_eq!(app.current_ai_model.as_deref(), Some("fake-model"));
+            assert_eq!(app.current_ai_effort.as_deref(), Some("high"));
+            assert_eq!(
+                app.config.ai_hub.default_model, None,
+                "the App's copy was written"
+            );
+            assert_eq!(
+                app.config.ai_hub.default_effort, None,
+                "the App's copy was written"
+            );
+        });
+    }
+
+    /// With the feature on, a picker save and a Settings write in either
+    /// order both reach the disk. Two writers would each save over the
+    /// other's change.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn picker_saves_and_settings_writes_all_reach_the_disk() {
+        let dir = ReviewFlowTestDir::new();
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("temp dir");
+        };
+        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
+            let state = shared_config_state(&dir);
+            let selected = ai_selection(
+                &state,
+                "fake".into(),
+                Some("fake-model".into()),
+                Some(true),
+                None,
+            );
+            assert!(selected.is_ok(), "set_ai_selection failed: {selected:?}");
+            let patched = crate::config_commands::apply_patch(
+                &state,
+                crate::config_commands::ConfigPatch {
+                    key: "display.theme".to_string(),
+                    value: er_engine::config::ConfigFieldValue::String("ember".to_string()),
+                },
+            );
+            assert!(patched.is_ok(), "apply_config_patch failed: {patched:?}");
+            let effort = ai_effort(&state, Some("high".into()), Some(true));
+            assert!(effort.is_ok(), "set_ai_effort failed: {effort:?}");
+
+            let path = er_engine::config::managed_config_path();
+            let read = |name: &str| std::fs::read_to_string(path.with_file_name(name));
+            let (Ok(agents), Ok(config)) = (read("agents.toml"), read("config.toml")) else {
+                panic!("the config pair was not saved");
+            };
+            assert!(
+                agents.contains("default_model = \"fake-model\""),
+                "the selection was saved over:\n{agents}"
+            );
+            assert!(
+                agents.contains("default_effort = \"high\""),
+                "the effort was saved over:\n{agents}"
+            );
+            assert!(
+                config.contains("theme = \"ember\""),
+                "the Settings write was saved over:\n{config}"
+            );
         });
     }
 
