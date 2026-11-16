@@ -10075,10 +10075,10 @@ fn set_active_project_impl(id: &str, state: &AppState) -> Result<AppSnapshot, St
     app.open_tab(new_tab);
     app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
     crate::tabs::persist_app_tabs(&app, &state.view);
-    projects::set_active(&id);
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, &state);
-    Ok(snap_from(&app, &state))
+    projects::set_active(id);
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    kick_active_gh_status(&app, state);
+    Ok(snap_from(&app, state))
 }
 
 #[tauri::command]
@@ -16421,6 +16421,7 @@ mod route_tests {
             "open_worktree",
             "open_local_branch",
             "open_project_branch",
+            "service_set_active_project",
         ] {
             let body = source
                 .split_once(&format!("fn {command}("))
@@ -16444,6 +16445,21 @@ mod route_tests {
         ] {
             let route = call(route);
             assert!(source.contains(&route), "no command calls {route}");
+        }
+        // The opens that once built an App tab go through the flag-on helpers.
+        for (command, helper) in [
+            ("set_active_project", "service_set_active_project("),
+            ("open_pr_branch", "service_open_pr_review("),
+            ("open_inbox_item_impl", "service_open_inbox_target("),
+        ] {
+            let body = source
+                .split_once(&format!("fn {command}("))
+                .and_then(|(_, rest)| rest.split_once("\n}\n"))
+                .map(|(body, _)| body);
+            assert!(
+                body.is_some_and(|body| body.contains(helper)),
+                "{command} does not call {helper}"
+            );
         }
         // toggle_reviewed and mark_reviewed.
         let reviewed = source.matches(&call("write_reviewed(")).count();
