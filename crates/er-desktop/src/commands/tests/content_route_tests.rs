@@ -265,3 +265,19 @@ fn every_mode_reaches_the_active_content() {
         assert!(!toured.diff.files.is_empty(), "the tour loaded no diff");
     });
 }
+
+/// The `set_mode` command records a view the App still shows on the content,
+/// then switches the App to it.
+#[test]
+fn a_recorded_mode_still_reaches_the_app() {
+    with_storage(|dir| {
+        let Fixture { state, active, .. } = fixture(dir);
+
+        let switched = crate::commands::set_mode_impl(&state, "history", None, None);
+
+        assert!(switched.is_ok(), "{:?}", switched.err());
+        assert_eq!(content(&state, &active).tab.mode, DiffMode::History);
+        let app_mode = state.app.lock().map(|app| app.tab().mode);
+        assert_eq!(app_mode.ok(), Some(DiffMode::History));
+    });
+}
