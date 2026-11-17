@@ -324,10 +324,16 @@ Each is a planning proposal the coordinator confirms or changes at the gate.
   whatever its kind (local PR or remote PR), when both name the same
   `workspace_key` and PR number. P54 implements it with a test.
 - **A16 Generated files and lint.** The generated directory
-  (`desktop-ui/src/lib/protocol/generated/`) is excluded from ESLint with a
-  reason, because a hand fix would be overwritten; `check-ui` still
-  type-checks it. On a merge conflict it is regenerated, never hand-merged,
-  as with the clippy budget file.
+  (`desktop-ui/src/lib/protocol/generated/`) and, from P62.1, the generated
+  `types.ts` barrel are excluded from ESLint with a reason, because a hand fix
+  would be overwritten; `check-ui` still type-checks them and
+  `protocol-check` covers both. On a merge conflict they are regenerated,
+  never hand-merged, as with the clippy budget file. Export runs only through
+  an explicit generator that calls ts-rs's export on each type; no type
+  carries `#[ts(export)]`, so `cargo test --workspace` never rewrites the
+  committed files and the drift check does not depend on what ran first.
+  The barrel is written by the same generator: an index that re-exports the
+  generated types and nothing else.
 
 ## Owner decisions (decided)
 
@@ -364,17 +370,17 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ### P50 `er-protocol`, ts-rs codegen and the drift check
 
-- Branch: `epic/p50-er-protocol`. Lanes: C, P. Model: `opus`. Depends on: the gate steps above.
+- Branch: `epic/p50-er-protocol`. Lanes: C, P. Model: `opus`. Depends on: #538 closed and this addendum's gate steps.
 - **Goal:** the wire crate and generated TypeScript, before any resource uses them.
-- **Done when:** `crates/er-protocol` exists as a leaf crate with `ResourceKey`, `ResourceVersion`, `Versioned<T>`, `ResourceChanged`, `Ack`, `ErError { kind, message }` and an empty wire command enum, each deriving serde and `TS`; `just protocol-gen` writes `desktop-ui/src/lib/protocol/generated/`; `just protocol-check` exports into a temporary directory and fails on any difference with the committed files, and CI runs it on the `rust` and `ui` change outputs; `protocol-check` joins `just ci`; the `er::core_io` dependency allow-list covers er-protocol (serde, ts-rs); er-protocol joins `just test`.
-- **Planted breaks:** a hand edit of one generated file fails `protocol-check`; a new field on a protocol struct without regenerating fails it; adding `er-engine` to er-protocol's dependencies fails the allow-list; removing the CI step leaves the hand edit green on a draft PR.
+- **Done when:** `crates/er-protocol` exists as a leaf crate with `ResourceKey`, `ResourceVersion`, `Versioned<T>`, `ResourceChanged`, `Ack`, `ErError { kind, message }` and an empty wire command enum, each deriving serde and `TS`; `just protocol-gen` runs the explicit generator (A16) into `desktop-ui/src/lib/protocol/generated/`; `just protocol-check` exports into a temporary directory and fails on any difference with the committed files, and CI runs it on the `rust` and `ui` change outputs; `protocol-check` joins `just ci`; the `er::core_io` dependency allow-list covers er-protocol (serde, ts-rs); er-protocol joins `just test`.
+- **Planted breaks:** a hand edit of one generated file fails `protocol-check`; a new field on a protocol struct without regenerating fails it; adding `er-engine` to er-protocol's dependencies fails the allow-list; removing the CI step leaves the hand edit green on a draft PR; adding `#[ts(export)]` to one type makes `cargo test --workspace` change the tree, which a CI `git diff --exit-code` over the protocol directory after the tests catches.
 - Size: M.
 
 ### P51 `er::command_shape` with a shrinking allow-list
 
 - Branch: `epic/p51-command-shape-rule`. Lanes: C. Model: `opus`. Depends on: P50 (it names `ErError`).
 - **Goal:** the exit rule exists from the start, so no new command takes the old shape.
-- **Done when:** a syn rule in `crates/er-lint-gate/src/` walks every `#[tauri::command]` function in er-desktop and fails one whose return type is `Result<_, String>` or has a path segment ending in `Snapshot`, resolving local type aliases in the same file; `[workspace.metadata.lint-gate]` lists the 196 names that fail it today as the allow-list, and a test fails if the list grows; the rule runs in both clippy passes.
+- **Done when:** a syn rule in `crates/er-lint-gate/src/` walks every `#[tauri::command]` function in er-desktop and accepts it only when its return type is `Result<T, ErError>` or a type that is not a `Result`, and no path segment of the return type ends in `Snapshot`; it resolves local type aliases in the same file; `[workspace.metadata.lint-gate]` lists the 196 names that fail it today as the allow-list, and a test fails if the list grows; the rule runs in both clippy passes.
 - **Planted breaks:** a new command returning `Result<AppSnapshot, String>` outside the list fails; one returning `Result<u8, String>` fails; one returning an alias `type R = Result<u8, String>` fails; adding a name to the list fails the shrink test.
 - Size: S.
 
@@ -405,7 +411,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ### P54 Tabs and the tab lifecycle
 
-- Branch: `epic/p54-tabs-resource`. Lanes: S, D, U, P. Model: `opus`. Depends on: P53; #578 and P47.2c.2 merged.
+- Branch: `epic/p54-tabs-resource`. Lanes: S, D, U, P. Model: `opus`. Depends on: P53, #538 (#578 and P47.2c.2 merged).
 - **Goal:** tab strip, opens and closes run on the `tabs` resource and `er_send`, and the phase-4 lifecycle gaps close.
 - **Done when:** the tab commands and the opens (19 commands) send through `er_send` with the flag on; `tabs` carries labels and kinds, and staleness is derived in the frontend; a drop of a never-loaded key moves no version; a `LoadTab` for a key the registry no longer lists is refused; the closed-key set is bounded; an all-broken restore leaves a Working tab on the launch root; the launch root comes from the registry; Cmd-T on a remote PR tab opens a Working tab with a root; an already-open PR is selected whatever its tab kind (A15); the entry stops reading `tabs`, `active_tab`, `browser` and `input_mode`.
 - **Planted breaks:** a `DropTab` on a never-loaded key that bumps fails the version test; a late `LoadTab` after a close that applies fails the race test; an unbounded closed set fails the bound test after 10,000 closes; `same_pr` comparing kinds fails the cross-kind open test; restoring with every descriptor broken leaves no tab and fails.
@@ -414,7 +420,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ### P55.1 The sidebar owner, `projects` and `branches(project)`
 
-- Branch: `epic/p55a-sidebar-projects`. Lanes: DS, US, P. Model: `opus`. Depends on: P52.2.
+- Branch: `epic/p55a-sidebar-projects`. Lanes: DS, US, P, D (planned exception, see pair (a)). Model: `opus`. Depends on: P52.2.
 - **Goal:** the desktop app owner exists and publishes the project rows and each project's branches.
 - **Done when:** the owner module holds one writer per resource and bumps on write; `projects` carries the project records without PR lists, and `branches(project)` the local and auto branches with worktree paths and the open PR number, from the metadata cache; `is_active` and `is_current` are derived in the frontend from `tabs`; the project commands (7) go through `er_send`; `auto_register` reads the registry's tab list on the flag path; the entry stops reading `projects` (its non-PR fields) and `worktrees`.
 - **Planted breaks:** a second writer of the projects record fails the one-writer test; a branch refresh that does not bump `branches(project)` fails; an `is_active` computed on the server fails a source scan; `auto_register` reading the App's startup tab fails the flag-on test.
@@ -422,7 +428,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ### P55.2 `prs(remote)` keyed on content, `head_oid` included
 
-- Branch: `epic/p55b-sidebar-prs`. Lanes: DS, US, P. Model: `opus`. Depends on: P55.1.
+- Branch: `epic/p55b-sidebar-prs`. Lanes: DS, US, P, D (planned exception, see pair (a)). Model: `opus`. Depends on: P55.1.
 - **Goal:** the sidebar PR lists come from one resource per remote whose version follows its content.
 - **Done when:** `prs(remote)` carries the PR rows plus server-built id lists for my PRs, to review, recently merged and saved, with the dismissed filter applied on the server; the writer bumps the version whenever the rows change, any field including `head_oid`, so no length-and-time fingerprint decides it; `patch_pr_head_oid` and the full sweep both write through the owner; the head probe takes its target from the `tabs` resource; `detected_pr_number` and the tab staleness are derived in the frontend from these rows; the PR commands (9) go through `er_send`; the saved-PR cap moves to the server.
 - **Planted breaks:** a test drives `patch_pr_head_oid` on a cached row and asserts the version moved and the fetched row carries the new oid; planting a version computed from row counts and fetch times (the `build_projects_cache_key` shape) fails it; a dismiss that does not filter on the server fails the dismissed test; a 51st save that lands fails the cap test.
@@ -430,7 +436,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ### P55.3 `inbox` and the global optimistic ops
 
-- Branch: `epic/p55c-sidebar-inbox`. Lanes: DS, US, U, P. Model: `opus`. Depends on: P55.2.
+- Branch: `epic/p55c-sidebar-inbox`. Lanes: DS, US, U, P, D (planned exception, see pair (a)). Model: `opus`. Depends on: P55.2.
 - **Goal:** the inbox is a resource, and the four global optimistic ops are gone with the flag on.
 - **Done when:** `inbox` carries the items, the unread count and the last refresh, computed on the server; the inbox commands (9, including `open_inbox_item` and `prefetch_inbox_item`) go through `er_send`; with the flag on, `inbox-read`, `inbox-clear`, `saved-pr` and `dismissed-pr` no longer paint, and the push lands within the A9 budget for mark read and save PR; the entry stops reading `inbox_items`, `inbox_unread_count` and `inbox_last_refresh_ms`.
 - **Planted breaks:** an unread count computed in TypeScript fails a source scan; a mark-read that does not bump `inbox` fails; a global op still painted with the flag on fails the flag test; a budget overrun fails the measurement.
@@ -442,6 +448,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 - **Goal:** the file list, mode, base and staleness of the active tab come from `diff(tab)`.
 - **Done when:** `diff(tab)` carries each file's row and content hash and the diff-level fields; fetching it for a key with no content sends `LoadTab`; the warmer loads unloaded registry tabs at idle through `LoadTab`, scoped by the registry; the refresh, mode, base, filter and sync commands (8) go through `er_send`; the visible-file list uses the pure `visible_files` (#595); the entry stops reading 17 fields, listed in the issue.
 - **Planted breaks:** a followed stub that never loads fails the first-diff test; a warmer that loads the active tab twice fails the warmer test; a filter computed against the App's tab fails the source scan; a stale pill that ignores `preview_head_oid` fails the staleness test.
+- **Fallback split:** P56.1a the resource, the adapter and the routed commands; P56.1b load on activation and the warmer.
 - Size: L.
 
 ### P56.2 Content-addressed hunks, previews and file reads
@@ -477,6 +484,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 - **Goal:** findings, threads, tour, checklist, triage, diagrams and the other bucket are read from resources.
 - **Done when:** `annotations(tab)` is built from the AI section with thread ordering and counts on the server; `ui_annotations(tab)` is served by the desktop and bumped by its writes; the sidecar reload watches the comments directory as well as `er_dir`; the four read commands go through `er_fetch`; the entry stops reading `ai`, `tour`, `other_bucket` and `ui_annotations`.
 - **Planted breaks:** an outside write to `questions.json` that never reaches the content fails the reload test when the comments directory is dropped from the watch; thread ordering done in TypeScript fails the source scan; an arena tick that bumps `annotations(tab)` fails the precision test.
+- **Fallback split:** P58.1a the builders and the reload; P58.1b the desktop-ui port.
 - Size: L.
 
 ### P58.2 Annotation writes and pending until ack
@@ -490,23 +498,25 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ### P59 `pr(tab)`, `pr_status`, the stack and the GitHub senders
 
-- Branch: `epic/p59-pr-resources`. Lanes: S, D, DS, U, P. Model: `opus`. Depends on: P58.1, P55.2.
+- Branch: `epic/p59-pr-resources`. Lanes: S, D, DS, U, P. Model: `opus`. Depends on: P58.1, P55.3 (DS is free once the sidebar track ends).
 - **Goal:** the PR card, merge box, GitHub status and stack read resources, and no GitHub command picks its tab from the App.
 - **Done when:** `pr(tab)` is built from the PR section; `pr_status(remote, number)` from the status cache through the desktop owner; the stack is part of `pr(tab)` or its own resource, decided in the step plan; `active_tab_command`, `send_for_active_tab`, the comment tick, `abort_wrong_view` and the document preview check take the tab from the `tabs` resource and its content; the 13 GitHub commands go through `er_send`; the entry stops reading `pr`, `github` and `stack`.
 - **Planted breaks:** a GitHub post that reads the App's active tab fails the held-App-mutex test; a status refresh that does not bump `pr_status` fails; a merge pinned to a stale head fails the head test.
+- **Fallback split:** P59.1 `pr(tab)`, `pr_status` and the stack; P59.2 the GitHub senders and commands.
 - Size: L.
 
 ### P60.1 Arena and review flows on `jobs`
 
-- Branch: `epic/p60a-jobs-arena`. Lanes: S, D, U, P. Model: `opus`. Depends on: P54. Runs beside P59 (planned pair).
+- Branch: `epic/p60a-jobs-arena`. Lanes: S, D, U, P. Model: `opus`. Depends on: P54. Runs beside P59 (pair (b)).
 - **Goal:** the arena page and the flow strip read `jobs`, and arena and flow commands stop resolving their tab on the App.
 - **Done when:** `jobs` carries the live arena runs, the review flows and their progress across actors; arena `resolve` and flow `key` take the tab from the `tabs` resource; the 20 arena and flow commands go through `er_send` and their reads through `er_fetch`; `App.svelte:293`'s `er://revision` listener is replaced by the `jobs` resource; the entry stops reading `review_flow`, `active_arena_run`, `arena_runs` and `background_arena_runs`.
 - **Planted breaks:** an arena start that resolves the App's tab fails the held-App-mutex test; a progress tick that does not bump `jobs` fails; the Deep cancel and orphan test from P28b/P32b is reused unchanged.
+- **Fallback split:** P60.1a the `jobs` aggregate and the arena; P60.1b review flows and the `App.svelte` listener.
 - Size: L.
 
 ### P60.2 AI runs, triage and task logs on `jobs`
 
-- Branch: `epic/p60b-jobs-runs`. Lanes: S, D, DS, U, P. Model: `opus`. Depends on: P60.1.
+- Branch: `epic/p60b-jobs-runs`. Lanes: S, D, DS, U, P. Model: `opus`. Depends on: P60.1, P55.3 (DS is free once the sidebar track ends).
 - **Goal:** card AI, review runs, triage and the background task panel read `jobs`.
 - **Done when:** the 19 run, triage and log commands go through `er_send`/`er_fetch`; triage spinners read `jobs` (owner answer); auto-triage writes its queue through the desktop owner; the entry stops reading `agent_commands`, `agent_log`, `background_tasks` and `bg_loading`.
 - **Planted breaks:** a triage queued without a `jobs` bump leaves the spinner off and fails; a task log fetched from the App fails the source scan; a cancel that does not reach the runner fails the reused `CancelJob` assertion (P43).
@@ -514,7 +524,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ### P61 Window-mechanics commands typed
 
-- Branch: `epic/p61-window-commands`. Lanes: D, U, P. Model: `sonnet`. Depends on: P51, P52.1. Runs in the sidebar track after P55.3.
+- Branch: `epic/p61-window-commands`. Lanes: D, U, P. Model: `sonnet`. Depends on: P55.3, P60.2 (it holds D and U, so it runs after both tracks).
 - **Goal:** the 27 commands that stay direct return `Result<T, ErError>` with protocol types.
 - **Done when:** the browser webview (9), terminal (4), OS launch and reveal (6), export (3), `start_window_drag`, `detect_dev_url`, `line_commits`, `fetch_github_image` and `dev_log_filter` commands are typed; the names among them that fail the rule leave the allow-list; their callers use the generated types.
 - **Planted breaks:** restoring one to `Result<_, String>` fails `er::command_shape`; re-adding a name to the allow-list fails the shrink test.
@@ -522,10 +532,10 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ### P62.1 Delete the old store layer
 
-- Branch: `epic/p62a-delete-old-store-layer`. Lanes: U, P, C. Model: `opus`. Depends on: P53–P61.
+- Branch: `epic/p62a-delete-old-store-layer`. Lanes: U, P, C. Model: `opus`. Depends on: P53, P54, P55.1, P55.2, P55.3, P56.1, P56.2, P56.3, P57, P58.1, P58.2, P59, P60.1, P60.2, P61.
 - **Goal:** desktop-ui runs only on resources.
-- **Done when:** the adapters lose their flag-off branch; the `snapshot` store, `poll` handling, `optimisticLocal.ts`'s remainder, `snapshotDelta.ts`, `snapshotChrome.ts`, `tabSnapshotCache.ts` and `v1ServiceFlag.ts` are deleted; the hand-written `types.ts` is replaced by a generated barrel that `protocol-check` covers, and frontend-only types move to their modules; `scripts/tauri-dev.sh` drops the flag; er-desktop makes `v1-service` a default feature for the one release step between P62.1 and P62.2.
-- **Planted breaks:** a hand edit of `types.ts` fails `protocol-check`; a component reading `app.snapshot` fails the source scan; `check-ui` fails on a removed field still referenced.
+- **Done when:** the adapters lose their flag-off branch; the `snapshot` store, `poll` handling, `optimisticLocal.ts`'s remainder, `snapshotDelta.ts`, `snapshotChrome.ts`, `tabSnapshotCache.ts` and `v1ServiceFlag.ts` are deleted; the hand-written `types.ts` is replaced by a generated barrel that `protocol-check` covers, and frontend-only types move to their modules; `scripts/tauri-dev.sh` drops the flag; er-desktop makes `v1-service` a default feature, so a backend built without it cannot pair with the new frontend. **Test change, up front:** P38's default-build assertion in the bin target (`!cfg!(feature = "v1-service")`) flips to assert the feature is on, and from here `test-desktop` runs the flag-on path, which makes `test-v1` redundant for er-desktop; the flag-off backend tests compile out with their `cfg`.
+- **Planted breaks:** a hand edit of `types.ts` fails `protocol-check`; a component reading `app.snapshot` fails the source scan; `check-ui` fails on a removed field still referenced; building er-desktop with `--no-default-features` fails the flipped assertion.
 - Size: M (deletions do not count).
 
 ### P62.2 Delete the old desktop path and the desktop flag
@@ -533,7 +543,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 - Branch: `epic/p62b-delete-old-desktop-path`. Lanes: D, DS, C, P. Model: `opus`. Depends on: P62.1.
 - **Goal:** the phase exit.
 - **Done when:** `snapshot.rs` and `commands.rs` are deleted, with the App-backed desktop route, `get_snapshot`, `poll`, `v1_service_enabled`, `run_revision_watcher` and the follower; er-desktop has no `er_engine::app` reference and depends on er-engine with `default-features = false` (`export.rs` moves off the `ui`-gated `er_engine::export` first); the `v1-service` feature leaves er-desktop and stays on er-tui (A12), and `test-v1`, CI and the lint gate's second pass keep only er-tui; the `er::command_shape` allow-list is empty and deleted, and no command returns a `*Snapshot` type or `Result<_, String>`; ADRs 0011, 0012, 0016, 0017, 0018, 0033 and 0034 are marked "Superseded by" the protocol ADR, and docs-check fails when a superseded mark and the superseding ADR's list disagree; `CLAUDE.md`'s push-driven line, `crates/er-desktop/agent.md`, `desktop-ui/agent.md` and `desktop-ui/src/lib/stores/agent.md` describe resources; `app-commands.toml` and `ipcAllowlist.test.ts` list the surviving commands only.
-- **Planted breaks:** a command returning `Result<AppSnapshot, String>` fails `er::command_shape` with no allow-list to hide in; a `use er_engine::app::App` in er-desktop fails the build; deleting 0012 from the protocol ADR's supersedes line fails docs-check; a compile error behind `cfg(feature = "v1-service")` in er-tui still fails CI on a throwaway draft PR (#470's shape); re-adding the feature to er-desktop fails the default-build `cfg!` test, moved to assert the feature is gone.
+- **Planted breaks:** a command returning `Result<AppSnapshot, String>` fails `er::command_shape` with no allow-list to hide in; a `use er_engine::app::App` in er-desktop fails the build; deleting 0012 from the protocol ADR's supersedes line fails docs-check; a compile error behind `cfg(feature = "v1-service")` in er-tui still fails CI on a throwaway draft PR (#470's shape); the flipped `cfg!` assertion goes with the feature, and a test that reads er-desktop's manifest fails when a `v1-service` feature is re-added.
 - **Fallback split:** P62.2a the deletion and the crate edges; P62.2b the rule, the ADR marks, docs-check and CI.
 - Size: M (deletions do not count).
 
@@ -546,27 +556,33 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 | **S** service | `crates/er-service/**`, and the engine's always-compiled half when a resource needs an extracted step |
 | **D** desktop backend | `crates/er-desktop/src/**` except the DS files, `crates/er-desktop/permissions/**` |
 | **DS** desktop sidebar | `projects.rs`, `pr_cache.rs`, `inbox.rs`, `gh_status_cache.rs`, `auto_triage.rs` and the app owner module in er-desktop |
-| **U** desktop-ui | `desktop-ui/src/**` except the US files |
+| **U** desktop-ui | `desktop-ui/src/**` except the US files and `desktop-ui/src/lib/protocol/**` |
 | **US** sidebar UI | `LeftSidebar.svelte`, `InboxView.svelte`, `InboxPanel.svelte`, `sidebarModel.ts`, `sidebarPrOpen.ts`, `inbox*.ts`, `projectOrder.ts` and the sidebar adapter stores |
 
 - **Chain:** P50 → P51 → P52.1 → P52.2, then two tracks:
   - workspace: P53 → P54 → P56.1 → P56.2 → { P56.3, P57, P58.1 } in that
     order → P58.2 → { P59 ∥ P60.1 } → P60.2;
-  - sidebar: P55.1 → P55.2 → P55.3 → P61.
-  - Both tracks join at P62.1 → P62.2.
-- **Pair (a), the two tracks.** Their files are disjoint except P (new
-  `ResourceKey` variants and generated files) and the resource host's dispatch
-  in D, which both extend. Those are conflict-by-addition; generated files are
-  regenerated. P55.3 holds U for its `optimisticLocal.ts` and `app.svelte.ts`
-  edits, so it waits for the workspace entry holding U to merge, and P58.2
-  waits for P55.3.
+  - sidebar: P55.1 → P55.2 → P55.3.
+  - Both tracks join at P61 → P62.1 → P62.2. P61 holds D and U, which every
+    workspace entry holds, so it runs after both tracks.
+- **Pair (a), the two tracks, a planned exception.** The sidebar entries
+  hold D for three edits only, each conflict-by-addition: a dispatch arm per
+  sidebar key in the resource host; in P55.2, the probe thread in `main.rs`
+  (`:1316`), a different block of the setup function from P54's
+  `launch_root` (`:1059`) and P56.1's warmer (`:1724`); and nothing in
+  `snapshot.rs`, because the owner wraps the existing metadata and PR caches
+  and calls `refresh_meta_cache` unchanged. P (new `ResourceKey` variants,
+  generated files) is shared the same way; generated files are regenerated.
+  P55.3 also holds U for its `optimisticLocal.ts` and `app.svelte.ts` edits,
+  so it waits for the workspace entry holding U to merge, and P58.2 waits for
+  P55.3. The workspace track takes DS only in P59 and P60.2, both after
+  P55.3.
 - **Pair (b), P59 beside P60.1.** P59 edits the GitHub senders and the PR
   card; P60.1 edits `arena_service.rs`, `flow_service.rs`,
   `arena_commands.rs` and `desktop-ui/src/lib/stores/arena.svelte.ts`. Shared files:
   `ResourceKey`, the host dispatch, the wire command enum. Additions only.
-- At most three lanes run at once (PLAN); the sidebar track holds DS and US,
-  which the workspace track never takes, so the two tracks fit beside each
-  other.
+- PLAN's three-lane ceiling counts tracks here: two tracks at most, plus a
+  C-only entry when one exists.
 
 ## Risks
 
