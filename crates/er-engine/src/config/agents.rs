@@ -61,6 +61,7 @@ pub fn agents_load_failed(path: &Path) -> bool {
 }
 
 /// Whether the managed `agents.toml` has a recorded failed load.
+#[cfg(feature = "ui")]
 pub(crate) fn managed_agents_load_failed() -> bool {
     agents_load_failed(&agents_path(&super::managed_config_path()))
 }
