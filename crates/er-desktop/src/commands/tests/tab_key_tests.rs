@@ -433,11 +433,14 @@ fn a_paint_is_refused_while_the_app_lags_the_registry() {
     });
 }
 
-/// An unmark paints no view, but its path comes from the file rows the App
-/// renders. While the App still shows the tab the registry left, it is
-/// refused, and the registry's new tab keeps its mark.
+/// `route_annotation` checks the App's tab against the registry's, so while
+/// the App still shows the tab the registry left, a write sent through it is
+/// refused, and the registry's new tab keeps its mark. `reply_to_github_thread`
+/// sends through it. The reviewed writes do not: they send without the
+/// painted tab's key, so the unmark here is only a write whose effect the
+/// marks show.
 #[test]
-fn an_unmark_is_refused_while_the_app_lags_the_registry() {
+fn route_annotation_refuses_a_write_while_the_app_lags_the_registry() {
     with_storage(|dir| {
         let state = state(dir);
         let first = content_routes::working_tab(dir_in(dir, "one"));
@@ -476,9 +479,9 @@ fn an_unmark_is_refused_while_the_app_lags_the_registry() {
 
         assert!(
             refused.is_err(),
-            "a lagging unmark was written: {refused:?}"
+            "route_annotation wrote while the App lagged: {refused:?}"
         );
-        assert!(marked(), "the unmark landed on the registry's other tab");
+        assert!(marked(), "the lagging write landed on the registry's other tab");
     });
 }
 
