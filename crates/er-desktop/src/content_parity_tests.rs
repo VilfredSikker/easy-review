@@ -520,10 +520,11 @@ fn first_difference(service: &[FileRow], app: &[FileRow]) -> Option<String> {
 
 /// Compares section by section, so a failure names the section that moved.
 fn assert_sections(service: &Observed, app: &Observed, case: &str) {
+    // Which files are stubs follows from the lazy flag, so it goes first.
+    assert_eq!(service.lazy, app.lazy, "{case}: the lazy flag differs");
     if let Some(difference) = first_difference(&service.files, &app.files) {
         panic!("{case}: the files differ: {difference}");
     }
-    assert_eq!(service.lazy, app.lazy, "{case}: the lazy flag differs");
     assert_eq!(service.hashes, app.hashes, "{case}: the diff hashes differ");
     assert_eq!(
         service.visible, app.visible,
