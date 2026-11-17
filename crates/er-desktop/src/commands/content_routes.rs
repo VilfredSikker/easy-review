@@ -251,6 +251,61 @@ pub(super) fn refresh(state: &AppState, force: bool) -> Result<usize, String> {
     cleared(send(state, &active.tab, command)?)
 }
 
+/// What a sync leaves to the caller's background refreshes.
+pub(super) struct Synced {
+    pub reviewed_cleared: usize,
+    /// The synced tab's root, whose branch metadata the caller refreshes.
+    pub repo_root: String,
+    /// The PR whose GitHub status the caller refreshes. The merge box compares
+    /// that status with the synced head, so a stale one blocks the merge.
+    pub status_key: Option<(String, String, u64)>,
+}
+
+/// Refetches the active tab's diff as a sync does, and lines the stale pill's
+/// baselines up with what the pill compares: a PR tab adopts the PR list's
+/// head, and a branch view records the base it just fetched as the probed one.
+pub(super) fn sync(state: &AppState) -> Result<Synced, String> {
+    let (active, content) = active_content(state)?;
+    let adopt_head_oid = content
+        .tab
+        .pr_number
+        .and_then(|number| super::pr_cache_head_oid_for_pr(state, number));
+    let key = active.key;
+    let command = Command::RefreshDiff {
+        key,
+        force: true,
+        adopt_head_oid,
+    };
+    let reviewed_cleared = cleared(send(state, &active.tab, command)?)?;
+    // The refresh may have resolved the base again.
+    let synced = state.service.content(key, &active.tab).unwrap_or(content);
+    let tab = &synced.tab;
+    let id = tab.identity();
+    if !id.is_remote() && tab.pr_number.is_none() && tab.mode == DiffMode::Branch {
+        super::align_branch_base_probe(state, &tab.repo_root, &tab.base_branch);
+    }
+    let status_key = state
+        .pr_cache
+        .lock()
+        .ok()
+        .and_then(|cache| crate::snapshot::resolve_github_status_key_for(&id, &cache));
+    Ok(Synced {
+        reviewed_cleared,
+        repo_root: tab.repo_root.clone(),
+        status_key,
+    })
+}
+
+/// Whether the active tab's content records History, whose files the App
+/// still shows.
+pub(super) fn shows_history(state: &AppState) -> bool {
+    let Ok(active) = active(state) else {
+        return false;
+    };
+    let content = state.service.content(active.key, &active.tab);
+    content.is_some_and(|content| content.tab.mode == DiffMode::History)
+}
+
 /// The modes the workspace loads. The others stay on the App until the
 /// snapshot reads the content.
 pub(super) fn routed_mode(mode: &str) -> Option<DiffMode> {

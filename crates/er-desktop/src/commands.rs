@@ -1082,7 +1082,7 @@ pub async fn request_file_content(
 pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
-    return run_blocking(move || content_routes::select_file(&state, idx)).await;
+    return run_blocking(move || select_file_routed(&state, idx)).await;
     #[cfg(not(feature = "v1-service"))]
     return run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -1103,6 +1103,18 @@ pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSn
         Ok(snap_from(&app, &state))
     })
     .await;
+}
+
+/// History still shows the App's commit files, so a click there reaches the
+/// App's History selection; any other view takes the content route.
+#[cfg(feature = "v1-service")]
+fn select_file_routed(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
+    if content_routes::shows_history(state) {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut().history_select_file(idx);
+        return Ok(snap_from(&app, state));
+    }
+    content_routes::select_file(state, idx)
 }
 
 #[derive(serde::Serialize)]
@@ -1497,7 +1509,7 @@ pub async fn unmark_reviewed(
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        route_annotation(&state, None, |context| er_service::Command::MarkReviewed {
+        content_routes::write_reviewed(&state, |context| er_service::Command::MarkReviewed {
             context,
             path,
             reviewed: false,
@@ -3391,6 +3403,19 @@ fn pr_cache_head_oid_for_pr(state: &AppState, pr_number: u64) -> Option<String> 
     })
 }
 
+/// The branch pill compares the ls-remote probe cache with the local
+/// `origin/<base>` oid. A sync has just fetched `origin/<base>`, so its oid
+/// becomes the probed value and the two agree.
+fn align_branch_base_probe(state: &AppState, repo_root: &str, base_branch: &str) {
+    let base_short = base_branch.trim_start_matches("origin/");
+    if let Some(oid) = er_engine::github::rev_parse_oid(&*state.ports.git, repo_root, base_branch) {
+        let key = format!("{repo_root}\u{0}{base_short}");
+        if let Ok(mut cache) = state.branch_base_remote_oid.lock() {
+            cache.insert(key, oid);
+        }
+    }
+}
+
 /// A Sync's snapshot plus how many Reviewed marks it cleared.
 ///
 /// The snapshot is flattened so the reply still applies as a plain
@@ -3407,14 +3432,16 @@ pub struct SyncOutcome {
 #[tauri::command]
 pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcome, String> {
     let state = state.inner().clone();
-    // Flag-on, the active tab's actor refetches; the stale pill and the merge
-    // status stay with the App's poll until the snapshot reads the content.
+    // Flag-on, the active tab's actor refetches and the route lines the stale
+    // pill's baselines up, as the App path below does.
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        let reviewed_cleared = content_routes::refresh(&state, true)?;
+        let synced = content_routes::sync(&state)?;
+        kick_meta_refresh(&state, synced.repo_root);
+        refresh_status_after_sync(&state, synced.status_key);
         Ok(SyncOutcome {
             snapshot: AppSnapshot::default(),
-            reviewed_cleared,
+            reviewed_cleared: synced.reviewed_cleared,
         })
     })
     .await;
@@ -3447,18 +3474,7 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcom
                     app.tab_mut().last_diff_head_oid = Some(oid);
                 }
             } else if is_branch_diff {
-                // Branch pill compares the ls-remote probe cache vs the local
-                // `origin/<base>` oid. After the sync just fetched `origin/<base>`,
-                // adopt that oid as the probed value so the two agree.
-                let base_short = base_branch.trim_start_matches("origin/").to_string();
-                if let Some(oid) =
-                    er_engine::github::rev_parse_oid(&*state.ports.git, &repo_root, &base_branch)
-                {
-                    let key = format!("{repo_root}\u{0}{base_short}");
-                    if let Ok(mut cache) = state.branch_base_remote_oid.lock() {
-                        cache.insert(key, oid);
-                    }
-                }
+                align_branch_base_probe(&state, &repo_root, &base_branch);
             }
 
             crate::tabs::persist_app_tabs(&app, &state.view);
@@ -3486,6 +3502,10 @@ fn refresh_active_status_after_sync(state: &AppState) {
         .lock()
         .ok()
         .and_then(|app| active_github_key(&app, state));
+    refresh_status_after_sync(state, key);
+}
+
+fn refresh_status_after_sync(state: &AppState, key: Option<(String, String, u64)>) {
     if let Some((owner, repo, number)) = key {
         kick_github_status_refresh(
             state.gh_status_cache.clone(),
@@ -15993,6 +16013,17 @@ mod tests {
                 "{command} must refresh the GitHub status"
             );
         }
+        // The flag-on sync takes its key from the tab's content, since the
+        // App's tab is not the one the route refreshed.
+        let flag_on = src
+            .split_once("pub async fn force_refresh_diff")
+            .and_then(|(_, from)| from.split_once("#[cfg(not(feature = \"v1-service\"))]"))
+            .map(|(flag_on, _)| flag_on)
+            .expect("force_refresh_diff's flag-on block");
+        assert!(
+            flag_on.contains("refresh_status_after_sync(&state, synced.status_key);"),
+            "the flag-on sync must refresh the GitHub status"
+        );
     }
 
     fn cached_pr(number: u64) -> crate::snapshot::PrInfo {
@@ -16494,11 +16525,12 @@ mod route_tests {
         for route in [
             "close(",
             "refresh(&state, false)",
-            "refresh(&state, true)",
+            "sync(&state)",
             "set_mode(",
             "record_mode(state, mode, diff_mode, tab_idx)",
             "reload_sidecars(state)",
             "select_file(",
+            "shows_history(state)",
             "request_file_content(",
         ] {
             let route = call(route);
@@ -16519,8 +16551,8 @@ mod route_tests {
                 "{command} does not call {helper}"
             );
         }
-        // toggle_reviewed and mark_reviewed.
+        // toggle_reviewed, mark_reviewed and unmark_reviewed.
         let reviewed = source.matches(&call("write_reviewed(")).count();
-        assert_eq!(reviewed, 2, "a reviewed command lost its route");
+        assert_eq!(reviewed, 3, "a reviewed command lost its route");
     }
 }
