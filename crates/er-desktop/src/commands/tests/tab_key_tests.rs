@@ -474,7 +474,10 @@ fn an_unmark_is_refused_while_the_app_lags_the_registry() {
 
         let refused = review(false);
 
-        assert!(refused.is_err(), "a lagging unmark was written: {refused:?}");
+        assert!(
+            refused.is_err(),
+            "a lagging unmark was written: {refused:?}"
+        );
         assert!(marked(), "the unmark landed on the registry's other tab");
     });
 }
