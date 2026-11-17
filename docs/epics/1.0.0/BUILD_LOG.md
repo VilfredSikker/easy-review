@@ -262,3 +262,12 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
   The exit checklist and the full "left on the App with the flag on" list are in #538's body. The review's call-graph pass added the commands whose helpers lock the App.
 - Decision A on `unmark_reviewed` (coordinator, on #538): unmark joins toggle and mark on the lock-free `write_reviewed`. All three share one gap: during the follower's lag they write to the registry's active tab. Phase 5 closes it by having the page send the tab key it painted.
 - A new coordinator session took over on 2026-11-17. The old session finished #578 and handed over #599 through a cross-session message. Phase-5 planning (ADDENDUM-06) runs as a workflow: an opus drafter, then a claims reviewer and a scope reviewer, for up to three rounds.
+- **Phase-5 gate, 2026-11-17.** #600 merged `main` into release (D2; `ci.yml` only, with no conflict). It was pushed over SSH, because the `gh` token lacks the `workflow` scope. `just ci` passes at `1f7527a1f`. In the temp HOME, `lint-ui` needs bun's install path set directly, because mise refuses its config there.
+- The phase-5 plan, ADDENDUM-06 (draft #601), has 21 entries: P50 to P62.2, about 28,000 counted lines in about 34 PRs. The issues are #602–#622. #622 sits under #398, because #371 reached GitHub's limit of 100 sub-issues.
+- How it was planned: one drafter, then five rounds of a claims reviewer and a scope reviewer. The rounds stopped converging at about nine must-fixes each, partly because each fix pass created new defects. The process switched to one final revision, a delta check of only that revision, and a mechanical check of about 1,800 citations, which passed. The delta check's two remaining points are a binding amendment on #619.
+- Coordinator decisions:
+  - `unmark_reviewed`: option A;
+  - the saved-PR cap stays as it is;
+  - latency is reported in each PR, with no CI assertion;
+  - the nine annotation writes with no service command get workspace commands.
+- Six owner questions are on #398, and the plan proceeds on their defaults.
