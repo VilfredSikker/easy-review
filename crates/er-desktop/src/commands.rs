@@ -6845,9 +6845,10 @@ pub(crate) fn tab_context(app: &er_engine::app::App) -> er_service::TabContext {
 ///
 /// The context and the key come from the app registry's active tab and its
 /// published content. The view the user painted on is still checked on the
-/// App, which renders it, and the App tab's key read with it goes to
-/// `annotate`, which refuses the paint when the registry's active tab is
-/// another one.
+/// App, which renders it. Every command here carries something the page took
+/// from the App, a painted view or a path or thread id on screen, so the App
+/// tab's key goes to `annotate`, which refuses the command when the
+/// registry's active tab is another one.
 #[cfg(feature = "v1-service")]
 fn route_annotation(
     state: &AppState,
@@ -6862,9 +6863,9 @@ fn route_annotation(
         if abort_wrong_view(&app, state, view).is_some() {
             return Err(content_routes::MOVED.to_string());
         }
-        view.map(|_| app.tab().key())
+        app.tab().key()
     };
-    content_routes::annotate(state, expected, build)?;
+    content_routes::annotate(state, Some(expected), build)?;
     Ok(AppSnapshot::default())
 }
 

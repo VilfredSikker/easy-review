@@ -300,24 +300,16 @@ fn opening_an_open_pr_selects_its_tab() {
 }
 
 /// An annotation takes its context from the registry's active tab and its
-/// published content, loading it first when it never loaded, whatever the
-/// App's own tab holds.
+/// published content, loading it first when it never loaded: a followed App
+/// tab holds no content of its own.
 #[test]
 fn an_annotation_writes_through_the_registry_tab_content() {
     with_storage(|dir| {
         let state = state(dir);
         let root = dir_in(dir, "repo-under-review");
         let tab = content_routes::working_tab(root.clone());
-        let entry = state
-            .service
-            .send_app(er_service::AppCommand::NewTab { tab: tab.clone() });
-        assert!(entry.is_ok(), "{entry:?}");
-        let key = state
-            .service
-            .app_registry()
-            .tabs_view()
-            .active
-            .expect("the new tab");
+        let key = open_unfollowed(&state, &tab);
+        follow(&state);
         assert!(state.service.content(key, &tab).is_none());
 
         let written = route_annotation(&state, None, |context| Command::MarkReviewed {
@@ -438,6 +430,52 @@ fn a_paint_is_refused_while_the_app_lags_the_registry() {
         let written = mark(painted(&state));
         assert!(written.is_ok(), "{written:?}");
         assert!(marked(), "the followed paint was not written");
+    });
+}
+
+/// An unmark paints no view, but its path comes from the file rows the App
+/// renders. While the App still shows the tab the registry left, it is
+/// refused, and the registry's new tab keeps its mark.
+#[test]
+fn an_unmark_is_refused_while_the_app_lags_the_registry() {
+    with_storage(|dir| {
+        let state = state(dir);
+        let first = content_routes::working_tab(dir_in(dir, "one"));
+        let opened = content_routes::open(&state, first, false);
+        assert!(opened.is_ok(), "{opened:?}");
+        follow(&state);
+        let left = app(&state).tab().key();
+        let second = content_routes::working_tab(dir_in(dir, "two"));
+        let key = open_unfollowed(&state, &second);
+        follow(&state);
+        let review = |reviewed: bool| {
+            route_annotation(&state, None, |context| Command::MarkReviewed {
+                context,
+                path: "src/a.rs".to_string(),
+                reviewed,
+            })
+        };
+        let marked = || {
+            state
+                .service
+                .content(key, &second)
+                .is_some_and(|content| content.reviewed.marks.contains_key("src/a.rs"))
+        };
+        let written = review(true);
+        assert!(written.is_ok(), "{written:?}");
+        assert!(marked(), "the followed mark was not written");
+        let select = |key: TabKey| {
+            let selected = state.service.send_app(AppCommand::SelectTab { key });
+            assert!(selected.is_ok(), "{selected:?}");
+        };
+        select(left);
+        follow(&state);
+        select(key);
+
+        let refused = review(false);
+
+        assert!(refused.is_err(), "a lagging unmark was written: {refused:?}");
+        assert!(marked(), "the unmark landed on the registry's other tab");
     });
 }
 
