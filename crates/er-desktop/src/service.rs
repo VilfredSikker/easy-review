@@ -86,8 +86,8 @@ impl ServiceState {
         }
     }
 
-    /// The actor for `key`, started on first use. The key is the repo root, or
-    /// `remote:<slug>` for a PR with no local project.
+    /// The actor for `key`, started on first use. The key is the tab's
+    /// `workspace_key`.
     pub fn handle_for(&self, key: &str) -> WorkspaceHandle {
         let mut handles = match self.handles.lock() {
             Ok(handles) => handles,
@@ -226,14 +226,9 @@ impl ServiceState {
     }
 }
 
-/// The actor a tab's content lives on: the tab's repo root, or its PR's remote
-/// when it has no local root. The open routes follow the same rule.
+/// The actor a tab's content lives on. The open routes key the same way.
 pub fn actor_key(tab: &TabDescriptor) -> String {
-    let remote = match (&tab.pr_owner, &tab.pr_repo) {
-        (Some(owner), Some(repo)) => format!("{owner}/{repo}"),
-        _ => String::new(),
-    };
-    crate::commands::service_key(&tab.repo_root, &remote)
+    tab.workspace_key()
 }
 
 /// One thread per actor, alive as long as the actor, relaying its events.

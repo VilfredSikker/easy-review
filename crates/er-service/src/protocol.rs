@@ -491,6 +491,15 @@ pub struct TabContext {
     pub diff_hash: String,
 }
 
+impl TabContext {
+    /// The actor this tab's commands go to. A remote tab's `repo_root` is the
+    /// directory it was opened from, not its repo, so it keys on the remote.
+    pub fn workspace_key(&self) -> String {
+        let root = (!self.is_remote).then_some(self.repo_root.as_str());
+        er_engine::tab_identity::workspace_key(root, self.remote_repo.as_deref().unwrap_or(""))
+    }
+}
+
 /// Where an annotation goes, as the desktop passes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnnotationTarget {

@@ -14,7 +14,7 @@ use er_engine::review_flow_driver::ReviewFlowHost;
 use er_service::{AcceptanceDiff, Command, FlowCommand, FlowContext, Reply};
 
 use crate::arena_commands::validate_review_flow_bucket;
-use crate::commands::{service_key, snap_from_command, AppState};
+use crate::commands::{snap_from_command, AppState};
 use crate::service::ServiceState;
 use crate::snapshot::{AppSnapshot, ArenaRunSnapshotWire};
 
@@ -33,7 +33,7 @@ fn context(app: &App, scope: Option<&str>) -> FlowContext {
 }
 
 fn tab_key(tab: &TabState) -> String {
-    service_key(&tab.repo_root, tab.remote_repo.as_deref().unwrap_or(""))
+    tab.identity().workspace_key()
 }
 
 fn key(app: &App) -> String {

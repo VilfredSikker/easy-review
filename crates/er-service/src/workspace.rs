@@ -33,6 +33,13 @@ pub struct WorkspaceTarget {
     pub pr_state: Option<String>,
 }
 
+impl WorkspaceTarget {
+    /// The actor this target was opened on.
+    pub fn workspace_key(&self) -> String {
+        er_engine::tab_identity::workspace_key(Some(&self.repo_root), &self.remote)
+    }
+}
+
 /// The whole read side of one workspace, published per revision.
 #[derive(Clone, Default)]
 pub struct WorkspaceView {

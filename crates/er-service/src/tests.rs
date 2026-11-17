@@ -471,6 +471,60 @@ diff --git a/src/b.rs b/src/b.rs
         })
     }
 
+    /// A remote PR tab carries the directory it was opened from as its root.
+    /// Its write reaches the remote's actor, opened with no local root, and is
+    /// accepted there: both name the same workspace.
+    #[test]
+    fn a_remote_tab_write_matches_the_remote_workspace() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bucket = dir.path().join("bucket");
+        std::fs::create_dir_all(&bucket)?;
+        let bucket_text = bucket.to_string_lossy().into_owned();
+        er_engine::storage::with_process_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+            let git: Arc<dyn er_git::Git> =
+                Arc::new(FakeGit::default().with_diff_against_branch(Ok(RAW.to_string())));
+            let github: Arc<dyn er_github::GitHub> = Arc::new(
+                FakeGitHub::default()
+                    .with_pr_state(Ok("OPEN".to_string()))
+                    .with_pr_diff_remote(Ok(RAW.to_string())),
+            );
+            let handle = spawn(WorkspaceDeps::new(Ports { git, github }));
+            let opened = handle.send_and_wait_with(
+                Command::OpenTarget {
+                    target: OpenTarget::RemotePr {
+                        owner: "acme".to_string(),
+                        repo: "widgets".to_string(),
+                        number: 7,
+                        repo_root: String::new(),
+                    },
+                    replace: false,
+                },
+                Duration::from_secs(5),
+            )?;
+            assert!(matches!(opened, Reply::TargetOpened(_)));
+
+            let remote = TabContext {
+                is_remote: true,
+                remote_repo: Some("acme/widgets".to_string()),
+                pr_number: Some(7),
+                local_branch_view: None,
+                ..context(&bucket_text, "/where/it/opened")
+            };
+            let written = handle.send_and_wait_with(
+                Command::ToggleReviewed {
+                    context: remote,
+                    path: "src/b.rs".to_string(),
+                },
+                Duration::from_secs(5),
+            );
+            assert!(
+                matches!(written, Ok(Reply::ReviewedChanged { .. })),
+                "got {written:?}"
+            );
+            Ok(())
+        })
+    }
+
     #[test]
     fn a_command_for_another_repo_is_refused_as_stale() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
