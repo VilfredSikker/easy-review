@@ -302,7 +302,8 @@ pub(crate) fn promote_finding_to_comment(
     if promotions.remove(finding_id).is_some() {
         let _ = ai::save_finding_promotions(&ctx.er_dir, &promotions);
     }
-    // The review sidecar the finding left has no patch; the next load reads it.
+    // The review the finding left merges several sidecars, so the actor reads
+    // each reader's AI state again rather than patching one file.
     Ok((posted.id, stored_threads(ctx)))
 }
 

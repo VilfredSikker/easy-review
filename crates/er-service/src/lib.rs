@@ -29,11 +29,15 @@ mod pending_review;
 mod pr_posts;
 mod protocol;
 mod settings;
+mod sidecar_reload;
+mod tab_pr;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
-pub use app_registry::{AppCommand, AppRegistry, TabEntry, TabsView};
-pub use content::{AiSection, DiffMeta, DiffSection, ReviewedSection, TabContent};
+pub use app_registry::{AppCommand, AppRegistry, CachedPr, TabEntry, TabsView};
+pub use content::{
+    AiSection, DiffMeta, DiffSection, PrSection, ReviewedSection, SidecarStamp, TabContent,
+};
 pub use flows::read_flow_run;
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use pending_review::OWN_PR_APPROVAL_REFUSED;

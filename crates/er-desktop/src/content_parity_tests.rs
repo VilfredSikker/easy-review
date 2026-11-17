@@ -267,7 +267,12 @@ fn through_the_workspace(
             "unexpected reply: {reply:?}"
         );
         for _ in 1..refreshes {
-            handle.send_and_wait_with(Command::RefreshDiff { key, force: false }, WAIT)?;
+            let refresh = Command::RefreshDiff {
+                key,
+                force: false,
+                adopt_head_oid: None,
+            };
+            handle.send_and_wait_with(refresh, WAIT)?;
         }
         let view = handle.view();
         let content: &TabContent = view

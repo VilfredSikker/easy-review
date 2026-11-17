@@ -1,21 +1,24 @@
 //! The content of each open tab, as the Workspace publishes it.
 //!
-//! A tab's content is three sections behind their own `Arc`s: the diff, the
-//! reviewed marks and the AI state. Each section carries the revision that
+//! A tab's content is four sections behind their own `Arc`s: the diff, the
+//! reviewed marks, the AI state and the PR. Each section carries the revision that
 //! last replaced it, so a publish copies pointers and a reader rebuilds only
 //! the sections whose revision moved (ADR 0071).
 //!
 //! This module holds the types and the patch steps, which run on the actor
 //! thread and touch no port. The loads that fill a section run as effects.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
+use std::time::SystemTime;
 
-use er_engine::ai::AiState;
+use er_engine::ai::{self, AiState};
 use er_engine::annotations::WrittenPayload;
-use er_engine::git::{DiffFile, DiffFileHeader};
-use er_engine::tab_identity::ResolvedTab;
+use er_engine::git::{CommitInfo, DiffFile, DiffFileHeader};
+use er_engine::github::PrOverviewData;
+use er_engine::preview_key::{PreviewKeyInputs, PreviewStamps};
+use er_engine::tab_identity::{DiffMode, ResolvedTab};
 use er_engine::TabKey;
 
 use crate::protocol::TabContext;
@@ -31,31 +34,68 @@ pub struct TabContent {
     /// Whether this tab fetched its PR head and base refs, which entering the
     /// PR diff does once.
     pub pr_refs_fetched: bool,
+    /// The revision that last changed `tab.mode` without a load: a view the
+    /// workspace records but does not load.
+    pub mode_revision: u64,
     pub diff: Arc<DiffSection>,
     pub reviewed: Arc<ReviewedSection>,
     pub ai: Arc<AiSection>,
+    pub pr: Arc<PrSection>,
+}
+
+/// Whether the workspace loads a diff for `mode`. History, Conflicts and
+/// Hidden show what the App reads for them, so the content only records them.
+pub fn loads(mode: DiffMode) -> bool {
+    !matches!(
+        mode,
+        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden
+    )
 }
 
 impl TabContent {
     /// The latest revision of any section. A load is applied only over the
-    /// content it started from, so a write that landed meanwhile survives.
+    /// content it started from, so a write that landed meanwhile survives. A
+    /// sidecar reload is no write: the load reads the sidecars too.
     pub fn generation(&self) -> u64 {
         self.diff
             .revision
             .max(self.reviewed.revision)
-            .max(self.ai.revision)
+            .max(self.ai.written)
+            .max(self.pr.revision)
+            .max(self.mode_revision)
+    }
+
+    /// The inputs this content's preview keys read. The workspace shows no
+    /// History commit, so a History view keys on its mode alone.
+    pub fn preview_key_inputs(&self) -> PreviewKeyInputs<'_> {
+        PreviewKeyInputs {
+            repo_root: &self.tab.repo_root,
+            remote_repo: self.tab.remote_repo.as_deref(),
+            mode: self.tab.mode,
+            checkout_root: self.tab.checkout_root.as_deref(),
+            preview_head_oid: self.diff.meta.preview_head_oid.as_deref(),
+            history_commit: None,
+            raw: Some(&self.diff.meta.raw),
+            diff_hash: &self.diff.meta.diff_hash,
+            headers: &self.diff.meta.headers,
+            mtimes: &self.diff.meta.stamps.mtimes,
+            blob_ids: &self.diff.meta.stamps.blob_ids,
+        }
     }
 
     pub(crate) fn from_loaded(key: TabKey, loaded: LoadedTab, revision: u64) -> Self {
+        let pr_number = loaded.tab.pr_number;
         Self {
             key,
             tab: loaded.tab,
             context: loaded.context,
             pr_refs_fetched: loaded.pr_refs_fetched,
+            mode_revision: revision,
             diff: Arc::new(DiffSection {
                 revision,
                 files: loaded.diff.files.into_iter().map(Arc::new).collect(),
                 meta: Arc::new(loaded.diff.meta),
+                expanded: loaded.diff.expanded,
             }),
             reviewed: Arc::new(ReviewedSection {
                 revision,
@@ -64,8 +104,38 @@ impl TabContent {
             }),
             ai: Arc::new(AiSection {
                 revision,
+                written: revision,
                 state: loaded.ai,
+                stamp: loaded.ai_stamp,
             }),
+            pr: Arc::new(PrSection {
+                revision,
+                pr_number,
+                overview: loaded.pr.overview,
+                commits: loaded.pr.commits,
+                head_oid: loaded.pr.head_oid,
+            }),
+        }
+    }
+
+    /// This content shown in `mode`, which the workspace does not load.
+    fn with_mode(&self, mode: DiffMode, revision: u64) -> Self {
+        let mut next = self.clone();
+        next.tab.mode = mode;
+        next.mode_revision = revision;
+        next
+    }
+
+    /// This content with its AI state read again from the sidecars.
+    fn with_ai(&self, ai: ReloadedAi, revision: u64) -> Self {
+        Self {
+            ai: Arc::new(AiSection {
+                revision,
+                written: self.ai.written,
+                state: ai.state,
+                stamp: ai.stamp,
+            }),
+            ..self.clone()
         }
     }
 
@@ -81,8 +151,15 @@ impl TabContent {
         }
         let mut state = self.ai.state.clone();
         payload.clone().adopt(&mut state);
+        // The stamp stays: the next reload reads this write back once.
+        let stamp = self.ai.stamp.clone();
         Some(Self {
-            ai: Arc::new(AiSection { revision, state }),
+            ai: Arc::new(AiSection {
+                revision,
+                written: revision,
+                state,
+                stamp,
+            }),
             ..self.clone()
         })
     }
@@ -108,19 +185,28 @@ impl TabContent {
     }
 
     /// This content with lazy files parsed. Only the parsed files get new
-    /// `Arc`s; the rest are shared with the previous section.
-    fn with_parsed(&self, parsed: Vec<(usize, DiffFile)>, revision: u64) -> Self {
+    /// `Arc`s; the rest are shared with the previous section. An expanded
+    /// file stays expanded across the next loads.
+    fn with_parsed(
+        &self,
+        parsed: Vec<(usize, DiffFile)>,
+        expanded: &[String],
+        revision: u64,
+    ) -> Self {
         let mut files = self.diff.files.clone();
         for (index, file) in parsed {
             if let Some(slot) = files.get_mut(index) {
                 *slot = Arc::new(file);
             }
         }
+        let mut kept = self.diff.expanded.clone();
+        kept.extend(expanded.iter().cloned());
         Self {
             diff: Arc::new(DiffSection {
                 revision,
                 files,
                 meta: Arc::clone(&self.diff.meta),
+                expanded: kept,
             }),
             ..self.clone()
         }
@@ -132,9 +218,11 @@ impl fmt::Debug for TabContent {
         f.debug_struct("TabContent")
             .field("key", &self.key)
             .field("mode", &self.tab.mode)
+            .field("mode_revision", &self.mode_revision)
             .field("diff", &self.diff.revision)
             .field("reviewed", &self.reviewed.revision)
             .field("ai", &self.ai.revision)
+            .field("pr", &self.pr.revision)
             .finish_non_exhaustive()
     }
 }
@@ -145,6 +233,8 @@ pub struct DiffSection {
     pub files: Vec<Arc<DiffFile>>,
     /// Shared with the sections a lazy parse makes from this one.
     pub meta: Arc<DiffMeta>,
+    /// The compacted files the user expanded, which a load parses in full.
+    pub expanded: BTreeSet<String>,
 }
 
 /// What a diff section keeps beside its files.
@@ -160,6 +250,8 @@ pub struct DiffMeta {
     pub branch_diff_hash: String,
     /// The PR head the diff was taken at, for the views that preview it.
     pub preview_head_oid: Option<String>,
+    /// What the preview keys read beside the diff, taken when it loaded.
+    pub stamps: PreviewStamps,
 }
 
 /// The tab's reviewed marks, as saved.
@@ -174,7 +266,53 @@ pub struct ReviewedSection {
 /// The tab's AI state, assembled from its sidecars.
 pub struct AiSection {
     pub revision: u64,
+    /// The revision of the last load or write, which a reload keeps.
+    pub written: u64,
     pub state: AiState,
+    /// The sidecars as they stood when `state` was read.
+    pub stamp: SidecarStamp,
+}
+
+/// The PR a tab reviews: what GitHub says about it, and the head its diff
+/// was taken at. Empty for a tab with no PR.
+pub struct PrSection {
+    pub revision: u64,
+    /// The PR this section was filled for; a tab that gains a PR fills again.
+    pub pr_number: Option<u64>,
+    pub overview: Option<PrOverviewData>,
+    /// Newest first.
+    pub commits: Vec<CommitInfo>,
+    /// The PR head the diff was taken at, which the stale pill compares with
+    /// the newest head.
+    pub head_oid: Option<String>,
+}
+
+/// When a bucket's sidecars last changed, as an external writer leaves them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SidecarStamp {
+    pub latest: Option<SystemTime>,
+    pub arbiter: Option<Vec<u8>>,
+}
+
+impl SidecarStamp {
+    pub(crate) fn read(er_dir: &str) -> Self {
+        Self {
+            latest: ai::latest_er_mtime(er_dir),
+            arbiter: ai::arbiter_overlay_stamp(er_dir),
+        }
+    }
+
+    /// Whether the sidecars moved between `self` and `now`: one is newer,
+    /// the first appeared, the last was deleted, or the arbiter changed.
+    pub(crate) fn moved_to(&self, now: &Self) -> bool {
+        if self.arbiter != now.arbiter {
+            return true;
+        }
+        match now.latest {
+            Some(latest) => self.latest.is_none_or(|last| latest > last),
+            None => self.latest.is_some(),
+        }
+    }
 }
 
 /// What a load effect read, before the actor puts it behind `Arc`s.
@@ -186,6 +324,8 @@ pub(crate) struct LoadedTab {
     pub marks: HashMap<String, String>,
     pub file_hashes: HashMap<String, String>,
     pub ai: AiState,
+    pub ai_stamp: SidecarStamp,
+    pub pr: LoadedPr,
     /// How many reviewed marks the load cleared.
     pub cleared: usize,
 }
@@ -193,6 +333,20 @@ pub(crate) struct LoadedTab {
 pub(crate) struct LoadedDiff {
     pub files: Vec<DiffFile>,
     pub meta: DiffMeta,
+    pub expanded: BTreeSet<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct LoadedPr {
+    pub overview: Option<PrOverviewData>,
+    pub commits: Vec<CommitInfo>,
+    pub head_oid: Option<String>,
+}
+
+/// An AI state read again from the sidecars, with their stamp.
+pub(crate) struct ReloadedAi {
+    pub state: AiState,
+    pub stamp: SidecarStamp,
 }
 
 /// What an effect changed in the tabs' content. The actor applies it after
@@ -205,11 +359,28 @@ pub(crate) enum ContentPatch {
         since: Option<u64>,
         loaded: Box<LoadedTab>,
     },
-    /// Lazy files parsed from the diff section at revision `since`.
+    /// Lazy files parsed from the diff section at revision `since`;
+    /// `expanded` names the compacted ones the parse expanded.
     Parsed {
         key: TabKey,
         since: u64,
         files: Vec<(usize, DiffFile)>,
+        expanded: Vec<String>,
+    },
+    /// A view recorded without a load, over the generation `since`.
+    Mode {
+        key: TabKey,
+        since: u64,
+        mode: DiffMode,
+    },
+    /// The tab's AI state read again from its sidecars, over the AI section
+    /// at revision `since`. A section that moved meanwhile keeps the newer
+    /// state, and the patch drops without an error: the read was a refresh,
+    /// and the next one reads again.
+    Ai {
+        key: TabKey,
+        since: u64,
+        ai: Box<ReloadedAi>,
     },
     /// A sidecar a write stored in `dir`.
     Sidecar {
@@ -260,8 +431,13 @@ pub(crate) fn check(
             Some(content) if content.diff.revision == *since => Ok(()),
             _ => Err(PatchRefused::Moved),
         },
+        ContentPatch::Mode { key, since, .. } => match tabs.get(key) {
+            Some(content) if content.generation() == *since => Ok(()),
+            _ => Err(PatchRefused::Moved),
+        },
         ContentPatch::Several(patches) => patches.iter().try_for_each(|patch| check(tabs, patch)),
-        ContentPatch::Sidecar { .. }
+        ContentPatch::Ai { .. }
+        | ContentPatch::Sidecar { .. }
         | ContentPatch::Reviewed { .. }
         | ContentPatch::Dropped { .. } => Ok(()),
     }
@@ -284,9 +460,26 @@ pub(crate) fn apply(
             );
             cleared
         }
-        ContentPatch::Parsed { key, files, .. } => {
+        ContentPatch::Parsed {
+            key,
+            files,
+            expanded,
+            ..
+        } => {
             if let Some(content) = tabs.get_mut(&key) {
-                *content = Arc::new(content.with_parsed(files, revision));
+                *content = Arc::new(content.with_parsed(files, &expanded, revision));
+            }
+            0
+        }
+        ContentPatch::Mode { key, mode, .. } => {
+            if let Some(content) = tabs.get_mut(&key) {
+                *content = Arc::new(content.with_mode(mode, revision));
+            }
+            0
+        }
+        ContentPatch::Ai { key, since, ai } => {
+            if let Some(content) = tabs.get_mut(&key).filter(|c| c.ai.revision == since) {
+                *content = Arc::new(content.with_ai(*ai, revision));
             }
             0
         }

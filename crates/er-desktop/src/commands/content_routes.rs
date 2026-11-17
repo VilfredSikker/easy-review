@@ -195,11 +195,12 @@ pub(super) fn refresh(state: &AppState, force: bool) -> Result<usize, String> {
         return load(state, active.key, &active.tab);
     }
     let key = active.key;
-    cleared(send(
-        state,
-        &active.tab,
-        Command::RefreshDiff { key, force },
-    )?)
+    let command = Command::RefreshDiff {
+        key,
+        force,
+        adopt_head_oid: None,
+    };
+    cleared(send(state, &active.tab, command)?)
 }
 
 /// The modes the workspace loads. The others stay on the App until the
@@ -210,8 +211,66 @@ pub(super) fn routed_mode(mode: &str) -> Option<DiffMode> {
         "unstaged" => Some(DiffMode::Unstaged),
         "staged" => Some(DiffMode::Staged),
         "pr" | "pr_diff" => Some(DiffMode::PrDiff),
+        "tour" => Some(DiffMode::Tour),
         _ => None,
     }
+}
+
+/// The views the App still shows, which the workspace records on the
+/// active tab's content without loading anything.
+pub(super) fn recorded_mode(mode: &str) -> Option<DiffMode> {
+    match mode {
+        "history" => Some(DiffMode::History),
+        "conflicts" => Some(DiffMode::Conflicts),
+        "hidden" => Some(DiffMode::Hidden),
+        _ => None,
+    }
+}
+
+/// Records `mode` on the active tab's content, when it is loaded, under the
+/// same feature gate and painted-tab check as a routed switch. The App path
+/// runs after it either way, so a failure here is only logged.
+pub(super) fn record_mode(state: &AppState, name: &str, mode: DiffMode, tab_idx: Option<usize>) {
+    let features = state.service.settings().view().config.features.clone();
+    if !super::feature_allows_mode_str(&features, name) {
+        return;
+    }
+    let view = state.service.app_registry().tabs_view();
+    if tab_idx.is_some_and(|idx| view.key_at(idx) != view.active) {
+        return;
+    }
+    let Ok(active) = active(state) else {
+        return;
+    };
+    let loaded = state.service.content(active.key, &active.tab);
+    if loaded.is_none_or(|content| content.tab.mode == mode) {
+        return;
+    }
+    let key = active.key;
+    let command = Command::SetDiffMode {
+        key,
+        mode,
+        pr_number: None,
+    };
+    if let Err(error) = send(state, &active.tab, command) {
+        log::warn!("er-desktop: recording the {mode:?} view failed: {error}");
+    }
+}
+
+/// Asks the active tab's actor to read its sidecars again, without waiting
+/// for the answer and without starting an actor or loading a tab. The poll
+/// tick calls it, so a sidecar an outside writer moved reaches the content.
+pub(super) fn reload_sidecars(state: &AppState) -> bool {
+    let Ok(active) = active(state) else {
+        return false;
+    };
+    if state.service.content(active.key, &active.tab).is_none() {
+        return false;
+    }
+    let key = active.key;
+    state
+        .service
+        .post_if_started(&actor_key(&active.tab), Command::ReloadSidecars { key })
 }
 
 /// Shows the active tab in `mode`. A click painted on a tab that is no longer
@@ -294,7 +353,12 @@ fn parse(
         return Ok(());
     }
     let key = active.key;
-    send(state, &active.tab, Command::ParseFiles { key, paths })?;
+    let expand = false;
+    send(
+        state,
+        &active.tab,
+        Command::ParseFiles { key, paths, expand },
+    )?;
     Ok(())
 }
 
