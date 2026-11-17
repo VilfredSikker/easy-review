@@ -555,7 +555,8 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
 }
 
 /// Every section the fixture fills must hold something on the App's side,
-/// or a section both readers dropped would pass.
+/// or a section both readers dropped would pass. AI, staleness and stamps are
+/// checked in part: the review, the stale flag and the mtimes.
 fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
     let stubs = app.files.iter().filter(|f| f.3 == 0 && !f.4).count();
     if lazy {
@@ -573,7 +574,16 @@ fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
     assert_eq!(risky, &["src/a.rs".to_string()], "{case}: the risk filter");
     let filtered = !unreviewed.is_empty() && unreviewed.len() < app.files.len();
     assert!(filtered, "{case}: the unreviewed toggle filtered nothing");
+    assert!(!app.hashes.0.is_empty(), "{case}: the diff hash is empty");
     assert!(!app.reviewed.is_empty(), "{case}: no mark survived");
+    let orphan = app.reviewed.contains_key("src/gone.rs");
+    assert!(!orphan, "{case}: the orphaned mark was kept");
+    // The fixture saved the orphan, so saved marks equal to the live ones
+    // were pruned and saved again.
+    assert_eq!(
+        app.saved_reviewed, app.reviewed,
+        "{case}: the pruned marks were not saved"
+    );
     assert!(app.ai[0] != Value::Null, "{case}: the review did not load");
     assert!(app.tour != Value::Null, "{case}: the tour did not load");
     assert!(app.staleness.0, "{case}: the older review was not stale");
