@@ -152,7 +152,8 @@ const VIEWS: [(&str, bool); 2] = [("risk:high", false), ("", true)];
 
 fn visible(files: &[&DiffFile], ai: &er_engine::ai::AiState, reviewed: &Marks) -> Vec<Vec<String>> {
     let (risk_rules, file_kinds) = (RiskRules::default(), FileKindRepoConfig::default());
-    let reviewed: std::collections::HashMap<String, String> = reviewed.clone().into_iter().collect();
+    let reviewed: std::collections::HashMap<String, String> =
+        reviewed.clone().into_iter().collect();
     VIEWS
         .iter()
         .map(|(expr, unreviewed_only)| {
@@ -203,7 +204,11 @@ struct Read<'a> {
     hashes: (&'a str, &'a str),
     reviewed: &'a std::collections::HashMap<String, String>,
     ai: &'a er_engine::ai::AiState,
-    pr: (Option<&'a PrOverviewData>, &'a [er_engine::git::CommitInfo], Option<&'a str>),
+    pr: (
+        Option<&'a PrOverviewData>,
+        &'a [er_engine::git::CommitInfo],
+        Option<&'a str>,
+    ),
     /// The context key, then each previewable file's key.
     preview_keys: Vec<(String, String)>,
     /// The mtimes and blob ids the keys read.
@@ -513,15 +518,24 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
     }
     assert_eq!(service.lazy, app.lazy, "{case}: the lazy flag differs");
     assert_eq!(service.hashes, app.hashes, "{case}: the diff hashes differ");
-    assert_eq!(service.visible, app.visible, "{case}: the visible files differ");
-    assert_eq!(service.reviewed, app.reviewed, "{case}: the reviewed marks differ");
+    assert_eq!(
+        service.visible, app.visible,
+        "{case}: the visible files differ"
+    );
+    assert_eq!(
+        service.reviewed, app.reviewed,
+        "{case}: the reviewed marks differ"
+    );
     assert_eq!(
         service.saved_reviewed, app.saved_reviewed,
         "{case}: the saved marks differ"
     );
     assert_eq!(service.ai, app.ai, "{case}: the AI state differs");
     assert_eq!(service.tour, app.tour, "{case}: the tour differs");
-    assert_eq!(service.staleness, app.staleness, "{case}: the staleness differs");
+    assert_eq!(
+        service.staleness, app.staleness,
+        "{case}: the staleness differs"
+    );
     assert_eq!(service.pr, app.pr, "{case}: the PR section differs");
     // The keys read the stamps, so the stamps go first.
     let same_stamps = service.stamps == app.stamps;
@@ -536,7 +550,10 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
 /// or a section both readers dropped would pass.
 fn assert_filled(app: &Observed, kind: &TabKind, case: &str) {
     let stubs = app.files.iter().filter(|f| f.3 == 0 && !f.4).count();
-    assert!(app.lazy && stubs > 0, "{case}: the fixture left no lazy stub");
+    assert!(
+        app.lazy && stubs > 0,
+        "{case}: the fixture left no lazy stub"
+    );
     let [risky, unreviewed] = [&app.visible[0], &app.visible[1]];
     assert_eq!(risky, &["src/a.rs".to_string()], "{case}: the risk filter");
     let filtered = !unreviewed.is_empty() && unreviewed.len() < app.files.len();
@@ -545,7 +562,10 @@ fn assert_filled(app: &Observed, kind: &TabKind, case: &str) {
     assert!(app.ai[0] != Value::Null, "{case}: the review did not load");
     assert!(app.tour != Value::Null, "{case}: the tour did not load");
     assert!(app.staleness.0, "{case}: the older review was not stale");
-    let document = app.preview_keys.iter().find(|(path, _)| path == "docs/new.md");
+    let document = app
+        .preview_keys
+        .iter()
+        .find(|(path, _)| path == "docs/new.md");
     let keyed = document.is_some_and(|(_, key)| !key.is_empty());
     assert!(keyed, "{case}: the document has no preview key");
     assert!(!app.stamps.0.is_empty(), "{case}: no mtime was stamped");

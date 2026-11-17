@@ -321,8 +321,9 @@ pub(crate) fn load_tab(
     );
     let diff_hash = ai::compute_diff_hash(&raw);
     // A tour entered from the branch view walks the branch diff itself.
-    let raw_is_branch_diff =
-        is_remote_pr || tab.mode == DiffMode::Branch || (tab.mode == DiffMode::Tour && !tab.tour_is_pr);
+    let raw_is_branch_diff = is_remote_pr
+        || tab.mode == DiffMode::Branch
+        || (tab.mode == DiffMode::Tour && !tab.tour_is_pr);
     // A plain tab's other views need a second git call for the branch diff,
     // which only AI data, questions or a tour consume.
     let fetched_branch = if !branch_view && !raw_is_branch_diff && held_ai {

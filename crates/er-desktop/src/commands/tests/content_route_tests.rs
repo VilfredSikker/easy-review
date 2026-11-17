@@ -347,12 +347,13 @@ fn ports_with_refs() -> (Arc<er_git::FakeGit>, er_engine::ports::Ports) {
 }
 
 fn open_one(state: &AppState, tab: TabDescriptor) -> (TabKey, TabDescriptor) {
-    let opened = while_the_app_is_locked(state, "open", move |state| {
-        content_routes::open(state, tab)
-    });
+    let opened =
+        while_the_app_is_locked(state, "open", move |state| content_routes::open(state, tab));
     assert!(opened.is_ok(), "{opened:?}");
     let view = state.service.app_registry().tabs_view();
-    let entry = view.active_entry().unwrap_or_else(|| panic!("no active tab"));
+    let entry = view
+        .active_entry()
+        .unwrap_or_else(|| panic!("no active tab"));
     (entry.key, entry.descriptor.clone())
 }
 
@@ -417,7 +418,11 @@ fn a_pr_sync_adopts_the_listed_head_and_names_its_status() {
 
         let synced = synced.unwrap_or_else(|e| panic!("sync: {e}"));
         let head = content(&state, &tab).pr.head_oid.clone();
-        assert_eq!(head.as_deref(), Some("h-listed"), "the listed head was not adopted");
+        assert_eq!(
+            head.as_deref(),
+            Some("h-listed"),
+            "the listed head was not adopted"
+        );
         let expected = ("acme".to_string(), "widgets".to_string(), 7);
         assert_eq!(synced.status_key, Some(expected));
     });

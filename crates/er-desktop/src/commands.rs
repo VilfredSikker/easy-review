@@ -3370,8 +3370,7 @@ fn pr_cache_head_oid_for_pr(state: &AppState, pr_number: u64) -> Option<String> 
 /// becomes the probed value and the two agree.
 fn align_branch_base_probe(state: &AppState, repo_root: &str, base_branch: &str) {
     let base_short = base_branch.trim_start_matches("origin/");
-    if let Some(oid) = er_engine::github::rev_parse_oid(&*state.ports.git, repo_root, base_branch)
-    {
+    if let Some(oid) = er_engine::github::rev_parse_oid(&*state.ports.git, repo_root, base_branch) {
         let key = format!("{repo_root}\u{0}{base_short}");
         if let Ok(mut cache) = state.branch_base_remote_oid.lock() {
             cache.insert(key, oid);
