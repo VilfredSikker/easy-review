@@ -12,7 +12,9 @@ use er_engine::git::DiffFile;
 use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_engine::TabKey;
-use er_service::{AppCommand, Command, OpenTarget, Reply, TabContent, TabContext};
+use er_service::{
+    AppCommand, Command, OpenTarget, Reply, TabContent, TabContext, TabEntry, TabsView,
+};
 
 use super::{projects, AppSnapshot, AppState};
 use crate::service::actor_key;
@@ -79,18 +81,73 @@ fn active_content(state: &AppState) -> Result<(Active, Arc<TabContent>), String>
 }
 
 /// Opens `tab` in the registry, then loads its content under the key the
-/// registry gave it.
-pub(super) fn open(state: &AppState, tab: TabDescriptor) -> Result<AppSnapshot, String> {
-    let reply = state
-        .service
-        .send_app(AppCommand::NewTab { tab: tab.clone() })
-        .map_err(|error| error.to_string())?;
-    let Reply::Tabs(view) = reply else {
-        return Err(unexpected(&reply));
+/// registry gave it. With `replace` it takes the active tab's place, whose
+/// content is dropped. A PR that is already open is selected instead, as the
+/// flag-off open does.
+pub(super) fn open(
+    state: &AppState,
+    tab: TabDescriptor,
+    replace: bool,
+) -> Result<AppSnapshot, String> {
+    let current = state.service.app_registry().tabs_view();
+    if let Some(open) = current
+        .tabs
+        .iter()
+        .find(|entry| same_pr(&entry.descriptor, &tab))
+    {
+        app_command(state, AppCommand::SelectTab { key: open.key })?;
+        if state.service.content(open.key, &open.descriptor).is_none() {
+            load(state, open.key, &open.descriptor)?;
+        }
+        return Ok(AppSnapshot::default());
+    }
+    let replaced = current.active_entry().filter(|_| replace).cloned();
+    let command = match &replaced {
+        Some(old) => AppCommand::ReplaceTab {
+            key: old.key,
+            tab: tab.clone(),
+        },
+        None => AppCommand::NewTab { tab: tab.clone() },
     };
+    let view = app_command(state, command)?;
+    if let Some(old) = replaced {
+        drop_content(state, &old)?;
+    }
     let key = view.active.ok_or("The new tab did not become active")?;
     load(state, key, &tab)?;
     Ok(AppSnapshot::default())
+}
+
+/// Two descriptors of one PR tab: the same kind, root and PR.
+fn same_pr(open: &TabDescriptor, tab: &TabDescriptor) -> bool {
+    tab.pr_number.is_some()
+        && open.kind == tab.kind
+        && open.pr_number == tab.pr_number
+        && open.workspace_key() == tab.workspace_key()
+}
+
+fn app_command(state: &AppState, command: AppCommand) -> Result<TabsView, String> {
+    let reply = state
+        .service
+        .send_app(command)
+        .map_err(|error| error.to_string())?;
+    match reply {
+        Reply::Tabs(view) => Ok(view),
+        other => Err(unexpected(&other)),
+    }
+}
+
+/// Drops a closed or replaced tab's content on the actor that loaded it. An
+/// actor that is not up holds no content and is not started for the drop.
+fn drop_content(state: &AppState, entry: &TabEntry) -> Result<(), String> {
+    let drop = Command::DropTab { key: entry.key };
+    if let Some(dropped) = state
+        .service
+        .send_if_started(&actor_key(&entry.descriptor), drop)
+    {
+        dropped.map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// A plain tab on `repo_root`.
@@ -173,17 +230,8 @@ pub(super) fn close(state: &AppState, idx: usize) -> Result<AppSnapshot, String>
         .get(idx)
         .cloned()
         .ok_or_else(|| format!("no tab at position {idx}"))?;
-    state
-        .service
-        .send_app(AppCommand::CloseTab { key: entry.key })
-        .map_err(|error| error.to_string())?;
-    let drop = Command::DropTab { key: entry.key };
-    if let Some(dropped) = state
-        .service
-        .send_if_started(&actor_key(&entry.descriptor), drop)
-    {
-        dropped.map_err(|error| error.to_string())?;
-    }
+    app_command(state, AppCommand::CloseTab { key: entry.key })?;
+    drop_content(state, &entry)?;
     Ok(AppSnapshot::default())
 }
 
@@ -428,7 +476,32 @@ pub(super) fn write_reviewed(
     state: &AppState,
     build: impl FnOnce(TabContext) -> Command,
 ) -> Result<AppSnapshot, String> {
-    let (active, content) = active_content(state)?;
-    send(state, &active.tab, build(content.context.clone()))?;
+    annotate(state, None, build)?;
     Ok(AppSnapshot::default())
 }
+
+/// Sends an annotation command built from the active tab's published
+/// context, loading the content first when it never loaded. Answers the key
+/// it acted on.
+///
+/// `expected` is the App tab the caller read under the App lock, when the
+/// command carries something taken from it: a painted view, or a document's
+/// text. The App follows the registry on another thread, so while it lags
+/// the registry's active tab is another one, and the command is refused
+/// rather than written to that tab.
+pub(super) fn annotate(
+    state: &AppState,
+    expected: Option<TabKey>,
+    build: impl FnOnce(TabContext) -> Command,
+) -> Result<TabKey, String> {
+    let (active, content) = active_content(state)?;
+    if expected.is_some_and(|key| key != active.key) {
+        return Err(MOVED.to_string());
+    }
+    send(state, &active.tab, build(content.context.clone()))?;
+    Ok(active.key)
+}
+
+/// The refusal for an annotation whose App tab is no longer the registry's
+/// active one.
+pub(super) const MOVED: &str = "The active view changed; the annotation was not written";

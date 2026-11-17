@@ -141,6 +141,21 @@ impl ServiceState {
         &self.app_registry
     }
 
+    /// Runs `follow` on its own thread after each tab-list change, so the App
+    /// follows the registry without a tab command waiting on the App lock.
+    pub fn follow_tabs(&self, follow: impl Fn() + Send + 'static) {
+        let events = self.app_registry.subscribe();
+        let _ = std::thread::Builder::new()
+            .name("er-tab-follower".into())
+            .spawn(move || {
+                for event in events {
+                    if matches!(event, Event::TabsChanged { .. }) {
+                        follow();
+                    }
+                }
+            });
+    }
+
     /// Sends one command to the app registry.
     pub fn send_app(&self, command: AppCommand) -> Result<Reply, WorkspaceError> {
         self.app_registry.send(command)
@@ -422,6 +437,37 @@ mod tests {
             let added = service.send_app(er_service::AppCommand::NewTab { tab });
             assert!(added.is_ok(), "{added:?}");
             assert_eq!(revisions.recv_timeout(Duration::from_secs(5)), Ok(1));
+        });
+    }
+
+    /// A tab change runs the follower on its own thread, which is how the
+    /// flag-on App follows the registry without a tab command waiting on it.
+    #[test]
+    fn a_tab_change_runs_the_follower() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        er_engine::storage::with_test_storage_root(tmp.path(), || {
+            let service = ServiceState::new(Ports::for_test());
+            let (tx, followed) = std::sync::mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            service.follow_tabs(move || {
+                if let Ok(tx) = tx.lock() {
+                    let _ = tx.send(());
+                }
+            });
+            let tab = er_engine::tabs_record::TabDescriptor {
+                kind: er_engine::tabs_record::TabKind::Working,
+                repo_root: "/repo".to_string(),
+                branch: None,
+                pr_owner: None,
+                pr_repo: None,
+                pr_number: None,
+                pr_head_ref: None,
+                base_ref: None,
+                extra: serde_json::Map::new(),
+            };
+            let added = service.send_app(er_service::AppCommand::NewTab { tab });
+            assert!(added.is_ok(), "{added:?}");
+            assert_eq!(followed.recv_timeout(Duration::from_secs(5)), Ok(()));
         });
     }
 }

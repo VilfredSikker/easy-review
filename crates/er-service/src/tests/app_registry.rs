@@ -146,6 +146,43 @@ fn a_tab_command_with_no_such_key_or_the_last_tab_is_refused() -> anyhow::Result
     })
 }
 
+/// A replace puts the new tab at the old one's index under a new key, makes
+/// it active, and saves it there.
+#[test]
+fn a_replace_takes_the_old_tabs_place_under_a_new_key() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    er_engine::storage::with_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+        save_tabs(&[working("/a"), working("/b"), working("/c")], 0)?;
+        let (registry, _) = registry(FakeGitHub::default());
+        let before = registry.tabs_view();
+        let old = before.key_at(1).ok_or_else(|| anyhow::anyhow!("no tab"))?;
+
+        let reply = registry.send(AppCommand::ReplaceTab {
+            key: old,
+            tab: working("/d"),
+        })?;
+        let Reply::Tabs(view) = reply else {
+            anyhow::bail!("replace answered {reply:?}");
+        };
+        let new = view.key_at(1).ok_or_else(|| anyhow::anyhow!("no tab"))?;
+        assert_ne!(new, old);
+        assert_eq!(view.active, Some(new));
+        assert_eq!(view.tabs.len(), 3);
+        assert_eq!(view.tabs[1].descriptor.repo_root, "/d");
+        assert_eq!(view.key_at(0), before.key_at(0));
+        assert_eq!(view.key_at(2), before.key_at(2));
+        let saved = load_tabs().ok_or_else(|| anyhow::anyhow!("no record"))?;
+        let roots: Vec<_> = saved
+            .tabs
+            .iter()
+            .map(|tab| tab.repo_root.as_str())
+            .collect();
+        assert_eq!(roots, ["/a", "/d", "/c"]);
+        assert_eq!(saved.active_idx, 1);
+        Ok(())
+    })
+}
+
 /// Puts a directory's permissions back when dropped, so a failing assertion
 /// never leaves a read-only directory behind.
 #[cfg(unix)]

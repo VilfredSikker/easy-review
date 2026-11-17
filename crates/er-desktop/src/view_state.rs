@@ -50,10 +50,12 @@ impl DesktopViewState {
         self.tabs.entry(key).or_default()
     }
 
-    /// Drop the entries of tabs that are gone. Nav entries are left alone:
-    /// their keys come from the app registry, a different key space.
+    /// Drop the entries of tabs that are gone. Nav entries go too: on the flag
+    /// path every tab carries the key the app registry issued, so both maps
+    /// share one key space.
     pub fn retain_tabs(&mut self, live: &[TabKey]) {
         self.tabs.retain(|key, _| live.contains(key));
+        self.nav.retain(|key, _| live.contains(key));
     }
 
     /// The tab's selection and scroll; a tab that never moved starts at the top.
@@ -342,8 +344,12 @@ mod tests {
         let mut view = DesktopViewState::default();
         view.browser_mut(a).url = "a".into();
         view.browser_mut(b).url = "b".into();
+        view.nav_mut(a).selected_file = 2;
+        view.nav_mut(b).selected_file = 5;
         view.retain_tabs(&[b]);
         assert_eq!(view.browser(a), TabBrowserState::default());
         assert_eq!(view.browser(b).url, "b");
+        assert_eq!(view.nav(a), TabNavState::default());
+        assert_eq!(view.nav(b).selected_file, 5);
     }
 }
