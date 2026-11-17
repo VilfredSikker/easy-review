@@ -146,7 +146,7 @@ fn file_delta_key(lines_key: u64, threads_by_hunk: &[Vec<ThreadSnapshot>]) -> u6
     h.finish()
 }
 
-const fn mode_str(mode: DiffMode) -> &'static str {
+pub(crate) const fn mode_str(mode: DiffMode) -> &'static str {
     match mode {
         DiffMode::Branch => "branch",
         DiffMode::Unstaged => "unstaged",
@@ -1271,17 +1271,23 @@ pub fn resolve_github_status_key(
     tab: &TabState,
     pr_cache: &HashMap<String, Vec<PrInfo>>,
 ) -> Option<(String, String, u64)> {
+    resolve_github_status_key_for(&tab.identity(), pr_cache)
+}
+
+/// [`resolve_github_status_key`] over a tab's identity, which the flag-on
+/// desktop reads from the tab's published content.
+pub fn resolve_github_status_key_for(
+    tab: &er_engine::tab_identity::TabIdentity<'_>,
+    pr_cache: &HashMap<String, Vec<PrInfo>>,
+) -> Option<(String, String, u64)> {
     // 1. Remote PR: slug + number directly.
-    if let (Some(slug), Some(number)) = (tab.remote_repo.as_ref(), tab.pr_number) {
+    if let (Some(slug), Some(number)) = (tab.remote_repo, tab.pr_number) {
         return slug
             .split_once('/')
             .map(|(o, r)| (o.to_string(), r.to_string(), number));
     }
 
-    let branch = tab
-        .local_branch_view
-        .as_deref()
-        .unwrap_or(&tab.current_branch);
+    let branch = tab.local_branch_view.unwrap_or(tab.current_branch);
 
     // 2. Local PR tab: trust the tab's own pr_number; only resolve the slug.
     //    When the tab knows its own remote (local PR tabs resolve it from the
@@ -1292,7 +1298,6 @@ pub fn resolve_github_status_key(
         let matches = |slug: &str, prs: &[PrInfo]| {
             let in_repo = tab
                 .remote_repo
-                .as_deref()
                 .map(|r| r.eq_ignore_ascii_case(slug))
                 .unwrap_or(true);
             in_repo && prs.iter().any(|p| p.number == number)
@@ -1305,7 +1310,6 @@ pub fn resolve_github_status_key(
                     .iter()
                     .filter(|(slug, _)| {
                         tab.remote_repo
-                            .as_deref()
                             .map(|r| r.eq_ignore_ascii_case(slug))
                             .unwrap_or(true)
                     })
@@ -1326,7 +1330,6 @@ pub fn resolve_github_status_key(
         .iter()
         .filter(|(slug, _)| {
             tab.remote_repo
-                .as_deref()
                 .map(|r| r.eq_ignore_ascii_case(slug))
                 .unwrap_or(true)
         })

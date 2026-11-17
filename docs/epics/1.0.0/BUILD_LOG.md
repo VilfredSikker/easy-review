@@ -251,3 +251,14 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
   - 2b: one TabKey and one `workspace_key`. This fixes remote PR tabs, which had been sending to the cwd's actor.
   - 2c, slim (owner, 2026-11-16): only what phase 5 reuses. The flag-on snapshot keeps reading the App until phase 5's protocol replaces `snapshot.rs`, so phase 4's exit means the service owns all tab state and routes.
 - **Phase-5 gate questions answered** (owner, 2026-11-15): D9 ts-rs; the sidebar data has a desktop-side owner in phase 5, with resources per data source (`projects`, `branches(project)`, `prs(remote)`, `inbox`).
+
+- Merged #577 (P47.2b.1) and #578 (P47.2b.2, `5942bc925`). The registry issues every TabKey and the App's tabs follow it. #578's last round made every annotation route check the App's key under the App lock, so a write is refused while the follower lags.
+- Merged #599 (P47.2c.2) as `e2fd75582`; #538 closed. **Phase 4 is complete.** The work:
+  - a TabContent parity test over Branch, Unstaged, Staged, Tour and PrDiff, eager and lazy, with one plant per section. It found that a Tour load left `branch_diff_hash` empty, and that is fixed;
+  - flag-on History file clicks, `unmark_reviewed` and Sync (`adopt_head_oid`, the base fetch and the status refresh);
+  - the headless engine build's dead-code warnings are gone (5 to 0);
+  - the CI plant: on draft #598, `Test (v1-service)` and Clippy failed.
+
+  The exit checklist and the full "left on the App with the flag on" list are in #538's body. The review's call-graph pass added the commands whose helpers lock the App.
+- Decision A on `unmark_reviewed` (coordinator, on #538): unmark joins toggle and mark on the lock-free `write_reviewed`. All three share one gap: during the follower's lag they write to the registry's active tab. Phase 5 closes it by having the page send the tab key it painted.
+- A new coordinator session took over on 2026-11-17. The old session finished #578 and handed over #599 through a cross-session message. Phase-5 planning (ADDENDUM-06) runs as a workflow: an opus drafter, then a claims reviewer and a scope reviewer, for up to three rounds.

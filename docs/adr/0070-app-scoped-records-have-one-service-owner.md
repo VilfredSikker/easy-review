@@ -30,3 +30,11 @@ lock and writes after releasing it, and port calls run on effect threads.
   key order can differ from older builds.
 - Tab commands name a tab by its `TabKey`; a position travels only where the
   command needs one, as the reorder target.
+- On the `v1-service` path the App's tabs follow the registry by key until the
+  App stops serving tabs: the registry issues each key, the App adopts it, and
+  after each tab change the App keeps the listed tabs, builds stubs for new
+  ones outside its lock and drops the rest. Restore runs once the service is
+  built, from the registry's list.
+- A workspace actor's key is `workspace_key` of the tab's identity: its local
+  root, or `remote:<owner/repo>` for a remote PR. It never reads the project
+  list, so a tab cannot drift to another actor.

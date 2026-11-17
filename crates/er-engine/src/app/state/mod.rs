@@ -1019,6 +1019,13 @@ impl TabState {
         self.key
     }
 
+    /// Takes the key the app registry issued for this tab, so the App's tab and
+    /// the registry's entry are one tab. Only the flag-on desktop calls it; a
+    /// flag-off tab keeps the key it was built with.
+    pub fn adopt_key(&mut self, key: crate::TabKey) {
+        self.key = key;
+    }
+
     /// The fields that decide this tab's storage buckets and diff fetch.
     pub fn identity(&self) -> TabIdentity<'_> {
         TabIdentity {

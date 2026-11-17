@@ -1082,7 +1082,7 @@ pub async fn request_file_content(
 pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
-    return run_blocking(move || content_routes::select_file(&state, idx)).await;
+    return run_blocking(move || select_file_routed(&state, idx)).await;
     #[cfg(not(feature = "v1-service"))]
     return run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -1103,6 +1103,18 @@ pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSn
         Ok(snap_from(&app, &state))
     })
     .await;
+}
+
+/// History still shows the App's commit files, so a click there reaches the
+/// App's History selection; any other view takes the content route.
+#[cfg(feature = "v1-service")]
+fn select_file_routed(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
+    if content_routes::shows_history(state) {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut().history_select_file(idx);
+        return Ok(snap_from(&app, state));
+    }
+    content_routes::select_file(state, idx)
 }
 
 #[derive(serde::Serialize)]
@@ -1497,7 +1509,7 @@ pub async fn unmark_reviewed(
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        route_annotation(&state, None, |context| er_service::Command::MarkReviewed {
+        content_routes::write_reviewed(&state, |context| er_service::Command::MarkReviewed {
             context,
             path,
             reviewed: false,
@@ -2755,51 +2767,17 @@ pub async fn add_document_thread(
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        let kind = match kind.as_str() {
-            "question" => er_service::AnnotationKind::Question,
-            "note" => er_service::AnnotationKind::Note,
-            other => return Err(format!("A document anchor cannot hold a {other}")),
-        };
-        let (active_tab, request) = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            (
-                app.active_tab,
-                app.tab()
-                    .capture_file_preview(&file)
-                    .map_err(|e| e.to_string())?,
-            )
-        };
-        if request.preview_key != preview_key {
-            return Err("The document changed before the comment was saved".to_string());
-        }
-        let source = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
-        let (key, command) = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            if app.active_tab != active_tab
-                || app.tab().file_preview_key(&file) != request.preview_key
-            {
-                return Err("The document changed before the comment was saved".to_string());
-            }
-            let context = tab_context(&app);
-            let key = context.workspace_key();
-            (
-                key,
-                er_service::Command::AddDocumentThread {
-                    context,
-                    file,
-                    line: line_num,
-                    line_end: line_num_end,
-                    kind,
-                    body: text,
-                    source,
-                },
-            )
-        };
-        state
-            .service
-            .send(&key, command)
-            .map_err(|error| error.to_string())?;
-        Ok(AppSnapshot::default())
+        service_add_document_thread(
+            &state,
+            DocumentThread {
+                file,
+                kind,
+                line_num,
+                line_num_end,
+                text,
+                preview_key,
+            },
+        )
     })
     .await;
     #[cfg(not(feature = "v1-service"))]
@@ -2843,6 +2821,78 @@ pub async fn add_document_thread(
         Ok(snap_from_confirmed(&app, &state))
     })
     .await
+}
+
+/// A document thread as the preview sends it.
+#[cfg(feature = "v1-service")]
+pub(crate) struct DocumentThread {
+    pub file: String,
+    pub kind: String,
+    pub line_num: usize,
+    pub line_num_end: Option<usize>,
+    pub text: String,
+    pub preview_key: String,
+}
+
+/// The flag path of `add_document_thread`. The preview and its text come from
+/// the App's tab, which renders it; the context comes from the registry's
+/// active tab, as every annotation route's does. The App's tab key is read
+/// with the preview, so while the App lags the registry the text is refused
+/// rather than written to the registry's other tab.
+#[cfg(feature = "v1-service")]
+pub(crate) fn service_add_document_thread(
+    state: &AppState,
+    thread: DocumentThread,
+) -> Result<AppSnapshot, String> {
+    let DocumentThread {
+        file,
+        kind,
+        line_num,
+        line_num_end,
+        text,
+        preview_key,
+    } = thread;
+    let kind = match kind.as_str() {
+        "question" => er_service::AnnotationKind::Question,
+        "note" => er_service::AnnotationKind::Note,
+        other => return Err(format!("A document anchor cannot hold a {other}")),
+    };
+    let changed = || "The document changed before the comment was saved".to_string();
+    let (active_tab, key, request) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        (
+            app.active_tab,
+            app.tab().key(),
+            app.tab()
+                .capture_file_preview(&file)
+                .map_err(|e| e.to_string())?,
+        )
+    };
+    if request.preview_key != preview_key {
+        return Err(changed());
+    }
+    let source = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
+    {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if app.active_tab != active_tab
+            || app.tab().key() != key
+            || app.tab().file_preview_key(&file) != request.preview_key
+        {
+            return Err(changed());
+        }
+    }
+    content_routes::annotate(state, Some(key), |context| {
+        er_service::Command::AddDocumentThread {
+            context,
+            file,
+            line: line_num,
+            line_end: line_num_end,
+            kind,
+            body: text,
+            source,
+        }
+    })?;
+    Ok(AppSnapshot::default())
 }
 
 #[tauri::command]
@@ -3353,6 +3403,19 @@ fn pr_cache_head_oid_for_pr(state: &AppState, pr_number: u64) -> Option<String> 
     })
 }
 
+/// The branch pill compares the ls-remote probe cache with the local
+/// `origin/<base>` oid. A sync has just fetched `origin/<base>`, so its oid
+/// becomes the probed value and the two agree.
+fn align_branch_base_probe(state: &AppState, repo_root: &str, base_branch: &str) {
+    let base_short = base_branch.trim_start_matches("origin/");
+    if let Some(oid) = er_engine::github::rev_parse_oid(&*state.ports.git, repo_root, base_branch) {
+        let key = format!("{repo_root}\u{0}{base_short}");
+        if let Ok(mut cache) = state.branch_base_remote_oid.lock() {
+            cache.insert(key, oid);
+        }
+    }
+}
+
 /// A Sync's snapshot plus how many Reviewed marks it cleared.
 ///
 /// The snapshot is flattened so the reply still applies as a plain
@@ -3369,14 +3432,16 @@ pub struct SyncOutcome {
 #[tauri::command]
 pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcome, String> {
     let state = state.inner().clone();
-    // Flag-on, the active tab's actor refetches; the stale pill and the merge
-    // status stay with the App's poll until the snapshot reads the content.
+    // Flag-on, the active tab's actor refetches and the route lines the stale
+    // pill's baselines up, as the App path below does.
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        let reviewed_cleared = content_routes::refresh(&state, true)?;
+        let synced = content_routes::sync(&state)?;
+        kick_meta_refresh(&state, synced.repo_root);
+        refresh_status_after_sync(&state, synced.status_key);
         Ok(SyncOutcome {
             snapshot: AppSnapshot::default(),
-            reviewed_cleared,
+            reviewed_cleared: synced.reviewed_cleared,
         })
     })
     .await;
@@ -3409,18 +3474,7 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcom
                     app.tab_mut().last_diff_head_oid = Some(oid);
                 }
             } else if is_branch_diff {
-                // Branch pill compares the ls-remote probe cache vs the local
-                // `origin/<base>` oid. After the sync just fetched `origin/<base>`,
-                // adopt that oid as the probed value so the two agree.
-                let base_short = base_branch.trim_start_matches("origin/").to_string();
-                if let Some(oid) =
-                    er_engine::github::rev_parse_oid(&*state.ports.git, &repo_root, &base_branch)
-                {
-                    let key = format!("{repo_root}\u{0}{base_short}");
-                    if let Ok(mut cache) = state.branch_base_remote_oid.lock() {
-                        cache.insert(key, oid);
-                    }
-                }
+                align_branch_base_probe(&state, &repo_root, &base_branch);
             }
 
             crate::tabs::persist_app_tabs(&app, &state.view);
@@ -3448,6 +3502,10 @@ fn refresh_active_status_after_sync(state: &AppState) {
         .lock()
         .ok()
         .and_then(|app| active_github_key(&app, state));
+    refresh_status_after_sync(state, key);
+}
+
+fn refresh_status_after_sync(state: &AppState, key: Option<(String, String, u64)>) {
     if let Some((owner, repo, number)) = key {
         kick_github_status_refresh(
             state.gh_status_cache.clone(),
@@ -6767,7 +6825,7 @@ fn service_open(
     // The PR becomes a registry tab whose content the actor loads. The
     // flag-on desktop does not render from the service yet, so the command
     // acknowledges the open without moving the view.
-    content_routes::open(state, tab)
+    content_routes::open(state, tab, replace.unwrap_or(false))
 }
 
 /// The tab a routed annotation command acts on, with every field its effect
@@ -6803,30 +6861,31 @@ pub(crate) fn tab_context(app: &er_engine::app::App) -> er_service::TabContext {
 /// The flag-on desktop does not render from the service yet (D21), so the
 /// returned snapshot is empty; the open commands are tab changes and blank
 /// until the next poll, while annotation commands keep the painted row
-/// (ADR 0017). The view is checked before the context is read, so a write
-/// painted on a tab switch is refused.
+/// (ADR 0017).
+///
+/// The context and the key come from the app registry's active tab and its
+/// published content. The view the user painted on is still checked on the
+/// App, which renders it. Every command here carries something the page took
+/// from the App, a painted view or a path or thread id on screen, so the App
+/// tab's key goes to `annotate`, which refuses the command when the
+/// registry's active tab is another one.
 #[cfg(feature = "v1-service")]
 fn route_annotation(
     state: &AppState,
     view: Option<&crate::snapshot::OptimisticView>,
     build: impl FnOnce(er_service::TabContext) -> er_service::Command,
 ) -> Result<AppSnapshot, String> {
-    let (key, command) = {
+    let expected = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
         // The flag-on desktop does not render the service snapshot (D21), so a
         // wrong-view snapshot would read as success and leave the paint in
         // place. Err is what makes the frontend roll the paint back.
         if abort_wrong_view(&app, state, view).is_some() {
-            return Err("The active view changed; the annotation was not written".to_string());
+            return Err(content_routes::MOVED.to_string());
         }
-        let context = tab_context(&app);
-        let key = context.workspace_key();
-        (key, build(context))
+        app.tab().key()
     };
-    state
-        .service
-        .send(&key, command)
-        .map_err(|error| error.to_string())?;
+    content_routes::annotate(state, Some(expected), build)?;
     Ok(AppSnapshot::default())
 }
 
@@ -7242,7 +7301,7 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
     return {
         let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path_str);
-        content_routes::open(&state, content_routes::working_tab(path_str))
+        content_routes::open(&state, content_routes::working_tab(path_str), false)
     };
     #[cfg(not(feature = "v1-service"))]
     return open_worktree_tab(&state, path_str);
@@ -7502,11 +7561,10 @@ pub async fn open_local_branch(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    // Flag-on, the registry appends the tab; it has no in-place replace yet.
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        let _ = replace;
-        content_routes::open(&state, content_routes::branch_tab(&project_id, name)?)
+        let tab = content_routes::branch_tab(&project_id, name)?;
+        content_routes::open(&state, tab, replace.unwrap_or(false))
     })
     .await;
     #[cfg(not(feature = "v1-service"))]
@@ -8714,7 +8772,12 @@ pub async fn open_pr_branch(
 ) -> Result<AppSnapshot, String> {
     let _ = head_ref; // ignored; PR head is fetched directly from origin
     let state = state.inner().clone();
-    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, None, &state)).await
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || service_open_pr_review(&state, project_id, pr_number, replace))
+        .await;
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, None, &state))
+        .await;
 }
 
 /// Fire-and-forget background warmup of the PR-open cache. Invoked from the
@@ -9424,6 +9487,13 @@ fn open_inbox_item_impl(
     crate::inbox::save_inbox_state(&state.inbox);
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
+    #[cfg(feature = "v1-service")]
+    if let Some(target) = target
+        .clone()
+        .and_then(|t| resolve_inbox_open_target(t, state))
+    {
+        return service_open_inbox_target(state, target, replace);
+    }
     match target.and_then(|t| resolve_inbox_open_target(t, state)) {
         Some(InboxOpenTarget::LocalPr {
             project_id,
@@ -9447,6 +9517,31 @@ fn open_inbox_item_impl(
         );
     }
     snap!(state)
+}
+
+/// An inbox open through the same flag-on helpers as a sidebar click.
+#[cfg(feature = "v1-service")]
+fn service_open_inbox_target(
+    state: &AppState,
+    target: InboxOpenTarget,
+    replace: Option<bool>,
+) -> Result<AppSnapshot, String> {
+    match target {
+        InboxOpenTarget::LocalPr {
+            project_id,
+            pr_number,
+            ..
+        } => service_open_pr_review(state, project_id, pr_number, replace),
+        InboxOpenTarget::RemotePr {
+            owner,
+            repo,
+            number,
+        } => service_open_remote_pr(state, owner, repo, number, replace),
+        InboxOpenTarget::Branch { project_id, branch } => {
+            let tab = content_routes::branch_tab(&project_id, branch)?;
+            content_routes::open(state, tab, replace.unwrap_or(false))
+        }
+    }
 }
 
 #[tauri::command]
@@ -9616,9 +9711,8 @@ pub fn open_project_branch(
 ) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
     return {
-        let _ = replace;
         let tab = content_routes::branch_tab(&project_id, branch)?;
-        content_routes::open(&state, tab)?;
+        content_routes::open(&state, tab, replace.unwrap_or(false))?;
         projects::set_active(&project_id);
         Ok(AppSnapshot::default())
     };
@@ -10014,6 +10108,29 @@ pub fn list_available_prs(
 
 #[tauri::command]
 pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    #[cfg(feature = "v1-service")]
+    return service_set_active_project(&state, &id);
+    #[cfg(not(feature = "v1-service"))]
+    return set_active_project_impl(&id, &state);
+}
+
+/// Opens a Working tab on the project's root through the registry, as the
+/// other flag-on opens do.
+#[cfg(feature = "v1-service")]
+fn service_set_active_project(state: &AppState, id: &str) -> Result<AppSnapshot, String> {
+    let root = projects::load()
+        .projects
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.root_path.clone())
+        .ok_or_else(|| format!("Project not found: {id}"))?;
+    content_routes::open(state, content_routes::working_tab(root), false)?;
+    projects::set_active(id);
+    Ok(AppSnapshot::default())
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn set_active_project_impl(id: &str, state: &AppState) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let file = projects::load();
     let proj = file
@@ -10027,10 +10144,10 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
     app.open_tab(new_tab);
     app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
     crate::tabs::persist_app_tabs(&app, &state.view);
-    projects::set_active(&id);
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, &state);
-    Ok(snap_from(&app, &state))
+    projects::set_active(id);
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    kick_active_gh_status(&app, state);
+    Ok(snap_from(&app, state))
 }
 
 #[tauri::command]
@@ -12547,6 +12664,8 @@ mod tests {
 
     #[cfg(feature = "v1-service")]
     mod content_route_tests;
+    #[cfg(feature = "v1-service")]
+    mod tab_key_tests;
     #[cfg(feature = "v1-service")]
     mod workspace_key_tests;
     #[cfg(not(feature = "v1-service"))]
@@ -15894,6 +16013,17 @@ mod tests {
                 "{command} must refresh the GitHub status"
             );
         }
+        // The flag-on sync takes its key from the tab's content, since the
+        // App's tab is not the one the route refreshed.
+        let flag_on = src
+            .split_once("pub async fn force_refresh_diff")
+            .and_then(|(_, from)| from.split_once("#[cfg(not(feature = \"v1-service\"))]"))
+            .map(|(flag_on, _)| flag_on)
+            .expect("force_refresh_diff's flag-on block");
+        assert!(
+            flag_on.contains("refresh_status_after_sync(&state, synced.status_key);"),
+            "the flag-on sync must refresh the GitHub status"
+        );
     }
 
     fn cached_pr(number: u64) -> crate::snapshot::PrInfo {
@@ -16378,6 +16508,7 @@ mod route_tests {
             "open_worktree",
             "open_local_branch",
             "open_project_branch",
+            "service_set_active_project",
         ] {
             let body = source
                 .split_once(&format!("fn {command}("))
@@ -16394,18 +16525,34 @@ mod route_tests {
         for route in [
             "close(",
             "refresh(&state, false)",
-            "refresh(&state, true)",
+            "sync(&state)",
             "set_mode(",
             "record_mode(state, mode, diff_mode, tab_idx)",
             "reload_sidecars(state)",
             "select_file(",
+            "shows_history(state)",
             "request_file_content(",
         ] {
             let route = call(route);
             assert!(source.contains(&route), "no command calls {route}");
         }
-        // toggle_reviewed and mark_reviewed.
+        // The opens that once built an App tab go through the flag-on helpers.
+        for (command, helper) in [
+            ("set_active_project", "service_set_active_project("),
+            ("open_pr_branch", "service_open_pr_review("),
+            ("open_inbox_item_impl", "service_open_inbox_target("),
+        ] {
+            let body = source
+                .split_once(&format!("fn {command}("))
+                .and_then(|(_, rest)| rest.split_once("\n}\n"))
+                .map(|(body, _)| body);
+            assert!(
+                body.is_some_and(|body| body.contains(helper)),
+                "{command} does not call {helper}"
+            );
+        }
+        // toggle_reviewed, mark_reviewed and unmark_reviewed.
         let reviewed = source.matches(&call("write_reviewed(")).count();
-        assert_eq!(reviewed, 2, "a reviewed command lost its route");
+        assert_eq!(reviewed, 3, "a reviewed command lost its route");
     }
 }

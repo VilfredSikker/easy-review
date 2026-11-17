@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md), [ADDENDUM-05](./ADDENDUM-05-phase-4.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-17 10:40 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-17 12:05 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,10 +9,10 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| Coordinator | workflow runs | [#538](https://github.com/VilfredSikker/easy-review/issues/538) P47.2: 2b in review, 2c.1 in review, 2c.2 next | F, E-svc |
+| Coordinator | workflow runs | Phase-5 gate ([#398](https://github.com/VilfredSikker/easy-review/issues/398)): planning ADDENDUM-06 and its issues; builds wait for the owner's approval | – |
 | D1–D5, T1, T2 | – | stopped 2026-11-14; the coordinator runs the rest of phase 4 through workflow runs | – |
 
-**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538. P38 through P47.1 are merged. P47.2, the last entry, is re-sequenced and grew into stacked layers (2a, 2b, a slim 2c), and its decisions are on #538. The phase-5 gate questions (D9 codegen, sidebar resources) are answered.
+**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538. **Phase 4 is complete (2026-11-17):** P38 through P47.2 are merged and #526–#538 are closed. P47.2 was re-sequenced into stacked layers (2a, 2b, a slim 2c); its decisions, the exit checklist and the list of what stays on the App with the flag on are on #538. The phase-5 gate questions (D9 codegen, sidebar resources) are answered, and the phase-5 plan is being drafted.
 
 ## Progress
 
@@ -87,7 +87,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P45 | [#535](https://github.com/VilfredSikker/easy-review/issues/535) Tab persistence and open-target caches | E-svc/F | opus | ✅ | [#566](https://github.com/VilfredSikker/easy-review/pull/566), [#567](https://github.com/VilfredSikker/easy-review/pull/567) | ADR 0070; option B (open map for desktop fields) |
 | P46 | [#536](https://github.com/VilfredSikker/easy-review/issues/536) Single-owner view state into the front ends | E-svc/F | opus | ✅ | [#554](https://github.com/VilfredSikker/easy-review/pull/554) | ADR 0068; stable process-local TabKey |
 | P47.1 | [#537](https://github.com/VilfredSikker/easy-review/issues/537) Snapshot builder over the read API | F/E-svc | opus | ✅ | [#569](https://github.com/VilfredSikker/easy-review/pull/569), [#571](https://github.com/VilfredSikker/easy-review/pull/571) | re-sequenced (owner): the read seam and pure navigation; parity moved to P47.2 |
-| P47.2 | [#538](https://github.com/VilfredSikker/easy-review/issues/538) Routing the remaining commands and the phase exit | F/E-svc/C | opus | 🔵 | 2a: [#570](https://github.com/VilfredSikker/easy-review/pull/570), [#572](https://github.com/VilfredSikker/easy-review/pull/572), [#573](https://github.com/VilfredSikker/easy-review/pull/573), [#574](https://github.com/VilfredSikker/easy-review/pull/574), [#576](https://github.com/VilfredSikker/easy-review/pull/576) ✅; 2b: [#577](https://github.com/VilfredSikker/easy-review/pull/577) ✅, [#578](https://github.com/VilfredSikker/easy-review/pull/578) 🔵; 2c.1: [#595](https://github.com/VilfredSikker/easy-review/pull/595) ✅, [#596](https://github.com/VilfredSikker/easy-review/pull/596) 🔵 | 2a the Workspace owns tab content (ADR 0071); 2b one TabKey; 2c slim (owner): service-side gaps, then parity and the exit |
+| P47.2 | [#538](https://github.com/VilfredSikker/easy-review/issues/538) Routing the remaining commands and the phase exit | F/E-svc/C | opus | ✅ | 2a: [#570](https://github.com/VilfredSikker/easy-review/pull/570), [#572](https://github.com/VilfredSikker/easy-review/pull/572), [#573](https://github.com/VilfredSikker/easy-review/pull/573), [#574](https://github.com/VilfredSikker/easy-review/pull/574), [#576](https://github.com/VilfredSikker/easy-review/pull/576); 2b: [#577](https://github.com/VilfredSikker/easy-review/pull/577), [#578](https://github.com/VilfredSikker/easy-review/pull/578); 2c.1: [#595](https://github.com/VilfredSikker/easy-review/pull/595), [#596](https://github.com/VilfredSikker/easy-review/pull/596), [#597](https://github.com/VilfredSikker/easy-review/pull/597); 2c.2: [#599](https://github.com/VilfredSikker/easy-review/pull/599) | 2a the Workspace owns tab content (ADR 0071); 2b one TabKey; 2c slim (owner): service-side gaps, then parity and the exit. CI plant: draft #598. Exit checklist and the "left on the App" list are in #538's body |
 
 ## Designs
 
@@ -110,7 +110,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | --- | --- | --- |
 | Phase 3: jobs and workflows | [#396](https://github.com/VilfredSikker/easy-review/issues/396) | ✅ passed 2026-11-10; [ADDENDUM-04](./ADDENDUM-04-phase-3.md), issues #471–#489 |
 | Phase 4: core and service | [#397](https://github.com/VilfredSikker/easy-review/issues/397) | ✅ passed 2026-11-14; [ADDENDUM-05](./ADDENDUM-05-phase-4.md), issues #526–#538 |
-| Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | ⬜ |
+| Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | 🟡 planning; D9 and the sidebar resources answered |
 | Phase 5b: TUI | [#399](https://github.com/VilfredSikker/easy-review/issues/399) | ⬜ |
 | Phase 6: consolidate | [#400](https://github.com/VilfredSikker/easy-review/issues/400) | ⬜ |
 

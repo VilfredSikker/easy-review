@@ -14,6 +14,7 @@ mod settings_coverage;
 
 use anyhow::Result;
 
+#[cfg(feature = "ui")]
 pub(crate) use agents::managed_agents_load_failed;
 pub use agents::{agents_path, load_agents_from, save_agents_to, AgentsConfig};
 pub use desktop_settings::{
@@ -1711,6 +1712,7 @@ pub fn managed_config_path() -> std::path::PathBuf {
 /// The typed config ignores unknown keys, so the file itself is the only
 /// place the key can still be seen. A file that cannot be read or parsed is
 /// not reported here; the load path already says so.
+#[cfg(feature = "ui")]
 pub(crate) fn retired_summary_command_set(path: &std::path::Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
@@ -1764,6 +1766,7 @@ fn config_load_failed(path: &std::path::Path) -> bool {
 /// Whether the managed config has a recorded failed load. The config hub reads
 /// this after a refused save, so the persistent banner also appears when the
 /// file went bad after startup.
+#[cfg(feature = "ui")]
 pub(crate) fn managed_config_load_failed() -> bool {
     config_load_failed(&managed_config_path())
 }
@@ -4603,6 +4606,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "ui")]
     fn the_retired_summary_key_is_seen_in_the_raw_file() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");

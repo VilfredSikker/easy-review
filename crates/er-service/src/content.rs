@@ -414,6 +414,28 @@ impl fmt::Display for PatchRefused {
     }
 }
 
+/// The keys `patch` loads into the view and the keys it drops from it.
+pub(crate) fn lifecycle_keys(
+    patch: &ContentPatch,
+    loads: &mut Vec<TabKey>,
+    drops: &mut Vec<TabKey>,
+) {
+    match patch {
+        ContentPatch::Loaded { key, .. } => loads.push(*key),
+        ContentPatch::Dropped { key } => drops.push(*key),
+        ContentPatch::Several(patches) => {
+            for patch in patches {
+                lifecycle_keys(patch, loads, drops);
+            }
+        }
+        ContentPatch::Parsed { .. }
+        | ContentPatch::Mode { .. }
+        | ContentPatch::Ai { .. }
+        | ContentPatch::Sidecar { .. }
+        | ContentPatch::Reviewed { .. } => {}
+    }
+}
+
 /// Checks that `patch` still applies to `tabs`, before any revision moves.
 pub(crate) fn check(
     tabs: &BTreeMap<TabKey, Arc<TabContent>>,
