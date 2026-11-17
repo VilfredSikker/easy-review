@@ -1,4 +1,7 @@
 #[cfg(feature = "v1-service")]
+compile_error!("plant");
+
+#[cfg(feature = "v1-service")]
 pub mod ai_selection_service;
 pub mod arena_commands;
 #[cfg(feature = "v1-service")]
