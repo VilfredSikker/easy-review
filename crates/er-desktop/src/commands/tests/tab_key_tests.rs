@@ -481,7 +481,10 @@ fn route_annotation_refuses_a_write_while_the_app_lags_the_registry() {
             refused.is_err(),
             "route_annotation wrote while the App lagged: {refused:?}"
         );
-        assert!(marked(), "the lagging write landed on the registry's other tab");
+        assert!(
+            marked(),
+            "the lagging write landed on the registry's other tab"
+        );
     });
 }
 
