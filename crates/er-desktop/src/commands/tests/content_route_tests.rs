@@ -60,7 +60,7 @@ fn fixture(dir: &ReviewFlowTestDir) -> Fixture {
         std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
         let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
         let opened = while_the_app_is_locked(&state, "open", move |state| {
-            content_routes::open(state, tab)
+            content_routes::open(state, tab, false)
         });
         assert!(opened.is_ok(), "{opened:?}");
     }

@@ -259,13 +259,6 @@ fn spawn_effect<R: Into<Effected>>(
     });
 }
 
-/// Whether a tab command names a tab this actor has loaded. A key the actor
-/// does not hold is a tab that closed or never loaded here; the command is
-/// refused before any effect runs.
-fn key_loaded(state: &WorkspaceState, key: TabKey) -> bool {
-    state.view().tabs.contains_key(&key)
-}
-
 /// Answers a tab command whose key this actor has not loaded.
 fn refuse_unknown_tab(reply: ReplySender) {
     let _ = reply.send(Err(WorkspaceError::Failed(
@@ -799,10 +792,8 @@ fn handle_command(
             let _ = reply.send(Ok(Reply::SidecarsReloaded { key, reloaded }));
         }
         Command::DropTab { key } => {
-            if !key_loaded(state, key) {
-                let _ = reply.send(Ok(Reply::ContentDropped { key }));
-                return;
-            }
+            // A key not loaded yet may have a first load in flight; the patch
+            // records the close, so that load is refused when it lands.
             spawn_effect(tx, reply, move || {
                 Ok(Effected::patched(
                     Reply::ContentDropped { key },

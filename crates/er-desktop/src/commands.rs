@@ -2755,51 +2755,17 @@ pub async fn add_document_thread(
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        let kind = match kind.as_str() {
-            "question" => er_service::AnnotationKind::Question,
-            "note" => er_service::AnnotationKind::Note,
-            other => return Err(format!("A document anchor cannot hold a {other}")),
-        };
-        let (active_tab, request) = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            (
-                app.active_tab,
-                app.tab()
-                    .capture_file_preview(&file)
-                    .map_err(|e| e.to_string())?,
-            )
-        };
-        if request.preview_key != preview_key {
-            return Err("The document changed before the comment was saved".to_string());
-        }
-        let source = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
-        let (key, command) = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            if app.active_tab != active_tab
-                || app.tab().file_preview_key(&file) != request.preview_key
-            {
-                return Err("The document changed before the comment was saved".to_string());
-            }
-            let context = tab_context(&app);
-            let key = context.workspace_key();
-            (
-                key,
-                er_service::Command::AddDocumentThread {
-                    context,
-                    file,
-                    line: line_num,
-                    line_end: line_num_end,
-                    kind,
-                    body: text,
-                    source,
-                },
-            )
-        };
-        state
-            .service
-            .send(&key, command)
-            .map_err(|error| error.to_string())?;
-        Ok(AppSnapshot::default())
+        service_add_document_thread(
+            &state,
+            DocumentThread {
+                file,
+                kind,
+                line_num,
+                line_num_end,
+                text,
+                preview_key,
+            },
+        )
     })
     .await;
     #[cfg(not(feature = "v1-service"))]
@@ -2843,6 +2809,78 @@ pub async fn add_document_thread(
         Ok(snap_from_confirmed(&app, &state))
     })
     .await
+}
+
+/// A document thread as the preview sends it.
+#[cfg(feature = "v1-service")]
+pub(crate) struct DocumentThread {
+    pub file: String,
+    pub kind: String,
+    pub line_num: usize,
+    pub line_num_end: Option<usize>,
+    pub text: String,
+    pub preview_key: String,
+}
+
+/// The flag path of `add_document_thread`. The preview and its text come from
+/// the App's tab, which renders it; the context comes from the registry's
+/// active tab, as every annotation route's does. The App's tab key is read
+/// with the preview, so while the App lags the registry the text is refused
+/// rather than written to the registry's other tab.
+#[cfg(feature = "v1-service")]
+pub(crate) fn service_add_document_thread(
+    state: &AppState,
+    thread: DocumentThread,
+) -> Result<AppSnapshot, String> {
+    let DocumentThread {
+        file,
+        kind,
+        line_num,
+        line_num_end,
+        text,
+        preview_key,
+    } = thread;
+    let kind = match kind.as_str() {
+        "question" => er_service::AnnotationKind::Question,
+        "note" => er_service::AnnotationKind::Note,
+        other => return Err(format!("A document anchor cannot hold a {other}")),
+    };
+    let changed = || "The document changed before the comment was saved".to_string();
+    let (active_tab, key, request) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        (
+            app.active_tab,
+            app.tab().key(),
+            app.tab()
+                .capture_file_preview(&file)
+                .map_err(|e| e.to_string())?,
+        )
+    };
+    if request.preview_key != preview_key {
+        return Err(changed());
+    }
+    let source = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
+    {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if app.active_tab != active_tab
+            || app.tab().key() != key
+            || app.tab().file_preview_key(&file) != request.preview_key
+        {
+            return Err(changed());
+        }
+    }
+    content_routes::annotate(state, Some(key), |context| {
+        er_service::Command::AddDocumentThread {
+            context,
+            file,
+            line: line_num,
+            line_end: line_num_end,
+            kind,
+            body: text,
+            source,
+        }
+    })?;
+    Ok(AppSnapshot::default())
 }
 
 #[tauri::command]
@@ -6767,7 +6805,7 @@ fn service_open(
     // The PR becomes a registry tab whose content the actor loads. The
     // flag-on desktop does not render from the service yet, so the command
     // acknowledges the open without moving the view.
-    content_routes::open(state, tab)
+    content_routes::open(state, tab, replace.unwrap_or(false))
 }
 
 /// The tab a routed annotation command acts on, with every field its effect
@@ -6803,30 +6841,31 @@ pub(crate) fn tab_context(app: &er_engine::app::App) -> er_service::TabContext {
 /// The flag-on desktop does not render from the service yet (D21), so the
 /// returned snapshot is empty; the open commands are tab changes and blank
 /// until the next poll, while annotation commands keep the painted row
-/// (ADR 0017). The view is checked before the context is read, so a write
-/// painted on a tab switch is refused.
+/// (ADR 0017).
+///
+/// The context and the key come from the app registry's active tab and its
+/// published content. The view the user painted on is still checked on the
+/// App, which renders it. Every command here carries something the page took
+/// from the App, a painted view or a path or thread id on screen, so the App
+/// tab's key goes to `annotate`, which refuses the command when the
+/// registry's active tab is another one.
 #[cfg(feature = "v1-service")]
 fn route_annotation(
     state: &AppState,
     view: Option<&crate::snapshot::OptimisticView>,
     build: impl FnOnce(er_service::TabContext) -> er_service::Command,
 ) -> Result<AppSnapshot, String> {
-    let (key, command) = {
+    let expected = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
         // The flag-on desktop does not render the service snapshot (D21), so a
         // wrong-view snapshot would read as success and leave the paint in
         // place. Err is what makes the frontend roll the paint back.
         if abort_wrong_view(&app, state, view).is_some() {
-            return Err("The active view changed; the annotation was not written".to_string());
+            return Err(content_routes::MOVED.to_string());
         }
-        let context = tab_context(&app);
-        let key = context.workspace_key();
-        (key, build(context))
+        app.tab().key()
     };
-    state
-        .service
-        .send(&key, command)
-        .map_err(|error| error.to_string())?;
+    content_routes::annotate(state, Some(expected), build)?;
     Ok(AppSnapshot::default())
 }
 
@@ -7242,7 +7281,7 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
     return {
         let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path_str);
-        content_routes::open(&state, content_routes::working_tab(path_str))
+        content_routes::open(&state, content_routes::working_tab(path_str), false)
     };
     #[cfg(not(feature = "v1-service"))]
     return open_worktree_tab(&state, path_str);
@@ -7502,11 +7541,10 @@ pub async fn open_local_branch(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    // Flag-on, the registry appends the tab; it has no in-place replace yet.
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        let _ = replace;
-        content_routes::open(&state, content_routes::branch_tab(&project_id, name)?)
+        let tab = content_routes::branch_tab(&project_id, name)?;
+        content_routes::open(&state, tab, replace.unwrap_or(false))
     })
     .await;
     #[cfg(not(feature = "v1-service"))]
@@ -8714,7 +8752,12 @@ pub async fn open_pr_branch(
 ) -> Result<AppSnapshot, String> {
     let _ = head_ref; // ignored; PR head is fetched directly from origin
     let state = state.inner().clone();
-    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, None, &state)).await
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || service_open_pr_review(&state, project_id, pr_number, replace))
+        .await;
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, None, &state))
+        .await;
 }
 
 /// Fire-and-forget background warmup of the PR-open cache. Invoked from the
@@ -9424,6 +9467,13 @@ fn open_inbox_item_impl(
     crate::inbox::save_inbox_state(&state.inbox);
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
+    #[cfg(feature = "v1-service")]
+    if let Some(target) = target
+        .clone()
+        .and_then(|t| resolve_inbox_open_target(t, state))
+    {
+        return service_open_inbox_target(state, target, replace);
+    }
     match target.and_then(|t| resolve_inbox_open_target(t, state)) {
         Some(InboxOpenTarget::LocalPr {
             project_id,
@@ -9447,6 +9497,31 @@ fn open_inbox_item_impl(
         );
     }
     snap!(state)
+}
+
+/// An inbox open through the same flag-on helpers as a sidebar click.
+#[cfg(feature = "v1-service")]
+fn service_open_inbox_target(
+    state: &AppState,
+    target: InboxOpenTarget,
+    replace: Option<bool>,
+) -> Result<AppSnapshot, String> {
+    match target {
+        InboxOpenTarget::LocalPr {
+            project_id,
+            pr_number,
+            ..
+        } => service_open_pr_review(state, project_id, pr_number, replace),
+        InboxOpenTarget::RemotePr {
+            owner,
+            repo,
+            number,
+        } => service_open_remote_pr(state, owner, repo, number, replace),
+        InboxOpenTarget::Branch { project_id, branch } => {
+            let tab = content_routes::branch_tab(&project_id, branch)?;
+            content_routes::open(state, tab, replace.unwrap_or(false))
+        }
+    }
 }
 
 #[tauri::command]
@@ -9616,9 +9691,8 @@ pub fn open_project_branch(
 ) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
     return {
-        let _ = replace;
         let tab = content_routes::branch_tab(&project_id, branch)?;
-        content_routes::open(&state, tab)?;
+        content_routes::open(&state, tab, replace.unwrap_or(false))?;
         projects::set_active(&project_id);
         Ok(AppSnapshot::default())
     };
@@ -10014,6 +10088,29 @@ pub fn list_available_prs(
 
 #[tauri::command]
 pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    #[cfg(feature = "v1-service")]
+    return service_set_active_project(&state, &id);
+    #[cfg(not(feature = "v1-service"))]
+    return set_active_project_impl(&id, &state);
+}
+
+/// Opens a Working tab on the project's root through the registry, as the
+/// other flag-on opens do.
+#[cfg(feature = "v1-service")]
+fn service_set_active_project(state: &AppState, id: &str) -> Result<AppSnapshot, String> {
+    let root = projects::load()
+        .projects
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.root_path.clone())
+        .ok_or_else(|| format!("Project not found: {id}"))?;
+    content_routes::open(state, content_routes::working_tab(root), false)?;
+    projects::set_active(id);
+    Ok(AppSnapshot::default())
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn set_active_project_impl(id: &str, state: &AppState) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let file = projects::load();
     let proj = file
@@ -10027,10 +10124,10 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
     app.open_tab(new_tab);
     app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
     crate::tabs::persist_app_tabs(&app, &state.view);
-    projects::set_active(&id);
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, &state);
-    Ok(snap_from(&app, &state))
+    projects::set_active(id);
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    kick_active_gh_status(&app, state);
+    Ok(snap_from(&app, state))
 }
 
 #[tauri::command]
@@ -12547,6 +12644,8 @@ mod tests {
 
     #[cfg(feature = "v1-service")]
     mod content_route_tests;
+    #[cfg(feature = "v1-service")]
+    mod tab_key_tests;
     #[cfg(feature = "v1-service")]
     mod workspace_key_tests;
     #[cfg(not(feature = "v1-service"))]
@@ -16378,6 +16477,7 @@ mod route_tests {
             "open_worktree",
             "open_local_branch",
             "open_project_branch",
+            "service_set_active_project",
         ] {
             let body = source
                 .split_once(&format!("fn {command}("))
@@ -16403,6 +16503,21 @@ mod route_tests {
         ] {
             let route = call(route);
             assert!(source.contains(&route), "no command calls {route}");
+        }
+        // The opens that once built an App tab go through the flag-on helpers.
+        for (command, helper) in [
+            ("set_active_project", "service_set_active_project("),
+            ("open_pr_branch", "service_open_pr_review("),
+            ("open_inbox_item_impl", "service_open_inbox_target("),
+        ] {
+            let body = source
+                .split_once(&format!("fn {command}("))
+                .and_then(|(_, rest)| rest.split_once("\n}\n"))
+                .map(|(body, _)| body);
+            assert!(
+                body.is_some_and(|body| body.contains(helper)),
+                "{command} does not call {helper}"
+            );
         }
         // toggle_reviewed and mark_reviewed.
         let reviewed = source.matches(&call("write_reviewed(")).count();

@@ -20,7 +20,10 @@ front ends read, and D20 keeps the TUI layout widths, selection, cursor and
 scroll in the engine until phase 5b.
 
 **Browser state is keyed on a tab key.** `TabState` carries a `TabKey`, a
-process-local number given when the tab is built and never saved. The type
+process-local number given when the tab is built and never saved. On the
+`v1-service` path the app registry issues the key and the App's tab adopts
+it, so the registry, the App, the loaded content and the view state name a
+tab by one key. The type
 lives in the engine half that always compiles, so the desktop and the service
 name the same key.
 
