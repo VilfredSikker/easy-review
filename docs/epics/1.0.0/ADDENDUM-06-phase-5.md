@@ -28,7 +28,7 @@ brace.
   `cfg`. All 200 names are registered in the one `generate_handler!` list
   (`main.rs:1988`–`:2189`). By file: `commands.rs` 159, `arena_commands.rs` 20,
   `config_commands.rs` 11, `browser_webview.rs` 9, `risk_commands.rs` 2, and
-  one each in `commands/line_commits.rs`, `gh_pr_actions.rs`, `github_image.rs`
+  one each in `crates/er-desktop/src/commands/line_commits.rs`, `gh_pr_actions.rs`, `github_image.rs`
   and `main.rs` (`v1_service_enabled` `:890`). So 46 commands sit outside
   `commands.rs`, and the exit rule covers all of them.
 - **Return types.** 129 commands return a type named `*Snapshot`
@@ -54,7 +54,7 @@ brace.
   (`snapshot.rs:105`, ADR 0013); the delta key `file_delta_key` (`:137`) also
   hashes the file's threads (ADR 0012).
 - **desktop-ui.** `types.ts` is 1,179 hand-written lines with 83 exported
-  types, plus `types/arena.ts` (233). `app.svelte.ts` (1,275 lines) holds the
+  types, plus `desktop-ui/src/lib/types/arena.ts` (233). `app.svelte.ts` (1,275 lines) holds the
   one `snapshot` store, the 30 s safety timer (`pollIntervalMs` `:285`,
   `startPolling` `:575`), the `er://revision` listener (`:634`), `cmd`
   (`:1025`), `cmdOptimistic` (`:864`) and `cmdReviewed` (`:972`).
@@ -65,8 +65,8 @@ brace.
   checkmark is a separate path through `cmdReviewed`. The proposal's "36
   operation kinds" is stale. `snapshotDelta.ts` (54), `snapshotChrome.ts`
   (142) and `tabSnapshotCache.ts` (153, `TAB_SNAPSHOT_CACHE_CAP = 8` `:4`)
-  carry the merge and cache rules. 106 non-test files read `app.snapshot` or
-  name `AppSnapshot`.
+  carry the merge and cache rules. 104 non-test `.ts` and `.svelte` files
+  (stories excluded) read `app.snapshot` or name `AppSnapshot`.
 - **What the service already publishes** (ADR 0067, 0069, 0070, 0071).
   `WorkspaceView` (`er-service/src/workspace.rs:45`) carries the targets, the
   live arena runs, the review flows and `tabs: BTreeMap<TabKey,
@@ -86,20 +86,20 @@ brace.
   job (`ci.yml:83`) runs the same two. desktop-ui checks the build value in
   `v1ServiceFlag.ts`.
 - **The engine split.** Only `app` and `export` are `ui`-gated in
-  `er-engine/src/lib.rs`; `arena` and `navigation` are always compiled.
+  `crates/er-engine/src/lib.rs`; `arena` and `navigation` are always compiled.
   er-desktop depends on er-engine with default features and names
-  `er_engine::app::` 150 times (98 in `commands.rs`). Its `export.rs` calls
+  `er_engine::app::` on 158 lines (98 in `commands.rs`). Its `export.rs` calls
   the `ui`-gated `er_engine::export`.
 - **No codegen exists.** No crate depends on `ts-rs` or `specta`.
 - **The sidebar's PR fingerprint ignores `head_oid`.** `build_projects`
   (`snapshot.rs:4552`) memoizes the project rows behind `ProjectsCacheKey`
   (`:4581`); `build_projects_cache_key` (`:4592`) hashes each remote's PR count
-  and last fetch time. The 30 s head probe (`main.rs:1316`–`:1370`) calls
+  and last fetch time. The 30 s head probe (the thread at `main.rs:1316`) calls
   `patch_pr_head_oid` (`pr_cache.rs:114`, call `main.rs:1362`), which changes
   one row's `head_oid` in place and touches neither, so the sidebar keeps the
   old oid until the next full sweep. The coordinator's "about line 4484" was a
   `main` line number; at this ref it is `:4592`. The probe also picks its
-  target from the App's active tab (`pr_head_probe_target`).
+  target from the App's active tab (`pr_head_probe_target`, `main.rs:656`).
 - **Sidebar sources are desktop-side** (D19): projects (`projects.rs`), the
   branch metadata cache (`ProjectMeta` `snapshot.rs:2375`,
   `refresh_meta_cache` `:2386`), the PR list cache (`pr_cache.rs`), GitHub
@@ -175,8 +175,8 @@ These come from #578's follow-ups and review, #596 and P47.2c.2. All are
     through `AppRead` → P53–P60 port each section; P62.2 deletes both;
   - History, Conflicts and Hidden load on the App (`commands.rs:1333`), and
     History file clicks reach `history_select_file` (P47.2c.2) → **P56.3**;
-  - compaction expansion (`toggle_compacted`), mtime sort, file and image
-    previews and `list_diff_paths` → **P56.2**;
+  - compaction expansion (`toggle_compacted`), file and image previews and
+    `list_diff_paths` → **P56.2**;
   - GitHub senders keyed off the App tab: `active_tab_command`
     (`commands.rs:6836`), `send_for_active_tab` (`:6845`) and the comment
     tick, plus `abort_wrong_view` (`:343`) and the document preview check →
@@ -191,8 +191,8 @@ These come from #578's follow-ups and review, #596 and P47.2c.2. All are
 1. #578 and P47.2c.2 merged and #538 closed with the exit checklist and the
    "left on the App" list in its body; STATUS and BUILD_LOG updated.
 2. **D2:** merge `main` into `release/v1.0.0` (three CI commits at
-   `f107a0944`) and run `just ci` through the lock. This is a gate step, not an
-   entry.
+   `f107a0944`) and run `just ci` through the lock. The coordinator does this
+   at the gate; no entry holds it.
 3. Re-pin every **re-pin** citation here and in the step plans at the merge
    head; record what moved in this file's Notes.
 4. The coordinator confirms the proposals below and the owner approves the
@@ -243,8 +243,8 @@ Each is a planning proposal the coordinator confirms or changes at the gate.
     `session` (watch status, app version, active AI labels, config load
     error), `view(tab)` (browser pane, ADR 0068) and `panels`, and
     `ui_annotations(tab)`.
-  - Notices become an `er://notice` event, since a notice is a moment, not
-    state.
+  - Notices become an `er://notice` event: a notice happens once and has
+    nothing to refetch.
 - **A4 Content addressing.** `hunks(hash)` is keyed by the hash of one file's
   own hunk lines, `file_lines_key`'s rule (ADR 0013), computed by the service
   builder. Threads leave the hunk payload: they come from `annotations(tab)`
@@ -266,11 +266,11 @@ Each is a planning proposal the coordinator confirms or changes at the gate.
   `er::command_shape` at error tier: a `#[tauri::command]` function must
   return `Result<T, ErError>` or a type with no `Result` and no `String`
   error, and no path segment of its return type may end in `Snapshot`. Its
-  allow-list freezes today's 200 names and may only shrink; P61 shrinks it and
+  allow-list freezes the 196 names that fail it today and may only shrink; P61 shrinks it and
   P62.2 deletes it. Planted breaks cover the two direct shapes and a type alias
   (`type R = Result<X, String>`), which a literal match would miss.
-- **A7 The protocol ADR.** P52.2 adds ADR 0072 (check the number at commit
-  time) for the protocol: resources with versions, push invalidation per key,
+- **A7 The protocol ADR.** P52.2 adds the protocol ADR, numbered 0072 unless that number is
+  taken at commit time: resources with versions, push invalidation per key,
   content-addressed hunks, `ErError`, the three commands, `ts-rs`, and
   ADR 0017's `client_id` rule carried over unchanged. The seven
   "Superseded by" marks on ADRs 0011, 0012, 0016, 0017, 0018, 0033 and 0034
@@ -294,8 +294,8 @@ Each is a planning proposal the coordinator confirms or changes at the gate.
   tab switch, mark reviewed, next file and add question. Budget: within 10% or
   2 ms of the old median, whichever is larger (ADDENDUM-05, B6). An action
   whose paint was optimistic is also timed click-to-paint in the desktop with
-  `profileLog` and the numbers recorded in the PR; that row is reported, not
-  asserted.
+  `profileLog` and the numbers recorded in the PR; that row is reported and
+  has no assertion.
 - **A10 Selection and navigation.** The frontend owns selection, cursor and
   scroll (the proposal's §3.5); `next_file` and its siblings become desktop-ui
   functions over `diff(tab)` and `reviewed(tab)`, so a keypress makes no IPC
@@ -374,7 +374,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p51-command-shape-rule`. Lanes: C. Model: `opus`. Depends on: P50 (it names `ErError`).
 - **Goal:** the exit rule exists from the start, so no new command takes the old shape.
-- **Done when:** a syn rule in `crates/er-lint-gate/src/` walks every `#[tauri::command]` function in er-desktop and fails one whose return type is `Result<_, String>` or has a path segment ending in `Snapshot`, resolving local type aliases in the same file; `[workspace.metadata.lint-gate]` lists today's 200 names as the allow-list, and a test fails if the list grows; the rule runs in both clippy passes.
+- **Done when:** a syn rule in `crates/er-lint-gate/src/` walks every `#[tauri::command]` function in er-desktop and fails one whose return type is `Result<_, String>` or has a path segment ending in `Snapshot`, resolving local type aliases in the same file; `[workspace.metadata.lint-gate]` lists the 196 names that fail it today as the allow-list, and a test fails if the list grows; the rule runs in both clippy passes.
 - **Planted breaks:** a new command returning `Result<AppSnapshot, String>` outside the list fails; one returning `Result<u8, String>` fails; one returning an alias `type R = Result<u8, String>` fails; adding a name to the list fails the shrink test.
 - Size: S.
 
@@ -382,16 +382,16 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p52a-resource-host`. Lanes: D, S, P. Model: `opus`. Depends on: P50, P51.
 - **Goal:** with the flag on, the desktop answers `er_send`, `er_fetch` and `er_versions` and pushes `er://resources`; nothing reads it yet.
-- **Done when:** a desktop resource host maps each `ResourceKey` to its owner (workspace actors through `ServiceState`, the registry, the settings actor, the desktop owners); a relay subscribes to each actor's `ViewPublished` and to `TabsChanged`, compares section revisions with the last published view and emits `ResourceChanged` only for keys whose revision moved, coalesced as `run_revision_watcher` does; the three commands are registered, in `permissions/app-commands.toml` and in `ipcAllowlist.test.ts`, and pass `er::command_shape` with no allow-list entry; the first resource, `tabs`, is served; the old `er://revision` path is untouched.
+- **Done when:** a desktop resource host maps each `ResourceKey` to its owner (workspace actors through `ServiceState`, the registry, the settings actor, the desktop owners); a relay subscribes to each actor's `ViewPublished` and to `TabsChanged`, compares section revisions with the last published view and emits `ResourceChanged` only for keys whose revision moved, coalesced as `run_revision_watcher` does; the three commands are registered, in `crates/er-desktop/permissions/app-commands.toml` and in `ipcAllowlist.test.ts`, and pass `er::command_shape` with no allow-list entry; the first resource, `tabs`, is served; the old `er://revision` path is untouched.
 - **Planted breaks:** a relay that emits every key on every publish fails the precision test (an arena tick moves no `diff(tab)` version); a write that does not bump fails the bump-on-write test; an `er_fetch` that blocks on the actor fails the held-actor bound test (ADR 0067); dropping the command from `app-commands.toml` fails the allowlist test.
 - **Fallback split:** P52.1a host and relay; P52.1b the commands and permissions.
 - Size: M.
 
-### P52.2 The frontend resource client, the adapter pattern and ADR 0072
+### P52.2 The frontend resource client, the adapter pattern and the protocol ADR
 
 - Branch: `epic/p52b-resource-client`. Lanes: U, P. Model: `opus`. Depends on: P52.1.
 - **Goal:** desktop-ui can hold resources by version, refetch on push, and run one adapter store in both flag modes.
-- **Done when:** a hand-typed client wraps the three commands with the generated types; a resource store tracks the versions it holds, refetches a shown key only when an `er://resources` version exceeds it, and asks `er_versions` on the 30 s safety net and once after the listener attaches; the `tabs` adapter store reads `app.snapshot.tabs` with the flag off and `er_fetch` with it on, and the tab strip reads the adapter; ADR 0072 is added; `CONTEXT.md` gains **Resource** (a versioned piece of published state with one writer).
+- **Done when:** a hand-typed client wraps the three commands with the generated types; a resource store tracks the versions it holds, refetches a shown key only when an `er://resources` version exceeds it, and asks `er_versions` on the 30 s safety net and once after the listener attaches; the `tabs` adapter store reads `app.snapshot.tabs` with the flag off and `er_fetch` with it on, and the tab strip reads the adapter; the protocol ADR is added; `CONTEXT.md` gains **Resource** (a versioned piece of published state with one writer).
 - **Planted breaks:** a store that refetches on every event fails the version test; a safety net that calls the old `poll` with the flag on fails the flag test; a listener attached after a push leaves the store stale, and the attach-time `er_versions` test catches it when that call is removed; the tab strip reading `app.snapshot` directly fails a source scan.
 - Size: M.
 
@@ -416,7 +416,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p55a-sidebar-projects`. Lanes: DS, US, P. Model: `opus`. Depends on: P52.2.
 - **Goal:** the desktop app owner exists and publishes the project rows and each project's branches.
-- **Done when:** the owner module holds one writer per resource and bumps on write; `projects` carries the project records without PR lists, and `branches(project)` the local and auto branches with worktree paths and the open PR number, from the metadata cache; `is_active` and `is_current` are derived in the frontend from `tabs`; the project commands (7) go through `er_send`; `auto_register` takes the registry's tabs, not the startup tab; the entry stops reading `projects` (its non-PR fields) and `worktrees`.
+- **Done when:** the owner module holds one writer per resource and bumps on write; `projects` carries the project records without PR lists, and `branches(project)` the local and auto branches with worktree paths and the open PR number, from the metadata cache; `is_active` and `is_current` are derived in the frontend from `tabs`; the project commands (7) go through `er_send`; `auto_register` reads the registry's tab list on the flag path; the entry stops reading `projects` (its non-PR fields) and `worktrees`.
 - **Planted breaks:** a second writer of the projects record fails the one-writer test; a branch refresh that does not bump `branches(project)` fails; an `is_active` computed on the server fails a source scan; `auto_register` reading the App's startup tab fails the flag-on test.
 - Size: M.
 
@@ -448,7 +448,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p56b-content-addressed-hunks`. Lanes: S, D, U, P. Model: `opus`. Depends on: P56.1.
 - **Goal:** hunks are fetched by content hash and cached in the frontend; the server records nothing about what it sent.
-- **Done when:** `hunks(hash)` is served per A4; DiffView joins hunks with threads from `annotations(tab)` (adapter-fed until P58.1); the frontend cache is an LRU bounded by bytes; previews, compaction expansion, mtime sort and `list_diff_paths` (5 commands) run on the service; with the flag on, no code path calls `record_sent_file` or reads `hunks_omitted`.
+- **Done when:** `hunks(hash)` is served per A4; DiffView joins hunks with threads from `annotations(tab)` (adapter-fed until P58.1); the frontend cache is an LRU bounded by bytes; previews, compaction expansion and `list_diff_paths` (5 commands) run on the service; with the flag on, no code path calls `record_sent_file` or reads `hunks_omitted`.
 - **Planted breaks:** a hash that includes threads makes a comment re-send the file and fails the comment test; an unbounded cache fails the byte-bound test; a fetch of an unparsed file that parses on the reader thread instead of through `ParseFiles` fails the one-parse-path test; a flag-on call to `record_sent_file` fails the source scan.
 - **Fallback split:** P56.2a hunks and the cache; P56.2b previews and file reads.
 - Size: L.
@@ -516,7 +516,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p61-window-commands`. Lanes: D, U, P. Model: `sonnet`. Depends on: P51, P52.1. Runs in the sidebar track after P55.3.
 - **Goal:** the 27 commands that stay direct return `Result<T, ErError>` with protocol types.
-- **Done when:** the browser webview (9), terminal (4), OS launch and reveal (6), export (3), `start_window_drag`, `detect_dev_url`, `line_commits`, `fetch_github_image` and `dev_log_filter` commands are typed; their names leave the allow-list; their callers use the generated types.
+- **Done when:** the browser webview (9), terminal (4), OS launch and reveal (6), export (3), `start_window_drag`, `detect_dev_url`, `line_commits`, `fetch_github_image` and `dev_log_filter` commands are typed; the names among them that fail the rule leave the allow-list; their callers use the generated types.
 - **Planted breaks:** restoring one to `Result<_, String>` fails `er::command_shape`; re-adding a name to the allow-list fails the shrink test.
 - Size: M.
 
@@ -532,8 +532,8 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p62b-delete-old-desktop-path`. Lanes: D, DS, C, P. Model: `opus`. Depends on: P62.1.
 - **Goal:** the phase exit.
-- **Done when:** `snapshot.rs` and `commands.rs` are deleted, with the App-backed desktop route, `get_snapshot`, `poll`, `v1_service_enabled`, `run_revision_watcher` and the follower; er-desktop has no `er_engine::app` reference and depends on er-engine with `default-features = false` (`export.rs` moves off the `ui`-gated `er_engine::export` first); the `v1-service` feature leaves er-desktop and stays on er-tui (A12), and `test-v1`, CI and the lint gate's second pass keep only er-tui; the `er::command_shape` allow-list is empty and deleted, and no command returns a `*Snapshot` type or `Result<_, String>`; ADRs 0011, 0012, 0016, 0017, 0018, 0033 and 0034 are marked "Superseded by ADR 0072", and docs-check fails when a superseded mark and the superseding ADR's list disagree; `CLAUDE.md`'s push-driven line, `crates/er-desktop/agent.md`, `desktop-ui/agent.md` and `desktop-ui/src/lib/stores/agent.md` describe resources; `app-commands.toml` and `ipcAllowlist.test.ts` list the surviving commands only.
-- **Planted breaks:** a command returning `Result<AppSnapshot, String>` fails `er::command_shape` with no allow-list to hide in; a `use er_engine::app::App` in er-desktop fails the build; deleting 0012 from ADR 0072's supersedes line fails docs-check; a compile error behind `cfg(feature = "v1-service")` in er-tui still fails CI on a throwaway draft PR (#470's shape); re-adding the feature to er-desktop fails the default-build `cfg!` test, moved to assert the feature is gone.
+- **Done when:** `snapshot.rs` and `commands.rs` are deleted, with the App-backed desktop route, `get_snapshot`, `poll`, `v1_service_enabled`, `run_revision_watcher` and the follower; er-desktop has no `er_engine::app` reference and depends on er-engine with `default-features = false` (`export.rs` moves off the `ui`-gated `er_engine::export` first); the `v1-service` feature leaves er-desktop and stays on er-tui (A12), and `test-v1`, CI and the lint gate's second pass keep only er-tui; the `er::command_shape` allow-list is empty and deleted, and no command returns a `*Snapshot` type or `Result<_, String>`; ADRs 0011, 0012, 0016, 0017, 0018, 0033 and 0034 are marked "Superseded by" the protocol ADR, and docs-check fails when a superseded mark and the superseding ADR's list disagree; `CLAUDE.md`'s push-driven line, `crates/er-desktop/agent.md`, `desktop-ui/agent.md` and `desktop-ui/src/lib/stores/agent.md` describe resources; `app-commands.toml` and `ipcAllowlist.test.ts` list the surviving commands only.
+- **Planted breaks:** a command returning `Result<AppSnapshot, String>` fails `er::command_shape` with no allow-list to hide in; a `use er_engine::app::App` in er-desktop fails the build; deleting 0012 from the protocol ADR's supersedes line fails docs-check; a compile error behind `cfg(feature = "v1-service")` in er-tui still fails CI on a throwaway draft PR (#470's shape); re-adding the feature to er-desktop fails the default-build `cfg!` test, moved to assert the feature is gone.
 - **Fallback split:** P62.2a the deletion and the crate edges; P62.2b the rule, the ADR marks, docs-check and CI.
 - Size: M (deletions do not count).
 
@@ -562,7 +562,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
   waits for P55.3.
 - **Pair (b), P59 beside P60.1.** P59 edits the GitHub senders and the PR
   card; P60.1 edits `arena_service.rs`, `flow_service.rs`,
-  `arena_commands.rs` and `stores/arena.svelte.ts`. Shared files:
+  `arena_commands.rs` and `desktop-ui/src/lib/stores/arena.svelte.ts`. Shared files:
   `ResourceKey`, the host dispatch, the wire command enum. Additions only.
 - At most three lanes run at once (PLAN); the sidebar track holds DS and US,
   which the workspace track never takes, so the two tracks fit beside each
@@ -595,10 +595,10 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ## ADR and doc changes
 
-- P52.2 adds ADR 0072 (the protocol) and the **Resource** term in
+- P52.2 adds the protocol ADR and the **Resource** term in
   `CONTEXT.md`.
 - P62.2 marks ADRs 0011, 0012, 0016, 0017, 0018, 0033 and 0034 superseded by
-  0072, adds the two-way supersession check to docs-check, and rewrites the
+  the protocol ADR, adds the two-way supersession check to docs-check, and rewrites the
   push-driven line in `CLAUDE.md` and the poll text in
   `crates/er-desktop/agent.md`, `desktop-ui/agent.md` and
   `desktop-ui/src/lib/stores/agent.md`.
