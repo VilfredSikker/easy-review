@@ -13,8 +13,8 @@ use crate::commands::{
     content_routes, route_annotation, service_add_document_thread, service_new_tab, AppState,
     DocumentThread,
 };
-use crate::snapshot::OptimisticView;
 use crate::service::ServiceState;
+use crate::snapshot::OptimisticView;
 
 const REMOTE: &str = "acme/widgets";
 
@@ -490,7 +490,10 @@ fn a_document_thread_is_refused_while_the_app_lags_the_registry() {
 
         let refused = service_add_document_thread(&state, document_note(preview_key));
 
-        assert!(refused.is_err(), "a lagging thread was written: {refused:?}");
+        assert!(
+            refused.is_err(),
+            "a lagging thread was written: {refused:?}"
+        );
         assert_eq!(notes(&state, key, &second), 0, "the thread moved tabs");
         follow(&state);
         let preview_key = seed_readme(&state);
