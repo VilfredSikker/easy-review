@@ -51,10 +51,16 @@ struct Fixture {
     active: (TabKey, TabDescriptor),
 }
 
-fn fixture(dir: &ReviewFlowTestDir) -> Fixture {
+/// A desktop state whose service runs on `ports`.
+fn state_over(dir: &ReviewFlowTestDir, ports: er_engine::ports::Ports) -> AppState {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
-    state.service = Arc::new(ServiceState::with_settings_path(ports(), settings));
+    state.service = Arc::new(ServiceState::with_settings_path(ports, settings));
+    state
+}
+
+fn fixture(dir: &ReviewFlowTestDir) -> Fixture {
+    let state = state_over(dir, ports());
     for repo in ["one", "two"] {
         let root = dir.path().join(repo);
         std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
@@ -98,7 +104,7 @@ fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
 type Route = fn(&AppState) -> Result<(), String>;
 
 /// Each routed command, as its Tauri command calls it.
-const ROUTES: [(&str, Route); 6] = [
+const ROUTES: [(&str, Route); 7] = [
     ("refresh_diff", |state| {
         content_routes::refresh(state, false).map(drop)
     }),
@@ -123,6 +129,14 @@ const ROUTES: [(&str, Route); 6] = [
         content_routes::write_reviewed(state, |context| Command::ToggleReviewed {
             context,
             path: "src/f1.rs".to_string(),
+        })
+        .map(drop)
+    }),
+    ("unmark_reviewed", |state| {
+        content_routes::write_reviewed(state, |context| Command::MarkReviewed {
+            context,
+            path: "src/f1.rs".to_string(),
+            reviewed: false,
         })
         .map(drop)
     }),
@@ -173,6 +187,8 @@ fn each_content_route_moves_only_the_active_tab_without_the_app_lock() {
         );
         assert!(!active_after.diff.files[5].hunks.is_empty());
         assert!(active_after.reviewed.marks.contains_key("src/f0.rs"));
+        let unmarked = !active_after.reviewed.marks.contains_key("src/f1.rs");
+        assert!(unmarked, "the toggled mark stayed");
         let nav = state.view.lock().map(|view| view.nav(active.0));
         assert_eq!(nav.map(|nav| nav.selected_file).ok(), Some(3));
     });
@@ -279,5 +295,130 @@ fn a_recorded_mode_still_reaches_the_app() {
         assert_eq!(content(&state, &active).tab.mode, DiffMode::History);
         let app_mode = state.app.lock().map(|app| app.tab().mode);
         assert_eq!(app_mode.ok(), Some(DiffMode::History));
+    });
+}
+
+/// A file click while the active tab shows History reaches the App's History
+/// selection, which the App still shows.
+#[test]
+fn a_history_file_click_reaches_the_app() {
+    with_storage(|dir| {
+        let Fixture { state, active, .. } = fixture(dir);
+        let switched = crate::commands::set_mode_impl(&state, "history", None, None);
+        assert!(switched.is_ok(), "{:?}", switched.err());
+        assert!(content_routes::shows_history(&state));
+        let files: Vec<er_engine::git::DiffFile> = content(&state, &active).diff.files[..3]
+            .iter()
+            .map(|file| file.as_ref().clone())
+            .collect();
+        if let Ok(mut app) = state.app.lock() {
+            if let Some(history) = app.tab_mut().history.as_mut() {
+                history.commit_files = files;
+            }
+        }
+
+        let clicked = crate::commands::select_file_routed(&state, 2);
+
+        assert!(clicked.is_ok(), "{:?}", clicked.err());
+        let selected = state.app.lock().ok().and_then(|app| {
+            let history = app.tab().history.as_ref()?;
+            Some(history.selected_file)
+        });
+        assert_eq!(selected, Some(2), "the click did not reach History");
+    });
+}
+
+/// A plain tab's git, which answers every ref and accepts every fetch.
+fn ports_with_refs() -> (Arc<er_git::FakeGit>, er_engine::ports::Ports) {
+    let fake = Arc::new(
+        er_git::FakeGit::default()
+            .with_current_branch(Ok("feature".to_string()))
+            .with_detect_base_branch(Ok("main".to_string()))
+            .with_diff_raw(Ok(lazy_raw()))
+            .with_is_merge_in_progress(false)
+            .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string()))
+            .with_rev_parse_verify(Ok(Some("base-oid".to_string())))
+            .with_fetch(Ok(())),
+    );
+    let git: Arc<dyn er_git::Git> = fake.clone();
+    let github: Arc<dyn er_engine::github::GitHub> =
+        Arc::new(er_engine::github::FakeGitHub::default());
+    (fake, er_engine::ports::Ports { git, github })
+}
+
+fn open_one(state: &AppState, tab: TabDescriptor) -> (TabKey, TabDescriptor) {
+    let opened = while_the_app_is_locked(state, "open", move |state| {
+        content_routes::open(state, tab)
+    });
+    assert!(opened.is_ok(), "{opened:?}");
+    let view = state.service.app_registry().tabs_view();
+    let entry = view.active_entry().unwrap_or_else(|| panic!("no active tab"));
+    (entry.key, entry.descriptor.clone())
+}
+
+/// A sync of a branch view fetches `origin/<base>` again, then records that
+/// base as the probed one, so the branch pill clears.
+#[test]
+fn a_branch_sync_fetches_the_base_and_lines_the_probe_up() {
+    with_storage(|dir| {
+        let (git, ports) = ports_with_refs();
+        let mut state = state_over(dir, ports.clone());
+        state.ports = ports;
+        let root = dir.path().join("one");
+        std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
+        let root = root.to_string_lossy().into_owned();
+        let tab = open_one(&state, content_routes::working_tab(root.clone()));
+
+        let synced = while_the_app_is_locked(&state, "sync", content_routes::sync);
+
+        let synced = synced.unwrap_or_else(|e| panic!("sync: {e}"));
+        let refspec = "+refs/heads/main:refs/remotes/origin/main";
+        let fetched = git.calls().iter().any(|call| call.contains(refspec));
+        assert!(fetched, "the sync did not fetch the base");
+        assert_eq!(content(&state, &tab).tab.base_branch, "origin/main");
+        let probed = state.branch_base_remote_oid.lock().ok().and_then(|cache| {
+            let key = format!("{root}\u{0}main");
+            cache.get(&key).cloned()
+        });
+        assert_eq!(probed.as_deref(), Some("base-oid"));
+        assert_eq!(synced.repo_root, root);
+        assert_eq!(synced.status_key, None, "no PR is listed for the branch");
+    });
+}
+
+/// A sync of a PR tab adopts the PR list's head, which the stale pill
+/// compares, and names that PR for the status refresh.
+#[test]
+fn a_pr_sync_adopts_the_listed_head_and_names_its_status() {
+    with_storage(|dir| {
+        let github = er_engine::github::FakeGitHub::default()
+            .with_pr_diff_remote(Ok(lazy_raw()))
+            .with_pr_head_oid_remote(Ok("h-fetched".to_string()));
+        let ports = er_engine::ports::Ports {
+            git: ports().git,
+            github: Arc::new(github),
+        };
+        let state = state_over(dir, ports);
+        let target = er_service::OpenTarget::RemotePr {
+            owner: "acme".to_string(),
+            repo: "widgets".to_string(),
+            number: 7,
+            repo_root: String::new(),
+        };
+        let tab = content_routes::pr_tab(&target).unwrap_or_else(|e| panic!("pr tab: {e}"));
+        let tab = open_one(&state, tab);
+        let mut listed = crate::snapshot::minimal_pr_info(7, "t");
+        listed.head_oid = "h-listed".to_string();
+        if let Ok(mut cache) = state.pr_cache.lock() {
+            cache.insert("acme/widgets".to_string(), vec![listed]);
+        }
+
+        let synced = while_the_app_is_locked(&state, "sync", content_routes::sync);
+
+        let synced = synced.unwrap_or_else(|e| panic!("sync: {e}"));
+        let head = content(&state, &tab).pr.head_oid.clone();
+        assert_eq!(head.as_deref(), Some("h-listed"), "the listed head was not adopted");
+        let expected = ("acme".to_string(), "widgets".to_string(), 7);
+        assert_eq!(synced.status_key, Some(expected));
     });
 }

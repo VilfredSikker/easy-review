@@ -144,8 +144,9 @@ pub(crate) struct LoadInput {
     pub auto_unmark: bool,
     /// Re-read the checkout's branch first, as a refresh of a plain tab does.
     pub recheck_branch: bool,
-    /// Fetch the PR head and base refs first, as a sync or a first entry into
-    /// the PR diff does.
+    /// Fetch the refs the diff compares first, as a sync or a first entry into
+    /// the PR diff does: a local PR's head and base, or a branch view's
+    /// `origin/<base>`.
     pub fetch_pr_refs: bool,
     pub pr_refs_fetched: bool,
     /// The AI state the tab held, `None` for a tab not loaded yet. A plain
@@ -160,6 +161,22 @@ pub(crate) struct LoadInput {
     pub refresh_pr: bool,
     /// A PR head the caller confirmed, adopted as the diff's head.
     pub adopt_head_oid: Option<String>,
+}
+
+/// Fetches a branch view's `origin/<base>` again, so a sync compares against
+/// current origin. Best effort, as on the App: offline, the diff is still
+/// recomputed against the base already fetched. A base pinned under
+/// `refs/er/` is a deleted branch's last commit, with nothing on origin.
+fn fetch_branch_base(git: &dyn er_git::Git, tab: &mut ResolvedTab) {
+    let base = tab.base_branch.clone();
+    let base_short = base.strip_prefix("origin/").unwrap_or(&base);
+    if er_engine::github::is_pinned_pr_base(base_short) {
+        return;
+    }
+    if let Ok(resolved) = er_engine::github::fetch_base_branch_ref(git, &tab.repo_root, base_short)
+    {
+        tab.base_branch = resolved;
+    }
 }
 
 /// Loads one tab's content in its mode, by the steps a full diff refresh
@@ -196,6 +213,8 @@ pub(crate) fn load_tab(
             pr_refs_fetched = true;
             fetched_commits = Some(fetched.commits);
             fetched_head = fetched.last_diff_head_oid;
+        } else if tab.mode == DiffMode::Branch {
+            fetch_branch_base(git, &mut tab);
         }
     }
     if matches!(
