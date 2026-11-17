@@ -11,7 +11,9 @@ Every claim and citation below was checked against `release/v1.0.0` at
 `949eb993d` (2026-11-17), the merge of #597. Two phase-4 PRs were still open at
 that ref: #578 (P47.2b.2, head `88c21f507` on `epic/p47g-tab-keys`) and
 P47.2c.2 (local head `d5e060baa` on `epic/p47i-parity-exit`, no PR yet). Their
-sites are cited at those heads and marked **re-pin**: once both merge, every
+sites are cited at those heads and marked **re-pin**. After the pin, #578
+merged at `5942bc925` and P47.2c.2's local head moved to `2f709c637`; once
+P47.2c.2 merges too, every
 line number in this file and in the issue step plans is re-found by symbol at
 the merge head before the first build starts. Symbols are the anchor; line
 numbers are a convenience.
@@ -159,14 +161,42 @@ These come from #578's follow-ups and review, #596 and P47.2c.2. All are
 - `same_pr` requires the same tab kind (`content_routes.rs:122` at
   `88c21f507`) → **P54**, as a proposal below.
 - `launch_root` (`main.rs:1059`) and the warmer scope (`:1008`) read the
-  startup tab on the flag path → **P54** and **P56.1**; `auto_register`
-  (`projects.rs:523`) → **P55.1**.
+  startup tab on the flag path → **P54** and **P56.1**. The startup
+  registration block (`main.rs:997`–`:1003`: `sync_projects_from_tabs(&app.tabs)`,
+  `projects.rs:472`, then `auto_register` on `app.tab().repo_root`) →
+  **P55.1**.
 - `toggle_reviewed` and `mark_reviewed` (`write_reviewed`,
   `content_routes.rs:372`) have a follower-lag gap → **P57**: the command
   carries the `TabKey` the page rendered. P62.2 deletes the follower, which
   closes the class.
 - The sidecar reload watches `er_dir` only (#596; `readers`,
-  `sidecar_reload.rs:115`) → **P58.1**.
+  `er-service/src/sidecar_reload.rs:115`) → **P58.1**.
+- Only the frontend's `poll` drives `poll_impl` (`commands.rs:11869`, its one
+  caller `app.svelte.ts:589`), and its first pass is the only trigger for
+  `content_routes::reload_sidecars` (`commands/content_routes.rs:263`, active
+  tab only), `drain_agent_log`, `check_commands`, `poll_background_tasks`,
+  `process_ai_task_inbox`, `check_ai_files_changed` and
+  `kick_worktrees_warm` → **P52.1** (the backend tick, A17).
+- Review follow-ups from the phase-4 PRs:
+  - #577 plants 8 and 9 survive because no remote-PR-tab arena or flow test
+    exists → **P60.1** (an arena and a flow test on a remote PR tab, keyed
+    through `tabs`).
+  - #595 note 1: `history_commit` stays set outside History, so the App's
+    preview key differs from the service's (`er-service/src/content.rs:77`
+    passes `history_commit: None`) → **P56.3**, with the preview-stamp parity.
+  - #596: a stamp read after the AI read in `load_tab` can lose an outside
+    write → **P58.1**.
+  - #596: a spawn failure in `SidecarReloads::start`
+    (`er-service/src/sidecar_reload.rs:40`) leaves the key in `running`
+    (`:54`), so every later reload answers false → **P58.1**.
+  - #596: `LoadTab` in History, Conflicts or Hidden still fails, and recorded
+    modes keep the old view's context and AI bucket → **P56.3**.
+  - #578: the gating scan accepts `cfg(any(feature = "v1-service", test))`;
+    the remote-PR row check "replaced tab's content stayed" in `every_kind…`
+    cannot fail; m02 (stubs built outside the App lock) is untested →
+    **deferred to P62.2**: #578 records all three as closing when the
+    follower is deleted, and P62.2 deletes it; a fix before then would test
+    code that P62.2 removes.
 - Cmd-T on a remote PR tab opens a rootless Working tab (predates phase 4) →
   **P54**.
 - **"Left on the App with the flag on"** (provisional; the coordinator
@@ -184,6 +214,22 @@ These come from #578's follow-ups and review, #596 and P47.2c.2. All are
   - arena `resolve` (`arena_service.rs:55`) and flow `key`
     (`flow_service.rs:39`) → **P60.1**;
   - the PR head probe's target (`pr_head_probe_target`) → **P55.2**;
+  - background threads in `main.rs` that read the App's active tab
+    (all at `949eb993d`):
+    - the active-branch watcher `run_active_branch_watcher` (`:702`) picks
+      its target with `desired_local_branch_watch` (`:719`, `:2245`),
+      mirrors the checkout root with `apply_watch_checkout_root` (`:753`),
+      and on a file change calls `refresh_diff_quick_with_unmark` on the App
+      tab (`:783`), so with the flag on `diff(tab)` never follows a file save
+      and auto-unmark never reaches the reviewed section → **P56.1**;
+    - the branch-base remote-oid probe (`:1234`, `probe_app.try_lock()`
+      `:1239`), which feeds the stale pill for branch views → **P56.1**;
+    - the GitHub status loop (`:1386`, `active_pr_identity(g.tab(), …)`
+      `:1395`), which feeds `pr_status` → **P59**;
+    - the inbox sweep's prefs (`commands::clone_inbox_prefs(&bg_app)` `:1609`,
+      `:1642`; `commands.rs:465` reads `app.config.inbox`) → **P55.3**;
+    - the meta-cache interval (`meta_app.try_lock()…tab().is_remote()`
+      `:1708`) → **P55.1**;
   - the App follower (`tabs::follow_registry`, #578) → deleted in **P62.2**.
 
 ## Gate steps (coordinator, before P50 starts)
@@ -197,14 +243,17 @@ These come from #578's follow-ups and review, #596 and P47.2c.2. All are
    head; record what moved in this file's Notes.
 4. The coordinator confirms the proposals below and the owner approves the
    plan; then the issues open as sub-issues of #371.
+5. The phase-5 gate is logged in BUILD_LOG (PLAN's gate step 6).
 
 ## Decisions settled by the coordinator
 
 Each is a planning proposal the coordinator confirms or changes at the gate.
 
 - **A1 Crate shape.** `er-protocol` is a leaf crate of wire types: serde,
-  `ts-rs`, and nothing from the workspace. A dependency allow-list in the
-  existing `er::core_io` rule holds it there. Deriving `TS` on er-core or
+  `ts-rs`, and nothing from the workspace. A second dependency allow-list in
+  the existing `er::core_io` rule, beside er-core's `ALLOWED`
+  (`crates/er-lint-gate/src/core_io.rs:25`), holds it there; the rule checks
+  er-protocol's manifest only, not its source. Deriving `TS` on er-core or
   engine types was rejected: it would put `ts-rs` on er-core's allow-list
   (P39) and tie the wire to internal types. The builders that map service
   views to wire types live in `er-service` (workspace resources) and in
@@ -219,9 +268,16 @@ Each is a planning proposal the coordinator confirms or changes at the gate.
   Tauri's event channel is the subscribe. `Ack` carries the versions the
   command moved and, for a create, the id. `ErError { kind, message }` maps
   `WorkspaceError` (including `Github(GhError)`, ADR 0055) to a kind the
-  frontend branches on. The wire command enum lives in er-protocol and names
-  tabs by `TabKey`; the desktop adapter resolves the `TabContext` from the
-  published content, as the phase-4 content routes do.
+  frontend branches on. The conversion is `impl From<WorkspaceError> for
+  ErError` in er-service, beside `WorkspaceError` (`er-service/src/handle.rs:25`):
+  er-service gains its er-protocol dependency in P52.1, which A1's builders
+  need anyway. er-desktop cannot hold that impl, since the trait and both
+  types would be foreign to it (E0117). The wire command enum lives in
+  er-protocol and names tabs by `TabKey`; the desktop adapter resolves the
+  `TabContext` from the published content, as the phase-4 content routes do.
+  Every flag-on command today has a flag-off twin, so the three commands are
+  registered in both builds; the flag-off bodies answer
+  `ErErrorKind::Unsupported` and go in P62.2.
 - **A3 Resources, owners and versions.** A resource's version is the
   revision its one writer stamped when it last replaced it, so no hash
   fingerprint decides freshness.
@@ -266,8 +322,9 @@ Each is a planning proposal the coordinator confirms or changes at the gate.
   `er::command_shape` at error tier: a `#[tauri::command]` function must
   return `Result<T, ErError>` or a type with no `Result` and no `String`
   error, and no path segment of its return type may end in `Snapshot`. Its
-  allow-list freezes the 196 names that fail it today and may only shrink; P61 shrinks it and
-  P62.2 deletes it. Planted breaks cover the two direct shapes and a type alias
+  allow-list freezes the 196 names that fail it today and may only shrink:
+  a name outside the frozen set fails, and so does a stale entry, one with no
+  command or whose every body passes. P61 shrinks it and P62.2 deletes it. Planted breaks cover the two direct shapes and a type alias
   (`type R = Result<X, String>`), which a literal match would miss.
 - **A7 The protocol ADR.** P52.2 adds the protocol ADR, numbered 0072 unless that number is
   taken at commit time: resources with versions, push invalidation per key,
@@ -275,27 +332,44 @@ Each is a planning proposal the coordinator confirms or changes at the gate.
   ADR 0017's `client_id` rule carried over unchanged. The seven
   "Superseded by" marks on ADRs 0011, 0012, 0016, 0017, 0018, 0033 and 0034
   land in P62.2, because the flag-off path runs under them until then.
-- **A8 The optimistic layer.** Each of the 22 op kinds and the reviewed path
-  is classified in the issue that ports it:
+- **A8 The optimistic layer.** Each of the 22 `OptimisticOp` kinds
+  (`optimisticLocal.ts:76`) and the reviewed path is classified in the entry
+  that ports the commands that paint it, and that entry stops the paint with
+  the flag on, so no paint waits for a confirming `AppSnapshot` that an `Ack`
+  never carries. The owners: `saved-pr` and `dismissed-pr` in P55.2
+  (`save_pr`, `unsave_pr`, `dismiss_remote_pr`, `undismiss_remote_pr`);
+  `inbox-read` and `inbox-clear` in P55.3; `bulk-reviewed` in P57
+  (`bulk_review_pillar`, `unbulk_review_pillar`); the other 17 in P58.2,
+  each named there. 2 + 2 + 1 + 17 = 22. The classes:
   - **pending until ack** (ADR 0017's `client_id`): thread and comment
-    creation (`add-thread`, `reply`, `promote`, `promote-finding`, the `new`
-    finding reply) and the reviewed checkmark on the one clicked path;
+    creation (`add-thread`, `reply`, `promote`, `promote-finding`, and
+    `reply-finding` for its `existing` and `new` targets; its `ai` target
+    paints nothing today) and the reviewed checkmark on the one clicked path;
   - **rule moved to the server**: the saved-PR cap (`MAX_SAVED_PRS`
-    `optimisticLocal.ts:74`), inbox unread counts, the dismissed-PR filter,
-    `reviewed_count` arithmetic and thread ordering are computed by the
-    resource builder;
-  - **deleted**: every other paint, once its resource's push arrives within
-    the latency budget (A9).
+    `optimisticLocal.ts:74`; the server keeps 50 by dropping the oldest, as
+    `projects.rs:190`–`:199` does), the dismissed-PR filter, inbox unread
+    counts, `reviewed_count` arithmetic and thread ordering are computed by
+    the resource builder, and the paint that applied them is deleted;
+  - **deleted**: every other paint, once its resource's push arrives. A hot
+    action (A9) whose measured median overruns the budget keeps its paint as
+    pending until ack, recorded in the PR.
 - **A9 Latency budget.** Old: the flag-off command plus
   `build_snapshot_with_delta` plus serialisation of the returned
   `AppSnapshot`. New: `er_send` to `Ack`, plus the changed resources'
-  `er_fetch` and their serialisation. Measured in the ignored harnesses above,
-  extended to er-desktop, over N runs on a 5,000-line diff, for open target,
-  tab switch, mark reviewed, next file and add question. Budget: within 10% or
-  2 ms of the old median, whichever is larger (ADDENDUM-05, B6). An action
-  whose paint was optimistic is also timed click-to-paint in the desktop with
-  `profileLog` and the numbers recorded in the PR; that row is reported and
-  has no assertion.
+  `er_fetch` and their serialisation. Budget: within 10% or 2 ms of the old
+  median, whichever is larger (ADDENDUM-05, B6). These are reported
+  measurements, as in P47.1: the harnesses are `#[ignore]` and never a CI
+  assertion (`er-service/src/tests.rs:208`, `content_tests.rs:463`), so each
+  entry records the old and new medians in its PR, and an overrun is acted on
+  there (the paint stays pending until ack, or the entry does not merge
+  until the coordinator accepts the number). P52.1 extends the harness to
+  er-desktop, with the old-path baseline taken over N runs on a 5,000-line
+  diff before any store moves. The hot actions and the entry that measures
+  each: open target in P54; save PR in P55.2; mark read in P55.3; tab switch
+  in P56.2, because hash-keyed hunks are what change its cost and they land
+  there; mark reviewed and next file in P57; add question in P58.2. An
+  action whose paint was optimistic is also timed click-to-paint in the
+  desktop with `profileLog`, and the numbers go in the PR.
 - **A10 Selection and navigation.** The frontend owns selection, cursor and
   scroll (the proposal's §3.5); `next_file` and its siblings become desktop-ui
   functions over `diff(tab)` and `reviewed(tab)`, so a keypress makes no IPC
@@ -333,7 +407,32 @@ Each is a planning proposal the coordinator confirms or changes at the gate.
   carries `#[ts(export)]`, so `cargo test --workspace` never rewrites the
   committed files and the drift check does not depend on what ran first.
   The barrel is written by the same generator: an index that re-exports the
-  generated types and nothing else.
+  generated types and nothing else. Two checks hold the "no
+  `#[ts(export)]`" rule, because ts-rs's export test writes to
+  `TS_RS_EXPORT_DIR` or to `./bindings` under the crate, an untracked path
+  that a diff of the generated directory never sees: a unit test in
+  er-protocol fails on any `ts(export` attribute in its source, and CI's
+  `test` job fails when `git status --porcelain` is not empty after
+  `cargo test`.
+- **A17 The backend tick.** `poll_impl` (`commands.rs:11869`) runs only when
+  the frontend calls `poll`, which it does on each `er://revision` event and
+  on the 30 s safety net. P52.1 adds a flag-on backend tick in er-desktop that
+  sends `ReloadSidecars` for every loaded key (today's
+  `content_routes::reload_sidecars` covers the active tab only) and runs
+  `poll_impl`'s other first-pass duties: `drain_agent_log`,
+  `check_commands`, `poll_background_tasks`, `process_ai_task_inbox`,
+  `check_ai_files_changed` and `kick_worktrees_warm`. With the flag on,
+  `poll_impl` skips that first pass, so each duty has one driver. The interval
+  is a proposal: 2 s, the cadence the poll had when it was the primary
+  mechanism (`app.svelte.ts:281`–`:284`); the reload's stamp check is a
+  `stat` per sidecar, and P52.1 records its cost. The snapshot's own `poll`
+  keeps running with the flag on for the stores not yet ported, until P62.1
+  deletes the snapshot store. Each duty that reads the App leaves the tick in
+  the entry that owns its data: `kick_worktrees_warm` takes its target from
+  `tabs` in P55.1, `check_ai_files_changed` goes in P58.1 (the annotations
+  come from the AI section), and `drain_agent_log`, `check_commands`,
+  `poll_background_tasks` and `process_ai_task_inbox` move off the App with
+  the runs they drive in P60.2. P62.2 deletes `poll`, after the tick exists.
 
 ## Owner decisions (decided)
 
@@ -358,7 +457,7 @@ owner on 2026-11-17:
 ## PR entries
 
 Shared acceptance: `fmt-check` and `clippy` always; `test`, `test-desktop`,
-`test-all` (er-protocol and er-service are outside `just test`), `test-v1` and
+`test-all` (er-service is outside `just test`; er-protocol joins it in P50), `test-v1` and
 `build-service-headless` as the touched crates require; `build-mcp` when engine
 features or dependencies change; `docs-check` for docs and ADRs; and for every
 entry that touches desktop-ui, `check-ui`, `lint-ui` and `test-ui`. Lint only
@@ -372,33 +471,33 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p50-er-protocol`. Lanes: C, P. Model: `opus`. Depends on: #538 closed and this addendum's gate steps.
 - **Goal:** the wire crate and generated TypeScript, before any resource uses them.
-- **Done when:** `crates/er-protocol` exists as a leaf crate with `ResourceKey`, `ResourceVersion`, `Versioned<T>`, `ResourceChanged`, `Ack`, `ErError { kind, message }` and an empty wire command enum, each deriving serde and `TS`; `just protocol-gen` runs the explicit generator (A16) into `desktop-ui/src/lib/protocol/generated/`; `just protocol-check` exports into a temporary directory and fails on any difference with the committed files, and CI runs it on the `rust` and `ui` change outputs; `protocol-check` joins `just ci`; the `er::core_io` dependency allow-list covers er-protocol (serde, ts-rs); er-protocol joins `just test`.
-- **Planted breaks:** a hand edit of one generated file fails `protocol-check`; a new field on a protocol struct without regenerating fails it; adding `er-engine` to er-protocol's dependencies fails the allow-list; removing the CI step leaves the hand edit green on a draft PR; adding `#[ts(export)]` to one type makes `cargo test --workspace` change the tree, which a CI `git diff --exit-code` over the protocol directory after the tests catches.
+- **Done when:** `crates/er-protocol` exists as a leaf crate with `ResourceKey`, `ResourceVersion`, `Versioned<T>`, `ResourceChanged`, `Ack`, `ErError { kind, message }` and an empty wire command enum, each deriving serde and `TS`; `just protocol-gen` runs the explicit generator (A16) into `desktop-ui/src/lib/protocol/generated/`; `just protocol-check` exports into a temporary directory and fails on any difference with the committed files, and CI runs it on the `rust` and `ui` change outputs; `protocol-check` joins `just ci`; the `er::core_io` manifest check covers er-protocol (serde, ts-rs) through a second allow-list beside er-core's `ALLOWED` (A1); er-protocol joins `just test`; a unit test in er-protocol fails on any `ts(export` attribute in its source, and CI's `test` job fails when `git status --porcelain` is not empty after `cargo test` (A16).
+- **Planted breaks:** a hand edit of one generated file fails `protocol-check`; a new field on a protocol struct without regenerating fails it; adding `er-engine` to er-protocol's dependencies fails the allow-list; removing the CI step leaves the hand edit green on a draft PR; adding `#[ts(export)]` to one type fails the source-scan test; with that test skipped, the same plant makes `cargo test` write an untracked file under `crates/er-protocol/bindings/`, and the porcelain step fails on a draft PR.
 - Size: M.
 
 ### P51 `er::command_shape` with a shrinking allow-list
 
 - Branch: `epic/p51-command-shape-rule`. Lanes: C. Model: `opus`. Depends on: P50 (it names `ErError`).
 - **Goal:** the exit rule exists from the start, so no new command takes the old shape.
-- **Done when:** a syn rule in `crates/er-lint-gate/src/` walks every `#[tauri::command]` function in er-desktop and accepts it only when its return type is `Result<T, ErError>` or a type that is not a `Result`, and no path segment of the return type ends in `Snapshot`; it resolves local type aliases in the same file; `[workspace.metadata.lint-gate]` lists the 196 names that fail it today as the allow-list, and a test fails if the list grows; the rule runs in both clippy passes.
-- **Planted breaks:** a new command returning `Result<AppSnapshot, String>` outside the list fails; one returning `Result<u8, String>` fails; one returning an alias `type R = Result<u8, String>` fails; adding a name to the list fails the shrink test.
+- **Done when:** a syn rule in `crates/er-lint-gate/src/` walks every `#[tauri::command]` function in er-desktop and accepts it only when its return type is `Result<T, ErError>` or a type that is not a `Result`, and no path segment of the return type ends in `Snapshot`; it resolves local type aliases in the same file; `[workspace.metadata.lint-gate]` lists the 196 names that fail it today as the allow-list; the list only shrinks: a name outside the frozen fixture fails, and a stale entry fails, meaning a listed name with no command, or whose every body passes the rule, as the `comment-boundary` list already does (`Cargo.toml:150`–`:153`); the rule also scans bodies under `cfg(feature = "v1-service")`, since it reads the source with syn and sees both `cfg` arms.
+- **Planted breaks:** a new command returning `Result<AppSnapshot, String>` outside the list fails; one returning `Result<u8, String>` fails; one returning an alias `type R = Result<u8, String>` fails; a flag-only command (`#[cfg(feature = "v1-service")]`) with the wrong shape fails; adding a name to the list fails; leaving a name on the list after its command passes fails as stale.
 - Size: S.
 
-### P52.1 The resource host and the three commands
+### P52.1 The resource host, the three commands and the backend tick
 
-- Branch: `epic/p52a-resource-host`. Lanes: D, S, P. Model: `opus`. Depends on: P50, P51.
-- **Goal:** with the flag on, the desktop answers `er_send`, `er_fetch` and `er_versions` and pushes `er://resources`; nothing reads it yet.
-- **Done when:** a desktop resource host maps each `ResourceKey` to its owner (workspace actors through `ServiceState`, the registry, the settings actor, the desktop owners); a relay subscribes to each actor's `ViewPublished` and to `TabsChanged`, compares section revisions with the last published view and emits `ResourceChanged` only for keys whose revision moved, coalesced as `run_revision_watcher` does; the three commands are registered, in `crates/er-desktop/permissions/app-commands.toml` and in `ipcAllowlist.test.ts`, and pass `er::command_shape` with no allow-list entry; the first resource, `tabs`, is served; the old `er://revision` path is untouched.
-- **Planted breaks:** a relay that emits every key on every publish fails the precision test (an arena tick moves no `diff(tab)` version); a write that does not bump fails the bump-on-write test; an `er_fetch` that blocks on the actor fails the held-actor bound test (ADR 0067); dropping the command from `app-commands.toml` fails the allowlist test.
-- **Fallback split:** P52.1a host and relay; P52.1b the commands and permissions.
-- Size: M.
+- Branch: `epic/p52a-resource-host`. Lanes: D, S, P, U, C. Model: `opus`. Depends on: P50, P51.
+- **Goal:** with the flag on, the desktop answers `er_send`, `er_fetch` and `er_versions` and pushes `er://resources`; the backend tick (A17) drives the sidecar reload and `poll_impl`'s other first-pass duties; nothing reads the resources yet.
+- **Done when:** a desktop resource host maps each `ResourceKey` to its owner (workspace actors through `ServiceState`, the registry, the settings actor, the desktop owners); a relay subscribes to each actor's `ViewPublished` and to `TabsChanged`, compares section revisions with the last published view and emits `ResourceChanged` only for keys whose revision moved, coalesced as `run_revision_watcher` does; the three commands are registered in both builds (A2), in `crates/er-desktop/permissions/app-commands.toml` and in `ipcAllowlist.test.ts`, and pass `er::command_shape` with no allow-list entry; `impl From<WorkspaceError> for ErError` lives in er-service, which gains its er-protocol dependency (A2); the first resource, `tabs`, is served; the backend tick sends `ReloadSidecars` for every loaded key and runs `poll_impl`'s other first-pass duties, which `poll_impl` skips with the flag on (A17); the latency harness is extended to er-desktop and the old-path medians for A9's hot actions are recorded in the PR as the baseline; the old `er://revision` path is untouched.
+- **Planted breaks:** a relay that emits every key on every publish fails the precision test (an arena tick moves no `diff(tab)` version); a write that does not bump fails the bump-on-write test; an `er_fetch` that blocks on the actor fails the held-actor bound test (ADR 0067); dropping the command from `app-commands.toml` fails the allowlist test; with the tick disabled, an outside write to a sidecar in a loaded tab's `er_dir` leaves that tab's `AiSection` revision unmoved with no frontend call, and the reload test fails; a `poll_impl` that still runs its first pass with the flag on fails the one-driver test.
+- **Fallback split:** P52.1a host, relay and the tick; P52.1b the commands, permissions and the harness.
+- Size: L.
 
 ### P52.2 The frontend resource client, the adapter pattern and the protocol ADR
 
 - Branch: `epic/p52b-resource-client`. Lanes: U, P. Model: `opus`. Depends on: P52.1.
 - **Goal:** desktop-ui can hold resources by version, refetch on push, and run one adapter store in both flag modes.
-- **Done when:** a hand-typed client wraps the three commands with the generated types; a resource store tracks the versions it holds, refetches a shown key only when an `er://resources` version exceeds it, and asks `er_versions` on the 30 s safety net and once after the listener attaches; the `tabs` adapter store reads `app.snapshot.tabs` with the flag off and `er_fetch` with it on, and the tab strip reads the adapter; the protocol ADR is added; `CONTEXT.md` gains **Resource** (a versioned piece of published state with one writer).
-- **Planted breaks:** a store that refetches on every event fails the version test; a safety net that calls the old `poll` with the flag on fails the flag test; a listener attached after a push leaves the store stale, and the attach-time `er_versions` test catches it when that call is removed; the tab strip reading `app.snapshot` directly fails a source scan.
+- **Done when:** a hand-typed client wraps the three commands with the generated types; a resource store tracks the versions it holds, refetches a shown key only when an `er://resources` version exceeds it, and asks `er_versions` on its own 30 s safety net and once after the listener attaches; the snapshot's `poll` keeps running with the flag on beside it, for the stores not yet ported, until P62.1 (A17); the `tabs` adapter store reads `app.snapshot.tabs` with the flag off and `er_fetch` with it on, and the tab strip reads the adapter; the protocol ADR is added; `CONTEXT.md` gains **Resource** (a versioned piece of published state with one writer).
+- **Planted breaks:** a store that refetches on every event fails the version test; a resource store that refreshes through `poll` instead of `er_versions` and `er_fetch` fails the flag test; a listener attached after a push leaves the store stale, and the attach-time `er_versions` test catches it when that call is removed; the tab strip reading `app.snapshot` directly fails a source scan.
 - Size: M.
 
 ### P53 Settings, session chrome and panels
@@ -407,14 +506,15 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 - **Goal:** the settings page, the AI picker and the app chrome read resources.
 - **Done when:** `settings`, `risk(key)`, `session` and `panels` are served and their adapters read them; the settings writes, the AI selection writes and the risk reads go through `er_send`/`er_fetch` with the flag on; notices arrive on `er://notice`; the entry stops reading 14 `AppSnapshot` fields and 21 commands, listed in the issue.
 - **Planted breaks:** a settings write that skips the actor fails the one-writer test (ADR 0069); a refused save whose rollback does not bump the version leaves the page on the refused value and fails the rollback test; a notice delivered twice fails the dedupe test.
+- **Fallback split:** P53.1 `settings` and `risk(key)` with the settings and risk commands; P53.2 `session`, `panels`, the AI selection writes and `er://notice`.
 - Size: M.
 
 ### P54 Tabs and the tab lifecycle
 
 - Branch: `epic/p54-tabs-resource`. Lanes: S, D, U, P. Model: `opus`. Depends on: P53, #538 (#578 and P47.2c.2 merged).
 - **Goal:** tab strip, opens and closes run on the `tabs` resource and `er_send`, and the phase-4 lifecycle gaps close.
-- **Done when:** the tab commands and the opens (19 commands) send through `er_send` with the flag on; `tabs` carries labels and kinds, and staleness is derived in the frontend; a drop of a never-loaded key moves no version; a `LoadTab` for a key the registry no longer lists is refused; the closed-key set is bounded; an all-broken restore leaves a Working tab on the launch root; the launch root comes from the registry; Cmd-T on a remote PR tab opens a Working tab with a root; an already-open PR is selected whatever its tab kind (A15); the entry stops reading `tabs`, `active_tab`, `browser` and `input_mode`.
-- **Planted breaks:** a `DropTab` on a never-loaded key that bumps fails the version test; a late `LoadTab` after a close that applies fails the race test; an unbounded closed set fails the bound test after 10,000 closes; `same_pr` comparing kinds fails the cross-kind open test; restoring with every descriptor broken leaves no tab and fails.
+- **Done when:** the tab commands and the opens (19 commands) send through `er_send` with the flag on, and none of them takes the App mutex; `tabs` carries labels and kinds; a tab's staleness keeps the snapshot's value in the adapter until P55.2 derives it from `prs(remote)`; a drop of a never-loaded key moves no version; a `LoadTab` for a key the registry no longer lists is refused; the closed-key set is bounded; an all-broken restore leaves a Working tab on the launch root; the launch root comes from the registry; Cmd-T on a remote PR tab opens a Working tab with a root; an already-open PR is selected whatever its tab kind (A15); the open-target median is recorded against the A9 baseline; the entry stops reading `tabs`, `active_tab`, `browser` and `input_mode`. No desktop-ui component reads `input_mode` (only `snapshotChrome.ts:57` carries it over and `types.ts:793` declares it), so the flag-on desktop drops it and no resource carries it; the key handler's modes stay frontend-local, and the App keeps `input_mode` for 5b (D20).
+- **Planted breaks:** a `DropTab` on a never-loaded key that bumps fails the version test; a late `LoadTab` after a close that applies fails the race test; an unbounded closed set fails the bound test after 10,000 closes; `same_pr` comparing kinds fails the cross-kind open test; restoring with every descriptor broken leaves no tab and fails; a `launch_root` that reads the App's startup tab fails the flag-on launch-root test; an open that locks the App fails the held-App-mutex test.
 - **Fallback split:** P54.1 the resource, commands and adapters; P54.2 the lifecycle fixes.
 - Size: L.
 
@@ -422,33 +522,33 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p55a-sidebar-projects`. Lanes: DS, US, P, D (planned exception, see pair (a)). Model: `opus`. Depends on: P52.2.
 - **Goal:** the desktop app owner exists and publishes the project rows and each project's branches.
-- **Done when:** the owner module holds one writer per resource and bumps on write; `projects` carries the project records without PR lists, and `branches(project)` the local and auto branches with worktree paths and the open PR number, from the metadata cache; `is_active` and `is_current` are derived in the frontend from `tabs`; the project commands (7) go through `er_send`; `auto_register` reads the registry's tab list on the flag path; the entry stops reading `projects` (its non-PR fields) and `worktrees`.
-- **Planted breaks:** a second writer of the projects record fails the one-writer test; a branch refresh that does not bump `branches(project)` fails; an `is_active` computed on the server fails a source scan; `auto_register` reading the App's startup tab fails the flag-on test.
+- **Done when:** the owner module holds one writer per resource and bumps on write; `projects` carries the project records without PR lists, and `branches(project)` the local and auto branches with worktree paths and the open PR number, from the metadata cache; `is_active` and `is_current` are derived in the frontend from `tabs`; the project commands (7) go through `er_send`; on the flag path the startup registration block (`main.rs:997`–`:1003`) registers from the registry's tab list instead of `sync_projects_from_tabs(&app.tabs)` (`projects.rs:472`) and `app.tab().repo_root`; the meta-cache loop picks its interval (`main.rs:1708`) from the `tabs` resource's active key instead of the App tab, and the tick's `kick_worktrees_warm` takes its target from the same key (A17); the entry stops reading `projects` (its non-PR fields) and `worktrees`.
+- **Planted breaks:** a second writer of the projects record fails the one-writer test; a branch refresh that does not bump `branches(project)` fails; an `is_active` computed on the server fails a source scan; a startup registration that reads `app.tabs` or the App's startup tab fails the flag-on test; a meta-cache interval read from the App fails the held-App-mutex test.
 - Size: M.
 
 ### P55.2 `prs(remote)` keyed on content, `head_oid` included
 
-- Branch: `epic/p55b-sidebar-prs`. Lanes: DS, US, P, D (planned exception, see pair (a)). Model: `opus`. Depends on: P55.1.
+- Branch: `epic/p55b-sidebar-prs`. Lanes: DS, US, U, P, D (planned exception, see pair (a)). Model: `opus`. Depends on: P55.1, and the workspace entry holding U when it is ready (pair (a)).
 - **Goal:** the sidebar PR lists come from one resource per remote whose version follows its content.
-- **Done when:** `prs(remote)` carries the PR rows plus server-built id lists for my PRs, to review, recently merged and saved, with the dismissed filter applied on the server; the writer bumps the version whenever the rows change, any field including `head_oid`, so no length-and-time fingerprint decides it; `patch_pr_head_oid` and the full sweep both write through the owner; the head probe takes its target from the `tabs` resource; `detected_pr_number` and the tab staleness are derived in the frontend from these rows; the PR commands (9) go through `er_send`; the saved-PR cap moves to the server.
-- **Planted breaks:** a test drives `patch_pr_head_oid` on a cached row and asserts the version moved and the fetched row carries the new oid; planting a version computed from row counts and fetch times (the `build_projects_cache_key` shape) fails it; a dismiss that does not filter on the server fails the dismissed test; a 51st save that lands fails the cap test.
+- **Done when:** `prs(remote)` carries the PR rows plus server-built id lists for my PRs, to review, recently merged and saved, with the dismissed filter applied on the server; the writer bumps the version whenever the rows change, any field including `head_oid`, so no length-and-time fingerprint decides it; `patch_pr_head_oid` and the full sweep both write through the owner; the head probe takes its target from the `tabs` resource; `detected_pr_number` (read in `contextIdentity.ts`, `prUrl.ts` and `stores/reviewPageModel.ts`) and the tab staleness the tab strip shows are derived in the frontend from these rows; the PR commands (9) go through `er_send`; the saved-PR cap moves to the server, keeping today's rule: the 51st save drops the oldest, as `projects.rs:190`–`:199` does (`MAX_PR_HISTORY` = 50, `:6`); with the flag on, the `saved-pr` and `dismissed-pr` ops no longer paint and their four commands leave the optimistic path (A8: rule moved to the server); the save-PR median is recorded against the A9 baseline.
+- **Planted breaks:** a test drives `patch_pr_head_oid` on a cached row and asserts the version moved and the fetched row carries the new oid; planting a version computed from row counts and fetch times (the `build_projects_cache_key` shape) fails it; a dismiss that does not filter on the server fails the dismissed test; a saved list over 50 fails the cap test; a `saved-pr` or `dismissed-pr` paint with the flag on fails the flag test.
 - Size: M.
 
-### P55.3 `inbox` and the global optimistic ops
+### P55.3 `inbox` and the inbox optimistic ops
 
-- Branch: `epic/p55c-sidebar-inbox`. Lanes: DS, US, U, P, D (planned exception, see pair (a)). Model: `opus`. Depends on: P55.2.
-- **Goal:** the inbox is a resource, and the four global optimistic ops are gone with the flag on.
-- **Done when:** `inbox` carries the items, the unread count and the last refresh, computed on the server; the inbox commands (9, including `open_inbox_item` and `prefetch_inbox_item`) go through `er_send`; with the flag on, `inbox-read`, `inbox-clear`, `saved-pr` and `dismissed-pr` no longer paint, and the push lands within the A9 budget for mark read and save PR; the entry stops reading `inbox_items`, `inbox_unread_count` and `inbox_last_refresh_ms`.
-- **Planted breaks:** an unread count computed in TypeScript fails a source scan; a mark-read that does not bump `inbox` fails; a global op still painted with the flag on fails the flag test; a budget overrun fails the measurement.
+- Branch: `epic/p55c-sidebar-inbox`. Lanes: DS, US, U, P, D (planned exception, see pair (a)). Model: `opus`. Depends on: P55.2, and the workspace entry holding U when it is ready (pair (a)).
+- **Goal:** the inbox is a resource, and the two inbox optimistic ops are gone with the flag on (P55.2 removes the other two global ops).
+- **Done when:** `inbox` carries the items, the unread count and the last refresh, computed on the server; the inbox commands (9, including `open_inbox_item` and `prefetch_inbox_item`) go through `er_send`; with the flag on, `inbox-read` and `inbox-clear` no longer paint (A8: rule moved to the server for the unread count, deleted for the rest), and `mergeGlobalConfirm` runs flag-off only; the inbox sweep reads its prefs from the settings actor's view instead of `commands::clone_inbox_prefs(&bg_app)` (`main.rs:1609`, `:1642`); the mark-read median is recorded against the A9 baseline; the entry stops reading `inbox_items`, `inbox_unread_count` and `inbox_last_refresh_ms`.
+- **Planted breaks:** an unread count computed in TypeScript fails a source scan; a mark-read that does not bump `inbox` fails; an `inbox-read` paint with the flag on fails the flag test; an inbox sweep that reads the App's config fails the held-App-mutex test.
 - Size: M.
 
-### P56.1 `diff(tab)`, loading on activation and the warmer
+### P56.1 `diff(tab)`, loading on activation, the warmer and the watcher
 
 - Branch: `epic/p56a-diff-resource`. Lanes: S, D, U, P. Model: `opus`. Depends on: P54.
-- **Goal:** the file list, mode, base and staleness of the active tab come from `diff(tab)`.
-- **Done when:** `diff(tab)` carries each file's row and content hash and the diff-level fields; fetching it for a key with no content sends `LoadTab`; the warmer loads unloaded registry tabs at idle through `LoadTab`, scoped by the registry; the refresh, mode, base, filter and sync commands (8) go through `er_send`; the visible-file list uses the pure `visible_files` (#595); the entry stops reading 17 fields, listed in the issue.
-- **Planted breaks:** a followed stub that never loads fails the first-diff test; a warmer that loads the active tab twice fails the warmer test; a filter computed against the App's tab fails the source scan; a stale pill that ignores `preview_head_oid` fails the staleness test.
-- **Fallback split:** P56.1a the resource, the adapter and the routed commands; P56.1b load on activation and the warmer.
+- **Goal:** the file list, mode, base and staleness of the active tab come from `diff(tab)`, and the background threads that refresh or probe the active tab key it through `tabs`.
+- **Done when:** `diff(tab)` carries each file's row and content hash and the diff-level fields, in the file order the App shows, the mtime sort included (`TabState::mtime_cache`, left on the App by the 2a plan); fetching it for a key with no content sends `LoadTab`; the warmer loads unloaded registry tabs at idle through `LoadTab`, scoped by the registry; the refresh, mode, base, filter and sync commands (8) go through `er_send`; the visible-file list uses the pure `visible_files` (`crates/er-engine/src/visible_files.rs:40`, #595); on the flag path the active-branch watcher (`run_active_branch_watcher`, `main.rs:702`) takes its target from `tabs` and the content instead of `desired_local_branch_watch`, replaces `apply_watch_checkout_root` (`:753`) with the content's checkout root, and on a file change sends a new service refresh route with auto-unmark for that key, instead of `refresh_diff_quick_with_unmark` on the App tab (`:783`); it keeps writing `WatchStatusState`, so P53's `session` resource still bumps; the branch-base remote-oid probe (`main.rs:1234`) takes its target from `tabs`; the entry stops reading 17 fields, listed in the issue.
+- **Planted breaks:** a followed stub that never loads fails the first-diff test; a warmer that loads the active tab twice fails the warmer test; a filter computed against the App's tab fails the source scan; a stale pill that ignores `preview_head_oid` fails the staleness test; a watcher that refreshes the App tab only leaves the `diff(tab)` version and the `ReviewedSection` revision unmoved after a file write in the watched checkout, and fails; a branch-base probe that reads the App fails the held-App-mutex test.
+- **Fallback split (the plan):** P56.1a the resource, the adapter and the routed commands; P56.1b load on activation and the warmer; P56.1c the watcher, its service refresh route and the branch-base probe.
 - Size: L.
 
 ### P56.2 Content-addressed hunks, previews and file reads
@@ -464,8 +564,8 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p56c-history-modes`. Lanes: S, D, U, P. Model: `opus`. Depends on: P56.2.
 - **Goal:** the three modes that load on the App with the flag on load in the Workspace.
-- **Done when:** the History commit list and the selected commit's files are a section of `TabContent` and part of `diff(tab)`; Conflicts and Hidden load by the engine steps the App runs, extracted into the always-compiled half as 2a.1 did; `select_commit` and `exit_history` go through `er_send`; a History file click no longer reaches the App; the parity test covers the three modes; the entry stops reading `commits` and `selected_commit_sha`.
-- **Planted breaks:** skipping the commit list load fails the History parity row; a click routed to `history_select_file` with the flag on fails the source scan; a Conflicts load that reads the App fails the actor-thread scan.
+- **Done when:** the History commit list and the selected commit's files are a section of `TabContent` and part of `diff(tab)`; Conflicts and Hidden load by the engine steps the App runs, extracted into the always-compiled half as 2a.1 did; `select_commit` and `exit_history` go through `er_send`; a History file click no longer reaches the App; `LoadTab` in History, Conflicts or Hidden succeeds, and a recorded mode takes the new view's context and AI bucket (#596 review); the preview key clears `history_commit` outside History on both paths, so the App's and the service's preview keys agree (#595 note 1; `er-service/src/content.rs:77`); the parity test covers the three modes and the preview stamps; the entry stops reading `commits` and `selected_commit_sha`.
+- **Planted breaks:** skipping the commit list load fails the History parity row; a click routed to `history_select_file` with the flag on fails the source scan; a Conflicts load that reads the App fails the actor-thread scan; a `LoadTab` in History that fails, or a recorded mode that keeps the old AI bucket, fails the mode-load test; a preview key that keeps `history_commit` outside History fails the preview-stamp parity row.
 - **Fallback split:** P56.3a the engine extraction (flag-off byte-identical); P56.3b the service and the routes.
 - Size: L.
 
@@ -473,8 +573,8 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p57-reviewed-navigation`. Lanes: S, D, U, P. Model: `opus`. Depends on: P56.2.
 - **Goal:** reviewed marks are a resource, reviewed writes name their tab, and navigation runs in the frontend.
-- **Done when:** `reviewed(tab)` carries the marks and the counts; the reviewed commands carry the `TabKey` the page rendered and are refused when it is not the content's key; the checkmark is pending until ack (A8); selection, cursor and `next_file`, `prev_file`, `next_hunk`, `prev_hunk` and `jump_to_unreviewed` run in desktop-ui over the two resources (A10), checked by the shared fixture against the Rust functions; mark reviewed and next file stay within the A9 budget; the entry stops reading `reviewed_count`, `selected_file` and `current_hunk` and 12 commands.
-- **Planted breaks:** a reviewed write without the key lands on the registry's other tab and fails the lag test; `reviewed_count` computed in TypeScript fails the source scan; a TypeScript `jump_to_unreviewed` that skips the last file fails the shared fixture; a budget overrun fails the measurement.
+- **Done when:** `reviewed(tab)` carries the marks and the counts; the reviewed commands carry the `TabKey` the page rendered and are refused when it is not the content's key; the checkmark is pending until ack (A8); selection, cursor and `next_file`, `prev_file`, `next_hunk`, `prev_hunk` and `jump_to_unreviewed` run in desktop-ui over the two resources (A10), checked by the shared fixture against the Rust functions; with the flag on, `bulk-reviewed` no longer paints and `bulk_review_pillar` and `unbulk_review_pillar` leave the optimistic path (A8: deleted; the `reviewed(tab)` push paints it); the mark-reviewed and next-file medians are recorded against the A9 baseline; the entry stops reading `reviewed_count`, `selected_file` and `current_hunk` and 12 commands.
+- **Planted breaks:** a reviewed write without the key lands on the registry's other tab and fails the lag test; `reviewed_count` computed in TypeScript fails the source scan; a TypeScript `jump_to_unreviewed` that skips the last file fails the shared fixture; a `bulk-reviewed` paint with the flag on fails the flag test.
 - **Fallback split:** P57.1 reviewed; P57.2 navigation.
 - Size: L.
 
@@ -482,8 +582,8 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p58a-annotations-read`. Lanes: S, D, U, P. Model: `opus`. Depends on: P56.2.
 - **Goal:** findings, threads, tour, checklist, triage, diagrams and the other bucket are read from resources.
-- **Done when:** `annotations(tab)` is built from the AI section with thread ordering and counts on the server; `ui_annotations(tab)` is served by the desktop and bumped by its writes; the sidecar reload watches the comments directory as well as `er_dir`; the four read commands go through `er_fetch`; the entry stops reading `ai`, `tour`, `other_bucket` and `ui_annotations`.
-- **Planted breaks:** an outside write to `questions.json` that never reaches the content fails the reload test when the comments directory is dropped from the watch; thread ordering done in TypeScript fails the source scan; an arena tick that bumps `annotations(tab)` fails the precision test.
+- **Done when:** `annotations(tab)` is built from the AI section with thread ordering and counts on the server; `ui_annotations(tab)` is served by the desktop and bumped by its writes; the sidecar reload watches the comments directory as well as `er_dir`, driven by P52.1's backend tick (A17) with no frontend call; `load_tab` reads the sidecar stamps before the AI read, so an outside write between the two is not lost (#596 review); a spawn failure in `SidecarReloads::start` (`er-service/src/sidecar_reload.rs:40`) removes the key from `running` (`:54`), so the next reload runs (#596 review); `annotations(tab)` carries the triage review update as a protocol type, so `TriageReviewUpdateSnapshot` (`triage_update.rs:13`) is flag-off only; the four read commands go through `er_fetch`; the entry stops reading `ai`, `tour`, `other_bucket` and `ui_annotations`.
+- **Planted breaks:** an outside write to `questions.json` moves the `annotations(tab)` version with no frontend call, and the reload test fails when the comments directory is dropped from the watch or the tick is disabled; a stamp read after the AI read loses a write landed between them and fails the ordering test; a spawn failure that leaves the key in `running` makes the next reload answer false and fails; thread ordering done in TypeScript fails the source scan; an arena tick that bumps `annotations(tab)` fails the precision test.
 - **Fallback split:** P58.1a the builders and the reload; P58.1b the desktop-ui port.
 - Size: L.
 
@@ -491,8 +591,8 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p58b-annotation-writes`. Lanes: D, U, P. Model: `opus`. Depends on: P58.1, P55.3 (both edit `optimisticLocal.ts`).
 - **Goal:** the 27 annotation write commands go through `er_send` and the thread paints shrink to pending until ack.
-- **Done when:** each write maps to the service command P41 added, by `TabKey`; creation paints pending with the `client_id` and the confirming fetch lands on the same row (ADR 0017); every other thread paint is deleted with the flag on; add question stays within the A9 budget.
-- **Planted breaks:** dropping `client_id` makes the confirmed row get a fresh id and fails the confirm test; a resolve still painted with the flag on fails the flag test; a budget overrun fails the measurement.
+- **Done when:** each write maps to the service command P41 added, by `TabKey`; the 17 remaining `OptimisticOp` kinds are classified by name (A8). Pending until ack, with the `client_id`, the confirming fetch landing on the same row (ADR 0017): `add-thread`, `reply`, `promote`, `promote-finding` and `reply-finding` (its `existing` and `new` targets; the `ai` target paints nothing). Deleted with the flag on, the `annotations(tab)` or `ui_annotations(tab)` push painting the result: `resolve`, `delete-root`, `delete-reply`, `edit`, `dismiss-finding`, `resolve-finding`, `add-annotation`, `delete-annotation`, `checklist-toggle`, `remove-finding-thread`, `delete-finding-response` and `edit-finding-response`. Thread ordering, the one rule these paints applied, moved to the server in P58.1. The add-question median is recorded against the A9 baseline, and the deleted paints are timed click-to-paint with `profileLog`, numbers in the PR.
+- **Planted breaks:** dropping `client_id` makes the confirmed row get a fresh id and fails the confirm test; a `resolve` still painted with the flag on fails the flag test; a `reply-finding` with a `new` target that does not paint pending fails the pending test.
 - **Fallback split:** P58.2a threads, comments and promote; P58.2b findings, checklist, artifacts and browser annotations.
 - Size: L.
 
@@ -500,8 +600,8 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p59-pr-resources`. Lanes: S, D, DS, U, P. Model: `opus`. Depends on: P58.1, P55.3 (DS is free once the sidebar track ends).
 - **Goal:** the PR card, merge box, GitHub status and stack read resources, and no GitHub command picks its tab from the App.
-- **Done when:** `pr(tab)` is built from the PR section; `pr_status(remote, number)` from the status cache through the desktop owner; the stack is part of `pr(tab)` or its own resource, decided in the step plan; `active_tab_command`, `send_for_active_tab`, the comment tick, `abort_wrong_view` and the document preview check take the tab from the `tabs` resource and its content; the 13 GitHub commands go through `er_send`; the entry stops reading `pr`, `github` and `stack`.
-- **Planted breaks:** a GitHub post that reads the App's active tab fails the held-App-mutex test; a status refresh that does not bump `pr_status` fails; a merge pinned to a stale head fails the head test.
+- **Done when:** `pr(tab)` is built from the PR section; `pr_status(remote, number)` from the status cache through the desktop owner; the stack is part of `pr(tab)`: `PrSection` gains it, and a service command for the stack refresh runs `gh_stack::load_from` off the actor thread, as `refresh_stack_impl` (`commands.rs:3295`) runs it off the App lock, so the actor stays its one writer and a stack change moves the PR section's revision (decided: the stack is per tab, refreshed with the PR and read only by the PR card, so its own resource would add a fetch to every card render); `active_tab_command`, `send_for_active_tab`, the comment tick, `abort_wrong_view` and the document preview check take the tab from the `tabs` resource and its content; the GitHub status loop (`main.rs:1386`) takes its PR identity from `tabs` and `prs(remote)` instead of `active_pr_identity(g.tab(), …)` (`:1395`); the 13 GitHub command functions (12 names; `submit_github_pr_decision` has two bodies) go through `er_send`; the entry stops reading `pr`, `github` and `stack`.
+- **Planted breaks:** a GitHub post that reads the App's active tab fails the held-App-mutex test; a status loop that reads the App tab fails the same test; a status refresh that does not bump `pr_status` fails; a stack refresh that does not move the PR section's revision fails; a merge pinned to a stale head fails the head test.
 - **Fallback split:** P59.1 `pr(tab)`, `pr_status` and the stack; P59.2 the GitHub senders and commands.
 - Size: L.
 
@@ -509,8 +609,8 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p60a-jobs-arena`. Lanes: S, D, U, P. Model: `opus`. Depends on: P54. Runs beside P59 (pair (b)).
 - **Goal:** the arena page and the flow strip read `jobs`, and arena and flow commands stop resolving their tab on the App.
-- **Done when:** `jobs` carries the live arena runs, the review flows and their progress across actors; arena `resolve` and flow `key` take the tab from the `tabs` resource; the 20 arena and flow commands go through `er_send` and their reads through `er_fetch`; `App.svelte:293`'s `er://revision` listener is replaced by the `jobs` resource; the entry stops reading `review_flow`, `active_arena_run`, `arena_runs` and `background_arena_runs`.
-- **Planted breaks:** an arena start that resolves the App's tab fails the held-App-mutex test; a progress tick that does not bump `jobs` fails; the Deep cancel and orphan test from P28b/P32b is reused unchanged.
+- **Done when:** `jobs` carries the live arena runs, the review flows and their progress across actors; arena `resolve` and flow `key` take the tab from the `tabs` resource; the 20 arena and flow commands go through `er_send` and their reads through `er_fetch`, which retires the three `ArenaRunSnapshotWire` commands (`flow_get_run`, `arena_get`, `arena_override`); an arena run and a review flow on a remote PR tab key through `tabs`, covering #577's surviving plants 8 and 9; `App.svelte:293`'s `er://revision` listener is replaced by the `jobs` resource; the entry stops reading `review_flow`, `active_arena_run`, `arena_runs` and `background_arena_runs`.
+- **Planted breaks:** an arena start that resolves the App's tab fails the held-App-mutex test; #577's plants 8 and 9 (re-applied) fail the new remote-PR-tab arena and flow tests; a progress tick that does not bump `jobs` fails; the Deep cancel and orphan test from P28b/P32b is reused unchanged.
 - **Fallback split:** P60.1a the `jobs` aggregate and the arena; P60.1b review flows and the `App.svelte` listener.
 - Size: L.
 
@@ -518,32 +618,34 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 - Branch: `epic/p60b-jobs-runs`. Lanes: S, D, DS, U, P. Model: `opus`. Depends on: P60.1, P55.3 (DS is free once the sidebar track ends).
 - **Goal:** card AI, review runs, triage and the background task panel read `jobs`.
-- **Done when:** the 19 run, triage and log commands go through `er_send`/`er_fetch`; triage spinners read `jobs` (owner answer); auto-triage writes its queue through the desktop owner; the entry stops reading `agent_commands`, `agent_log`, `background_tasks` and `bg_loading`.
-- **Planted breaks:** a triage queued without a `jobs` bump leaves the spinner off and fails; a task log fetched from the App fails the source scan; a cancel that does not reach the runner fails the reused `CancelJob` assertion (P43).
+- **Done when:** the 19 run, triage and log commands go through `er_send`/`er_fetch`; triage spinners read `jobs` (owner answer); auto-triage writes its queue through the desktop owner; the tick's four agent and task duties (`drain_agent_log`, `check_commands`, `poll_background_tasks`, `process_ai_task_inbox`) move off the App with the runs they drive, so no tick call names the App after this entry (A17); the entry stops reading `agent_commands`, `agent_log`, `background_tasks` and `bg_loading`.
+- **Planted breaks:** a triage queued without a `jobs` bump leaves the spinner off and fails; a task log fetched from the App fails the source scan; a tick that still calls an App duty fails the same scan; a cancel that does not reach the runner fails the reused `CancelJob` assertion (P43).
+- **Fallback split:** P60.2a AI runs and triage on `jobs`; P60.2b agent commands, logs, background tasks and the tick's App duties.
 - Size: L.
 
-### P61 Window-mechanics commands typed
+### P61 Window-mechanics commands typed and moved out of `commands.rs`
 
-- Branch: `epic/p61-window-commands`. Lanes: D, U, P. Model: `sonnet`. Depends on: P55.3, P60.2 (it holds D and U, so it runs after both tracks).
-- **Goal:** the 27 commands that stay direct return `Result<T, ErError>` with protocol types.
-- **Done when:** the browser webview (9), terminal (4), OS launch and reveal (6), export (3), `start_window_drag`, `detect_dev_url`, `line_commits`, `fetch_github_image` and `dev_log_filter` commands are typed; the names among them that fail the rule leave the allow-list; their callers use the generated types.
-- **Planted breaks:** restoring one to `Result<_, String>` fails `er::command_shape`; re-adding a name to the allow-list fails the shrink test.
-- Size: M.
+- Branch: `epic/p61-window-commands`. Lanes: D, U, P, C. Model: `opus`. Depends on: P55.3, P60.2 (it holds D and U, so it runs after both tracks).
+- **Goal:** the 27 commands that stay direct return `Result<T, ErError>` with protocol types, and none of them lives in a file P62.2 deletes.
+- **Done when:** the browser webview (9), terminal (4), OS launch and reveal (6), export (3), `start_window_drag`, `detect_dev_url`, `line_commits`, `fetch_github_image` and `dev_log_filter` commands are typed; the ones in `commands.rs` (16), `commands/line_commits.rs` and `arena_commands.rs` (`dev_log_filter`) move into a new `crates/er-desktop/src/direct/` module, one file per group (window, OS launch and reveal, terminal, export, line commits, dev log), so P62.2 can delete `commands.rs`, the `commands/` directory and `arena_commands.rs` whole; `browser_webview.rs` and `github_image.rs` stay where they are; the commands that read the App take what they need as parameters: `open_in_editor`, `open_in_vscode` and `open_source` take the path and line from desktop-ui, which owns the selection since P57 (today they read `tab.selected_diff_file()` and `current_hunk`, `commands.rs:1666`–`:1681`), `reveal_er_folder` takes the `TabKey` and reads `er_dir` from the content (today `app.tab().er_dir()`, `:2436`), and the export commands take the `TabKey` and render from the tab's published content instead of `render_markdown(app.tab(), …)` (`:10551`), which moves `export.rs` off the `ui`-gated `er_engine::export` before P62.2 needs it; `export_to_agent` stops returning `AppSnapshot` and its run shows in `jobs` (P60.2); the names among them that fail the rule leave the allow-list; their callers use the generated types.
+- **Planted breaks:** restoring one to `Result<_, String>` fails `er::command_shape`; leaving a typed name on the allow-list fails as stale (P51), and so does re-adding one; an `open_source` that reads the App's selection fails the held-App-mutex test; an export rendered from `TabState` fails the export parity test against the flag-off output.
+- **Fallback split:** P61.1 the move and the typing; P61.2 the App-free parameters and the export renderer.
+- Size: L.
 
 ### P62.1 Delete the old store layer
 
-- Branch: `epic/p62a-delete-old-store-layer`. Lanes: U, P, C. Model: `opus`. Depends on: P53, P54, P55.1, P55.2, P55.3, P56.1, P56.2, P56.3, P57, P58.1, P58.2, P59, P60.1, P60.2, P61.
+- Branch: `epic/p62a-delete-old-store-layer`. Lanes: U, P, C, D. Model: `opus`. Depends on: P53, P54, P55.1, P55.2, P55.3, P56.1, P56.2, P56.3, P57, P58.1, P58.2, P59, P60.1, P60.2, P61.
 - **Goal:** desktop-ui runs only on resources.
-- **Done when:** the adapters lose their flag-off branch; the `snapshot` store, `poll` handling, `optimisticLocal.ts`'s remainder, `snapshotDelta.ts`, `snapshotChrome.ts`, `tabSnapshotCache.ts` and `v1ServiceFlag.ts` are deleted; the hand-written `types.ts` is replaced by a generated barrel that `protocol-check` covers, and frontend-only types move to their modules; `scripts/tauri-dev.sh` drops the flag; er-desktop makes `v1-service` a default feature, so a backend built without it cannot pair with the new frontend. **Test change, up front:** P38's default-build assertion in the bin target (`!cfg!(feature = "v1-service")`) flips to assert the feature is on, and from here `test-desktop` runs the flag-on path, which makes `test-v1` redundant for er-desktop; the flag-off backend tests compile out with their `cfg`.
+- **Done when:** the adapters lose their flag-off branch; the `snapshot` store, `poll` handling, `optimisticLocal.ts`'s remainder, `snapshotDelta.ts`, `snapshotChrome.ts`, `tabSnapshotCache.ts` and `v1ServiceFlag.ts` are deleted; the hand-written `types.ts` is replaced by a generated barrel that `protocol-check` covers, and frontend-only types move to their modules; `scripts/tauri-dev.sh` drops the flag; er-desktop makes `v1-service` a default feature, so a backend built without it cannot pair with the new frontend. **Test change, up front:** P38's default-build assertion in the bin target (`!cfg!(feature = "v1-service")`, `crates/er-desktop/src/main.rs:2347`) flips to assert the feature is on, and from here `test-desktop` runs the flag-on path, which makes `test-v1` redundant for er-desktop; the flag-off backend tests compile out with their `cfg`.
 - **Planted breaks:** a hand edit of `types.ts` fails `protocol-check`; a component reading `app.snapshot` fails the source scan; `check-ui` fails on a removed field still referenced; building er-desktop with `--no-default-features` fails the flipped assertion.
 - Size: M (deletions do not count).
 
 ### P62.2 Delete the old desktop path and the desktop flag
 
-- Branch: `epic/p62b-delete-old-desktop-path`. Lanes: D, DS, C, P. Model: `opus`. Depends on: P62.1.
+- Branch: `epic/p62b-delete-old-desktop-path`. Lanes: D, DS, C, P, U. Model: `opus`. Depends on: P62.1.
 - **Goal:** the phase exit.
-- **Done when:** `snapshot.rs` and `commands.rs` are deleted, with the App-backed desktop route, `get_snapshot`, `poll`, `v1_service_enabled`, `run_revision_watcher` and the follower; er-desktop has no `er_engine::app` reference and depends on er-engine with `default-features = false` (`export.rs` moves off the `ui`-gated `er_engine::export` first); the `v1-service` feature leaves er-desktop and stays on er-tui (A12), and `test-v1`, CI and the lint gate's second pass keep only er-tui; the `er::command_shape` allow-list is empty and deleted, and no command returns a `*Snapshot` type or `Result<_, String>`; ADRs 0011, 0012, 0016, 0017, 0018, 0033 and 0034 are marked "Superseded by" the protocol ADR, and docs-check fails when a superseded mark and the superseding ADR's list disagree; `CLAUDE.md`'s push-driven line, `crates/er-desktop/agent.md`, `desktop-ui/agent.md` and `desktop-ui/src/lib/stores/agent.md` describe resources; `app-commands.toml` and `ipcAllowlist.test.ts` list the surviving commands only.
-- **Planted breaks:** a command returning `Result<AppSnapshot, String>` fails `er::command_shape` with no allow-list to hide in; a `use er_engine::app::App` in er-desktop fails the build; deleting 0012 from the protocol ADR's supersedes line fails docs-check; a compile error behind `cfg(feature = "v1-service")` in er-tui still fails CI on a throwaway draft PR (#470's shape); the flipped `cfg!` assertion goes with the feature, and a test that reads er-desktop's manifest fails when a `v1-service` feature is re-added.
+- **Done when:** `snapshot.rs` and `commands.rs` are deleted, with the `commands/` directory (`content_routes.rs`; `line_commits.rs` left in P61), the App-backed desktop route, `get_snapshot`, `poll`, `v1_service_enabled`, `run_revision_watcher`, the flag-off bodies of the three resource commands (A2) and the follower; the old commands outside `commands.rs` go too, each replaced by `er_send`/`er_fetch` in the entry named: `arena_commands.rs` whole (19 commands, `:135`–`:667` at `949eb993d`, P60.1; `dev_log_filter` left in P61), `config_commands.rs` whole (11, `:32`–`:128`, P53), `risk_commands.rs` whole (2, `:17` and `:29`, P53) and `gh_pr_actions.rs`'s `run_github_pr_action` (`:64`, P59); any helper an `er_send` mapping still calls moves into the module that calls it in that entry; the two `*Snapshot` types outside `snapshot.rs` go: `SettingsSnapshot` (`settings.rs:12`) with `GetConfigHubResponse` (`:20`), replaced by P53's `settings` resource, and `TriageReviewUpdateSnapshot` (`triage_update.rs:13`), replaced in P58.1; er-desktop has no `er_engine::app` reference and depends on er-engine with `default-features = false, features = ["watch"]` (the watcher, `main.rs:707`; P61 already moved `export.rs` off the `ui`-gated `er_engine::export`), and its dev-dependency becomes `default-features = false, features = ["test-support"]`, so a test build does not turn `ui` back on; a new `check-desktop` recipe (`cargo check -p er-desktop`, in the style of `build-service-headless`) joins `just ci` and a CI job with `tauri-linux-deps`, because resolver 2 unifies er-engine's features with er-tui in every workspace build, so `clippy --workspace` and `test-desktop` alone would still compile `ui`; the #578 follower notes deferred here (the gating scan's `cfg(any(…, test))`, the remote-PR row check that cannot fail, m02) close with the follower; the `v1-service` feature leaves er-desktop and stays on er-tui (A12), and `test-v1`, CI and the lint gate's second pass keep only er-tui; the `er::command_shape` allow-list is empty and deleted, and no command returns a `*Snapshot` type or `Result<_, String>`; ADRs 0011, 0012, 0016, 0017, 0018, 0033 and 0034 are marked "Superseded by" the protocol ADR, and docs-check fails when a superseded mark and the superseding ADR's list disagree; `CLAUDE.md`'s push-driven line, `crates/er-desktop/agent.md`, `desktop-ui/agent.md` and `desktop-ui/src/lib/stores/agent.md` describe resources; `app-commands.toml` and `ipcAllowlist.test.ts` list the surviving commands only.
+- **Planted breaks:** a command returning `Result<AppSnapshot, String>` fails `er::command_shape` with no allow-list to hide in; a `use er_engine::app::App` in er-desktop fails `check-desktop` locally and in CI; deleting 0012 from the protocol ADR's supersedes line fails docs-check; a compile error behind `cfg(feature = "v1-service")` in er-tui still fails CI on a throwaway draft PR (#470's shape); the flipped `cfg!` assertion goes with the feature, and a test that reads er-desktop's manifest fails when a `v1-service` feature is re-added.
 - **Fallback split:** P62.2a the deletion and the crate edges; P62.2b the rule, the ADR marks, docs-check and CI.
 - Size: M (deletions do not count).
 
@@ -566,17 +668,31 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
   - Both tracks join at P61 → P62.1 → P62.2. P61 holds D and U, which every
     workspace entry holds, so it runs after both tracks.
 - **Pair (a), the two tracks, a planned exception.** The sidebar entries
-  hold D for three edits only, each conflict-by-addition: a dispatch arm per
-  sidebar key in the resource host; in P55.2, the probe thread in `main.rs`
-  (`:1316`), a different block of the setup function from P54's
-  `launch_root` (`:1059`) and P56.1's warmer (`:1724`); and nothing in
-  `snapshot.rs`, because the owner wraps the existing metadata and PR caches
-  and calls `refresh_meta_cache` unchanged. P (new `ResourceKey` variants,
-  generated files) is shared the same way; generated files are regenerated.
-  P55.3 also holds U for its `optimisticLocal.ts` and `app.svelte.ts` edits,
-  so it waits for the workspace entry holding U to merge, and P58.2 waits for
-  P55.3. The workspace track takes DS only in P59 and P60.2, both after
-  P55.3.
+  hold D for these edits only, each conflict-by-addition or in a block of
+  `main.rs`'s setup function that no workspace entry edits:
+  - every sidebar entry: a dispatch arm per sidebar key in the resource host;
+  - P55.1: the startup registration block (`main.rs:997`–`:1003`), the
+    meta-cache interval (`:1708`) and the tick's `kick_worktrees_warm`
+    target (A17). The registration block ends five lines above P56.1's
+    warmer scope (`:1008`), so whichever of P55.1 and P56.1 merges second
+    rebases there by hand;
+  - P55.2: the PR head probe thread (`:1316`);
+  - P55.3: the inbox sweep's prefs (`:1609`, `:1642`);
+  - the workspace track's `main.rs` blocks are P54's `launch_root`
+    (`:1059`), P56.1's watcher (`:702`), branch-base probe (`:1234`) and
+    warmer (`:1724`), and P59's GitHub status loop (`:1386`);
+  - nothing in `snapshot.rs`, because the owner wraps the existing metadata
+    and PR caches and calls `refresh_meta_cache` unchanged.
+
+  P (new `ResourceKey` variants, generated files) is shared the same way;
+  generated files are regenerated. P55.2 and P55.3 also hold U: P55.2 for
+  the `detected_pr_number` and tab-staleness derivations
+  (`contextIdentity.ts`, `prUrl.ts`, `stores/reviewPageModel.ts`, the tabs
+  adapter) and its `optimisticLocal.ts` edits, P55.3 for its
+  `optimisticLocal.ts` and `app.svelte.ts` edits. Each waits for the
+  workspace entry holding U to merge and takes U before the next workspace
+  entry starts, and P58.2 waits for P55.3. The workspace track takes DS only
+  in P59 and P60.2, both after P55.3.
 - **Pair (b), P59 beside P60.1.** P59 edits the GitHub senders and the PR
   card; P60.1 edits `arena_service.rs`, `flow_service.rs`,
   `arena_commands.rs` and `desktop-ui/src/lib/stores/arena.svelte.ts`. Shared files:
@@ -586,9 +702,11 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ## Risks
 
-1. **Latency the optimistic layer hid.** Each entry that deletes a paint
-   measures its action against A9's budget; an overrun keeps that one paint as
-   pending until ack, recorded in the PR.
+1. **Latency the optimistic layer hid.** Each entry that deletes the paint
+   of one of A9's hot actions records that action's old and new medians in
+   its PR; an overrun keeps that one paint as pending until ack. The other
+   deleted paints (most of P58.2's) are timed click-to-paint with
+   `profileLog` and the numbers go in the PR, with no budget.
 2. **Two render paths until P62.** Every adapter store has a flag-off and a
    flag-on branch; `test-ui` runs both, and `test-v1` runs the backend half.
    The coordinator stops new adapter work if a flag-off regression lands.
@@ -634,6 +752,9 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
   (CLAUDE.md); P55.2 fixes the resource path only.
 - **Re-pin** marks: #578 (`88c21f507`) and P47.2c.2 (`d5e060baa`). The
   coordinator confirms the "left on the App" list from P47.2c.2's PR body.
+  Since the pin, #578 has merged into `release/v1.0.0` at `5942bc925`, and
+  P47.2c.2's local head is `2f709c637` (no PR yet). Line numbers are re-found
+  at those heads in gate step 3, not before.
 - Phase 5b and phase 6 are out of scope: the TUI keeps the `App`,
   `navigation.rs`'s `App` methods and the `TabState` view fields (D20);
   inbox, projects, MCP and the CLI move in phase 6.
