@@ -20,6 +20,7 @@ pub mod diff_load;
 pub mod env_path;
 #[cfg(feature = "ui")]
 pub mod export;
+pub mod filter;
 pub use er_github::actions as gh_pr_actions;
 mod env_var;
 pub mod gh_stack;
@@ -43,6 +44,7 @@ pub mod pr_open_cache;
 pub mod pr_open_entry;
 pub mod pr_resolve;
 pub mod pr_review_feedback;
+pub mod preview_key;
 pub mod projects_pins;
 pub mod release_install;
 pub mod release_update;
@@ -62,6 +64,7 @@ pub use tab_key::TabKey;
 pub mod tabs_record;
 pub mod task_target;
 pub mod uninstall;
+pub mod visible_files;
 #[cfg(feature = "watch")]
 pub mod watch;
 pub mod workflow_recovery;
