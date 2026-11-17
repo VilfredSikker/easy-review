@@ -1,6 +1,6 @@
 pub mod card_ai_context;
 pub mod card_job;
-pub mod filter;
+pub use crate::filter;
 pub use crate::{job_commit, job_staging};
 pub(crate) mod state;
 pub use state::preview::{

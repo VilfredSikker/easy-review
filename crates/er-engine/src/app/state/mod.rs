@@ -3745,34 +3745,19 @@ impl TabState {
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
     /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {
-        let mut visible: Vec<(usize, &DiffFile)> =
-            self.active_diff_files().iter().enumerate().collect();
+        crate::visible_files::visible_files(self.active_diff_files(), &self.file_list_view())
+    }
 
-        // Phase 1: Apply filter rules
-        if !self.filter_rules.is_empty() {
-            let review = self.ai.review.as_ref();
-            visible.retain(|(_, f)| {
-                super::filter::apply_filter_with_kinds(
-                    &self.filter_rules,
-                    f,
-                    review,
-                    Some(&self.risk_rules),
-                    Some(&self.file_kinds),
-                )
-            });
+    fn file_list_view(&self) -> crate::visible_files::FileListView<'_> {
+        crate::visible_files::FileListView {
+            rules: &self.filter_rules,
+            review: self.ai.review.as_ref(),
+            risk_rules: &self.risk_rules,
+            file_kinds: &self.file_kinds,
+            search_lower: &self.search_query_lower,
+            unreviewed_only: self.show_unreviewed_only,
+            reviewed: &self.reviewed,
         }
-
-        // Phase 2: Apply search query (uses pre-lowercased query to avoid per-call allocation)
-        if !self.search_query_lower.is_empty() {
-            visible.retain(|(_, f)| f.path.to_lowercase().contains(&self.search_query_lower));
-        }
-
-        // Phase 3: Apply unreviewed-only toggle
-        if self.show_unreviewed_only {
-            visible.retain(|(_, f)| !self.reviewed.contains_key(&f.path));
-        }
-
-        visible
     }
 
     /// Get the list of watched files, filtered by search query
@@ -4298,21 +4283,20 @@ impl TabState {
     /// Populate `mtime_cache` with one `fs::metadata` call per diff file.
     /// Called after the diff is loaded so rendering never touches the filesystem directly.
     pub fn refresh_mtime_cache(&mut self) {
-        use std::fs;
-        use std::time::SystemTime;
-        self.mtime_cache.clear();
-        self.preview_blob_ids.clear();
-        for file in &self.files {
-            let root = self
-                .local_branch_checkout_root
+        let source = crate::preview_key::StampSource {
+            repo_root: &self.repo_root,
+            checkout_root: self.local_branch_checkout_root.as_deref(),
+            is_remote: self.is_remote(),
+            mode: self.mode,
+            committed_unpushed: self.committed_unpushed,
+            revision: self
+                .local_branch_view
                 .as_deref()
-                .unwrap_or(&self.repo_root);
-            let mtime = fs::metadata(format!("{}/{}", root, file.path))
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            self.mtime_cache.insert(file.path.clone(), mtime);
-        }
-        self.capture_preview_rename_blobs();
+                .or(self.pr_head_ref.as_deref()),
+        };
+        let stamps = crate::preview_key::capture_stamps(&*self.ports.git, &self.files, &source);
+        self.mtime_cache = stamps.mtimes;
+        self.preview_blob_ids = stamps.blob_ids;
     }
 
     fn clamp_hunk(&mut self) {
@@ -4383,26 +4367,7 @@ impl TabState {
     /// Count of reviewed files vs total among filtered files only.
     /// Returns None if no filter is active.
     pub fn filtered_reviewed_count(&self) -> Option<(usize, usize)> {
-        if self.filter_rules.is_empty() {
-            return None;
-        }
-        let (mut total, mut reviewed) = (0, 0);
-        let review = self.ai.review.as_ref();
-        for f in &self.files {
-            if super::filter::apply_filter_with_kinds(
-                &self.filter_rules,
-                f,
-                review,
-                Some(&self.risk_rules),
-                Some(&self.file_kinds),
-            ) {
-                total += 1;
-                if self.reviewed.contains_key(&f.path) {
-                    reviewed += 1;
-                }
-            }
-        }
-        Some((reviewed, total))
+        crate::visible_files::filtered_reviewed_count(&self.files, &self.file_list_view())
     }
 
     /// Reload the reviewed marks for this tab's current bucket.

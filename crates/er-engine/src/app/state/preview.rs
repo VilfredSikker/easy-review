@@ -2,9 +2,11 @@
 use super::{DiffMode, TabState};
 use crate::git::FileStatus;
 use anyhow::{bail, Context, Result};
-use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Component, Path};
+
+use crate::preview_key::PreviewKeyInputs;
+pub use crate::preview_key::{image_mime, supports_preview};
 
 pub const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 /// Screenshots and diagrams routinely pass the 1 MiB text cap.
@@ -37,44 +39,6 @@ impl std::fmt::Debug for FilePreviewRequest {
     }
 }
 
-fn fingerprint(value: impl Hash) -> String {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut h);
-    format!("{:016x}", h.finish())
-}
-
-pub fn supports_preview(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| {
-            matches!(
-                e.to_ascii_lowercase().as_str(),
-                "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "txt" | "text"
-            )
-        })
-}
-
-/// The MIME type an image file is rendered as, or `None` when it is not an image.
-pub fn image_mime(path: &str) -> Option<&'static str> {
-    let extension = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
-    Some(match extension.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "bmp" => "image/bmp",
-        "ico" => "image/x-icon",
-        "svg" => "image/svg+xml",
-        _ => return None,
-    })
-}
-
-fn has_preview(path: &str) -> bool {
-    supports_preview(path) || image_mime(path).is_some()
-}
-
 impl TabState {
     pub(super) fn load_diff_with_preview_head(
         &mut self,
@@ -105,111 +69,37 @@ impl TabState {
         fetch(self, scope)
     }
 
-    pub(super) fn capture_preview_rename_blobs(&mut self) {
-        if self.is_remote() {
-            return;
-        }
-        for file in &self.files {
-            let FileStatus::Renamed(old_path) = &file.status else {
-                continue;
-            };
-            if !has_preview(&file.path) {
-                continue;
-            }
-            let root = self
-                .local_branch_checkout_root
-                .as_deref()
-                .unwrap_or(&self.repo_root);
-            let spec = if self.mode == DiffMode::Staged && !self.committed_unpushed {
-                format!("HEAD:{old_path}")
-            } else {
-                format!(
-                    "{}:{}",
-                    self.local_branch_view
-                        .as_deref()
-                        .or(self.pr_head_ref.as_deref())
-                        .unwrap_or("HEAD"),
-                    file.path
-                )
-            };
-            if let Ok(oid) = self.ports.git.blob_oid(root, &spec) {
-                self.preview_blob_ids.insert(file.path.clone(), oid);
-            }
+    /// The keys' inputs as this tab holds them.
+    pub(super) fn preview_key_inputs(&self) -> PreviewKeyInputs<'_> {
+        PreviewKeyInputs {
+            repo_root: &self.repo_root,
+            remote_repo: self.remote_repo.as_deref(),
+            mode: self.mode,
+            checkout_root: self.local_branch_checkout_root.as_deref(),
+            preview_head_oid: self.preview_head_oid.as_deref(),
+            history_commit: self
+                .history
+                .as_ref()
+                .and_then(|h| h.commits.get(h.selected_commit))
+                .map(|c| c.hash.as_str()),
+            raw: self.raw_diff.as_deref(),
+            diff_hash: &self.diff_hash,
+            headers: &self.file_headers,
+            mtimes: &self.mtime_cache,
+            blob_ids: &self.preview_blob_ids,
         }
     }
 
     pub fn preview_context_key(&self) -> String {
-        let mut blobs: Vec<_> = if self.mode == DiffMode::History {
-            Vec::new()
-        } else {
-            self.preview_blob_ids.iter().collect()
-        };
-        blobs.sort_by_key(|(path, _)| *path);
-        let commit = self
-            .history
-            .as_ref()
-            .and_then(|h| h.commits.get(h.selected_commit))
-            .map(|c| &c.hash);
-        fingerprint((
-            &self.repo_root,
-            &self.remote_repo,
-            self.mode.git_mode(),
-            &self.local_branch_checkout_root,
-            &self.preview_head_oid,
-            commit,
-            if self.mode == DiffMode::History {
-                None
-            } else {
-                self.raw_diff.as_ref()
-            },
-            if self.mode == DiffMode::History {
-                ""
-            } else {
-                &self.diff_hash
-            },
-            blobs,
-        ))
+        crate::preview_key::preview_context_key(&self.preview_key_inputs())
     }
 
     fn preview_section(&self, path: &str) -> Option<&str> {
-        let raw = self.raw_diff.as_deref()?;
-        let h = self.file_headers.iter().find(|h| h.path == path)?;
-        raw.get(h.byte_offset..h.byte_offset + h.byte_length)
+        self.preview_key_inputs().section(path)
     }
 
     pub fn file_preview_key(&self, path: &str) -> String {
-        if !has_preview(path) {
-            return String::new();
-        }
-        let commit = self
-            .history
-            .as_ref()
-            .and_then(|h| h.commits.get(h.selected_commit))
-            .map(|c| &c.hash);
-        fingerprint((
-            &self.repo_root,
-            &self.remote_repo,
-            self.mode.git_mode(),
-            &self.preview_head_oid,
-            &self.local_branch_checkout_root,
-            commit,
-            path,
-            if self.mode == DiffMode::History {
-                None
-            } else {
-                self.preview_blob_ids.get(path)
-            },
-            if self.mode == DiffMode::History {
-                None
-            } else {
-                self.preview_section(path)
-            },
-            if self.mode == DiffMode::History {
-                None
-            } else {
-                self.mtime_cache.get(path)
-            },
-        ))
+        crate::preview_key::file_preview_key(&self.preview_key_inputs(), path)
     }
 
     pub fn capture_file_preview(&self, path: &str) -> Result<FilePreviewRequest> {
@@ -927,6 +817,52 @@ mod tests {
         let key = t.file_preview_key("readme.md");
         t.local_branch_checkout_root = Some("/different/checkout".into());
         assert_ne!(key, t.file_preview_key("readme.md"));
+    }
+
+    /// A tab with every key input fixed, so its keys never depend on the disk.
+    pub(crate) fn keyed_tab(mode: DiffMode) -> TabState {
+        let raw = "diff --git a/readme.md b/readme.md\nindex abcdef0..1234567 100644\n--- a/readme.md\n+++ b/readme.md\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut t = super::super::tests::make_test_tab(git::parse_diff(raw));
+        t.repo_root = "/keyed/repo".into();
+        t.remote_repo = Some("owner/repo".into());
+        t.mode = mode;
+        t.raw_diff = Some(raw.to_string());
+        t.file_headers = git::parse_diff_headers(raw);
+        t.diff_hash = "diff-hash".into();
+        t.preview_head_oid = Some("c".repeat(40));
+        t.local_branch_checkout_root = Some("/keyed/checkout".into());
+        t.preview_blob_ids = [("readme.md".to_string(), "d".repeat(40))].into();
+        t.mtime_cache = [(
+            "readme.md".to_string(),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+        )]
+        .into();
+        t
+    }
+
+    /// The keys a fixed tab gives, recorded before the key steps moved out of
+    /// `TabState`. A change here changes every key the desktop compares.
+    #[test]
+    fn preview_keys_stay_byte_identical() {
+        let unstaged = keyed_tab(DiffMode::Unstaged);
+        let history = keyed_tab(DiffMode::History);
+        assert_eq!(
+            [
+                unstaged.preview_context_key(),
+                unstaged.file_preview_key("readme.md"),
+                history.preview_context_key(),
+                history.file_preview_key("readme.md"),
+                unstaged.file_preview_key("src/main.rs"),
+            ],
+            [
+                "7b8ab87aa2d52f42",
+                "61ef0459ef1d3eb0",
+                "fb19f6ab31b58428",
+                "3eef7decc2ae9e35",
+                "",
+            ]
+            .map(str::to_string)
+        );
     }
 
     #[test]
