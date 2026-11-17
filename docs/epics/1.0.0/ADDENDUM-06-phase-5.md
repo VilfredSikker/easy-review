@@ -422,10 +422,15 @@ Each is a planning proposal the coordinator confirms or changes at the gate.
   `poll_impl`'s other first-pass duties: `drain_agent_log`,
   `check_commands`, `poll_background_tasks`, `process_ai_task_inbox`,
   `check_ai_files_changed` and `kick_worktrees_warm`. With the flag on,
-  `poll_impl` skips that first pass, so each duty has one driver. The interval
-  is a proposal: 2 s, the cadence the poll had when it was the primary
-  mechanism (`app.svelte.ts:281`–`:284`); the reload's stamp check is a
-  `stat` per sidecar, and P52.1 records its cost. The snapshot's own `poll`
+  `poll_impl` skips that first pass and its `reload_sidecars` call
+  (`commands.rs:11873`–`:11874`), so each duty has one driver. The tick keeps
+  the old trigger set: it wakes on each revision bump that
+  `run_revision_watcher` (`main.rs:855`) debounces, as the duties did when
+  every `er://revision` event made the frontend call `poll`, and on an
+  interval as the floor. The interval is a proposal: 2 s, the cadence the
+  poll had when it was the primary mechanism (`app.svelte.ts:281`–`:284`);
+  the reload's stamp check is a `stat` per sidecar, and P52.1 records its
+  cost. The snapshot's own `poll`
   keeps running with the flag on for the stores not yet ported, until P62.1
   deletes the snapshot store. Each duty that reads the App leaves the tick in
   the entry that owns its data: `kick_worktrees_warm` takes its target from
@@ -488,7 +493,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 - Branch: `epic/p52a-resource-host`. Lanes: D, S, P, U, C. Model: `opus`. Depends on: P50, P51.
 - **Goal:** with the flag on, the desktop answers `er_send`, `er_fetch` and `er_versions` and pushes `er://resources`; the backend tick (A17) drives the sidecar reload and `poll_impl`'s other first-pass duties; nothing reads the resources yet.
 - **Done when:** a desktop resource host maps each `ResourceKey` to its owner (workspace actors through `ServiceState`, the registry, the settings actor, the desktop owners); a relay subscribes to each actor's `ViewPublished` and to `TabsChanged`, compares section revisions with the last published view and emits `ResourceChanged` only for keys whose revision moved, coalesced as `run_revision_watcher` does; the three commands are registered in both builds (A2), in `crates/er-desktop/permissions/app-commands.toml` and in `ipcAllowlist.test.ts`, and pass `er::command_shape` with no allow-list entry; `impl From<WorkspaceError> for ErError` lives in er-service, which gains its er-protocol dependency (A2); the first resource, `tabs`, is served; the backend tick sends `ReloadSidecars` for every loaded key and runs `poll_impl`'s other first-pass duties, which `poll_impl` skips with the flag on (A17); the latency harness is extended to er-desktop and the old-path medians for A9's hot actions are recorded in the PR as the baseline; the old `er://revision` path is untouched.
-- **Planted breaks:** a relay that emits every key on every publish fails the precision test (an arena tick moves no `diff(tab)` version); a write that does not bump fails the bump-on-write test; an `er_fetch` that blocks on the actor fails the held-actor bound test (ADR 0067); dropping the command from `app-commands.toml` fails the allowlist test; with the tick disabled, an outside write to a sidecar in a loaded tab's `er_dir` leaves that tab's `AiSection` revision unmoved with no frontend call, and the reload test fails; a `poll_impl` that still runs its first pass with the flag on fails the one-driver test.
+- **Planted breaks:** a relay that emits every key on every publish fails the precision test (an arena tick moves no `diff(tab)` version); a write that does not bump fails the bump-on-write test; an `er_fetch` that blocks on the actor fails the held-actor bound test (ADR 0067); dropping the command from `app-commands.toml` fails the allowlist test; with the tick disabled, an outside write to a sidecar in a loaded tab's `er_dir` leaves that tab's `AiSection` revision unmoved with no frontend call, and the reload test fails; a `poll_impl` that still runs its first pass or its `reload_sidecars` call with the flag on fails the one-driver test; a tick that ignores revision bumps leaves a finished agent command undrained until the interval and fails the wake test.
 - **Fallback split:** P52.1a host, relay and the tick; P52.1b the commands, permissions and the harness.
 - Size: L.
 
@@ -625,7 +630,7 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
 
 ### P61 Window-mechanics commands typed and moved out of `commands.rs`
 
-- Branch: `epic/p61-window-commands`. Lanes: D, U, P, C. Model: `opus`. Depends on: P55.3, P60.2 (it holds D and U, so it runs after both tracks).
+- Branch: `epic/p61-window-commands`. Lanes: D, U, P, C. Model: `opus`. Depends on: P55.3, P57 (desktop-ui owns the selection the open commands now take as parameters), P60.2 (it holds D and U, so it runs after both tracks).
 - **Goal:** the 27 commands that stay direct return `Result<T, ErError>` with protocol types, and none of them lives in a file P62.2 deletes.
 - **Done when:** the browser webview (9), terminal (4), OS launch and reveal (6), export (3), `start_window_drag`, `detect_dev_url`, `line_commits`, `fetch_github_image` and `dev_log_filter` commands are typed; the ones in `commands.rs` (16), `commands/line_commits.rs` and `arena_commands.rs` (`dev_log_filter`) move into a new `crates/er-desktop/src/direct/` module, one file per group (window, OS launch and reveal, terminal, export, line commits, dev log), so P62.2 can delete `commands.rs`, the `commands/` directory and `arena_commands.rs` whole; `browser_webview.rs` and `github_image.rs` stay where they are; the commands that read the App take what they need as parameters: `open_in_editor`, `open_in_vscode` and `open_source` take the path and line from desktop-ui, which owns the selection since P57 (today they read `tab.selected_diff_file()` and `current_hunk`, `commands.rs:1666`–`:1681`), `reveal_er_folder` takes the `TabKey` and reads `er_dir` from the content (today `app.tab().er_dir()`, `:2436`), and the export commands take the `TabKey` and render from the tab's published content instead of `render_markdown(app.tab(), …)` (`:10551`), which moves `export.rs` off the `ui`-gated `er_engine::export` before P62.2 needs it; `export_to_agent` stops returning `AppSnapshot` and its run shows in `jobs` (P60.2); the names among them that fail the rule leave the allow-list; their callers use the generated types.
 - **Planted breaks:** restoring one to `Result<_, String>` fails `er::command_shape`; leaving a typed name on the allow-list fails as stale (P51), and so does re-adding one; an `open_source` that reads the App's selection fails the held-App-mutex test; an export rendered from `TabState` fails the export parity test against the flag-off output.
