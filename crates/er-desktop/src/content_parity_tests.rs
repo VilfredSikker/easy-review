@@ -61,11 +61,15 @@ index 1111111..2222222 100644
 +moved
 ";
 
-/// Over the lazy-parse size, with more files than a lazy diff parses up
-/// front, so every file starts as a stub.
-fn raw() -> String {
-    let filler = "x".repeat(120);
+/// The fixture's diff. A lazy one is over the lazy-parse size, with more
+/// files than a lazy diff parses up front, so every file starts as a stub;
+/// an eager one parses every file.
+fn raw(lazy: bool) -> String {
     let mut raw = HEAD.to_string();
+    if !lazy {
+        return raw;
+    }
+    let filler = "x".repeat(120);
     for n in 0..600 {
         let _ = write!(
             raw,
@@ -110,8 +114,8 @@ fn commit(hash: &str) -> er_engine::git::CommitInfo {
     }
 }
 
-fn ports() -> Ports {
-    let raw = raw();
+fn ports(lazy: bool) -> Ports {
+    let raw = raw(lazy);
     let git: Arc<dyn er_git::Git> = Arc::new(
         FakeGit::default()
             .with_current_branch(Ok("feature".to_string()))
@@ -336,7 +340,7 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
             }),
         );
     }
-    let b_hash = er_engine::ai::compute_per_file_hash(&raw(), "src/b.rs").unwrap_or_default();
+    let b_hash = er_engine::ai::compute_per_file_hash(HEAD, "src/b.rs").unwrap_or_default();
     let marks = [
         ("src/a.rs".to_string(), "older".to_string()),
         ("src/b.rs".to_string(), b_hash),
@@ -378,13 +382,13 @@ fn temp_repo() -> anyhow::Result<(tempfile::TempDir, String)> {
 /// reads, the commits a PR open reads, and the head a restore seeds from the
 /// fetched ref.
 fn through_tab_state(
-    kind: &TabKind,
-    mode: DiffMode,
+    (kind, mode): (&TabKind, DiffMode),
     refreshes: usize,
+    lazy: bool,
     (root, repo): (&Path, &str),
 ) -> anyhow::Result<Observed> {
     er_engine::storage::with_process_test_storage_root(root.join("app-storage"), || {
-        let ports = ports();
+        let ports = ports(lazy);
         let github = Arc::clone(&ports.github);
         let resolved = resolved(kind, repo, mode, &ports)?;
         let er_dir = write_fixture(&resolved, &*ports.git)?;
@@ -426,13 +430,13 @@ fn through_tab_state(
 
 /// The Workspace's side: the same tab loaded under a key, then refreshed.
 fn through_the_workspace(
-    kind: &TabKind,
-    mode: DiffMode,
+    (kind, mode): (&TabKind, DiffMode),
     refreshes: usize,
+    lazy: bool,
     (root, repo): (&Path, &str),
 ) -> anyhow::Result<Observed> {
     er_engine::storage::with_process_test_storage_root(root.join("service-storage"), || {
-        let ports = ports();
+        let ports = ports(lazy);
         let er_dir = write_fixture(&resolved(kind, repo, mode, &ports)?, &*ports.git)?;
         let handle = er_service::spawn(WorkspaceDeps::new(ports));
         let key = TabKey::next();
@@ -457,18 +461,21 @@ fn through_the_workspace(
             handle.send_and_wait_with(refresh, WAIT)?;
         }
         // A `TabState` refresh parses its selected file, the first; the
-        // desktop's file routes ask for the shown file's parse instead.
-        let first = handle
-            .view()
-            .tab(key)
-            .and_then(|content| content.diff.files.first().map(|file| file.path.clone()));
-        let paths = first.into_iter().collect();
-        let parse = Command::ParseFiles {
-            key,
-            paths,
-            expand: false,
-        };
-        handle.send_and_wait_with(parse, WAIT)?;
+        // desktop's file routes ask for the shown file's parse instead, and
+        // only while it is a stub.
+        let stub = handle.view().tab(key).and_then(|content| {
+            let first = content.diff.files.first()?;
+            let is_stub = content.diff.meta.lazy && first.hunks.is_empty() && !first.compacted;
+            is_stub.then(|| first.path.clone())
+        });
+        if let Some(path) = stub {
+            let parse = Command::ParseFiles {
+                key,
+                paths: vec![path],
+                expand: false,
+            };
+            handle.send_and_wait_with(parse, WAIT)?;
+        }
         let view = handle.view();
         let content: &TabContent = view
             .tab(key)
@@ -548,12 +555,19 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
 
 /// Every section the fixture fills must hold something on the App's side,
 /// or a section both readers dropped would pass.
-fn assert_filled(app: &Observed, kind: &TabKind, case: &str) {
+fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
     let stubs = app.files.iter().filter(|f| f.3 == 0 && !f.4).count();
-    assert!(
-        app.lazy && stubs > 0,
-        "{case}: the fixture left no lazy stub"
-    );
+    if lazy {
+        assert!(
+            app.lazy && stubs > 0,
+            "{case}: the fixture left no lazy stub"
+        );
+    } else {
+        assert!(
+            !app.lazy && stubs == 0,
+            "{case}: the eager diff left a stub"
+        );
+    }
     let [risky, unreviewed] = [&app.visible[0], &app.visible[1]];
     assert_eq!(risky, &["src/a.rs".to_string()], "{case}: the risk filter");
     let filtered = !unreviewed.is_empty() && unreviewed.len() < app.files.len();
@@ -580,15 +594,19 @@ fn assert_filled(app: &Observed, kind: &TabKind, case: &str) {
 fn assert_parity(kind: TabKind, mode: DiffMode) -> anyhow::Result<()> {
     // One refresh is the restore's first load; a second one sees the AI
     // state the first loaded, which is when a working-tree view fetches the
-    // branch diff.
-    for refreshes in [1, 2] {
-        let case = format!("{kind:?} in {mode:?} after {refreshes} refresh(es)");
-        let (root, repo) = temp_repo()?;
-        let checkout = (root.path(), repo.as_str());
-        let app = through_tab_state(&kind, mode, refreshes, checkout)?;
-        let service = through_the_workspace(&kind, mode, refreshes, checkout)?;
-        assert_sections(&service, &app, &case);
-        assert_filled(&app, &kind, &case);
+    // branch diff. An eager diff relocates anchors in parsed files; a lazy
+    // one leaves stubs.
+    for lazy in [false, true] {
+        for refreshes in [1, 2] {
+            let size = if lazy { "lazy" } else { "eager" };
+            let case = format!("{kind:?} in {mode:?}, {size}, after {refreshes} refresh(es)");
+            let (root, repo) = temp_repo()?;
+            let checkout = (root.path(), repo.as_str());
+            let app = through_tab_state((&kind, mode), refreshes, lazy, checkout)?;
+            let service = through_the_workspace((&kind, mode), refreshes, lazy, checkout)?;
+            assert_sections(&service, &app, &case);
+            assert_filled(&app, &kind, lazy, &case);
+        }
     }
     Ok(())
 }
