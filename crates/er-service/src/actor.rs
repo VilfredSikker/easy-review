@@ -16,7 +16,7 @@ use er_engine::ports::Ports;
 use er_engine::tab_identity::DiffMode;
 use er_engine::TabKey;
 
-use crate::content::{ContentPatch, TabContent};
+use crate::content::{self, ContentPatch, TabContent};
 use crate::effect::{resolve_target, LoadInput};
 use crate::flows::{FlowRunner, FlowsUpdate};
 use crate::github_sync::{Applied, Fetched};
@@ -24,6 +24,7 @@ use crate::guard::{self, ActorThread};
 use crate::handle::{ActorMsg, Effected, ReplySender, WorkspaceError, WorkspaceHandle};
 use crate::jobs::JobHost;
 use crate::protocol::{Command, Event, Reply, TabContext};
+use crate::sidecar_reload::SidecarReloads;
 use crate::workspace::{WorkspaceState, WorkspaceView};
 
 /// The actor's dependencies. This is the seam P45 extends: the actor takes
@@ -129,8 +130,14 @@ fn run(
     let mut state = WorkspaceState::new();
     let mut jobs = JobHost::new(&deps, &tx);
     let flows = FlowRunner::new(&deps, jobs.sink(), jobs.arena().clone(), &tx);
+    let mut reloads = SidecarReloads::default();
     while let Ok(message) = rx.recv() {
         match message {
+            ActorMsg::Command {
+                command: Command::ReloadSidecars { key },
+                reply,
+            } => reloads.start(&deps, &state, &tx, key, reply),
+            ActorMsg::Reloaded(done) => reloads.finish(&mut state, done, &subscribers, &view),
             ActorMsg::Command { command, reply } => {
                 handle_command(&deps, &state, &mut jobs, &flows, &tx, command, reply);
             }
@@ -252,13 +259,6 @@ fn spawn_effect<R: Into<Effected>>(
     });
 }
 
-/// Whether a tab command names a tab this actor has loaded. A key the actor
-/// does not hold is a tab that closed or never loaded here; the command is
-/// refused before any effect runs.
-fn key_loaded(state: &WorkspaceState, key: TabKey) -> bool {
-    state.view().tabs.contains_key(&key)
-}
-
 /// Answers a tab command whose key this actor has not loaded.
 fn refuse_unknown_tab(reply: ReplySender) {
     let _ = reply.send(Err(WorkspaceError::Failed(
@@ -311,6 +311,10 @@ fn reload_input(content: &TabContent, mode: DiffMode) -> LoadInput {
         pr_refs_fetched: content.pr_refs_fetched,
         prev_ai: Some(Arc::clone(&content.ai)),
         prev_branch_diff_hash: content.diff.meta.branch_diff_hash.clone(),
+        expanded: content.diff.expanded.clone(),
+        prev_pr: Some(Arc::clone(&content.pr)),
+        refresh_pr: false,
+        adopt_head_oid: None,
     }
 }
 
@@ -624,6 +628,7 @@ fn handle_command(
                 return refuse_stale(reply);
             }
             let deps = deps.clone();
+            let readers = crate::sidecar_reload::readers(state, &context.er_dir);
             spawn_effect(tx, reply, move || {
                 crate::github_comments::promote_finding_to_comment(
                     &deps,
@@ -631,7 +636,10 @@ fn handle_command(
                     &finding_id,
                     body,
                 )
-                .map(|(id, patch)| Effected::patched(Reply::CommentPromoted { id }, patch))
+                .map(|(id, patch)| {
+                    let patch = crate::sidecar_reload::with_reloaded_ai(&deps, &readers, patch);
+                    Effected::patched(Reply::CommentPromoted { id }, patch)
+                })
             });
         }
         Command::SyncGithubComments { context, source } => {
@@ -696,15 +704,30 @@ fn handle_command(
                 crate::effect::first_load(deps, &tab, mode)
             });
         }
-        Command::RefreshDiff { key, force } => {
-            if !key_loaded(state, key) {
+        Command::RefreshDiff {
+            key,
+            force,
+            adopt_head_oid,
+        } => {
+            let Some(mode) = state.view().tabs.get(&key).map(|c| c.tab.mode) else {
                 return refuse_unknown_tab(reply);
+            };
+            // A view the workspace only records has nothing to refresh.
+            if !content::loads(mode) {
+                let reviewed_cleared = 0;
+                let _ = reply.send(Ok(Reply::ContentLoaded {
+                    key,
+                    reviewed_cleared,
+                }));
+                return;
             }
             spawn_load(deps, state, tx, reply, key, move |_, content| {
                 let content = content
                     .ok_or_else(|| WorkspaceError::Failed("no loaded tab has that key".into()))?;
                 let mut input = reload_input(content, content.tab.mode);
                 input.fetch_pr_refs = force;
+                input.refresh_pr = force;
+                input.adopt_head_oid = adopt_head_oid;
                 Ok(input)
             });
         }
@@ -713,14 +736,25 @@ fn handle_command(
             mode,
             pr_number,
         } => {
-            if !key_loaded(state, key) {
+            let Some(since) = state.view().tabs.get(&key).map(|c| c.generation()) else {
                 return refuse_unknown_tab(reply);
+            };
+            if !content::loads(mode) {
+                let patch = ContentPatch::Mode { key, since, mode };
+                return spawn_effect(tx, reply, move || {
+                    Ok(Effected::patched(Reply::ModeRecorded { key }, patch))
+                });
             }
             spawn_load(deps, state, tx, reply, key, move |_, content| {
                 let content = content
                     .ok_or_else(|| WorkspaceError::Failed("no loaded tab has that key".into()))?;
                 let mut input = reload_input(content, mode);
                 input.tab.pr_number = input.tab.pr_number.or(pr_number);
+                // A tour entered from the PR diff stays on the PR.
+                if mode == DiffMode::Tour {
+                    let from_pr = content.tab.mode == DiffMode::PrDiff;
+                    input.tab.tour_is_pr = from_pr || content.tab.identity().is_remote();
+                }
                 // The views show different diffs, so a mark whose hash differs
                 // in the new view still holds.
                 input.auto_unmark = false;
@@ -732,13 +766,14 @@ fn handle_command(
                 Ok(input)
             });
         }
-        Command::ParseFiles { key, paths } => {
+        Command::ParseFiles { key, paths, expand } => {
             let Some(content) = state.view().tabs.get(&key).cloned() else {
                 return refuse_unknown_tab(reply);
             };
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
-                let files = crate::effect::parse_files(&deps, &content.tab, &content.diff, &paths);
+                let (files, expanded) =
+                    crate::effect::parse_files(&deps, &content.tab, &content.diff, &paths, expand);
                 let parsed = files.len();
                 Ok(Effected::patched(
                     Reply::FilesParsed { key, parsed },
@@ -746,9 +781,15 @@ fn handle_command(
                         key,
                         since: content.diff.revision,
                         files,
+                        expanded,
                     },
                 ))
             });
+        }
+        // The loop hands reloads to their gate before dispatch.
+        Command::ReloadSidecars { key } => {
+            let reloaded = false;
+            let _ = reply.send(Ok(Reply::SidecarsReloaded { key, reloaded }));
         }
         Command::DropTab { key } => {
             // A key not loaded yet may have a first load in flight; the patch
@@ -828,7 +869,7 @@ fn apply(
     }
 }
 
-fn publish(view: &RwLock<Arc<WorkspaceView>>, state: &WorkspaceState) {
+pub(crate) fn publish(view: &RwLock<Arc<WorkspaceView>>, state: &WorkspaceState) {
     let next = Arc::new(state.view().clone());
     match view.write() {
         Ok(mut current) => *current = next,
@@ -839,7 +880,7 @@ fn publish(view: &RwLock<Arc<WorkspaceView>>, state: &WorkspaceState) {
 }
 
 /// Sends one event to every subscriber, dropping those whose receiver is gone.
-fn broadcast(subscribers: &Mutex<Vec<Sender<Event>>>, event: Event) {
+pub(crate) fn broadcast(subscribers: &Mutex<Vec<Sender<Event>>>, event: Event) {
     if let Ok(mut subscribers) = subscribers.lock() {
         subscribers.retain(|sender| sender.send(event.clone()).is_ok());
     }

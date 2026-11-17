@@ -4,14 +4,15 @@
 //! `deps.ports()` call passes the guard. It resolves open targets and loads
 //! each tab's content; the actor applies what a load returns.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use er_engine::ai::tab_ai::{assemble_tab_ai, TabAiLoad};
 use er_engine::ai::{self, tab_refresh};
 use er_engine::diff_load::{self, PrRefreshInputs};
-use er_engine::git::{CompactionConfig, DiffFile};
+use er_engine::git::{CompactionConfig, DiffFile, DiffFileHeader};
 use er_engine::paths::ErRoot;
+use er_engine::preview_key::{capture_stamps, StampSource};
 use er_engine::session_store;
 use er_engine::store_registry;
 use er_engine::tab_identity::{resolve_descriptor, DiffMode, ResolvedTab};
@@ -19,9 +20,13 @@ use er_engine::tabs_record::TabDescriptor;
 
 use crate::actor::WorkspaceDeps;
 use crate::annotations::failed;
-use crate::content::{AiSection, DiffMeta, DiffSection, LoadedDiff, LoadedTab};
+use crate::content::{
+    AiSection, DiffMeta, DiffSection, LoadedDiff, LoadedTab, PrSection, ReloadedAi, SidecarStamp,
+    TabContent,
+};
 use crate::handle::WorkspaceError;
 use crate::protocol::{OpenTarget, TabContext};
+use crate::tab_pr::{load_pr, PrLoad};
 use crate::workspace::WorkspaceTarget;
 
 /// Resolves what to open: parse the target, ask GitHub for the PR state, and
@@ -124,6 +129,10 @@ pub(crate) fn first_load(
         pr_refs_fetched: false,
         prev_ai: None,
         prev_branch_diff_hash: String::new(),
+        expanded: BTreeSet::new(),
+        prev_pr: None,
+        refresh_pr: false,
+        adopt_head_oid: None,
     })
 }
 
@@ -144,6 +153,13 @@ pub(crate) struct LoadInput {
     /// and a reload keeps its staleness.
     pub prev_ai: Option<Arc<AiSection>>,
     pub prev_branch_diff_hash: String,
+    /// The compacted files the user expanded, which the load parses in full.
+    pub expanded: BTreeSet<String>,
+    /// The PR section the tab held, carried unless `refresh_pr` is set.
+    pub prev_pr: Option<Arc<PrSection>>,
+    pub refresh_pr: bool,
+    /// A PR head the caller confirmed, adopted as the diff's head.
+    pub adopt_head_oid: Option<String>,
 }
 
 /// Loads one tab's content in its mode, by the steps a full diff refresh
@@ -163,6 +179,7 @@ pub(crate) fn load_tab(
             .map_err(|error| failed("read the checkout's branch", error))?;
     }
     let mut pr_refs_fetched = input.pr_refs_fetched;
+    let (mut fetched_commits, mut fetched_head) = (None, None);
     if input.fetch_pr_refs && !tab.identity().is_remote() {
         if let Some(pr_number) = tab.pr_number {
             let fetched = diff_load::fetch_pr_refresh_with(
@@ -177,11 +194,13 @@ pub(crate) fn load_tab(
             tab.pr_head_ref = Some(fetched.head_ref);
             tab.base_branch = fetched.resolved_base;
             pr_refs_fetched = true;
+            fetched_commits = Some(fetched.commits);
+            fetched_head = fetched.last_diff_head_oid;
         }
     }
     if matches!(
         tab.mode,
-        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::Tour
+        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden
     ) {
         return Err(WorkspaceError::Failed(format!(
             "the workspace does not load the {:?} view",
@@ -252,7 +271,35 @@ pub(crate) fn load_tab(
         tab.mode.fetch_scope()
     };
     let (raw, preview_head_oid) = fetch(diff_scope)?;
-    let parsed = diff_load::parse_raw(&raw, &CompactionConfig::default(), |_| false);
+    let expanded = input.expanded;
+    let mut parsed = diff_load::parse_raw(&raw, &CompactionConfig::default(), |path| {
+        expanded.contains(path)
+    });
+    // An eager parse compacts by pattern alone; the files the user expanded
+    // are parsed in full again, as the App's refresh does.
+    if !parsed.lazy {
+        for file in &mut parsed.files {
+            if file.compacted && expanded.contains(&file.path) {
+                expand_file(deps, &tab, &raw, &parsed.headers, file)
+                    .map_err(|error| failed("expand a file", error))?;
+            }
+        }
+    }
+    let stamps = capture_stamps(
+        git,
+        &parsed.files,
+        &StampSource {
+            repo_root: &tab.repo_root,
+            checkout_root: tab.checkout_root.as_deref(),
+            is_remote: id.is_remote(),
+            mode: tab.mode,
+            committed_unpushed: false,
+            revision: tab
+                .local_branch_view
+                .as_deref()
+                .or(tab.pr_head_ref.as_deref()),
+        },
+    );
     let diff_hash = ai::compute_diff_hash(&raw);
     // A plain tab's other views need a second git call for the branch diff,
     // which only AI data, questions or a tour consume.
@@ -316,6 +363,21 @@ pub(crate) fn load_tab(
         0
     };
 
+    // Read after the load's own writes (moved comments, cleared marks), so
+    // only a later writer moves it.
+    let ai_stamp = SidecarStamp::read(&er_dir);
+    let pr = load_pr(
+        deps,
+        &tab,
+        PrLoad {
+            prev: input.prev_pr.as_deref(),
+            force: input.refresh_pr,
+            fetched_commits,
+            fetched_head,
+            preview_head_oid: preview_head_oid.as_deref(),
+            adopt_head_oid: input.adopt_head_oid,
+        },
+    );
     let context = TabContext {
         er_dir,
         comments_dir,
@@ -349,13 +411,50 @@ pub(crate) fn load_tab(
                 diff_hash,
                 branch_diff_hash,
                 preview_head_oid,
+                stamps,
             },
+            expanded,
         },
         marks,
         file_hashes,
         ai: state,
+        ai_stamp,
+        pr,
         cleared,
     })
+}
+
+/// The AI state of `content` read again from its sidecars, as the App's
+/// reload does: per-file staleness is kept, since only a diff refresh
+/// recomputes it. `None` when the sidecars have not moved since the content
+/// read them, unless `always`.
+pub(crate) fn reload_ai(
+    deps: &WorkspaceDeps,
+    content: &TabContent,
+    always: bool,
+) -> Option<ReloadedAi> {
+    let er_dir = content.context.er_dir.as_str();
+    let stamp = SidecarStamp::read(er_dir);
+    if !always && !content.ai.stamp.moved_to(&stamp) {
+        return None;
+    }
+    let id = content.tab.identity();
+    let mut state = ai::load_ai_state_with_arbiter(
+        er_dir,
+        &content.context.branch_diff_hash,
+        id.storage_branch_scope(),
+        stamp.arbiter.as_deref(),
+    );
+    let load = TabAiLoad {
+        identity: id,
+        git: &*deps.ports().git,
+        er_dir,
+        diff_hash: &content.context.diff_hash,
+        branch_diff_hash: &content.context.branch_diff_hash,
+    };
+    let prev = &content.ai.state;
+    assemble_tab_ai(&mut state, &load, prev.tour_stale, prev.stale_files.clone());
+    Some(ReloadedAi { state, stamp })
 }
 
 /// Drops the marks whose file left the diff or changed since it was marked,
@@ -395,20 +494,30 @@ fn clear_moved_marks(
 }
 
 /// Parses the named lazy files of a loaded diff, each on its own copy, and
-/// answers the ones a parse filled with their index in the section.
+/// answers the ones a parse filled with their index in the section. With
+/// `expand`, a compacted file is parsed in full too, and its path is answered
+/// beside the files.
 pub(crate) fn parse_files(
     deps: &WorkspaceDeps,
     tab: &ResolvedTab,
     diff: &DiffSection,
     paths: &[String],
-) -> Vec<(usize, DiffFile)> {
+    expand: bool,
+) -> (Vec<(usize, DiffFile)>, Vec<String>) {
     let ports = deps.ports();
     let id = tab.identity();
-    paths
+    let mut expanded = Vec::new();
+    let files = paths
         .iter()
         .filter_map(|path| {
             let index = diff.files.iter().position(|file| &file.path == path)?;
             let mut one = [(*diff.files[index]).clone()];
+            if expand && one[0].compacted {
+                let [mut file] = one;
+                expand_file(deps, tab, &diff.meta.raw, &diff.meta.headers, &mut file).ok()?;
+                expanded.push(file.path.clone());
+                return Some((index, file));
+            }
             let parsed = diff_load::parse_lazy_file(
                 ports,
                 &id,
@@ -420,5 +529,39 @@ pub(crate) fn parse_files(
             let [file] = one;
             parsed.then_some((index, file))
         })
-        .collect()
+        .collect();
+    (files, expanded)
+}
+
+/// Parses a compacted file in full, as the App's expand does: from the raw
+/// diff when the tab has no checkout to ask (a remote or local PR), from git
+/// otherwise.
+fn expand_file(
+    deps: &WorkspaceDeps,
+    tab: &ResolvedTab,
+    raw: &str,
+    headers: &[DiffFileHeader],
+    file: &mut DiffFile,
+) -> anyhow::Result<()> {
+    if tab.identity().is_remote() || tab.pr_number.is_some() {
+        let header = headers
+            .iter()
+            .find(|header| header.path == file.path)
+            .ok_or_else(|| anyhow::anyhow!("{} is not in the diff", file.path))?;
+        let parsed = er_engine::git::parse_file_at_offset(raw, header);
+        file.hunks = parsed.hunks;
+        file.adds = parsed.adds;
+        file.dels = parsed.dels;
+    } else {
+        er_engine::git::expand_compacted_file(
+            file,
+            &*deps.ports().git,
+            &tab.repo_root,
+            tab.mode.fetch_scope(),
+            &tab.base_branch,
+            tab.pr_head_ref.as_deref(),
+        )?;
+    }
+    file.compacted = false;
+    Ok(())
 }

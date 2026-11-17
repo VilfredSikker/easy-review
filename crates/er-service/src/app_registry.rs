@@ -530,3 +530,41 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         Err(poisoned) => poisoned.into_inner(),
     }
 }
+
+/// What an open cache holds about a PR beside its diff. A local entry warmed
+/// by a prefetch may carry commits and no overview.
+#[derive(Clone, Debug, Default)]
+pub struct CachedPr {
+    pub overview: Option<er_engine::github::PrOverviewData>,
+    pub commits: Option<Vec<er_engine::git::CommitInfo>>,
+    pub head_oid: Option<String>,
+}
+
+impl AppRegistry {
+    /// The cached PR `number`: the remote cache's entry for `remote`, or a
+    /// local entry for `repo_root` under any project. The diff stays in the
+    /// cache.
+    pub fn cached_pr(
+        &self,
+        remote: Option<(&str, &str)>,
+        repo_root: &str,
+        number: u64,
+    ) -> Option<CachedPr> {
+        if let Some((owner, repo)) = remote {
+            let key = (owner.to_string(), repo.to_string(), number);
+            return lock(&self.remote).get(&key).map(|entry| CachedPr {
+                overview: entry.pr_data.clone(),
+                commits: Some(entry.pr_commits.clone()),
+                head_oid: entry.head_oid.clone(),
+            });
+        }
+        lock(self.pr_open())
+            .iter()
+            .find(|(key, _)| key.repo_root == repo_root && key.pr_number == number)
+            .map(|(_, entry)| CachedPr {
+                overview: entry.pr_data.clone(),
+                commits: entry.pr_commits.clone(),
+                head_oid: Some(entry.freshness.head_oid.clone()).filter(|oid| !oid.is_empty()),
+            })
+    }
+}

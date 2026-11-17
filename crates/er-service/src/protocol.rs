@@ -224,18 +224,33 @@ pub enum Command {
         mode: Option<DiffMode>,
     },
     /// Refresh a loaded tab's diff. `force` also fetches a local PR's head
-    /// and base refs first, as a sync does.
-    RefreshDiff { key: TabKey, force: bool },
+    /// and base refs first and reads the PR's overview and commits again, as
+    /// a sync does. `adopt_head_oid` is a PR head the caller confirmed, which
+    /// the PR section then records as the diff's head.
+    RefreshDiff {
+        key: TabKey,
+        force: bool,
+        adopt_head_oid: Option<String>,
+    },
     /// Show a loaded tab in another mode. Its reviewed marks are kept.
     /// `pr_number` seeds a PR the front end detected onto a tab that has
-    /// none, so entering the PR diff can fetch its refs.
+    /// none, so entering the PR diff can fetch its refs. History, Conflicts
+    /// and Hidden are recorded without a load.
     SetDiffMode {
         key: TabKey,
         mode: DiffMode,
         pr_number: Option<u64>,
     },
-    /// Parse the named lazy files of a loaded tab's diff.
-    ParseFiles { key: TabKey, paths: Vec<String> },
+    /// Parse the named lazy files of a loaded tab's diff. `expand` also
+    /// parses a compacted file in full, and keeps it expanded across loads.
+    ParseFiles {
+        key: TabKey,
+        paths: Vec<String>,
+        expand: bool,
+    },
+    /// Read a loaded tab's sidecars again when a writer outside the workspace
+    /// moved them. A reload already running for the key answers at once.
+    ReloadSidecars { key: TabKey },
     /// Forget a closed tab's content. A key the actor never loaded answers
     /// at once and publishes nothing.
     DropTab { key: TabKey },
@@ -648,6 +663,15 @@ pub enum Reply {
     /// A closed tab's content left the view.
     ContentDropped {
         key: TabKey,
+    },
+    /// A view the workspace does not load was recorded on the tab.
+    ModeRecorded {
+        key: TabKey,
+    },
+    /// Whether a sidecar reload read anything new.
+    SidecarsReloaded {
+        key: TabKey,
+        reloaded: bool,
     },
 }
 

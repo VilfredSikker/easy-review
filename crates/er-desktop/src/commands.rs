@@ -1320,53 +1320,63 @@ pub async fn set_mode(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
-        // The modes the workspace loads go to the active tab's actor; History,
-        // Conflicts, Hidden and Tour stay on the App until the snapshot reads
-        // the content.
-        #[cfg(feature = "v1-service")]
-        if let Some(diff_mode) = content_routes::routed_mode(&mode) {
-            return content_routes::set_mode(&state, &mode, diff_mode, pr_number, tab_idx);
+    run_blocking(move || set_mode_impl(&state, &mode, pr_number, tab_idx)).await
+}
+
+fn set_mode_impl(
+    state: &AppState,
+    mode: &str,
+    pr_number: Option<u64>,
+    tab_idx: Option<usize>,
+) -> Result<AppSnapshot, String> {
+    // The modes the workspace loads go to the active tab's actor; History,
+    // Conflicts and Hidden are recorded there and stay on the App until
+    // the snapshot reads the content.
+    #[cfg(feature = "v1-service")]
+    if let Some(diff_mode) = content_routes::routed_mode(mode) {
+        return content_routes::set_mode(state, mode, diff_mode, pr_number, tab_idx);
+    }
+    #[cfg(feature = "v1-service")]
+    if let Some(diff_mode) = content_routes::recorded_mode(mode) {
+        content_routes::record_mode(state, mode, diff_mode, tab_idx);
+    }
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if !feature_allows_mode_str(&app.config.features, mode) {
+        return Err(format!("'{mode}' view is disabled in settings"));
+    }
+    if let Some(idx) = tab_idx {
+        if app.active_tab != idx {
+            return Ok(snap_from_command(&app, state));
         }
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
-            return Err(format!("'{mode}' view is disabled in settings"));
-        }
-        if let Some(idx) = tab_idx {
-            if app.active_tab != idx {
-                return Ok(snap_from_command(&app, &state));
-            }
-        }
-        let t_switch = std::time::Instant::now();
-        if matches!(mode.as_str(), "pr" | "pr_diff") {
-            // Only enter PrDiff when not already there (avoids re-fetching refs
-            // on a tab that is already in PrDiff from construction).
-            if app.tab().mode != DiffMode::PrDiff {
-                // Seed a detected PR number (from the header toggle) onto a local
-                // branch tab that wasn't opened via --pr, so enter_pr_diff can fetch
-                // the head and resolve the shared `pr` bucket.
-                if app.tab().pr_number.is_none() {
-                    if let Some(n) = pr_number {
-                        app.tab_mut().pr_number = Some(n);
-                    }
+    }
+    let t_switch = std::time::Instant::now();
+    if matches!(mode, "pr" | "pr_diff") {
+        // Only enter PrDiff when not already there (avoids re-fetching refs
+        // on a tab that is already in PrDiff from construction).
+        if app.tab().mode != DiffMode::PrDiff {
+            // Seed a detected PR number (from the header toggle) onto a local
+            // branch tab that wasn't opened via --pr, so enter_pr_diff can fetch
+            // the head and resolve the shared `pr` bucket.
+            if app.tab().pr_number.is_none() {
+                if let Some(n) = pr_number {
+                    app.tab_mut().pr_number = Some(n);
                 }
-                app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
             }
-            return Ok(set_mode_snapshot(&app, &state, &mode, t_switch));
+            app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
         }
-        let diff_mode = match mode.as_str() {
-            "unstaged" => DiffMode::Unstaged,
-            "staged" => DiffMode::Staged,
-            "history" => DiffMode::History,
-            "conflicts" => DiffMode::Conflicts,
-            "hidden" => DiffMode::Hidden,
-            "tour" => DiffMode::Tour,
-            _ => DiffMode::Branch,
-        };
-        app.tab_mut().set_mode(diff_mode);
-        Ok(set_mode_snapshot(&app, &state, &mode, t_switch))
-    })
-    .await
+        return Ok(set_mode_snapshot(&app, state, mode, t_switch));
+    }
+    let diff_mode = match mode {
+        "unstaged" => DiffMode::Unstaged,
+        "staged" => DiffMode::Staged,
+        "history" => DiffMode::History,
+        "conflicts" => DiffMode::Conflicts,
+        "hidden" => DiffMode::Hidden,
+        "tour" => DiffMode::Tour,
+        _ => DiffMode::Branch,
+    };
+    app.tab_mut().set_mode(diff_mode);
+    Ok(set_mode_snapshot(&app, state, mode, t_switch))
 }
 
 /// The snapshot a mode switch returns, with the switch and the snapshot build
@@ -11954,6 +11964,10 @@ pub async fn poll(state: State<'_, AppState>) -> Result<PollResponse, String> {
 
 fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     let t0 = std::time::Instant::now();
+    // Flag-on, the active tab's actor reads its sidecars again when an outside
+    // writer moved them. Sent before the App lock and never awaited.
+    #[cfg(feature = "v1-service")]
+    content_routes::reload_sidecars(state);
 
     // Pass one: the calls that mutate. A short lock, released before the
     // snapshot re-takes it — so a `select_file` or `set_mode` arriving
@@ -13303,7 +13317,8 @@ mod tests {
             };
             drop(held);
             assert!(result.is_ok(), "the service open path failed: {result:?}");
-            // The open resolves the target, then loads the new tab's diff.
+            // The open resolves the target, then loads the new tab's diff and
+            // fills its PR section, which no prefetch warmed.
             assert_eq!(
                 github.calls(),
                 vec![
@@ -13311,6 +13326,8 @@ mod tests {
                     "pr_head_oid_remote(owner=\"acme\", repo=\"widgets\", pr=7)",
                     "pr_diff_remote(owner=\"acme\", repo=\"widgets\", number=7)",
                     "pr_head_oid_remote(owner=\"acme\", repo=\"widgets\", pr=7)",
+                    "overview_remote(owner=\"acme\", repo=\"widgets\", number=7)",
+                    "commits_remote(owner=\"acme\", repo=\"widgets\", number=7, limit=250)",
                 ]
             );
         });
@@ -16478,6 +16495,8 @@ mod route_tests {
             "refresh(&state, false)",
             "refresh(&state, true)",
             "set_mode(",
+            "record_mode(state, mode, diff_mode, tab_idx)",
+            "reload_sidecars(state)",
             "select_file(",
             "request_file_content(",
         ] {
