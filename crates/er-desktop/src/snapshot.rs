@@ -1298,7 +1298,6 @@ pub fn resolve_github_status_key_for(
         let matches = |slug: &str, prs: &[PrInfo]| {
             let in_repo = tab
                 .remote_repo
-                .as_deref()
                 .map(|r| r.eq_ignore_ascii_case(slug))
                 .unwrap_or(true);
             in_repo && prs.iter().any(|p| p.number == number)
@@ -1311,7 +1310,6 @@ pub fn resolve_github_status_key_for(
                     .iter()
                     .filter(|(slug, _)| {
                         tab.remote_repo
-                            .as_deref()
                             .map(|r| r.eq_ignore_ascii_case(slug))
                             .unwrap_or(true)
                     })
@@ -1332,7 +1330,6 @@ pub fn resolve_github_status_key_for(
         .iter()
         .filter(|(slug, _)| {
             tab.remote_repo
-                .as_deref()
                 .map(|r| r.eq_ignore_ascii_case(slug))
                 .unwrap_or(true)
         })
