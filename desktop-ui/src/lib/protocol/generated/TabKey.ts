@@ -8,4 +8,4 @@
  * Keys count from 1 in each backend process; a key kept across a restart can
  * name a different tab.
  */
-export type TabKey = number | string;
+export type TabKey = number;
