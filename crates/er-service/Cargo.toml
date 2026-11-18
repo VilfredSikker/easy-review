@@ -14,6 +14,8 @@ er-engine = { path = "../er-engine", default-features = false }
 er-store = { path = "../er-store" }
 er-git = { path = "../er-git" }
 er-github = { path = "../er-github" }
+# The wire types the resource builders answer in (ADR 0067).
+er-protocol = { path = "../er-protocol" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -512,3 +512,62 @@ fn the_local_cache_warms_through_the_ports_and_prunes() -> anyhow::Result<()> {
         Ok(())
     })
 }
+
+/// A wire key resolves only by a lookup in the published list: a number the
+/// list never held, and a closed tab's, both answer `NotFound`.
+#[test]
+fn a_wire_key_the_registry_does_not_list_is_not_found() -> anyhow::Result<()> {
+    use crate::app_registry::{resolve_tab_key, tabs_resource, wire_tab_key};
+    use er_protocol::ErErrorKind;
+
+    let dir = tempfile::tempdir()?;
+    er_engine::storage::with_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+        let (registry, _) = registry(FakeGitHub::default());
+        registry.send(AppCommand::NewTab { tab: working("/a") })?;
+        registry.send(AppCommand::NewTab { tab: working("/b") })?;
+        let opened = registry.tabs_view();
+        let (closed, kept) = (opened.tabs[0].key, opened.tabs[1].key);
+        registry.send(AppCommand::CloseTab { key: closed })?;
+        let view = registry.tabs_view();
+
+        assert_eq!(resolve_tab_key(&view, wire_tab_key(kept)), Ok(kept));
+        let unlisted = er_protocol::TabKey(kept.get() + 1_000);
+        for wire in [unlisted, wire_tab_key(closed)] {
+            let answer = resolve_tab_key(&view, wire);
+            assert_eq!(
+                answer.as_ref().map_err(|e| e.kind),
+                Err(ErErrorKind::NotFound),
+                "{wire:?} answered {answer:?}"
+            );
+        }
+        assert_eq!(
+            tabs_resource(&view),
+            er_protocol::Tabs {
+                tabs: vec![wire_tab_key(kept)],
+                active: Some(wire_tab_key(kept)),
+            }
+        );
+        Ok(())
+    })
+}
+
+/// Each workspace error reaches the frontend as a kind it can branch on.
+#[test]
+fn a_workspace_error_maps_to_its_wire_kind() {
+    use crate::handle::WorkspaceError;
+    use er_protocol::{ErError, ErErrorKind};
+
+    let cases = [
+        (WorkspaceError::Disconnected, ErErrorKind::Disconnected),
+        (WorkspaceError::Timeout(WAIT), ErErrorKind::Timeout),
+        (WorkspaceError::Failed("no".into()), ErErrorKind::Refused),
+        (
+            WorkspaceError::Github(er_github::GhError::Timeout),
+            ErErrorKind::Github,
+        ),
+    ];
+    for (error, kind) in cases {
+        let message = error.to_string();
+        assert_eq!(ErError::from(error), ErError { kind, message });
+    }
+}

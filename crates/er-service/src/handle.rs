@@ -55,6 +55,25 @@ impl From<er_github::GhError> for WorkspaceError {
 
 impl std::error::Error for WorkspaceError {}
 
+/// The kind the frontend branches on. A failed effect is the backend
+/// declining the command, with the port's message as the reason.
+impl From<WorkspaceError> for er_protocol::ErError {
+    fn from(error: WorkspaceError) -> Self {
+        use er_protocol::ErErrorKind;
+
+        let kind = match &error {
+            WorkspaceError::Disconnected => ErErrorKind::Disconnected,
+            WorkspaceError::Timeout(_) => ErErrorKind::Timeout,
+            WorkspaceError::Failed(_) => ErErrorKind::Refused,
+            WorkspaceError::Github(_) => ErErrorKind::Github,
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+}
+
 pub(crate) type ReplySender = Sender<Result<Reply, WorkspaceError>>;
 
 /// What an effect hands back: the caller's reply, and what it changed in the
