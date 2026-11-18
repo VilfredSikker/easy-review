@@ -21,15 +21,22 @@ pub const COALESCE: Duration = Duration::from_millis(40);
 /// A burst's moved keys with their new versions; never empty.
 pub type Moved = Vec<(Watched, u64)>;
 
-/// Runs the relay on its own thread until every wake sender is gone.
+/// Runs the relay on its own thread until every wake sender is gone. The
+/// baseline is read before the thread starts, so a change made once this
+/// returns is always handed on.
 pub fn spawn(desktop: DesktopState, wake: Receiver<()>, emit: impl Fn(Moved) + Send + 'static) {
+    let last = watched(&desktop);
     let _ = std::thread::Builder::new()
         .name("er-resource-relay".into())
-        .spawn(move || run(&desktop, &wake, &emit));
+        .spawn(move || run(&desktop, last, &wake, &emit));
 }
 
-fn run(desktop: &DesktopState, wake: &Receiver<()>, emit: &dyn Fn(Moved)) {
-    let mut last = watched(desktop);
+fn run(
+    desktop: &DesktopState,
+    mut last: BTreeMap<Watched, u64>,
+    wake: &Receiver<()>,
+    emit: &dyn Fn(Moved),
+) {
     while wake.recv().is_ok() {
         let deadline = Instant::now() + COALESCE;
         loop {
