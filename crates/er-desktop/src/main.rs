@@ -852,7 +852,12 @@ fn spawn_service_comment_sync(
 }
 
 /// Emit `er://revision` whenever `desktop_revision` advances; see the call site.
-fn run_revision_watcher(watch_handle: &tauri::AppHandle, watch_rev: &std::sync::atomic::AtomicU64) {
+/// `on_emit` runs after each emit.
+fn run_revision_watcher(
+    watch_handle: &tauri::AppHandle,
+    watch_rev: &std::sync::atomic::AtomicU64,
+    on_emit: &dyn Fn(),
+) {
     use tauri::Emitter;
     let mut last_emitted = u64::MAX;
     loop {
@@ -875,6 +880,7 @@ fn run_revision_watcher(watch_handle: &tauri::AppHandle, watch_rev: &std::sync::
                     ],
                 );
             }
+            on_emit();
         }
         std::thread::sleep(std::time::Duration::from_millis(80));
     }
@@ -1104,18 +1110,21 @@ fn main() {
     }
     let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    // The resource relay's wakes; the relay starts with the window.
     #[cfg(feature = "v1-service")]
-    let service = Arc::new(er_desktop::service::ServiceState::with_revision_relay(
-        ports.clone(),
-        {
+    let (resource_wake, resource_wakes) = std::sync::mpsc::channel();
+    #[cfg(feature = "v1-service")]
+    let service = Arc::new(
+        er_desktop::service::ServiceState::with_revision_relay(ports.clone(), {
             // The revision watcher emits `er://revision` for this bump, so the
             // relay does not emit one of its own.
             let desktop_revision = Arc::clone(&desktop_revision);
             move |_| {
                 profile_log::bump_desktop_revision(&desktop_revision, "service_view");
             }
-        },
-    ));
+        })
+        .with_resource_wake(resource_wake),
+    );
     // The registry issues every tab key on this path: the App restores from
     // its list, then follows each change to it.
     #[cfg(feature = "v1-service")]
@@ -1958,7 +1967,38 @@ fn main() {
                 // react within ~50ms of a real change.
                 let watch_handle = app.handle().clone();
                 let watch_rev = Arc::clone(&state.desktop_revision);
-                std::thread::spawn(move || run_revision_watcher(&watch_handle, &watch_rev));
+                // With the flag on, each emitted revision also runs the backend
+                // tick, which drives the duties the poll ran on each event.
+                #[cfg(feature = "v1-service")]
+                let on_emit = {
+                    use er_desktop::resources::tick;
+                    let wake = tick::spawn(
+                        state.desktop.clone(),
+                        Arc::clone(&state.app),
+                        tick::INTERVAL,
+                    );
+                    move || wake.wake()
+                };
+                #[cfg(not(feature = "v1-service"))]
+                let on_emit = || {};
+                std::thread::spawn(move || {
+                    run_revision_watcher(&watch_handle, &watch_rev, &on_emit);
+                });
+                #[cfg(feature = "v1-service")]
+                {
+                    use er_desktop::resources::relay;
+                    use tauri::Emitter;
+                    let handle = app.handle().clone();
+                    relay::spawn(state.desktop.clone(), resource_wakes, move |moved| {
+                        let changed = relay::wire(&moved);
+                        if changed.is_empty() {
+                            return;
+                        }
+                        if let Err(e) = handle.emit("er://resources", &changed) {
+                            log::warn!("resource relay emit failed: {e}");
+                        }
+                    });
+                }
             }
 
             install_app_menu(app.handle())?;

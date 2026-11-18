@@ -614,7 +614,9 @@ fn is_one_pending_review_error(raw: &str) -> bool {
     raw.to_lowercase().contains("one pending review")
 }
 
-fn process_ai_task_inbox(app: &App, state: &AppState) {
+/// Files the finished and failed background tasks in the inbox. The backend
+/// tick runs it with the flag on; the poll runs it with the flag off.
+pub(crate) fn process_ai_task_inbox(app: &App, state: &DesktopState) {
     let now = now_ms();
     let tasks = app.background_task_snapshots();
     let tab = app.tab();
@@ -11925,17 +11927,13 @@ pub async fn poll(state: State<'_, AppState>) -> Result<PollResponse, String> {
     run_blocking(move || poll_impl(&state)).await
 }
 
-fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
-    let t0 = std::time::Instant::now();
-    // Flag-on, the active tab's actor reads its sidecars again when an outside
-    // writer moved them. Sent before the App lock and never awaited.
-    #[cfg(feature = "v1-service")]
-    content_routes::reload_sidecars(state);
-
-    // Pass one: the calls that mutate. A short lock, released before the
-    // snapshot re-takes it — so a `select_file` or `set_mode` arriving
-    // mid-poll waits for this pass rather than for the whole snapshot build.
-    let lock_t0 = std::time::Instant::now();
+/// Pass one: the calls that mutate. A short lock, released before the
+/// snapshot re-takes it — so a `select_file` or `set_mode` arriving
+/// mid-poll waits for this pass rather than for the whole snapshot build.
+/// With the flag on the backend tick runs these duties and the sidecar
+/// reload instead, so each has one driver.
+#[cfg(not(feature = "v1-service"))]
+fn poll_first_pass(state: &AppState) -> Result<(), String> {
     let warm_target;
     {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -11973,6 +11971,14 @@ fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     // fan-out inside it; warming here means the next build reads a warm entry.
     // No-op unless the cached entry is actually getting old (see the fn).
     crate::snapshot::kick_worktrees_warm(state.ports.clone(), &warm_target.0, &warm_target.1);
+    Ok(())
+}
+
+fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
+    let t0 = std::time::Instant::now();
+    let lock_t0 = std::time::Instant::now();
+    #[cfg(not(feature = "v1-service"))]
+    poll_first_pass(state)?;
     let lock_wait_ms = lock_t0.elapsed().as_millis();
 
     // Pass two: re-take for the revisions and the snapshot, so the two agree
@@ -12606,6 +12612,8 @@ mod tests {
 
     #[cfg(feature = "v1-service")]
     mod content_route_tests;
+    #[cfg(feature = "v1-service")]
+    mod resource_tests;
     #[cfg(feature = "v1-service")]
     mod tab_key_tests;
     #[cfg(feature = "v1-service")]
@@ -16466,7 +16474,6 @@ mod route_tests {
             "sync(&state)",
             "set_mode(",
             "record_mode(state, mode, diff_mode, tab_idx)",
-            "reload_sidecars(state)",
             "select_file(",
             "shows_history(state)",
             "request_file_content(",

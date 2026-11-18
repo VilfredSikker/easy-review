@@ -26,6 +26,8 @@ pub mod pr_open_cache;
 pub mod profile_log;
 pub mod projects;
 pub mod remote_pr_open_cache;
+#[cfg(feature = "v1-service")]
+pub mod resources;
 pub mod risk_commands;
 #[cfg(feature = "v1-service")]
 pub mod service;
