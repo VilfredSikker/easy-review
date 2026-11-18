@@ -413,9 +413,9 @@ changes at the gate.
   of its hot actions in the PR, and the reviewer acts on an overrun past the
   budget (within 10% or 2 ms of the old median, whichever is larger). No CI
   assertion and no latency plant.
-- **The `head_oid` bug on `main`:** the owner decides whether a separate
-  bug-fix PR goes to `main`. Either way P55.2 fixes the resource path, and no
-  entry carries a `main` fix.
+- **The `head_oid` bug on `main`:** the owner chose a separate bug-fix PR
+  to `main` (2026-11-18). P55.2 fixes the resource path, and no entry carries
+  the `main` fix.
 
 **Coordinator ruling (round 5, binding):**
 
@@ -424,8 +424,8 @@ changes at the gate.
   stays the one writer of the AI section (ADR 0067; ADR 0070's one-owner
   rule). The desktop never writes those sidecars itself.
 
-**Owner questions (pending).** The plan proceeds on each default until the
-owner answers.
+**Owner questions (answered 2026-11-18).** The owner took every default
+below, and approved the plan.
 
 1. A10, P57, P54: the desktop's copy of selection, cursor, navigation and
    input mode moves in phase 5 (D20 had 5b). Default: yes, because P62.2
@@ -1043,8 +1043,8 @@ are measured by what remains and do not count (ADDENDUM-04's L5).
   `v1_service_enabled`. The counts hold at `1f7527a1f`: #578, #599 and #600
   added no command and changed no return type.
 - **The `head_oid` gap on `main`:** `build_projects_cache_key`'s fingerprint
-  is live on `main` (v0.6.x). The owner decides whether a separate bug-fix PR
-  goes to `main` (coordinator ruling); P55.2 fixes the resource path only.
+  is live on `main` (v0.6.x). The owner chose a separate bug-fix PR to `main`;
+  P55.2 fixes the resource path only.
 - **Re-pin (gate step 3).** Every line number moved from `949eb993d` (or the
   #578 head `88c21f507`) to `1f7527a1f` by mapping each cited line through
   `git diff` and checking that the line's text is unchanged; the files that
