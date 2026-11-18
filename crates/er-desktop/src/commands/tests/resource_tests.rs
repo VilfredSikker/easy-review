@@ -19,14 +19,17 @@ use crate::service::{actor_key, ServiceState};
 const WAIT: Duration = Duration::from_secs(5);
 
 fn raw_diff() -> String {
-    (0..3)
-        .map(|n| {
-            format!(
-                "diff --git a/src/f{n}.rs b/src/f{n}.rs\n--- a/src/f{n}.rs\n+++ b/src/f{n}.rs\n\
-                 @@ -1,2 +1,2 @@\n-old\n+new\n ctx\n"
-            )
-        })
-        .collect()
+    use std::fmt::Write as _;
+
+    let mut raw = String::new();
+    for n in 0..3 {
+        let _ = write!(
+            raw,
+            "diff --git a/src/f{n}.rs b/src/f{n}.rs\n--- a/src/f{n}.rs\n+++ b/src/f{n}.rs\n\
+             @@ -1,2 +1,2 @@\n-old\n+new\n ctx\n"
+        );
+    }
+    raw
 }
 
 fn ports() -> er_engine::ports::Ports {

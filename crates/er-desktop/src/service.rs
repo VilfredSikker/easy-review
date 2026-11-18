@@ -76,6 +76,7 @@ impl ServiceState {
     /// The same service, waking `wake` after each view an actor publishes and
     /// each tab-list change. Set it before any actor starts: an actor started
     /// earlier is not followed.
+    #[must_use]
     pub fn with_resource_wake(mut self, wake: Sender<()>) -> Self {
         forward_wakes(self.app_registry.subscribe(), wake.clone());
         self.resource_wake = Some(wake);
