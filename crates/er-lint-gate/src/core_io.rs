@@ -4,6 +4,10 @@
 //! reads no file, starts no process and starts no thread or channel. The rule
 //! also fails a dependency outside the crate's allow-list. Test code is not
 //! exempt: a core test that needs a file belongs in the crate that consumes it.
+//!
+//! `crates/er-protocol`, the wire types, has an allow-list of its own and no
+//! source scan: its generator writes files, and what keeps the crate a leaf is
+//! that it depends on nothing from the workspace.
 
 use std::collections::BTreeMap;
 
@@ -30,6 +34,32 @@ pub const ALLOWED: &[&str] = &[
     "serde_json",
     "sha1",
     "sha2",
+];
+/// The wire crate's manifest, held to its own allow-list.
+pub const PROTOCOL_MANIFEST: &str = "crates/er-protocol/Cargo.toml";
+/// The dependencies the wire crate may declare.
+pub const PROTOCOL_ALLOWED: &[&str] = &["serde", "ts-rs"];
+
+/// A crate whose `[dependencies]` may only name the listed crates.
+pub struct AllowList {
+    pub crate_name: &'static str,
+    /// Workspace-relative path of the crate's manifest.
+    pub manifest: &'static str,
+    pub allowed: &'static [&'static str],
+}
+
+/// Every manifest the rule checks.
+pub const ALLOW_LISTS: &[AllowList] = &[
+    AllowList {
+        crate_name: "er-core",
+        manifest: MANIFEST,
+        allowed: ALLOWED,
+    },
+    AllowList {
+        crate_name: "er-protocol",
+        manifest: PROTOCOL_MANIFEST,
+        allowed: PROTOCOL_ALLOWED,
+    },
 ];
 
 /// Module prefixes that reach the outside world.
@@ -238,8 +268,8 @@ pub fn evaluate(findings_by_file: &BTreeMap<String, Vec<Finding>>, code: &str) -
     out
 }
 
-/// The dependencies in `[dependencies]` that the allow-list does not name.
-pub fn manifest_findings(manifest: &str) -> Vec<String> {
+/// The dependencies in `[dependencies]` that `allowed` does not name.
+pub fn manifest_findings(manifest: &str, allowed: &[&str]) -> Vec<String> {
     let Ok(value) = manifest.parse::<toml::Table>() else {
         return Vec::new();
     };
@@ -248,23 +278,24 @@ pub fn manifest_findings(manifest: &str) -> Vec<String> {
     };
     let mut extra: Vec<String> = dependencies
         .keys()
-        .filter(|key| !ALLOWED.contains(&key.as_str()))
+        .filter(|key| !allowed.contains(&key.as_str()))
         .cloned()
         .collect();
     extra.sort();
     extra
 }
 
-/// Diagnostics for dependencies outside the allow-list.
-pub fn manifest_diagnostics(manifest: &str, code: &str) -> Vec<Diagnostic> {
-    manifest_findings(manifest)
+/// Diagnostics for dependencies outside `list`, reported at its manifest.
+pub fn manifest_diagnostics(manifest: &str, list: &AllowList, code: &str) -> Vec<Diagnostic> {
+    manifest_findings(manifest, list.allowed)
         .into_iter()
         .map(|dependency| {
             let message = format!(
-                "dependency `{dependency}` is not in er-core's allow-list ({})",
-                ALLOWED.join(", ")
+                "dependency `{dependency}` is not in {}'s allow-list ({})",
+                list.crate_name,
+                list.allowed.join(", ")
             );
-            error(MANIFEST, 1, code, &message)
+            error(list.manifest, 1, code, &message)
         })
         .collect()
 }
@@ -361,12 +392,46 @@ mod tests {
     #[test]
     fn the_allow_list_accepts_the_declared_set() {
         let manifest = "[dependencies]\nserde.workspace = true\nserde_json.workspace = true\nschemars.workspace = true\nsha1.workspace = true\nglob.workspace = true\nsha2.workspace = true\nanyhow.workspace = true\n";
-        assert!(manifest_findings(manifest).is_empty());
+        assert!(manifest_findings(manifest, ALLOWED).is_empty());
     }
 
     #[test]
     fn an_extra_dependency_is_flagged() {
         let manifest = "[dependencies]\nserde.workspace = true\ndirs.workspace = true\n";
-        assert_eq!(manifest_findings(manifest), vec!["dirs".to_string()]);
+        assert_eq!(
+            manifest_findings(manifest, ALLOWED),
+            vec!["dirs".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_protocol_allow_list_accepts_serde_and_ts_rs() {
+        let manifest = "[dependencies]\nserde.workspace = true\nts-rs.workspace = true\n\n[dev-dependencies]\nserde_json.workspace = true\n";
+        assert!(manifest_findings(manifest, PROTOCOL_ALLOWED).is_empty());
+    }
+
+    #[test]
+    fn a_workspace_dependency_in_the_protocol_crate_is_flagged() {
+        let manifest =
+            "[dependencies]\nserde.workspace = true\ner-engine = { path = \"../er-engine\" }\n";
+        assert_eq!(
+            manifest_findings(manifest, PROTOCOL_ALLOWED),
+            vec!["er-engine".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_protocol_finding_points_at_the_protocol_manifest() {
+        let manifest = "[dependencies]\ner-core = { path = \"../er-core\" }\n";
+        let protocol = ALLOW_LISTS
+            .iter()
+            .find(|list| list.crate_name == "er-protocol")
+            .expect("er-protocol has an allow-list");
+        let found = manifest_diagnostics(manifest, protocol, CODE);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].file.as_deref(), Some(PROTOCOL_MANIFEST));
+        assert!(found[0]
+            .rendered
+            .contains("er-protocol's allow-list (serde, ts-rs)"));
     }
 }
