@@ -369,7 +369,16 @@ nothing reads, or a text artifact read or written with no `register_text`; it
 has no allow list, so a kind it cannot see is fixed in the composition.
 `er::core_io` fails a filesystem, process, thread or channel path in
 `er-core`, a `glob::glob` walk, a `crate::arena` path outside the arena module,
-and a dependency outside that crate's allow-list.
+and a dependency outside that crate's allow-list. `er-protocol` has an
+allow-list of its own (`serde`, `ts-rs`), so the wire types stay a leaf crate.
+
+The TypeScript in `desktop-ui/src/lib/protocol/generated/` is generated from
+`er-protocol` by `just protocol-gen`; ESLint skips it and nobody edits it by
+hand. `just protocol-check` (part of `just ci`, and a CI job) exports into a
+temporary directory and fails on any difference. On a merge conflict in those
+files, regenerate them. No wire type carries ts-rs's `export` attribute: it
+would make `cargo test` write bindings into the tree, which a test in
+`er-protocol` and CI's clean-tree step after `cargo test` both catch.
 
 Writes that must be atomic go through `er_store::atomic::write_atomic`, whose
 temporary name carries the pid and a process-wide counter. A fixed
