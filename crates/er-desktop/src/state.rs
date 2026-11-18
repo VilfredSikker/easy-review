@@ -11,8 +11,8 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use er_engine::pr_open_entry::{PrOpenCacheEntry, PrOpenCacheKey, PrOpenFreshness};
 
-use crate::commands::line_commits::LineCommitsCache;
 use crate::inbox::InboxHandle;
+use crate::line_commits_cache::LineCommitsCache;
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::snapshot::{
     GhStatusCache, GhUser, LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
