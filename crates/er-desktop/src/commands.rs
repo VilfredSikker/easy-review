@@ -13994,6 +13994,10 @@ mod tests {
             let mut observed_terminal = false;
             while Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
+                // With the flag on the backend tick drives the flow; the poll
+                // only delivers it.
+                #[cfg(feature = "v1-service")]
+                crate::resources::tick::run(&state.desktop, &state.app);
                 let response = poll_impl(&state).unwrap();
                 if let Some(snapshot) = response.snapshot {
                     if snapshot
