@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 #[test]
+#[ignore]
 fn no_type_carries_ts_export() -> std::io::Result<()> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();

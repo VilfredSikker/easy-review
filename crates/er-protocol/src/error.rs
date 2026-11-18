@@ -4,6 +4,7 @@ use ts_rs::TS;
 /// Why a command or a fetch failed, in a form the frontend branches on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct ErError {
     pub kind: ErErrorKind,
     /// Text for the person, never parsed.
