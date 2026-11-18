@@ -351,6 +351,47 @@ fn the_flag_on_poll_leaves_the_duties_to_the_tick() {
     });
 }
 
+/// A tick that finishes a command bumps the desktop revision, so the page
+/// polls for it; one that only drains agent log lines does not, or a running
+/// agent would wake the tick and the poll every debounce.
+#[test]
+fn the_tick_bumps_for_a_finished_command_and_not_for_log_lines() {
+    with_storage(|dir| {
+        let state = review_flow_test_state(dir);
+        let revision = || {
+            state
+                .desktop_revision
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+        {
+            let app = state.app.lock().unwrap_or_else(|e| e.into_inner());
+            let line = er_engine::app::AgentLogEntry {
+                timestamp: Instant::now(),
+                command_name: Arc::from("lens"),
+                source: er_engine::app::AgentLogSource::Stdout,
+                text: "working".to_string(),
+            };
+            assert!(app.tab().log_tx.send(line).is_ok());
+        }
+        let before = revision();
+
+        tick::run(&state.desktop, &state.app);
+
+        let drained = {
+            let app = state.app.lock().unwrap_or_else(|e| e.into_inner());
+            app.tab().agent_log.len()
+        };
+        assert_eq!(drained, 1, "the tick did not drain the line");
+        assert_eq!(revision(), before, "a log line bumped the revision");
+
+        finished_command(&state);
+        tick::run(&state.desktop, &state.app);
+
+        assert!(!command_pending(&state));
+        assert!(revision() > before, "a finished command did not bump");
+    });
+}
+
 /// A revision bump runs the tick at once: a finished command is drained
 /// long before the interval.
 #[test]

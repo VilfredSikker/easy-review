@@ -15,7 +15,7 @@
 
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use er_engine::app::App;
 use er_service::Command;
@@ -104,25 +104,21 @@ pub fn reload_loaded_tabs(desktop: &DesktopState) -> usize {
         .count()
 }
 
-/// What the App duties move that the snapshot shows: each tab's newest log
-/// line and pending commands, and each background task's status.
+/// What the App duties move that warrants a new snapshot: each tab's pending
+/// commands and each background task's status. Agent log lines are left out:
+/// a running agent writes them continuously, so a bump per line would wake
+/// the tick and the poll every debounce for the whole run. They reach the
+/// page with the next snapshot, as they did when the poll drained them.
 #[derive(PartialEq, Eq)]
 struct AppStamp {
-    tabs: Vec<(usize, Option<Instant>, usize)>,
+    commands: Vec<usize>,
     tasks: Vec<(String, String)>,
 }
 
 impl AppStamp {
     fn of(app: &App) -> Self {
         Self {
-            tabs: app
-                .tabs
-                .iter()
-                .map(|tab| {
-                    let newest = tab.agent_log.back().map(|entry| entry.timestamp);
-                    (tab.agent_log.len(), newest, tab.command_rx.len())
-                })
-                .collect(),
+            commands: app.tabs.iter().map(|tab| tab.command_rx.len()).collect(),
             tasks: app
                 .background_task_snapshots()
                 .into_iter()
