@@ -271,3 +271,6 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
   - latency is reported in each PR, with no CI assertion;
   - the nine annotation writes with no service command get workspace commands.
 - Six owner questions are on #398, and the plan proceeds on their defaults.
+- **Phase-5 gate passed, 2026-11-18.** The owner approved the plan and took every default on #398: D20's move of selection, cursor, navigation and input mode happens in phase 5; the use cases stay in er-engine until 5b; the crate-edge work stays in phase 5; an all-broken restore shows a Working tab on the launch root; the session-only AI pick is dropped; and the sidebar `head_oid` bug gets its own bug-fix PR to `main`.
+- Before the approval, a review session the owner started added a sixth revision to the plan: History, Conflicts and Hidden keep the recorded-mode route until P56.3; a failed load shows as an error; the client refetches on `Ack`; a stale hunk hash answers `Stale`; `jobs` carries no output lines; desktop-ui stores no wire keys; and a late AI answer for a closed tab still lands. The owner confirmed that the approval covers it. The six affected issues (#604, #605, #611–#613, #619) carry the new entry text.
+- #601 merged as `ce4194bb5`. P50 (#602) is building.

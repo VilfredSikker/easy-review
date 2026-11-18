@@ -9,10 +9,10 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| Coordinator | workflow runs | Phase-5 gate ([#398](https://github.com/VilfredSikker/easy-review/issues/398)): plan ready (#601, issues #602–#622); waiting on the owner's approval | – |
+| Coordinator | workflow runs | Phase 5 ([#398](https://github.com/VilfredSikker/easy-review/issues/398)): P50 building; the `head_oid` fix on `main` building | – |
 | D1–D5, T1, T2 | – | stopped 2026-11-14; the coordinator runs the rest of phase 4 through workflow runs | – |
 
-**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538. **Phase 4 is complete (2026-11-17):** P38 through P47.2 are merged and #526–#538 are closed. P47.2 was re-sequenced into stacked layers (2a, 2b, a slim 2c); its decisions, the exit checklist and the list of what stays on the App with the flag on are on #538. The phase-5 gate questions (D9 codegen, sidebar resources) are answered. The phase-5 plan is ADDENDUM-06, in [draft PR #601](https://github.com/VilfredSikker/easy-review/pull/601) until the gate, and its issues are #602–#622; builds start when the owner approves it on #398.
+**Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538. **Phase 4 is complete (2026-11-17):** P38 through P47.2 are merged and #526–#538 are closed. P47.2 was re-sequenced into stacked layers (2a, 2b, a slim 2c); its decisions, the exit checklist and the list of what stays on the App with the flag on are on #538. The phase-5 gate questions (D9 codegen, sidebar resources) are answered. **The phase-5 gate passed on 2026-11-18:** the owner approved the plan, [ADDENDUM-06](./ADDENDUM-06-phase-5.md) (merged as #601), and its issues are #602–#622.
 
 ## Progress
 
@@ -88,27 +88,27 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P46 | [#536](https://github.com/VilfredSikker/easy-review/issues/536) Single-owner view state into the front ends | E-svc/F | opus | ✅ | [#554](https://github.com/VilfredSikker/easy-review/pull/554) | ADR 0068; stable process-local TabKey |
 | P47.1 | [#537](https://github.com/VilfredSikker/easy-review/issues/537) Snapshot builder over the read API | F/E-svc | opus | ✅ | [#569](https://github.com/VilfredSikker/easy-review/pull/569), [#571](https://github.com/VilfredSikker/easy-review/pull/571) | re-sequenced (owner): the read seam and pure navigation; parity moved to P47.2 |
 | P47.2 | [#538](https://github.com/VilfredSikker/easy-review/issues/538) Routing the remaining commands and the phase exit | F/E-svc/C | opus | ✅ | 2a: [#570](https://github.com/VilfredSikker/easy-review/pull/570), [#572](https://github.com/VilfredSikker/easy-review/pull/572), [#573](https://github.com/VilfredSikker/easy-review/pull/573), [#574](https://github.com/VilfredSikker/easy-review/pull/574), [#576](https://github.com/VilfredSikker/easy-review/pull/576); 2b: [#577](https://github.com/VilfredSikker/easy-review/pull/577), [#578](https://github.com/VilfredSikker/easy-review/pull/578); 2c.1: [#595](https://github.com/VilfredSikker/easy-review/pull/595), [#596](https://github.com/VilfredSikker/easy-review/pull/596), [#597](https://github.com/VilfredSikker/easy-review/pull/597); 2c.2: [#599](https://github.com/VilfredSikker/easy-review/pull/599) | 2a the Workspace owns tab content (ADR 0071); 2b one TabKey; 2c slim (owner): service-side gaps, then parity and the exit. CI plant: draft #598. Exit checklist and the "left on the App" list are in #538's body |
-| P50 | [#602](https://github.com/VilfredSikker/easy-review/issues/602) er-protocol, ts-rs codegen and the drift check | C/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P51 | [#603](https://github.com/VilfredSikker/easy-review/issues/603) er::command_shape with a shrinking allow-list | C | opus | ⬜ | | waits for the owner's approval on #398 |
-| P52.1 | [#604](https://github.com/VilfredSikker/easy-review/issues/604) The resource host, the three commands and the backend tick | D/S/P/U/C | opus | ⬜ | | waits for the owner's approval on #398 |
-| P52.2 | [#605](https://github.com/VilfredSikker/easy-review/issues/605) The frontend resource client, the adapter pattern and the protocol ADR | U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P53 | [#606](https://github.com/VilfredSikker/easy-review/issues/606) Settings, session chrome and panels | D/U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P54 | [#607](https://github.com/VilfredSikker/easy-review/issues/607) Tabs and the tab lifecycle | S/D/U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P55.1 | [#608](https://github.com/VilfredSikker/easy-review/issues/608) The sidebar owner, projects and branches(project) | DS/US/P/D | opus | ⬜ | | waits for the owner's approval on #398 |
-| P55.2 | [#609](https://github.com/VilfredSikker/easy-review/issues/609) prs(remote) keyed on content, head_oid included | DS/US/U/P/D | opus | ⬜ | | waits for the owner's approval on #398 |
-| P55.3 | [#610](https://github.com/VilfredSikker/easy-review/issues/610) inbox and the inbox optimistic ops | DS/US/U/P/D | opus | ⬜ | | waits for the owner's approval on #398 |
-| P56.1 | [#611](https://github.com/VilfredSikker/easy-review/issues/611) diff(tab), loading on activation, the warmer and the watcher | S/D/U/P/C | opus | ⬜ | | waits for the owner's approval on #398 |
-| P56.2 | [#612](https://github.com/VilfredSikker/easy-review/issues/612) Content-addressed hunks, previews and file reads | S/D/U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P56.3 | [#613](https://github.com/VilfredSikker/easy-review/issues/613) History, Conflicts and Hidden in the service | S/D/U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P57 | [#614](https://github.com/VilfredSikker/easy-review/issues/614) reviewed(tab) and frontend navigation | S/D/U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P58.1 | [#615](https://github.com/VilfredSikker/easy-review/issues/615) annotations(tab) and ui_annotations(tab) | S/D/U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P58.2 | [#616](https://github.com/VilfredSikker/easy-review/issues/616) Annotation writes and pending until ack | S/D/U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P59 | [#617](https://github.com/VilfredSikker/easy-review/issues/617) pr(tab), pr_status, the stack and the GitHub senders | S/D/DS/U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P60.1 | [#618](https://github.com/VilfredSikker/easy-review/issues/618) Arena and review flows on jobs | S/D/U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P60.2 | [#619](https://github.com/VilfredSikker/easy-review/issues/619) AI runs, triage and task logs on jobs | S/D/DS/U/P | opus | ⬜ | | waits for the owner's approval on #398 |
-| P61 | [#620](https://github.com/VilfredSikker/easy-review/issues/620) Window-mechanics commands typed and moved out of commands.rs | D/S/U/P/C | opus | ⬜ | | waits for the owner's approval on #398 |
-| P62.1 | [#621](https://github.com/VilfredSikker/easy-review/issues/621) Delete the old store layer | U/P/C/D | opus | ⬜ | | waits for the owner's approval on #398 |
-| P62.2 | [#622](https://github.com/VilfredSikker/easy-review/issues/622) Delete the old desktop path and the desktop flag | D/DS/C/P/U | opus | ⬜ | | waits for the owner's approval on #398 |
+| P50 | [#602](https://github.com/VilfredSikker/easy-review/issues/602) er-protocol, ts-rs codegen and the drift check | C/P | opus | 🟡 | | building |
+| P51 | [#603](https://github.com/VilfredSikker/easy-review/issues/603) er::command_shape with a shrinking allow-list | C | opus | ⬜ | | |
+| P52.1 | [#604](https://github.com/VilfredSikker/easy-review/issues/604) The resource host, the three commands and the backend tick | D/S/P/U/C | opus | ⬜ | | |
+| P52.2 | [#605](https://github.com/VilfredSikker/easy-review/issues/605) The frontend resource client, the adapter pattern and the protocol ADR | U/P | opus | ⬜ | | |
+| P53 | [#606](https://github.com/VilfredSikker/easy-review/issues/606) Settings, session chrome and panels | D/U/P | opus | ⬜ | | |
+| P54 | [#607](https://github.com/VilfredSikker/easy-review/issues/607) Tabs and the tab lifecycle | S/D/U/P | opus | ⬜ | | |
+| P55.1 | [#608](https://github.com/VilfredSikker/easy-review/issues/608) The sidebar owner, projects and branches(project) | DS/US/P/D | opus | ⬜ | | |
+| P55.2 | [#609](https://github.com/VilfredSikker/easy-review/issues/609) prs(remote) keyed on content, head_oid included | DS/US/U/P/D | opus | ⬜ | | |
+| P55.3 | [#610](https://github.com/VilfredSikker/easy-review/issues/610) inbox and the inbox optimistic ops | DS/US/U/P/D | opus | ⬜ | | |
+| P56.1 | [#611](https://github.com/VilfredSikker/easy-review/issues/611) diff(tab), loading on activation, the warmer and the watcher | S/D/U/P/C | opus | ⬜ | | |
+| P56.2 | [#612](https://github.com/VilfredSikker/easy-review/issues/612) Content-addressed hunks, previews and file reads | S/D/U/P | opus | ⬜ | | |
+| P56.3 | [#613](https://github.com/VilfredSikker/easy-review/issues/613) History, Conflicts and Hidden in the service | S/D/U/P | opus | ⬜ | | |
+| P57 | [#614](https://github.com/VilfredSikker/easy-review/issues/614) reviewed(tab) and frontend navigation | S/D/U/P | opus | ⬜ | | |
+| P58.1 | [#615](https://github.com/VilfredSikker/easy-review/issues/615) annotations(tab) and ui_annotations(tab) | S/D/U/P | opus | ⬜ | | |
+| P58.2 | [#616](https://github.com/VilfredSikker/easy-review/issues/616) Annotation writes and pending until ack | S/D/U/P | opus | ⬜ | | |
+| P59 | [#617](https://github.com/VilfredSikker/easy-review/issues/617) pr(tab), pr_status, the stack and the GitHub senders | S/D/DS/U/P | opus | ⬜ | | |
+| P60.1 | [#618](https://github.com/VilfredSikker/easy-review/issues/618) Arena and review flows on jobs | S/D/U/P | opus | ⬜ | | |
+| P60.2 | [#619](https://github.com/VilfredSikker/easy-review/issues/619) AI runs, triage and task logs on jobs | S/D/DS/U/P | opus | ⬜ | | |
+| P61 | [#620](https://github.com/VilfredSikker/easy-review/issues/620) Window-mechanics commands typed and moved out of commands.rs | D/S/U/P/C | opus | ⬜ | | |
+| P62.1 | [#621](https://github.com/VilfredSikker/easy-review/issues/621) Delete the old store layer | U/P/C/D | opus | ⬜ | | |
+| P62.2 | [#622](https://github.com/VilfredSikker/easy-review/issues/622) Delete the old desktop path and the desktop flag | D/DS/C/P/U | opus | ⬜ | | |
 
 ## Designs
 
@@ -131,7 +131,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | --- | --- | --- |
 | Phase 3: jobs and workflows | [#396](https://github.com/VilfredSikker/easy-review/issues/396) | ✅ passed 2026-11-10; [ADDENDUM-04](./ADDENDUM-04-phase-3.md), issues #471–#489 |
 | Phase 4: core and service | [#397](https://github.com/VilfredSikker/easy-review/issues/397) | ✅ passed 2026-11-14; [ADDENDUM-05](./ADDENDUM-05-phase-4.md), issues #526–#538 |
-| Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | 🟡 plan ready: #601, issues #602–#622; waiting on the owner's approval |
+| Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | 🟡 gate passed 2026-11-18; building (ADDENDUM-06, #602–#622) |
 | Phase 5b: TUI | [#399](https://github.com/VilfredSikker/easy-review/issues/399) | ⬜ |
 | Phase 6: consolidate | [#400](https://github.com/VilfredSikker/easy-review/issues/400) | ⬜ |
 
