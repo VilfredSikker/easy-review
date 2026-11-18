@@ -16,4 +16,6 @@ mod resource;
 
 pub use command::{Ack, Command};
 pub use error::{ErError, ErErrorKind};
-pub use resource::{ResourceChanged, ResourceKey, ResourceVersion, TabKey, Versioned};
+pub use resource::{
+    Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
+};

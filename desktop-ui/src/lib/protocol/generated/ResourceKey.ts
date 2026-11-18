@@ -3,4 +3,4 @@
 /**
  * Names one resource: a piece of published state with one writer.
  */
-export type ResourceKey = never;
+export type ResourceKey = { "kind": "tabs" };

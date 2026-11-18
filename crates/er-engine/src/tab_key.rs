@@ -20,6 +20,12 @@ impl TabKey {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
+
+    /// The number behind the key, for the wire. There is no way back: a wire
+    /// number names a tab only through a lookup among the open tabs.
+    pub fn get(self) -> u64 {
+        self.0
+    }
 }
 
 #[cfg(test)]

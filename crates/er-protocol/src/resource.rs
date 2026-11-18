@@ -25,7 +25,25 @@ pub struct ResourceVersion(
 /// Names one resource: a piece of published state with one writer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ResourceKey {}
+pub enum ResourceKey {
+    /// The open tabs and the active one.
+    Tabs,
+}
+
+/// One resource's content, tagged with the kind of key it answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Resource {
+    Tabs(Tabs),
+}
+
+/// The open tabs in strip order, and the active one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Tabs {
+    pub tabs: Vec<TabKey>,
+    pub active: Option<TabKey>,
+}
 
 /// A resource's content at the version it was read.
 ///
