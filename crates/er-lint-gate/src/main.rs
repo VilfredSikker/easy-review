@@ -19,8 +19,8 @@ use anyhow::{bail, Context};
 use er_lint_gate::diagnostics::Diagnostic;
 use er_lint_gate::ratchet::{Baseline, Entry};
 use er_lint_gate::{
-    agent_spawn, cohesion, comment_boundary, core_io, diagnostics, evaluate, registry, sidecar_fs,
-    spawn, store_bytes,
+    agent_spawn, cohesion, command_shape, comment_boundary, core_io, diagnostics, evaluate,
+    registry, sidecar_fs, spawn, store_bytes,
 };
 
 const BUDGET_FILE: &str = "clippy-warning-budget.json";
@@ -75,6 +75,7 @@ struct GateConfig {
     spawn_gh: SpawnConfig,
     sidecar_fs_deny: Vec<String>,
     comment_boundary_allow: Vec<String>,
+    command_shape_allow: Vec<String>,
     agent_spawn_os_launch: Vec<String>,
 }
 
@@ -114,6 +115,10 @@ fn gate_config(root: &Path) -> anyhow::Result<GateConfig> {
         comment_boundary_allow: string_list(
             table.get("comment-boundary").and_then(|c| c.get("allow")),
             "comment-boundary.allow",
+        )?,
+        command_shape_allow: string_list(
+            table.get("command-shape").and_then(|c| c.get("allow")),
+            "command-shape.allow",
         )?,
         agent_spawn_os_launch: string_list(
             table.get("agent-spawn-os-launch"),
@@ -343,6 +348,27 @@ fn comment_boundary_diagnostics(root: &Path, allow: &[String]) -> anyhow::Result
     ))
 }
 
+fn command_shape_diagnostics(root: &Path, allow: &[String]) -> anyhow::Result<Vec<Diagnostic>> {
+    let mut by_file = BTreeMap::new();
+    for rel in crate_sources(root)? {
+        if !rel.starts_with(command_shape::SOURCE) {
+            continue;
+        }
+        let source = std::fs::read_to_string(root.join(&rel))?;
+        let file = rel.to_string_lossy().replace('\\', "/");
+        let found = command_shape::commands(&source);
+        if !found.is_empty() {
+            by_file.insert(file, found);
+        }
+    }
+    Ok(command_shape::evaluate(
+        &by_file,
+        allow,
+        &command_shape::frozen(),
+        command_shape::CODE,
+    ))
+}
+
 /// Run one clippy pass and return its JSON stream and success.
 fn clippy_json(cargo: &str, root: &Path, args: &[&str]) -> anyhow::Result<(String, bool)> {
     let output = Command::new(cargo)
@@ -393,6 +419,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     let sidecar = sidecar_fs_diagnostics(&root, &config.sidecar_fs_deny)?;
     let store_bytes = store_bytes_diagnostics(&root)?;
     let boundary = comment_boundary_diagnostics(&root, &config.comment_boundary_allow)?;
+    let command_shape_rule = command_shape_diagnostics(&root, &config.command_shape_allow)?;
     let registry_rule = registry_diagnostics(&root)?;
     let core_io_rule = core_io_diagnostics(&root)?;
     let agent = agent_spawn_diagnostics(&root, &config.agent_spawn_os_launch)?;
@@ -441,6 +468,7 @@ fn run(flags: &Flags) -> anyhow::Result<bool> {
     diags.extend(sidecar);
     diags.extend(store_bytes);
     diags.extend(boundary);
+    diags.extend(command_shape_rule);
     diags.extend(registry_rule);
     diags.extend(core_io_rule);
     diags.extend(agent);
@@ -535,6 +563,7 @@ mod tests {
 budgeted = []
 sidecar-fs-deny = ["crates/er-engine/src/ai/annotation_store.rs"]
 comment-boundary = { allow = ["crates/er-engine/src/github_post.rs"] }
+command-shape = { allow = ["get_snapshot"] }
 agent-spawn-os-launch = ["crates/er-engine/src/os_launch.rs"]
 
 [workspace.metadata.lint-gate.impl-cohesion]
@@ -563,10 +592,24 @@ allow = ["crates/x/src/a.rs"]
             config.comment_boundary_allow,
             ["crates/er-engine/src/github_post.rs"]
         );
+        assert_eq!(config.command_shape_allow, ["get_snapshot"]);
         assert_eq!(
             config.agent_spawn_os_launch,
             ["crates/er-engine/src/os_launch.rs"]
         );
+    }
+
+    /// The real er-desktop sources against the real allow-list: a command in
+    /// the old shape that is not listed, a listed name that passes or has no
+    /// command, and a name outside the frozen list all fail here.
+    #[test]
+    fn every_desktop_command_passes_command_shape_or_is_listed() {
+        let root = workspace_root().expect("the workspace root");
+        let config = gate_config(&root).expect("the lint-gate config");
+        let diags = command_shape_diagnostics(&root, &config.command_shape_allow)
+            .expect("the er-desktop sources");
+        let rendered: String = diags.iter().map(|d| d.rendered.as_str()).collect();
+        assert!(diags.is_empty(), "{rendered}");
     }
 
     /// The allow list is gone: every agent spawn is inside `er-agent` or an
