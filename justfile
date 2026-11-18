@@ -123,7 +123,7 @@ sign-release-desktop *ARGS:
 # Test the TUI + engine (scoped to target/tui — fast, no Tauri build).
 [group('test')]
 test:
-    ./scripts/er-tui.sh test -p er-engine -p er-tui -p er-git -p er-github -p er-store
+    ./scripts/er-tui.sh test -p er-engine -p er-tui -p er-git -p er-github -p er-store -p er-protocol
 
 # Test the desktop (Tauri) backend.
 [group('test')]
@@ -227,6 +227,18 @@ docs-check:
 comments-check:
     ./scripts/comments-check.sh
 
+# Write the TypeScript for the wire types (er-protocol) into desktop-ui. Run it
+# after changing a wire type, and on a merge conflict in the generated files.
+[group('lint')]
+protocol-gen:
+    cargo run -q -p er-protocol --bin protocol-gen -- desktop-ui/src/lib/protocol/generated
+
+# Fail when the committed TypeScript differs from a fresh export of the wire
+# types: a hand edit, or a wire change without `just protocol-gen`.
+[group('lint')]
+protocol-check:
+    ./scripts/protocol-check.sh
+
 # Fail when an atomic write builds a fixed temporary name instead of the shared
 # helper (scripts/atomic-tmp-check.sh).
 [group('lint')]
@@ -242,9 +254,9 @@ lint: fmt-check clippy check-ui lint-ui docs-check comments-check atomic-tmp-che
 
 # Mirror the GitHub CI gate, plus the checks CI does not run: format, the
 # clippy and frontend lint gates, tests, docs, inline comments, atomic temp
-# names, headless engine builds.
+# names, the protocol bindings, headless engine builds.
 [group('ci')]
-ci: fmt-check clippy lint-ui docs-check comments-check atomic-tmp-check test build-engine-headless build-service-headless test-v1
+ci: fmt-check clippy lint-ui docs-check comments-check atomic-tmp-check protocol-check test build-engine-headless build-service-headless test-v1
 
 # Build the headless engine the way CI does (no UI features, then +highlight).
 [group('ci')]

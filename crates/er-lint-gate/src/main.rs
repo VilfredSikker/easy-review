@@ -315,8 +315,14 @@ fn core_io_diagnostics(root: &Path) -> anyhow::Result<Vec<Diagnostic>> {
         }
     }
     let mut out = core_io::evaluate(&by_file, core_io::CODE);
-    let manifest = std::fs::read_to_string(root.join(core_io::MANIFEST))?;
-    out.extend(core_io::manifest_diagnostics(&manifest, core_io::CODE));
+    for list in core_io::ALLOW_LISTS {
+        let manifest = std::fs::read_to_string(root.join(list.manifest))?;
+        out.extend(core_io::manifest_diagnostics(
+            &manifest,
+            list,
+            core_io::CODE,
+        ));
+    }
     Ok(out)
 }
 
