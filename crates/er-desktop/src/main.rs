@@ -851,41 +851,6 @@ fn spawn_service_comment_sync(
     });
 }
 
-/// Emit `er://revision` whenever `desktop_revision` advances; see the call site.
-/// `on_emit` runs after each emit.
-fn run_revision_watcher(
-    watch_handle: &tauri::AppHandle,
-    watch_rev: &std::sync::atomic::AtomicU64,
-    on_emit: &dyn Fn(),
-) {
-    use tauri::Emitter;
-    let mut last_emitted = u64::MAX;
-    loop {
-        let current = watch_rev.load(std::sync::atomic::Ordering::Relaxed);
-        if current != last_emitted {
-            // Brief debounce to coalesce bursts (e.g. several
-            // background threads bumping the revision at once).
-            std::thread::sleep(std::time::Duration::from_millis(40));
-            let coalesced = watch_rev.load(std::sync::atomic::Ordering::Relaxed);
-            let delta_rev = coalesced.wrapping_sub(last_emitted);
-            last_emitted = coalesced;
-            if let Err(e) = watch_handle.emit("er://revision", coalesced) {
-                log::warn!("revision watcher emit failed: {e}");
-            } else {
-                profile_log::profile_log(
-                    "revision_emit",
-                    &[
-                        ("coalesced_rev", coalesced.to_string()),
-                        ("delta_rev", delta_rev.to_string()),
-                    ],
-                );
-            }
-            on_emit();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(80));
-    }
-}
-
 /// Whether this build compiled the v1 service path.
 ///
 /// desktop-ui compares it with its own build-time `VITE_ER_V1_SERVICE` and
@@ -1966,24 +1931,40 @@ fn main() {
                 // backend mutex/lock contention to ~zero, and lets the UI
                 // react within ~50ms of a real change.
                 let watch_handle = app.handle().clone();
-                let watch_rev = Arc::clone(&state.desktop_revision);
+                let emit = move |revision: u64, delta: u64| {
+                    use tauri::Emitter;
+                    if let Err(e) = watch_handle.emit("er://revision", revision) {
+                        log::warn!("revision watcher emit failed: {e}");
+                    } else {
+                        profile_log::profile_log(
+                            "revision_emit",
+                            &[
+                                ("coalesced_rev", revision.to_string()),
+                                ("delta_rev", delta.to_string()),
+                            ],
+                        );
+                    }
+                };
                 // With the flag on, each emitted revision also runs the backend
                 // tick, which drives the duties the poll ran on each event.
                 #[cfg(feature = "v1-service")]
-                let on_emit = {
+                {
                     use er_desktop::resources::tick;
-                    let wake = tick::spawn(
-                        state.desktop.clone(),
-                        Arc::clone(&state.app),
-                        tick::INTERVAL,
-                    );
-                    move || wake.wake()
-                };
+                    let desktop = state.desktop.clone();
+                    let app = Arc::clone(&state.app);
+                    std::thread::spawn(move || {
+                        let never = std::sync::atomic::AtomicBool::new(false);
+                        tick::follow_revisions(desktop, app, tick::INTERVAL, &never, &emit);
+                    });
+                }
                 #[cfg(not(feature = "v1-service"))]
-                let on_emit = || {};
-                std::thread::spawn(move || {
-                    run_revision_watcher(&watch_handle, &watch_rev, &on_emit);
-                });
+                {
+                    let watch_rev = Arc::clone(&state.desktop_revision);
+                    std::thread::spawn(move || {
+                        let never = std::sync::atomic::AtomicBool::new(false);
+                        er_desktop::revision_watcher::follow(&watch_rev, &never, &emit, &|| {});
+                    });
+                }
                 #[cfg(feature = "v1-service")]
                 {
                     use er_desktop::resources::relay;

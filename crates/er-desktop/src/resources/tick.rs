@@ -10,9 +10,10 @@
 //!
 //! It wakes on each desktop revision the watcher emits, as the duties did when
 //! every `er://revision` made the frontend poll, and on an interval as the
-//! floor. This is the one module of the host that names the App; it is handed
+//! floor; `follow_revisions` joins the two for the app. This is the one module of the host that names the App; it is handed
 //! the App beside the `DesktopState`.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -51,6 +52,21 @@ pub fn spawn(desktop: DesktopState, app: Arc<Mutex<App>>, interval: Duration) ->
         run(&desktop, &app);
     });
     TickWake(tx)
+}
+
+/// Starts the tick and runs the revision watcher on this thread, waking the
+/// tick after each revision the watcher hands `emit`. Returns once `stop` is
+/// set, which stops the tick too.
+pub fn follow_revisions(
+    desktop: DesktopState,
+    app: Arc<Mutex<App>>,
+    interval: Duration,
+    stop: &AtomicBool,
+    emit: &dyn Fn(u64, u64),
+) {
+    let counter = Arc::clone(&desktop.desktop_revision);
+    let wake = spawn(desktop, app, interval);
+    crate::revision_watcher::follow(&counter, stop, emit, &|| wake.wake());
 }
 
 /// One tick. A duty that changed what the snapshot shows bumps the desktop

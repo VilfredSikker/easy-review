@@ -1,6 +1,7 @@
 //! The flag-on resource host: the relay, the `tabs` read path and the backend
 //! tick, each over a real service and the App fixture.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -408,6 +409,42 @@ fn a_wake_runs_the_tick_before_the_interval() {
         wake.wake();
 
         wait_until("the tick to drain the command", || !command_pending(&state));
+    });
+}
+
+/// A desktop revision bump runs the tick through the watcher the app runs,
+/// the one that emits `er://revision`: a finished command is drained long
+/// before the interval.
+#[test]
+fn a_revision_bump_runs_the_tick_through_the_watcher() {
+    with_storage(|dir| {
+        let state = review_flow_test_state(dir);
+        let stop = Arc::new(AtomicBool::new(false));
+        let (emitted, emits) = mpsc::channel();
+        let follower = {
+            let desktop = state.desktop.clone();
+            let app = Arc::clone(&state.app);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let emit = move |revision: u64, _delta: u64| {
+                    let _ = emitted.send(revision);
+                };
+                tick::follow_revisions(desktop, app, Duration::from_secs(600), &stop, &emit);
+            })
+        };
+        // The watcher's first read emits, and wakes the tick, with no bump;
+        // the command goes in once that tick has passed.
+        let first = emits.recv_timeout(WAIT).expect("no first emit");
+        std::thread::sleep(Duration::from_millis(200));
+        finished_command(&state);
+
+        let bumped =
+            crate::profile_log::bump_desktop_revision(&state.desktop_revision, "test_bump");
+        assert!(bumped > first, "{bumped} after {first}");
+
+        wait_until("the tick to drain the command", || !command_pending(&state));
+        stop.store(true, Ordering::Relaxed);
+        assert!(follower.join().is_ok(), "the watcher panicked");
     });
 }
 
