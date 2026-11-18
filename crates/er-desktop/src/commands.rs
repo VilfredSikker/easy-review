@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+#[cfg(not(feature = "v1-service"))]
+use std::sync::Condvar;
+use std::sync::{Arc, Mutex};
 use tauri::State;
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
@@ -16,13 +18,13 @@ use crate::inbox::{
     InboxItem, InboxNotification, InboxState, InboxTarget, NotificationInboxCtx, PrInboxView,
     PrTransitionCtx,
 };
-use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects::{self, normalize_remote_slug};
 use crate::snapshot::{
     build_chrome_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary, FileSnapshot,
     GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState,
-    MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
+    PrInfo,
 };
+pub use crate::state::{run_blocking, DesktopState, PrOpenPrefetchClaim, PrOpenPrefetchMap};
 use er_engine::ai::CommentType;
 #[cfg(test)]
 use er_engine::app::CardAiInvocation;
@@ -153,98 +155,56 @@ pub struct OpenSourceResult {
     pub target: String,
 }
 
+/// The desktop state plus what only the App path reads: the App, and the
+/// snapshot poll's record of what it last sent. Field reads reach the
+/// [`DesktopState`] it wraps through `Deref`.
 #[derive(Clone)]
 pub struct AppState {
-    pub ports: er_engine::ports::Ports,
-    /// Workspace actors for the `v1-service` command path (ADR 0067). The
-    /// default build has no service and no field.
-    #[cfg(feature = "v1-service")]
-    pub service: Arc<crate::service::ServiceState>,
+    pub desktop: DesktopState,
     pub app: Arc<Mutex<App>>,
-    /// Desktop-only view state (ADR 0068). Lock it after `app`, never before.
-    pub view: crate::view_state::ViewStateHandle,
-    pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
-    pub pr_cache_fetched_at: PrCacheFetchedAtMap,
-    /// Background-probed remote oid of the active branch tab's base branch,
-    /// keyed by "{repo_root}\0{base_short}". Compared in build_snapshot against
-    /// the local origin/<base> oid to detect a stale ("behind main") branch diff.
-    pub branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>>,
-    pub pr_open_cache: Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
-    pub meta_cache: MetaCache,
-    pub gh_user: GhUser,
-    /// Active PTY sessions keyed by frontend session_id (e.g. `tab-<idx>`).
-    /// Dropping an entry kills its child shell via `PtySession::drop`.
-    pub terminals: Arc<Mutex<HashMap<String, crate::terminal::PtySession>>>,
-    /// Threads with an in-flight `ask_ai` subprocess. Snapshot reads this
-    /// to render a synthetic "…thinking" reply until the real reply lands.
-    pub pending_ai_replies: PendingAiReplies,
-    /// Per-PR GitHub status (review decision, mergeable, checks, etc).
-    /// Populated by a background thread on a 60s cadence and on explicit refresh.
-    pub gh_status_cache: GhStatusCache,
-    /// Which background fetches are currently in-flight — surfaced in every snapshot.
-    pub loading: LoadingState,
-    /// Keys with an in-flight gh_status fetch. Prevents duplicate concurrent fetches.
-    pub gh_status_in_flight: Arc<Mutex<HashSet<(String, String, u64)>>>,
-    /// Keys (project_id, pr_number) with an in-flight PR-open prefetch,
-    /// mapped to a claim the open path can wait on. Prevents duplicate
-    /// background `gh` invocations when the user hovers the same row
-    /// repeatedly, and lets a click during a hover-prefetch join the
-    /// in-flight fetch instead of running a duplicate `gh pr diff`.
-    pub pr_open_prefetch_in_flight: Arc<Mutex<PrOpenPrefetchMap>>,
-    /// Keys (repo-or-slug, pr_number) with an in-flight branch-scope preload
-    /// (`kick_branch_preload`). Prevents duplicate background `gh`/git calls
-    /// when the same PR is opened repeatedly.
-    pub branch_preload_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
-    /// Keys (repo-root, pr_number) with an in-flight background PR ref fetch
-    /// (`kick_pr_ref_fetch`). Prevents duplicate `git fetch` pairs when the
-    /// same PR is opened repeatedly.
-    pub pr_ref_fetch_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
-    /// Remote-only PR open cache + in-flight claims (see remote_pr_open_cache.rs).
-    /// Warms on sidebar hover (`prefetch_remote_pr_open`); a hit opens the PR
-    /// with zero `gh` calls.
-    pub remote_pr_open_cache: crate::remote_pr_open_cache::RemotePrOpenCache,
-    pub remote_pr_open_in_flight: crate::remote_pr_open_cache::RemotePrOpenInFlight,
-    /// Monotonic counter bumped whenever background-owned durable state changes
-    /// so that poll() can detect changes not visible in App state.
-    pub desktop_revision: Arc<AtomicU64>,
     /// Last content revision included in a poll response.
     pub last_sent_content_revision: Arc<AtomicU64>,
     /// Last chrome revision included in a poll response.
     pub last_sent_chrome_revision: Arc<AtomicU64>,
     /// Last reviewed_revision included in a poll response.
     pub last_sent_reviewed_revision: Arc<AtomicU64>,
-    /// Active-branch watcher status. Read by `build_snapshot` so the UI can
-    /// show `Watching` when the desktop watcher is following a checkout.
-    pub watch_status: WatchStatusState,
-    pub inbox: InboxHandle,
-    pub tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
-    /// Dedupes concurrent auto-triage workers per remote/pr/head.
-    pub auto_triage_in_flight: crate::auto_triage::AutoTriageInFlight,
     /// Differential snapshots: per-file content keys the frontend currently
     /// holds, so unchanged hunks can be omitted from later snapshots.
     pub sent_files: crate::snapshot::SentFilesHandle,
-    /// Per-file "Mark lines" attribution, outside the snapshot on purpose.
-    pub line_commits_cache: line_commits::LineCommitsCache,
+}
+
+impl AppState {
+    /// `desktop` beside `app`, with nothing sent to the frontend yet.
+    pub fn new(desktop: DesktopState, app: Arc<Mutex<App>>) -> Self {
+        Self {
+            desktop,
+            app,
+            last_sent_content_revision: Arc::new(AtomicU64::new(u64::MAX)),
+            last_sent_chrome_revision: Arc::new(AtomicU64::new(u64::MAX)),
+            last_sent_reviewed_revision: Arc::new(AtomicU64::new(u64::MAX)),
+            sent_files: Arc::default(),
+        }
+    }
+}
+
+impl std::ops::Deref for AppState {
+    type Target = DesktopState;
+
+    fn deref(&self) -> &DesktopState {
+        &self.desktop
+    }
+}
+
+impl std::ops::DerefMut for AppState {
+    fn deref_mut(&mut self) -> &mut DesktopState {
+        &mut self.desktop
+    }
 }
 
 pub use er_engine::pr_open_entry::{
     evict_lru, pr_open_clock, PrOpenCacheEntry, PrOpenCacheKey, PrOpenFreshness,
     MAX_PR_OPEN_CACHE_ENTRIES, PR_COMMIT_CACHE_LIMIT,
 };
-
-/// In-flight PR-open prefetch claim. The open path (`load_pr_open_inputs`)
-///
-/// waits on `cv` (bounded) when the claim's freshness matches its own, so a
-/// click during a hover-prefetch consumes the prefetched cache entry instead
-/// of running a duplicate `gh pr diff`. `freshness` is the prefetch's own, so
-/// a waiter whose hint changed mid-flight skips the wait entirely.
-pub type PrOpenPrefetchMap = HashMap<(String, u64), Arc<PrOpenPrefetchClaim>>;
-
-pub struct PrOpenPrefetchClaim {
-    pub freshness: PrOpenFreshness,
-    pub done: Mutex<bool>,
-    pub cv: Condvar,
-}
 
 #[derive(Debug, Clone)]
 struct PrOpenMetadata {
@@ -280,24 +240,6 @@ pub struct PrOpenHint {
 #[tauri::command]
 pub fn start_window_drag(window: tauri::Window) -> Result<(), String> {
     window.start_dragging().map_err(|e| e.to_string())
-}
-
-/// Run a blocking command body on the async runtime's blocking pool.
-///
-/// Sync Tauri commands execute on the main thread — any command that waits
-/// on the `App` mutex or shells out to git can freeze the window while it
-/// runs. Heavy commands are declared `async` and wrap their original body
-/// with this helper so the main thread stays responsive; the bodies remain
-/// plain blocking code (`AppState` is all `Arc`s, so it is cloned into the
-/// closure).
-pub async fn run_blocking<T, F>(f: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, String> + Send + 'static,
-{
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .map_err(|e| format!("blocking task failed: {e}"))?
 }
 
 macro_rules! snap {
@@ -12956,14 +12898,13 @@ mod tests {
         let gh_status_cache = Arc::new(Mutex::new(HashMap::new()));
         let loading = Arc::new(Mutex::new(crate::snapshot::LoadingFlags::default()));
         let watch_status = Arc::new(Mutex::new(crate::snapshot::WatchStatusSnapshot::default()));
-        AppState {
+        let desktop = DesktopState {
             ports: er_engine::ports::Ports::cli(),
             #[cfg(feature = "v1-service")]
             service: Arc::new(crate::service::ServiceState::with_settings_path(
                 er_engine::ports::Ports::for_test(),
                 dir.path().join("settings").join("config.toml"),
             )),
-            app,
             view: Default::default(),
             pr_cache: Arc::new(Mutex::new(HashMap::new())),
             pr_cache_fetched_at: Arc::new(Mutex::new(HashMap::new())),
@@ -12982,16 +12923,13 @@ mod tests {
             remote_pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
             remote_pr_open_in_flight: Arc::new(Mutex::new(HashSet::new())),
             desktop_revision,
-            last_sent_content_revision: Arc::new(AtomicU64::new(u64::MAX)),
-            last_sent_chrome_revision: Arc::new(AtomicU64::new(u64::MAX)),
-            last_sent_reviewed_revision: Arc::new(AtomicU64::new(u64::MAX)),
             watch_status,
             inbox: Arc::new(Mutex::new(crate::inbox::InboxState::default())),
             tauri_app_handle: Arc::new(Mutex::new(None)),
             auto_triage_in_flight: Arc::new(Mutex::new(HashSet::new())),
-            sent_files: Arc::new(Mutex::new(Default::default())),
             line_commits_cache: Arc::default(),
-        }
+        };
+        AppState::new(desktop, app)
     }
 
     /// A view the active tab's actor publishes rebuilds the content on the

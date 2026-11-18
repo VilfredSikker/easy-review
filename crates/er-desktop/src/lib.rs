@@ -33,6 +33,7 @@ pub mod settings;
 pub mod snapshot;
 #[cfg(feature = "v1-service")]
 pub mod snapshot_view;
+pub mod state;
 pub mod store_registry;
 pub mod tabs;
 pub mod terminal;
