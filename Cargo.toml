@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/er-agent", "crates/er-core", "crates/er-engine", "crates/er-service", "crates/er-tui", "crates/er-desktop", "crates/er-mcp", "crates/er-crap", "crates/er-lint-gate", "crates/er-git", "crates/er-github", "crates/er-store"]
+members = ["crates/er-agent", "crates/er-core", "crates/er-engine", "crates/er-service", "crates/er-tui", "crates/er-desktop", "crates/er-mcp", "crates/er-crap", "crates/er-lint-gate", "crates/er-git", "crates/er-github", "crates/er-store", "crates/er-protocol"]
 
 [workspace.package]
 version = "0.6.5"
@@ -23,6 +23,9 @@ dirs = "6"
 notify = "8"
 notify-debouncer-mini = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Exact: the TypeScript it generates is committed, so an update is a
+# deliberate `just protocol-gen`, never a side effect of `cargo update`.
+ts-rs = "=12.0.1"
 
 # Lint is a gate, in two tiers (docs/adr/0038-lint-is-a-ratcheted-gate.md).
 # `just clippy` runs it through er-lint-gate, which fails on any diagnostic
