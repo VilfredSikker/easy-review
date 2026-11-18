@@ -2059,6 +2059,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             v1_service_enabled,
+            er_desktop::resources::commands::er_send,
+            er_desktop::resources::commands::er_fetch,
+            er_desktop::resources::commands::er_versions,
             commands::start_window_drag,
             commands::get_snapshot,
             commands::toggle_panel,

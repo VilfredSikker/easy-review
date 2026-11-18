@@ -216,7 +216,7 @@ fn a_tab_change_reaches_the_wire_as_one_tabs_change() {
 /// applies tab commands inline on the caller's thread.
 #[test]
 fn the_tabs_read_comes_from_the_published_list() {
-    let source = include_str!("../../resources/mod.rs");
+    let source = include_str!("../../resources/host.rs");
     let body = source
         .split_once("fn tabs(")
         .and_then(|(_, rest)| rest.split_once("\n}\n"))

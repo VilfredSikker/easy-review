@@ -48,6 +48,15 @@ describe("IPC allowlist", () => {
     expect(registered.filter((name) => !allowed.has(name))).toEqual([]);
   });
 
+  it("registers and allows the resource commands", () => {
+    const allowed = allowedCommands();
+    const registered = registeredCommands();
+    for (const name of ["er_send", "er_fetch", "er_versions"]) {
+      expect(registered).toContain(name);
+      expect(allowed.has(name)).toBe(true);
+    }
+  });
+
   it("allows every command the UI invokes", () => {
     const allowed = allowedCommands();
     const invoked = invokedCommands();
