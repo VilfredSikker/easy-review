@@ -41,6 +41,8 @@ export class ResourceStore {
   private readonly inFlight = new Set<string>();
   /** The highest version announced for a key while its fetch was in flight. */
   private readonly announced = new Map<string, number>();
+  /** Who waits for a key to reach a version, by key. */
+  private readonly waiters = new Map<string, { version: number; resolve: () => void }[]>();
   private unlisten: (() => void) | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
@@ -99,6 +101,22 @@ export class ResourceStore {
     this.unlisten = null;
   }
 
+  /**
+   * Resolves once the key is held at `version` or above, so a caller that
+   * sent a command can read what it wrote. Also resolves when the key is
+   * released or a fetch of it fails, so nothing waits on a key no one shows.
+   */
+  whenAt(key: ResourceKey, version: number): Promise<void> {
+    const id = resourceKeyId(key);
+    const held = this.held.get(id);
+    if (!this.shown.has(id) || (held !== undefined && held >= version)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const waiting = this.waiters.get(id) ?? [];
+      waiting.push({ version, resolve });
+      this.waiters.set(id, waiting);
+    });
+  }
+
   /** Sends a command and refetches what its `Ack` names, without waiting for the push. */
   async send(command: Command): Promise<Ack> {
     const ack = await this.client.send(command);
@@ -131,6 +149,17 @@ export class ResourceStore {
     this.held.delete(id);
     this.announced.delete(id);
     this.values.delete(id);
+    this.wake(id, Number.POSITIVE_INFINITY);
+  }
+
+  /** Resolves the waiters on `id` whose version is at or below `version`. */
+  private wake(id: string, version: number): void {
+    const waiting = this.waiters.get(id);
+    if (!waiting) return;
+    const left = waiting.filter((w) => w.version > version);
+    for (const w of waiting) if (w.version <= version) w.resolve();
+    if (left.length > 0) this.waiters.set(id, left);
+    else this.waiters.delete(id);
   }
 
   private arm(): void {
@@ -160,6 +189,7 @@ export class ResourceStore {
       for (const entry of await this.client.fetch([...asked])) this.accept(entry);
     } catch (e) {
       this.report(e as ErError);
+      for (const key of asked) this.wake(resourceKeyId(key), Number.POSITIVE_INFINITY);
     } finally {
       this.settle(asked);
     }
@@ -173,6 +203,7 @@ export class ResourceStore {
     if (held !== undefined && entry.version <= held) return;
     this.held.set(id, entry.version);
     this.values.set(id, entry);
+    this.wake(id, entry.version);
   }
 
   /** Ends the fetches of `asked`, and fetches again any key announced past what came back. */
