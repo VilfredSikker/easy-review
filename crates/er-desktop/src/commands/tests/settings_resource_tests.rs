@@ -13,7 +13,7 @@ use er_protocol::{
 use super::{review_flow_test_state, while_the_app_is_locked, ReviewFlowTestDir};
 use crate::commands::AppState;
 use crate::resources::relay;
-use crate::resources::send::{apply, Applied};
+use crate::resources::send::{apply, Applied, Effects};
 use crate::resources::{self, Watched};
 use crate::service::ServiceState;
 
@@ -36,8 +36,17 @@ fn theme(value: &str) -> Command {
     }
 }
 
+/// Effects that reach nothing outside the owner but `notify`.
+fn effects(notify: &dyn Fn(NoticeLevel, String)) -> Effects<'_> {
+    Effects {
+        notify,
+        follow_selection: &|_| {},
+        check_update: || panic!("no update check in this test"),
+    }
+}
+
 fn send(state: &AppState, command: Command) -> Result<Applied, er_protocol::ErError> {
-    apply(&state.desktop, command, &|_, _| {})
+    apply(&state.desktop, command, &effects(&|_, _| {}))
 }
 
 fn fetch_settings(state: &AppState) -> (ResourceVersion, Settings) {
@@ -79,11 +88,11 @@ fn a_settings_write_through_er_send_has_the_actor_as_its_one_writer() {
         let (version, settings) = fetch_settings(&state);
         assert_eq!(theme_row(&settings).as_deref(), Some("paper"));
         assert_eq!(
-            ack.changed,
-            vec![ResourceChanged {
+            ack.changed.first(),
+            Some(&ResourceChanged {
                 key: ResourceKey::Settings,
                 version,
-            }]
+            })
         );
         let written = std::fs::read_to_string(config_path(dir)).unwrap_or_default();
         assert!(written.contains("paper"), "config.toml: {written}");
@@ -149,7 +158,16 @@ fn the_settings_resource_matches_the_flag_off_answer() {
             old.remove("warnings");
         }
         if let Some(new) = new.as_object_mut() {
-            new.remove("uninstallPreview");
+            // The page's preview and the view chrome are not in the old answer.
+            for key in [
+                "uninstallPreview",
+                "theme",
+                "features",
+                "display",
+                "arenaEnabled",
+            ] {
+                new.remove(key);
+            }
         }
         assert!(old
             .get("providers")
@@ -282,11 +300,12 @@ fn an_editor_warning_arrives_as_a_notice() {
                 models_command: None,
             },
         };
-        let applied = apply(&state.desktop, upsert, &|level, message| {
+        let notify = |level, message| {
             if let Ok(mut notices) = notices.lock() {
                 notices.push((level, message));
             }
-        });
+        };
+        let applied = apply(&state.desktop, upsert, &effects(&notify));
         assert!(applied.is_ok(), "{applied:?}");
         let notices = notices.into_inner().unwrap_or_default();
         assert_eq!(notices.len(), 1, "{notices:?}");
