@@ -16,6 +16,7 @@ mod notice;
 mod resource;
 mod risk;
 mod settings;
+mod sidebar;
 
 pub use command::{Ack, Command};
 pub use error::{ErError, ErErrorKind};
@@ -29,3 +30,4 @@ pub use settings::{
     ReviewModelGroups, ReviewModelRef, Settings, SettingsRows, UninstallOptions, UninstallPreview,
     UninstallTarget,
 };
+pub use sidebar::{Branch, Branches, Project, Projects};

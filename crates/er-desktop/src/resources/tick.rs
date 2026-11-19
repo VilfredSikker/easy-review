@@ -3,10 +3,12 @@
 //!
 //! A tick asks every loaded tab's actor to read its sidecars again, so an
 //! outside write reaches the content with no frontend call, then runs the
-//! App's duties: agent logs and commands, background tasks, the AI task inbox,
-//! the active tab's sidecar check (the only path that brings an outside write
-//! into the App's AI state, which the export and the ask runs still read) and
-//! the worktree warm. Each App duty leaves as its data leaves the App.
+//! App's duties: agent logs and commands, background tasks, the AI task inbox
+//! and the active tab's sidecar check (the only path that brings an outside
+//! write into the App's AI state, which the export and the ask runs still
+//! read). Each App duty leaves as its data leaves the App. Then it warms the
+//! active tab's worktree list and has the sidebar's owner publish, which is
+//! how writes the owner does not make reach its resources.
 //!
 //! It wakes on each desktop revision the watcher emits, as the duties did when
 //! every `er://revision` made the frontend poll, and on an interval as the
@@ -75,7 +77,7 @@ pub fn follow_revisions(
 /// so the tick never wakes itself.
 pub fn run(desktop: &DesktopState, app: &Mutex<App>) {
     reload_loaded_tabs(desktop);
-    let (moved, root, base) = {
+    let moved = {
         let mut app = app.lock().unwrap_or_else(PoisonError::into_inner);
         let before = AppStamp::of(&app);
         app.drain_agent_log();
@@ -85,17 +87,27 @@ pub fn run(desktop: &DesktopState, app: &Mutex<App>) {
         // Completion and failure lines land after the commands are checked.
         app.drain_agent_log();
         let ai_reloaded = app.tab_mut().check_ai_files_changed();
-        let moved = ai_reloaded || AppStamp::of(&app) != before;
-        (
-            moved,
-            app.tab().repo_root.clone(),
-            app.tab().base_branch.clone(),
-        )
+        ai_reloaded || AppStamp::of(&app) != before
     };
-    crate::snapshot::kick_worktrees_warm(desktop.ports.clone(), &root, &base);
+    if let Some((root, base)) = warm_target(desktop) {
+        crate::snapshot::kick_worktrees_warm(desktop.ports.clone(), &root, &base);
+    }
+    desktop.app_owner.publish();
     if moved {
         crate::profile_log::bump_desktop_revision(&desktop.desktop_revision, "backend_tick");
     }
+}
+
+/// The active tab's repository and base branch, as its loaded content holds
+/// them; none until the active tab has loaded.
+fn warm_target(desktop: &DesktopState) -> Option<(String, String)> {
+    let tabs = desktop.service.app_registry().tabs_view();
+    let active = tabs.active_entry()?;
+    let content = desktop.service.content(active.key, &active.descriptor)?;
+    Some((
+        content.tab.repo_root.clone(),
+        content.tab.base_branch.clone(),
+    ))
 }
 
 /// Asks the actor of every loaded tab to read the tab's sidecars again.
