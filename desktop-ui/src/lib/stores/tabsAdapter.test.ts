@@ -129,3 +129,66 @@ describe("tabsFromResource", () => {
     expect(tabsFromResource({ ...wireTabs, active: null }, snapshot.tabs).active).toBe(0);
   });
 });
+
+describe("TabsAdapter.route", () => {
+  function sender() {
+    const sent: unknown[] = [];
+    const waited: unknown[] = [];
+    const store = {
+      get: () => ({ key: { kind: "tabs" as const }, version: 3, value: { kind: "tabs" as const, ...wireTabs } }),
+      show: () => () => {},
+      send: async (command: unknown) => {
+        sent.push(command);
+        return { changed: [{ key: { kind: "tabs" as const }, version: 4 }], created: null };
+      },
+      whenAt: async (key: unknown, version: number) => {
+        waited.push([key, version]);
+      },
+    };
+    return { sent, waited, store };
+  }
+
+  it("leaves every command to app.cmd with the flag off", () => {
+    const { store } = sender();
+    const tabs = new TabsAdapter({ flagOn: false, store, snapshot: () => snapshot });
+    expect(tabs.route("select_tab", { idx: 1 })).toBeNull();
+    expect(tabs.route("open_worktree", {})).toBeNull();
+  });
+
+  it("sends the tab commands and the opens by key through er_send with the flag on, and waits for the Ack", async () => {
+    const { sent, waited, store } = sender();
+    const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
+    await tabs.route("select_tab", { idx: 0 });
+    await tabs.route("close_tab", { idx: 1 });
+    await tabs.route("reorder_tabs", { fromIdx: 1, toIdx: 0 });
+    await tabs.route("open_pr_branch", { projectId: "p", prNumber: 7, headRef: "h", replace: true });
+    await tabs.route("open_pr_url", { url: "https://github.com/a/b/pull/1" });
+    await tabs.route("update_tab_browser", { splitRatio: 0.6 });
+    await tabs.route("prefetch_pr_open", { projectId: "p", prNumber: 7 });
+    expect(sent).toEqual([
+      { kind: "select_tab", key: 11 },
+      { kind: "close_tab", key: 12 },
+      { kind: "reorder_tabs", key: 12, toIdx: 0 },
+      { kind: "open_pr_review", projectId: "p", prNumber: 7, replace: true },
+      { kind: "open_pr_url", url: "https://github.com/a/b/pull/1", replace: false },
+      {
+        kind: "update_tab_browser",
+        layout: null,
+        url: null,
+        navigate: false,
+        annotate: null,
+        tooltips: null,
+        splitRatio: 0.6,
+      },
+    ]);
+    expect(waited).toHaveLength(6);
+    expect(tabs.route("run_ai_review", {})).toBeNull();
+  });
+
+  it("rejects a position the resource does not list", async () => {
+    const { sent, store } = sender();
+    const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
+    await expect(tabs.route("select_tab", { idx: 5 }) ?? Promise.resolve()).rejects.toThrow("no tab at position 5");
+    expect(sent).toEqual([]);
+  });
+});

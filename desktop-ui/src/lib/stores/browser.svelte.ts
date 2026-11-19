@@ -1,7 +1,9 @@
-// Browser pane state — backed by the active tab in `app.snapshot.browser`.
+// Browser pane state — the active tab's browser, from `app.snapshot.browser`
+// or the tab's `view` resource by build (`browserView`).
 // Annotations live in `app.snapshot.ui_annotations` (persisted via Tauri commands).
 
 import { app } from "./app.svelte";
+import { browserView } from "./tabsResource.svelte";
 import { DEFAULT_DEV_URL, defaultDevUrl, pageKey, urlPath } from "./browserUrl";
 import type { UiDomContext } from "$lib/types";
 export { DEFAULT_DEV_URL, defaultDevUrl, pageKey, urlPath };
@@ -15,25 +17,25 @@ class BrowserStore {
   }
 
   get url(): string {
-    return app.snapshot?.browser?.url ?? "";
+    return browserView.read().url;
   }
 
   get layout(): BrowserLayout {
-    const l = app.snapshot?.browser?.layout ?? "hidden";
+    const l = browserView.read().layout;
     if (l === "split" || l === "fullscreen") return l;
     return "hidden";
   }
 
   get splitRatio(): number {
-    return app.snapshot?.browser?.split_ratio ?? 0.45;
+    return browserView.read().split_ratio;
   }
 
   get annotateMode(): boolean {
-    return app.snapshot?.browser?.annotate_mode ?? false;
+    return browserView.read().annotate_mode;
   }
 
   get showAnnotationTooltips(): boolean {
-    return app.snapshot?.browser?.show_tooltips ?? false;
+    return browserView.read().show_tooltips;
   }
 
   /** Annotation id to scroll into view in the right-panel card. */

@@ -1,4 +1,7 @@
+import type { BrowserLayout } from "$lib/protocol/generated/BrowserLayout";
+import type { Command } from "$lib/protocol/generated/Command";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
+import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TabKind } from "$lib/protocol/generated/TabKind";
 import type { TabRow } from "$lib/protocol/generated/TabRow";
 import type { Tabs } from "$lib/protocol/generated/Tabs";
@@ -54,10 +57,100 @@ export function tabsFromResource(wire: Tabs, snapshotRows: readonly TabSummary[]
   return { tabs, active: tabs[active]?.idx ?? 0 };
 }
 
+type Args = Record<string, unknown>;
+
+/**
+ * The wire command for a tab command or an open `app.cmd` was asked for,
+ * from the arguments its callers pass; undefined for any other command, null
+ * for a prefetch with no hint to pin. A position names the tab `keyAt` gives
+ * for it, as the strip rendered it.
+ */
+export function wireCommand(
+  command: string,
+  a: Args,
+  keyAt: (idx: number) => TabKey | null,
+): Command | null | undefined {
+  return tabCommand(command, a, keyAt) ?? openCommand(command, a);
+}
+
+/** The commands on an open tab: the strip's and the review browser's. */
+function tabCommand(command: string, a: Args, keyAt: (idx: number) => TabKey | null): Command | undefined {
+  const key = (idx: unknown): TabKey => {
+    const at = typeof idx === "number" ? keyAt(idx) : null;
+    if (at === null) throw new Error(`${command}: no tab at position ${String(idx)}`);
+    return at;
+  };
+  switch (command) {
+    case "new_tab":
+      return { kind: "new_tab" };
+    case "select_tab":
+      return { kind: "select_tab", key: key(a.idx) };
+    case "close_tab":
+      return { kind: "close_tab", key: key(a.idx) };
+    case "reorder_tabs":
+      return { kind: "reorder_tabs", key: key(a.fromIdx), toIdx: Number(a.toIdx) };
+    case "update_tab_browser":
+      return {
+        kind: "update_tab_browser",
+        layout: (a.layout as BrowserLayout | undefined) ?? null,
+        url: (a.url as string | undefined) ?? null,
+        navigate: a.navigate === true,
+        annotate: (a.annotate as boolean | undefined) ?? null,
+        tooltips: (a.tooltips as boolean | undefined) ?? null,
+        splitRatio: (a.splitRatio as number | undefined) ?? null,
+      };
+    case "cycle_tab_browser_layout":
+      return { kind: "cycle_tab_browser_layout" };
+    default:
+      return undefined;
+  }
+}
+
+/** The opens and the open-cache warm-ups. */
+function openCommand(command: string, a: Args): Command | null | undefined {
+  const replace = a.replace === true;
+  switch (command) {
+    // A PR branch opens as the PR's review, as the flag-on command does.
+    case "open_pr_review":
+    case "open_pr_branch":
+      return { kind: "open_pr_review", projectId: String(a.projectId), prNumber: Number(a.prNumber), replace };
+    case "open_remote_pr":
+      return { kind: "open_remote_pr", owner: String(a.owner), repo: String(a.repo), number: Number(a.number), replace };
+    case "open_pr_url":
+      return { kind: "open_pr_url", url: String(a.url), replace };
+    case "open_local_branch":
+      return { kind: "open_local_branch", projectId: String(a.projectId), name: String(a.name), replace };
+    case "open_project_branch":
+      return { kind: "open_project_branch", projectId: String(a.projectId), branch: String(a.branch), replace };
+    case "open_worktree":
+      return { kind: "open_worktree" };
+    case "set_active_project":
+      return { kind: "set_active_project", projectId: String(a.id) };
+    case "prefetch_pr_open":
+      return prefetchCommand(a);
+    case "prefetch_remote_pr_open":
+      return { kind: "prefetch_remote_pr_open", owner: String(a.owner), repo: String(a.repo), number: Number(a.number) };
+    default:
+      return undefined;
+  }
+}
+
+function prefetchCommand(a: Args): Command | null {
+  const hint = a.hint as { baseRef: string; headRef: string; headOid: string; updatedAt: string } | undefined;
+  if (!hint) return null;
+  const { baseRef, headRef, headOid, updatedAt } = hint;
+  return {
+    kind: "prefetch_pr_open",
+    projectId: String(a.projectId),
+    prNumber: Number(a.prNumber),
+    hint: { baseRef, headRef, headOid, updatedAt },
+  };
+}
+
 interface TabsAdapterDeps {
   /** Whether the backend serves resources (the `v1-service` build). */
   flagOn: boolean;
-  store: Pick<ResourceStore, "get" | "show">;
+  store: Pick<ResourceStore, "get" | "show" | "send" | "whenAt">;
   snapshot: () => TabsSlice | null;
 }
 
@@ -85,5 +178,54 @@ export class TabsAdapter {
 
   get active(): number {
     return this.read().active;
+  }
+
+  /** The active row, as the strip highlights it. */
+  get activeTab(): TabSummary | null {
+    const view = this.read();
+    return view.tabs.find((tab) => tab.is_active) ?? view.tabs[view.active] ?? null;
+  }
+
+  /** The active tab's wire key; null with the flag off or before the first fetch. */
+  get activeKey(): TabKey | null {
+    return this.held()?.active ?? null;
+  }
+
+  /** The wire key of the row at `idx` in the resource's order. */
+  keyAt(idx: number): TabKey | null {
+    return this.held()?.tabs[idx]?.key ?? null;
+  }
+
+  /**
+   * With the flag on, a tab command or an open goes through `er_send` and
+   * resolves once every key its `Ack` names is held at that version; null for
+   * any other command, and for every command with the flag off.
+   */
+  route(command: string, args: Args = {}): Promise<void> | null {
+    if (!this.deps.flagOn) return null;
+    let wire: Command | null | undefined;
+    try {
+      wire = wireCommand(command, args, (idx) => this.keyAt(idx));
+    } catch (e) {
+      return Promise.reject(e);
+    }
+    if (wire === undefined) return null;
+    return wire === null ? Promise.resolve() : this.send(wire);
+  }
+
+  private async send(command: Command): Promise<void> {
+    let ack;
+    try {
+      ack = await this.deps.store.send(command);
+    } catch (e) {
+      throw new Error((e as { message?: string }).message ?? String(e), { cause: e });
+    }
+    await Promise.all(ack.changed.map(({ key, version }) => this.deps.store.whenAt(key, version)));
+  }
+
+  private held(): Tabs | null {
+    if (!this.deps.flagOn) return null;
+    const held = this.deps.store.get(TABS_KEY)?.value;
+    return held?.kind === "tabs" ? held : null;
   }
 }
