@@ -164,9 +164,10 @@ counts; `wc -l` gives one fewer per file.
   `navigation.rs:33`, from P47.1b), `er_engine::visible_files`, and
   `session_store::save_session` (`session_store.rs:152`) all compile without
   `ui`.
-- **`jobs` is a desktop aggregate.** ADDENDUM-06 A3 builds it in the desktop
-  adapter from each actor's jobs, arena and flow sections. The TUI cannot read
-  it, so it builds its own rows from `WorkspaceView` and the job events.
+- **`jobs` is a desktop aggregate today.** ADDENDUM-06 A3 builds it in the
+  desktop adapter from each actor's jobs, arena and flow sections. The TUI
+  will call the er-service job-row builder that "What 5b asks" creates, and
+  aggregates no rows itself (P74).
 - **The App is large.** `crates/er-engine/src/app` is 33,483 lines;
   `app/state/mod.rs` alone is 16,644.
 - **er-mcp builds the engine headless** and calls always-compiled modules
@@ -190,16 +191,19 @@ defaults until the owner answers.
    host calls, in-process, for every value phase 5 computes on the server:
    the reviewed counts (P57), thread ordering and counts and the findings
    projection in `annotations(tab)` (P58.1), and the job rows (P58.1, P60.1,
-   P60.2). It renders the er-protocol values they answer. Plain section data
-   that no builder changes (the files and hunks, the PR overview) may be read
-   from the section until its entry switches to the builder; P71 takes the
-   file order from `diff(tab)`'s builder. TUI-only layout stays in er-tui.
-   The TUI edits no er-protocol file, so lane P stays free, and nothing is
-   serialized. It sends er-service `Command`s and `AppCommand`s. An entry
-   that needs a builder waits for the phase-5 entry that adds it. Alternative:
-   render the sections and compute those values in er-tui, which writes the
-   same rule in two front ends, which the review rules rank as the most
-   severe finding.
+   P60.2). It renders the er-protocol values they answer. The flag-on read
+   model calls each builder once per published revision of the section it
+   reads, never once per frame, and keeps the value beside the section data.
+   Three kinds of data stay on the sections for good, laid out by er-tui:
+   the files, the hunks and the PR overview. P71 takes the file order from
+   `diff(tab)`'s builder. TUI-only layout stays in er-tui. er-tui gains an
+   er-protocol dependency (a lane T manifest edit) and edits no er-protocol
+   file, so lane P stays free. Nothing is serialized or sent over IPC; the
+   cost is one builder run per section revision. The TUI sends er-service
+   `Command`s and `AppCommand`s. An entry that needs a builder waits for the
+   phase-5 entry that adds it. Alternative: render the sections and compute
+   those values in er-tui, which writes the same rule in two front ends,
+   which the review rules rank as the most severe finding.
 3. **Where the actor host lives.** Default: a new er-service module, so the
    TUI and phase 6's MCP share one host. The desktop keeps its `ServiceState`
    until phase 6. Alternative: a host in er-tui, copied from the desktop's.
@@ -237,8 +241,7 @@ defaults until the owner answers.
    expansion change the repo or the published diff. Default: each becomes an
    er-service command whose effect runs the `Git` port off the actor and
    refreshes the tab (P69; context lines in P71). Alternative: keep them as
-   TUI calls to the port,
-   which the exit criterion forbids.
+   TUI calls to the port, which the exit criterion forbids.
 9. **The use cases move into er-service in phase 6, with MCP.** ADDENDUM-06
    A11 kept them in the engine "until 5b". After P77 the only callers outside
    er-service are er-mcp's direct calls, which phase 6 moves onto the service.
@@ -339,10 +342,16 @@ sidecars on disk must match.
   none.
 - **Goal:** every renderer draws from one read model that either path can
   fill.
-- **Done when:** `ui::draw` takes a `Screen`: a borrowed read model of the
-  active tab's files, AI state, reviewed marks, PR data, history and tour,
-  the tab's view fields, and the app chrome (tabs, status line, theme, update
-  notice, config error); one function builds it from the App; no module under
+- **Done when:** `ui::draw` takes a `Screen`: a read model of the active
+  tab's files, AI state, reviewed marks, PR data, history and tour, the tab's
+  view fields, and the app chrome (tabs, status line, theme, update notice,
+  config error); the AI and reviewed part of `Screen` has two variants behind
+  the render seam: the flag-off variant borrows the App's types and renders
+  them exactly as today, and the flag-on variant (filled from P65 on) holds
+  the builders' er-protocol values beside the section data (decision 2);
+  each renderer that reads that part matches on the variant, and P76 deletes
+  the flag-off variant; one function builds the flag-off `Screen` from the
+  App; no module under
   `ui/` names `App` or `TabState`; the view types the renderers read
   (overlays, hubs, input mode, confirm actions, split side, the config edit
   state, and the agent log's `CommandStatus` and `AgentLogSource`,
@@ -495,7 +504,8 @@ sidecars on disk must match.
   write carries the `TabContext` of the tab it was composed on; the composer
   text lives in `TuiView` and stays until the reply, so a refused write keeps
   it; each create carries a `client_id` (ADR 0017); the thread lists, their
-  order and their counts render from P58.1's annotations builder (decision 2);
+  order and their counts render from P58.1's annotations builder: the
+  flag-on `Screen` variant's thread field holds its output (decision 2);
   the layer toggles, hide resolved and the Gate are `TuiView` state.
 - **Planted breaks:** a composer that closes before the reply loses its text
   on a refused write and fails; a create with no `client_id` gets a fresh id
@@ -580,14 +590,20 @@ sidecars on disk must match.
   the TUI.
 - **Done when:** the reviewed keys send `ToggleReviewed` and `MarkReviewed`
   with the tab's `TabContext`; the reviewed count comes from P57's reviewed
-  builder, called in-process (decision 2); `--filter` applies here; the filter, its history and the unreviewed-only toggle are
+  builder, called in-process when the reviewed section's revision moves, and
+  the flag-on `Screen` variant's count field holds its output (decision 2); er-tui
+  gains its er-protocol dependency here, as the first entry in lane order that
+  calls a builder; `--filter` applies here; the filter, its history and the unreviewed-only toggle are
   `TuiView` state over the pure `visible_files`, as the desktop's filter is
   after P56.1; compaction expands through `ParseFiles` with `expand`
   (re-compacting is P71's).
 - **Planted breaks:** a reviewed write after a tab switch that resolves the
   active tab lands on the other tab and fails the keyed-write test; a
   reviewed count computed in er-tui from the marks fails the source scan; a filter read from an App tab fails the same scan; key parity on
-  mark, filter and jump fails when `reviewed.json` differs; an expand that
+  mark, filter and jump fails when `reviewed.json` differs; on a fixture
+  where the filter hides a reviewed file, a flag-on fill that counts reviewed
+  files itself fails render parity against the builder's count, as does a
+  builder call per frame against the call-count test; an expand that
   sends `ParseFiles` without `expand` leaves the file compacted and fails
   render parity.
 - Size: M.
@@ -645,7 +661,12 @@ sidecars on disk must match.
 - **Goal:** the review panel, the tour and the clear actions write through the
   actor.
 - **Done when:** the review panel renders the findings projection and the
-  checklist from P58.1's annotations builder; the checklist toggle sends
+  checklist from P58.1's annotations builder, held in the flag-on `Screen`
+  variant's findings and checklist fields; the Gate stays `TuiView` state and
+  is applied by calling the shared rule, `Finding::passes`
+  (`crates/er-core/src/review.rs:363`, over `InlineLayers` `:12`; its truth
+  table is `passes_gate_truth_table`, `crates/er-engine/src/ai/review.rs:1727`),
+  with the Gate as an argument; the checklist toggle sends
   `ToggleChecklistItem`; the tour's reviewed toggle and pillar bulk review
   send `ToggleReviewed` and `BulkReviewPillar`; tour, finding and panel
   navigation are `TuiView` state; the review clear sends
@@ -662,7 +683,8 @@ sidecars on disk must match.
   (`input/mod.rs:1005`–`:1012`) is P74's, on this entry's clear.
 - **Planted breaks:** a checklist toggle written to the App fails the source
   scan, as does a finding or pillar jump done on the App; a findings list
-  filtered by the Gate in er-tui fails the same scan; a flag-on review clear
+  filtered by a Gate comparison written in er-tui, in place of a call to
+  `Finding::passes`, fails the same scan; a flag-on review clear
   that leaves `professor.json` fails the rule test against
   `DeleteReviewArtifact`; a clear on a bucket whose workflow lease is held is
   refused, and skipping the admission check deletes the review and fails; a
@@ -755,8 +777,8 @@ sidecars on disk must match.
 - Branch: `epic/p76-tui-switch`. Lanes: T, C. Model: `opus`. Depends on:
   P63–P75, P62.2 (the same recipe, CI and lint-gate lines).
 - **Goal:** the TUI runs only on the service.
-- **Done when:** the flag-off executor, the App-filled `Screen` and the old
-  loop are deleted; er-tui depends on er-service as a plain dependency and on
+- **Done when:** the flag-off executor, the flag-off `Screen` variant and the
+  old loop are deleted; er-tui depends on er-service as a plain dependency and on
   er-engine with `default-features = false` and the features it uses, its
   dev-dependency included, so no build of er-tui turns `ui` on; the
   `v1-service` feature leaves er-tui, and with it the `test-v1` recipe, the
@@ -768,7 +790,9 @@ sidecars on disk must match.
   `session_store.rs:152`; A15 makes `session.json` the TUI's view file), a
   `Git` port write, an er-github write, or a `std::fs` write outside
   `update.rs`; the release
-  notes carry D3's restored review submission; `crates/er-tui`'s docs and
+  notes carry D3's restored review submission, and say that clearing a
+  review, or re-running the general review through the clear-then-run
+  confirm, now also deletes the professor and expert results (P72, P74); `crates/er-tui`'s docs and
   `CLAUDE.md` describe the TUI on the service.
 - **Planted breaks:** a `use er_engine::app::App` in er-tui fails the
   standalone check locally and in CI; a `std::fs::remove_file` added to a key
@@ -782,8 +806,8 @@ sidecars on disk must match.
 - Branch: `epic/p77-delete-app`. Lanes: S, C. Model: `opus`. Depends on: P76.
 - **Goal:** the engine has one half.
 - **Done when:** `crates/er-engine/src/app`, the `ui`-gated export wrapper and
-  the `ui` feature are deleted, with the re-exports P58.2 and P61 left in
-  `er_engine::app` (decision 10); the eleven `cfg(feature = "ui")` sites
+  the `ui` feature are deleted, and the re-exports P58.2 and P61 left in
+  `er_engine::app` are deleted with them (decision 10); the eleven `cfg(feature = "ui")` sites
   outside `app/` and `export` (in `config/mod.rs`, `config/agents.rs`,
   `ai/mtime.rs`, `projects_pins.rs`, `review_flow_driver/` and
   `session_store.rs`) lose their gate or their gated code, so
@@ -837,6 +861,10 @@ sidecars on disk must match.
   move for them, yet P62.2 requires er-desktop to name no `er_engine::app`
   item. The entry that last calls them (P60.2) should move them to the
   always-compiled half; P77's premise depends on it.
+- **P57's and P58.1's builders take section-level inputs:** the files, the
+  reviewed marks map and `&AiState`, never `&TabContent` alone, so the TUI
+  can call them on each section revision and compare against the flag-off
+  `TabState` in render parity.
 - **P56.1's refresh route with auto-unmark** should answer how many reviewed
   marks it cleared, since the TUI's status line shows that count
   (`main.rs:560`–`:566`). If P56.1 merges without it, P71 adds the field, as
