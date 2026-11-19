@@ -15,9 +15,9 @@ mod error;
 mod resource;
 mod sidebar;
 
-pub use command::{Ack, Command};
+pub use command::{Ack, Command, ProjectReviewSettingsPatch};
 pub use error::{ErError, ErErrorKind};
 pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
 };
-pub use sidebar::{Branch, Branches, Project, Projects};
+pub use sidebar::{AvailableBranches, Branch, Branches, Project, Projects};

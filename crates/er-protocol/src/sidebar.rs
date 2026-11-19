@@ -56,3 +56,10 @@ pub struct Branch {
     #[ts(type = "number | null")]
     pub pr_number: Option<u64>,
 }
+
+/// Branch names a project could start tracking.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableBranches {
+    pub branches: Vec<String>,
+}

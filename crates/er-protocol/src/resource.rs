@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{Branches, Projects};
+use crate::{AvailableBranches, Branches, Projects};
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
 /// a wire key is resolved by looking it up among the published tabs, never by
@@ -34,6 +34,9 @@ pub enum ResourceKey {
     Projects,
     /// One project's branches, by project id.
     Branches { project: String },
+    /// One project's local branches that are neither checked out nor tracked,
+    /// computed on each read and never pushed.
+    AvailableBranches { project: String },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -43,6 +46,7 @@ pub enum Resource {
     Tabs(Tabs),
     Projects(Projects),
     Branches(Branches),
+    AvailableBranches(AvailableBranches),
 }
 
 /// The open tabs in strip order, and the active one.
