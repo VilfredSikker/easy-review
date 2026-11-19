@@ -6,8 +6,9 @@
 //! them off the App. Every field is an `Arc`, so a clone shares the state.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use er_engine::pr_open_entry::{PrOpenCacheEntry, PrOpenCacheKey, PrOpenFreshness};
 
@@ -15,7 +16,8 @@ use crate::inbox::InboxHandle;
 use crate::line_commits_cache::LineCommitsCache;
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::snapshot::{
-    GhStatusCache, GhUser, LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
+    GhStatusCache, GhUser, LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusSnapshot,
+    WatchStatusState,
 };
 
 #[derive(Clone)]
@@ -80,6 +82,63 @@ pub struct DesktopState {
     pub auto_triage_in_flight: crate::auto_triage::AutoTriageInFlight,
     /// Per-file "Mark lines" attribution, outside the snapshot on purpose.
     pub line_commits_cache: LineCommitsCache,
+    /// The desktop's writes to `session` and `panels`.
+    pub session: SessionClock,
+}
+
+/// The desktop's own writes to `session` and `panels`: the watcher's status,
+/// the update check and the panel mirror. Each write moves a counter and wakes
+/// the resource relay, so the push follows it as it follows an actor's
+/// publish. The default build has no relay and only counts.
+#[derive(Clone, Default)]
+pub struct SessionClock {
+    revision: Arc<AtomicU64>,
+    wake: Arc<OnceLock<Sender<()>>>,
+    /// The last update check's answer.
+    pub update: Arc<Mutex<Option<er_protocol::AppUpdate>>>,
+    /// The engine's sequence number of the last App notification sent as a
+    /// notice, so each is sent once.
+    pub app_notice_seq: Arc<AtomicU64>,
+}
+
+impl SessionClock {
+    /// How many times the desktop's half of `session` moved.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
+    /// The desktop's half of `session` moved.
+    pub fn bump(&self) {
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        self.wake();
+    }
+
+    /// Asks the relay to read the versions again.
+    pub fn wake(&self) {
+        if let Some(wake) = self.wake.get() {
+            let _ = wake.send(());
+        }
+    }
+
+    /// Wakes `wake` after each write from now on; the first call wins.
+    pub fn wake_with(&self, wake: Sender<()>) {
+        let _ = self.wake.set(wake);
+    }
+
+    /// Writes the watcher's status and moves `session` when it changed.
+    pub fn set_watch_status(&self, status: &WatchStatusState, next: WatchStatusSnapshot) {
+        let changed = match status.lock() {
+            Ok(mut current) => {
+                let changed = *current != next;
+                *current = next;
+                changed
+            }
+            Err(_) => false,
+        };
+        if changed {
+            self.bump();
+        }
+    }
 }
 
 /// In-flight PR-open prefetch claim. The open path (`load_pr_open_inputs`)

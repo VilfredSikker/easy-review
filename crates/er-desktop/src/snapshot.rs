@@ -270,7 +270,7 @@ pub type PrCacheFetchedAt = Arc<Mutex<HashMap<String, u64>>>;
 
 /// Active-branch watcher status. Set by the desktop background thread that
 /// watches the working tree of the currently active local-branch tab.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct WatchStatusSnapshot {
     pub active: bool,
     pub branch: Option<String>,

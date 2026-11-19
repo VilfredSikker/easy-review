@@ -14,6 +14,15 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::Tabs => tabs(desktop),
         ResourceKey::Settings => settings(desktop),
         ResourceKey::Risk { key } => risk(desktop, key)?,
+        ResourceKey::Session => {
+            let (version, session) =
+                super::session::session(desktop, &desktop.service.settings().view());
+            (version, Resource::Session(Box::new(session)))
+        }
+        ResourceKey::Panels => {
+            let (version, panels) = super::session::panels(desktop);
+            (version, Resource::Panels(panels))
+        }
     };
     Ok(Versioned {
         key,
@@ -31,6 +40,10 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
             Some(view) => view.version,
             None => return Err(risk_not_loaded(&key)),
         },
+        ResourceKey::Session => {
+            super::session::session_version(desktop, Some(&desktop.service.settings().view()))
+        }
+        ResourceKey::Panels => super::session::panels_version(desktop),
     };
     Ok(ResourceVersion(version))
 }
@@ -81,6 +94,8 @@ pub enum Watched {
     Settings,
     /// One rules key's risk view.
     Risk(String),
+    Session,
+    Panels,
     Diff(TabKey),
     Reviewed(TabKey),
     Ai(TabKey),
@@ -96,6 +111,8 @@ impl Watched {
             Self::Tabs => Some(ResourceKey::Tabs),
             Self::Settings => Some(ResourceKey::Settings),
             Self::Risk(key) => Some(ResourceKey::Risk { key: key.clone() }),
+            Self::Session => Some(ResourceKey::Session),
+            Self::Panels => Some(ResourceKey::Panels),
             Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Pr(_) | Self::Mode(_) => None,
         }
     }
@@ -105,9 +122,16 @@ impl Watched {
 /// until something reads `settings`, the settings actor is not watched.
 pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
     let tabs = desktop.service.app_registry().tabs_view();
-    let mut versions = BTreeMap::from([(Watched::Tabs, tabs.revision)]);
-    if let Some(settings) = desktop.service.settings_if_started() {
-        let view = settings.view();
+    let settings = desktop.service.settings_if_started().map(|s| s.view());
+    let mut versions = BTreeMap::from([
+        (Watched::Tabs, tabs.revision),
+        (
+            Watched::Session,
+            super::session::session_version(desktop, settings.as_deref()),
+        ),
+        (Watched::Panels, super::session::panels_version(desktop)),
+    ]);
+    if let Some(view) = settings {
         versions.insert(Watched::Settings, view.revision);
         versions.extend(
             view.risk

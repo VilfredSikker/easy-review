@@ -17,17 +17,21 @@ pub async fn er_send(
     command: Command,
     app: tauri::AppHandle,
     state: State<'_, DesktopState>,
+    pick: State<'_, crate::ai_selection_service::SessionPick>,
 ) -> Result<Ack, ErError> {
     let desktop = state.inner().clone();
+    let pick = pick.inner().clone();
     let emitter = app.clone();
     let applied = blocking(move || {
-        super::send::apply(&desktop, command, &|level, message| {
-            use tauri::Emitter;
-            let notice = super::notice::notice(level, message);
-            if let Err(e) = emitter.emit(super::notice::NOTICE_EVENT, &notice) {
-                log::warn!("notice emit failed: {e}");
-            }
-        })
+        let notify = |level, message| {
+            super::notice::emit(&emitter, &super::notice::notice(level, message));
+        };
+        let effects = super::send::Effects {
+            notify: &notify,
+            follow_selection: &|selection| pick.follow(selection),
+            check_update: || super::session::app_update(crate::commands::app_update_cached()),
+        };
+        super::send::apply(&desktop, command, &effects)
     })
     .await?;
     match applied.uninstalled {

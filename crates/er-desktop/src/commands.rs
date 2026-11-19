@@ -1776,6 +1776,14 @@ fn check_app_update_inner() -> AppUpdateInfo {
 /// Compare the running app version to GitHub Releases latest (1h cache).
 #[tauri::command]
 pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(app_update_cached)
+        .await
+        .map_err(|e| format!("check_app_update join: {e}"))
+}
+
+/// The update check behind a 1 h cache, shared by the command and the wire's
+/// `check_app_update`. Blocking: a miss asks GitHub.
+pub(crate) fn app_update_cached() -> AppUpdateInfo {
     use std::sync::Mutex;
     use std::time::Instant;
 
@@ -1788,14 +1796,12 @@ pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
     if let Ok(guard) = CACHE.lock() {
         if let Some(c) = guard.as_ref() {
             if c.at.elapsed() < UPDATE_CACHE_TTL {
-                return Ok(c.info.clone());
+                return c.info.clone();
             }
         }
     }
 
-    let info = tauri::async_runtime::spawn_blocking(check_app_update_inner)
-        .await
-        .map_err(|e| format!("check_app_update join: {e}"))?;
+    let info = check_app_update_inner();
 
     if let Ok(mut guard) = CACHE.lock() {
         *guard = Some(Cache {
@@ -1803,7 +1809,7 @@ pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
             info: info.clone(),
         });
     }
-    Ok(info)
+    info
 }
 
 fn github_file_url_for_tab(
@@ -5088,7 +5094,17 @@ pub use er_engine::config::{map_ai_providers, AiModelInfo, AiProviderInfo};
 #[tauri::command]
 pub async fn list_ai_providers(state: State<'_, AppState>) -> Result<Vec<AiProviderInfo>, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
+    run_blocking(move || ai_providers(&state)).await
+}
+
+/// The picker's providers with the current pick marked. With `v1-service`
+/// every pick saves, so the pick is the settings actor's default selection,
+/// which its view already marks; the App lock is never taken.
+pub(crate) fn ai_providers(state: &AppState) -> Result<Vec<AiProviderInfo>, String> {
+    #[cfg(feature = "v1-service")]
+    return Ok(state.service.settings().view().hub.providers.clone());
+    #[cfg(not(feature = "v1-service"))]
+    {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.sync_config_from_active_tab();
         let hub = &app.config.ai_hub;
@@ -5104,8 +5120,7 @@ pub async fn list_ai_providers(state: State<'_, AppState>) -> Result<Vec<AiProvi
             resolved_provider.as_deref(),
             resolved_model.as_deref(),
         ))
-    })
-    .await
+    }
 }
 
 #[tauri::command]
@@ -12617,6 +12632,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod resource_tests;
     #[cfg(feature = "v1-service")]
+    mod session_resource_tests;
+    #[cfg(feature = "v1-service")]
     mod settings_resource_tests;
     #[cfg(feature = "v1-service")]
     mod tab_key_tests;
@@ -12940,6 +12957,7 @@ mod tests {
             tauri_app_handle: Arc::new(Mutex::new(None)),
             auto_triage_in_flight: Arc::new(Mutex::new(HashSet::new())),
             line_commits_cache: Arc::default(),
+            session: Default::default(),
         };
         AppState::new(desktop, app)
     }
