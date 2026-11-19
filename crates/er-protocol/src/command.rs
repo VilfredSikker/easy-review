@@ -4,7 +4,7 @@ use ts_rs::TS;
 use crate::settings::{
     ConfigFieldValue, ModelUpsert, ProviderUpsert, ReviewModelGroups, UninstallOptions,
 };
-use crate::ResourceChanged;
+use crate::{Panel, ResourceChanged};
 
 /// A command the frontend sends to the backend.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -60,6 +60,24 @@ pub enum Command {
         repo_root: String,
         remote_repo: Option<String>,
         paths: Vec<String>,
+    },
+    /// Saves the default AI provider and model, and the effort when one is
+    /// named. Every pick saves: there is no session-only pick on the wire.
+    SetAiSelection {
+        provider_id: String,
+        model_id: Option<String>,
+        effort: Option<String>,
+    },
+    /// Saves the default effort for the default selection; none is Auto.
+    SetAiEffort {
+        effort: Option<String>,
+    },
+    /// Compares the running build with the latest release. The `Ack` comes
+    /// at once; the answer lands in `session`.
+    CheckAppUpdate,
+    /// Mirrors a side panel the page toggled into `panels`.
+    TogglePanel {
+        panel: Panel,
     },
 }
 

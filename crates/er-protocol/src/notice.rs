@@ -15,11 +15,14 @@ pub struct Notice {
     pub level: NoticeLevel,
     /// Text for the person, never parsed.
     pub message: String,
+    /// Worth leaving up longer than the page's default.
+    pub long: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum NoticeLevel {
     Info,
+    Success,
     Error,
 }
