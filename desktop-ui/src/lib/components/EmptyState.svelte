@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
   import { startWindowDrag } from "$lib/windowDrag";
   import { openExternalUrl } from "$lib/openExternalUrl";
@@ -52,7 +53,7 @@
 
   const hasActiveReview = $derived(
     overlay ||
-      (app.snapshot?.tabs?.length ?? 0) > 0 ||
+      tabsResource.tabs.length > 0 ||
       (app.snapshot?.files.length ?? 0) > 0,
   );
 

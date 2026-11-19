@@ -4,6 +4,7 @@
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -82,7 +83,7 @@
   );
   const agentSummaryOnly = $derived(useAgentScopedSummary(aiReviewFilter.filter));
   const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
-  const activeTab = $derived(app.snapshot?.tabs.find((tab) => tab.is_active));
+  const activeTab = $derived(tabsResource.activeTab ?? undefined);
   const hasExpertFindings = $derived(
     agentScopedFindings.some((finding) => finding.expert_label != null),
   );

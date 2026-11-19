@@ -1,11 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { app } from "./app.svelte";
+import { tabsResource } from "./tabsResource.svelte";
 
 export const BROWSER_MESSAGE_EVENT = "browser://message";
 
 function activeTabIdx(tabIdx?: number): number {
-  return tabIdx ?? app.snapshot?.active_tab ?? 0;
+  return tabIdx ?? tabsResource.active;
 }
 
 /** Subscribe to messages from the review-browser content script. */

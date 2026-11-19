@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { PrSnapshot, GithubStatusSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
@@ -218,7 +219,7 @@
     const prNumber = selectablePrNumber(row);
     if (prNumber === null) return;
     // A remote PR tab has no local project; open the layer the same remote way.
-    const tab = app.snapshot?.tabs.find((t) => t.is_active);
+    const tab = tabsResource.activeTab;
     const [owner, repo] = tab?.kind === "remote_pr" ? (tab.remote ?? "").split("/") : [];
     if (owner && repo) {
       stackOpen = false;

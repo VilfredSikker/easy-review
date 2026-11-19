@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { startNotices, stopNotices } from "$lib/stores/noticeFeed.svelte";
   import { initKeyboard } from "$lib/stores/keyboard";
@@ -72,7 +73,7 @@
       app.snapshot.files.length === 0 &&
       (app.snapshot.projects?.length ?? 0) === 0,
   );
-  const hasOpenTabs = $derived((app.snapshot?.tabs?.length ?? 0) > 0);
+  const hasOpenTabs = $derived(tabsResource.tabs.length > 0);
   const explicitFullWelcome = $derived(app.showEmptyState && app.snapshot !== null && !hasOpenTabs);
   const showFullWelcome = $derived(
     showFullWelcomeFor({
@@ -210,7 +211,7 @@
 
   $effect(() => {
     if (resizingBrowserSplit) return;
-    const r = app.snapshot?.browser?.split_ratio;
+    const r = browser.splitRatio;
     if (r == null || !Number.isFinite(r)) return;
     if (Math.abs(browserSplitRatio - r) < 0.001) return;
     browserSplitRatio = r;
@@ -252,7 +253,7 @@
   });
   /** The tab an uncached switch is loading; the review area names it until it lands. */
   const placeholderTab = $derived(
-    isReviewView ? tabPlaceholderTarget(app.snapshot?.tabs, app.switchingTabIdx) : null,
+    isReviewView ? tabPlaceholderTarget(tabsResource.tabs, app.switchingTabIdx) : null,
   );
   const inTour = $derived(app.snapshot?.mode === "tour");
   /** Tour mode with no tour for this view draws an empty state, not a pillar-less diff. */
@@ -260,8 +261,8 @@
   /** The findings panel sits beside the Tour and the Diff, never over other pages. */
   const showRightPanel = $derived(showDiff && app.mainView === "diff" && !placeholderTab);
 
-  const activeTabIdx = $derived(app.snapshot?.active_tab ?? 0);
-  const activeTab = $derived(app.snapshot?.tabs?.[activeTabIdx]);
+  const activeTabIdx = $derived(tabsResource.active);
+  const activeTab = $derived(tabsResource.tabs[activeTabIdx]);
   const activeTabRoot = $derived(resolveTabRoot(app.snapshot, activeTab));
 
   $effect(() => {
