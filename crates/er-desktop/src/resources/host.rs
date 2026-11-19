@@ -60,7 +60,7 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
     let git = &*desktop.ports.git;
     match command {
         Command::ReorderProjects { ordered } => {
-            crate::projects::reorder_projects(&ordered).map_err(|e| failed("", e.to_string()))?
+            crate::projects::reorder_projects(&ordered).map_err(|e| failed("", e.to_string()))?;
         }
         Command::DeleteProject { project } => {
             crate::commands::delete_project_and_its_prs(desktop, &project)
