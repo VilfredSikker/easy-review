@@ -41,7 +41,7 @@ function wireSettings(theme: string): Settings {
     theme,
     features: FEATURES,
     display: DISPLAY,
-    arenaEnabled: true,
+    arenaEnabled: false,
   };
 }
 
@@ -64,7 +64,7 @@ const SNAPSHOT: SessionSlice = {
   theme: "paper",
   features: FEATURES,
   display: DISPLAY,
-  arena_enabled: true,
+  arena_enabled: false,
   config_load_error: "config.toml: bad",
   active_ai_label: "Echo / first",
   active_ai_effort: "high",
@@ -116,6 +116,10 @@ function fakeBackend() {
         return UPDATE as T;
       case "toggle_panel":
         return undefined as T;
+      case "set_ai_selection":
+      case "set_ai_effort":
+        if (args.modelId === "refused" || args.effort === "refused") throw "no such model";
+        return {} as T;
       default:
         throw new Error(`unexpected ${command}`);
     }
@@ -165,19 +169,29 @@ const until = async (done: () => boolean) => {
 describe("SessionAdapter", () => {
   it("reads the snapshot and calls the old commands with the flag off", async () => {
     const { backend, session, cmds } = adapter(false);
-    expect(chrome(session)).toMatchObject({ theme: "paper", features: FEATURES, display: DISPLAY });
+    expect(chrome(session)).toMatchObject({ theme: "paper", features: FEATURES, display: DISPLAY, arenaEnabled: false });
     expect(session.activeAiLabel).toBe("Echo / first");
     expect(await session.providers()).toEqual([PROVIDER]);
     expect((await session.reviewers()).map((r) => r.kind)).toEqual(["security"]);
     await session.checkUpdate();
     expect(session.update?.latest).toBe("9.9.9");
+    // Settings invokes the picks itself; the palette sends them through app.cmd.
     await session.setAiSelection("echo", "second", "low");
     await session.setAiEffort(null);
-    expect(cmds).toEqual([
-      ["set_ai_selection", { providerId: "echo", modelId: "second", effort: "low", persist: true }],
-      ["set_ai_effort", { effort: null, persist: true }],
+    await session.setAiSelection("echo", "third", undefined, "app");
+    expect(backend.calls.filter((c) => c.command.startsWith("set_ai_"))).toEqual([
+      { command: "set_ai_selection", args: { providerId: "echo", modelId: "second", effort: "low", persist: true } },
+      { command: "set_ai_effort", args: { effort: null, persist: true } },
     ]);
+    expect(cmds).toEqual([["set_ai_selection", { providerId: "echo", modelId: "third", persist: true }]]);
     expect(backend.names().filter((n) => n.startsWith("er_"))).toEqual([]);
+  });
+
+  it("rejects a refused Settings pick with the flag off, so Settings sees the failure", async () => {
+    const { session, cmds } = adapter(false);
+    await expect(session.setAiSelection("echo", "refused")).rejects.toBe("no such model");
+    await expect(session.setAiEffort("refused")).rejects.toBe("no such model");
+    expect(cmds).toEqual([]);
   });
 
   it("reads settings and session and writes through er_send with the flag on", async () => {
