@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { resourceClient, type Invoke } from "$lib/protocol/client";
 import type { Command } from "$lib/protocol/generated/Command";
 import type { ProjectSnapshot, TabSummary } from "$lib/types";
-import { ProjectsAdapter, branchRows, isActiveProject, remoteKey } from "./projectsAdapter";
+import { ProjectsAdapter, branchRows, branchesKey, isActiveProject, remoteKey } from "./projectsAdapter";
 import { ResourceStore } from "./resourceStore";
 
 function tab(o: Partial<TabSummary> = {}): TabSummary {
@@ -182,19 +182,21 @@ describe("ProjectsAdapter", () => {
     expect(calls.at(-1)?.args.keys).toEqual([{ kind: "available_branches", project: "a" }]);
   });
 
-  it("releases the branches of a project that leaves the list", async () => {
-    const { calls, projects } = adapter(true);
+  it("releases the branches of a project that leaves the list, and shows them again when it returns", async () => {
+    const { calls, projects, store } = adapter(true);
     await settle();
     projects.showBranches(["a", "b"]);
-    projects.showBranches(["a"]);
     await settle();
     projects.showBranches(["a"]);
+    expect(store.get(branchesKey("b"))).toBeUndefined();
+    expect(store.get(branchesKey("a"))).toBeDefined();
+    projects.showBranches(["a", "b"]);
     await settle();
     const branchFetches = calls
       .flatMap((c) => (c.command === "er_fetch" ? (c.args.keys as { kind: string; project?: string }[]) : []))
       .filter((k) => k.kind === "branches")
       .map((k) => k.project);
-    expect(branchFetches).toEqual(["a", "b"]);
+    expect(branchFetches).toEqual(["a", "b", "b"]);
   });
 });
 
