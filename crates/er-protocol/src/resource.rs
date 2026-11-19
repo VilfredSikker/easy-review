@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{AvailableBranches, Branches, Projects};
+use crate::{AvailableBranches, Branches, Projects, Risk, Settings};
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
 /// a wire key is resolved by looking it up among the published tabs, never by
@@ -37,16 +37,22 @@ pub enum ResourceKey {
     /// One project's local branches that are neither checked out nor tracked,
     /// computed on each read and never pushed.
     AvailableBranches { project: String },
+    /// The Settings page's rows and AI defaults.
+    Settings,
+    /// One repo's risk rules, by the rules key `load_risk` answered.
+    Risk { key: String },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Resource {
     Tabs(Tabs),
     Projects(Projects),
     Branches(Branches),
     AvailableBranches(AvailableBranches),
+    Settings(Box<Settings>),
+    Risk(Risk),
 }
 
 /// The open tabs in strip order, and the active one.

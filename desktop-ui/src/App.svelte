@@ -3,6 +3,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { app } from "$lib/stores/app.svelte";
   import { arena } from "$lib/stores/arena.svelte";
+  import { startNotices, stopNotices } from "$lib/stores/noticeFeed.svelte";
   import { initKeyboard } from "$lib/stores/keyboard";
   import AppMark from "$lib/components/AppMark.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -288,6 +289,7 @@
     }
     void import("$lib/dev/log").then(({ initDevLog }) => initDevLog());
     app.load().then(() => app.startPolling());
+    startNotices();
     const cleanupKeyboard = initKeyboard();
     const cleanupLinkGuard = installExternalLinkGuard();
     const unlistenArena = listen<number>("er://revision", () => {
@@ -297,6 +299,7 @@
       cleanupKeyboard();
       cleanupLinkGuard();
       app.stopPolling();
+      stopNotices();
       void unlistenArena.then((fn) => fn());
     };
   });

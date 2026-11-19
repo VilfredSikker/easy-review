@@ -2,81 +2,119 @@
 //! every flag-on command has a flag-off twin, and answers each as
 //! unsupported.
 
-use er_protocol::{
-    Ack, Command, ErError, ErErrorKind, Resource, ResourceKey, ResourceVersion, Versioned,
-};
+use er_protocol::{Ack, Command, ErError, Resource, ResourceKey, ResourceVersion, Versioned};
 #[cfg(feature = "v1-service")]
 use tauri::State;
 
 #[cfg(feature = "v1-service")]
 use crate::state::DesktopState;
 
-/// Applies one command and names the versions it moved. It runs off the
-/// main thread, since a command may call git.
+/// Applies one command and names the versions it moved. Off the main thread:
+/// a settings write waits on the actor and its save, and a sidebar command
+/// may call git.
 #[cfg(feature = "v1-service")]
 #[tauri::command]
-pub async fn er_send(command: Command, state: State<'_, DesktopState>) -> Result<Ack, ErError> {
+pub async fn er_send(
+    command: Command,
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<Ack, ErError> {
     let desktop = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || super::send(&desktop, command))
-        .await
-        .map_err(|e| ErError {
-            kind: ErErrorKind::Internal,
-            message: format!("command task failed: {e}"),
-        })?
+    let emitter = app.clone();
+    let applied = blocking(move || {
+        super::send::apply(&desktop, command, &|level, message| {
+            use tauri::Emitter;
+            let notice = super::notice::notice(level, message);
+            if let Err(e) = emitter.emit(super::notice::NOTICE_EVENT, &notice) {
+                log::warn!("notice emit failed: {e}");
+            }
+        })
+    })
+    .await?;
+    match applied.uninstalled {
+        Some(result) => crate::config_commands::finish_uninstall(&app, result)
+            .map(|_| applied.ack)
+            .map_err(|message| ErError {
+                kind: er_protocol::ErErrorKind::Refused,
+                message,
+            }),
+        None => Ok(applied.ack),
+    }
 }
 
-/// Each key's content at its published version, in the order asked.
+/// Each key's content at its published version, in the order asked. Off the
+/// main thread: the first `settings` read starts the settings actor, which
+/// loads the config.
 #[cfg(feature = "v1-service")]
 #[tauri::command]
-pub fn er_fetch(
+pub async fn er_fetch(
     keys: Vec<ResourceKey>,
     state: State<'_, DesktopState>,
 ) -> Result<Vec<Versioned<Resource>>, ErError> {
-    keys.into_iter()
-        .map(|key| super::fetch(&state, key))
-        .collect()
+    let desktop = state.inner().clone();
+    blocking(move || {
+        keys.into_iter()
+            .map(|key| super::fetch(&desktop, key))
+            .collect()
+    })
+    .await
 }
 
 /// Each key's published version, so a listener that attached late learns
 /// what it missed without fetching the content.
 #[cfg(feature = "v1-service")]
 #[tauri::command]
-pub fn er_versions(
+pub async fn er_versions(
     keys: Vec<ResourceKey>,
     state: State<'_, DesktopState>,
 ) -> Result<Vec<ResourceVersion>, ErError> {
-    keys.into_iter()
-        .map(|key| super::version(&state, key))
-        .collect()
+    let desktop = state.inner().clone();
+    blocking(move || {
+        keys.into_iter()
+            .map(|key| super::version(&desktop, key))
+            .collect()
+    })
+    .await
+}
+
+#[cfg(feature = "v1-service")]
+async fn blocking<T, F>(f: F) -> Result<T, ErError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, ErError> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| ErError {
+            kind: er_protocol::ErErrorKind::Internal,
+            message: format!("blocking task failed: {e}"),
+        })?
 }
 
 #[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub fn er_send(command: Command) -> Result<Ack, ErError> {
-    Err(ErError {
-        kind: ErErrorKind::Unsupported,
-        message: format!("this build applies no resource command (sent {command:?})"),
-    })
+    Err(unsupported(&format!("{command:?}")))
 }
 
 #[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub fn er_fetch(keys: Vec<ResourceKey>) -> Result<Vec<Versioned<Resource>>, ErError> {
-    Err(unsupported(&keys))
+    Err(unsupported(&format!("{keys:?}")))
 }
 
 #[cfg(not(feature = "v1-service"))]
 #[tauri::command]
 pub fn er_versions(keys: Vec<ResourceKey>) -> Result<Vec<ResourceVersion>, ErError> {
-    Err(unsupported(&keys))
+    Err(unsupported(&format!("{keys:?}")))
 }
 
-/// The default build serves no resource.
+/// The default build serves no resource and applies no wire command.
 #[cfg(not(feature = "v1-service"))]
-fn unsupported(keys: &[ResourceKey]) -> ErError {
+fn unsupported(asked: &str) -> ErError {
     ErError {
-        kind: ErErrorKind::Unsupported,
-        message: format!("this build serves no resources (asked for {keys:?})"),
+        kind: er_protocol::ErErrorKind::Unsupported,
+        message: format!("this build serves no resources (asked for {asked})"),
     }
 }
 
@@ -95,6 +133,8 @@ mod tests {
         let sent = super::er_send(Command::DeleteProject {
             project: "p".into(),
         });
+        assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
+        let sent = super::er_send(Command::ReloadSettings);
         assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
     }
 }

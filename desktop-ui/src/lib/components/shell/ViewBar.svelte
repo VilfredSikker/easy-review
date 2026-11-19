@@ -5,8 +5,8 @@
 </script>
 
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
+  import { settingsResource } from "$lib/stores/settingsResource.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { rightRail } from "$lib/stores/rightRail.svelte";
@@ -84,7 +84,7 @@
     const from = themeName;
     const to = themeTarget;
     try {
-      await invoke("apply_config_patch", { patch: { key: "display.theme", value: to } });
+      await settingsResource.patch("display.theme", to);
     } catch (err) {
       app.showToast("error", `Theme change failed: ${err}`);
       return;

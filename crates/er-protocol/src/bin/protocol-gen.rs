@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use er_protocol::{
-    Ack, AvailableBranches, Branch, Branches, Command, ErError, Project,
+    Ack, AvailableBranches, Branch, Branches, Command, ErError, Notice, Project,
     ProjectReviewSettingsPatch, Projects, Resource, ResourceChanged, ResourceKey, ResourceVersion,
     TabKey, Tabs, Versioned,
 };
@@ -53,6 +53,7 @@ fn generate(dir: &Path) -> Result<(), Box<dyn Error>> {
     Ack::export_all(&cfg)?;
     ErError::export_all(&cfg)?;
     Command::export_all(&cfg)?;
+    Notice::export_all(&cfg)?;
     Ok(())
 }
 

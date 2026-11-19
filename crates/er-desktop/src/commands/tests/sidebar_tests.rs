@@ -526,6 +526,34 @@ fn a_project_command_answers_the_versions_it_moved() {
     });
 }
 
+/// `er_send`'s body hands a project command to the sidebar's owner and
+/// leaves the settings actor unstarted.
+#[test]
+fn er_send_routes_a_project_command_to_the_sidebar_owner() {
+    with_storage(|dir| {
+        let state = command_fixture(dir);
+        let applied = resources::send::apply(
+            &state.desktop,
+            Command::ReorderProjects {
+                ordered: vec!["b".into(), "a".into()],
+            },
+            &|_, _| {},
+        )
+        .unwrap();
+        let (version, _) = state.app_owner.projects();
+        assert_eq!(
+            applied.ack.changed,
+            vec![ResourceChanged {
+                key: ResourceKey::Projects,
+                version: ResourceVersion(version),
+            }]
+        );
+        assert!(applied.uninstalled.is_none());
+        assert_eq!(project_ids(&state), ["b", "a"]);
+        assert!(state.desktop.service.settings_if_started().is_none());
+    });
+}
+
 /// Tracking a branch refreshes its project's metadata before the answer,
 /// so the `Ack` names that project's branches and they list the branch.
 #[test]

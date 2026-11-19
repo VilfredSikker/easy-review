@@ -257,7 +257,7 @@ pub(crate) fn model_delete(
 pub use er_engine::uninstall::{UninstallPreview, UninstallResult, UninstallTargetDto};
 
 /// Quits after an uninstall that asked for it, and reports what failed.
-fn finish_uninstall(
+pub(crate) fn finish_uninstall(
     app_handle: &tauri::AppHandle,
     result: UninstallResult,
 ) -> Result<UninstallResult, String> {

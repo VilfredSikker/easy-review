@@ -11,7 +11,11 @@ pub mod commands;
 #[cfg(feature = "v1-service")]
 mod host;
 #[cfg(feature = "v1-service")]
+pub mod notice;
+#[cfg(feature = "v1-service")]
 pub mod relay;
+#[cfg(feature = "v1-service")]
+pub mod send;
 #[cfg(feature = "v1-service")]
 pub mod tick;
 

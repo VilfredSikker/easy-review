@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { getRiskFiles, riskTarget } from "$lib/riskRequests";
+  import { riskTarget } from "$lib/riskRequests";
+  import { riskResource } from "$lib/stores/settingsResource.svelte";
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
@@ -38,7 +39,7 @@
   };
 
   // Per-file tier and matching rule ride on the snapshot's files (ADR 0048);
-  // `get_risk_files` is read only for the rule table and its file counts.
+  // the risk rules are read only for the rule table and its file counts.
   let ruleTable = $state<RiskRuleWire[] | null>(null);
   let loadError = $state<string | null>(null);
 
@@ -57,10 +58,11 @@
     }
     const paths = untrack(() => files.map((f) => f.path));
     let cancelled = false;
-    getRiskFiles(current, paths)
-      .then((res) => {
+    riskResource
+      .loadRules(current, paths)
+      .then((rules) => {
         if (cancelled) return;
-        ruleTable = res.rules;
+        ruleTable = rules;
         loadError = null;
       })
       .catch((e) => {

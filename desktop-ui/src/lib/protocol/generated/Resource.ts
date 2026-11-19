@@ -2,9 +2,11 @@
 import type { AvailableBranches } from "./AvailableBranches";
 import type { Branches } from "./Branches";
 import type { Projects } from "./Projects";
+import type { Risk } from "./Risk";
+import type { Settings } from "./Settings";
 import type { Tabs } from "./Tabs";
 
 /**
  * One resource's content, tagged with the kind of key it answers.
  */
-export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "available_branches" } & AvailableBranches;
+export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "available_branches" } & AvailableBranches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk;
