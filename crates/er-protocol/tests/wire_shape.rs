@@ -5,9 +5,10 @@
 //! fails here before the frontend sees a missing field.
 
 use er_protocol::{
-    Ack, AvailableBranches, Branch, Branches, Command, ConfigFieldValue, ErError, ErErrorKind,
-    ModelUpsert, Notice, NoticeLevel, Project, ProjectReviewSettingsPatch, Projects, Resource,
-    ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, UninstallOptions, Versioned,
+    Ack, AvailableBranches, AvailablePrs, Branch, Branches, Command, ConfigFieldValue, ErError,
+    ErErrorKind, ModelUpsert, Notice, NoticeLevel, PrRow, Project, ProjectPrs,
+    ProjectReviewSettingsPatch, Projects, Prs, Resource, ResourceChanged, ResourceKey,
+    ResourceVersion, TabKey, Tabs, UninstallOptions, Versioned,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -191,6 +192,122 @@ fn wire_integers_are_typescript_numbers() {
         "{}",
         Branch::decl(&cfg)
     );
+    assert!(PrRow::decl(&cfg).contains("number: number,"));
+    assert!(Prs::decl(&cfg).contains("fetchedAtMs: number | null"));
+    assert!(ProjectPrs::decl(&cfg).contains("toReview: number[]"));
+    assert!(Command::decl(&cfg).contains("\"save_pr\", project: string, number: number"));
+}
+
+#[test]
+fn the_prs_resource_is_keyed_by_its_remote() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::Prs {
+            remote: "acme/er".into(),
+        },
+        r#"{"kind":"prs","remote":"acme/er"}"#,
+    )?;
+    assert_wire(
+        &Resource::Prs(Prs {
+            rows: vec![PrRow {
+                number: 7,
+                title: "Fix".into(),
+                head_ref: "fix".into(),
+                base_ref: "main".into(),
+                head_oid: "abc".into(),
+                state: "OPEN".into(),
+                is_draft: false,
+                author: "me".into(),
+                assignees: Vec::new(),
+                reviewers: vec!["you".into()],
+                checks_state: None,
+                review_decision: Some("APPROVED".into()),
+                merged_at: None,
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                approved_by_me: false,
+            }],
+            fetched_at_ms: Some(1_000),
+            projects: vec![ProjectPrs {
+                project: "er".into(),
+                mine: vec![7],
+                to_review: Vec::new(),
+                recently_merged: Vec::new(),
+                saved: vec![7],
+                recent: Vec::new(),
+                dismissed: vec![3],
+            }],
+        }),
+        r#"{"kind":"prs","rows":[{"number":7,"title":"Fix","headRef":"fix","baseRef":"main","headOid":"abc","state":"OPEN","isDraft":false,"author":"me","assignees":[],"reviewers":["you"],"checksState":null,"reviewDecision":"APPROVED","mergedAt":null,"updatedAt":"2026-01-01T00:00:00Z","approvedByMe":false}],"fetchedAtMs":1000,"projects":[{"project":"er","mine":[7],"toReview":[],"recentlyMerged":[],"saved":[7],"recent":[],"dismissed":[3]}]}"#,
+    )?;
+    assert_wire(
+        &ResourceKey::AvailablePrs {
+            project: "er".into(),
+        },
+        r#"{"kind":"available_prs","project":"er"}"#,
+    )?;
+    assert_wire(
+        &Resource::AvailablePrs(AvailablePrs { prs: Vec::new() }),
+        r#"{"kind":"available_prs","prs":[]}"#,
+    )
+}
+
+#[test]
+fn the_pr_commands_are_tagged_by_kind() -> serde_json::Result<()> {
+    assert_wire(&Command::RefreshPrList, r#"{"kind":"refresh_pr_list"}"#)?;
+    assert_wire(
+        &Command::RefreshProjectPrList {
+            project: "a".into(),
+        },
+        r#"{"kind":"refresh_project_pr_list","project":"a"}"#,
+    )?;
+    assert_wire(
+        &Command::SavePr {
+            project: "a".into(),
+            number: 7,
+            title: None,
+        },
+        r#"{"kind":"save_pr","project":"a","number":7,"title":null}"#,
+    )?;
+    for (command, kind) in [
+        (
+            Command::DismissPr {
+                project: "a".into(),
+                number: 7,
+            },
+            "dismiss_pr",
+        ),
+        (
+            Command::UndismissPr {
+                project: "a".into(),
+                number: 7,
+            },
+            "undismiss_pr",
+        ),
+        (
+            Command::TrackPr {
+                project: "a".into(),
+                number: 7,
+            },
+            "track_pr",
+        ),
+        (
+            Command::UntrackPr {
+                project: "a".into(),
+                number: 7,
+            },
+            "untrack_pr",
+        ),
+        (
+            Command::UnsavePr {
+                project: "a".into(),
+                number: 7,
+            },
+            "unsave_pr",
+        ),
+    ] {
+        let json = format!(r#"{{"kind":"{kind}","project":"a","number":7}}"#);
+        assert_wire(&command, &json)?;
+    }
+    Ok(())
 }
 
 #[test]
