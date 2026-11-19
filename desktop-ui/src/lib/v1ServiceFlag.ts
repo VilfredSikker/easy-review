@@ -14,11 +14,16 @@ export class V1ServiceFlagMismatch extends Error {
   }
 }
 
+/** Whether this UI was built for the `v1-service` backend. */
+export function v1ServiceRequested(env: string | undefined = import.meta.env.VITE_ER_V1_SERVICE): boolean {
+  return env === "1";
+}
+
 export function assertV1ServiceFlagAgreement(
   backend: boolean,
   env: string | undefined,
 ): void {
-  const requested = env === "1";
+  const requested = v1ServiceRequested(env);
   if (requested === backend) return;
   throw new V1ServiceFlagMismatch(
     requested

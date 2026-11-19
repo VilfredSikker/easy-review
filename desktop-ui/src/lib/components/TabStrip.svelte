@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { tabSeen } from "$lib/stores/tabSeen.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { activeJobCount, aggregateJobs, jobsForTab } from "$lib/runningJobs";
   import { arenaRunsAcrossTabs, tabRowModel } from "$lib/tabStripModel";
@@ -37,9 +38,9 @@
     runningTabs: runningProp,
   }: Props = $props();
 
-  // Default to the live snapshot; props win when supplied (Storybook).
-  const tabs = $derived(tabsProp ?? app.snapshot?.tabs ?? []);
-  const _active = $derived(activeProp ?? app.snapshot?.active_tab ?? 0);
+  // Default to the live tabs; props win when supplied (Storybook).
+  const tabs = $derived(tabsProp ?? tabsResource.tabs);
+  const _active = $derived(activeProp ?? tabsResource.active);
   const canClose = $derived(tabs.length > 1);
   const runningTabs = $derived.by(() => {
     if (runningProp) return runningProp;
@@ -48,7 +49,7 @@
       agentCommands: app.snapshot?.agent_commands,
       arenaRuns: arenaRunsAcrossTabs(arena.summaries, arena.backgroundRuns),
       tabs,
-      activeTabIdx: app.snapshot?.active_tab ?? null,
+      activeTabIdx: tabsResource.active,
       nowMs: Date.now(),
     });
     return new Set(tabs.filter((t) => activeJobCount(jobsForTab(jobs, t.idx)) > 0).map((t) => t.idx));

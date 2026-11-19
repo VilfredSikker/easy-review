@@ -55,6 +55,12 @@ The actor is its only writer; readers get an immutable view published per
 revision.
 _Avoid_: tab (a tab is a review target), project, session
 
+**Resource**:
+A versioned piece of published state with one writer. The writer stamps a new
+version each time it replaces the content, and a reader that holds an older
+version refetches it.
+_Avoid_: snapshot, slice, model
+
 **Finding**:
 A remark an AI review produced about a specific place in the diff. Findings
 belong to the AI that wrote them; a person reads them and acts, and does not
