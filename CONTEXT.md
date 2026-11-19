@@ -61,6 +61,12 @@ version each time it replaces the content, and a reader that holds an older
 version refetches it.
 _Avoid_: snapshot, slice, model
 
+**Notice**:
+A message the backend tells the person once, such as a settings editor's
+soft warning. It has no resource to refetch, so it travels as its own event,
+and the frontend shows each one once.
+_Avoid_: notification (a native OS alert), toast (how a notice is shown)
+
 **Finding**:
 A remark an AI review produced about a specific place in the diff. Findings
 belong to the AI that wrote them; a person reads them and acts, and does not

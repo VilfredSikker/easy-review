@@ -24,7 +24,7 @@ Default is `app.cmd`: it ingests the returned snapshot, carries the tab-change o
 Raw `invoke` is for commands whose result must not replace the live snapshot:
 
 - a non-snapshot return — `export_review`, `get_background_task_log`, `list_available_branches`, the `arena_*` reads the arena store polls itself;
-- the settings panel, which keeps its own `GetConfigHubResponse` state (`get_config_hub`, `apply_config_patch`, the AI provider editor) and bypasses the snapshot contract on purpose;
+- the settings panel, which reads and writes through `settingsResource` (`settingsAdapter.ts`): the old commands with the flag off, the `settings` resource and `er_send` with it on, never the snapshot;
 - `toggle_panel`, which paints the layout locally first.
 
 A raw `invoke` reports its own failure; nothing else will.
