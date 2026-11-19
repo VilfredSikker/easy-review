@@ -67,6 +67,9 @@ function backend() {
   const run: Invoke = async <T,>(command: string, args: Record<string, unknown>): Promise<T> => {
     calls.push({ command, args });
     if (command === "er_fetch") {
+      // After a send the fetch answers a task later, as IPC does, so a write
+      // that returned before it would see the old version.
+      if (version > 3) await new Promise((r) => setTimeout(r, 5));
       const keys = args.keys as { kind: string; project?: string }[];
       return keys.map((key) => {
         if (key.kind === "projects") return { key, version, value: { kind: "projects", projects: wireProjects } };
