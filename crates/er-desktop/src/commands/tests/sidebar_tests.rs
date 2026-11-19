@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use er_engine::tabs_record::{TabDescriptor, TabKind};
-use er_protocol::{Resource, ResourceKey};
+use er_protocol::{Command, ErErrorKind, Resource, ResourceChanged, ResourceKey, ResourceVersion};
 use er_service::AppCommand;
 
 use super::{git_fixture_command, review_flow_test_state, snap_from, ReviewFlowTestDir};
@@ -452,5 +452,207 @@ fn the_sidebar_resources_match_the_snapshot_projects() {
             Some("/src/feature-tree"),
             "the fixture covers worktree paths"
         );
+    });
+}
+
+/// The desktop's git for the project commands: `main` checked out, with
+/// `feature` and `spare` beside it, every branch present.
+fn command_git() -> er_git::FakeGit {
+    er_git::FakeGit::default()
+        .with_show_ref_verify(Ok(true))
+        .with_current_branch_show(Ok("main".into()))
+        .with_current_branch(Ok("main".into()))
+        .with_rev_parse_verify(Ok(Some("0".repeat(40))))
+        .with_list_worktrees(Ok(Vec::new()))
+        .with_for_each_ref(Ok("main\nfeature\nspare\n".into()))
+        .with_branch_merged(Ok(String::new()))
+}
+
+/// The registered projects `a` and `b`, published, with the command git.
+fn command_fixture(dir: &ReviewFlowTestDir) -> AppState {
+    let mut state = review_flow_test_state(dir);
+    state.ports = er_engine::ports::Ports {
+        git: Arc::new(command_git()),
+        github: Arc::new(er_engine::github::FakeGitHub::default()),
+    };
+    let untracked = |id: &str| ProjectRecord {
+        tracked_branches: Vec::new(),
+        ..record(id, &format!("/src/{id}"), None)
+    };
+    save(vec![untracked("a"), untracked("b")]);
+    state.app_owner.refresh_meta(&command_git(), "");
+    state
+}
+
+fn project_ids(state: &AppState) -> Vec<String> {
+    let fetched = resources::fetch(&state.desktop, ResourceKey::Projects).unwrap();
+    let Resource::Projects(projects) = fetched.value else {
+        panic!("{:?}", fetched.value);
+    };
+    projects.projects.into_iter().map(|p| p.id).collect()
+}
+
+/// A project command through `er_send` answers the versions it moved, so
+/// the frontend refetches them before the push.
+#[test]
+fn a_project_command_answers_the_versions_it_moved() {
+    with_storage(|dir| {
+        let state = command_fixture(dir);
+        let ack = resources::send(
+            &state.desktop,
+            Command::ReorderProjects {
+                ordered: vec!["b".into(), "a".into()],
+            },
+        )
+        .unwrap();
+        let (version, _) = state.app_owner.projects();
+        assert_eq!(
+            ack.changed,
+            vec![ResourceChanged {
+                key: ResourceKey::Projects,
+                version: ResourceVersion(version),
+            }]
+        );
+        assert_eq!(project_ids(&state), ["b", "a"]);
+
+        resources::send(
+            &state.desktop,
+            Command::DeleteProject {
+                project: "a".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(project_ids(&state), ["b"]);
+    });
+}
+
+/// `er_send`'s body hands a project command to the sidebar's owner and
+/// leaves the settings actor unstarted.
+#[test]
+fn er_send_routes_a_project_command_to_the_sidebar_owner() {
+    with_storage(|dir| {
+        let state = command_fixture(dir);
+        let applied = resources::send::apply(
+            &state.desktop,
+            Command::ReorderProjects {
+                ordered: vec!["b".into(), "a".into()],
+            },
+            &|_, _| {},
+        )
+        .unwrap();
+        let (version, _) = state.app_owner.projects();
+        assert_eq!(
+            applied.ack.changed,
+            vec![ResourceChanged {
+                key: ResourceKey::Projects,
+                version: ResourceVersion(version),
+            }]
+        );
+        assert!(applied.uninstalled.is_none());
+        assert_eq!(project_ids(&state), ["b", "a"]);
+        assert!(state.desktop.service.settings_if_started().is_none());
+    });
+}
+
+/// Tracking a branch refreshes its project's metadata before the answer,
+/// so the `Ack` names that project's branches and they list the branch.
+#[test]
+fn tracking_a_branch_answers_its_branches() {
+    with_storage(|dir| {
+        let state = command_fixture(dir);
+        let ack = resources::send(
+            &state.desktop,
+            Command::AddTrackedBranch {
+                project: "a".into(),
+                name: "spare".into(),
+            },
+        )
+        .unwrap();
+        let keys: Vec<ResourceKey> = ack.changed.into_iter().map(|c| c.key).collect();
+        assert!(
+            keys.contains(&ResourceKey::Branches {
+                project: "a".into()
+            }),
+            "{keys:?}"
+        );
+        let (_, branches) = state.app_owner.branches("a");
+        let local: Vec<&str> = branches
+            .local_branches
+            .iter()
+            .map(|b| b.name.as_str())
+            .collect();
+        assert_eq!(local, ["main", "spare"]);
+
+        resources::send(
+            &state.desktop,
+            Command::RemoveTrackedBranch {
+                project: "a".into(),
+                name: "spare".into(),
+            },
+        )
+        .unwrap();
+        let (_, branches) = state.app_owner.branches("a");
+        assert_eq!(branches.local_branches.len(), 1);
+    });
+}
+
+/// `available_branches(project)` is computed on read: the local branches
+/// neither checked out nor tracked, at version 0.
+#[test]
+fn the_available_branches_are_computed_on_read() {
+    with_storage(|dir| {
+        let state = command_fixture(dir);
+        resources::send(
+            &state.desktop,
+            Command::AddTrackedBranch {
+                project: "a".into(),
+                name: "feature".into(),
+            },
+        )
+        .unwrap();
+        let key = ResourceKey::AvailableBranches {
+            project: "a".into(),
+        };
+        let fetched = resources::fetch(&state.desktop, key.clone()).unwrap();
+        assert_eq!(fetched.version, ResourceVersion(0));
+        let Resource::AvailableBranches(available) = fetched.value else {
+            panic!("{:?}", fetched.value);
+        };
+        assert_eq!(available.branches, ["spare"]);
+        assert_eq!(
+            resources::version(&state.desktop, key),
+            Ok(ResourceVersion(0))
+        );
+    });
+}
+
+/// A command or read naming a project the record does not hold is not
+/// found; one the backend declines is refused.
+#[test]
+fn a_project_command_on_an_unknown_project_is_not_found() {
+    with_storage(|dir| {
+        let state = command_fixture(dir);
+        let missing = resources::send(
+            &state.desktop,
+            Command::DeleteProject {
+                project: "gone".into(),
+            },
+        );
+        assert_eq!(missing.map_err(|e| e.kind), Err(ErErrorKind::NotFound));
+        let read = resources::fetch(
+            &state.desktop,
+            ResourceKey::AvailableBranches {
+                project: "gone".into(),
+            },
+        );
+        assert_eq!(read.map_err(|e| e.kind), Err(ErErrorKind::NotFound));
+        let checked_out = resources::send(
+            &state.desktop,
+            Command::RemoveTrackedBranch {
+                project: "a".into(),
+                name: "main".into(),
+            },
+        );
+        assert_eq!(checked_out.map_err(|e| e.kind), Err(ErErrorKind::Refused));
     });
 }
