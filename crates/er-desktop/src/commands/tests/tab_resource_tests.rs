@@ -466,14 +466,21 @@ fn no_body_the_tab_arm_calls_reaches_the_app() {
         (routes, "fn close_key("),
         (routes, "fn drop_content("),
     ];
+    let forbidden = [
+        "tauri_app_handle",
+        "AppState",
+        ".app.lock",
+        "er_engine::app",
+    ];
     for (source, signature) in bodies {
         let body = source
             .split_once(signature)
             .and_then(|(_, rest)| rest.split_once("\n}\n"))
             .map(|(body, _)| body)
             .unwrap_or_else(|| panic!("no {signature}"));
-        assert!(body.contains("DesktopState"), "{signature} is a flag-off body");
-        for name in ["tauri_app_handle", "AppState", ".app.lock", "er_engine::app"] {
+        let flag_on = body.contains("DesktopState");
+        assert!(flag_on, "{signature} is a flag-off body");
+        for name in forbidden {
             assert!(!body.contains(name), "{signature} names {name}");
         }
     }
