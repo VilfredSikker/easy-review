@@ -668,3 +668,112 @@ fn a_first_load_landing_after_its_tab_closed_is_refused() -> anyhow::Result<()> 
         Ok(())
     })
 }
+
+/// A drop of a key that never loaded changes no view: it moves no revision,
+/// and a later first load for the key is still refused. A drop of a loaded
+/// key does move it.
+#[test]
+fn a_drop_of_a_key_that_never_loaded_moves_no_version() -> anyhow::Result<()> {
+    with_root(|repo| {
+        let handle = actor_over(git(RAW));
+        let before = handle.view().revision;
+
+        let never = TabKey::next();
+        handle.send_and_wait_with(Command::DropTab { key: never }, WAIT)?;
+
+        assert_eq!(handle.view().revision, before, "the drop moved the view");
+        assert!(load(&handle, never, repo).is_err(), "the closed key loaded");
+        let loaded = TabKey::next();
+        load(&handle, loaded, repo)?;
+        let at = handle.view().revision;
+        handle.send_and_wait_with(Command::DropTab { key: loaded }, WAIT)?;
+        assert!(
+            handle.view().revision > at,
+            "dropping content moved nothing"
+        );
+        Ok(())
+    })
+}
+
+/// A tab closed before its workspace actor started: the drop reached no
+/// actor, so only the app registry's list can tell the late load belongs to
+/// a closed tab.
+#[test]
+fn a_load_for_a_key_the_registry_no_longer_lists_is_refused() -> anyhow::Result<()> {
+    use crate::app_registry::{AppCommand, AppRegistry};
+
+    with_root(|repo| {
+        let github: Arc<dyn er_github::GitHub> = Arc::new(FakeGitHub::default());
+        let git: Arc<dyn er_git::Git> = git(RAW);
+        let ports = Ports { git, github };
+        let registry = Arc::new(AppRegistry::new(ports.clone()));
+        for _ in 0..2 {
+            registry.send(AppCommand::NewTab {
+                tab: working_tab(repo),
+            })?;
+        }
+        let opened = registry.tabs_view();
+        let (closed, kept) = (opened.tabs[0].key, opened.tabs[1].key);
+        registry.send(AppCommand::CloseTab { key: closed })?;
+
+        let deps = WorkspaceDeps::new(ports).with_app_registry(Arc::clone(&registry));
+        assert!(
+            deps.app_registry().is_some(),
+            "the actor has no registry to ask"
+        );
+        let handle = spawn(deps);
+        let late = load(&handle, closed, repo);
+
+        assert!(late.is_err(), "the late load answered {late:?}");
+        assert!(
+            handle.view().tab(closed).is_none(),
+            "the closed tab's content came back"
+        );
+        load(&handle, kept, repo)?;
+        assert!(
+            handle.view().tab(kept).is_some(),
+            "a listed tab did not load"
+        );
+        Ok(())
+    })
+}
+
+/// The workspace remembers a bounded number of closed keys, the newest ones,
+/// however many tabs open and close; a load landing after the newest close
+/// is still refused.
+#[test]
+fn the_closed_keys_stay_bounded_after_ten_thousand_closes() {
+    let mut state = WorkspaceState::new();
+    let mut last = None;
+    for _ in 0..10_000 {
+        let key = TabKey::next();
+        let loaded = ContentPatch::Loaded {
+            key,
+            since: None,
+            loaded: loaded_tab("/repo"),
+        };
+        assert!(
+            state.apply_patch(loaded).is_ok(),
+            "a first load was refused"
+        );
+        assert!(state.apply_patch(ContentPatch::Dropped { key }).is_ok());
+        last = Some(key);
+    }
+    assert!(
+        state.closed_len() <= crate::workspace::CLOSED_KEPT,
+        "{} closed keys kept",
+        state.closed_len()
+    );
+    let Some(key) = last else {
+        panic!("no tab closed");
+    };
+    let late = ContentPatch::Loaded {
+        key,
+        since: None,
+        loaded: loaded_tab("/repo"),
+    };
+    assert!(
+        state.apply_patch(late).is_err(),
+        "the newest closed key loaded again"
+    );
+}

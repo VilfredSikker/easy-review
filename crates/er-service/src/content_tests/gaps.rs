@@ -202,8 +202,13 @@ fn a_pr_section_comes_from_the_open_cache_when_a_prefetch_warmed_it() -> anyhow:
             calls_to(&github, "overview_remote("),
             calls_to(&github, "commits_remote("),
         );
+        // The registry lists the tab, as an open does before its load.
+        registry.send(AppCommand::NewTab { tab: remote_tab() })?;
+        let key = registry
+            .tabs_view()
+            .active
+            .ok_or_else(|| anyhow::anyhow!("the tab did not open"))?;
         let handle = spawn(WorkspaceDeps::new(ports).with_app_registry(registry));
-        let key = TabKey::next();
         load_remote(&handle, key)?;
 
         let pr = content_of(&handle.view(), key)?.pr.clone();
