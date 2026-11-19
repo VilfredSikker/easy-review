@@ -29,18 +29,29 @@ describe("resource source scans", () => {
     const files = readdirSync(srcDir, { recursive: true, encoding: "utf8" }).filter(
       (f) => /\.(ts|svelte)$/.test(f) && !/\.test\.ts$/.test(f) && !f.includes("protocol/generated/"),
     );
-    const holdsWireKeys = (text: string) =>
-      /\bTabKey\b/.test(text) ||
-      /from\s+["'][^"']*\/protocol\//.test(text) ||
-      /\bTABS_KEY\b/.test(text) ||
-      /from\s+["'][^"']*\/resourceStore["']/.test(text) ||
-      /from\s+["'][^"']*\/(tabsAdapter|tabsResource\.svelte)["']/.test(text);
-    const holders = files.filter((f) => holdsWireKeys(read(f)));
+    const importsResourceStore = /from\s+["'][^"']*\/resourceStore["']/;
+    const clauses = [
+      /\bTabKey\b/,
+      /from\s+["'][^"']*\/protocol\//,
+      /\bTABS_KEY\b/,
+      importsResourceStore,
+      /from\s+["'][^"']*\/(tabsAdapter|tabsResource\.svelte)["']/,
+    ];
+    // app.svelte.ts imports the store only to start and stop it (the next test
+    // holds it to that), so for it alone the store import does not count.
+    const clausesFor = (f: string) =>
+      f === APP_STORE ? clauses.filter((c) => c !== importsResourceStore) : clauses;
+    const holders = files.filter((f) => clauses.some((c) => c.test(read(f))));
     expect(holders).toContain(join("lib", "stores", "tabsAdapter.ts"));
     expect(holders).toContain(APP_STORE);
-    // app.svelte.ts persists view prefs; the next test scans it in place of this one.
     expect(
-      holders.filter((f) => f !== APP_STORE && /\b(localStorage|sessionStorage)\b/.test(read(f))),
+      files.filter((f) => {
+        const text = read(f);
+        return (
+          clausesFor(f).some((c) => c.test(text)) &&
+          /\b(localStorage|sessionStorage)\b/.test(text)
+        );
+      }),
     ).toEqual([]);
   });
 
