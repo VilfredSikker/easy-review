@@ -348,8 +348,9 @@ fn the_browser_commands_write_the_registry_active_tab_with_the_app_locked() {
         assert!(written.show_tooltips);
         assert_eq!(browser_of(&state, first), Default::default());
 
-        let fetched = crate::resources::fetch(&state.desktop, ResourceKey::View { tab: wire(active) })
-            .unwrap_or_else(|e| panic!("view fetch: {e:?}"));
+        let fetched =
+            crate::resources::fetch(&state.desktop, ResourceKey::View { tab: wire(active) })
+                .unwrap_or_else(|e| panic!("view fetch: {e:?}"));
         assert_eq!(
             ack.changed,
             vec![ResourceChanged {
@@ -389,7 +390,11 @@ fn the_browser_commands_write_the_registry_active_tab_with_the_app_locked() {
         let steps = webviews.steps.lock().map(|s| s.clone()).unwrap_or_default();
         assert_eq!(
             steps,
-            vec![("show", active, 1), ("show", active, 1), ("sync", active, 1)]
+            vec![
+                ("show", active, 1),
+                ("show", active, 1),
+                ("sync", active, 1)
+            ]
         );
     });
 }
@@ -434,7 +439,10 @@ fn a_close_prunes_the_closed_tabs_view_with_the_app_locked() {
             true
         });
 
-        assert!(pruned, "the closed tab's browser state stayed while the App was locked");
+        assert!(
+            pruned,
+            "the closed tab's browser state stayed while the App was locked"
+        );
         assert_eq!(browser_of(&state, first).url, "http://localhost:5173/");
     });
 }

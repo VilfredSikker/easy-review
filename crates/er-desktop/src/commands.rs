@@ -7173,7 +7173,8 @@ pub async fn open_remote_pr(
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
-        service_open_remote_pr(&state, owner, repo, number, replace).map(|()| AppSnapshot::default())
+        service_open_remote_pr(&state, owner, repo, number, replace)
+            .map(|()| AppSnapshot::default())
     })
     .await;
     #[cfg(not(feature = "v1-service"))]
@@ -10812,7 +10813,11 @@ fn service_select_tab(state: &DesktopState, idx: usize) -> Result<AppSnapshot, S
 }
 
 #[cfg(feature = "v1-service")]
-fn service_reorder_tabs(state: &DesktopState, from: usize, to: usize) -> Result<AppSnapshot, String> {
+fn service_reorder_tabs(
+    state: &DesktopState,
+    from: usize,
+    to: usize,
+) -> Result<AppSnapshot, String> {
     let key = service_tab_key(state, from)?;
     service_tab_command(
         state,
@@ -10922,7 +10927,13 @@ pub async fn select_tab(
             .get(idx)
             .map(er_engine::app::TabState::key)
             .ok_or_else(|| format!("tab index {idx} out of range"))?;
-        crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &state.view, key, idx)?;
+        crate::browser_webview::on_tab_selected(
+            &app_handle,
+            &browser_state,
+            &state.view,
+            key,
+            idx,
+        )?;
         let webview_ms = t_webview.elapsed().as_millis();
         let t_persist = std::time::Instant::now();
         crate::tabs::persist_app_tabs(&app, &state.view);
@@ -11558,7 +11569,7 @@ pub fn update_tab_browser(
     let navigate = navigate.unwrap_or(false);
     #[cfg(feature = "v1-service")]
     return {
-        drop(browser_state);
+        let _ = &browser_state;
         update_tab_browser_routed(&state, &app_handle, update, navigate)
     };
     #[cfg(not(feature = "v1-service"))]
@@ -11629,7 +11640,7 @@ pub fn cycle_tab_browser_layout(
 ) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
     return {
-        drop(browser_state);
+        let _ = &browser_state;
         cycle_tab_browser_layout_routed(&state, &app_handle)
     };
     #[cfg(not(feature = "v1-service"))]
@@ -13369,7 +13380,7 @@ mod tests {
                     "https://github.com/acme/widgets/pull/7".to_string(),
                     None,
                 );
-                let _ = done_tx.send(result.map(|_| ()));
+                let _ = done_tx.send(result);
             });
             let Ok(result) = done_rx.recv_timeout(Duration::from_secs(5)) else {
                 panic!("the service open path blocked on the App lock");

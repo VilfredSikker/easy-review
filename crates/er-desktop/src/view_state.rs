@@ -70,7 +70,9 @@ impl DesktopViewState {
 
     /// Every tab whose browser state was written, with its tick.
     pub fn browser_revisions(&self) -> impl Iterator<Item = (TabKey, u64)> + '_ {
-        self.browser_revisions.iter().map(|(&key, &tick)| (key, tick))
+        self.browser_revisions
+            .iter()
+            .map(|(&key, &tick)| (key, tick))
     }
 
     /// Drop the entries of tabs that are gone. Nav entries go too: on the flag

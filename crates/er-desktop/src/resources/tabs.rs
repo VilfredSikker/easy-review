@@ -207,7 +207,9 @@ pub fn cycle_browser_layout(
     webviews: &dyn TabWebviews,
 ) -> Result<Ack, ErError> {
     let (key, idx) = active_tab(desktop)?;
-    let version = write_browser(desktop, key, |browser| browser.layout = browser.layout.cycle())?;
+    let version = write_browser(desktop, key, |browser| {
+        browser.layout = browser.layout.cycle();
+    })?;
     webviews.show(&desktop.view, key, idx).map_err(refused)?;
     Ok(view_moved(key, version))
 }

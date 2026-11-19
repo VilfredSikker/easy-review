@@ -5,8 +5,8 @@
 //! fails here before the frontend sees a missing field.
 
 use er_protocol::{
-    Ack, Branch, Branches, Command, ConfigFieldValue, ErError, ErErrorKind, ModelUpsert, Notice,
-    BrowserLayout, BrowserView, NoticeLevel, Panel, Panels, Project, Projects, Resource,
+    Ack, Branch, Branches, BrowserLayout, BrowserView, Command, ConfigFieldValue, ErError,
+    ErErrorKind, ModelUpsert, Notice, NoticeLevel, Panel, Panels, Project, Projects, Resource,
     ResourceChanged, ResourceKey, ResourceVersion, TabKey, TabKind, TabRow, TabView, Tabs,
     UninstallOptions, Versioned,
 };

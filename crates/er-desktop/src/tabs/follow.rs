@@ -99,7 +99,12 @@ fn apply(app: &Mutex<App>, view_state: &ViewStateHandle, view: &TabsView, built:
 
 /// Drops the view state of every tab the registry no longer lists.
 pub fn prune(view_state: &ViewStateHandle, registry: &AppRegistry) {
-    let live: Vec<TabKey> = registry.tabs_view().tabs.iter().map(|tab| tab.key).collect();
+    let live: Vec<TabKey> = registry
+        .tabs_view()
+        .tabs
+        .iter()
+        .map(|tab| tab.key)
+        .collect();
     if let Ok(mut view) = view_state.lock() {
         view.retain_tabs(&live);
     }
