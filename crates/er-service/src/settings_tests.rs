@@ -100,6 +100,7 @@ fn the_risk_view_versions_once_per_change() -> anyhow::Result<()> {
                 SettingsCommand::LoadRiskRules {
                     repo_root: "/work/er".to_string(),
                     remote_repo: None,
+                    paths: Vec::new(),
                 },
                 DEADLINE,
             )
@@ -127,6 +128,40 @@ fn the_risk_view_versions_once_per_change() -> anyhow::Result<()> {
             anyhow::bail!("the reload answered with another reply");
         };
         assert_eq!(again, version + 1, "a re-read with no change keeps it");
+        Ok(())
+    })
+}
+
+/// The paths a load resolves are part of the risk view: new paths raise its
+/// version and are resolved in it, the same paths again keep it.
+#[test]
+fn a_risk_load_with_new_paths_raises_the_version() -> anyhow::Result<()> {
+    in_temp_storage(|dir| {
+        let handle = actor(dir);
+        let edit = r#"{"source":"user","pattern":"db/**","tier":"high"}"#;
+        patch(&handle, RISK_RULE_PATCH_KEY, text(edit))?;
+        let load = |paths: &[&str]| -> anyhow::Result<(String, u64)> {
+            match handle.send_and_wait_with(
+                SettingsCommand::LoadRiskRules {
+                    repo_root: "/work/er".to_string(),
+                    remote_repo: None,
+                    paths: paths.iter().map(|p| (*p).to_string()).collect(),
+                },
+                DEADLINE,
+            )? {
+                SettingsReply::RiskRulesLoaded { key, version } => Ok((key, version)),
+                other => anyhow::bail!("the load answered {other:?}"),
+            }
+        };
+        let (key, first) = load(&["src/a.rs"])?;
+        let (_, moved) = load(&["db/schema.sql", "src/a.rs"])?;
+        assert_eq!(moved, first + 1, "new paths, a new version");
+        let view = handle.view();
+        let files = view.risk_files.get(&key).expect("the resolved paths");
+        let paths: Vec<&str> = files.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["db/schema.sql", "src/a.rs"]);
+        let (_, again) = load(&["db/schema.sql", "src/a.rs"])?;
+        assert_eq!(again, moved, "the same paths keep the version");
         Ok(())
     })
 }

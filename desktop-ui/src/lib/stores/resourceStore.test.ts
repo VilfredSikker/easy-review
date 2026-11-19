@@ -153,14 +153,30 @@ describe("ResourceStore", () => {
 
     const next = backend.move([1, 2, 3]);
     backend.ackWith([{ key: TABS, version: next }]);
-    // No wire command exists yet; any command exercises the Ack path.
-    await store.send(undefined as never);
+    await store.send({ kind: "reload_settings" });
     await settle();
 
     expect(heldTabs(store)?.version).toBe(next);
     const value = heldTabs(store)?.value;
     expect(value?.kind === "tabs" ? value.tabs : null).toEqual([1, 2, 3]);
     store.stop();
+  });
+
+  it("resolves a wait for a version once that version is held", async () => {
+    const backend = fakeBackend();
+    const store = new ResourceStore(backend.client, 60_000);
+    store.show(TABS);
+    await settle();
+    const next = backend.move([5]);
+    let done = false;
+    const waited = store.whenAt(TABS, next).then(() => (done = true));
+    await settle();
+    expect(done).toBe(false);
+    store.applyChanges([{ key: TABS, version: next }]);
+    await waited;
+    expect(heldTabs(store)?.version).toBe(next);
+    // A key no one shows has nothing to wait for.
+    await store.whenAt({ kind: "settings" }, 99);
   });
 
   it("drops a key's content when its last holder releases it", async () => {

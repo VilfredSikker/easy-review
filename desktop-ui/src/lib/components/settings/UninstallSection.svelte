@@ -1,7 +1,9 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
+  import { settingsResource } from "$lib/stores/settingsResource.svelte";
+  import type { UninstallOptions } from "$lib/protocol/generated/UninstallOptions";
+  import type { UninstallPreview } from "$lib/protocol/generated/UninstallPreview";
   import SettingsSection from "./SettingsSection.svelte";
   import SettingsRow from "./SettingsRow.svelte";
   import SettingsButton from "./SettingsButton.svelte";
@@ -18,12 +20,7 @@
 
   const { autoPreview = false, onautopreviewed }: Props = $props();
 
-  interface UninstallPreview {
-    targets: { kind: string; path: string; exists: boolean; description: string }[];
-    existingCount: number;
-  }
-
-  const fullUninstallRequest = {
+  const fullUninstallRequest: UninstallOptions = {
     removeConfig: true,
     removeData: true,
     removeCache: true,
@@ -40,7 +37,7 @@
   async function loadPreview() {
     loading = true;
     try {
-      preview = await invoke<UninstallPreview>("preview_uninstall", { request: fullUninstallRequest });
+      preview = await settingsResource.previewUninstall(fullUninstallRequest);
     } catch (e) {
       app.showToast("error", `preview_uninstall: ${e}`);
     } finally {
@@ -52,7 +49,7 @@
     if (typed.trim() !== "uninstall") return;
     busy = true;
     try {
-      await invoke("run_uninstall", { request: fullUninstallRequest });
+      await settingsResource.runUninstall(fullUninstallRequest);
       app.showToast("success", "Easy Review removed — quitting…");
     } catch (e) {
       app.showToast("error", String(e));

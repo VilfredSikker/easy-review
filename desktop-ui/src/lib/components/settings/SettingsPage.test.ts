@@ -9,7 +9,7 @@ const risk = read("RiskRulesSection.svelte");
 
 describe("SettingsPage risk rules", () => {
   it("reads the merged rule table from the risk commands, for the paths it names", () => {
-    expect(page).toContain("getRiskFiles(target, paths)");
+    expect(page).toContain("riskResource.load(target, paths)");
     expect(page).toContain("riskRules = resolved.rules;");
     expect(page).toContain("riskFiles = resolved.files;");
   });

@@ -1,14 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
-  import type {
-    AiProviderInfo,
-    ConfigFieldValue,
-    ConfigHubField,
-    GetConfigHubResponse,
-    RefreshAiModelsResponse,
-    ReviewModelGroups,
-  } from "$lib/types";
+  import { settingsResource } from "$lib/stores/settingsResource.svelte";
+  import type { AiProviderInfo, ConfigFieldValue, ConfigHubField, ReviewModelGroups } from "$lib/types";
   import SettingsSection from "./SettingsSection.svelte";
   import SettingsRow from "./SettingsRow.svelte";
   import SettingsButton from "./SettingsButton.svelte";
@@ -36,8 +30,6 @@
     warnings: Record<string, string | null>;
     onpatch: (key: string, value: ConfigFieldValue) => Promise<void>;
     onreload: () => Promise<void>;
-    onUpdated: (res: GetConfigHubResponse) => void;
-    onProviders: (providers: AiProviderInfo[]) => void;
   }
 
   const {
@@ -49,8 +41,6 @@
     warnings,
     onpatch,
     onreload,
-    onUpdated,
-    onProviders,
   }: Props = $props();
 
   const byKey = $derived(fieldMap(fields));
@@ -105,14 +95,7 @@
     }
     refreshing = true;
     try {
-      const res = await invoke<RefreshAiModelsResponse>("refresh_ai_models", { providerId: provider.id, force: true });
-      onProviders(res.providers);
-      if (res.errors.length > 0) {
-        for (const err of res.errors) app.showToast("error", err);
-      } else {
-        const count = res.providers.find((p) => p.id === provider.id)?.models.length ?? 0;
-        app.showToast("success", `${provider.label}: ${count} models`);
-      }
+      await settingsResource.refreshModels(provider.id, provider.label);
     } catch (e) {
       app.showToast("error", `refresh_ai_models: ${e}`);
     } finally {
@@ -180,7 +163,6 @@
       <AiProviderEditor
         {providers}
         {familyOptions}
-        {onUpdated}
         onError={(msg) => app.showToast("error", msg)}
       />
     </SettingsRow>
@@ -189,7 +171,7 @@
 
 <SettingsSection title="Model groups" keywords={MODEL_GROUP_KEYWORDS}>
   {#snippet aside()}Which models each review stage may use{/snippet}
-  <ReviewModelGroupsEditor {providers} {reviewModels} {onUpdated} onError={(msg) => app.showToast("error", msg)} />
+  <ReviewModelGroupsEditor {providers} {reviewModels} onError={(msg) => app.showToast("error", msg)} />
 </SettingsSection>
 
 {#if agentFields.length > 0}

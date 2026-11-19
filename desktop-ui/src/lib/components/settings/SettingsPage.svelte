@@ -2,15 +2,8 @@
   import { tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
-  import type {
-    AiProviderInfo,
-    AppSnapshot,
-    ConfigFieldValue,
-    ConfigHubField,
-    GetConfigHubResponse,
-    ReviewModelGroups,
-    SettingsTab,
-  } from "$lib/types";
+  import { riskResource, settingsResource } from "$lib/stores/settingsResource.svelte";
+  import type { AppSnapshot, ConfigFieldValue, SettingsTab } from "$lib/types";
   import GeneralSettings from "./GeneralSettings.svelte";
   import AiSettings from "./AiSettings.svelte";
   import ReviewSettings from "./ReviewSettings.svelte";
@@ -26,7 +19,7 @@
     type RiskRuleRow,
     type RiskTier,
   } from "./riskRules";
-  import { changedPaths, getRiskFiles, getRiskRules, riskTarget } from "$lib/riskRequests";
+  import { changedPaths, riskTarget } from "$lib/riskRequests";
 
   interface Props {
     onBack: () => void;
@@ -37,12 +30,13 @@
   let loading = $state(true);
   let activeTab = $state<SettingsTab>("general");
   let query = $state("");
-  let generalFields = $state<ConfigHubField[]>([]);
-  let terminalFields = $state<ConfigHubField[]>([]);
-  let providers = $state<AiProviderInfo[]>([]);
-  let reviewModels = $state<ReviewModelGroups>({ fast: [], standard: [], advanced: [] });
-  let familyOptions = $state<string[]>([]);
-  let activeEffort = $state("Auto");
+  const hub = $derived(settingsResource.read());
+  const generalFields = $derived(hub?.settings.general ?? []);
+  const terminalFields = $derived(hub?.settings.terminal ?? []);
+  const providers = $derived(hub?.providers ?? []);
+  const reviewModels = $derived(hub?.reviewModels ?? { fast: [], standard: [], advanced: [] });
+  const familyOptions = $derived(hub?.familyOptions ?? []);
+  const activeEffort = $derived(hub?.activeEffort ?? "Auto");
   let riskRepo = $state("");
   let riskRules = $state<RiskRuleRow[]>([]);
   let riskDefault = $state<RiskTier>("ai");
@@ -72,18 +66,6 @@
     query.trim() && matchCounts[activeTab] === 0 ? SETTINGS_TABS.filter((t) => matchCounts[t.id] > 0) : [],
   );
 
-  function applySettings(res: GetConfigHubResponse) {
-    generalFields = res.settings.general;
-    terminalFields = res.settings.terminal;
-    providers = res.providers;
-    reviewModels = res.reviewModels;
-    familyOptions = res.familyOptions ?? [];
-    activeEffort = res.activeEffort ?? "Auto";
-    for (const w of res.warnings ?? []) {
-      app.showToast("info", w);
-    }
-  }
-
   // The rule table belongs to the active tab's repo and counts its changed
   // files. Read untracked: the page loads it on open and after a rule edit,
   // not on every snapshot.
@@ -99,9 +81,9 @@
       return [];
     }
     try {
-      const [view, resolved] = await Promise.all([getRiskRules(target), getRiskFiles(target, paths)]);
-      riskRepo = view.repo;
-      riskDefault = view.default;
+      const resolved = await riskResource.load(target, paths);
+      riskRepo = resolved.repo;
+      riskDefault = resolved.default;
       riskRules = resolved.rules;
       riskFiles = resolved.files;
       return riskRules;
@@ -116,8 +98,7 @@
   // every pick in the AI tab would scroll the page away from it.
   async function reload() {
     try {
-      const [hub] = await Promise.all([invoke<GetConfigHubResponse>("get_config_hub", {}), loadRisk()]);
-      applySettings(hub);
+      await Promise.all([settingsResource.open(), loadRisk()]);
     } catch (e) {
       app.showToast("error", `get_config_hub: ${e}`);
     } finally {
@@ -136,15 +117,14 @@
     }
   }
 
-  async function send(key: string, value: ConfigFieldValue): Promise<GetConfigHubResponse | null> {
+  async function send(key: string, value: ConfigFieldValue): Promise<boolean> {
     validateText(key, value);
     try {
-      const res = await invoke<GetConfigHubResponse>("apply_config_patch", { patch: { key, value } });
-      applySettings(res);
-      return res;
+      await settingsResource.patch(key, value);
+      return true;
     } catch (e) {
       app.showToast("error", `apply_config_patch: ${e}`);
-      return null;
+      return false;
     }
   }
 
@@ -153,8 +133,7 @@
   }
 
   async function editRiskRule(edit: string): Promise<RiskRuleRow[] | null> {
-    const res = await send(RISK_RULE_PATCH_KEY, edit);
-    if (!res) return null;
+    if (!(await send(RISK_RULE_PATCH_KEY, edit))) return null;
     return loadRisk();
   }
 
@@ -324,8 +303,6 @@
             warnings={textWarnings}
             onpatch={patch}
             onreload={reload}
-            onUpdated={applySettings}
-            onProviders={(next) => (providers = next)}
           />
         {:else if activeTab === "review"}
           <ReviewSettings

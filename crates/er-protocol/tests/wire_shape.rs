@@ -5,8 +5,9 @@
 //! fails here before the frontend sees a missing field.
 
 use er_protocol::{
-    Ack, Branch, Branches, ErError, ErErrorKind, Project, Projects, Resource, ResourceChanged,
-    ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
+    Ack, Branch, Branches, Command, ConfigFieldValue, ErError, ErErrorKind, ModelUpsert, Notice,
+    NoticeLevel, Project, Projects, Resource, ResourceChanged, ResourceKey, ResourceVersion,
+    TabKey, Tabs, UninstallOptions, Versioned,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -93,6 +94,89 @@ fn the_tabs_resource_is_tagged_by_its_key() -> serde_json::Result<()> {
     )
 }
 
+/// The settings commands carry the field names the Settings page already
+/// sends to the old commands, so its calls move over unchanged.
+#[test]
+fn a_settings_command_is_tagged_and_camel_cased() -> serde_json::Result<()> {
+    assert_wire(&ResourceKey::Settings, r#"{"kind":"settings"}"#)?;
+    assert_wire(&Command::ReloadSettings, r#"{"kind":"reload_settings"}"#)?;
+    assert_wire(
+        &Command::ApplyConfigPatch {
+            key: "display.theme".into(),
+            value: ConfigFieldValue::String("paper".into()),
+        },
+        r#"{"kind":"apply_config_patch","key":"display.theme","value":"paper"}"#,
+    )?;
+    assert_wire(
+        &Command::ApplyConfigPatch {
+            key: "agent.max_concurrent_reviews".into(),
+            value: ConfigFieldValue::Number(3),
+        },
+        r#"{"kind":"apply_config_patch","key":"agent.max_concurrent_reviews","value":3}"#,
+    )?;
+    assert_wire(
+        &Command::UpsertAiModel {
+            provider_id: "codex".into(),
+            model: ModelUpsert {
+                id: "m".into(),
+                original_id: None,
+                label: None,
+                description: None,
+                args: "--model m".into(),
+                effort_levels: vec!["high".into()],
+                cost_per_1k_in: None,
+                cost_per_1k_out: None,
+                avg_latency_ms: None,
+            },
+        },
+        r#"{"kind":"upsert_ai_model","providerId":"codex","model":{"id":"m","originalId":null,"label":null,"description":null,"args":"--model m","effortLevels":["high"],"costPer1kIn":null,"costPer1kOut":null,"avgLatencyMs":null}}"#,
+    )?;
+    assert_wire(
+        &Command::RunUninstall {
+            options: UninstallOptions {
+                remove_config: true,
+                remove_data: true,
+                remove_cache: false,
+                remove_binaries: false,
+                remove_desktop_app: true,
+            },
+        },
+        r#"{"kind":"run_uninstall","options":{"removeConfig":true,"removeData":true,"removeCache":false,"removeBinaries":false,"removeDesktopApp":true}}"#,
+    )
+}
+
+/// A risk key names the repo by its rules key, and a load carries the
+/// target and the paths the page shows.
+#[test]
+fn a_risk_key_and_load_carry_the_repo() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::Risk {
+            key: "github.com/acme/widgets".into(),
+        },
+        r#"{"kind":"risk","key":"github.com/acme/widgets"}"#,
+    )?;
+    assert_wire(
+        &Command::LoadRisk {
+            repo_root: "/work/widgets".into(),
+            remote_repo: None,
+            paths: vec!["src/a.rs".into()],
+        },
+        r#"{"kind":"load_risk","repoRoot":"/work/widgets","remoteRepo":null,"paths":["src/a.rs"]}"#,
+    )
+}
+
+#[test]
+fn a_notice_carries_its_sequence_level_and_text() -> serde_json::Result<()> {
+    assert_wire(
+        &Notice {
+            seq: 4,
+            level: NoticeLevel::Info,
+            message: "Include {prompt} in args".into(),
+        },
+        r#"{"seq":4,"level":"info","message":"Include {prompt} in args"}"#,
+    )
+}
+
 /// JSON over IPC delivers numbers, so a 64-bit key or version must not be
 /// typed `bigint` in TypeScript, which ts-rs does for `u64` by default.
 #[test]
@@ -100,6 +184,8 @@ fn wire_integers_are_typescript_numbers() {
     let cfg = Config::new();
     assert_eq!(TabKey::inline(&cfg), "number");
     assert_eq!(ResourceVersion::inline(&cfg), "number");
+    assert_eq!(ConfigFieldValue::inline(&cfg), "boolean | string | number");
+    assert!(Notice::inline(&cfg).contains("seq: number"));
     assert!(
         Branch::decl(&cfg).contains("prNumber: number | null"),
         "{}",
