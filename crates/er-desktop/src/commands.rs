@@ -10793,11 +10793,32 @@ fn service_tab_command(
 #[cfg(feature = "v1-service")]
 pub(crate) fn service_new_tab(state: &DesktopState) -> Result<AppSnapshot, String> {
     let view = state.service.app_registry().tabs_view();
-    let Some(root) = view.active_entry().or(view.tabs.first()) else {
-        return Err("Failed to open new tab: no open tab names a repo".to_string());
-    };
-    let tab = content_routes::working_tab(root.descriptor.repo_root.clone());
+    let root = new_tab_root(&view, project_root_for_remote)
+        .ok_or_else(|| "Failed to open new tab: no open tab names a repo".to_string())?;
+    let tab = content_routes::working_tab(root);
     service_tab_command(state, er_service::AppCommand::NewTab { tab })
+}
+
+/// The root a new Working tab opens on: the active tab's. A remote PR has no
+/// local root, so it takes the root of the project that tracks its repo, and
+/// failing that the first open tab that has one.
+#[cfg(feature = "v1-service")]
+fn new_tab_root(
+    view: &er_service::TabsView,
+    project_root: impl Fn(&str) -> String,
+) -> Option<String> {
+    use er_engine::tabs_record::TabKind;
+
+    let local = |tab: &crate::tabs::TabDescriptor| {
+        (tab.kind != TabKind::RemotePr && !tab.repo_root.is_empty()).then(|| tab.repo_root.clone())
+    };
+    let active = &view.active_entry().or(view.tabs.first())?.descriptor;
+    local(active)
+        .or_else(|| {
+            let (owner, repo) = active.pr_owner.as_ref().zip(active.pr_repo.as_ref())?;
+            Some(project_root(&format!("{owner}/{repo}"))).filter(|root| !root.is_empty())
+        })
+        .or_else(|| view.tabs.iter().find_map(|tab| local(&tab.descriptor)))
 }
 
 /// Closing a tab also drops its content on the actor that loaded it.
