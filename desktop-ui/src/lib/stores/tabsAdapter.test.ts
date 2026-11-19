@@ -125,6 +125,52 @@ describe("tabsFromResource", () => {
     expect(tabsFromResource(wire, []).tabs[0]?.label).toBe("a");
   });
 
+  it("matches a remote PR on its remote and number, since its descriptor has no repo root", () => {
+    const wire = {
+      tabs: [
+        wireRow(11, "a"),
+        wireRow(12, "gadgets#9", { kind: "remote_pr", repo_root: "", branch: null, pr_number: 9, remote: "acme/gadgets" }),
+      ],
+      active: 11,
+    };
+    const remotePr = {
+      ...row(1, "gadgets#9", false),
+      kind: "remote_pr" as const,
+      repo_root: "/Users/x/proj",
+      pr_number: 9,
+      remote: "acme/gadgets",
+      stale: true,
+      change_token: "t1",
+    };
+    const pick = (rows: TabSummary[]) =>
+      tabsFromResource(wire, rows).tabs.map((t) => [t.label, t.stale, t.change_token]);
+    expect(pick([row(0, "a", true), remotePr])).toEqual([
+      ["a", false, "a"],
+      ["gadgets#9", true, "t1"],
+    ]);
+    // Same length, other tabs: another PR number, and a branch in another repo.
+    expect(pick([{ ...row(0, "a", true), repo_root: "/r/other" }, { ...remotePr, pr_number: 10 }])).toEqual([
+      ["a", false, ""],
+      ["gadgets#9", false, ""],
+    ]);
+  });
+
+  it("labels a local PR whose row has no branch with the snapshot's head branch", () => {
+    const wire = {
+      tabs: [
+        wireRow(11, "proj#7", { kind: "local_pr", repo_root: "/r/proj", branch: null, pr_number: 7 }),
+        wireRow(12, "b"),
+      ],
+      active: 11,
+    };
+    const rows = [
+      { ...row(0, "feature-x", true), kind: "local_branch" as const, repo_root: "/r/proj", branch: "feature-x", pr_number: 7 },
+      { ...row(1, "b", false), kind: "local_branch" as const, label: "older-name" },
+    ];
+    expect(tabsFromResource(wire, rows).tabs.map((t) => t.label)).toEqual(["feature-x", "b"]);
+    expect(tabsFromResource(wire, rows.slice(0, 1)).tabs[0]?.label).toBe("proj#7");
+  });
+
   it("takes the first tab as active when the resource names none", () => {
     expect(tabsFromResource({ ...wireTabs, active: null }, snapshot.tabs).active).toBe(0);
   });
