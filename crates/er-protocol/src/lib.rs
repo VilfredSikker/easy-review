@@ -19,7 +19,7 @@ mod session;
 mod settings;
 mod sidebar;
 
-pub use command::{Ack, Command};
+pub use command::{Ack, Command, ProjectReviewSettingsPatch};
 pub use error::{ErError, ErErrorKind};
 pub use notice::{Notice, NoticeLevel};
 pub use resource::{
@@ -32,4 +32,4 @@ pub use settings::{
     ModelUpsert, ProviderUpsert, ReviewModelGroups, ReviewModelRef, Settings, SettingsRows,
     UninstallOptions, UninstallPreview, UninstallTarget,
 };
-pub use sidebar::{Branch, Branches, Project, Projects};
+pub use sidebar::{AvailableBranches, Branch, Branches, Project, Projects};

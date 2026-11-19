@@ -1,11 +1,12 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { groupInboxThreads, isThreadUnread } from "$lib/inboxThreads";
+  import { projectsResource } from "$lib/stores/projectsResource.svelte";
 
   // Counted per PR, like the Inbox page's rows, so the badge matches what the
   // reader finds when they click through.
   const unreadPrs = $derived(
-    groupInboxThreads(app.snapshot?.inbox_items ?? [], app.snapshot?.projects ?? []).filter(isThreadUnread)
+    groupInboxThreads(app.snapshot?.inbox_items ?? [], projectsResource.projects).filter(isThreadUnread)
       .length,
   );
   const on = $derived(app.mainView === "inbox");
