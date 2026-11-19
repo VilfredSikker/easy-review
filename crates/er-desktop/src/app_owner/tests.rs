@@ -292,3 +292,18 @@ fn the_owner_never_names_the_app() {
         assert!(!text.contains(name), "app_owner.rs names {name}");
     }
 }
+
+/// On the flag the App holds only its startup tab, so the registry's tabs register projects.
+#[test]
+fn main_registers_projects_from_the_registry_on_the_flag_path() {
+    let main = production_source("src/main.rs");
+    let gate = "(not(feature = \"v1-service\"))]\n    {\n        projects::sync_projects";
+    let block = &main[main.find(gate).expect("the tab sync is gated off the flag")..];
+    let block = &block[..block.find("\n    }\n").unwrap()];
+    for call in ["sync_projects_from_tabs", "auto_register("] {
+        let once = main.matches(call).count() == 1;
+        assert!(once && block.contains(call), "{call}");
+    }
+    assert!(main.contains("startup::register_open_projects(&state)"));
+    assert!(main.contains("startup::meta_refresh_interval(&meta_state)"));
+}
