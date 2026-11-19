@@ -26,7 +26,7 @@ use er_engine::config::{
     adopt_config_from, apply_config_field, config_hub_view, config_pair_load_failed, hub_edits,
     normalize_effort, overlay_discovered_models, risk_rules_view, save_config_pair_to, AiSelection,
     ConfigFieldValue, ConfigHubView, ErConfig, ModelUpsert, ProviderUpsert, ReviewModelGroups,
-    RiskRuleTable, RiskRulesView,
+    RiskFilesView, RiskRuleTable, RiskRulesView,
 };
 use er_engine::model_discovery::DiscoveredModel;
 use er_engine::uninstall::{UninstallOptions, UninstallPreview, UninstallResult};
@@ -87,12 +87,16 @@ pub enum SettingsCommand {
     RunUninstall {
         options: UninstallOptions,
     },
-    /// Read one repo's committed risk rules and publish its view. The rules
-    /// key is resolved off-actor, since it asks the clone for its remote.
+    /// Read one repo's committed risk rules and publish its view, with
+    /// `paths` resolved against them. The rules key is resolved off-actor,
+    /// since it asks the clone for its remote.
     LoadRiskRules {
         repo_root: String,
         /// `owner/repo`, only for a target with no clone (`storage::rules_key`).
         remote_repo: Option<String>,
+        /// The caller's changed paths. The last load's paths are the ones
+        /// the view resolves, so a read never needs the caller's diff.
+        paths: Vec<String>,
     },
     /// Settings reopened: adopt a config file repaired after a failed load.
     ReloadIfFailed,
@@ -136,6 +140,9 @@ pub struct SettingsView {
     /// Per-repo risk rules, by rules key. Each carries its own version, which
     /// rises only when that repo's rules change.
     pub risk: BTreeMap<String, RiskRulesView>,
+    /// The last loaded paths of each rules key, resolved against its rules.
+    /// It moves with its rules' version.
+    pub risk_files: BTreeMap<String, RiskFilesView>,
     /// The rules key each loaded `(repo_root, remote_repo)` resolved to.
     pub risk_keys: BTreeMap<(String, Option<String>), String>,
     pub uninstall_preview: Option<UninstallPreview>,
@@ -198,6 +205,7 @@ enum Outcome {
         remote_repo: Option<String>,
         key: String,
         artifact: Option<RiskRuleTable>,
+        paths: Vec<String>,
     },
     Reloaded {
         config: Box<ErConfig>,
@@ -264,6 +272,8 @@ pub fn spawn_settings(deps: WorkspaceDeps, config_path: PathBuf) -> SettingsHand
         revision: 0,
         artifacts: BTreeMap::new(),
         risk: BTreeMap::new(),
+        risk_paths: BTreeMap::new(),
+        risk_files: BTreeMap::new(),
         risk_keys: BTreeMap::new(),
         uninstall_preview: None,
         load_error: error.map(|e| e.to_string()),
@@ -372,6 +382,8 @@ struct SettingsState {
     /// The committed risk table per rules key, as last read.
     artifacts: BTreeMap<String, Option<RiskRuleTable>>,
     risk: BTreeMap<String, RiskRulesView>,
+    risk_paths: BTreeMap<String, Vec<String>>,
+    risk_files: BTreeMap<String, RiskFilesView>,
     risk_keys: BTreeMap<(String, Option<String>), String>,
     uninstall_preview: Option<UninstallPreview>,
     load_error: Option<String>,
@@ -387,6 +399,7 @@ impl SettingsState {
             config: Arc::new(self.config.clone()),
             hub: config_hub_view(&self.config),
             risk: self.risk.clone(),
+            risk_files: self.risk_files.clone(),
             risk_keys: self.risk_keys.clone(),
             uninstall_preview: self.uninstall_preview.clone(),
             load_error: self.load_error.clone(),
@@ -395,22 +408,24 @@ impl SettingsState {
     }
 
     /// Rebuilds one repo's risk view from the actor's config; its version
-    /// rises only when the rules it shows changed.
-    fn rebuild_risk(&mut self, key: &str) {
+    /// rises only when the rules it shows, or the paths it resolves, changed.
+    fn rebuild_risk(&mut self, key: &str, paths_moved: bool) {
         let artifact = self.artifacts.get(key).cloned().flatten();
         let mut next = risk_rules_view(&self.config, key, artifact);
         match self.risk.get(key) {
-            Some(current) if current.same_rules(&next) => return,
+            Some(current) if !paths_moved && current.same_rules(&next) => return,
             Some(current) => next.version = current.version + 1,
             None => next.version = 1,
         }
+        let paths = self.risk_paths.get(key).map_or(&[][..], Vec::as_slice);
+        self.risk_files.insert(key.to_string(), next.resolve(paths));
         self.risk.insert(key.to_string(), next);
     }
 
     fn rebuild_all_risk(&mut self) {
         let keys: Vec<String> = self.artifacts.keys().cloned().collect();
         for key in keys {
-            self.rebuild_risk(&key);
+            self.rebuild_risk(&key, false);
         }
     }
 
@@ -615,6 +630,7 @@ fn handle_command(
         SettingsCommand::LoadRiskRules {
             repo_root,
             remote_repo,
+            paths,
         } => {
             let deps = deps.clone();
             return spawn_effect(tx, reply, move || {
@@ -629,6 +645,7 @@ fn handle_command(
                     remote_repo,
                     key,
                     artifact,
+                    paths,
                 })
             });
         }
@@ -801,12 +818,15 @@ fn apply(
             remote_repo,
             key,
             artifact,
+            paths,
         }) => {
             state.artifacts.insert(key.clone(), artifact);
             state
                 .risk_keys
                 .insert((repo_root, remote_repo), key.clone());
-            state.rebuild_risk(&key);
+            let paths_moved = state.risk_paths.get(&key) != Some(&paths);
+            state.risk_paths.insert(key.clone(), paths);
+            state.rebuild_risk(&key, paths_moved);
             state.revision += 1;
             let version = state.risk.get(&key).map_or(0, |view| view.version);
             Ok(SettingsReply::RiskRulesLoaded { key, version })

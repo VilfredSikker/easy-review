@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
-  import type { AiProviderInfo, GetConfigHubResponse, ReviewModelGroups, ReviewModelRef } from "$lib/types";
+  import { settingsResource } from "$lib/stores/settingsResource.svelte";
+  import type { AiProviderInfo, ReviewModelGroups, ReviewModelRef } from "$lib/types";
   import SettingsButton from "./SettingsButton.svelte";
   import {
     cloneReviewModelGroups,
@@ -15,11 +15,10 @@
   interface Props {
     providers: AiProviderInfo[];
     reviewModels: ReviewModelGroups;
-    onUpdated: (res: GetConfigHubResponse) => void;
     onError: (msg: string) => void;
   }
 
-  let { providers, reviewModels, onUpdated, onError }: Props = $props();
+  let { providers, reviewModels, onError }: Props = $props();
   let draft = $state<ReviewModelGroups>(untrack(() => cloneReviewModelGroups(reviewModels)));
   let hasLocalEdits = $state(false);
   let saving = $state(false);
@@ -95,11 +94,8 @@
     saving = true;
     saveError = "";
     try {
-      const res = await invoke<GetConfigHubResponse>("set_review_flow_models", {
-        groups: cloneReviewModelGroups(draft),
-      });
+      await settingsResource.setReviewModels(cloneReviewModelGroups(draft));
       hasLocalEdits = false;
-      onUpdated(res);
     } catch (error) {
       saveError = String(error);
       onError(`Could not save Review model groups. ${error}`);

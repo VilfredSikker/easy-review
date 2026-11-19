@@ -29,6 +29,11 @@ one writer that stamps a version when it replaces the content.
   `er_versions(keys) -> ResourceVersion[]`. The backend pushes
   `er://resources` with the keys whose version moved, coalesced. Every failure
   is an `ErError` whose `kind` the frontend branches on.
+- **Notices are their own event.** What the person reads once, such as a
+  settings editor's soft warning or a provider whose model listing failed,
+  goes out on `er://notice` with a sequence number. An `Ack` carries only
+  versions, and a notice has nothing to refetch, so neither a resource nor
+  the `Ack` holds it. The frontend shows each sequence number once.
 - **The frontend refetches by version.** A store holds each shown key at the
   version it fetched and refetches only when a push, an `Ack` or a version
   check names a higher one. The client refetches what an `Ack` names as soon

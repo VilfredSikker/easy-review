@@ -63,7 +63,7 @@ pub fn moved(last: &mut BTreeMap<Watched, u64>, now: BTreeMap<Watched, u64>) -> 
     let moved = now
         .iter()
         .filter(|(key, version)| last.get(key) != Some(version))
-        .map(|(key, version)| (*key, *version))
+        .map(|(key, version)| (key.clone(), *version))
         .collect();
     *last = now;
     moved

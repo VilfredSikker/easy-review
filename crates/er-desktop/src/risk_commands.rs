@@ -20,7 +20,7 @@ pub async fn get_risk_rules(
     state: State<'_, AppState>,
 ) -> Result<RiskRulesView, String> {
     let state = state.inner().clone();
-    run_blocking(move || risk_rules(&state, repo_root, remote_repo)).await
+    run_blocking(move || risk_rules(&state, repo_root, remote_repo, &[])).await
 }
 
 /// The caller's paths resolved against the repo's rules, and the rules with
@@ -42,7 +42,7 @@ pub(crate) fn risk_files(
     remote_repo: Option<String>,
     paths: &[String],
 ) -> Result<RiskFilesView, String> {
-    Ok(risk_rules(state, repo_root, remote_repo)?.resolve(paths))
+    Ok(risk_rules(state, repo_root, remote_repo, paths)?.resolve(paths))
 }
 
 /// Reads the repo's committed rules afresh on every call, so a table an agent
@@ -51,6 +51,7 @@ pub(crate) fn risk_rules(
     state: &AppState,
     repo_root: String,
     remote_repo: Option<String>,
+    paths: &[String],
 ) -> Result<RiskRulesView, String> {
     #[cfg(feature = "v1-service")]
     {
@@ -59,6 +60,7 @@ pub(crate) fn risk_rules(
             .send_and_wait(er_service::SettingsCommand::LoadRiskRules {
                 repo_root: repo_root.clone(),
                 remote_repo: remote_repo.clone(),
+                paths: paths.to_vec(),
             })
             .map_err(|error| error.to_string())?;
         settings
@@ -69,6 +71,7 @@ pub(crate) fn risk_rules(
     }
     #[cfg(not(feature = "v1-service"))]
     {
+        let _ = paths;
         let config = state.app.lock().map_err(|e| e.to_string())?.config.clone();
         let key =
             er_engine::storage::rules_key(&*state.ports.git, &repo_root, remote_repo.as_deref());

@@ -1,17 +1,16 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import type { AiModelInfo, AiProviderInfo, GetConfigHubResponse } from "$lib/types";
+  import { settingsResource } from "$lib/stores/settingsResource.svelte";
+  import type { AiModelInfo, AiProviderInfo } from "$lib/types";
   import { EFFORT_LEVELS, effortLabel } from "$lib/arena/effort";
   import Button from "$lib/components/ui/Button.svelte";
 
   interface Props {
     providers: AiProviderInfo[];
     familyOptions?: string[];
-    onUpdated: (res: GetConfigHubResponse) => void;
     onError: (msg: string) => void;
   }
 
-  let { providers, familyOptions, onUpdated, onError }: Props = $props();
+  let { providers, familyOptions, onError }: Props = $props();
 
   const FALLBACK_FAMILY_OPTIONS = ["claude", "codex", "cursor", "opencode"];
   const familyChoices = $derived(
@@ -67,10 +66,6 @@
     formWarnings = [];
   }
 
-  function handleUpdated(res: GetConfigHubResponse) {
-    formWarnings = res.warnings ?? [];
-    onUpdated(res);
-  }
 
   function toggleEffort(level: string) {
     if (modelDraft.effortLevels.includes(level)) {
@@ -82,20 +77,18 @@
 
   async function saveProvider(originalId: string | null) {
     try {
-      const res = await invoke<GetConfigHubResponse>("upsert_ai_provider", {
-        provider: {
-          id: draftId.trim(),
-          originalId,
-          label: draftLabel.trim() || null,
-          command: draftCommand.trim(),
-          args: draftArgs,
-          family: draftFamily.trim() || null,
-          modelsCommand: draftModelsCommand.trim() || null,
-        },
+      const warnings = await settingsResource.upsertProvider({
+        id: draftId.trim(),
+        originalId,
+        label: draftLabel.trim() || null,
+        command: draftCommand.trim(),
+        args: draftArgs,
+        family: draftFamily.trim() || null,
+        modelsCommand: draftModelsCommand.trim() || null,
       });
       addingProvider = false;
       editingProviderId = null;
-      handleUpdated(res);
+      formWarnings = warnings;
     } catch (e) {
       onError(String(e));
     }
@@ -103,10 +96,8 @@
 
   async function removeProvider(id: string) {
     try {
-      const res = await invoke<GetConfigHubResponse>("delete_ai_provider", {
-        providerId: id,
-      });
-      handleUpdated(res);
+      await settingsResource.deleteProvider(id);
+      formWarnings = [];
     } catch (e) {
       onError(String(e));
     }
@@ -138,21 +129,17 @@
 
   async function saveModel(providerId: string, originalId: string | null) {
     try {
-      const res = await invoke<GetConfigHubResponse>("upsert_ai_model", {
-        providerId,
-        model: {
-          id: modelDraft.id.trim(),
-          originalId,
-          label: modelDraft.label.trim() || null,
-          description: modelDraft.description.trim() || null,
-          args: modelDraft.args,
-          effortLevels: modelDraft.effortLevels,
-          costPer1kIn: null,
-          costPer1kOut: null,
-          avgLatencyMs: null,
-        },
+      formWarnings = await settingsResource.upsertModel(providerId, {
+        id: modelDraft.id.trim(),
+        originalId,
+        label: modelDraft.label.trim() || null,
+        description: modelDraft.description.trim() || null,
+        args: modelDraft.args,
+        effortLevels: modelDraft.effortLevels,
+        costPer1kIn: null,
+        costPer1kOut: null,
+        avgLatencyMs: null,
       });
-      handleUpdated(res);
       editingModelKey = null;
     } catch (e) {
       onError(String(e));
@@ -161,11 +148,8 @@
 
   async function removeModel(providerId: string, modelId: string) {
     try {
-      const res = await invoke<GetConfigHubResponse>("delete_ai_model", {
-        providerId,
-        modelId,
-      });
-      handleUpdated(res);
+      await settingsResource.deleteModel(providerId, modelId);
+      formWarnings = [];
     } catch (e) {
       onError(String(e));
     }

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use er_protocol::{
     Command, ConfigFieldValue, ConfigHubField, ErErrorKind, NoticeLevel, ProviderUpsert, Resource,
-    ResourceChanged, ResourceKey, ResourceVersion, Settings,
+    ResourceChanged, ResourceKey, ResourceVersion, RiskTier, Settings,
 };
 
 use super::{review_flow_test_state, while_the_app_is_locked, ReviewFlowTestDir};
@@ -45,7 +45,7 @@ fn fetch_settings(state: &AppState) -> (ResourceVersion, Settings) {
         .unwrap_or_else(|e| panic!("settings fetch: {e:?}"));
     match fetched.value {
         Resource::Settings(settings) => (fetched.version, *settings),
-        Resource::Tabs(tabs) => panic!("not a settings resource: {tabs:?}"),
+        other => panic!("not a settings resource: {other:?}"),
     }
 }
 
@@ -188,6 +188,79 @@ fn a_settings_write_reaches_the_wire() {
             "{moved:?}"
         );
         assert_eq!(relay::wire(&moved), ack.changed);
+    });
+}
+
+/// A risk read goes through `er_send` and `er_fetch` without the App lock:
+/// the load names the rules key it resolved, and `risk(key)` answers the
+/// rules with the load's paths counted and resolved. A key no load named is
+/// not found.
+#[test]
+fn a_risk_read_is_a_load_then_a_fetch_without_the_app() {
+    with_storage(|dir| {
+        let state = review_flow_test_state(dir);
+        let rule = r#"{"source":"user","pattern":"db/**","tier":"high"}"#;
+        let ruled = send(
+            &state,
+            Command::ApplyConfigPatch {
+                key: er_engine::config::RISK_RULE_PATCH_KEY.into(),
+                value: ConfigFieldValue::String(rule.into()),
+            },
+        );
+        assert!(ruled.is_ok(), "{ruled:?}");
+        let root = dir.path().join("repo").to_string_lossy().into_owned();
+        let (ack, fetched) = while_the_app_is_locked(&state, "the risk read", move |state| {
+            let ack = send(
+                state,
+                Command::LoadRisk {
+                    repo_root: root,
+                    remote_repo: None,
+                    paths: vec!["db/schema.sql".into(), "src/a.rs".into()],
+                },
+            )
+            .unwrap_or_else(|e| panic!("the load failed: {e:?}"))
+            .ack;
+            let key = ack.created.clone().unwrap_or_default();
+            (
+                ack,
+                resources::fetch(&state.desktop, ResourceKey::Risk { key }),
+            )
+        });
+        let fetched = fetched.unwrap_or_else(|e| panic!("risk fetch: {e:?}"));
+        assert_eq!(
+            ack.changed,
+            vec![ResourceChanged {
+                key: fetched.key.clone(),
+                version: fetched.version,
+            }]
+        );
+        let Resource::Risk(risk) = fetched.value else {
+            panic!("not a risk resource: {:?}", fetched.value);
+        };
+        let tiers: Vec<_> = risk
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.tier))
+            .collect();
+        assert_eq!(
+            tiers,
+            [
+                ("db/schema.sql", RiskTier::High),
+                ("src/a.rs", RiskTier::Ai)
+            ]
+        );
+        assert_eq!(risk.rules.iter().map(|r| r.file_count).sum::<usize>(), 1);
+
+        let unknown = resources::fetch(
+            &state.desktop,
+            ResourceKey::Risk {
+                key: "never-loaded".into(),
+            },
+        );
+        assert_eq!(
+            unknown.map(|_| ()).map_err(|e| e.kind),
+            Err(ErErrorKind::NotFound)
+        );
     });
 }
 

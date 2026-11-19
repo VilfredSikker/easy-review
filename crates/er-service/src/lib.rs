@@ -51,7 +51,7 @@ pub use protocol::{
     SyncSource, TabContext,
 };
 pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
-pub use settings_wire::{settings_command, settings_resource};
+pub use settings_wire::{risk_resource, settings_command, settings_resource};
 pub use workspace::{LiveArenaRun, LiveReviewFlow, WorkspaceTarget, WorkspaceView};
 
 #[cfg(test)]
