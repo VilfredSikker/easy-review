@@ -171,6 +171,22 @@ pub fn settings_command(command: wire::Command) -> Option<SettingsCommand> {
         },
         wire::Command::SetAiEffort { effort } => SettingsCommand::SetDefaultAiEffort { effort },
         wire::Command::CheckAppUpdate | wire::Command::TogglePanel { .. } => return None,
+        // The tab commands and the opens go to the app registry.
+        wire::Command::NewTab
+        | wire::Command::CloseTab { .. }
+        | wire::Command::SelectTab { .. }
+        | wire::Command::ReorderTabs { .. }
+        | wire::Command::OpenPrReview { .. }
+        | wire::Command::OpenRemotePr { .. }
+        | wire::Command::OpenPrUrl { .. }
+        | wire::Command::OpenLocalBranch { .. }
+        | wire::Command::OpenProjectBranch { .. }
+        | wire::Command::OpenWorktree
+        | wire::Command::SetActiveProject { .. }
+        | wire::Command::PrefetchPrOpen { .. }
+        | wire::Command::PrefetchRemotePrOpen { .. }
+        | wire::Command::UpdateTabBrowser { .. }
+        | wire::Command::CycleTabBrowserLayout => return None,
     })
 }
 
