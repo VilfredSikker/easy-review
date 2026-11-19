@@ -34,6 +34,8 @@ function fakeBackend() {
     calls.push({ command, args });
     switch (command) {
       case "er_fetch":
+        // Slower than a microtask, so a write that did not wait reads the old value.
+        await new Promise((r) => setTimeout(r, 5));
         return (args.keys as unknown[]).map((key) => ({
           key,
           version,
