@@ -1102,12 +1102,6 @@ fn main() {
     if let Ok(mut app) = app_arc.lock() {
         arena_commands::attach_arena_notify(&mut app, Arc::clone(&desktop_revision));
     }
-    let last_sent_content_revision: Arc<std::sync::atomic::AtomicU64> =
-        Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
-    let last_sent_chrome_revision: Arc<std::sync::atomic::AtomicU64> =
-        Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
-    let last_sent_reviewed_revision: Arc<std::sync::atomic::AtomicU64> =
-        Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
     #[cfg(feature = "v1-service")]
@@ -1139,11 +1133,10 @@ fn main() {
         er_desktop::arena_service::attach(&app, Arc::clone(&service));
         er_desktop::flow_service::reconcile_on_load(&app, &service);
     }
-    let state = AppState {
+    let desktop = er_desktop::state::DesktopState {
         ports: ports.clone(),
         #[cfg(feature = "v1-service")]
         service: Arc::clone(&service),
-        app: Arc::clone(&app_arc),
         view: Arc::clone(&view_arc),
         pr_cache: Arc::clone(&pr_cache),
         pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
@@ -1162,16 +1155,13 @@ fn main() {
         remote_pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
         remote_pr_open_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         desktop_revision: Arc::clone(&desktop_revision),
-        last_sent_content_revision: Arc::clone(&last_sent_content_revision),
-        last_sent_chrome_revision: Arc::clone(&last_sent_chrome_revision),
-        last_sent_reviewed_revision: Arc::clone(&last_sent_reviewed_revision),
         watch_status: Arc::clone(&watch_status),
         inbox: Arc::clone(&inbox),
         tauri_app_handle: Arc::clone(&tauri_app_handle),
         auto_triage_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
-        sent_files: Arc::new(Mutex::new(Default::default())),
         line_commits_cache: Arc::default(),
     };
+    let state = AppState::new(desktop.clone(), Arc::clone(&app_arc));
 
     match pr_cache::load_persisted_pr_cache() {
         Ok(Some((cached_prs, cached_fetched_at))) => {
@@ -1899,6 +1889,7 @@ fn main() {
                 .build(),
         )
         .manage(state)
+        .manage(desktop)
         .manage(BrowserWebviewState::default())
         // `erp://host/path` proxies `http://host/path`; `erps://host/path`
         // proxies `https://host/path`. HTML responses get the annotation script.

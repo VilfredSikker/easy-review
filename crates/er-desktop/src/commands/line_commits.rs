@@ -7,54 +7,15 @@
 //! resolved range oids, so a rebase that keeps a file's hunks byte-identical
 //! still re-attributes it.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use er_engine::app::{DiffMode, TabState};
 use er_engine::git::{BlameEnd, BlameRequest, FileStatus, GitError, LineAttribution};
 use tauri::State;
 
 use super::AppState;
-
-/// Bounds memory across long sessions; one entry is one file of one range.
-const CACHE_CAP: usize = 256;
-
-pub type LineCommitsCache = Arc<Mutex<LineCommitsLru>>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct CacheKey {
-    root: String,
-    start: Option<String>,
-    end: String,
-    working_tree: bool,
-    path: String,
-    old_path: Option<String>,
-    /// The file's `FileSnapshot.cache_key`.
-    hunks_key: String,
-}
-
-#[derive(Default)]
-pub struct LineCommitsLru {
-    entries: HashMap<CacheKey, LineAttribution>,
-    order: VecDeque<CacheKey>,
-}
-
-impl LineCommitsLru {
-    fn get(&self, key: &CacheKey) -> Option<LineAttribution> {
-        self.entries.get(key).cloned()
-    }
-
-    fn insert(&mut self, key: CacheKey, value: LineAttribution) {
-        if self.entries.insert(key.clone(), value).is_none() {
-            self.order.push_back(key);
-        }
-        while self.order.len() > CACHE_CAP {
-            if let Some(old) = self.order.pop_front() {
-                self.entries.remove(&old);
-            }
-        }
-    }
-}
+use crate::line_commits_cache::CacheKey;
+pub use crate::line_commits_cache::{LineCommitsCache, LineCommitsLru};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LineCommits {
@@ -436,25 +397,5 @@ mod tests {
         let off = line_commits_for(&ports, &app, &cache, "f".into(), "k1".into()).unwrap();
         assert_eq!(off.unavailable.as_deref(), Some(UNCOMMITTED_REASON));
         assert!(off.attribution.commits.is_empty());
-    }
-
-    #[test]
-    fn cache_evicts_oldest_past_the_cap() {
-        let mut lru = LineCommitsLru::default();
-        let key = |i: usize| CacheKey {
-            root: String::new(),
-            start: None,
-            end: String::new(),
-            working_tree: false,
-            path: i.to_string(),
-            old_path: None,
-            hunks_key: String::new(),
-        };
-        for i in 0..=CACHE_CAP {
-            lru.insert(key(i), LineAttribution::default());
-        }
-        assert_eq!(lru.entries.len(), CACHE_CAP);
-        assert!(lru.get(&key(0)).is_none());
-        assert!(lru.get(&key(CACHE_CAP)).is_some());
     }
 }

@@ -18,6 +18,7 @@ pub mod gh_status_cache;
 pub mod github_comment_builders;
 pub mod github_image;
 pub mod inbox;
+pub mod line_commits_cache;
 pub mod main_webview_policy;
 pub mod native_notify;
 pub mod os_launch;
@@ -33,6 +34,7 @@ pub mod settings;
 pub mod snapshot;
 #[cfg(feature = "v1-service")]
 pub mod snapshot_view;
+pub mod state;
 pub mod store_registry;
 pub mod tabs;
 pub mod terminal;

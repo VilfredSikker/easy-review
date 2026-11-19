@@ -11,7 +11,7 @@ use std::io::Read as _;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::commands::{run_blocking, AppState};
+use crate::state::{run_blocking, DesktopState};
 
 /// Larger attachments are screenshots of a whole screen at most; a cap keeps a
 /// hostile body from streaming an unbounded response into memory.
@@ -104,7 +104,7 @@ fn fetch(github: &dyn er_engine::github::GitHub, url: &str) -> Result<String, St
 #[tauri::command]
 pub async fn fetch_github_image(
     url: String,
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, DesktopState>,
 ) -> Result<String, String> {
     let github = Arc::clone(&state.ports.github);
     run_blocking(move || fetch(&*github, &url)).await
