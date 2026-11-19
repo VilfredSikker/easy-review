@@ -995,12 +995,17 @@ fn main() {
     let (deferred_tab_indices, view_state) = restore_app_tabs(&mut app, &ports);
 
     app.announce_legacy_root();
-    // Register every unique repo root / remote referenced by open tabs.
-    projects::sync_projects_from_tabs(&app.tabs);
-    if projects::load().projects.is_empty() {
-        let root = app.tab().repo_root.clone();
-        if !root.is_empty() {
-            let _ = projects::auto_register(&*ports.github, &*ports.git, &root);
+    // Register every unique repo root / remote referenced by open tabs. With
+    // `v1-service` the App holds only its startup tab here, so the
+    // registration waits for the registry (`register_open_projects`).
+    #[cfg(not(feature = "v1-service"))]
+    {
+        projects::sync_projects_from_tabs(&app.tabs);
+        if projects::load().projects.is_empty() {
+            let root = app.tab().repo_root.clone();
+            if !root.is_empty() {
+                let _ = projects::auto_register(&*ports.github, &*ports.git, &root);
+            }
         }
     }
 
@@ -1032,6 +1037,11 @@ fn main() {
             .ok()
             .flatten()
             .unwrap_or_default(),
+    ));
+    let app_owner = Arc::new(er_desktop::app_owner::AppOwner::new(
+        Arc::clone(&meta_cache),
+        Arc::clone(&pr_cache),
+        Arc::clone(&gh_user),
     ));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
@@ -1092,17 +1102,16 @@ fn main() {
                 profile_log::bump_desktop_revision(&desktop_revision, "service_view");
             }
         })
-        .with_resource_wake(resource_wake),
+        .with_resource_wake(resource_wake.clone()),
     );
+    #[cfg(feature = "v1-service")]
+    app_owner.set_wake(resource_wake);
     // The registry issues every tab key on this path: the App restores from
     // its list, then follows each change to it.
     #[cfg(feature = "v1-service")]
     {
         let registry = Arc::clone(service.app_registry());
         tabs::restore(&app_arc, &view_arc, &registry, &ports);
-        if let Ok(app) = app_arc.lock() {
-            projects::sync_projects_from_tabs(&app.tabs);
-        }
         let (app, view, ports) = (Arc::clone(&app_arc), Arc::clone(&view_arc), ports.clone());
         service.follow_tabs(move || tabs::follow(&app, &view, &registry, &ports));
     }
@@ -1121,6 +1130,7 @@ fn main() {
         branch_base_remote_oid: Arc::clone(&branch_base_remote_oid),
         pr_open_cache: Arc::clone(&pr_open_cache),
         meta_cache: Arc::clone(&meta_cache),
+        app_owner: Arc::clone(&app_owner),
         gh_user: Arc::clone(&gh_user),
         terminals: Arc::clone(&terminals),
         pending_ai_replies: Arc::new(Mutex::new(HashMap::new())),
@@ -1141,6 +1151,8 @@ fn main() {
         session: session.clone(),
     };
     let state = AppState::new(desktop.clone(), Arc::clone(&app_arc));
+    #[cfg(feature = "v1-service")]
+    er_desktop::app_owner::startup::register_open_projects(&state);
 
     match pr_cache::load_persisted_pr_cache() {
         Ok(Some((cached_prs, cached_fetched_at))) => {
@@ -1693,9 +1705,9 @@ fn main() {
     // Spawn background meta-cache refresh: keeps per-project git metadata
     // (branches, worktrees, current/base branch) fresh without ever taking
     // the AppState.app mutex.
-    let bg_meta = Arc::clone(&meta_cache);
+    let meta_owner = Arc::clone(&app_owner);
     let meta_desktop_rev = Arc::clone(&desktop_revision);
-    let meta_app = Arc::clone(&app_arc);
+    let meta_state = state.clone();
     let meta_ports = ports.clone();
     std::thread::spawn(move || {
         #[expect(
@@ -1711,27 +1723,23 @@ fn main() {
             // ASAP. Then a short delay before the full sweep covers everyone else.
             let active_id = projects::load().active_id.clone();
             if let Some(id) = active_id.as_deref() {
-                if snapshot::refresh_meta_cache_for_project(&*meta_ports.git, id, &bg_meta) {
+                if meta_owner.refresh_project_meta(&*meta_ports.git, id) {
                     profile_log::bump_desktop_revision(&meta_desktop_rev, "meta_startup_project");
                 }
             }
             // First full pass — slight delay so we don't compete with the
             // active tab's diff refresh for git CPU during the first frame.
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            if snapshot::refresh_meta_cache(&*meta_ports.git, &launch_root, &bg_meta) {
+            if meta_owner.refresh_meta(&*meta_ports.git, &launch_root) {
                 profile_log::bump_desktop_revision(&meta_desktop_rev, "meta_startup_full");
             }
             loop {
                 profile_log::profile_log("bg_loop", &[("loop", "meta".to_string())]);
-                let interval_secs = if meta_app.try_lock().is_ok_and(|g| g.tab().is_remote()) {
-                    120
-                } else {
-                    60
-                };
-                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                let interval = er_desktop::app_owner::startup::meta_refresh_interval(&meta_state);
+                tokio::time::sleep(interval).await;
                 let active_id = projects::load().active_id.clone();
                 if let Some(id) = active_id.as_deref() {
-                    if snapshot::refresh_meta_cache_for_project(&*meta_ports.git, id, &bg_meta) {
+                    if meta_owner.refresh_project_meta(&*meta_ports.git, id) {
                         profile_log::bump_desktop_revision(&meta_desktop_rev, "meta_tick");
                     }
                 }

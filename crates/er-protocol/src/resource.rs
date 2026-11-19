@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{Panels, Risk, Session, Settings};
+use crate::{Branches, Panels, Projects, Risk, Session, Settings};
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
 /// a wire key is resolved by looking it up among the published tabs, never by
@@ -30,6 +30,10 @@ pub struct ResourceVersion(
 pub enum ResourceKey {
     /// The open tabs and the active one.
     Tabs,
+    /// The registered projects.
+    Projects,
+    /// One project's branches, by project id.
+    Branches { project: String },
     /// The Settings page's rows and AI defaults.
     Settings,
     /// One repo's risk rules, by the rules key `load_risk` answered.
@@ -45,6 +49,8 @@ pub enum ResourceKey {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Resource {
     Tabs(Tabs),
+    Projects(Projects),
+    Branches(Branches),
     Settings(Box<Settings>),
     Risk(Risk),
     Session(Box<Session>),

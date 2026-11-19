@@ -6,12 +6,21 @@ use std::collections::BTreeMap;
 use er_engine::TabKey;
 use er_protocol::{ErError, ErErrorKind, Resource, ResourceKey, ResourceVersion, Versioned};
 
+use crate::app_owner::SidebarOwner;
 use crate::state::DesktopState;
 
 /// `key`'s content at the version its owner last published.
 pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resource>, ErError> {
     let (version, value) = match &key {
         ResourceKey::Tabs => tabs(desktop),
+        ResourceKey::Projects => {
+            let (version, projects) = sidebar(desktop).projects();
+            (version, Resource::Projects(projects))
+        }
+        ResourceKey::Branches { project } => {
+            let (version, branches) = sidebar(desktop).branches(project);
+            (version, Resource::Branches(branches))
+        }
         ResourceKey::Settings => settings(desktop),
         ResourceKey::Risk { key } => risk(desktop, key)?,
         ResourceKey::Session => {
@@ -33,12 +42,14 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
 
 /// `key`'s version, read without building its content.
 pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersion, ErError> {
-    let version = match key {
+    let version = match &key {
         ResourceKey::Tabs => desktop.service.app_registry().tabs_view().revision,
+        ResourceKey::Projects => sidebar(desktop).projects().0,
+        ResourceKey::Branches { project } => sidebar(desktop).branches(project).0,
         ResourceKey::Settings => desktop.service.settings().view().revision,
-        ResourceKey::Risk { key } => match desktop.service.settings().view().risk.get(&key) {
+        ResourceKey::Risk { key } => match desktop.service.settings().view().risk.get(key) {
             Some(view) => view.version,
-            None => return Err(risk_not_loaded(&key)),
+            None => return Err(risk_not_loaded(key)),
         },
         ResourceKey::Session => {
             super::session::session_version(desktop, Some(&desktop.service.settings().view()))
@@ -46,6 +57,12 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::Panels => super::session::panels_version(desktop),
     };
     Ok(ResourceVersion(version))
+}
+
+/// The sidebar's owner, read through the trait that outlives its move into
+/// the service.
+fn sidebar(desktop: &DesktopState) -> &dyn SidebarOwner {
+    &*desktop.app_owner
 }
 
 /// The registry's published list. A read never takes the registry's command
@@ -91,6 +108,8 @@ fn risk_not_loaded(key: &str) -> ErError {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Watched {
     Tabs,
+    /// A resource the sidebar's owner publishes, under its wire key.
+    Sidebar(ResourceKey),
     Settings,
     /// One rules key's risk view.
     Risk(String),
@@ -109,6 +128,7 @@ impl Watched {
     pub fn wire(&self) -> Option<ResourceKey> {
         match self {
             Self::Tabs => Some(ResourceKey::Tabs),
+            Self::Sidebar(key) => Some(key.clone()),
             Self::Settings => Some(ResourceKey::Settings),
             Self::Risk(key) => Some(ResourceKey::Risk { key: key.clone() }),
             Self::Session => Some(ResourceKey::Session),
@@ -131,6 +151,12 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
         ),
         (Watched::Panels, super::session::panels_version(desktop)),
     ]);
+    let sidebar = sidebar(desktop).versions();
+    versions.extend(
+        sidebar
+            .into_iter()
+            .map(|(key, v)| (Watched::Sidebar(key), v)),
+    );
     if let Some(view) = settings {
         versions.insert(Watched::Settings, view.revision);
         versions.extend(
