@@ -760,7 +760,7 @@ fn the_closed_keys_stay_bounded_after_ten_thousand_closes() {
         last = Some(key);
     }
     assert!(
-        state.closed_len() <= crate::workspace::CLOSED_KEPT,
+        state.closed_len() <= 256,
         "{} closed keys kept",
         state.closed_len()
     );
