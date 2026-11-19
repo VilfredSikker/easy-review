@@ -399,6 +399,93 @@ fn the_browser_commands_write_the_registry_active_tab_with_the_app_locked() {
     });
 }
 
+/// `cycle_tab_browser_layout` through `er_send` with the App locked moves the
+/// registry's active tab one layout on, shows its webview, and answers its
+/// `view` version.
+#[test]
+fn cycle_tab_browser_layout_through_er_send_moves_the_registry_active_tab() {
+    with_storage(|dir| {
+        let state = state(dir);
+        let (first, active) = two_tabs(&state, dir);
+        let webviews = Arc::new(Webviews::default());
+
+        let sent = Arc::clone(&webviews);
+        let ack = while_the_app_is_locked(&state, "cycle_tab_browser_layout", move |state| {
+            let effects = Effects {
+                notify: &|_, _| {},
+                follow_selection: &|_| {},
+                check_update: || panic!("no update check in this test"),
+                webviews: &*sent,
+                pick_folder: &|| None,
+            };
+            let command = Command::CycleTabBrowserLayout;
+            apply(&state.desktop, command, &effects).map(|applied| applied.ack)
+        });
+        let ack = ack.unwrap_or_else(|e| panic!("cycle_tab_browser_layout: {e:?}"));
+        let layout = browser_of(&state, active).layout;
+        assert_eq!(layout, crate::view_state::BrowserLayout::Split);
+        assert_eq!(browser_of(&state, first), Default::default());
+
+        let fetched =
+            crate::resources::fetch(&state.desktop, ResourceKey::View { tab: wire(active) })
+                .unwrap_or_else(|e| panic!("view fetch: {e:?}"));
+        assert_eq!(
+            ack.changed,
+            vec![ResourceChanged {
+                key: ResourceKey::View { tab: wire(active) },
+                version: fetched.version,
+            }]
+        );
+        let steps = webviews.steps.lock().map(|s| s.clone()).unwrap_or_default();
+        assert_eq!(steps, vec![("show", active, 1)]);
+    });
+}
+
+/// The bodies the tab arm calls take `DesktopState`, which still reaches the
+/// App through `tauri_app_handle`. That handle is `None` in tests, so the
+/// held-mutex tests cannot see a lock taken through it; this scan can. It
+/// reads each named body; the helpers those bodies call go unscanned.
+#[test]
+fn no_body_the_tab_arm_calls_reaches_the_app() {
+    let commands = include_str!("../../commands.rs");
+    let routes = include_str!("../content_routes.rs");
+    let bodies = [
+        (commands, "fn service_open("),
+        (commands, "fn service_open_pr_url("),
+        (commands, "fn service_open_remote_pr("),
+        (commands, "fn service_open_pr_review("),
+        (commands, "fn service_open_folder("),
+        (commands, "fn service_open_project_branch("),
+        (commands, "fn service_set_active_project("),
+        (commands, "fn service_new_tab("),
+        (commands, "fn service_tab_command("),
+        (commands, "pub(crate) fn prefetch_pr_open_impl("),
+        (commands, "pub(crate) fn prefetch_remote_pr_open_impl("),
+        (routes, "fn open("),
+        (routes, "fn app_command("),
+        (routes, "fn close_key("),
+        (routes, "fn drop_content("),
+    ];
+    let forbidden = [
+        "tauri_app_handle",
+        "AppState",
+        ".app.lock",
+        "er_engine::app",
+    ];
+    for (source, signature) in bodies {
+        let body = source
+            .split_once(signature)
+            .and_then(|(_, rest)| rest.split_once("\n}\n"))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("no {signature}"));
+        let flag_on = body.contains("DesktopState");
+        assert!(flag_on, "{signature} is a flag-off body");
+        for name in forbidden {
+            assert!(!body.contains(name), "{signature} names {name}");
+        }
+    }
+}
+
 /// With the App locked, a close's `TabsChanged` drops the closed tab's
 /// browser state over the registry's list, and keeps the other tab's.
 #[test]
