@@ -13,9 +13,11 @@
 mod command;
 mod error;
 mod resource;
+mod sidebar;
 
 pub use command::{Ack, Command};
 pub use error::{ErError, ErErrorKind};
 pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
 };
+pub use sidebar::{Branch, Branches, Project, Projects};

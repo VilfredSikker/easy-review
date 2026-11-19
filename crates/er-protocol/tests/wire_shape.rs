@@ -5,8 +5,8 @@
 //! fails here before the frontend sees a missing field.
 
 use er_protocol::{
-    Ack, ErError, ErErrorKind, Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey,
-    Tabs, Versioned,
+    Ack, Branch, Branches, ErError, ErErrorKind, Project, Projects, Resource, ResourceChanged,
+    ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -100,4 +100,54 @@ fn wire_integers_are_typescript_numbers() {
     let cfg = Config::new();
     assert_eq!(TabKey::inline(&cfg), "number");
     assert_eq!(ResourceVersion::inline(&cfg), "number");
+    assert!(
+        Branch::decl(&cfg).contains("prNumber: number | null"),
+        "{}",
+        Branch::decl(&cfg)
+    );
+}
+
+#[test]
+fn the_projects_resource_carries_each_record_without_its_prs() -> serde_json::Result<()> {
+    assert_wire(&ResourceKey::Projects, r#"{"kind":"projects"}"#)?;
+    assert_wire(
+        &Resource::Projects(Projects {
+            projects: vec![Project {
+                id: "er".into(),
+                name: "easy-review".into(),
+                root_path: "/src/er".into(),
+                remote: Some("acme/er".into()),
+                remote_only: false,
+                auto_triage_max_diff_kb: 512,
+                review_ignore_globs: vec!["*.lock".into()],
+            }],
+        }),
+        r#"{"kind":"projects","projects":[{"id":"er","name":"easy-review","rootPath":"/src/er","remote":"acme/er","remoteOnly":false,"autoTriageMaxDiffKb":512,"reviewIgnoreGlobs":["*.lock"]}]}"#,
+    )
+}
+
+#[test]
+fn the_branches_resource_is_keyed_by_its_project() -> serde_json::Result<()> {
+    let key = ResourceKey::Branches {
+        project: "er".into(),
+    };
+    assert_wire(&key, r#"{"kind":"branches","project":"er"}"#)?;
+    assert_wire(
+        &Versioned {
+            key,
+            version: ResourceVersion(4),
+            value: Resource::Branches(Branches {
+                current_branch: "main".into(),
+                local_branches: vec![Branch {
+                    name: "feature".into(),
+                    upstream: Some("origin/feature".into()),
+                    is_merged: false,
+                    worktree_path: Some("/src/er-feature".into()),
+                    pr_number: Some(12),
+                }],
+                auto_branches: Vec::new(),
+            }),
+        },
+        r#"{"key":{"kind":"branches","project":"er"},"version":4,"value":{"kind":"branches","currentBranch":"main","localBranches":[{"name":"feature","upstream":"origin/feature","isMerged":false,"worktreePath":"/src/er-feature","prNumber":12}],"autoBranches":[]}}"#,
+    )
 }
