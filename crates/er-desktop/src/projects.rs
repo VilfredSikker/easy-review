@@ -217,7 +217,14 @@ pub fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
 /// Where the projects record lives in the store, for mtime watchers.
 use std::sync::Mutex;
 
-static PROJECTS_LOAD_CACHE: Mutex<Option<(std::time::SystemTime, ProjectsFile)>> = Mutex::new(None);
+/// The last record read, under its path and mtime.
+type LoadCache = Option<(
+    Option<std::path::PathBuf>,
+    std::time::SystemTime,
+    ProjectsFile,
+)>;
+
+static PROJECTS_LOAD_CACHE: Mutex<LoadCache> = Mutex::new(None);
 static PROJECTS_CONTENT_GEN: AtomicU64 = AtomicU64::new(0);
 static PROJECTS_IO: Mutex<()> = Mutex::new(());
 
@@ -239,18 +246,21 @@ pub fn content_generation() -> u64 {
 pub fn load() -> ProjectsFile {
     // Skip the store read when mtime hasn't advanced since the last load. The
     // record is hit on every snapshot build; with multiple polls per second
-    // under user input, re-reading it repeatedly is wasted work.
+    // under user input, re-reading it repeatedly is wasted work. The path is
+    // part of the key: a file system with coarse timestamps gives two records
+    // written in one tick the same mtime, and each test has its own root.
+    let path = er_engine::projects_pins::projects_artifact_path();
     let mtime = er_engine::projects_pins::modified();
     if let (Some(mtime), Ok(guard)) = (mtime, PROJECTS_LOAD_CACHE.lock()) {
-        if let Some((cached_mtime, cached_file)) = guard.as_ref() {
-            if *cached_mtime == mtime {
+        if let Some((cached_path, cached_mtime, cached_file)) = guard.as_ref() {
+            if *cached_mtime == mtime && *cached_path == path {
                 return cached_file.clone();
             }
         }
     }
     let parsed = er_engine::projects_pins::load();
     if let (Some(mtime), Ok(mut guard)) = (mtime, PROJECTS_LOAD_CACHE.lock()) {
-        *guard = Some((mtime, parsed.clone()));
+        *guard = Some((path, mtime, parsed.clone()));
     }
     parsed
 }
@@ -396,6 +406,18 @@ impl TabProjectRef {
             remote: tab.remote_repo.clone(),
         }
     }
+
+    /// A saved tab's root, and for a remote PR the remote it names.
+    pub fn from_descriptor(tab: &er_engine::tabs_record::TabDescriptor) -> Self {
+        let remote = match (&tab.pr_owner, &tab.pr_repo) {
+            (Some(owner), Some(repo)) => Some(format!("{owner}/{repo}")),
+            _ => None,
+        };
+        Self {
+            repo_root: tab.repo_root.clone(),
+            remote,
+        }
+    }
 }
 
 /// Register a local repo root in `file` when missing. Returns true if a row was added.
@@ -470,21 +492,28 @@ fn sync_project_refs_in_file(file: &mut ProjectsFile, refs: &[TabProjectRef]) ->
 
 /// Register every unique local repo and remote slug referenced by open tabs.
 pub fn sync_projects_from_tabs(tabs: &[er_engine::app::TabState]) {
-    if tabs.is_empty() {
+    let Some(first) = tabs.first() else {
         return;
-    }
-    use std::collections::HashSet;
+    };
     let refs: Vec<TabProjectRef> = tabs.iter().map(TabProjectRef::from_tab).collect();
-    let git = &*tabs[0].ports.git;
-    let github = &*tabs[0].ports.github;
+    sync_projects_from_refs(&*first.ports.github, &*first.ports.git, &refs);
+}
+
+/// Register every unique local repo and remote slug in `refs`.
+pub fn sync_projects_from_refs(
+    github: &dyn er_engine::github::GitHub,
+    git: &dyn er_engine::git::Git,
+    refs: &[TabProjectRef],
+) {
+    use std::collections::HashSet;
     let mut seen_roots = HashSet::new();
-    for r in &refs {
+    for r in refs {
         if !r.repo_root.is_empty() && seen_roots.insert(r.repo_root.clone()) {
             let _ = auto_register(github, git, &r.repo_root);
         }
     }
     let mut seen_remotes = HashSet::new();
-    for r in &refs {
+    for r in refs {
         if let Some(ref remote) = r.remote {
             if seen_remotes.insert(remote.clone()) {
                 let _ = ensure_remote_project(remote);
@@ -854,6 +883,37 @@ mod tests {
             assert_eq!(project.saved_prs[0].number, 5);
             assert_eq!(project.saved_prs[0].title, "Pinned");
         });
+    }
+
+    /// Two roots whose records carry the same mtime each read their own: the
+    /// load cache keys on the record's path as well as its mtime.
+    #[test]
+    fn records_with_one_mtime_under_two_roots_load_apart() {
+        let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let roots = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+        for (root, id) in roots.iter().zip(["one", "two"]) {
+            er_engine::storage::with_test_storage_root(root.path(), || {
+                let key = er_engine::store_registry::app_key::<ProjectsFile>().unwrap();
+                er_engine::store_registry::store()
+                    .write_durable(
+                        &key,
+                        &ProjectsFile {
+                            projects: vec![local_project(id, None)],
+                            active_id: None,
+                        },
+                    )
+                    .unwrap();
+                let path = er_engine::projects_pins::projects_artifact_path().unwrap();
+                let file = std::fs::File::options().write(true).open(path).unwrap();
+                file.set_modified(stamp).unwrap();
+            });
+        }
+        invalidate_load_cache();
+        for (root, id) in roots.iter().zip(["one", "two"]) {
+            let loaded = er_engine::storage::with_test_storage_root(root.path(), load);
+            let ids: Vec<String> = loaded.projects.into_iter().map(|p| p.id).collect();
+            assert_eq!(ids, [id]);
+        }
     }
 
     #[test]

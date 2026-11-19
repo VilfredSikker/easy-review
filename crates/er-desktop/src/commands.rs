@@ -919,12 +919,12 @@ fn kick_active_gh_status(app: &App, state: &AppState) {
 /// mutation that just happened. The refresh runs on a background thread and
 /// does NOT touch the App mutex.
 fn kick_meta_refresh(state: &AppState, root: String) {
-    let cache = state.meta_cache.clone();
+    let owner = Arc::clone(&state.app_owner);
     let desktop_revision = Arc::clone(&state.desktop_revision);
     let ports = state.ports.clone();
     desktop_revision.fetch_add(1, Ordering::Relaxed);
     std::thread::spawn(move || {
-        crate::snapshot::refresh_meta_cache(&*ports.git, &root, &cache);
+        owner.refresh_meta(&*ports.git, &root);
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     });
 }
@@ -5898,7 +5898,7 @@ fn ask_ai_impl(
     };
     let app_arc = Arc::clone(&state.app);
     let pending_arc = Arc::clone(&state.pending_ai_replies);
-    let meta_cache = state.meta_cache.clone();
+    let app_owner = Arc::clone(&state.app_owner);
     let desktop_revision = Arc::clone(&state.desktop_revision);
     let ports = state.ports.clone();
     let thread_id_for_thread = thread_id.clone();
@@ -5949,7 +5949,7 @@ fn ask_ai_impl(
         if let Ok(mut p) = pending_arc.lock() {
             p.remove(&thread_id_for_thread);
         }
-        crate::snapshot::refresh_meta_cache(&*ports.git, &repo_root_for_thread, &meta_cache);
+        app_owner.refresh_meta(&*ports.git, &repo_root_for_thread);
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     });
 
@@ -6141,7 +6141,7 @@ fn ask_ai_for_finding(
     };
     let app_arc = Arc::clone(&state.app);
     let pending_arc = Arc::clone(&state.pending_ai_replies);
-    let meta_cache = state.meta_cache.clone();
+    let app_owner = Arc::clone(&state.app_owner);
     let desktop_revision = Arc::clone(&state.desktop_revision);
     let ports = state.ports.clone();
     let finding_id_for_thread = finding_id;
@@ -6179,7 +6179,7 @@ fn ask_ai_for_finding(
         if let Ok(mut p) = pending_arc.lock() {
             p.remove(&format!("finding:{finding_id_for_thread}"));
         }
-        crate::snapshot::refresh_meta_cache(&*ports.git, &repo_root_for_thread, &meta_cache);
+        app_owner.refresh_meta(&*ports.git, &repo_root_for_thread);
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     });
 
@@ -12636,6 +12636,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod settings_resource_tests;
     #[cfg(feature = "v1-service")]
+    mod sidebar_tests;
+    #[cfg(feature = "v1-service")]
     mod tab_key_tests;
     #[cfg(feature = "v1-service")]
     mod workspace_key_tests;
@@ -12923,7 +12925,13 @@ mod tests {
         crate::arena_commands::attach_arena_notify(&mut app, Arc::clone(&desktop_revision));
         let app = Arc::new(Mutex::new(app));
         let meta_cache = Arc::new(Mutex::new(HashMap::new()));
+        let pr_cache = Arc::new(Mutex::new(HashMap::new()));
         let gh_user = Arc::new(Mutex::new(None));
+        let app_owner = Arc::new(crate::app_owner::AppOwner::new(
+            Arc::clone(&meta_cache),
+            Arc::clone(&pr_cache),
+            Arc::clone(&gh_user),
+        ));
         let gh_status_cache = Arc::new(Mutex::new(HashMap::new()));
         let loading = Arc::new(Mutex::new(crate::snapshot::LoadingFlags::default()));
         let watch_status = Arc::new(Mutex::new(crate::snapshot::WatchStatusSnapshot::default()));
@@ -12935,10 +12943,11 @@ mod tests {
                 dir.path().join("settings").join("config.toml"),
             )),
             view: Default::default(),
-            pr_cache: Arc::new(Mutex::new(HashMap::new())),
+            pr_cache,
             pr_cache_fetched_at: Arc::new(Mutex::new(HashMap::new())),
             branch_base_remote_oid: Arc::new(Mutex::new(HashMap::new())),
             pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
+            app_owner,
             meta_cache,
             gh_user,
             terminals: Arc::new(Mutex::new(HashMap::new())),

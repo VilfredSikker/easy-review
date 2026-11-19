@@ -37,6 +37,8 @@ pub struct DesktopState {
     pub branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>>,
     pub pr_open_cache: Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     pub meta_cache: MetaCache,
+    /// The sidebar's resources and the metadata cache's one writer.
+    pub app_owner: Arc<crate::app_owner::AppOwner>,
     pub gh_user: GhUser,
     /// Active PTY sessions keyed by frontend session_id (e.g. `tab-<idx>`).
     /// Dropping an entry kills its child shell via `PtySession::drop`.
