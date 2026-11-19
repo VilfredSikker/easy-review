@@ -56,6 +56,8 @@ import {
   saveFlag,
 } from "./viewPrefs";
 import { inboxReturnView } from "../inboxNav";
+import { v1ServiceRequested } from "../v1ServiceFlag";
+import { resources } from "./resourceStore";
 
 export type { CommentVisibility };
 
@@ -647,9 +649,14 @@ class AppStore {
       }
     };
     this.pollTimer = setTimeout(safetyTick, this.pollIntervalMs);
+
+    // The ported stores read resources; the poll above keeps the rest fresh
+    // until every store has moved.
+    if (v1ServiceRequested()) void resources.start();
   }
 
   stopPolling() {
+    resources.stop();
     if (this.pollTimer !== null) {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
