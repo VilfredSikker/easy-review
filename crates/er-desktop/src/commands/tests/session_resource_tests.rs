@@ -2,7 +2,7 @@
 //! `er_send`, the update check, the panel mirror and the App's
 //! notifications as notices.
 
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -458,4 +458,34 @@ fn each_app_notification_is_one_notice() {
     app.notify("Review failed");
     let next = tick::app_notice(app.notification.as_ref(), &sent);
     assert_eq!(next.map(|n| n.level), Some(NoticeLevel::Error));
+}
+
+/// The tick itself sends the App's notification: one tick consumes it, so
+/// the dedupe has nothing left to send, and the next tick sends nothing.
+#[test]
+fn the_tick_sends_the_app_notification_once() {
+    with_storage(|dir| {
+        let state = review_flow_test_state(dir);
+        let set = {
+            let mut app = state.app.lock().unwrap_or_else(|e| e.into_inner());
+            app.notify("Review started");
+            app.notification.as_ref().map_or(0, |n| n.seq)
+        };
+        assert!(set > 0, "the App numbered its notification");
+        let sent = || state.desktop.session.app_notice_seq.load(Ordering::Acquire);
+
+        tick::run(&state.desktop, &state.app);
+
+        let current = {
+            let app = state.app.lock().unwrap_or_else(|e| e.into_inner());
+            let unsent = tick::app_notice(app.notification.as_ref(), &AtomicU64::new(sent()));
+            assert_eq!(unsent, None, "the tick left the notification unsent");
+            app.notification.as_ref().map_or(0, |n| n.seq)
+        };
+        assert!(current >= set, "{current} before {set}");
+        assert_eq!(sent(), current);
+
+        tick::run(&state.desktop, &state.app);
+        assert_eq!(sent(), current, "a second tick sent again");
+    });
 }
