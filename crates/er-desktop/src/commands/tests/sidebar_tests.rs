@@ -248,11 +248,16 @@ fn save(projects: Vec<ProjectRecord>) {
     projects::invalidate_load_cache();
 }
 
+/// `main` checked out, `feature` in its own worktree, `old` merged.
 fn meta_git() -> er_git::FakeGit {
     er_git::FakeGit::default()
         .with_current_branch(Ok("main".into()))
         .with_rev_parse_verify(Ok(Some("0".repeat(40))))
-        .with_list_worktrees(Ok(Vec::new()))
+        .with_list_worktrees(Ok(vec![er_git::Worktree {
+            path: "/src/feature-tree".into(),
+            branch: "feature".into(),
+            head: "1".repeat(40),
+        }]))
         .with_for_each_ref(Ok("main|origin/main\nfeature|origin/feature\nold|\n".into()))
         .with_branch_merged(Ok("old\n".into()))
 }
@@ -439,6 +444,13 @@ fn the_sidebar_resources_match_the_snapshot_projects() {
             numbered,
             vec![vec![7], vec![8]],
             "the fixture covers PR numbers"
+        );
+        let (_, branches) = state.app_owner.branches("active");
+        let feature = branches.local_branches.iter().find(|b| b.name == "feature");
+        assert_eq!(
+            feature.and_then(|b| b.worktree_path.as_deref()),
+            Some("/src/feature-tree"),
+            "the fixture covers worktree paths"
         );
     });
 }

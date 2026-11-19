@@ -885,6 +885,37 @@ mod tests {
         });
     }
 
+    /// Two roots whose records carry the same mtime each read their own: the
+    /// load cache keys on the record's path as well as its mtime.
+    #[test]
+    fn records_with_one_mtime_under_two_roots_load_apart() {
+        let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let roots = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+        for (root, id) in roots.iter().zip(["one", "two"]) {
+            er_engine::storage::with_test_storage_root(root.path(), || {
+                let key = er_engine::store_registry::app_key::<ProjectsFile>().unwrap();
+                er_engine::store_registry::store()
+                    .write_durable(
+                        &key,
+                        &ProjectsFile {
+                            projects: vec![local_project(id, None)],
+                            active_id: None,
+                        },
+                    )
+                    .unwrap();
+                let path = er_engine::projects_pins::projects_artifact_path().unwrap();
+                let file = std::fs::File::options().write(true).open(path).unwrap();
+                file.set_modified(stamp).unwrap();
+            });
+        }
+        invalidate_load_cache();
+        for (root, id) in roots.iter().zip(["one", "two"]) {
+            let loaded = er_engine::storage::with_test_storage_root(root.path(), load);
+            let ids: Vec<String> = loaded.projects.into_iter().map(|p| p.id).collect();
+            assert_eq!(ids, [id]);
+        }
+    }
+
     #[test]
     fn needs_remote_query_skips_when_remote_known() {
         // The hot path: re-opening a PR/branch for an already-registered project
