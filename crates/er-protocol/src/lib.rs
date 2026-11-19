@@ -30,4 +30,6 @@ pub use settings::{
     ReviewModelGroups, ReviewModelRef, Settings, SettingsRows, UninstallOptions, UninstallPreview,
     UninstallTarget,
 };
-pub use sidebar::{AvailableBranches, Branch, Branches, Project, Projects};
+pub use sidebar::{
+    AvailableBranches, AvailablePrs, Branch, Branches, PrRow, Project, ProjectPrs, Projects, Prs,
+};

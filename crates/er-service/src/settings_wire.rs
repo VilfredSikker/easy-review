@@ -138,7 +138,15 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::DeleteProject { .. }
         | wire::Command::AddTrackedBranch { .. }
         | wire::Command::RemoveTrackedBranch { .. }
-        | wire::Command::PatchProjectReviewSettings { .. }) => return Err(Box::new(other)),
+        | wire::Command::PatchProjectReviewSettings { .. }
+        | wire::Command::RefreshPrList
+        | wire::Command::RefreshProjectPrList { .. }
+        | wire::Command::DismissPr { .. }
+        | wire::Command::UndismissPr { .. }
+        | wire::Command::TrackPr { .. }
+        | wire::Command::UntrackPr { .. }
+        | wire::Command::SavePr { .. }
+        | wire::Command::UnsavePr { .. }) => return Err(Box::new(other)),
     })
 }
 

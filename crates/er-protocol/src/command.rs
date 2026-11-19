@@ -83,6 +83,49 @@ pub enum Command {
         project: String,
         patch: ProjectReviewSettingsPatch,
     },
+    /// Fetches every project remote's pull requests in the background; the
+    /// push brings the new `prs` versions. A refresh already running absorbs it.
+    RefreshPrList,
+    /// Fetches one project's remote in the background; a project with no
+    /// remote changes nothing.
+    RefreshProjectPrList {
+        project: String,
+    },
+    /// Hides a pull request from the project's lists.
+    DismissPr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+    UndismissPr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+    /// Tracks a pull request, which also undoes its dismissal.
+    TrackPr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+    UntrackPr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+    /// Saves a pull request at the front of the project's saved list, which
+    /// keeps the newest 50. With no title the cached one is used.
+    SavePr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+        title: Option<String>,
+    },
+    UnsavePr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
 }
 
 /// The review settings a patch changes; a field left empty stays as it is.
