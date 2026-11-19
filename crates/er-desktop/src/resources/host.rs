@@ -12,6 +12,7 @@ use crate::state::DesktopState;
 pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resource>, ErError> {
     let (version, value) = match key {
         ResourceKey::Tabs => tabs(desktop),
+        ResourceKey::Settings => settings(desktop),
     };
     Ok(Versioned {
         key,
@@ -24,6 +25,7 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
 pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersion, ErError> {
     let version = match key {
         ResourceKey::Tabs => desktop.service.app_registry().tabs_view().revision,
+        ResourceKey::Settings => desktop.service.settings().view().revision,
     };
     Ok(ResourceVersion(version))
 }
@@ -36,12 +38,23 @@ fn tabs(desktop: &DesktopState) -> (u64, Resource) {
     (view.revision, Resource::Tabs(tabs))
 }
 
+/// The settings actor's published view. The first read starts the actor,
+/// which loads the config on this thread.
+fn settings(desktop: &DesktopState) -> (u64, Resource) {
+    let view = desktop.service.settings().view();
+    (
+        view.revision,
+        Resource::Settings(Box::new(er_service::settings_resource(&view))),
+    )
+}
+
 /// What the relay compares between publishes: each resource with a wire key,
 /// and each section of a loaded tab, which that tab's resources are built
 /// from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Watched {
     Tabs,
+    Settings,
     Diff(TabKey),
     Reviewed(TabKey),
     Ai(TabKey),
@@ -55,15 +68,20 @@ impl Watched {
     pub fn wire(self) -> Option<ResourceKey> {
         match self {
             Self::Tabs => Some(ResourceKey::Tabs),
+            Self::Settings => Some(ResourceKey::Settings),
             Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Pr(_) | Self::Mode(_) => None,
         }
     }
 }
 
-/// Every watched version as its owner last published it. Starts no actor.
+/// Every watched version as its owner last published it. Starts no actor:
+/// until something reads `settings`, the settings actor is not watched.
 pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
     let tabs = desktop.service.app_registry().tabs_view();
     let mut versions = BTreeMap::from([(Watched::Tabs, tabs.revision)]);
+    if let Some(settings) = desktop.service.settings_if_started() {
+        versions.insert(Watched::Settings, settings.view().revision);
+    }
     for view in desktop.service.published_views() {
         for (&key, content) in &view.tabs {
             versions.extend([

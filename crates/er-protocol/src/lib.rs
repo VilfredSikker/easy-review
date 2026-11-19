@@ -12,10 +12,18 @@
 
 mod command;
 mod error;
+mod notice;
 mod resource;
+mod settings;
 
 pub use command::{Ack, Command};
 pub use error::{ErError, ErErrorKind};
+pub use notice::{Notice, NoticeLevel};
 pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
+};
+pub use settings::{
+    AiModel, AiProvider, ConfigFieldValue, ConfigHubField, ModelUpsert, ProviderUpsert,
+    ReviewModelGroups, ReviewModelRef, Settings, SettingsRows, UninstallOptions, UninstallPreview,
+    UninstallTarget,
 };

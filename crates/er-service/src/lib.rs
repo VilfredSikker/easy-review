@@ -29,6 +29,7 @@ mod pending_review;
 mod pr_posts;
 mod protocol;
 mod settings;
+mod settings_wire;
 mod sidecar_reload;
 mod tab_pr;
 mod workspace;
@@ -50,6 +51,7 @@ pub use protocol::{
     SyncSource, TabContext,
 };
 pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
+pub use settings_wire::{settings_command, settings_resource};
 pub use workspace::{LiveArenaRun, LiveReviewFlow, WorkspaceTarget, WorkspaceView};
 
 #[cfg(test)]
