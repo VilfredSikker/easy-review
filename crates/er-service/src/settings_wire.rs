@@ -5,7 +5,7 @@
 
 use er_engine::config::{
     AiModelInfo, AiProviderInfo, ConfigFieldValue, ConfigHubFieldDto, ModelUpsert, ProviderUpsert,
-    ReviewModelGroups, ReviewModelRef,
+    ReviewModelGroups, ReviewModelRef, RiskRuleDto, RiskRuleSource, RiskTier,
 };
 use er_engine::uninstall::{UninstallOptions, UninstallPreview};
 use er_protocol as wire;
@@ -27,6 +27,35 @@ pub fn settings_resource(view: &SettingsView) -> wire::Settings {
         family_options: hub.family_options.clone(),
         uninstall_preview: view.uninstall_preview.as_ref().map(uninstall_preview),
     }
+}
+
+/// The `risk(key)` resource: the rules key's rules with the paths its last
+/// load named, counted and resolved. None for a key never loaded.
+pub fn risk_resource(view: &SettingsView, key: &str) -> Option<wire::Risk> {
+    let rules = view.risk.get(key)?;
+    let files = view.risk_files.get(key)?;
+    Some(wire::Risk {
+        repo: rules.repo.clone(),
+        rules: files.rules.iter().map(risk_rule).collect(),
+        default: risk_tier(rules.default),
+        files: files
+            .files
+            .iter()
+            .map(|file| wire::RiskFile {
+                path: file.path.clone(),
+                tier: risk_tier(file.resolved.tier),
+                rule: file
+                    .resolved
+                    .rule
+                    .as_ref()
+                    .map(|rule| wire::MatchedRiskRule {
+                        key: rule.key.clone(),
+                        label: rule.label.clone(),
+                        source: risk_source(rule.source),
+                    }),
+            })
+            .collect(),
+    })
 }
 
 /// The settings actor's command for a wire command.
@@ -95,6 +124,42 @@ pub fn settings_command(command: wire::Command) -> SettingsCommand {
         wire::Command::RunUninstall { options } => SettingsCommand::RunUninstall {
             options: uninstall_options(options),
         },
+        wire::Command::LoadRisk {
+            repo_root,
+            remote_repo,
+            paths,
+        } => SettingsCommand::LoadRiskRules {
+            repo_root,
+            remote_repo,
+            paths,
+        },
+    }
+}
+
+fn risk_rule(rule: &RiskRuleDto) -> wire::RiskRule {
+    wire::RiskRule {
+        pattern: rule.pattern.clone(),
+        tier: rule.tier.clone(),
+        readable: rule.readable,
+        label: rule.label.clone(),
+        source: risk_source(rule.source),
+        file_count: rule.file_count,
+    }
+}
+
+const fn risk_tier(tier: RiskTier) -> wire::RiskTier {
+    match tier {
+        RiskTier::High => wire::RiskTier::High,
+        RiskTier::Med => wire::RiskTier::Med,
+        RiskTier::Low => wire::RiskTier::Low,
+        RiskTier::Ai => wire::RiskTier::Ai,
+    }
+}
+
+const fn risk_source(source: RiskRuleSource) -> wire::RiskRuleSource {
+    match source {
+        RiskRuleSource::Project => wire::RiskRuleSource::Project,
+        RiskRuleSource::User => wire::RiskRuleSource::User,
     }
 }
 
