@@ -12612,6 +12612,8 @@ mod tests {
 
     #[cfg(feature = "v1-service")]
     mod content_route_tests;
+    #[cfg(not(feature = "v1-service"))]
+    mod latency_tests;
     #[cfg(feature = "v1-service")]
     mod resource_tests;
     #[cfg(feature = "v1-service")]
