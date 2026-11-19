@@ -26,7 +26,7 @@ const meta = {
   title: "Settings/ReviewModelGroups",
   component: ReviewModelGroupsEditor,
   parameters: { layout: "padded", backgrounds: { default: "rail" } },
-  args: { providers, reviewModels, onUpdated: () => {}, onError: () => {} },
+  args: { providers, reviewModels, onError: () => {} },
 } satisfies Meta<typeof ReviewModelGroupsEditor>;
 
 export default meta;
