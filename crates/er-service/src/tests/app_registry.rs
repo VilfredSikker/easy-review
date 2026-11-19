@@ -540,13 +540,73 @@ fn a_wire_key_the_registry_does_not_list_is_not_found() -> anyhow::Result<()> {
                 "{wire:?} answered {answer:?}"
             );
         }
-        assert_eq!(
-            tabs_resource(&view),
-            er_protocol::Tabs {
-                tabs: vec![wire_tab_key(kept)],
-                active: Some(wire_tab_key(kept)),
-            }
-        );
+        let resource = tabs_resource(&view);
+        let keys: Vec<_> = resource.tabs.iter().map(|row| row.key).collect();
+        assert_eq!(keys, vec![wire_tab_key(kept)]);
+        assert_eq!(resource.active, Some(wire_tab_key(kept)));
+        Ok(())
+    })
+}
+
+/// Each row carries the strip's label and kind and the descriptor fields the
+/// page reads, from the descriptor alone.
+#[test]
+fn the_tabs_resource_carries_labels_kinds_and_descriptor_fields() -> anyhow::Result<()> {
+    use crate::app_registry::{tabs_resource, wire_tab_key};
+    use er_protocol::{TabKind as Wire, TabRow};
+
+    let dir = tempfile::tempdir()?;
+    er_engine::storage::with_test_storage_root(dir.path(), || -> anyhow::Result<()> {
+        let (registry, _) = registry(FakeGitHub::default());
+        let branch = TabDescriptor {
+            kind: TabKind::LocalBranch,
+            branch: Some("feature".into()),
+            ..working("/src/widgets")
+        };
+        let local_pr = TabDescriptor {
+            kind: TabKind::LocalPr,
+            pr_number: Some(7),
+            ..working("/src/widgets")
+        };
+        let remote_pr = TabDescriptor {
+            kind: TabKind::RemotePr,
+            pr_owner: Some("acme".into()),
+            pr_repo: Some("gadgets".into()),
+            pr_number: Some(9),
+            branch: Some("head-branch".into()),
+            ..working("")
+        };
+        for tab in [working("/src/widgets"), branch, local_pr, remote_pr] {
+            registry.send(AppCommand::NewTab { tab })?;
+        }
+        let view = registry.tabs_view();
+
+        let row = |idx: usize, kind, label: &str, root: &str| TabRow {
+            key: wire_tab_key(view.tabs[idx].key),
+            kind,
+            label: label.into(),
+            repo_root: root.into(),
+            branch: None,
+            pr_number: None,
+            remote: None,
+        };
+        let expected = vec![
+            row(0, Wire::Working, "widgets", "/src/widgets"),
+            TabRow {
+                branch: Some("feature".into()),
+                ..row(1, Wire::LocalBranch, "feature", "/src/widgets")
+            },
+            TabRow {
+                pr_number: Some(7),
+                ..row(2, Wire::LocalPr, "widgets#7", "/src/widgets")
+            },
+            TabRow {
+                pr_number: Some(9),
+                remote: Some("acme/gadgets".into()),
+                ..row(3, Wire::RemotePr, "gadgets#9", "")
+            },
+        ];
+        assert_eq!(tabs_resource(&view).tabs, expected);
         Ok(())
     })
 }

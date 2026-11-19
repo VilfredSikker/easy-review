@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{Branches, Panels, Projects, Risk, Session, Settings};
+use crate::{Branches, Panels, Projects, Risk, Session, Settings, TabRow};
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
 /// a wire key is resolved by looking it up among the published tabs, never by
@@ -61,7 +61,7 @@ pub enum Resource {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Tabs {
-    pub tabs: Vec<TabKey>,
+    pub tabs: Vec<TabRow>,
     pub active: Option<TabKey>,
 }
 

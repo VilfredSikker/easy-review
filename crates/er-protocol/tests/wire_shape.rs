@@ -7,7 +7,7 @@
 use er_protocol::{
     Ack, Branch, Branches, Command, ConfigFieldValue, ErError, ErErrorKind, ModelUpsert, Notice,
     NoticeLevel, Panel, Panels, Project, Projects, Resource, ResourceChanged, ResourceKey,
-    ResourceVersion, TabKey, Tabs, UninstallOptions, Versioned,
+    ResourceVersion, TabKey, TabKind, TabRow, Tabs, UninstallOptions, Versioned,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -86,11 +86,19 @@ fn the_tabs_resource_is_tagged_by_its_key() -> serde_json::Result<()> {
             key: ResourceKey::Tabs,
             version: ResourceVersion(3),
             value: Resource::Tabs(Tabs {
-                tabs: vec![TabKey(1), TabKey(2)],
+                tabs: vec![TabRow {
+                    key: TabKey(2),
+                    kind: TabKind::RemotePr,
+                    label: "gadgets#9".into(),
+                    repo_root: String::new(),
+                    branch: None,
+                    pr_number: Some(9),
+                    remote: Some("acme/gadgets".into()),
+                }],
                 active: Some(TabKey(2)),
             }),
         },
-        r#"{"key":{"kind":"tabs"},"version":3,"value":{"kind":"tabs","tabs":[1,2],"active":2}}"#,
+        r#"{"key":{"kind":"tabs"},"version":3,"value":{"kind":"tabs","tabs":[{"key":2,"kind":"remote_pr","label":"gadgets#9","repo_root":"","branch":null,"pr_number":9,"remote":"acme/gadgets"}],"active":2}}"#,
     )
 }
 

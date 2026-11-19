@@ -18,6 +18,7 @@ mod risk;
 mod session;
 mod settings;
 mod sidebar;
+mod tabs;
 
 pub use command::{Ack, Command};
 pub use error::{ErError, ErErrorKind};
@@ -33,3 +34,4 @@ pub use settings::{
     UninstallOptions, UninstallPreview, UninstallTarget,
 };
 pub use sidebar::{Branch, Branches, Project, Projects};
+pub use tabs::{TabKind, TabRow};
