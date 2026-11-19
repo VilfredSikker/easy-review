@@ -149,19 +149,32 @@ pub fn follow(
 /// stubs: on the flag path a select only sends `SelectTab`, and nothing calls
 /// `kick_deferred_tab_refresh` for them, so they show no diff until 2c. With no
 /// saved tab, the App's startup tab joins the registry under the key the
-/// registry gives it.
+/// registry gives it. When no saved tab builds, a Working tab on
+/// `fallback_root` (the launch directory's repo, else the active project's
+/// root) opens first, since the registry keeps its last tab; with no
+/// fallback either, the last broken tab stays.
 pub fn restore(
     app: &Mutex<App>,
     view_state: &ViewStateHandle,
     registry: &Arc<AppRegistry>,
     ports: &Ports,
+    fallback_root: Option<&str>,
 ) {
     let view = registry.tabs_view();
     if view.tabs.is_empty() {
         join_startup_tab(app, view_state, registry);
         return;
     }
-    let (built, failed) = build_missing(&[], &view, ports, view.active);
+    let (mut built, failed) = build_missing(&[], &view, ports, view.active);
+    if built.is_empty() {
+        if let Some(root) = fallback_root.filter(|root| !root.is_empty()) {
+            let tab = crate::commands::content_routes::working_tab(root.to_string());
+            if registry.send(AppCommand::NewTab { tab }).is_ok() {
+                let opened = registry.tabs_view();
+                built = build_missing(&failed, &opened, ports, opened.active).0;
+            }
+        }
+    }
     let view = close_failed(registry, &failed).unwrap_or(view);
     apply(app, view_state, &view, built);
 }

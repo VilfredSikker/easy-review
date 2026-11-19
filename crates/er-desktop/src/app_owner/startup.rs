@@ -22,6 +22,23 @@ pub fn meta_refresh_interval(state: &AppState) -> Duration {
     Duration::from_secs(if remote { 120 } else { 60 })
 }
 
+/// The root the first metadata pass reads on the service path: the
+/// registry's active tab's, read once the restore has run, or `fallback` when
+/// that tab has no local root (a remote PR) or no tab is open.
+#[cfg(feature = "v1-service")]
+pub fn launch_root(registry: &er_service::AppRegistry, fallback: Option<&str>) -> String {
+    use er_engine::tabs_record::TabKind;
+
+    registry
+        .tabs_view()
+        .active_entry()
+        .map(|tab| &tab.descriptor)
+        .filter(|tab| tab.kind != TabKind::RemotePr && !tab.repo_root.is_empty())
+        .map(|tab| tab.repo_root.clone())
+        .or_else(|| fallback.map(str::to_string))
+        .unwrap_or_default()
+}
+
 /// Registers the project of every tab the registry lists, and, while no
 /// project is registered at all, the active tab's repository; then
 /// publishes. It reads the registry's list and never the App: before the
