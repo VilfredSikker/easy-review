@@ -52,6 +52,15 @@ pub enum Command {
     RunUninstall {
         options: UninstallOptions,
     },
+    /// Reads one repo's committed risk rules and resolves `paths` against
+    /// them. The `Ack` names the rules key as `created`, and `risk(key)`
+    /// holds the result. `remote_repo` (`owner/repo`) is for a target with no
+    /// clone.
+    LoadRisk {
+        repo_root: String,
+        remote_repo: Option<String>,
+        paths: Vec<String>,
+    },
 }
 
 /// A command was applied.

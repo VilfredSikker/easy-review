@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::Settings;
+use crate::{Risk, Settings};
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
 /// a wire key is resolved by looking it up among the published tabs, never by
@@ -25,13 +25,15 @@ pub struct ResourceVersion(
 );
 
 /// Names one resource: a piece of published state with one writer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResourceKey {
     /// The open tabs and the active one.
     Tabs,
     /// The Settings page's rows and AI defaults.
     Settings,
+    /// One repo's risk rules, by the rules key `load_risk` answered.
+    Risk { key: String },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -40,6 +42,7 @@ pub enum ResourceKey {
 pub enum Resource {
     Tabs(Tabs),
     Settings(Box<Settings>),
+    Risk(Risk),
 }
 
 /// The open tabs in strip order, and the active one.
@@ -62,7 +65,7 @@ pub struct Versioned<T> {
 }
 
 /// A resource moved to a new version; the frontend refetches the keys it shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceChanged {
     pub key: ResourceKey,

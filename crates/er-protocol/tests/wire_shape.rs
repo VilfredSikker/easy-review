@@ -145,6 +145,26 @@ fn a_settings_command_is_tagged_and_camel_cased() -> serde_json::Result<()> {
     )
 }
 
+/// A risk key names the repo by its rules key, and a load carries the
+/// target and the paths the page shows.
+#[test]
+fn a_risk_key_and_load_carry_the_repo() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::Risk {
+            key: "github.com/acme/widgets".into(),
+        },
+        r#"{"kind":"risk","key":"github.com/acme/widgets"}"#,
+    )?;
+    assert_wire(
+        &Command::LoadRisk {
+            repo_root: "/work/widgets".into(),
+            remote_repo: None,
+            paths: vec!["src/a.rs".into()],
+        },
+        r#"{"kind":"load_risk","repoRoot":"/work/widgets","remoteRepo":null,"paths":["src/a.rs"]}"#,
+    )
+}
+
 #[test]
 fn a_notice_carries_its_sequence_level_and_text() -> serde_json::Result<()> {
     assert_wire(

@@ -14,6 +14,7 @@ mod command;
 mod error;
 mod notice;
 mod resource;
+mod risk;
 mod settings;
 
 pub use command::{Ack, Command};
@@ -22,6 +23,7 @@ pub use notice::{Notice, NoticeLevel};
 pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
 };
+pub use risk::{MatchedRiskRule, Risk, RiskFile, RiskRule, RiskRuleSource, RiskTier};
 pub use settings::{
     AiModel, AiProvider, ConfigFieldValue, ConfigHubField, ModelUpsert, ProviderUpsert,
     ReviewModelGroups, ReviewModelRef, Settings, SettingsRows, UninstallOptions, UninstallPreview,
