@@ -2,7 +2,7 @@
   import { tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
-  import { settingsResource } from "$lib/stores/settingsResource.svelte";
+  import { riskResource, settingsResource } from "$lib/stores/settingsResource.svelte";
   import type { AppSnapshot, ConfigFieldValue, SettingsTab } from "$lib/types";
   import GeneralSettings from "./GeneralSettings.svelte";
   import AiSettings from "./AiSettings.svelte";
@@ -19,7 +19,7 @@
     type RiskRuleRow,
     type RiskTier,
   } from "./riskRules";
-  import { changedPaths, getRiskFiles, getRiskRules, riskTarget } from "$lib/riskRequests";
+  import { changedPaths, riskTarget } from "$lib/riskRequests";
 
   interface Props {
     onBack: () => void;
@@ -81,9 +81,9 @@
       return [];
     }
     try {
-      const [view, resolved] = await Promise.all([getRiskRules(target), getRiskFiles(target, paths)]);
-      riskRepo = view.repo;
-      riskDefault = view.default;
+      const resolved = await riskResource.load(target, paths);
+      riskRepo = resolved.repo;
+      riskDefault = resolved.default;
       riskRules = resolved.rules;
       riskFiles = resolved.files;
       return riskRules;

@@ -22,7 +22,7 @@ const withFindings = { ...richSnapshot, ai: aiWithFindings };
 
 export const Findings: Story = { args: { snapshot: withFindings, tab: "findings" } };
 
-/** Risks reads the rules through `get_risk_files`, which Storybook has no
+/** Risks reads the rules through `riskResource`, which Storybook has no
  *  backend for: the tab says so and shows every file as `ai`, rated by the
  *  review where it has a rating. */
 export const Risks: Story = { args: { snapshot: withFindings, tab: "risks" } };

@@ -32,7 +32,7 @@ interface SettingsAdapterDeps {
 }
 
 /** A failed call's text: the old commands reject with a string, the new ones with an `ErError`. */
-function message(e: unknown): string {
+export function errorText(e: unknown): string {
   if (typeof e === "object" && e !== null && typeof (e as ErError).message === "string") {
     return (e as ErError).message;
   }
@@ -151,7 +151,7 @@ export class SettingsAdapter {
     try {
       return await this.deps.invoke<T>(command, args);
     } catch (e) {
-      throw message(e);
+      throw errorText(e);
     }
   }
 
@@ -177,7 +177,7 @@ export class SettingsAdapter {
     try {
       ack = await this.deps.store.send(command);
     } catch (e) {
-      throw message(e);
+      throw errorText(e);
     }
     const moved = ack.changed.find((c) => c.key.kind === "settings");
     if (moved) await this.deps.store.whenAt(SETTINGS_KEY, moved.version);
