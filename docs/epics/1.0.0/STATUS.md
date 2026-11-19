@@ -9,7 +9,7 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| Coordinator | workflow runs | Phase 5 ([#398](https://github.com/VilfredSikker/easy-review/issues/398)): P50, P51 and P52.1 merged; P52.2 building; the `head_oid` fix on `main` (#623) waits for an approving review | – |
+| Coordinator | workflow runs | Phase 5 ([#398](https://github.com/VilfredSikker/easy-review/issues/398)): P50–P52.2 merged; P53 and P55.1 building; the `head_oid` fix on `main` (#623) waits for an approving review | – |
 | D1–D5, T1, T2 | – | stopped 2026-11-14; the coordinator runs the rest of phase 4 through workflow runs | – |
 
 **Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538. **Phase 4 is complete (2026-11-17):** P38 through P47.2 are merged and #526–#538 are closed. P47.2 was re-sequenced into stacked layers (2a, 2b, a slim 2c); its decisions, the exit checklist and the list of what stays on the App with the flag on are on #538. The phase-5 gate questions (D9 codegen, sidebar resources) are answered. **The phase-5 gate passed on 2026-11-18:** the owner approved the plan, [ADDENDUM-06](./ADDENDUM-06-phase-5.md) (merged as #601), and its issues are #602–#622.
@@ -91,10 +91,10 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P50 | [#602](https://github.com/VilfredSikker/easy-review/issues/602) er-protocol, ts-rs codegen and the drift check | C/P | opus | ✅ | [#624](https://github.com/VilfredSikker/easy-review/pull/624) | merged `9f62bf70e` |
 | P51 | [#603](https://github.com/VilfredSikker/easy-review/issues/603) er::command_shape with a shrinking allow-list | C | opus | ✅ | [#626](https://github.com/VilfredSikker/easy-review/pull/626) | merged `cb62e2e19` |
 | P52.1 | [#604](https://github.com/VilfredSikker/easy-review/issues/604) The resource host, the three commands and the backend tick | D/S/P/U/C | opus | ✅ | [#627](https://github.com/VilfredSikker/easy-review/pull/627), [#628](https://github.com/VilfredSikker/easy-review/pull/628), [#629](https://github.com/VilfredSikker/easy-review/pull/629) | merged `b31ca1e98` |
-| P52.2 | [#605](https://github.com/VilfredSikker/easy-review/issues/605) The frontend resource client, the adapter pattern and the protocol ADR | U/P | opus | 🟡 | | building |
-| P53 | [#606](https://github.com/VilfredSikker/easy-review/issues/606) Settings, session chrome and panels | D/U/P | opus | ⬜ | | |
+| P52.2 | [#605](https://github.com/VilfredSikker/easy-review/issues/605) The frontend resource client, the adapter pattern and the protocol ADR | U/P | opus | ✅ | [#631](https://github.com/VilfredSikker/easy-review/pull/631) | merged `5c22d5fe6` |
+| P53 | [#606](https://github.com/VilfredSikker/easy-review/issues/606) Settings, session chrome and panels | D/U/P | opus | 🟡 | | building |
 | P54 | [#607](https://github.com/VilfredSikker/easy-review/issues/607) Tabs and the tab lifecycle | S/D/U/P | opus | ⬜ | | |
-| P55.1 | [#608](https://github.com/VilfredSikker/easy-review/issues/608) The sidebar owner, projects and branches(project) | DS/US/P/D | opus | ⬜ | | |
+| P55.1 | [#608](https://github.com/VilfredSikker/easy-review/issues/608) The sidebar owner, projects and branches(project) | DS/US/P/D | opus | 🟡 | | building |
 | P55.2 | [#609](https://github.com/VilfredSikker/easy-review/issues/609) prs(remote) keyed on content, head_oid included | DS/US/U/P/D | opus | ⬜ | | |
 | P55.3 | [#610](https://github.com/VilfredSikker/easy-review/issues/610) inbox and the inbox optimistic ops | DS/US/U/P/D | opus | ⬜ | | |
 | P56.1 | [#611](https://github.com/VilfredSikker/easy-review/issues/611) diff(tab), loading on activation, the warmer and the watcher | S/D/U/P/C | opus | ⬜ | | |
