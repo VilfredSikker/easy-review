@@ -345,12 +345,15 @@ sidecars on disk must match.
 - **Done when:** `ui::draw` takes a `Screen`: a read model of the active
   tab's files, AI state, reviewed marks, PR data, history and tour, the tab's
   view fields, and the app chrome (tabs, status line, theme, update notice,
-  config error); the AI and reviewed part of `Screen` has two variants behind
-  the render seam: the flag-off variant borrows the App's types and renders
-  them exactly as today, and the flag-on variant (filled from P65 on) holds
-  the builders' er-protocol values beside the section data (decision 2);
-  each renderer that reads that part matches on the variant, and P76 deletes
-  the flag-off variant; one function builds the flag-off `Screen` from the
+  config error); `Screen` has two variants behind the render seam: the flag-off
+  variant borrows the App's types and renders them exactly as today, and the
+  flag-on variant holds section data only (files, hunks, reviewed marks, the
+  PR overview), which P65 fills; P63 adds no builder-backed field, since no
+  builder exists yet: P70, P67 and P72 each add theirs when they port their
+  area (decision 2), and until then the flag-on TUI shows the unported-area
+  message for the AI panels and the reviewed count; each renderer that reads
+  the AI and reviewed part matches on the variant, and P76 deletes the
+  flag-off variant; one function builds the flag-off `Screen` from the
   App; no module under
   `ui/` names `App` or `TabState`; the view types the renderers read
   (overlays, hubs, input mode, confirm actions, split side, the config edit
@@ -431,8 +434,10 @@ sidecars on disk must match.
     until P71) reports that on the status line;
   - the loop holds a `TuiView`: per tab key the selection, cursor, scroll,
     panel, layer toggles, Gate, filter, layout widths and text areas, and app
-    wide the input mode and the overlay; each frame fills P63's `Screen` from
-    the active tab's published content and the `TuiView`;
+    wide the input mode and the overlay; each frame fills the section-data part of
+    P63's flag-on `Screen` variant from the active tab's published content
+    and the `TuiView`, and calls no builder; the AI panels and the reviewed
+    count show the unported-area message until P70, P67 and P72;
   - file, hunk and line navigation, scrolling and the jump to the next
     unreviewed file run on `TuiView` through `er_engine::navigation`, the
     functions A10's fixture holds to desktop-ui's copy;
@@ -495,7 +500,7 @@ sidecars on disk must match.
 ### P67 Questions, notes, threads and the composer
 
 - Branch: `epic/p67-tui-threads`. Lanes: T. Model: `opus`. Depends on: P65,
-  P58.1 (the annotations builder).
+  P58.1 (the annotations builder), P70 (er-tui's er-protocol dependency).
 - **Goal:** the TUI's own annotations are written by the actor.
 - **Done when:** the composer, reply, edit, delete, resolve and promote-to-note
   keys send `AddQuestion`, `AddNote`, `ReplyToThread`, `UpdateThreadMessage`,
@@ -504,8 +509,9 @@ sidecars on disk must match.
   write carries the `TabContext` of the tab it was composed on; the composer
   text lives in `TuiView` and stays until the reply, so a refused write keeps
   it; each create carries a `client_id` (ADR 0017); the thread lists, their
-  order and their counts render from P58.1's annotations builder: the
-  flag-on `Screen` variant's thread field holds its output (decision 2);
+  order and their counts render from P58.1's annotations builder, called
+  when the AI section's revision moves: this entry adds the thread field to
+  the flag-on `Screen` variant (decision 2);
   the layer toggles, hide resolved and the Gate are `TuiView` state.
 - **Planted breaks:** a composer that closes before the reply loses its text
   on a refused write and fails; a create with no `client_id` gets a fresh id
@@ -591,9 +597,10 @@ sidecars on disk must match.
 - **Done when:** the reviewed keys send `ToggleReviewed` and `MarkReviewed`
   with the tab's `TabContext`; the reviewed count comes from P57's reviewed
   builder, called in-process when the reviewed section's revision moves, and
-  the flag-on `Screen` variant's count field holds its output (decision 2); er-tui
-  gains its er-protocol dependency here, as the first entry in lane order that
-  calls a builder; `--filter` applies here; the filter, its history and the unreviewed-only toggle are
+  this entry adds the count field to the flag-on `Screen` variant (decision
+  2); er-tui gains its er-protocol dependency here, and P67 and P72, the
+  other entries that call a builder, wait for P70 so the dependency arrives
+  once (P72 through P71); `--filter` applies here; the filter, its history and the unreviewed-only toggle are
   `TuiView` state over the pure `visible_files`, as the desktop's filter is
   after P56.1; compaction expands through `ParseFiles` with `expand`
   (re-compacting is P71's).
@@ -661,8 +668,8 @@ sidecars on disk must match.
 - **Goal:** the review panel, the tour and the clear actions write through the
   actor.
 - **Done when:** the review panel renders the findings projection and the
-  checklist from P58.1's annotations builder, held in the flag-on `Screen`
-  variant's findings and checklist fields; the Gate stays `TuiView` state and
+  checklist from P58.1's annotations builder: this entry adds the findings
+  and checklist fields to the flag-on `Screen` variant; the Gate stays `TuiView` state and
   is applied by calling the shared rule, `Finding::passes`
   (`crates/er-core/src/review.rs:363`, over `InlineLayers` `:12`; its truth
   table is `passes_gate_truth_table`, `crates/er-engine/src/ai/review.rs:1727`),
@@ -828,7 +835,8 @@ sidecars on disk must match.
 - **Starts now:** P63. It holds lane T only and depends on nothing.
 - **Then, on earlier 5b work:** P64 after P63; P65 after P64 and P54; P66 and
   P69 after P65. Past P54, these wait on no phase-5 entry.
-- **Waits on phase 5:** P70 (P57), P67 (P58.1) and P68 after it, P71 (P56.1,
+- **Waits on phase 5:** P70 (P57), P67 (P58.1, and P70 for the er-protocol
+  dependency) and P68 after it, P71 (P56.1,
   P56.2, P56.3; P71.3 also P58.1 and P60.1), P72 (P58.2), P73 (P59), P74
   (P60.1, P60.2), P75 (P61), P76 (P62.2), and P77 after P76.
 - Lane T runs one entry at a time, in this order: P63 → P64 → P65 → P66 →
@@ -887,6 +895,9 @@ puts its in-memory registry in every actor's `WorkspaceDeps`.
 2. **The read model is a wide seam.** `Screen` carries many fields, and a
    field the old path fills but the flag path leaves empty shows only in
    parity. Each flag-on entry adds parity fixtures for the area it ports.
+   Every renderer that reads the AI and reviewed part carries two drawing
+   branches, one per `Screen` variant, until P76 deletes the flag-off one;
+   render parity is what keeps the two branches equal.
 3. **A blocked loop freezes the terminal.** One `send_and_wait` on the loop
    thread can hold a frame for 30 s (`REPLY_TIMEOUT`). P65's no-wait test
    and the source scan guard it.
