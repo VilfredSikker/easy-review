@@ -118,7 +118,7 @@ function fakeBackend() {
         return undefined as T;
       case "set_ai_selection":
       case "set_ai_effort":
-        if (args.modelId === "refused" || args.effort === "refused") throw "no such model";
+        if (args.modelId === "refused" || args.effort === "refused") throw new Error("no such model");
         return {} as T;
       default:
         throw new Error(`unexpected ${command}`);
