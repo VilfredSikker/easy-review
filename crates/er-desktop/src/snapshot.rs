@@ -6769,37 +6769,42 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
     /// full PR sweep.
     #[test]
     fn projects_cache_key_changes_when_head_probe_patches_head_oid() {
-        let mut pr = minimal_pr_info(42, "PR");
-        pr.head_oid = "head1".to_string();
-        let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([(
-            "owner/repo".to_string(),
-            vec![pr],
-        )])));
-        let fetched_at: PrCacheFetchedAt = Arc::new(Mutex::new(HashMap::from([(
-            "owner/repo".to_string(),
-            1_000,
-        )])));
-        let tab = TabState::new_for_test(vec![]);
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut pr = minimal_pr_info(42, "PR");
+            pr.head_oid = "head1".to_string();
+            let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([(
+                "owner/repo".to_string(),
+                vec![pr],
+            )])));
+            let fetched_at: PrCacheFetchedAt = Arc::new(Mutex::new(HashMap::from([(
+                "owner/repo".to_string(),
+                1_000,
+            )])));
+            let tab = TabState::new_for_test(vec![]);
 
-        let before = build_projects_cache_key(&tab, Some(&pr_cache), Some(&fetched_at), None, None);
-        assert!(crate::pr_cache::patch_pr_head_oid(
-            &pr_cache,
-            "owner/repo",
-            42,
-            "head2"
-        ));
-        let after = build_projects_cache_key(&tab, Some(&pr_cache), Some(&fetched_at), None, None);
+            let before =
+                build_projects_cache_key(&tab, Some(&pr_cache), Some(&fetched_at), None, None);
+            assert!(crate::pr_cache::patch_pr_head_oid(
+                &pr_cache,
+                "owner/repo",
+                42,
+                "head2"
+            ));
+            let after =
+                build_projects_cache_key(&tab, Some(&pr_cache), Some(&fetched_at), None, None);
 
-        assert_eq!(
-            pr_cache.lock().unwrap()["owner/repo"][0].head_oid,
-            "head2",
-            "the probe write landed in the cache the sidebar reads"
-        );
-        assert_ne!(
-            before.pr_cache_fingerprint, after.pr_cache_fingerprint,
-            "a probe-patched head_oid must move the projects cache key"
-        );
-        assert_ne!(before, after);
+            assert_eq!(
+                pr_cache.lock().unwrap()["owner/repo"][0].head_oid,
+                "head2",
+                "the probe write landed in the cache the sidebar reads"
+            );
+            assert_ne!(
+                before.pr_cache_fingerprint, after.pr_cache_fingerprint,
+                "a probe-patched head_oid must move the projects cache key"
+            );
+            assert_ne!(before, after);
+        });
     }
 
     #[test]
