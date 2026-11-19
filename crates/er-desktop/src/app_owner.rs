@@ -1,7 +1,8 @@
 //! The desktop app owner: the one writer of the sidebar's resources.
 //!
-//! It publishes `projects`, each project's `branches` and each remote's
-//! `prs` from the projects record, the metadata cache and the PR cache, and
+//! It publishes `projects`, each project's `branches`, each remote's `prs`
+//! and each open root's `worktrees` from the projects record, the metadata
+//! cache, the PR cache and the tick's worktree listing, and
 //! stamps a key's version only when the value it builds differs from the one
 //! it last published, so any row field that moves moves the version. It is
 //! also the one writer of the metadata cache and of the PR cache: every
@@ -21,12 +22,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use er_protocol::{
     Branch, Branches, PrRow, Project, ProjectPrs, Projects, Prs, ResourceChanged, ResourceKey,
-    ResourceVersion,
+    ResourceVersion, Worktree, Worktrees,
 };
 
 use crate::pr_cache::{self, PrCacheFetchedAtMap, PrCacheMap};
 use crate::projects::{self, ProjectRecord, ProjectsFile};
-use crate::snapshot::{self, BranchInfo, GhUser, MetaCache, PrInfo, ProjectMeta};
+use crate::snapshot::{self, BranchInfo, GhUser, MetaCache, PrInfo, ProjectMeta, WorktreeSnapshot};
 
 pub mod startup;
 
@@ -45,6 +46,9 @@ pub trait SidebarOwner: Send + Sync {
     /// One remote's pull requests at their version; a remote the owner has
     /// not published reads empty at version 0.
     fn prs(&self, remote: &str) -> (u64, Prs);
+    /// The worktrees of one open tab's root at their version; a root the
+    /// tick has not listed reads empty at version 0.
+    fn worktrees(&self, root: &str) -> (u64, Worktrees);
     /// Every key the owner has published, with its version.
     fn versions(&self) -> Vec<(ResourceKey, u64)>;
 }
@@ -54,6 +58,8 @@ pub struct AppOwner {
     pr_cache: PrCacheMap,
     pr_fetched_at: PrCacheFetchedAtMap,
     gh_user: GhUser,
+    /// The worktree list of each open tab's root, as the tick last listed it.
+    worktrees: Mutex<BTreeMap<String, Worktrees>>,
     published: Mutex<Published>,
     /// Wakes the resource relay after a publish that moved a version.
     wake: Mutex<Option<Sender<()>>>,
@@ -68,6 +74,7 @@ struct Published {
     projects: Option<Stamped<Projects>>,
     branches: BTreeMap<String, Stamped<Branches>>,
     prs: BTreeMap<String, Stamped<Prs>>,
+    worktrees: BTreeMap<String, Stamped<Worktrees>>,
 }
 
 struct Stamped<T> {
@@ -88,6 +95,7 @@ impl AppOwner {
             pr_cache,
             pr_fetched_at,
             gh_user,
+            worktrees: Mutex::default(),
             published: Mutex::default(),
             wake: Mutex::default(),
         }
@@ -167,6 +175,15 @@ impl AppOwner {
         self.publish();
     }
 
+    /// Holds `root`'s worktree list, as the tick listed it for the active
+    /// tab, and drops the lists of roots no open tab shows. The tick
+    /// publishes next.
+    pub fn hold_worktrees(&self, root: &str, worktrees: Worktrees, open_roots: &BTreeSet<String>) {
+        let mut held = lock(&self.worktrees);
+        held.retain(|held_root, _| held_root == root || open_roots.contains(held_root));
+        held.insert(root.to_string(), worktrees);
+    }
+
     /// Builds every sidebar resource from its sources and stamps a new
     /// version on each one whose value changed. Answers the keys it moved.
     pub fn publish(&self) -> Vec<ResourceChanged> {
@@ -193,7 +210,8 @@ impl AppOwner {
                 })
                 .collect();
             let prs = build_prs(&file, &cache, &fetched_at, me.as_deref());
-            published.replace(build_projects(&file), branches, prs)
+            let worktrees = lock(&self.worktrees).clone();
+            published.replace(build_projects(&file), branches, prs, worktrees)
         };
         if !changed.is_empty() {
             if let Some(wake) = lock(&self.wake).as_ref() {
@@ -229,6 +247,14 @@ impl SidebarOwner for AppOwner {
             .unwrap_or_default()
     }
 
+    fn worktrees(&self, root: &str) -> (u64, Worktrees) {
+        lock(&self.published)
+            .worktrees
+            .get(root)
+            .map(|stamped| (stamped.version, stamped.value.clone()))
+            .unwrap_or_default()
+    }
+
     fn versions(&self) -> Vec<(ResourceKey, u64)> {
         let published = lock(&self.published);
         let projects = published
@@ -247,7 +273,16 @@ impl SidebarOwner for AppOwner {
             };
             (key, stamped.version)
         });
-        projects.into_iter().chain(branches).chain(prs).collect()
+        let worktrees = published.worktrees.iter().map(|(root, stamped)| {
+            let key = ResourceKey::Worktrees { root: root.clone() };
+            (key, stamped.version)
+        });
+        projects
+            .into_iter()
+            .chain(branches)
+            .chain(prs)
+            .chain(worktrees)
+            .collect()
     }
 }
 
@@ -259,6 +294,7 @@ impl Published {
         projects: Projects,
         branches: BTreeMap<String, Branches>,
         prs: BTreeMap<String, Prs>,
+        worktrees: BTreeMap<String, Worktrees>,
     ) -> Vec<ResourceChanged> {
         let mut changed = Vec::new();
         if self.projects.as_ref().map(|held| &held.value) != Some(&projects) {
@@ -279,6 +315,14 @@ impl Published {
         );
         let prs_key = |remote| ResourceKey::Prs { remote };
         replace_keyed(&mut self.stamp, &mut self.prs, prs, prs_key, &mut changed);
+        let worktrees_key = |root| ResourceKey::Worktrees { root };
+        replace_keyed(
+            &mut self.stamp,
+            &mut self.worktrees,
+            worktrees,
+            worktrees_key,
+            &mut changed,
+        );
         changed
     }
 }
@@ -520,6 +564,24 @@ pub fn pr_row(pr: &PrInfo, me: Option<&str>) -> PrRow {
         merged_at: pr.merged_at.clone(),
         updated_at: pr.updated_at.clone(),
         approved_by_me,
+    }
+}
+
+/// The wire form of the snapshot's worktree rows, without which one is
+/// current.
+pub fn worktree_rows(rows: Vec<WorktreeSnapshot>) -> Worktrees {
+    Worktrees {
+        worktrees: rows
+            .into_iter()
+            .map(|row| Worktree {
+                path: row.path,
+                branch: row.branch,
+                is_pr: row.is_pr,
+                pr_number: row.pr_number,
+                is_merged: row.is_merged,
+                remote: row.remote,
+            })
+            .collect(),
     }
 }
 

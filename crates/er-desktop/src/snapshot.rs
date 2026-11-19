@@ -4237,7 +4237,7 @@ pub fn kick_worktrees_warm(ports: er_engine::ports::Ports, repo_root: &str, base
     });
 }
 
-fn build_worktrees(
+pub(crate) fn build_worktrees(
     github: &dyn er_engine::github::GitHub,
     git: &dyn er_engine::git::Git,
     repo_root: &str,

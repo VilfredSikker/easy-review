@@ -38,6 +38,10 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
             let (version, prs) = sidebar(desktop).prs(remote);
             (version, Resource::Prs(prs))
         }
+        ResourceKey::Worktrees { root } => {
+            let (version, worktrees) = sidebar(desktop).worktrees(root);
+            (version, Resource::Worktrees(worktrees))
+        }
         ResourceKey::AvailablePrs { project } => {
             let prs = crate::commands::project_available_prs(desktop, project)
                 .map_err(|message| failed(project, message))?;
@@ -64,6 +68,7 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         // Computed on each read, so they never have a newer version to announce.
         ResourceKey::AvailableBranches { .. } | ResourceKey::AvailablePrs { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
+        ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Settings => desktop.service.settings().view().revision,
         ResourceKey::Risk { key } => match desktop.service.settings().view().risk.get(key) {
             Some(view) => view.version,
