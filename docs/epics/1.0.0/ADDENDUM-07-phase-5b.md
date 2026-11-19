@@ -348,7 +348,9 @@ sidecars on disk must match.
   config error); `Screen` has two variants behind the render seam: the flag-off
   variant borrows the App's types and renders them exactly as today, and the
   flag-on variant holds section data only (files, hunks, reviewed marks, the
-  PR overview), which P65 fills; P63 adds no builder-backed field, since no
+  PR overview), which P65 fills; it names engine types only (the
+  `DiffFile`, `AiState` and `PrOverviewData` that `TabContent` holds) and
+  imports nothing from er-service or er-protocol, so P63 stays in lane T; P63 adds no builder-backed field, since no
   builder exists yet: P70, P67 and P72 each add theirs when they port their
   area (decision 2), and until then the flag-on TUI shows the unported-area
   message for the AI panels and the reviewed count; each renderer that reads
@@ -598,9 +600,9 @@ sidecars on disk must match.
   with the tab's `TabContext`; the reviewed count comes from P57's reviewed
   builder, called in-process when the reviewed section's revision moves, and
   this entry adds the count field to the flag-on `Screen` variant (decision
-  2); er-tui gains its er-protocol dependency here, and P67 and P72, the
-  other entries that call a builder, wait for P70 so the dependency arrives
-  once (P72 through P71); `--filter` applies here; the filter, its history and the unreviewed-only toggle are
+  2); er-tui gains its er-protocol dependency here, and P67, P72 and P74,
+  the other entries that call a builder, wait for P70 so the dependency
+  arrives once (P72 through P71, P74 through P72); `--filter` applies here; the filter, its history and the unreviewed-only toggle are
   `TuiView` state over the pure `visible_files`, as the desktop's filter is
   after P56.1; compaction expands through `ParseFiles` with `expand`
   (re-compacting is P71's).
