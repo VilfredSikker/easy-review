@@ -9494,24 +9494,7 @@ pub fn add_tracked_branch(
     name: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let file = projects::load();
-    let proj = file
-        .projects
-        .iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Project not found: {project_id}"))?;
-
-    // Confirm the branch actually exists locally before tracking it.
-    let exists = state
-        .ports
-        .git
-        .show_ref_verify(&proj.root_path, &format!("refs/heads/{name}"))
-        .map_err(|e| format!("git show-ref failed: {e}"))?;
-    if !exists {
-        return Err(format!("Branch '{name}' does not exist locally"));
-    }
-
-    projects::add_tracked_branch(&project_id, &name).map_err(|e| e.to_string())?;
+    track_branch(&state, &project_id, &name)?;
     let root = state
         .app
         .lock()
@@ -9528,25 +9511,7 @@ pub fn remove_tracked_branch(
     name: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let file = projects::load();
-    let proj = file
-        .projects
-        .iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Project not found: {project_id}"))?;
-
-    let current = state
-        .ports
-        .git
-        .current_branch_show(&proj.root_path)
-        .unwrap_or_default();
-    if !current.is_empty() && current == name {
-        return Err(
-            "Cannot remove the currently-checked-out branch from view; switch first.".to_string(),
-        );
-    }
-
-    projects::remove_tracked_branch(&project_id, &name).map_err(|e| e.to_string())?;
+    untrack_branch(&state, &project_id, &name)?;
     let root = state
         .app
         .lock()
@@ -9557,10 +9522,72 @@ pub fn remove_tracked_branch(
     snap!(state)
 }
 
+/// Tracks `name` under its project once git confirms the branch exists
+/// locally.
+pub(crate) fn track_branch(
+    desktop: &DesktopState,
+    project_id: &str,
+    name: &str,
+) -> Result<(), String> {
+    let file = projects::load();
+    let proj = file
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+
+    // Confirm the branch actually exists locally before tracking it.
+    let exists = desktop
+        .ports
+        .git
+        .show_ref_verify(&proj.root_path, &format!("refs/heads/{name}"))
+        .map_err(|e| format!("git show-ref failed: {e}"))?;
+    if !exists {
+        return Err(format!("Branch '{name}' does not exist locally"));
+    }
+
+    projects::add_tracked_branch(project_id, name).map_err(|e| e.to_string())
+}
+
+/// Hides `name` from its project's list; the checked-out branch stays.
+pub(crate) fn untrack_branch(
+    desktop: &DesktopState,
+    project_id: &str,
+    name: &str,
+) -> Result<(), String> {
+    let file = projects::load();
+    let proj = file
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+
+    let current = desktop
+        .ports
+        .git
+        .current_branch_show(&proj.root_path)
+        .unwrap_or_default();
+    if !current.is_empty() && current == name {
+        return Err(
+            "Cannot remove the currently-checked-out branch from view; switch first.".to_string(),
+        );
+    }
+
+    projects::remove_tracked_branch(project_id, name).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn list_available_branches(
     project_id: String,
     state: State<AppState>,
+) -> Result<Vec<String>, String> {
+    project_available_branches(&state, &project_id)
+}
+
+/// The project's local branches neither checked out nor tracked.
+pub(crate) fn project_available_branches(
+    desktop: &DesktopState,
+    project_id: &str,
 ) -> Result<Vec<String>, String> {
     let file = projects::load();
     let proj = file
@@ -9569,7 +9596,7 @@ pub fn list_available_branches(
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Project not found: {project_id}"))?;
 
-    available_branches(&*state.ports.git, &proj.root_path, &proj.tracked_branches)
+    available_branches(&*desktop.ports.git, &proj.root_path, &proj.tracked_branches)
 }
 
 /// Branch names not checked out and not already tracked.
@@ -9597,13 +9624,24 @@ fn available_branches(
 
 #[tauri::command]
 pub fn delete_project(project_id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    delete_project_and_its_prs(&state, &project_id)?;
+    snap!(state)
+}
+
+/// Deletes the project, and the cached PRs of its remote when no other
+/// project shares it.
+pub(crate) fn delete_project_and_its_prs(
+    desktop: &DesktopState,
+    project_id: &str,
+) -> Result<(), String> {
+    let state = desktop;
     let before = projects::load();
     let deleted_remote = before
         .projects
         .iter()
         .find(|p| p.id == project_id)
         .and_then(|p| p.remote.clone());
-    projects::delete_project(&project_id).map_err(|e| e.to_string())?;
+    projects::delete_project(project_id).map_err(|e| e.to_string())?;
     if let Some(remote) = deleted_remote {
         let remaining = projects::load();
         let target = normalize_remote_slug(&remote);
@@ -9623,7 +9661,7 @@ pub fn delete_project(project_id: String, state: State<AppState>) -> Result<AppS
         }
     }
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    snap!(state)
+    Ok(())
 }
 
 #[tauri::command]
