@@ -6,8 +6,9 @@
 
 use er_protocol::{
     Ack, Branch, Branches, Command, ConfigFieldValue, ErError, ErErrorKind, ModelUpsert, Notice,
-    NoticeLevel, Panel, Panels, Project, Projects, Resource, ResourceChanged, ResourceKey,
-    ResourceVersion, TabKey, Tabs, UninstallOptions, Versioned,
+    BrowserLayout, BrowserView, NoticeLevel, Panel, Panels, Project, Projects, Resource,
+    ResourceChanged, ResourceKey, ResourceVersion, TabKey, TabKind, TabRow, TabView, Tabs,
+    UninstallOptions, Versioned,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -86,11 +87,57 @@ fn the_tabs_resource_is_tagged_by_its_key() -> serde_json::Result<()> {
             key: ResourceKey::Tabs,
             version: ResourceVersion(3),
             value: Resource::Tabs(Tabs {
-                tabs: vec![TabKey(1), TabKey(2)],
+                tabs: vec![TabRow {
+                    key: TabKey(2),
+                    kind: TabKind::RemotePr,
+                    label: "gadgets#9".into(),
+                    repo_root: String::new(),
+                    branch: None,
+                    pr_number: Some(9),
+                    remote: Some("acme/gadgets".into()),
+                }],
                 active: Some(TabKey(2)),
             }),
         },
-        r#"{"key":{"kind":"tabs"},"version":3,"value":{"kind":"tabs","tabs":[1,2],"active":2}}"#,
+        r#"{"key":{"kind":"tabs"},"version":3,"value":{"kind":"tabs","tabs":[{"key":2,"kind":"remote_pr","label":"gadgets#9","repo_root":"","branch":null,"pr_number":9,"remote":"acme/gadgets"}],"active":2}}"#,
+    )
+}
+
+/// A tab's view is keyed by the tab, and the tab commands name tabs by key
+/// with the fields the strip already sends.
+#[test]
+fn the_tab_commands_and_the_view_key_are_tagged() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::View { tab: TabKey(4) },
+        r#"{"kind":"view","tab":4}"#,
+    )?;
+    assert_wire(&Command::NewTab, r#"{"kind":"new_tab"}"#)?;
+    assert_wire(
+        &Command::ReorderTabs {
+            key: TabKey(4),
+            to_idx: 0,
+        },
+        r#"{"kind":"reorder_tabs","key":4,"toIdx":0}"#,
+    )?;
+    assert_wire(
+        &Command::OpenPrReview {
+            project_id: "p".into(),
+            pr_number: 12,
+            replace: false,
+        },
+        r#"{"kind":"open_pr_review","projectId":"p","prNumber":12,"replace":false}"#,
+    )?;
+    assert_wire(
+        &Resource::View(TabView {
+            browser: BrowserView {
+                url: "http://localhost:5173".into(),
+                layout: BrowserLayout::Split,
+                split_ratio: 0.5,
+                annotate_mode: false,
+                show_tooltips: true,
+            },
+        }),
+        r#"{"kind":"view","browser":{"url":"http://localhost:5173","layout":"split","split_ratio":0.5,"annotate_mode":false,"show_tooltips":true}}"#,
     )
 }
 

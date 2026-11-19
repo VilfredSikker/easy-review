@@ -5,9 +5,10 @@ import type { Projects } from "./Projects";
 import type { Risk } from "./Risk";
 import type { Session } from "./Session";
 import type { Settings } from "./Settings";
+import type { TabView } from "./TabView";
 import type { Tabs } from "./Tabs";
 
 /**
  * One resource's content, tagged with the kind of key it answers.
  */
-export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk | { "kind": "session" } & Session | { "kind": "panels" } & Panels;
+export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk | { "kind": "session" } & Session | { "kind": "panels" } & Panels | { "kind": "view" } & TabView;
