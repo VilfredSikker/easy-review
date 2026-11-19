@@ -3,9 +3,9 @@
   import { hasColoredSyntaxSpans } from "$lib/highlightPlan";
   import { mergeWordDiffWithSyntax, type RenderSegment } from "$lib/mergeWordDiffWithSyntax";
   import { splitSegmentsByIdentifier, type RefSegment } from "$lib/referenceHighlight";
-  import { app } from "$lib/stores/app.svelte";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import { themeByName } from "$lib/themes";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import type { SpanSnapshot } from "$lib/types";
   import type { Span as WordSpan } from "$lib/wordDiff";
 
@@ -19,7 +19,7 @@
   }
   const { text, wordSpans, syntaxSpans, changedBgClass, kind }: Props = $props();
 
-  const theme = $derived(themeByName(app.snapshot?.theme));
+  const theme = $derived(themeByName(sessionResource.theme));
 
   const coloredSyntaxSpans = $derived(
     hasColoredSyntaxSpans(syntaxSpans) ? syntaxSpans : undefined,

@@ -23,6 +23,7 @@
   import { sectionOrder, type SidebarSection } from "$lib/stores/sectionOrder.svelte";
   import { prCiState, prNeedsMyReview, projectColorVar, projectMonogram, projectTileInk } from "$lib/sidebarModel";
   import { themeByName } from "$lib/themes";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { installAppUpdate, type UpdatePhase } from "$lib/appUpdate";
 
   interface PinnedItem {
@@ -40,7 +41,7 @@
   const { collapsed = false, pinnedOverride }: Props = $props();
 
   const snapshot = $derived(app.snapshot);
-  const theme = $derived(themeByName(app.snapshot?.theme));
+  const theme = $derived(themeByName(sessionResource.theme));
   const worktrees = $derived(snapshot?.worktrees ?? []);
   const projects = $derived<ProjectSnapshot[]>(snapshot?.projects ?? []);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
@@ -57,35 +58,15 @@
   const inboxUnread = $derived(unreadPrs > 0 ? `${unreadPrs} unread` : "");
   const inboxTitle = $derived(inboxOpen ? "Close Inbox (Esc)" : ["Inbox", inboxUnread].filter(Boolean).join(" · "));
   const inboxLabel = $derived(inboxOpen ? "Close Inbox" : ["Inbox", inboxUnread].filter(Boolean).join(", "));
-  const appVersion = $derived(snapshot?.app_version?.trim() || "0.0.0");
+  const appVersion = $derived(sessionResource.appVersion);
 
-  interface AppUpdateInfo {
-    current: string;
-    latest: string | null;
-    update_available: boolean;
-    release_url: string | null;
-  }
-
-  let updateAvailable = $state(false);
-  let latestVersion = $state<string | null>(null);
-  let releaseUrl = $state<string | null>(null);
+  const updateAvailable = $derived(sessionResource.update?.update_available ?? false);
+  const latestVersion = $derived(sessionResource.update?.latest ?? null);
+  const releaseUrl = $derived(sessionResource.update?.release_url ?? null);
 
   $effect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const info = await invoke<AppUpdateInfo>("check_app_update");
-        if (cancelled) return;
-        updateAvailable = info.update_available;
-        latestVersion = info.latest;
-        releaseUrl = info.release_url;
-      } catch {
-        // Offline / rate-limit — keep pill hidden.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    // Offline / rate-limit: the pill stays hidden.
+    sessionResource.checkUpdate().catch(() => {});
   });
 
   let updatePhase = $state<UpdatePhase>({ kind: "idle" });

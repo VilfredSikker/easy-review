@@ -52,13 +52,14 @@
   import { installExternalLinkGuard } from "$lib/openExternalUrl";
   import { startWindowDrag } from "$lib/windowDrag";
   import { applyTheme } from "$lib/themes";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { snapshotViewIdentity } from "$lib/snapshotChrome";
 
   // Follow the configured theme (`display.theme`, same as the TUI): override
   // the CSS vars on the root element and switch the Shiki syntax theme.
   $effect(() => {
     if (!app.snapshot) return;
-    const theme = applyTheme(app.snapshot.theme);
+    const theme = applyTheme(sessionResource.theme);
     if (app.currentSyntaxTheme !== theme.syntaxThemeId) {
       app.currentSyntaxTheme = theme.syntaxThemeId;
     }
