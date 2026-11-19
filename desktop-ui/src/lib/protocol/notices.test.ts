@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { Notice } from "./generated/Notice";
 import { NOTICE_EVENT, NoticeFeed, type ListenNotices } from "./notices";
 
-const notice = (seq: number, message = `notice ${seq}`): Notice => ({ seq, level: "info", message });
+const notice = (seq: number, message = `notice ${seq}`): Notice => ({ seq, level: "info", message, long: false });
 
 describe("NoticeFeed", () => {
   it("shows a notice delivered twice once", async () => {

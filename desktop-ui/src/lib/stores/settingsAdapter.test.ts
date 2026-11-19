@@ -18,6 +18,18 @@ function wireSettings(theme: string): Settings {
     activeEffort: null,
     familyOptions: [],
     uninstallPreview: null,
+    theme,
+    features: {
+      viewBranch: true,
+      viewUnstaged: true,
+      viewStaged: true,
+      viewHistory: true,
+      viewConflicts: true,
+      viewHidden: true,
+      viewTour: true,
+    },
+    display: { lineNumbers: true, wrapLines: false, splitDiff: false, tabWidth: 4 },
+    arenaEnabled: true,
   };
 }
 
