@@ -217,7 +217,14 @@ pub fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
 /// Where the projects record lives in the store, for mtime watchers.
 use std::sync::Mutex;
 
-static PROJECTS_LOAD_CACHE: Mutex<Option<(std::time::SystemTime, ProjectsFile)>> = Mutex::new(None);
+/// The last record read, under its path and mtime.
+type LoadCache = Option<(
+    Option<std::path::PathBuf>,
+    std::time::SystemTime,
+    ProjectsFile,
+)>;
+
+static PROJECTS_LOAD_CACHE: Mutex<LoadCache> = Mutex::new(None);
 static PROJECTS_CONTENT_GEN: AtomicU64 = AtomicU64::new(0);
 static PROJECTS_IO: Mutex<()> = Mutex::new(());
 
@@ -239,18 +246,21 @@ pub fn content_generation() -> u64 {
 pub fn load() -> ProjectsFile {
     // Skip the store read when mtime hasn't advanced since the last load. The
     // record is hit on every snapshot build; with multiple polls per second
-    // under user input, re-reading it repeatedly is wasted work.
+    // under user input, re-reading it repeatedly is wasted work. The path is
+    // part of the key: a file system with coarse timestamps gives two records
+    // written in one tick the same mtime, and each test has its own root.
+    let path = er_engine::projects_pins::projects_artifact_path();
     let mtime = er_engine::projects_pins::modified();
     if let (Some(mtime), Ok(guard)) = (mtime, PROJECTS_LOAD_CACHE.lock()) {
-        if let Some((cached_mtime, cached_file)) = guard.as_ref() {
-            if *cached_mtime == mtime {
+        if let Some((cached_path, cached_mtime, cached_file)) = guard.as_ref() {
+            if *cached_mtime == mtime && *cached_path == path {
                 return cached_file.clone();
             }
         }
     }
     let parsed = er_engine::projects_pins::load();
     if let (Some(mtime), Ok(mut guard)) = (mtime, PROJECTS_LOAD_CACHE.lock()) {
-        *guard = Some((mtime, parsed.clone()));
+        *guard = Some((path, mtime, parsed.clone()));
     }
     parsed
 }
