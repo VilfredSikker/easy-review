@@ -1,6 +1,6 @@
 //! `er_send`'s body: each wire command applied by the one owner of what it
-//! writes. Every command so far is a settings write or a risk read, so the
-//! owner is the settings actor (ADR 0069).
+//! writes. A settings write or a risk read goes to the settings actor
+//! (ADR 0069); a project or branch edit goes to the sidebar's owner.
 
 use er_engine::uninstall::UninstallResult;
 use er_protocol::{
@@ -26,8 +26,17 @@ pub fn apply(
     command: Command,
     notify: &dyn Fn(NoticeLevel, String),
 ) -> Result<Applied, ErError> {
+    let command = match er_service::settings_command(command) {
+        Ok(command) => command,
+        Err(command) => {
+            return super::host::send(desktop, *command).map(|ack| Applied {
+                ack,
+                uninstalled: None,
+            });
+        }
+    };
     let settings = desktop.service.settings();
-    let reply = settings.send_and_wait(er_service::settings_command(command))?;
+    let reply = settings.send_and_wait(command)?;
     let mut uninstalled = None;
     match reply {
         SettingsReply::ConfigChanged { warnings, .. } => {

@@ -5,9 +5,9 @@
 //! fails here before the frontend sees a missing field.
 
 use er_protocol::{
-    Ack, Branch, Branches, Command, ConfigFieldValue, ErError, ErErrorKind, ModelUpsert, Notice,
-    NoticeLevel, Project, Projects, Resource, ResourceChanged, ResourceKey, ResourceVersion,
-    TabKey, Tabs, UninstallOptions, Versioned,
+    Ack, AvailableBranches, Branch, Branches, Command, ConfigFieldValue, ErError, ErErrorKind,
+    ModelUpsert, Notice, NoticeLevel, Project, ProjectReviewSettingsPatch, Projects, Resource,
+    ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, UninstallOptions, Versioned,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -236,4 +236,66 @@ fn the_branches_resource_is_keyed_by_its_project() -> serde_json::Result<()> {
         },
         r#"{"key":{"kind":"branches","project":"er"},"version":4,"value":{"kind":"branches","currentBranch":"main","localBranches":[{"name":"feature","upstream":"origin/feature","isMerged":false,"worktreePath":"/src/er-feature","prNumber":12}],"autoBranches":[]}}"#,
     )
+}
+
+#[test]
+fn the_available_branches_are_read_by_project() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::AvailableBranches {
+            project: "er".into(),
+        },
+        r#"{"kind":"available_branches","project":"er"}"#,
+    )?;
+    assert_wire(
+        &Resource::AvailableBranches(AvailableBranches {
+            branches: vec!["spare".into()],
+        }),
+        r#"{"kind":"available_branches","branches":["spare"]}"#,
+    )
+}
+
+#[test]
+fn the_project_commands_are_tagged_by_kind() -> serde_json::Result<()> {
+    assert_wire(
+        &Command::ReorderProjects {
+            ordered: vec!["b".into(), "a".into()],
+        },
+        r#"{"kind":"reorder_projects","ordered":["b","a"]}"#,
+    )?;
+    assert_wire(
+        &Command::DeleteProject {
+            project: "a".into(),
+        },
+        r#"{"kind":"delete_project","project":"a"}"#,
+    )?;
+    assert_wire(
+        &Command::AddTrackedBranch {
+            project: "a".into(),
+            name: "feature".into(),
+        },
+        r#"{"kind":"add_tracked_branch","project":"a","name":"feature"}"#,
+    )?;
+    assert_wire(
+        &Command::RemoveTrackedBranch {
+            project: "a".into(),
+            name: "feature".into(),
+        },
+        r#"{"kind":"remove_tracked_branch","project":"a","name":"feature"}"#,
+    )?;
+    assert_wire(
+        &Command::PatchProjectReviewSettings {
+            project: "a".into(),
+            patch: ProjectReviewSettingsPatch {
+                auto_triage_max_diff_kb: Some(256),
+                review_ignore_glob_add: None,
+                review_ignore_glob_remove: Some(1),
+            },
+        },
+        r#"{"kind":"patch_project_review_settings","project":"a","patch":{"autoTriageMaxDiffKb":256,"reviewIgnoreGlobAdd":null,"reviewIgnoreGlobRemove":1}}"#,
+    )?;
+    // A patch names only what it changes.
+    let partial: ProjectReviewSettingsPatch =
+        serde_json::from_str(r#"{"reviewIgnoreGlobAdd":"*.snap"}"#)?;
+    assert_eq!(partial.review_ignore_glob_add.as_deref(), Some("*.snap"));
+    Ok(())
 }

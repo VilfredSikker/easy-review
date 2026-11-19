@@ -58,9 +58,10 @@ pub fn risk_resource(view: &SettingsView, key: &str) -> Option<wire::Risk> {
     })
 }
 
-/// The settings actor's command for a wire command.
-pub fn settings_command(command: wire::Command) -> SettingsCommand {
-    match command {
+/// The settings actor's command for a wire command. A command another owner
+/// applies comes back unchanged.
+pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<wire::Command>> {
+    Ok(match command {
         wire::Command::ReloadSettings => SettingsCommand::ReloadIfFailed,
         wire::Command::ApplyConfigPatch { key, value } => SettingsCommand::ApplyConfigPatch {
             key,
@@ -133,7 +134,12 @@ pub fn settings_command(command: wire::Command) -> SettingsCommand {
             remote_repo,
             paths,
         },
-    }
+        other @ (wire::Command::ReorderProjects { .. }
+        | wire::Command::DeleteProject { .. }
+        | wire::Command::AddTrackedBranch { .. }
+        | wire::Command::RemoveTrackedBranch { .. }
+        | wire::Command::PatchProjectReviewSettings { .. }) => return Err(Box::new(other)),
+    })
 }
 
 fn risk_rule(rule: &RiskRuleDto) -> wire::RiskRule {
