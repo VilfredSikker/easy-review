@@ -158,16 +158,16 @@ describe("TabsAdapter.route", () => {
   it("sends the tab commands and the opens by key through er_send with the flag on, and waits for the Ack", async () => {
     const { sent, waited, store } = sender();
     const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
-    await tabs.route("select_tab", { idx: 0 });
-    await tabs.route("close_tab", { idx: 1 });
+    await tabs.route("select_tab", { idx: 1 });
+    await tabs.route("close_tab", { idx: 0 });
     await tabs.route("reorder_tabs", { fromIdx: 1, toIdx: 0 });
     await tabs.route("open_pr_branch", { projectId: "p", prNumber: 7, headRef: "h", replace: true });
     await tabs.route("open_pr_url", { url: "https://github.com/a/b/pull/1" });
     await tabs.route("update_tab_browser", { splitRatio: 0.6 });
     await tabs.route("prefetch_pr_open", { projectId: "p", prNumber: 7 });
     expect(sent).toEqual([
-      { kind: "select_tab", key: 11 },
-      { kind: "close_tab", key: 12 },
+      { kind: "select_tab", key: 12 },
+      { kind: "close_tab", key: 11 },
       { kind: "reorder_tabs", key: 12, toIdx: 0 },
       { kind: "open_pr_review", projectId: "p", prNumber: 7, replace: true },
       { kind: "open_pr_url", url: "https://github.com/a/b/pull/1", replace: false },
