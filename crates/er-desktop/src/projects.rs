@@ -396,6 +396,18 @@ impl TabProjectRef {
             remote: tab.remote_repo.clone(),
         }
     }
+
+    /// A saved tab's root, and for a remote PR the remote it names.
+    pub fn from_descriptor(tab: &er_engine::tabs_record::TabDescriptor) -> Self {
+        let remote = match (&tab.pr_owner, &tab.pr_repo) {
+            (Some(owner), Some(repo)) => Some(format!("{owner}/{repo}")),
+            _ => None,
+        };
+        Self {
+            repo_root: tab.repo_root.clone(),
+            remote,
+        }
+    }
 }
 
 /// Register a local repo root in `file` when missing. Returns true if a row was added.
@@ -470,21 +482,28 @@ fn sync_project_refs_in_file(file: &mut ProjectsFile, refs: &[TabProjectRef]) ->
 
 /// Register every unique local repo and remote slug referenced by open tabs.
 pub fn sync_projects_from_tabs(tabs: &[er_engine::app::TabState]) {
-    if tabs.is_empty() {
+    let Some(first) = tabs.first() else {
         return;
-    }
-    use std::collections::HashSet;
+    };
     let refs: Vec<TabProjectRef> = tabs.iter().map(TabProjectRef::from_tab).collect();
-    let git = &*tabs[0].ports.git;
-    let github = &*tabs[0].ports.github;
+    sync_projects_from_refs(&*first.ports.github, &*first.ports.git, &refs);
+}
+
+/// Register every unique local repo and remote slug in `refs`.
+pub fn sync_projects_from_refs(
+    github: &dyn er_engine::github::GitHub,
+    git: &dyn er_engine::git::Git,
+    refs: &[TabProjectRef],
+) {
+    use std::collections::HashSet;
     let mut seen_roots = HashSet::new();
-    for r in &refs {
+    for r in refs {
         if !r.repo_root.is_empty() && seen_roots.insert(r.repo_root.clone()) {
             let _ = auto_register(github, git, &r.repo_root);
         }
     }
     let mut seen_remotes = HashSet::new();
-    for r in &refs {
+    for r in refs {
         if let Some(ref remote) = r.remote {
             if seen_remotes.insert(remote.clone()) {
                 let _ = ensure_remote_project(remote);
