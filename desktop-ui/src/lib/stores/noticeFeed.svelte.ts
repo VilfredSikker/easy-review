@@ -1,9 +1,9 @@
 import { NoticeFeed } from "$lib/protocol/notices";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
-import { app } from "./app.svelte";
+import { app, TOAST_LONG_MS } from "./app.svelte";
 
 const feed = new NoticeFeed((notice) =>
-  app.showToast(notice.level === "error" ? "error" : "info", notice.message),
+  app.showToast(notice.level, notice.message, notice.long ? TOAST_LONG_MS : undefined),
 );
 let unlisten: Promise<() => void> | null = null;
 

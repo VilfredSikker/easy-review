@@ -25,7 +25,8 @@ Raw `invoke` is for commands whose result must not replace the live snapshot:
 
 - a non-snapshot return — `export_review`, `get_background_task_log`, `list_available_branches`, the `arena_*` reads the arena store polls itself;
 - the settings panel, which reads and writes through `settingsResource` (`settingsAdapter.ts`): the old commands with the flag off, the `settings` resource and `er_send` with it on, never the snapshot;
-- `toggle_panel`, which paints the layout locally first.
+- the app chrome and the AI picker (theme, view switches, AI labels, watcher, version, update check, providers, reviewers, picks), which read and write through `sessionResource` (`sessionAdapter.ts`) the same way over `settings` and `session`;
+- `toggle_panel`, which paints the layout locally first and mirrors through `panelMirror.ts`.
 
 A raw `invoke` reports its own failure; nothing else will.
 
