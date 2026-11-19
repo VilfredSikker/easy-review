@@ -119,7 +119,10 @@ fn tab_row(entry: &TabEntry) -> er_protocol::TabRow {
     let tab = &entry.descriptor;
     let folder = std::path::Path::new(&tab.repo_root)
         .file_name()
-        .map_or_else(|| tab.repo_root.clone(), |name| name.to_string_lossy().into_owned());
+        .map_or_else(
+            || tab.repo_root.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        );
     let branch = match tab.kind {
         TabKind::LocalBranch | TabKind::LocalPr => tab.branch.clone().filter(|b| !b.is_empty()),
         TabKind::Working | TabKind::RemotePr => None,

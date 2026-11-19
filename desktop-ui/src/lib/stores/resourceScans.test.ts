@@ -90,6 +90,13 @@ describe("resource source scans", () => {
     expect(sources().filter((f) => !allowed.includes(f) && old.test(stripped(f)))).toEqual([]);
   });
 
+  it("with the flag off Settings invokes the picks and the palette sends them through app.cmd", () => {
+    expect(stripped(join("lib", "components", "CommandPalette.svelte"))).toMatch(
+      /\.setAiSelection\(providerId, modelId, effort, "app"\)/,
+    );
+    expect(stripped(join("lib", "components", "settings", "AiSettings.svelte"))).not.toMatch(/setAi\w+\([^)]*"app"/);
+  });
+
   it("with the flag on the app store shows no snapshot notification, which the notices carry", () => {
     const store = stripped(APP_STORE);
     const start = store.indexOf("private syncSnapshotToast(");

@@ -300,10 +300,10 @@
   }
 
   // ── Provider / model / effort nested picker ──────────────────────────────
-  /** Saves the pick as the default; a refused one shows why. */
+  /** Saves the pick as the default; a refused one shows why. With the flag off it goes through `app.cmd`, as it always has. */
   function pickAi(providerId: string, modelId: string | null, effort?: string): Promise<void> {
     return sessionResource
-      .setAiSelection(providerId, modelId, effort)
+      .setAiSelection(providerId, modelId, effort, "app")
       .catch((e) => app.showToast("error", `set_ai_selection: ${e}`));
   }
 

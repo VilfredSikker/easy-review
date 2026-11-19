@@ -59,9 +59,17 @@ interface SessionAdapterDeps {
   store: Pick<ResourceStore, "get" | "show" | "send" | "whenAt">;
   invoke: Invoke;
   snapshot: () => SessionSlice | null;
-  /** The old AI pick commands, which answer a snapshot the page takes in. */
+  /** `app.cmd`: the palette's flag-off pick, whose answered snapshot the page takes in. */
   cmd: (command: string, args: Record<string, unknown>) => Promise<unknown>;
 }
+
+/**
+ * How a flag-off pick reaches `set_ai_selection`. `invoke` calls it as
+ * Settings always has and rejects on failure; `app` goes through `app.cmd`
+ * as the palette always has, which takes in the snapshot the command answers
+ * and toasts a failure itself.
+ */
+export type OldPickRoute = "invoke" | "app";
 
 /**
  * The app chrome and the AI picker behind one API in both builds: the theme
@@ -160,24 +168,26 @@ export class SessionAdapter {
     return this.session()?.reviewers ?? [];
   }
 
-  /** Saves the default provider and model; every pick saves. */
-  async setAiSelection(providerId: string, modelId: string | null, effort?: string): Promise<void> {
+  /** Saves the default provider and model; every pick saves. `route` matters only with the flag off. */
+  async setAiSelection(
+    providerId: string,
+    modelId: string | null,
+    effort?: string,
+    route: OldPickRoute = "invoke",
+  ): Promise<void> {
     if (!this.deps.flagOn) {
-      await this.deps.cmd("set_ai_selection", {
-        providerId,
-        modelId,
-        ...(effort === undefined ? {} : { effort }),
-        persist: true,
-      });
+      const args = { providerId, modelId, ...(effort === undefined ? {} : { effort }), persist: true };
+      if (route === "app") await this.deps.cmd("set_ai_selection", args);
+      else await this.old("set_ai_selection", args);
       return;
     }
     await this.send({ kind: "set_ai_selection", providerId, modelId, effort: effort ?? null });
   }
 
-  /** Saves the default effort; null is Auto. */
+  /** Saves the default effort; null is Auto. With the flag off it rejects on failure, as Settings expects. */
   async setAiEffort(effort: string | null): Promise<void> {
     if (!this.deps.flagOn) {
-      await this.deps.cmd("set_ai_effort", { effort, persist: true });
+      await this.old("set_ai_effort", { effort, persist: true });
       return;
     }
     await this.send({ kind: "set_ai_effort", effort });
