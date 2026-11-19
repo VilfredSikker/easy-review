@@ -4,15 +4,16 @@
 use std::collections::BTreeMap;
 
 use er_engine::TabKey;
-use er_protocol::{ErError, Resource, ResourceKey, ResourceVersion, Versioned};
+use er_protocol::{ErError, ErErrorKind, Resource, ResourceKey, ResourceVersion, Versioned};
 
 use crate::state::DesktopState;
 
 /// `key`'s content at the version its owner last published.
 pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resource>, ErError> {
-    let (version, value) = match key {
+    let (version, value) = match &key {
         ResourceKey::Tabs => tabs(desktop),
         ResourceKey::Settings => settings(desktop),
+        ResourceKey::Risk { key } => risk(desktop, key)?,
     };
     Ok(Versioned {
         key,
@@ -26,6 +27,10 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
     let version = match key {
         ResourceKey::Tabs => desktop.service.app_registry().tabs_view().revision,
         ResourceKey::Settings => desktop.service.settings().view().revision,
+        ResourceKey::Risk { key } => match desktop.service.settings().view().risk.get(&key) {
+            Some(view) => view.version,
+            None => return Err(risk_not_loaded(&key)),
+        },
     };
     Ok(ResourceVersion(version))
 }
@@ -48,13 +53,34 @@ fn settings(desktop: &DesktopState) -> (u64, Resource) {
     )
 }
 
+/// One rules key's risk view, as the settings actor last published it. A
+/// key no load named is not there: the load is what resolves a repo to its
+/// key, so the frontend sends `load_risk` before it reads.
+fn risk(desktop: &DesktopState, key: &str) -> Result<(u64, Resource), ErError> {
+    let view = desktop.service.settings().view();
+    let version = view.risk.get(key).map(|risk| risk.version);
+    match (version, er_service::risk_resource(&view, key)) {
+        (Some(version), Some(risk)) => Ok((version, Resource::Risk(risk))),
+        _ => Err(risk_not_loaded(key)),
+    }
+}
+
+fn risk_not_loaded(key: &str) -> ErError {
+    ErError {
+        kind: ErErrorKind::NotFound,
+        message: format!("no risk rules were loaded for {key}"),
+    }
+}
+
 /// What the relay compares between publishes: each resource with a wire key,
 /// and each section of a loaded tab, which that tab's resources are built
 /// from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Watched {
     Tabs,
     Settings,
+    /// One rules key's risk view.
+    Risk(String),
     Diff(TabKey),
     Reviewed(TabKey),
     Ai(TabKey),
@@ -65,10 +91,11 @@ pub enum Watched {
 
 impl Watched {
     /// The wire key a change here moves; none while no resource reads it.
-    pub fn wire(self) -> Option<ResourceKey> {
+    pub fn wire(&self) -> Option<ResourceKey> {
         match self {
             Self::Tabs => Some(ResourceKey::Tabs),
             Self::Settings => Some(ResourceKey::Settings),
+            Self::Risk(key) => Some(ResourceKey::Risk { key: key.clone() }),
             Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Pr(_) | Self::Mode(_) => None,
         }
     }
@@ -80,7 +107,13 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
     let tabs = desktop.service.app_registry().tabs_view();
     let mut versions = BTreeMap::from([(Watched::Tabs, tabs.revision)]);
     if let Some(settings) = desktop.service.settings_if_started() {
-        versions.insert(Watched::Settings, settings.view().revision);
+        let view = settings.view();
+        versions.insert(Watched::Settings, view.revision);
+        versions.extend(
+            view.risk
+                .iter()
+                .map(|(key, risk)| (Watched::Risk(key.clone()), risk.version)),
+        );
     }
     for view in desktop.service.published_views() {
         for (&key, content) in &view.tabs {

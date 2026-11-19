@@ -1,6 +1,6 @@
 //! `er_send`'s body: each wire command applied by the one owner of what it
-//! writes. Every command so far is a settings write, so the owner is the
-//! settings actor (ADR 0069).
+//! writes. Every command so far is a settings write or a risk read, so the
+//! owner is the settings actor (ADR 0069).
 
 use er_engine::uninstall::UninstallResult;
 use er_protocol::{
@@ -41,9 +41,21 @@ pub fn apply(
             }
         }
         SettingsReply::Uninstalled(result) => uninstalled = Some(result),
-        SettingsReply::AiSelectionSaved { .. }
-        | SettingsReply::UninstallPreviewed(_)
-        | SettingsReply::RiskRulesLoaded { .. } => {}
+        // The load is how a repo becomes a rules key, so the key is what it
+        // created; the frontend reads `risk(key)` from here on.
+        SettingsReply::RiskRulesLoaded { key, version } => {
+            return Ok(Applied {
+                ack: Ack {
+                    changed: vec![ResourceChanged {
+                        key: ResourceKey::Risk { key: key.clone() },
+                        version: ResourceVersion(version),
+                    }],
+                    created: Some(key),
+                },
+                uninstalled: None,
+            });
+        }
+        SettingsReply::AiSelectionSaved { .. } | SettingsReply::UninstallPreviewed(_) => {}
     }
     // The actor publishes before it answers, so the view read now carries
     // the command.
