@@ -39,7 +39,7 @@ pub enum ResourceKey {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Resource {
     Tabs(Tabs),
-    Settings(Settings),
+    Settings(Box<Settings>),
 }
 
 /// The open tabs in strip order, and the active one.

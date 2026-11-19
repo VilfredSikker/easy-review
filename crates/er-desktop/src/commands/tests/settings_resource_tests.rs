@@ -44,8 +44,8 @@ fn fetch_settings(state: &AppState) -> (ResourceVersion, Settings) {
     let fetched = resources::fetch(&state.desktop, ResourceKey::Settings)
         .unwrap_or_else(|e| panic!("settings fetch: {e:?}"));
     match fetched.value {
-        Resource::Settings(settings) => (fetched.version, settings),
-        other => panic!("not a settings resource: {other:?}"),
+        Resource::Settings(settings) => (fetched.version, *settings),
+        Resource::Tabs(tabs) => panic!("not a settings resource: {tabs:?}"),
     }
 }
 

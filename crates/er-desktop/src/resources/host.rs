@@ -44,7 +44,7 @@ fn settings(desktop: &DesktopState) -> (u64, Resource) {
     let view = desktop.service.settings().view();
     (
         view.revision,
-        Resource::Settings(er_service::settings_resource(&view)),
+        Resource::Settings(Box::new(er_service::settings_resource(&view))),
     )
 }
 
