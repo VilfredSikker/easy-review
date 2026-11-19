@@ -12617,6 +12617,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod resource_tests;
     #[cfg(feature = "v1-service")]
+    mod settings_resource_tests;
+    #[cfg(feature = "v1-service")]
     mod tab_key_tests;
     #[cfg(feature = "v1-service")]
     mod workspace_key_tests;

@@ -132,9 +132,19 @@ impl ServiceState {
                     .settings_path
                     .clone()
                     .unwrap_or_else(er_engine::config::managed_config_path);
-                spawn_settings(self.deps.clone(), path)
+                let handle = spawn_settings(self.deps.clone(), path);
+                if let Some(wake) = &self.resource_wake {
+                    forward_wakes(handle.subscribe(), wake.clone());
+                }
+                handle
             })
             .clone()
+    }
+
+    /// The settings actor when it is up. Never starts it, so the relay's
+    /// reads load no config.
+    pub fn settings_if_started(&self) -> Option<SettingsHandle> {
+        self.settings.get().cloned()
     }
 
     /// Sends one command and waits for the actor's bounded reply.
