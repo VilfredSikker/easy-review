@@ -444,7 +444,7 @@ fn cycle_tab_browser_layout_through_er_send_moves_the_registry_active_tab() {
 /// The bodies the tab arm calls take `DesktopState`, which still reaches the
 /// App through `tauri_app_handle`. That handle is `None` in tests, so the
 /// held-mutex tests cannot see a lock taken through it; this scan can. It
-/// reads each named body, not the helpers those bodies call.
+/// reads each named body; the helpers those bodies call go unscanned.
 #[test]
 fn no_body_the_tab_arm_calls_reaches_the_app() {
     let commands = include_str!("../../commands.rs");
