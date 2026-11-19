@@ -10,7 +10,7 @@ use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
 #[cfg(feature = "v1-service")]
-mod content_routes;
+pub(crate) mod content_routes;
 pub mod line_commits;
 
 use crate::inbox::{
@@ -6768,11 +6768,11 @@ fn project_root_for_remote(remote: &str) -> String {
 /// root and the remote and the service never reads the store. The actor is
 /// the one the opened tab keys, so the open and the tab's content meet there.
 #[cfg(feature = "v1-service")]
-fn service_open(
-    state: &AppState,
+pub(crate) fn service_open(
+    state: &DesktopState,
     target: er_service::OpenTarget,
     replace: Option<bool>,
-) -> Result<AppSnapshot, String> {
+) -> Result<(), String> {
     let tab = content_routes::pr_tab(&target)?;
     let reply = state
         .service
@@ -7094,11 +7094,11 @@ fn service_submit_github_pr_decision(
 }
 
 #[cfg(feature = "v1-service")]
-fn service_open_pr_url(
-    state: &AppState,
+pub(crate) fn service_open_pr_url(
+    state: &DesktopState,
     url: String,
     replace: Option<bool>,
-) -> Result<AppSnapshot, String> {
+) -> Result<(), String> {
     let pr_ref = er_engine::github::parse_github_pr_url(&url)
         .ok_or_else(|| format!("Not a valid GitHub PR URL: {url}"))?;
     let remote = format!("{}/{}", pr_ref.owner, pr_ref.repo);
@@ -7111,13 +7111,13 @@ fn service_open_pr_url(
 }
 
 #[cfg(feature = "v1-service")]
-fn service_open_remote_pr(
-    state: &AppState,
+pub(crate) fn service_open_remote_pr(
+    state: &DesktopState,
     owner: String,
     repo: String,
     number: u64,
     replace: Option<bool>,
-) -> Result<AppSnapshot, String> {
+) -> Result<(), String> {
     // A remote PR opens as a remote tab even when a project tracks its repo,
     // as the flag-off path does, so it carries no local root.
     service_open(
@@ -7133,12 +7133,12 @@ fn service_open_remote_pr(
 }
 
 #[cfg(feature = "v1-service")]
-fn service_open_pr_review(
-    state: &AppState,
+pub(crate) fn service_open_pr_review(
+    state: &DesktopState,
     project_id: String,
     pr_number: u64,
     replace: Option<bool>,
-) -> Result<AppSnapshot, String> {
+) -> Result<(), String> {
     let file = projects::load();
     let project = file
         .projects
@@ -7172,8 +7172,10 @@ pub async fn open_remote_pr(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
-    return run_blocking(move || service_open_remote_pr(&state, owner, repo, number, replace))
-        .await;
+    return run_blocking(move || {
+        service_open_remote_pr(&state, owner, repo, number, replace).map(|()| AppSnapshot::default())
+    })
+    .await;
     #[cfg(not(feature = "v1-service"))]
     return run_blocking(move || open_remote_pr_impl(owner, repo, number, replace, &state)).await;
 }
@@ -7198,7 +7200,10 @@ pub async fn open_pr_url(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
-    return run_blocking(move || service_open_pr_url(&state, url, replace)).await;
+    return run_blocking(move || {
+        service_open_pr_url(&state, url, replace).map(|()| AppSnapshot::default())
+    })
+    .await;
     #[cfg(not(feature = "v1-service"))]
     return run_blocking(move || open_pr_url_impl(url, replace, &state)).await;
 }
@@ -7258,12 +7263,16 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
     let path_str = path.to_string_lossy().to_string();
     // The picked folder is the only input the workspace needs.
     #[cfg(feature = "v1-service")]
-    return {
-        let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path_str);
-        content_routes::open(&state, content_routes::working_tab(path_str), false)
-    };
+    return service_open_folder(&state, path_str).map(|()| AppSnapshot::default());
     #[cfg(not(feature = "v1-service"))]
     return open_worktree_tab(&state, path_str);
+}
+
+/// Opens a Working tab on a picked folder, registering it as a project.
+#[cfg(feature = "v1-service")]
+pub(crate) fn service_open_folder(state: &DesktopState, path: String) -> Result<(), String> {
+    let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path);
+    content_routes::open(state, content_routes::working_tab(path), false)
 }
 
 #[cfg(not(feature = "v1-service"))]
@@ -7523,7 +7532,8 @@ pub async fn open_local_branch(
     #[cfg(feature = "v1-service")]
     return run_blocking(move || {
         let tab = content_routes::branch_tab(&project_id, name)?;
-        content_routes::open(&state, tab, replace.unwrap_or(false))
+        content_routes::open(&state, tab, replace.unwrap_or(false))?;
+        Ok(AppSnapshot::default())
     })
     .await;
     #[cfg(not(feature = "v1-service"))]
@@ -8289,7 +8299,11 @@ pub async fn open_pr_review(
         // The open path is service-owned now; the hint is not consumed until
         // the desktop renders from the view.
         drop(hint);
-        run_blocking(move || service_open_pr_review(&state, project_id, pr_number, replace)).await
+        run_blocking(move || {
+            service_open_pr_review(&state, project_id, pr_number, replace)?;
+            Ok(AppSnapshot::default())
+        })
+        .await
     };
     #[cfg(not(feature = "v1-service"))]
     run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, hint, &state)).await
@@ -8732,8 +8746,11 @@ pub async fn open_pr_branch(
     let _ = head_ref; // ignored; PR head is fetched directly from origin
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
-    return run_blocking(move || service_open_pr_review(&state, project_id, pr_number, replace))
-        .await;
+    return run_blocking(move || {
+        service_open_pr_review(&state, project_id, pr_number, replace)?;
+        Ok(AppSnapshot::default())
+    })
+    .await;
     #[cfg(not(feature = "v1-service"))]
     return run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, None, &state))
         .await;
@@ -8756,11 +8773,11 @@ pub fn prefetch_pr_open(
 
 /// With `v1-service` the app registry warms its own cache through the ports.
 #[cfg(feature = "v1-service")]
-fn prefetch_pr_open_impl(
+pub(crate) fn prefetch_pr_open_impl(
     project_id: String,
     pr_number: u64,
     hint: PrOpenHint,
-    state: &AppState,
+    state: &DesktopState,
 ) -> Result<(), String> {
     let file = projects::load();
     let Some(proj) = file.projects.iter().find(|p| p.id == project_id) else {
@@ -8923,11 +8940,11 @@ pub fn prefetch_remote_pr_open(
 }
 
 #[cfg(feature = "v1-service")]
-fn prefetch_remote_pr_open_impl(
+pub(crate) fn prefetch_remote_pr_open_impl(
     owner: String,
     repo: String,
     number: u64,
-    state: &AppState,
+    state: &DesktopState,
 ) -> Result<(), String> {
     let command = er_service::AppCommand::PrefetchRemoteOpenTarget {
         owner,
@@ -9490,17 +9507,18 @@ fn service_open_inbox_target(
             project_id,
             pr_number,
             ..
-        } => service_open_pr_review(state, project_id, pr_number, replace),
+        } => service_open_pr_review(state, project_id, pr_number, replace)?,
         InboxOpenTarget::RemotePr {
             owner,
             repo,
             number,
-        } => service_open_remote_pr(state, owner, repo, number, replace),
+        } => service_open_remote_pr(state, owner, repo, number, replace)?,
         InboxOpenTarget::Branch { project_id, branch } => {
             let tab = content_routes::branch_tab(&project_id, branch)?;
-            content_routes::open(state, tab, replace.unwrap_or(false))
+            content_routes::open(state, tab, replace.unwrap_or(false))?;
         }
     }
+    Ok(AppSnapshot::default())
 }
 
 #[tauri::command]
@@ -9669,14 +9687,24 @@ pub fn open_project_branch(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
-    return {
-        let tab = content_routes::branch_tab(&project_id, branch)?;
-        content_routes::open(&state, tab, replace.unwrap_or(false))?;
-        projects::set_active(&project_id);
-        Ok(AppSnapshot::default())
-    };
+    return service_open_project_branch(&state, project_id, branch, replace.unwrap_or(false))
+        .map(|()| AppSnapshot::default());
     #[cfg(not(feature = "v1-service"))]
     return open_project_branch_tab(project_id, branch, replace, &state);
+}
+
+/// Opens the branch and makes its project the active one.
+#[cfg(feature = "v1-service")]
+pub(crate) fn service_open_project_branch(
+    state: &DesktopState,
+    project_id: String,
+    branch: String,
+    replace: bool,
+) -> Result<(), String> {
+    let tab = content_routes::branch_tab(&project_id, branch)?;
+    content_routes::open(state, tab, replace)?;
+    projects::set_active(&project_id);
+    Ok(())
 }
 
 #[cfg(not(feature = "v1-service"))]
@@ -10068,7 +10096,7 @@ pub fn list_available_prs(
 #[tauri::command]
 pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
-    return service_set_active_project(&state, &id);
+    return service_set_active_project(&state, &id).map(|()| AppSnapshot::default());
     #[cfg(not(feature = "v1-service"))]
     return set_active_project_impl(&id, &state);
 }
@@ -10076,7 +10104,7 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
 /// Opens a Working tab on the project's root through the registry, as the
 /// other flag-on opens do.
 #[cfg(feature = "v1-service")]
-fn service_set_active_project(state: &AppState, id: &str) -> Result<AppSnapshot, String> {
+pub(crate) fn service_set_active_project(state: &DesktopState, id: &str) -> Result<(), String> {
     let root = projects::load()
         .projects
         .iter()
@@ -10085,7 +10113,7 @@ fn service_set_active_project(state: &AppState, id: &str) -> Result<AppSnapshot,
         .ok_or_else(|| format!("Project not found: {id}"))?;
     content_routes::open(state, content_routes::working_tab(root), false)?;
     projects::set_active(id);
-    Ok(AppSnapshot::default())
+    Ok(())
 }
 
 #[cfg(not(feature = "v1-service"))]
@@ -10744,7 +10772,7 @@ pub async fn exit_history(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 // registry yet, so each command answers with an empty snapshot.
 
 #[cfg(feature = "v1-service")]
-fn service_tab_key(state: &AppState, idx: usize) -> Result<er_engine::TabKey, String> {
+fn service_tab_key(state: &DesktopState, idx: usize) -> Result<er_engine::TabKey, String> {
     let view = state.service.app_registry().tabs_view();
     view.key_at(idx)
         .ok_or_else(|| format!("no tab at position {idx}"))
@@ -10752,7 +10780,7 @@ fn service_tab_key(state: &AppState, idx: usize) -> Result<er_engine::TabKey, St
 
 #[cfg(feature = "v1-service")]
 fn service_tab_command(
-    state: &AppState,
+    state: &DesktopState,
     command: er_service::AppCommand,
 ) -> Result<AppSnapshot, String> {
     state.service.send_app(command).map_err(|e| e.to_string())?;
@@ -10762,39 +10790,29 @@ fn service_tab_command(
 /// A Working tab on the active tab's repo, read from the registry's view
 /// rather than the App, so the command never waits on the App lock.
 #[cfg(feature = "v1-service")]
-fn service_new_tab(state: &AppState) -> Result<AppSnapshot, String> {
+pub(crate) fn service_new_tab(state: &DesktopState) -> Result<AppSnapshot, String> {
     let view = state.service.app_registry().tabs_view();
     let Some(root) = view.active_entry().or(view.tabs.first()) else {
         return Err("Failed to open new tab: no open tab names a repo".to_string());
     };
-    let tab = crate::tabs::TabDescriptor {
-        kind: crate::tabs::TabKind::Working,
-        repo_root: root.descriptor.repo_root.clone(),
-        branch: None,
-        pr_owner: None,
-        pr_repo: None,
-        pr_number: None,
-        pr_head_ref: None,
-        base_ref: None,
-        extra: serde_json::Map::new(),
-    };
+    let tab = content_routes::working_tab(root.descriptor.repo_root.clone());
     service_tab_command(state, er_service::AppCommand::NewTab { tab })
 }
 
 /// Closing a tab also drops its content on the actor that loaded it.
 #[cfg(feature = "v1-service")]
-fn service_close_tab(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
+fn service_close_tab(state: &DesktopState, idx: usize) -> Result<AppSnapshot, String> {
     content_routes::close(state, idx)
 }
 
 #[cfg(feature = "v1-service")]
-fn service_select_tab(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
+fn service_select_tab(state: &DesktopState, idx: usize) -> Result<AppSnapshot, String> {
     let key = service_tab_key(state, idx)?;
     service_tab_command(state, er_service::AppCommand::SelectTab { key })
 }
 
 #[cfg(feature = "v1-service")]
-fn service_reorder_tabs(state: &AppState, from: usize, to: usize) -> Result<AppSnapshot, String> {
+fn service_reorder_tabs(state: &DesktopState, from: usize, to: usize) -> Result<AppSnapshot, String> {
     let key = service_tab_key(state, from)?;
     service_tab_command(
         state,
@@ -10869,8 +10887,8 @@ pub fn close_tab(
     crate::browser_webview::on_tab_selected(
         &app_handle,
         &browser_state,
-        &app,
         &state.view,
+        app.tabs[active].key(),
         active,
     )?;
     crate::tabs::persist_app_tabs(&app, &state.view);
@@ -10899,13 +10917,12 @@ pub async fn select_tab(
         kick_deferred_tab_refresh(&mut app, &state);
         kick_active_gh_status(&app, &state);
         let t_webview = std::time::Instant::now();
-        crate::browser_webview::on_tab_selected(
-            &app_handle,
-            &browser_state,
-            &app,
-            &state.view,
-            idx,
-        )?;
+        let key = app
+            .tabs
+            .get(idx)
+            .map(er_engine::app::TabState::key)
+            .ok_or_else(|| format!("tab index {idx} out of range"))?;
+        crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &state.view, key, idx)?;
         let webview_ms = t_webview.elapsed().as_millis();
         let t_persist = std::time::Instant::now();
         crate::tabs::persist_app_tabs(&app, &state.view);
@@ -11531,43 +11548,66 @@ pub fn update_tab_browser(
     browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let tab_idx = app.active_tab;
-    let had_url = url.is_some();
-    let url_nav_needed = layout.is_some() || navigate.unwrap_or(false);
-    let sync_annotate = annotate.is_some();
     let update = crate::view_state::BrowserUpdate {
-        layout: layout.clone(),
+        layout,
         url,
         annotate,
         tooltips,
         split_ratio,
     };
-    set_active_tab_browser(&app, &state.view, update)?;
-    if url_nav_needed {
-        crate::browser_webview::on_tab_selected(
-            &app_handle,
-            &browser_state,
-            &app,
-            &state.view,
-            tab_idx,
-        )?;
-    } else if layout.is_none() && !had_url {
-        crate::browser_webview::sync_tab_browser_chrome(
-            &app_handle,
-            &browser_state,
-            &app,
-            &state.view,
-            tab_idx,
-            sync_annotate,
-        )?;
-    }
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+    let navigate = navigate.unwrap_or(false);
+    #[cfg(feature = "v1-service")]
+    return {
+        drop(browser_state);
+        update_tab_browser_routed(&state, &app_handle, update, navigate)
+    };
+    #[cfg(not(feature = "v1-service"))]
+    return {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab_idx = app.active_tab;
+        let key = app.tab().key();
+        let (show, sync_annotate) = crate::browser_webview::webview_step(&update, navigate);
+        set_active_tab_browser(&app, &state.view, update)?;
+        if show {
+            crate::browser_webview::on_tab_selected(
+                &app_handle,
+                &browser_state,
+                &state.view,
+                key,
+                tab_idx,
+            )?;
+        } else if let Some(sync_annotate) = sync_annotate {
+            crate::browser_webview::sync_tab_browser_chrome(
+                &app_handle,
+                &browser_state,
+                &state.view,
+                key,
+                tab_idx,
+                sync_annotate,
+            )?;
+        }
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    };
+}
+
+/// The flag-on body of `update_tab_browser`: the registry's active tab, as
+/// `er_send` writes it.
+#[cfg(feature = "v1-service")]
+pub(crate) fn update_tab_browser_routed(
+    state: &AppState,
+    webviews: &dyn crate::browser_webview::TabWebviews,
+    update: crate::view_state::BrowserUpdate,
+    navigate: bool,
+) -> Result<AppSnapshot, String> {
+    crate::resources::tabs::update_browser(state, webviews, update, navigate)
+        .map_err(|e| e.message)?;
+    Ok(AppSnapshot::default())
 }
 
 /// Write a browser update into the active tab's view state. The view lock is
 /// released on return, before any snapshot build takes it again.
+#[cfg(any(test, not(feature = "v1-service")))]
 fn set_active_tab_browser(
     app: &App,
     view: &crate::view_state::ViewStateHandle,
@@ -11587,22 +11627,41 @@ pub fn cycle_tab_browser_layout(
     browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let tab_idx = app.active_tab;
-    {
-        let mut view = state.view.lock().map_err(|e| e.to_string())?;
-        let browser = view.browser_mut(app.tab().key());
-        browser.layout = browser.layout.cycle();
-    }
-    crate::browser_webview::on_tab_selected(
-        &app_handle,
-        &browser_state,
-        &app,
-        &state.view,
-        tab_idx,
-    )?;
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+    #[cfg(feature = "v1-service")]
+    return {
+        drop(browser_state);
+        cycle_tab_browser_layout_routed(&state, &app_handle)
+    };
+    #[cfg(not(feature = "v1-service"))]
+    return {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab_idx = app.active_tab;
+        let key = app.tab().key();
+        {
+            let mut view = state.view.lock().map_err(|e| e.to_string())?;
+            let browser = view.browser_mut(key);
+            browser.layout = browser.layout.cycle();
+        }
+        crate::browser_webview::on_tab_selected(
+            &app_handle,
+            &browser_state,
+            &state.view,
+            key,
+            tab_idx,
+        )?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    };
+}
+
+/// The flag-on body of `cycle_tab_browser_layout`, as `er_send` runs it.
+#[cfg(feature = "v1-service")]
+pub(crate) fn cycle_tab_browser_layout_routed(
+    state: &AppState,
+    webviews: &dyn crate::browser_webview::TabWebviews,
+) -> Result<AppSnapshot, String> {
+    crate::resources::tabs::cycle_browser_layout(state, webviews).map_err(|e| e.message)?;
+    Ok(AppSnapshot::default())
 }
 
 #[cfg(not(feature = "v1-service"))]
@@ -12639,6 +12698,8 @@ mod tests {
     mod sidebar_tests;
     #[cfg(feature = "v1-service")]
     mod tab_key_tests;
+    #[cfg(feature = "v1-service")]
+    mod tab_resource_tests;
     #[cfg(feature = "v1-service")]
     mod workspace_key_tests;
     #[cfg(not(feature = "v1-service"))]
@@ -16486,9 +16547,9 @@ mod route_tests {
         // at the first closing brace in column zero.
         for command in [
             "service_open",
-            "open_worktree",
+            "service_open_folder",
             "open_local_branch",
-            "open_project_branch",
+            "service_open_project_branch",
             "service_set_active_project",
         ] {
             let body = source
@@ -16519,6 +16580,8 @@ mod route_tests {
         // The opens that once built an App tab go through the flag-on helpers.
         for (command, helper) in [
             ("set_active_project", "service_set_active_project("),
+            ("open_worktree", "service_open_folder("),
+            ("open_project_branch", "service_open_project_branch("),
             ("open_pr_branch", "service_open_pr_review("),
             ("open_inbox_item_impl", "service_open_inbox_target("),
         ] {

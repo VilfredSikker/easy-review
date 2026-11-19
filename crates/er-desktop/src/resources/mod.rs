@@ -19,6 +19,8 @@ pub mod send;
 #[cfg(feature = "v1-service")]
 pub mod session;
 #[cfg(feature = "v1-service")]
+pub mod tabs;
+#[cfg(feature = "v1-service")]
 pub mod tick;
 
 #[cfg(feature = "v1-service")]

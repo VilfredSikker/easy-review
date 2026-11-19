@@ -22,6 +22,10 @@ pub struct DesktopViewState {
     /// Rises with each toggle, so `panels` has a version to push.
     panels_revision: u64,
     tabs: HashMap<TabKey, TabBrowserState>,
+    /// The browser write clock, and the tick each tab's browser state was last
+    /// written at, so `view(tab)` has a version per tab that never repeats.
+    browser_clock: u64,
+    browser_revisions: HashMap<TabKey, u64>,
     /// Selection and scroll on the service path, keyed by the app registry's
     /// tab keys. The default build keeps these on the engine tab until the
     /// TUI's view state moves too, so it never writes here.
@@ -54,7 +58,19 @@ impl DesktopViewState {
     }
 
     pub fn browser_mut(&mut self, key: TabKey) -> &mut TabBrowserState {
+        self.browser_clock += 1;
+        self.browser_revisions.insert(key, self.browser_clock);
         self.tabs.entry(key).or_default()
+    }
+
+    /// The tick `key`'s browser state was last written at; 0 when never.
+    pub fn browser_revision(&self, key: TabKey) -> u64 {
+        self.browser_revisions.get(&key).copied().unwrap_or(0)
+    }
+
+    /// Every tab whose browser state was written, with its tick.
+    pub fn browser_revisions(&self) -> impl Iterator<Item = (TabKey, u64)> + '_ {
+        self.browser_revisions.iter().map(|(&key, &tick)| (key, tick))
     }
 
     /// Drop the entries of tabs that are gone. Nav entries go too: on the flag
@@ -62,6 +78,7 @@ impl DesktopViewState {
     /// share one key space.
     pub fn retain_tabs(&mut self, live: &[TabKey]) {
         self.tabs.retain(|key, _| live.contains(key));
+        self.browser_revisions.retain(|key, _| live.contains(key));
         self.nav.retain(|key, _| live.contains(key));
     }
 

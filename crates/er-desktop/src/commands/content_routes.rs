@@ -18,6 +18,7 @@ use er_service::{
 
 use super::{projects, AppSnapshot, AppState};
 use crate::service::actor_key;
+use crate::state::DesktopState;
 
 /// The app registry's active tab.
 struct Active {
@@ -25,7 +26,7 @@ struct Active {
     tab: TabDescriptor,
 }
 
-fn active(state: &AppState) -> Result<Active, String> {
+fn active(state: &DesktopState) -> Result<Active, String> {
     let view = state.service.app_registry().tabs_view();
     let entry = view.active_entry().ok_or("No tab is open")?;
     Ok(Active {
@@ -39,7 +40,7 @@ fn unexpected(reply: &Reply) -> String {
 }
 
 /// Sends `command` to the actor that holds `tab`'s content.
-fn send(state: &AppState, tab: &TabDescriptor, command: Command) -> Result<Reply, String> {
+fn send(state: &DesktopState, tab: &TabDescriptor, command: Command) -> Result<Reply, String> {
     state
         .service
         .send(&actor_key(tab), command)
@@ -56,7 +57,7 @@ fn cleared(reply: Reply) -> Result<usize, String> {
     }
 }
 
-fn load(state: &AppState, key: TabKey, tab: &TabDescriptor) -> Result<usize, String> {
+fn load(state: &DesktopState, key: TabKey, tab: &TabDescriptor) -> Result<usize, String> {
     let tab = tab.clone();
     let command = Command::LoadTab {
         key,
@@ -67,7 +68,7 @@ fn load(state: &AppState, key: TabKey, tab: &TabDescriptor) -> Result<usize, Str
 }
 
 /// The active tab and its content, loaded on its first use.
-fn active_content(state: &AppState) -> Result<(Active, Arc<TabContent>), String> {
+fn active_content(state: &DesktopState) -> Result<(Active, Arc<TabContent>), String> {
     let active = active(state)?;
     if let Some(content) = state.service.content(active.key, &active.tab) {
         return Ok((active, content));
@@ -84,11 +85,7 @@ fn active_content(state: &AppState) -> Result<(Active, Arc<TabContent>), String>
 /// registry gave it. With `replace` it takes the active tab's place, whose
 /// content is dropped. A PR that is already open is selected instead, as the
 /// flag-off open does.
-pub(super) fn open(
-    state: &AppState,
-    tab: TabDescriptor,
-    replace: bool,
-) -> Result<AppSnapshot, String> {
+pub(crate) fn open(state: &DesktopState, tab: TabDescriptor, replace: bool) -> Result<(), String> {
     let current = state.service.app_registry().tabs_view();
     if let Some(open) = current
         .tabs
@@ -99,7 +96,7 @@ pub(super) fn open(
         if state.service.content(open.key, &open.descriptor).is_none() {
             load(state, open.key, &open.descriptor)?;
         }
-        return Ok(AppSnapshot::default());
+        return Ok(());
     }
     let replaced = current.active_entry().filter(|_| replace).cloned();
     let command = match &replaced {
@@ -115,7 +112,7 @@ pub(super) fn open(
     }
     let key = view.active.ok_or("The new tab did not become active")?;
     load(state, key, &tab)?;
-    Ok(AppSnapshot::default())
+    Ok(())
 }
 
 /// Two descriptors of one PR tab: the same kind, root and PR.
@@ -126,7 +123,7 @@ fn same_pr(open: &TabDescriptor, tab: &TabDescriptor) -> bool {
         && open.workspace_key() == tab.workspace_key()
 }
 
-fn app_command(state: &AppState, command: AppCommand) -> Result<TabsView, String> {
+pub(crate) fn app_command(state: &DesktopState, command: AppCommand) -> Result<TabsView, String> {
     let reply = state
         .service
         .send_app(command)
@@ -139,7 +136,7 @@ fn app_command(state: &AppState, command: AppCommand) -> Result<TabsView, String
 
 /// Drops a closed or replaced tab's content on the actor that loaded it. An
 /// actor that is not up holds no content and is not started for the drop.
-fn drop_content(state: &AppState, entry: &TabEntry) -> Result<(), String> {
+fn drop_content(state: &DesktopState, entry: &TabEntry) -> Result<(), String> {
     let drop = Command::DropTab { key: entry.key };
     if let Some(dropped) = state
         .service
@@ -151,12 +148,12 @@ fn drop_content(state: &AppState, entry: &TabEntry) -> Result<(), String> {
 }
 
 /// A plain tab on `repo_root`.
-pub(super) fn working_tab(repo_root: String) -> TabDescriptor {
+pub(crate) fn working_tab(repo_root: String) -> TabDescriptor {
     tab_of(TabKind::Working, repo_root)
 }
 
 /// A branch view of `branch` in the project's checkout.
-pub(super) fn branch_tab(project_id: &str, branch: String) -> Result<TabDescriptor, String> {
+pub(crate) fn branch_tab(project_id: &str, branch: String) -> Result<TabDescriptor, String> {
     let file = projects::load();
     let project = file
         .projects
@@ -171,7 +168,7 @@ pub(super) fn branch_tab(project_id: &str, branch: String) -> Result<TabDescript
 
 /// The tab a PR open shows: a local PR review when the caller resolved a
 /// project, a remote PR otherwise.
-pub(super) fn pr_tab(target: &OpenTarget) -> Result<TabDescriptor, String> {
+pub(crate) fn pr_tab(target: &OpenTarget) -> Result<TabDescriptor, String> {
     let (owner, repo, number) = match target {
         OpenTarget::PrUrl { url, .. } => {
             let pr = er_engine::github::parse_github_pr_url(url)
@@ -220,19 +217,30 @@ fn tab_of(kind: TabKind, repo_root: String) -> TabDescriptor {
     }
 }
 
-/// Closes the tab at `idx` and drops its content. The descriptor is read
+/// Closes the tab at `idx` and drops its content.
+pub(super) fn close(state: &DesktopState, idx: usize) -> Result<AppSnapshot, String> {
+    let view = state.service.app_registry().tabs_view();
+    let key = view
+        .key_at(idx)
+        .ok_or_else(|| format!("no tab at position {idx}"))?;
+    close_key(state, key)?;
+    Ok(AppSnapshot::default())
+}
+
+/// Closes the tab `key` names and drops its content. The descriptor is read
 /// first, since the registry forgets it on close; an actor that is not up
 /// holds no content and is not started for the drop.
-pub(super) fn close(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
+pub(crate) fn close_key(state: &DesktopState, key: TabKey) -> Result<TabsView, String> {
     let view = state.service.app_registry().tabs_view();
     let entry = view
         .tabs
-        .get(idx)
+        .iter()
+        .find(|tab| tab.key == key)
         .cloned()
-        .ok_or_else(|| format!("no tab at position {idx}"))?;
-    app_command(state, AppCommand::CloseTab { key: entry.key })?;
+        .ok_or("no open tab has that key")?;
+    let closed = app_command(state, AppCommand::CloseTab { key: entry.key })?;
     drop_content(state, &entry)?;
-    Ok(AppSnapshot::default())
+    Ok(closed)
 }
 
 /// Refreshes the active tab's diff, or loads it if it never loaded. Answers
