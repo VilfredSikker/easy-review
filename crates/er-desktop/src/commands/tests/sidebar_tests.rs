@@ -238,7 +238,8 @@ fn worktree(path: &str, branch: &str) -> er_git::Worktree {
 }
 
 /// The tick serves the active tab's worktrees as `build_worktrees` lists
-/// them for the same root and base, less which one is current. A PR's merge
+/// them for the same root and base, less which one is current, and asks
+/// which branches are merged into the base the loaded tab holds. A PR's merge
 /// ref, a merged branch, a detached checkout and a worktree on a branch the
 /// project dismissed all stay, which `branches(project)` cannot show.
 #[test]
@@ -259,13 +260,25 @@ fn the_tick_serves_the_active_tab_worktrees_as_build_worktrees_lists_them() {
                  branch.pr-7.merge refs/pull/7/head\n"
                     .into(),
             ));
-        let (state, loaded, _) = loaded_with(dir, git);
+        let (state, loaded, git) = loaded_with(dir, git);
         assert_eq!(loaded, root);
         save(vec![ProjectRecord {
             dismissed_branches: vec!["gone".into()],
             ..record("p", &root, Some("acme/widgets"))
         }]);
         tick::run(&state.desktop, &state.app);
+        // The fake answers the merged list for any base, so the rows alone
+        // cannot show the tick asked with the loaded tab's base.
+        let merged_asks: Vec<String> = git
+            .calls()
+            .into_iter()
+            .filter(|call| call.starts_with("branch_merged("))
+            .collect();
+        let asked = format!("branch_merged(root={root:?}, base=\"main\")");
+        assert!(
+            !merged_asks.is_empty() && merged_asks.iter().all(|call| *call == asked),
+            "the tick asked {merged_asks:?}, expected only {asked}"
+        );
 
         let key = ResourceKey::Worktrees { root: root.clone() };
         let fetched = resources::fetch(&state.desktop, key.clone()).unwrap();
