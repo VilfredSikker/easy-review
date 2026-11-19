@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::Settings;
+
 /// A tab as the wire names it. The engine's key has no public constructor, so
 /// a wire key is resolved by looking it up among the published tabs, never by
 /// building an engine key from the number.
@@ -28,13 +30,16 @@ pub struct ResourceVersion(
 pub enum ResourceKey {
     /// The open tabs and the active one.
     Tabs,
+    /// The Settings page's rows and AI defaults.
+    Settings,
 }
 
 /// One resource's content, tagged with the kind of key it answers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Resource {
     Tabs(Tabs),
+    Settings(Settings),
 }
 
 /// The open tabs in strip order, and the active one.

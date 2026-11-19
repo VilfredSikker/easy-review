@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use er_protocol::{
-    Ack, Command, ErError, Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs,
-    Versioned,
+    Ack, Command, ErError, Notice, Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey,
+    Tabs, Versioned,
 };
 use ts_rs::{Config, TS};
 
@@ -46,6 +46,7 @@ fn generate(dir: &Path) -> Result<(), Box<dyn Error>> {
     Ack::export_all(&cfg)?;
     ErError::export_all(&cfg)?;
     Command::export_all(&cfg)?;
+    Notice::export_all(&cfg)?;
     Ok(())
 }
 
