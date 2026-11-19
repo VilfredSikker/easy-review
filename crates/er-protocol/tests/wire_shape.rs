@@ -8,7 +8,7 @@ use er_protocol::{
     Ack, AvailableBranches, AvailablePrs, Branch, Branches, Command, ConfigFieldValue, ErError,
     ErErrorKind, ModelUpsert, Notice, NoticeLevel, PrRow, Project, ProjectPrs,
     ProjectReviewSettingsPatch, Projects, Prs, Resource, ResourceChanged, ResourceKey,
-    ResourceVersion, TabKey, Tabs, UninstallOptions, Versioned,
+    ResourceVersion, TabKey, Tabs, UninstallOptions, Versioned, Worktree, Worktrees,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -248,6 +248,31 @@ fn the_prs_resource_is_keyed_by_its_remote() -> serde_json::Result<()> {
         &Resource::AvailablePrs(AvailablePrs { prs: Vec::new() }),
         r#"{"kind":"available_prs","prs":[]}"#,
     )
+}
+
+#[test]
+fn the_worktrees_resource_is_keyed_by_its_root() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::Worktrees {
+            root: "/src/er".into(),
+        },
+        r#"{"kind":"worktrees","root":"/src/er"}"#,
+    )?;
+    assert_wire(
+        &Resource::Worktrees(Worktrees {
+            worktrees: vec![Worktree {
+                path: "/src/er-7".into(),
+                branch: "pr-7".into(),
+                is_pr: true,
+                pr_number: Some(7),
+                is_merged: false,
+                remote: Some("acme/er".into()),
+            }],
+        }),
+        r#"{"kind":"worktrees","worktrees":[{"path":"/src/er-7","branch":"pr-7","isPr":true,"prNumber":7,"isMerged":false,"remote":"acme/er"}]}"#,
+    )?;
+    assert!(Worktree::decl(&Config::new()).contains("prNumber: number | null"));
+    Ok(())
 }
 
 #[test]

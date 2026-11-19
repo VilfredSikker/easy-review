@@ -7,8 +7,9 @@ import type { Prs } from "./Prs";
 import type { Risk } from "./Risk";
 import type { Settings } from "./Settings";
 import type { Tabs } from "./Tabs";
+import type { Worktrees } from "./Worktrees";
 
 /**
  * One resource's content, tagged with the kind of key it answers.
  */
-export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "available_branches" } & AvailableBranches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk | { "kind": "prs" } & Prs | { "kind": "available_prs" } & AvailablePrs;
+export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "available_branches" } & AvailableBranches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk | { "kind": "prs" } & Prs | { "kind": "available_prs" } & AvailablePrs | { "kind": "worktrees" } & Worktrees;

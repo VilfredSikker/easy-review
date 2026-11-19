@@ -138,6 +138,32 @@ pub struct AvailablePrs {
     pub prs: Vec<PrRow>,
 }
 
+/// The worktrees of the repository at one root, as `git worktree list`
+/// gives them, dismissed branches and detached checkouts included.
+///
+/// Which one is current is left out: the frontend compares each path with
+/// the root its tab shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Worktrees {
+    pub worktrees: Vec<Worktree>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Worktree {
+    pub path: String,
+    /// `(detached)` for a checkout with no branch.
+    pub branch: String,
+    /// The branch merges from a pull request's head (`refs/pull/<n>/head`).
+    pub is_pr: bool,
+    #[ts(type = "number | null")]
+    pub pr_number: Option<u64>,
+    pub is_merged: bool,
+    /// The repository's `owner/repo`; every row of a list carries the same.
+    pub remote: Option<String>,
+}
+
 /// Branch names a project could start tracking.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

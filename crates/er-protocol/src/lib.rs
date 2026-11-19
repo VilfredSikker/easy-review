@@ -32,4 +32,5 @@ pub use settings::{
 };
 pub use sidebar::{
     AvailableBranches, AvailablePrs, Branch, Branches, PrRow, Project, ProjectPrs, Projects, Prs,
+    Worktree, Worktrees,
 };
