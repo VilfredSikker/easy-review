@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use er_engine::ports::Ports;
@@ -28,6 +29,9 @@ pub struct ServiceState {
     deps: WorkspaceDeps,
     handles: Mutex<HashMap<String, WorkspaceHandle>>,
     relay: Option<RevisionRelay>,
+    /// Woken after each view an actor publishes and each tab-list change, so
+    /// the resource relay reads the versions again.
+    resource_wake: Option<Sender<()>>,
     /// The one settings actor. A fixed slot, never keyed by a tab: the config
     /// is app-scoped, so a per-repo owner would race its saves.
     settings: OnceLock<SettingsHandle>,
@@ -69,6 +73,16 @@ impl ServiceState {
         service
     }
 
+    /// The same service, waking `wake` after each view an actor publishes and
+    /// each tab-list change. Set it before any actor starts: an actor started
+    /// earlier is not followed.
+    #[must_use]
+    pub fn with_resource_wake(mut self, wake: Sender<()>) -> Self {
+        forward_wakes(self.app_registry.subscribe(), wake.clone());
+        self.resource_wake = Some(wake);
+        self
+    }
+
     /// Gives `deps` the one app registry: the one it already carries, or a new
     /// one over its ports.
     fn from_deps(deps: WorkspaceDeps, relay: Option<RevisionRelay>) -> Self {
@@ -80,6 +94,7 @@ impl ServiceState {
             deps: deps.with_app_registry(Arc::clone(&app_registry)),
             handles: Mutex::new(HashMap::new()),
             relay,
+            resource_wake: None,
             settings: OnceLock::new(),
             settings_path: None,
             app_registry,
@@ -99,6 +114,9 @@ impl ServiceState {
                 let handle = spawn(self.deps.clone());
                 if let Some(relay) = &self.relay {
                     forward_revisions(&handle, Arc::clone(relay));
+                }
+                if let Some(wake) = &self.resource_wake {
+                    forward_wakes(handle.subscribe(), wake.clone());
                 }
                 handle
             })
@@ -205,6 +223,15 @@ impl ServiceState {
         handles.get(key).cloned()
     }
 
+    /// The last published view of every actor that is up. Starts none.
+    pub fn published_views(&self) -> Vec<Arc<WorkspaceView>> {
+        let handles: Vec<WorkspaceHandle> = match self.handles.lock() {
+            Ok(handles) => handles.values().cloned().collect(),
+            Err(poisoned) => poisoned.into_inner().values().cloned().collect(),
+        };
+        handles.iter().map(WorkspaceHandle::view).collect()
+    }
+
     /// How many workspace actors this process has started.
     #[cfg(test)]
     pub(crate) fn started_actors(&self) -> usize {
@@ -285,6 +312,24 @@ fn bumps_revision(event: &Event) -> bool {
         event,
         Event::ViewPublished { .. } | Event::WorkflowChanged { .. } | Event::PanelRunChanged { .. }
     )
+}
+
+/// One thread per subscription, waking `wake` on each published view or tab
+/// list. It ends with the subscription, or when nothing reads the wakes.
+fn forward_wakes(events: std::sync::mpsc::Receiver<Event>, wake: Sender<()>) {
+    let _ = std::thread::Builder::new()
+        .name("er-resource-wake".into())
+        .spawn(move || {
+            for event in events {
+                let publishes = matches!(
+                    event,
+                    Event::ViewPublished { .. } | Event::TabsChanged { .. }
+                );
+                if publishes && wake.send(()).is_err() {
+                    return;
+                }
+            }
+        });
 }
 
 /// Like [`forward_revisions`], for the app registry's tab list.

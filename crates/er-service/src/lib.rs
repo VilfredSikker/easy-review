@@ -34,7 +34,10 @@ mod tab_pr;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
-pub use app_registry::{AppCommand, AppRegistry, CachedPr, TabEntry, TabsView};
+pub use app_registry::{
+    resolve_tab_key, tabs_resource, wire_tab_key, AppCommand, AppRegistry, CachedPr, TabEntry,
+    TabsView,
+};
 pub use content::{
     AiSection, DiffMeta, DiffSection, PrSection, ReviewedSection, SidecarStamp, TabContent,
 };

@@ -14,6 +14,9 @@ path = "src/main.rs"
 er-engine = { path = "../er-engine" }
 er-store = { path = "../er-store" }
 er-service = { path = "../er-service", optional = true }
+# The wire to desktop-ui. Not optional: the resource commands exist in both
+# builds, and the default build answers them as unsupported.
+er-protocol = { path = "../er-protocol" }
 tauri = { version = "2", features = ["devtools", "unstable", "macos-private-api"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-log = "2"

@@ -218,9 +218,9 @@ fn closing_a_tab_drops_its_content() {
 }
 
 /// A review an outside writer leaves in the active tab's bucket reaches its
-/// content through the poll tick's reload, which takes no App lock.
+/// content through the backend tick's reload, which takes no App lock.
 #[test]
-fn the_poll_tick_brings_an_outside_write_into_the_active_content() {
+fn the_backend_tick_brings_an_outside_write_into_the_active_content() {
     with_storage(|dir| {
         let Fixture { state, active, .. } = fixture(dir);
         let loaded = content(&state, &active);
@@ -236,9 +236,11 @@ fn the_poll_tick_brings_an_outside_write_into_the_active_content() {
             }),
         );
 
-        let sent = while_the_app_is_locked(&state, "poll tick", content_routes::reload_sidecars);
+        let sent = while_the_app_is_locked(&state, "backend tick", |state| {
+            crate::resources::tick::reload_loaded_tabs(state)
+        });
 
-        assert!(sent, "the tick sent nothing");
+        assert!(sent > 0, "the tick sent nothing");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while content(&state, &active).ai.state.total_findings() == 0 {
             assert!(

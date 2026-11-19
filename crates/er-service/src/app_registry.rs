@@ -79,6 +79,37 @@ impl TabsView {
     }
 }
 
+/// The wire's name for `key`. The engine key has no constructor beside
+/// `TabKey::next`, so this goes one way; [`resolve_tab_key`] goes back.
+pub fn wire_tab_key(key: TabKey) -> er_protocol::TabKey {
+    er_protocol::TabKey(key.get())
+}
+
+/// The open tab a wire key names, looked up in `view`. A number the list does
+/// not hold, a closed tab's or one from an earlier process, answers
+/// `NotFound`: a wire key never becomes a new engine key.
+pub fn resolve_tab_key(
+    view: &TabsView,
+    wire: er_protocol::TabKey,
+) -> Result<TabKey, er_protocol::ErError> {
+    view.tabs
+        .iter()
+        .map(|tab| tab.key)
+        .find(|key| key.get() == wire.0)
+        .ok_or_else(|| er_protocol::ErError {
+            kind: er_protocol::ErErrorKind::NotFound,
+            message: format!("no open tab has key {}", wire.0),
+        })
+}
+
+/// The `tabs` resource: the keys in strip order and the active one.
+pub fn tabs_resource(view: &TabsView) -> er_protocol::Tabs {
+    er_protocol::Tabs {
+        tabs: view.tabs.iter().map(|tab| wire_tab_key(tab.key)).collect(),
+        active: view.active.map(wire_tab_key),
+    }
+}
+
 /// A write or warm-up the registry runs. Commands that act on an existing tab
 /// name it by key; a position travels beside the key only where the command
 /// needs one.

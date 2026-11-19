@@ -360,22 +360,6 @@ pub(super) fn record_mode(state: &AppState, name: &str, mode: DiffMode, tab_idx:
     }
 }
 
-/// Asks the active tab's actor to read its sidecars again, without waiting
-/// for the answer and without starting an actor or loading a tab. The poll
-/// tick calls it, so a sidecar an outside writer moved reaches the content.
-pub(super) fn reload_sidecars(state: &AppState) -> bool {
-    let Ok(active) = active(state) else {
-        return false;
-    };
-    if state.service.content(active.key, &active.tab).is_none() {
-        return false;
-    }
-    let key = active.key;
-    state
-        .service
-        .post_if_started(&actor_key(&active.tab), Command::ReloadSidecars { key })
-}
-
 /// Shows the active tab in `mode`. A click painted on a tab that is no longer
 /// active changes nothing, as on the App path. The feature gate reads the
 /// settings actor's config. `pr_number` is the PR the header detected, for a

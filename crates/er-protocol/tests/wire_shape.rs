@@ -4,7 +4,10 @@
 //! are, so each case compares against a literal: a rename on the Rust side
 //! fails here before the frontend sees a missing field.
 
-use er_protocol::{Ack, ErError, ErErrorKind, ResourceVersion, TabKey};
+use er_protocol::{
+    Ack, ErError, ErErrorKind, Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey,
+    Tabs, Versioned,
+};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use ts_rs::{Config, TS};
@@ -65,6 +68,29 @@ fn an_error_carries_its_kind_and_message() -> serde_json::Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[test]
+fn the_tabs_resource_is_tagged_by_its_key() -> serde_json::Result<()> {
+    assert_wire(&ResourceKey::Tabs, r#"{"kind":"tabs"}"#)?;
+    assert_wire(
+        &ResourceChanged {
+            key: ResourceKey::Tabs,
+            version: ResourceVersion(3),
+        },
+        r#"{"key":{"kind":"tabs"},"version":3}"#,
+    )?;
+    assert_wire(
+        &Versioned {
+            key: ResourceKey::Tabs,
+            version: ResourceVersion(3),
+            value: Resource::Tabs(Tabs {
+                tabs: vec![TabKey(1), TabKey(2)],
+                active: Some(TabKey(2)),
+            }),
+        },
+        r#"{"key":{"kind":"tabs"},"version":3,"value":{"kind":"tabs","tabs":[1,2],"active":2}}"#,
+    )
 }
 
 /// JSON over IPC delivers numbers, so a 64-bit key or version must not be
