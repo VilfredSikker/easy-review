@@ -30,6 +30,7 @@ fn owner() -> AppOwner {
     AppOwner::new(
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(Some("me".into()))),
     )
 }
@@ -176,12 +177,13 @@ fn a_branch_carries_its_open_pr_number() {
         owner.refresh_meta(&git(Vec::new()), "");
         lock(&owner.pr_cache).insert("acme/a".into(), vec![pr(7, "feature", "someone")]);
         let changed = owner.publish();
+        let stamped = |key: ResourceKey| ResourceChanged {
+            version: ResourceVersion(version(&owner, &key)),
+            key,
+        };
         assert_eq!(
             changed,
-            vec![ResourceChanged {
-                key: branches_key("a"),
-                version: ResourceVersion(version(&owner, &branches_key("a"))),
-            }]
+            vec![stamped(branches_key("a")), stamped(prs_key("acme/a"))]
         );
         let number = |owner: &AppOwner| {
             owner
@@ -261,6 +263,147 @@ fn the_projects_record_and_the_metadata_cache_each_have_one_writer() {
     }
 }
 
+fn prs_key(remote: &str) -> ResourceKey {
+    ResourceKey::Prs {
+        remote: remote.into(),
+    }
+}
+
+/// A head probe's patch through the owner moves the remote's `prs` with no
+/// tick between, and the row carries the new commit. The patch changes no
+/// row count and no fetch time, so a version that followed those would stay.
+#[test]
+fn a_head_oid_patch_moves_the_remote_prs() {
+    in_storage(|| {
+        save(&ProjectsFile {
+            projects: vec![project("a", "/src/a", Some("acme/a"))],
+            active_id: None,
+        });
+        let owner = owner();
+        let mut row = pr(7, "feature", "someone");
+        row.head_oid = "1".repeat(40);
+        lock(&owner.pr_cache).insert("acme/a".into(), vec![row, pr(8, "other", "me")]);
+        lock(&owner.pr_fetched_at).insert("acme/a".into(), 1_000);
+        owner.publish();
+        let (before, held) = owner.prs("acme/a");
+        assert!(before > 0);
+
+        assert!(owner.patch_pr_head_oid("acme/a", 7, &"2".repeat(40)));
+
+        let (after, prs) = owner.prs("acme/a");
+        assert!(after > before, "the patch did not move prs(acme/a)");
+        assert_eq!(version(&owner, &prs_key("acme/a")), after);
+        assert_eq!(
+            (prs.rows.len(), prs.fetched_at_ms),
+            (held.rows.len(), held.fetched_at_ms),
+            "the fixture must change only what a count-and-time key ignores"
+        );
+        let row = prs.rows.iter().find(|row| row.number == 7).unwrap();
+        assert_eq!(row.head_oid, "2".repeat(40));
+        assert!(!owner.patch_pr_head_oid("acme/a", 7, &"2".repeat(40)));
+        assert_eq!(
+            owner.prs("acme/a").0,
+            after,
+            "an unchanged oid moves nothing"
+        );
+    });
+}
+
+/// A saved or recent PR the cache does not hold becomes a title-only row,
+/// so every number a list names has a row; one with no title is left out.
+#[test]
+fn an_uncached_saved_pr_has_a_title_only_row() {
+    in_storage(|| {
+        let mut record = project("a", "", Some("acme/a"));
+        record.saved_prs = serde_json::from_value(serde_json::json!([
+            {"number": 5, "saved_at_ms": 2, "title": "Saved"},
+            {"number": 6, "saved_at_ms": 1, "title": ""},
+        ]))
+        .unwrap();
+        save(&ProjectsFile {
+            projects: vec![record],
+            active_id: None,
+        });
+        let owner = owner();
+        owner.publish();
+        let (_, prs) = owner.prs("acme/a");
+        assert_eq!(prs.projects.len(), 1);
+        assert_eq!(prs.projects[0].saved, vec![5]);
+        let titles: Vec<(u64, &str)> = prs
+            .rows
+            .iter()
+            .map(|row| (row.number, row.title.as_str()))
+            .collect();
+        assert_eq!(titles, vec![(5, "Saved")]);
+        assert_eq!(prs.fetched_at_ms, None);
+    });
+}
+
+/// The owner keeps the worktree lists of roots an open tab shows and drops
+/// the rest, so the keys do not grow with every tab ever opened.
+#[test]
+fn the_owner_keeps_the_worktrees_of_open_roots_only() {
+    in_storage(|| {
+        let owner = owner();
+        let list = |path: &str| {
+            super::worktree_rows(vec![crate::snapshot::WorktreeSnapshot {
+                path: path.into(),
+                branch: "main".into(),
+                is_current: true,
+                is_pr: false,
+                pr_number: None,
+                is_merged: false,
+                remote: None,
+            }])
+        };
+        let open = |roots: &[&str]| roots.iter().map(|r| r.to_string()).collect();
+        owner.hold_worktrees("/a", list("/a"), &open(&["/a", "/b"]));
+        owner.hold_worktrees("/b", list("/b"), &open(&["/a", "/b"]));
+        owner.publish();
+        assert!(owner.worktrees("/a").0 > 0);
+        assert_eq!(owner.worktrees("/b").1.worktrees[0].path, "/b");
+
+        owner.hold_worktrees("/c", list("/c"), &open(&["/b", "/c"]));
+        owner.publish();
+        assert_eq!(owner.worktrees("/a"), (0, Default::default()));
+        assert!(owner.worktrees("/b").0 > 0);
+        assert!(owner.worktrees("/c").0 > 0);
+    });
+}
+
+/// The PR cache has one writer, the owner, over the helpers in
+/// `pr_cache.rs`: no other file locks it or its fetch times to write, or
+/// calls a helper that does.
+#[test]
+fn the_pr_cache_has_one_writer() {
+    let writers = [
+        "pr_cache::refresh_pr_cache",
+        "pr_cache::patch_pr_head_oid",
+        "pr_cache::merge_pr_results",
+        "pr_cache::cache_pr",
+        "pr_cache::forget_remote",
+        "save_persisted_pr_cache",
+    ];
+    for (path, text) in sources() {
+        if path == "src/app_owner.rs" || path == "src/pr_cache.rs" {
+            continue;
+        }
+        for writer in writers {
+            assert!(
+                !text.contains(writer),
+                "{path} writes the PR cache ({writer})"
+            );
+        }
+        for line in text.lines() {
+            let locks = line.contains("pr_cache") && line.contains(".lock()");
+            assert!(
+                !(locks && line.contains("mut ")),
+                "{path} writes the PR cache: {line}"
+            );
+        }
+    }
+}
+
 /// Which project and branch are active is the frontend's to derive from
 /// `tabs`; no sidebar wire type or builder carries it.
 #[test]
@@ -306,4 +449,14 @@ fn main_registers_projects_from_the_registry_on_the_flag_path() {
     }
     assert!(main.contains("startup::register_open_projects(&state)"));
     assert!(main.contains("startup::meta_refresh_interval(&meta_state)"));
+}
+
+/// The head probe takes its target from the library, which reads the
+/// registry on the flag path, and patches through the owner.
+#[test]
+fn main_probes_the_pr_head_through_the_startup_target_and_the_owner() {
+    let main = production_source("src/main.rs");
+    assert!(main.contains("startup::pr_head_probe_target(&probe_state)"));
+    assert!(!main.contains("fn pr_head_probe_target"));
+    assert!(main.contains(".patch_pr_head_oid(&slug, pr_number, &oid)"));
 }

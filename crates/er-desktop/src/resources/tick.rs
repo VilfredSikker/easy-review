@@ -6,15 +6,16 @@
 //! App's duties: agent logs and commands, background tasks, the AI task inbox
 //! and the active tab's sidecar check (the only path that brings an outside
 //! write into the App's AI state, which the export and the ask runs still
-//! read). Each App duty leaves as its data leaves the App. Then it warms the
-//! active tab's worktree list and has the sidebar's owner publish, which is
-//! how writes the owner does not make reach its resources.
+//! read). Each App duty leaves as its data leaves the App. Then it lists the
+//! active tab's worktrees for the sidebar's owner and has the owner publish,
+//! which is how writes the owner does not make reach its resources.
 //!
 //! It wakes on each desktop revision the watcher emits, as the duties did when
 //! every `er://revision` made the frontend poll, and on an interval as the
 //! floor; `follow_revisions` joins the two for the app. This is the one module of the host that names the App; it is handed
 //! the App beside the `DesktopState`.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -95,7 +96,7 @@ pub fn run(desktop: &DesktopState, app: &Mutex<App>) {
         ai_reloaded || AppStamp::of(&app) != before
     };
     if let Some((root, base)) = warm_target(desktop) {
-        crate::snapshot::kick_worktrees_warm(desktop.ports.clone(), &root, &base);
+        hold_worktrees(desktop, &root, &base);
     }
     desktop.app_owner.publish();
     if moved {
@@ -134,6 +135,24 @@ fn warm_target(desktop: &DesktopState) -> Option<(String, String)> {
         content.tab.repo_root.clone(),
         content.tab.base_branch.clone(),
     ))
+}
+
+/// Lists the active tab's worktrees for the owner, with the root and base
+/// the snapshot lists them from. The listing fills the worktree metadata
+/// cache the snapshot reads, as the warm it replaces did.
+fn hold_worktrees(desktop: &DesktopState, root: &str, base: &str) {
+    let (github, git) = (&*desktop.ports.github, &*desktop.ports.git);
+    let rows = crate::snapshot::build_worktrees(github, git, root, base, root);
+    let open: BTreeSet<String> = desktop
+        .service
+        .app_registry()
+        .tabs_view()
+        .tabs
+        .iter()
+        .map(|tab| tab.descriptor.repo_root.clone())
+        .collect();
+    let rows = crate::app_owner::worktree_rows(rows);
+    desktop.app_owner.hold_worktrees(root, rows, &open);
 }
 
 /// Asks the actor of every loaded tab to read the tab's sidecars again.
