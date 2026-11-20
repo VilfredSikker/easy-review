@@ -386,7 +386,9 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(drawn.contains(UNPORTED), "{drawn}");
+        // The top bar draws its own unported reviewed count; look past it.
+        let outside_top_bar = drawn.replace(&format!("reviewed count {UNPORTED}"), "");
+        assert!(outside_top_bar.contains(UNPORTED), "{drawn}");
         assert!(!drawn.contains("audience early"), "{drawn}");
     }
 }
