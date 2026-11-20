@@ -1,8 +1,7 @@
 import { app } from "./app.svelte";
+import { sessionResource } from "./sessionResource.svelte";
 import { localScopes, viewIsPr, type LocalScope } from "$lib/scopeRail";
 import type { TabSummary } from "$lib/types";
-
-const DEFAULT_FEATURES = { viewBranch: true, viewUnstaged: true, viewStaged: true };
 
 /**
  * Per tab, whether the last view seen outside History was the PR diff view.
@@ -33,7 +32,7 @@ export function railView() {
   const tourScope = $derived(snapshot?.tour?.scope);
   const isPr = $derived(viewIsPr(mode, tourScope, remote, lastSourceWasPr[key] ?? false));
   const scopes = $derived<LocalScope[]>(
-    localScopes({ remote, readOnly, features: snapshot?.features ?? DEFAULT_FEATURES }),
+    localScopes({ remote, readOnly, features: sessionResource.features }),
   );
 
   $effect(() => {

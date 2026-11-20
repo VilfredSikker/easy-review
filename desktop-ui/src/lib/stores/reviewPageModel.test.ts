@@ -85,15 +85,15 @@ describe("setModeArgsFor", () => {
 describe("reviewPageAvailable", () => {
   it("hides Tour only when the view is disabled", () => {
     const off = snap({ features: { viewTour: false } as ModeSnap["features"] });
-    expect(reviewPageAvailable("tour", off)).toBe(false);
-    expect(reviewPageAvailable("diff", off)).toBe(true);
-    expect(reviewPageAvailable("tour", snap())).toBe(true);
+    expect(reviewPageAvailable("tour", off.features)).toBe(false);
+    expect(reviewPageAvailable("diff", off.features)).toBe(true);
+    expect(reviewPageAvailable("tour", snap().features)).toBe(true);
     expect(reviewPageAvailable("tour", null)).toBe(true);
   });
 
   it("hides Overview until a page that renders it has registered", () => {
-    expect(reviewPageAvailable("overview", snap())).toBe(false);
-    expect(reviewPageAvailable("overview", snap(), true)).toBe(true);
+    expect(reviewPageAvailable("overview", snap().features)).toBe(false);
+    expect(reviewPageAvailable("overview", snap().features, true)).toBe(true);
   });
 });
 

@@ -4,7 +4,7 @@
 // engine's mode set is what ADR 0006 asks for, so this module translates a page
 // into a main view plus, at most, one `set_mode`.
 
-import type { AppSnapshot, TabSummary } from "../types";
+import type { AppSnapshot, FeatureFlagsSnapshot, TabSummary } from "../types";
 import type { MainViewMode } from "./app.svelte";
 
 export type ReviewPage = "overview" | "tour" | "diff";
@@ -42,12 +42,12 @@ export function currentReviewPage(
  */
 export function reviewPageAvailable(
   page: ReviewPage,
-  snap: ModeSnapshot | null,
+  features: Pick<FeatureFlagsSnapshot, "viewTour"> | null | undefined,
   overviewRendered = false,
 ): boolean {
   if (page === "overview") return overviewRendered;
   if (page !== "tour") return true;
-  return snap?.features?.viewTour ?? true;
+  return features?.viewTour ?? true;
 }
 
 /**

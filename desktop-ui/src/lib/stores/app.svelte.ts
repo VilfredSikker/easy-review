@@ -45,6 +45,7 @@ import { resolveSettingsTarget, type SettingsSectionId, type SettingsTarget } fr
 import { syncToastMessage, type SyncReply } from "../syncToast";
 import { aiReviewFilter } from "./aiReviewFilter.svelte";
 import { layoutPanels } from "./layoutPanels.svelte";
+import { mirrorPanelToggle } from "./panelMirror";
 import { rightRail } from "./rightRail.svelte";
 import { reviewPage } from "./reviewPage.svelte";
 import { ReviewPageMemory, reviewPageTabKey } from "./reviewPageModel";
@@ -110,7 +111,7 @@ const MAX_LOGS = 500;
  * Dwell for a backend notification flagged `long` — the desktop's counterpart
  * to the TUI's `NOTIFICATION_DWELL_LONG`. Overrides `showToast`'s default.
  */
-const TOAST_LONG_MS = 8_000;
+export const TOAST_LONG_MS = 8_000;
 
 export type DiffViewMode = "unified" | "split";
 /** `overview` and `diff` show a review page (see `reviewPage`); the rest replace it. */
@@ -435,6 +436,8 @@ class AppStore {
   }
 
   private syncSnapshotToast(snapshot: AppSnapshot | null): boolean {
+    // With the flag on the backend sends each notification as a notice.
+    if (v1ServiceRequested()) return false;
     const notification = snapshot?.notification ?? null;
     if (notification === null) return false;
     if (!shouldShowNotification(notification, this.lastSnapshotNotification)) {
@@ -674,7 +677,7 @@ class AppStore {
     } else {
       layoutPanels.toggle(panel);
     }
-    void invoke("toggle_panel", { panel }).catch((e) => {
+    void mirrorPanelToggle(panel).catch((e) => {
       console.error("togglePanel failed:", e);
       this.pushLog("error", "toggle_panel", String(e));
       this.showToast("error", `toggle_panel: ${e}`);
@@ -1174,7 +1177,9 @@ class AppStore {
       tabChangeGen: run.myTabChangeGen ?? undefined,
     });
     if (!applied) return false;
-    const hadBackendToast = snapshot.notification != null;
+    // The engine never clears its notification, so past the first one no
+    // fallback shows. With the flag on the notices say what happened.
+    const hadBackendToast = v1ServiceRequested() || snapshot.notification != null;
     if (!hadBackendToast) {
       // A Sync says where it landed and which Reviewed marks it cost in one
       // toast; a second one for the marks would stack on top of it.

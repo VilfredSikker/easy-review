@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import type { ReviewerInfo } from "$lib/types";
   import { toggled } from "$lib/immutableSet";
 
@@ -19,7 +19,7 @@
 
   onMount(async () => {
     try {
-      reviewers = await invoke<ReviewerInfo[]>("list_ai_reviewers");
+      reviewers = await sessionResource.reviewers();
       highlightIdx = 0;
     } catch (e) {
       loadError = String(e);

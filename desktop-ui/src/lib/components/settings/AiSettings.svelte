@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import { settingsResource } from "$lib/stores/settingsResource.svelte";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import type { AiProviderInfo, ConfigFieldValue, ConfigHubField, ReviewModelGroups } from "$lib/types";
   import SettingsSection from "./SettingsSection.svelte";
   import SettingsRow from "./SettingsRow.svelte";
@@ -66,19 +66,19 @@
     const provider = providers.find((p) => p.id === providerId);
     if (!provider) return;
     const model = provider.models.find((m) => m.is_selected) ?? provider.models[0];
-    await invoke("set_ai_selection", { providerId, modelId: model?.id ?? null, persist: true });
+    await sessionResource.setAiSelection(providerId, model?.id ?? null);
     await onreload();
   }
 
   async function selectModel(modelId: string) {
     if (!selectedProvider) return;
-    await invoke("set_ai_selection", { providerId: selectedProvider.id, modelId, persist: true });
+    await sessionResource.setAiSelection(selectedProvider.id, modelId);
     await onreload();
   }
 
   async function selectEffort(level: string) {
     try {
-      await invoke("set_ai_effort", { effort: level === "Auto" ? null : level, persist: true });
+      await sessionResource.setAiEffort(level === "Auto" ? null : level);
       await onreload();
     } catch (e) {
       app.showToast("error", `set_ai_effort: ${e}`);

@@ -6,6 +6,7 @@
   import { terminal } from "$lib/stores/terminal.svelte";
   import { terminalRepoName } from "$lib/stores/terminalTabs";
   import { themeByName, xtermThemeFor } from "$lib/themes";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
 
   interface Props {
     sessionId: string;
@@ -28,7 +29,7 @@
 
   const branch = $derived(app.snapshot?.branch ?? "");
 
-  const xtermTheme = $derived(xtermThemeFor(themeByName(app.snapshot?.theme)));
+  const xtermTheme = $derived(xtermThemeFor(themeByName(sessionResource.theme)));
   // Re-theme a live terminal when the app theme changes.
   $effect(() => {
     if (term) term.options.theme = xtermTheme;

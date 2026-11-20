@@ -2,6 +2,7 @@
   import { onMount, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { layoutPanels } from "$lib/stores/layoutPanels.svelte";
   import { tabSnapshotCacheKey } from "$lib/tabSnapshotCache";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
@@ -211,7 +212,7 @@
   );
   /** A tour exists for the current view context (PR vs local branch). */
   const tourAvailable = $derived(
-    (snapshot?.features?.viewTour ?? true) && (snapshot?.tour?.available ?? false),
+    sessionResource.features.viewTour && (snapshot?.tour?.available ?? false),
   );
   /** False when new changes have landed since the tour was generated. */
   const tourFresh = $derived(snapshot?.tour?.fresh ?? true);

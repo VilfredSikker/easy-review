@@ -308,8 +308,8 @@ describe("panel chrome is local-first", () => {
     const fn = src.slice(src.indexOf("togglePanel("), src.indexOf("setMainView"));
     expect(fn.indexOf("layoutPanels.toggle")).toBeGreaterThan(-1);
     expect(fn.indexOf("rightRail.toggle()")).toBeGreaterThan(-1);
-    expect(fn.indexOf("layoutPanels.toggle")).toBeLessThan(fn.indexOf('invoke("toggle_panel"'));
-    expect(fn.indexOf("rightRail.toggle()")).toBeLessThan(fn.indexOf('invoke("toggle_panel"'));
+    expect(fn.indexOf("layoutPanels.toggle")).toBeLessThan(fn.indexOf("mirrorPanelToggle("));
+    expect(fn.indexOf("rightRail.toggle()")).toBeLessThan(fn.indexOf("mirrorPanelToggle("));
     expect(fn).not.toContain("ingestCommandSnapshot");
     expect(fn).not.toContain("await invoke");
   });
@@ -330,7 +330,7 @@ describe("panel chrome is local-first", () => {
     const palette = component("CommandPalette.svelte");
     expect(palette).toContain("effortChoicesForModel");
     expect(palette).toContain("function modelItem(");
-    expect(palette).toContain("effort: choice.id");
+    expect(palette).toContain("pickAi(providerId, m.id, choice.id)");
     expect(palette).toContain("if (choices.length === 0)");
     expect(palette).toContain("function goBack()");
     expect(palette).toContain("if (activeSubmenu) goBack()");

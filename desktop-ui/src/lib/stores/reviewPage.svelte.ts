@@ -1,4 +1,5 @@
 import { app } from "./app.svelte";
+import { sessionResource } from "./sessionResource.svelte";
 import {
   currentReviewPage,
   reviewLayers,
@@ -30,7 +31,7 @@ export const reviewPage = {
   },
 
   available(page: ReviewPage): boolean {
-    return reviewPageAvailable(page, app.snapshot, overviewRendered);
+    return reviewPageAvailable(page, sessionResource.features, overviewRendered);
   },
 
   /**
@@ -49,7 +50,7 @@ export const reviewPage = {
 
   show(page: ReviewPage): void {
     const snap = app.snapshot;
-    if (!reviewPageAvailable(page, snap, overviewRendered)) return;
+    if (!reviewPageAvailable(page, sessionResource.features, overviewRendered)) return;
     app.setMainView(page === "overview" ? "overview" : "diff");
     const args = snap ? setModeArgsFor(page, snap) : null;
     if (args) void app.cmd("set_mode", { ...args });
