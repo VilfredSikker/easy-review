@@ -110,6 +110,8 @@ fn send(state: &AppState, command: Command) -> er_protocol::Ack {
             notify: &|_, _| {},
             follow_selection: &|_| {},
             check_update: || panic!("no update check in this test"),
+            webviews: &crate::browser_webview::NoWebviews,
+            pick_folder: &|| None,
         },
     )
     .unwrap()
@@ -405,6 +407,8 @@ fn every_pr_command_reaches_the_sidebar_owner() {
                     notify: &|_, _| {},
                     follow_selection: &|_| {},
                     check_update: || panic!("no update check in this test"),
+                    webviews: &crate::browser_webview::NoWebviews,
+                    pick_folder: &|| None,
                 },
             );
             assert!(applied.is_ok(), "{command:?}: {applied:?}");
@@ -418,6 +422,8 @@ fn every_pr_command_reaches_the_sidebar_owner() {
                 notify: &|_, _| {},
                 follow_selection: &|_| {},
                 check_update: || panic!("no update check in this test"),
+                webviews: &crate::browser_webview::NoWebviews,
+                pick_folder: &|| None,
             },
         );
         assert_eq!(

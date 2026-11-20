@@ -991,6 +991,13 @@ fn main() {
         }
     }
 
+    // With every saved tab broken, the restore opens a Working tab here, and
+    // the launch root falls back to it for a remote PR.
+    #[cfg(feature = "v1-service")]
+    let restore_root: Option<String> = cwd_repo_root
+        .clone()
+        .or_else(|| startup_root_from_projects(&projects::load()));
+
     // Scope background tab warmup to the active project (or the restored active
     // tab's repo). Never warm cross-project stubs when active_id is missing.
     let warmer_scope_root: Option<String> = active_root_from_projects()
@@ -1051,10 +1058,9 @@ fn main() {
     }
 
     // Capture the launch-time active root for the first meta-refresh iteration.
-    let launch_root: String = {
-        let initial = app.tab().repo_root.clone();
-        initial
-    };
+    // On the service path the registry's active tab names it, after the restore.
+    #[cfg(not(feature = "v1-service"))]
+    let launch_root: String = app.tab().repo_root.clone();
 
     let gh_status_in_flight: Arc<Mutex<std::collections::HashSet<(String, String, u64)>>> =
         Arc::new(Mutex::new(std::collections::HashSet::new()));
@@ -1095,10 +1101,21 @@ fn main() {
     #[cfg(feature = "v1-service")]
     {
         let registry = Arc::clone(service.app_registry());
-        tabs::restore(&app_arc, &view_arc, &registry, &ports);
-        let (app, view, ports) = (Arc::clone(&app_arc), Arc::clone(&view_arc), ports.clone());
-        service.follow_tabs(move || tabs::follow(&app, &view, &registry, &ports));
+        tabs::restore(
+            &app_arc,
+            &view_arc,
+            &registry,
+            &ports,
+            restore_root.as_deref(),
+        );
+        let (app, view) = (Arc::clone(&app_arc), Arc::clone(&view_arc));
+        tabs::follow_service(&service, app, view, ports.clone());
     }
+    #[cfg(feature = "v1-service")]
+    let launch_root = er_desktop::app_owner::startup::launch_root(
+        service.app_registry(),
+        restore_root.as_deref(),
+    );
     #[cfg(feature = "v1-service")]
     if let Ok(app) = app_arc.lock() {
         er_desktop::arena_service::attach(&app, Arc::clone(&service));

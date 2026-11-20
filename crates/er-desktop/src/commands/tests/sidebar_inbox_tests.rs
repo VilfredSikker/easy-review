@@ -78,6 +78,8 @@ fn apply(state: &AppState, command: Command) -> Result<er_protocol::Ack, er_prot
             notify: &|_, _| {},
             follow_selection: &|_| {},
             check_update: || panic!("no update check in this test"),
+            webviews: &crate::browser_webview::NoWebviews,
+            pick_folder: &|| None,
         },
     )
     .map(|applied| applied.ack)

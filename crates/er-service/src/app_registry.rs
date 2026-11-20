@@ -102,11 +102,58 @@ pub fn resolve_tab_key(
         })
 }
 
-/// The `tabs` resource: the keys in strip order and the active one.
+/// The `tabs` resource: each tab's row in strip order, and the active key.
 pub fn tabs_resource(view: &TabsView) -> er_protocol::Tabs {
     er_protocol::Tabs {
-        tabs: view.tabs.iter().map(|tab| wire_tab_key(tab.key)).collect(),
+        tabs: view.tabs.iter().map(tab_row).collect(),
         active: view.active.map(wire_tab_key),
+    }
+}
+
+/// A tab's strip row, from its descriptor alone. The label follows the App's
+/// tab name, apart from a Working tab, whose live branch no descriptor holds:
+/// it names its repo folder.
+fn tab_row(entry: &TabEntry) -> er_protocol::TabRow {
+    use er_engine::tabs_record::TabKind;
+
+    let tab = &entry.descriptor;
+    let folder = std::path::Path::new(&tab.repo_root)
+        .file_name()
+        .map_or_else(
+            || tab.repo_root.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+    let branch = match tab.kind {
+        TabKind::LocalBranch | TabKind::LocalPr => tab.branch.clone().filter(|b| !b.is_empty()),
+        TabKind::Working | TabKind::RemotePr => None,
+    };
+    let remote = match (&tab.kind, &tab.pr_owner, &tab.pr_repo) {
+        (TabKind::RemotePr, Some(owner), Some(repo)) => Some(format!("{owner}/{repo}")),
+        _ => None,
+    };
+    let numbered = |name: &str| match tab.pr_number {
+        Some(number) => format!("{name}#{number}"),
+        None => name.to_string(),
+    };
+    let label = match (&tab.kind, &branch, &tab.pr_repo) {
+        (_, Some(branch), _) => branch.clone(),
+        (TabKind::RemotePr, None, Some(repo)) => numbered(repo),
+        (TabKind::LocalPr | TabKind::RemotePr, None, _) => numbered(&folder),
+        _ => folder,
+    };
+    er_protocol::TabRow {
+        key: wire_tab_key(entry.key),
+        kind: match tab.kind {
+            TabKind::Working => er_protocol::TabKind::Working,
+            TabKind::LocalBranch => er_protocol::TabKind::LocalBranch,
+            TabKind::LocalPr => er_protocol::TabKind::LocalPr,
+            TabKind::RemotePr => er_protocol::TabKind::RemotePr,
+        },
+        label,
+        repo_root: tab.repo_root.clone(),
+        branch,
+        pr_number: tab.pr_number,
+        remote,
     }
 }
 

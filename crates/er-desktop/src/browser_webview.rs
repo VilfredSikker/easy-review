@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use er_engine::app::App;
+use er_engine::TabKey;
 
-use crate::view_state::{BrowserLayout, TabBrowserState, ViewStateHandle};
+use crate::view_state::{BrowserLayout, BrowserUpdate, TabBrowserState, ViewStateHandle};
 use tauri::webview::{PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, WebviewUrl};
 
@@ -224,33 +224,85 @@ fn finish_browser_navigate(
     Ok(())
 }
 
-/// The browser state of the tab at `tab_idx`, copied out so no lock is held
+/// The browser state of the tab `key` names, copied out so no lock is held
 /// while the webview is driven. Takes the view lock; the caller may hold the
 /// engine lock, never the view lock.
-pub fn tab_browser(
-    engine: &App,
-    view: &ViewStateHandle,
-    tab_idx: usize,
-) -> Result<TabBrowserState, String> {
-    let tab = engine
-        .tabs
-        .get(tab_idx)
-        .ok_or_else(|| format!("tab index {tab_idx} out of range"))?;
+pub fn tab_browser(view: &ViewStateHandle, key: TabKey) -> Result<TabBrowserState, String> {
     let view = view.lock().map_err(|e| e.to_string())?;
-    Ok(view.browser(tab.key()))
+    Ok(view.browser(key))
+}
+
+/// What an `update_tab_browser` asks of the webview: a layout change or a
+/// navigation shows the page, and a write of only the other fields syncs the
+/// chrome (with the annotate flag when that is what changed). A URL saved
+/// without navigating drives nothing.
+pub fn webview_step(update: &BrowserUpdate, navigate: bool) -> (bool, Option<bool>) {
+    if update.layout.is_some() || navigate {
+        return (true, None);
+    }
+    let sync = update.url.is_none().then_some(update.annotate.is_some());
+    (false, sync)
+}
+
+/// Drives a tab's review webview after its browser state changed. The
+/// webviews stay keyed by the tab's position; the state by its key.
+pub trait TabWebviews {
+    /// Hides the others and shows the tab's page when its layout is visible.
+    fn show(&self, view: &ViewStateHandle, key: TabKey, tab_idx: usize) -> Result<(), String>;
+    /// Annotate, tooltips and split ratio, without a reload.
+    fn sync_chrome(
+        &self,
+        view: &ViewStateHandle,
+        key: TabKey,
+        tab_idx: usize,
+        sync_annotate: bool,
+    ) -> Result<(), String>;
+}
+
+impl TabWebviews for AppHandle {
+    fn show(&self, view: &ViewStateHandle, key: TabKey, tab_idx: usize) -> Result<(), String> {
+        let browser_state = self.state::<BrowserWebviewState>();
+        on_tab_selected(self, &browser_state, view, key, tab_idx)
+    }
+
+    fn sync_chrome(
+        &self,
+        view: &ViewStateHandle,
+        key: TabKey,
+        tab_idx: usize,
+        sync_annotate: bool,
+    ) -> Result<(), String> {
+        let browser_state = self.state::<BrowserWebviewState>();
+        sync_tab_browser_chrome(self, &browser_state, view, key, tab_idx, sync_annotate)
+    }
+}
+
+/// No window to drive: every step is done at once.
+#[cfg(test)]
+pub struct NoWebviews;
+
+#[cfg(test)]
+impl TabWebviews for NoWebviews {
+    fn show(&self, _: &ViewStateHandle, _: TabKey, _: usize) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn sync_chrome(&self, _: &ViewStateHandle, _: TabKey, _: usize, _: bool) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Annotate / tooltips / split-ratio updates — never reload the page.
 pub fn sync_tab_browser_chrome(
     app: &AppHandle,
     browser_state: &BrowserWebviewState,
-    engine: &App,
     view: &ViewStateHandle,
+    key: TabKey,
     tab_idx: usize,
     sync_annotate: bool,
 ) -> Result<(), String> {
     *browser_state.active_tab.lock().map_err(|e| e.to_string())? = tab_idx;
-    let browser = tab_browser(engine, view, tab_idx)?;
+    let browser = tab_browser(view, key)?;
     if browser.layout == BrowserLayout::Hidden {
         return Ok(());
     }
@@ -343,13 +395,13 @@ pub fn destroy_tab_webview(app: &AppHandle, tab_idx: usize) -> Result<(), String
 pub fn on_tab_selected(
     app: &AppHandle,
     browser_state: &BrowserWebviewState,
-    engine: &App,
     view: &ViewStateHandle,
+    key: TabKey,
     tab_idx: usize,
 ) -> Result<(), String> {
     *browser_state.active_tab.lock().map_err(|e| e.to_string())? = tab_idx;
     hide_all_webviews(app, browser_state)?;
-    let browser = tab_browser(engine, view, tab_idx)?;
+    let browser = tab_browser(view, key)?;
     if browser.layout == BrowserLayout::Hidden {
         return Ok(());
     }
@@ -523,6 +575,7 @@ pub fn browser_send_to_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use er_engine::app::App;
 
     #[test]
     fn browser_webview_uses_the_view_state() {
@@ -546,14 +599,13 @@ mod tests {
             browser.layout = BrowserLayout::Split;
         }
 
-        let selected = tab_browser(&app, &view, 1).unwrap();
+        let selected = tab_browser(&view, app.tabs[1].key()).unwrap();
         assert_eq!(selected.url, "http://localhost:5173/");
         assert_eq!(selected.layout, BrowserLayout::Split);
         assert_eq!(
-            tab_browser(&app, &view, 0).unwrap(),
+            tab_browser(&view, app.tabs[0].key()).unwrap(),
             TabBrowserState::default()
         );
-        assert!(tab_browser(&app, &view, 2).is_err(), "out of range");
     }
 
     #[test]

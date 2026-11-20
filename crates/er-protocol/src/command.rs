@@ -4,7 +4,7 @@ use ts_rs::TS;
 use crate::settings::{
     ConfigFieldValue, ModelUpsert, ProviderUpsert, ReviewModelGroups, UninstallOptions,
 };
-use crate::{Panel, ResourceChanged};
+use crate::{Panel, PrOpenHint, ResourceChanged, TabKey};
 
 /// A command the frontend sends to the backend.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -79,6 +79,86 @@ pub enum Command {
     TogglePanel {
         panel: Panel,
     },
+    /// Opens a Working tab on the active tab's repo.
+    NewTab,
+    /// Closes a tab and drops its content; the last tab stays.
+    CloseTab {
+        key: TabKey,
+    },
+    SelectTab {
+        key: TabKey,
+    },
+    /// Moves a tab to `to_idx`; the active tab stays active.
+    ReorderTabs {
+        key: TabKey,
+        to_idx: u32,
+    },
+    /// Opens a project's PR from its clone. A PR that is already open is
+    /// selected. With `replace` the new tab takes the active tab's place.
+    OpenPrReview {
+        project_id: String,
+        #[ts(type = "number")]
+        pr_number: u64,
+        replace: bool,
+    },
+    /// Opens a PR with no clone.
+    OpenRemotePr {
+        owner: String,
+        repo: String,
+        #[ts(type = "number")]
+        number: u64,
+        replace: bool,
+    },
+    /// Opens a pasted GitHub PR link, from a project's clone when one tracks
+    /// its repo.
+    OpenPrUrl {
+        url: String,
+        replace: bool,
+    },
+    OpenLocalBranch {
+        project_id: String,
+        name: String,
+        replace: bool,
+    },
+    /// Opens a branch of a project's checkout and makes the project active.
+    OpenProjectBranch {
+        project_id: String,
+        branch: String,
+        replace: bool,
+    },
+    /// Asks for a folder and opens a Working tab on it. A cancelled pick
+    /// changes nothing.
+    OpenWorktree,
+    /// Opens a Working tab on the project's root and makes it active.
+    SetActiveProject {
+        project_id: String,
+    },
+    /// Warms the open cache for a project's PR. The `Ack` comes at once.
+    PrefetchPrOpen {
+        project_id: String,
+        #[ts(type = "number")]
+        pr_number: u64,
+        hint: PrOpenHint,
+    },
+    /// Warms the open cache for a PR with no clone. The `Ack` comes at once.
+    PrefetchRemotePrOpen {
+        owner: String,
+        repo: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+    /// Writes the active tab's review browser; a field left out stays.
+    /// `navigate` also loads `url` in the tab's webview.
+    UpdateTabBrowser {
+        layout: Option<crate::BrowserLayout>,
+        url: Option<String>,
+        navigate: bool,
+        annotate: Option<bool>,
+        tooltips: Option<bool>,
+        split_ratio: Option<f32>,
+    },
+    /// Hidden, split, fullscreen, hidden: the active tab's browser layout.
+    CycleTabBrowserLayout,
     /// Puts the projects in this order. Ids it does not name keep their order
     /// after the named ones; an empty list changes nothing.
     ReorderProjects {
