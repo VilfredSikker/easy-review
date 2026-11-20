@@ -100,6 +100,18 @@ fn hide_ci_in_settings(state: &AppState) {
     assert!(state.app.lock().unwrap().config.inbox.show.ci_failed);
 }
 
+/// Polls `done` for up to five seconds, and answers whether it came true.
+fn wait_for(mut done: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
 fn unread(inbox: &Inbox) -> Vec<&str> {
     let unread = inbox.items.iter().filter(|item| item.read_at_ms.is_none());
     unread.map(|item| item.id.as_str()).collect()
@@ -133,8 +145,9 @@ fn a_mark_read_moves_the_inbox_in_its_ack() {
 }
 
 /// Every inbox command reaches the owner and answers there: the reads and
-/// clears land in `inbox`, the refresh starts the PR sweep, and the test
-/// notification is refused in a process that cannot show one.
+/// clears land in `inbox`, the refresh runs the PR sweep, which stamps the
+/// inbox's last refresh, and the test notification is refused in a process
+/// that cannot show one.
 #[test]
 fn every_inbox_command_reaches_the_sidebar_owner() {
     with_storage(|dir| {
@@ -165,7 +178,13 @@ fn every_inbox_command_reaches_the_sidebar_owner() {
         send(&state, Command::ClearReadInboxItems);
         assert!(fetch_inbox(&state).1.items.is_empty());
 
+        assert_eq!(state.inbox.lock().unwrap().last_refresh_ms, 42);
         send(&state, Command::RefreshNotifications);
+        let swept = wait_for(|| {
+            let running = state.loading.lock().unwrap().pr_list;
+            !running && state.inbox.lock().unwrap().last_refresh_ms != 42
+        });
+        assert!(swept, "the refresh did not run the PR sweep");
 
         let refused = apply(&state, Command::TestNativeNotification).unwrap_err();
         assert_eq!(refused.kind, ErErrorKind::Refused, "{refused:?}");
