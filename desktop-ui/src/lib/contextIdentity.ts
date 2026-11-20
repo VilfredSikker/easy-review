@@ -1,3 +1,4 @@
+import { detectedPrNumber, sidebarProjects } from "./sidebarReads";
 import type { AppSnapshot, PrInfo, ProjectSnapshot } from "./types";
 
 function firstNonEmpty(...vals: Array<string | null | undefined>): string {
@@ -63,7 +64,7 @@ export function resolveContextTitle(
   const prNumber =
     tab?.pr_number ??
     snapshot.pr?.number ??
-    snapshot.detected_pr_number ??
+    detectedPrNumber(snapshot) ??
     snapshot.github?.number ??
     null;
   const repo = repoName(snapshot, tab?.remote);
@@ -71,7 +72,7 @@ export function resolveContextTitle(
   if (prNumber == null) {
     return { repo, prNumber, title: firstNonEmpty(tab?.label, snapshot.branch) };
   }
-  const listed = findPrInProjects(snapshot.projects, prNumber, tab?.remote);
+  const listed = findPrInProjects(sidebarProjects(snapshot), prNumber, tab?.remote);
   const title = firstNonEmpty(
     snapshot.pr?.title,
     snapshot.github?.title,
@@ -89,7 +90,7 @@ function repoName(
   const gh = snapshot.github;
   const slug = firstNonEmpty(tabRemote, gh ? `${gh.owner}/${gh.repo}` : "");
   if (slug) return slug.split("/").pop() ?? "";
-  return firstNonEmpty(snapshot.projects?.find((p) => p.is_active)?.name);
+  return firstNonEmpty(sidebarProjects(snapshot).find((p) => p.is_active)?.name);
 }
 
 /** Branch title + base ref for the context bar. Empty snapshot.branch/base
@@ -108,12 +109,12 @@ export function resolveContextIdentity(
   const prNumber =
     tab?.pr_number ??
     snapshot.pr?.number ??
-    snapshot.detected_pr_number ??
+    detectedPrNumber(snapshot) ??
     snapshot.github?.number ??
     null;
   const listed =
     prNumber != null
-      ? findPrInProjects(snapshot.projects, prNumber, tab?.remote)
+      ? findPrInProjects(sidebarProjects(snapshot), prNumber, tab?.remote)
       : null;
 
   return {

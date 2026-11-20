@@ -5,11 +5,16 @@ import type { Command } from "$lib/protocol/generated/Command";
 import type { ErError } from "$lib/protocol/generated/ErError";
 import type { Project } from "$lib/protocol/generated/Project";
 import type { ProjectReviewSettingsPatch } from "$lib/protocol/generated/ProjectReviewSettingsPatch";
+import type { Prs } from "$lib/protocol/generated/Prs";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { AppSnapshot, BranchInfo, ProjectSnapshot, TabSummary } from "$lib/types";
+import { projectPrFields, prsKey } from "./prsAdapter";
 import { resourceKeyId, type ResourceStore } from "./resourceStore";
 
 export const PROJECTS_KEY: ResourceKey = { kind: "projects" };
+
+/** The review settings one edit changes; the rest stay as they are. */
+export type ReviewSettingsChange = Partial<ProjectReviewSettingsPatch>;
 
 export function branchesKey(project: string): ResourceKey {
   return { kind: "branches", project };
@@ -56,24 +61,22 @@ export function branchRows(
 }
 
 /**
- * The resource's rows in its order. The PR lists still come from the
- * snapshot's row with the same id until they get their own resource, and a
- * project's branches from that row until its `branches` resource arrives.
+ * The resource's rows in its order: each project's branches from its
+ * `branches` resource and its PR lists from its remote's `prs`, each empty
+ * until that resource arrives. `nowMs` ages the PR lists.
  */
 export function projectsFromResource(
   wire: readonly Project[],
   branches: (project: string) => Branches | undefined,
-  rows: readonly ProjectSnapshot[],
+  prs: (remote: string) => Prs | undefined,
   active: TabSummary | null,
+  nowMs: number,
 ): ProjectSnapshot[] {
-  const byId = new Map(rows.map((row) => [row.id, row]));
   return wire.map((project) => {
-    const row = byId.get(project.id);
     const isActive = isActiveProject(project, active);
     const held = branches(project.id);
-    const { local, auto } = held
-      ? branchRows(held, active, isActive)
-      : { local: row?.local_branches ?? [], auto: row?.auto_branches ?? [] };
+    const { local, auto } = held ? branchRows(held, active, isActive) : { local: [], auto: [] };
+    const row = { id: project.id, remote: project.remote, remote_only: project.remoteOnly };
     return {
       id: project.id,
       name: project.name,
@@ -83,16 +86,9 @@ export function projectsFromResource(
       is_active: isActive,
       local_branches: local,
       auto_branches: auto,
-      saved_prs: row?.saved_prs ?? [],
-      my_prs: row?.my_prs ?? [],
-      prs_to_review: row?.prs_to_review ?? [],
-      recent_prs: row?.recent_prs ?? [],
-      recently_merged: row?.recently_merged ?? [],
-      pr_cache_stale: row?.pr_cache_stale,
-      pr_cache_age_ms: row?.pr_cache_age_ms,
+      ...projectPrFields(row, project.remote ? prs(project.remote) : undefined, nowMs),
       auto_triage_max_diff_kb: project.autoTriageMaxDiffKb,
       review_ignore_globs: project.reviewIgnoreGlobs,
-      dismissed_prs: row?.dismissed_prs ?? [],
     };
   });
 }
@@ -113,6 +109,10 @@ interface ProjectsAdapterDeps {
   /** A plain command call, for the old path's one command that answers a list. */
   invoke: <T>(name: string, args: Record<string, unknown>) => Promise<T>;
   report: (command: string, e: ErError) => void;
+  /** The clock the PR lists are aged by. */
+  now?: () => number;
+  /** Told how long a flag-on write took from the call until its `Ack`'s versions were held. */
+  profile?: (command: string, ms: number) => void;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -123,21 +123,22 @@ interface ProjectsAdapterDeps {
  */
 export class ProjectsAdapter {
   private readonly branchHolds = new Map<string, () => void>();
+  private readonly prHolds = new Map<string, () => void>();
 
   constructor(private readonly deps: ProjectsAdapterDeps) {
     if (deps.flagOn) deps.store.show(PROJECTS_KEY);
   }
 
+  /** Until the `projects` resource first arrives, the flag-on page shows the snapshot's rows. */
   get projects(): ProjectSnapshot[] {
-    const rows = this.deps.snapshot()?.projects ?? [];
-    if (!this.deps.flagOn) return rows;
-    const held = this.deps.store.get(PROJECTS_KEY)?.value;
-    if (held?.kind !== "projects") return rows;
+    const held = this.deps.flagOn ? this.deps.store.get(PROJECTS_KEY)?.value : undefined;
+    if (held?.kind !== "projects") return this.deps.snapshot()?.projects ?? [];
     const branches = (project: string) => {
       const value = this.deps.store.get(branchesKey(project))?.value;
       return value?.kind === "branches" ? value : undefined;
     };
-    return projectsFromResource(held.projects, branches, rows, this.deps.activeTab());
+    const now = (this.deps.now ?? Date.now)();
+    return projectsFromResource(held.projects, branches, (remote) => this.prs(remote), this.deps.activeTab(), now);
   }
 
   /** The ids the `projects` resource lists; empty until it arrives or with the flag off. */
@@ -146,18 +147,31 @@ export class ProjectsAdapter {
     return held?.kind === "projects" ? held.projects.map((p) => p.id) : [];
   }
 
+  /** Each remote the listed projects name, once, as the PR cache keys it. */
+  get remotes(): string[] {
+    const held = this.deps.store.get(PROJECTS_KEY)?.value;
+    if (held?.kind !== "projects") return [];
+    return [...new Set(held.projects.flatMap((p) => (p.remote ? [p.remote] : [])))];
+  }
+
+  /** The `prs` values held, in the order the projects name their remotes. */
+  get heldPrs(): Prs[] {
+    return this.remotes.flatMap((remote) => {
+      const value = this.prs(remote);
+      return value ? [value] : [];
+    });
+  }
+
+  /** Shows the PR lists of exactly these remotes, releasing the rest. */
+  showPrs(remotes: readonly string[]): void {
+    if (!this.deps.flagOn) return;
+    showExactly(this.prHolds, remotes, (remote) => this.deps.store.show(prsKey(remote)));
+  }
+
   /** Shows the branches of exactly these projects, releasing the rest. */
   showBranches(ids: readonly string[]): void {
     if (!this.deps.flagOn) return;
-    const wanted = new Set(ids);
-    for (const [id, release] of this.branchHolds) {
-      if (wanted.has(id)) continue;
-      release();
-      this.branchHolds.delete(id);
-    }
-    for (const id of wanted) {
-      if (!this.branchHolds.has(id)) this.branchHolds.set(id, this.deps.store.show(branchesKey(id)));
-    }
+    showExactly(this.branchHolds, ids, (id) => this.deps.store.show(branchesKey(id)));
   }
 
   reorder(orderedIds: string[]): Promise<void> {
@@ -184,11 +198,58 @@ export class ProjectsAdapter {
     );
   }
 
-  patchReviewSettings(projectId: string, patch: ProjectReviewSettingsPatch): Promise<void> {
+  patchReviewSettings(projectId: string, change: ReviewSettingsChange): Promise<void> {
+    const patch: ProjectReviewSettingsPatch = {
+      autoTriageMaxDiffKb: null,
+      reviewIgnoreGlobAdd: null,
+      reviewIgnoreGlobRemove: null,
+      ...change,
+    };
     return this.write(
       "patch_project_review_settings",
       { projectId, patch },
       { kind: "patch_project_review_settings", project: projectId, patch },
+    );
+  }
+
+  refreshPrList(): Promise<void> {
+    return this.write("refresh_pr_list", {}, { kind: "refresh_pr_list" });
+  }
+
+  refreshProjectPrList(projectId: string): Promise<void> {
+    return this.write("refresh_project_pr_list", { projectId }, { kind: "refresh_project_pr_list", project: projectId });
+  }
+
+  /**
+   * Flag off, the old command paints the pin at once. Flag on, nothing
+   * paints: the server keeps the 50-pin cap, and the `prs` push shows it.
+   */
+  savePr(projectId: string, prNumber: number, title: string): Promise<void> {
+    return this.write(
+      "save_pr",
+      { projectId, prNumber, title },
+      { kind: "save_pr", project: projectId, number: prNumber, title },
+    );
+  }
+
+  unsavePr(projectId: string, prNumber: number): Promise<void> {
+    return this.write("unsave_pr", { projectId, prNumber }, { kind: "unsave_pr", project: projectId, number: prNumber });
+  }
+
+  /** As `savePr`: flag on, the server's dismissed filter shows in the `prs` push. */
+  dismissPr(projectId: string, prNumber: number): Promise<void> {
+    return this.write(
+      "dismiss_remote_pr",
+      { projectId, prNumber },
+      { kind: "dismiss_pr", project: projectId, number: prNumber },
+    );
+  }
+
+  undismissPr(projectId: string, prNumber: number): Promise<void> {
+    return this.write(
+      "undismiss_remote_pr",
+      { projectId, prNumber },
+      { kind: "undismiss_pr", project: projectId, number: prNumber },
     );
   }
 
@@ -209,6 +270,7 @@ export class ProjectsAdapter {
    */
   private async write(name: string, args: Record<string, unknown>, command: Command): Promise<void> {
     if (!this.deps.flagOn) return this.deps.command(name, args);
+    const started = performance.now();
     let ack;
     try {
       ack = await this.deps.store.send(command);
@@ -223,10 +285,30 @@ export class ProjectsAdapter {
       if (Date.now() > deadline) return;
       await sleep(16);
     }
+    this.deps.profile?.(name, performance.now() - started);
+  }
+
+  private prs(remote: string): Prs | undefined {
+    const value = this.deps.store.get(prsKey(remote))?.value;
+    return value?.kind === "prs" ? value : undefined;
   }
 
   private isShown(key: ResourceKey): boolean {
     if (resourceKeyId(key) === resourceKeyId(PROJECTS_KEY)) return true;
+    if (key.kind === "prs") return this.prHolds.has(key.remote);
     return key.kind === "branches" && this.branchHolds.has(key.project);
+  }
+}
+
+/** Holds exactly `wanted` in `holds`, releasing the rest and showing what is new. */
+function showExactly(holds: Map<string, () => void>, wanted: readonly string[], show: (id: string) => () => void): void {
+  const keep = new Set(wanted);
+  for (const [id, release] of holds) {
+    if (keep.has(id)) continue;
+    release();
+    holds.delete(id);
+  }
+  for (const id of keep) {
+    if (!holds.has(id)) holds.set(id, show(id));
   }
 }

@@ -11,6 +11,7 @@
   import { reviewPageTabKey } from "$lib/stores/reviewPageModel";
   import { githubStatusForActiveTab, resolveActivePrNumber, resolveActivePrUrl } from "$lib/prUrl";
   import { resolveContextIdentity } from "$lib/contextIdentity";
+  import { sidebarWorktrees } from "$lib/sidebarReads";
   import { openExternalUrl } from "$lib/openExternalUrl";
   import { avatarToken, initials } from "$lib/activityTimeline";
   import type { MergeBoxTone } from "$lib/prMergeBox";
@@ -63,7 +64,7 @@
   const tabOwnsPr = $derived(activeRow?.pr_number != null);
   const isMerged = $derived(
     github?.state === "MERGED" ||
-      (!tabOwnsPr && (snap?.worktrees.find((w) => w.is_current)?.is_merged ?? false)),
+      (!tabOwnsPr && (sidebarWorktrees(snap).find((w) => w.is_current)?.is_merged ?? false)),
   );
   const checksStatus = $derived.by((): "success" | "pending" | "failure" | null => {
     if (checks.length === 0) return null;

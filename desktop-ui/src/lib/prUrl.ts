@@ -1,3 +1,4 @@
+import { detectedPrNumber, sidebarProjects, sidebarWorktrees } from "./sidebarReads";
 import type { AppSnapshot, GithubStatusSnapshot, TabSummary } from "./types";
 
 /** Parse `owner/repo` from a GitHub git remote URL (HTTPS or SSH). */
@@ -33,12 +34,13 @@ export function resolveActivePrNumber(snapshot: AppSnapshot | null): number | nu
   const tab = activeTab(snapshot);
   if (tab?.pr_number != null) return tab.pr_number;
   if (snapshot.pr?.number != null) return snapshot.pr.number;
-  if (snapshot.detected_pr_number != null) return snapshot.detected_pr_number;
+  const detected = detectedPrNumber(snapshot);
+  if (detected != null) return detected;
 
   const github = snapshot.github?.number ?? null;
   if (github != null) return github;
 
-  const currentWorktree = snapshot.worktrees.find((w) => w.is_current) ?? null;
+  const currentWorktree = sidebarWorktrees(snapshot).find((w) => w.is_current) ?? null;
   return currentWorktree?.pr_number ?? null;
 }
 
@@ -58,8 +60,8 @@ export function githubStatusForActiveTab(
 function activeRemote(snapshot: AppSnapshot): string | null {
   return (
     activeTab(snapshot)?.remote ??
-    snapshot.worktrees.find((w) => w.is_current)?.remote ??
-    snapshot.projects.find((p) => p.is_active)?.remote ??
+    sidebarWorktrees(snapshot).find((w) => w.is_current)?.remote ??
+    sidebarProjects(snapshot).find((p) => p.is_active)?.remote ??
     null
   );
 }

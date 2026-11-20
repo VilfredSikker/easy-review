@@ -3,6 +3,7 @@ import { resourceClient, type Invoke } from "$lib/protocol/client";
 import type { Command } from "$lib/protocol/generated/Command";
 import type { ProjectSnapshot, TabSummary } from "$lib/types";
 import { ProjectsAdapter, branchRows, branchesKey, isActiveProject, remoteKey } from "./projectsAdapter";
+import { prsKey } from "./prsAdapter";
 import { ResourceStore } from "./resourceStore";
 
 function tab(o: Partial<TabSummary> = {}): TabSummary {
@@ -61,24 +62,65 @@ const wireBranches = (project: string) => ({
   autoBranches: [],
 });
 
+function prRow(number: number, o: Record<string, unknown> = {}) {
+  return {
+    number,
+    title: `PR ${number}`,
+    headRef: `branch-${number}`,
+    baseRef: "main",
+    headOid: "",
+    state: "OPEN",
+    isDraft: false,
+    author: "me",
+    assignees: [],
+    reviewers: [],
+    checksState: null,
+    reviewDecision: null,
+    mergedAt: null,
+    updatedAt: "",
+    approvedByMe: false,
+    ...o,
+  };
+}
+
+/** `Acme/A`'s PR lists, as the server builds them; `saved` follows the pins sent. */
+function wirePrs(saved: number[]) {
+  return {
+    kind: "prs",
+    rows: [prRow(5, { title: "Five", headRef: "feature" }), prRow(9, { title: "Nine" })],
+    fetchedAtMs: 1_000,
+    projects: [{ project: "a", mine: [5], toReview: [], recentlyMerged: [], saved, recent: [], dismissed: [] }],
+  };
+}
+
 function backend() {
   const calls: { command: string; args: Record<string, unknown> }[] = [];
   let version = 3;
+  const saved: number[] = [];
   const run: Invoke = async <T,>(command: string, args: Record<string, unknown>): Promise<T> => {
     calls.push({ command, args });
     if (command === "er_fetch") {
       // After a send the fetch answers a task later, as IPC does, so a write
       // that returned before it would see the old version.
       if (version > 3) await new Promise((r) => setTimeout(r, 5));
-      const keys = args.keys as { kind: string; project?: string }[];
+      const keys = args.keys as { kind: string; project?: string; remote?: string }[];
       return keys.map((key) => {
         if (key.kind === "projects") return { key, version, value: { kind: "projects", projects: wireProjects } };
+        if (key.kind === "prs") {
+          const value = key.remote === "Acme/A" ? wirePrs([...saved]) : { kind: "prs", rows: [], fetchedAtMs: null, projects: [] };
+          return { key, version, value };
+        }
         if (key.kind === "available_branches") return { key, version: 0, value: { kind: "available_branches", branches: ["spare"] } };
         return { key, version, value: wireBranches(key.project ?? "") };
       }) as T;
     }
     if (command === "er_send") {
       version += 1;
+      const sent = args.command as Command;
+      if (sent.kind === "save_pr") {
+        saved.unshift(sent.number);
+        return { changed: [{ key: prsKey("Acme/A"), version }], created: null } as T;
+      }
       return { changed: [{ key: { kind: "projects" }, version }], created: null } as T;
     }
     throw Object.assign(new Error(`unexpected ${command}`), { kind: "unsupported" });
@@ -106,6 +148,7 @@ function adapter(flagOn: boolean, active: TabSummary | null = tab()) {
       return ["old-path"] as T;
     },
     report: () => {},
+    now: () => 61_000,
     sleep: settle,
   });
   return { calls, old, projects, store };
@@ -127,20 +170,89 @@ describe("ProjectsAdapter", () => {
     const { calls, projects } = adapter(true);
     await settle();
     projects.showBranches(projects.projectIds);
+    projects.showPrs(projects.remotes);
     await settle();
     const rows = projects.projects;
     expect(rows.map((p) => p.id)).toEqual(["b", "a"]);
     // The active tab is on /src/b, whatever the snapshot's flag says.
     expect(rows.map((p) => p.is_active)).toEqual([true, false]);
     const a = rows[1];
-    expect(a.my_prs.map((p) => p.number)).toEqual([5]);
+    // The lists come from `prs(Acme/A)`, which says nothing of the snapshot's row.
+    expect(a.my_prs.map((p) => [p.number, p.title, p.head_ref])).toEqual([[5, "Five", "feature"]]);
+    expect([a.pr_cache_stale, a.pr_cache_age_ms]).toEqual([false, 60_000]);
+    expect(rows[0].my_prs).toEqual([]);
     expect(a.review_ignore_globs).toEqual(["*.lock"]);
     expect(a.local_branches.map((b) => [b.name, b.is_current, b.worktree_path, b.pr_number])).toEqual([
       ["main", true, null, null],
       ["feature", false, "/wt/a", 5],
     ]);
     const fetched = calls.flatMap((c) => (c.command === "er_fetch" ? (c.args.keys as unknown[]) : []));
-    expect(fetched).toEqual([{ kind: "projects" }, { kind: "branches", project: "b" }, { kind: "branches", project: "a" }]);
+    expect(fetched).toEqual([
+      { kind: "projects" },
+      { kind: "branches", project: "b" },
+      { kind: "branches", project: "a" },
+      { kind: "prs", remote: "Acme/A" },
+    ]);
+  });
+
+  it("shows each named remote's PR lists once, keyed by the remote as the project writes it", async () => {
+    const { calls, projects } = adapter(true);
+    await settle();
+    expect(projects.remotes).toEqual(["Acme/A"]);
+    projects.showPrs(["Acme/A", "Acme/A"]);
+    projects.showPrs(["Acme/A"]);
+    await settle();
+    const prsFetches = calls
+      .flatMap((c) => (c.command === "er_fetch" ? (c.args.keys as { kind: string }[]) : []))
+      .filter((k) => k.kind === "prs");
+    expect(prsFetches).toEqual([{ kind: "prs", remote: "Acme/A" }]);
+    expect(projects.heldPrs.map((p) => p.rows.map((r) => r.number))).toEqual([[5, 9]]);
+  });
+
+  it("sends the PR writes through the old commands with the flag off", async () => {
+    const { calls, old, projects } = adapter(false);
+    await projects.savePr("a", 9, "Nine");
+    await projects.unsavePr("a", 9);
+    await projects.dismissPr("a", 5);
+    await projects.undismissPr("a", 5);
+    await projects.refreshProjectPrList("a");
+    await projects.refreshPrList();
+    expect(old).toEqual([
+      { name: "save_pr", args: { projectId: "a", prNumber: 9, title: "Nine" } },
+      { name: "unsave_pr", args: { projectId: "a", prNumber: 9 } },
+      { name: "dismiss_remote_pr", args: { projectId: "a", prNumber: 5 } },
+      { name: "undismiss_remote_pr", args: { projectId: "a", prNumber: 5 } },
+      { name: "refresh_project_pr_list", args: { projectId: "a" } },
+      { name: "refresh_pr_list", args: {} },
+    ]);
+    expect(calls).toEqual([]);
+  });
+
+  it("with the flag on a pin paints nothing and shows once the prs push lands", async () => {
+    const { calls, old, projects } = adapter(true);
+    await settle();
+    projects.showPrs(projects.remotes);
+    await settle();
+    const before = snapshot.projects[0].saved_prs;
+    await projects.savePr("a", 9, "Nine");
+    const sent = calls.filter((c) => c.command === "er_send").map((c) => c.args.command);
+    expect(sent).toEqual([{ kind: "save_pr", project: "a", number: 9, title: "Nine" }]);
+    expect(old).toEqual([]);
+    // No paint on the snapshot: the row comes from the server's list.
+    expect(snapshot.projects[0].saved_prs).toBe(before);
+    expect(snapshot.projects[0].saved_prs).toEqual([]);
+    const a = projects.projects.find((p) => p.id === "a");
+    expect(a?.saved_prs.map((p) => [p.number, p.title])).toEqual([[9, "Nine"]]);
+  });
+
+  it("sends the review-settings change with every other field left as it is", async () => {
+    const { calls, projects } = adapter(true);
+    await projects.patchReviewSettings("a", { autoTriageMaxDiffKb: 12 });
+    expect(calls.find((c) => c.command === "er_send")?.args.command).toEqual({
+      kind: "patch_project_review_settings",
+      project: "a",
+      patch: { autoTriageMaxDiffKb: 12, reviewIgnoreGlobAdd: null, reviewIgnoreGlobRemove: null },
+    });
   });
 
   it("marks the branch the active tab views as current in the active project", async () => {

@@ -159,6 +159,7 @@ describe("resource source scans", () => {
       join("lib", "contextIdentity.ts"),
       join("lib", "stores", "reviewPageModel.ts"),
       join("lib", "prUrl.ts"),
+      join("lib", "sidebarReads.ts"),
       join("lib", "annotationDraftCache.ts"),
       join("lib", "documentPreviewCache.ts"),
       join("lib", "imagePreview.ts"),

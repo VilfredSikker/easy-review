@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { ReviewSettingsChange } from "$lib/stores/projectsAdapter";
   import type { ProjectSnapshot } from "$lib/types";
   import SettingsSection from "./SettingsSection.svelte";
   import SettingsRow from "./SettingsRow.svelte";
@@ -8,7 +9,7 @@
 
   interface Props {
     project: ProjectSnapshot;
-    onpatch: (patch: Record<string, unknown>) => Promise<void>;
+    onpatch: (patch: ReviewSettingsChange) => Promise<void>;
   }
 
   const { project, onpatch }: Props = $props();
