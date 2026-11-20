@@ -3,7 +3,7 @@ use ts_rs::TS;
 
 use crate::{
     AvailableBranches, AvailablePrs, Branches, Panels, Projects, Prs, Risk, Session, Settings,
-    Worktrees,
+    TabRow, Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -80,7 +80,7 @@ pub enum Resource {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Tabs {
-    pub tabs: Vec<TabKey>,
+    pub tabs: Vec<TabRow>,
     pub active: Option<TabKey>,
 }
 
