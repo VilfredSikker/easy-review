@@ -6,8 +6,9 @@
 
 use er_protocol::{
     Ack, AvailableBranches, Branch, Branches, Command, ConfigFieldValue, ErError, ErErrorKind,
-    ModelUpsert, Notice, NoticeLevel, Project, ProjectReviewSettingsPatch, Projects, Resource,
-    ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, UninstallOptions, Versioned,
+    ModelUpsert, Notice, NoticeLevel, Panel, Panels, Project, ProjectReviewSettingsPatch, Projects,
+    Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, UninstallOptions,
+    Versioned,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -172,8 +173,52 @@ fn a_notice_carries_its_sequence_level_and_text() -> serde_json::Result<()> {
             seq: 4,
             level: NoticeLevel::Info,
             message: "Include {prompt} in args".into(),
+            long: false,
         },
-        r#"{"seq":4,"level":"info","message":"Include {prompt} in args"}"#,
+        r#"{"seq":4,"level":"info","message":"Include {prompt} in args","long":false}"#,
+    )?;
+    assert_wire(
+        &Notice {
+            seq: 5,
+            level: NoticeLevel::Success,
+            message: "Codex: 12 models".into(),
+            long: true,
+        },
+        r#"{"seq":5,"level":"success","message":"Codex: 12 models","long":true}"#,
+    )
+}
+
+/// The AI picker's writes carry no persist flag: every pick saves.
+#[test]
+fn the_session_commands_are_tagged_and_carry_no_persist_flag() -> serde_json::Result<()> {
+    assert_wire(&ResourceKey::Session, r#"{"kind":"session"}"#)?;
+    assert_wire(&ResourceKey::Panels, r#"{"kind":"panels"}"#)?;
+    assert_wire(
+        &Command::SetAiSelection {
+            provider_id: "codex".into(),
+            model_id: Some("m".into()),
+            effort: None,
+        },
+        r#"{"kind":"set_ai_selection","providerId":"codex","modelId":"m","effort":null}"#,
+    )?;
+    assert_wire(
+        &Command::SetAiEffort {
+            effort: Some("high".into()),
+        },
+        r#"{"kind":"set_ai_effort","effort":"high"}"#,
+    )?;
+    assert_wire(&Command::CheckAppUpdate, r#"{"kind":"check_app_update"}"#)?;
+    assert_wire(
+        &Command::TogglePanel { panel: Panel::Tree },
+        r#"{"kind":"toggle_panel","panel":"tree"}"#,
+    )?;
+    assert_wire(
+        &Resource::Panels(Panels {
+            left: true,
+            tree: false,
+            right: true,
+        }),
+        r#"{"kind":"panels","left":true,"tree":false,"right":true}"#,
     )
 }
 

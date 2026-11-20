@@ -15,6 +15,7 @@ mod error;
 mod notice;
 mod resource;
 mod risk;
+mod session;
 mod settings;
 mod sidebar;
 
@@ -25,9 +26,10 @@ pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
 };
 pub use risk::{MatchedRiskRule, Risk, RiskFile, RiskRule, RiskRuleSource, RiskTier};
+pub use session::{AppUpdate, Panel, Panels, Reviewer, Session, WatchStatus};
 pub use settings::{
-    AiModel, AiProvider, ConfigFieldValue, ConfigHubField, ModelUpsert, ProviderUpsert,
-    ReviewModelGroups, ReviewModelRef, Settings, SettingsRows, UninstallOptions, UninstallPreview,
-    UninstallTarget,
+    AiModel, AiProvider, ConfigFieldValue, ConfigHubField, DisplayConfig, FeatureFlags,
+    ModelUpsert, ProviderUpsert, ReviewModelGroups, ReviewModelRef, Settings, SettingsRows,
+    UninstallOptions, UninstallPreview, UninstallTarget,
 };
 pub use sidebar::{AvailableBranches, Branch, Branches, Project, Projects};

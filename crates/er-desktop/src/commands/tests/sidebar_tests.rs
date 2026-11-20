@@ -537,7 +537,11 @@ fn er_send_routes_a_project_command_to_the_sidebar_owner() {
             Command::ReorderProjects {
                 ordered: vec!["b".into(), "a".into()],
             },
-            &|_, _| {},
+            &resources::send::Effects {
+                notify: &|_, _| {},
+                follow_selection: &|_| {},
+                check_update: || panic!("no update check in this test"),
+            },
         )
         .unwrap();
         let (version, _) = state.app_owner.projects();

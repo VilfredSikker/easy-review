@@ -4,8 +4,9 @@
 //! commands and the `settings` resource answer the same JSON.
 
 use er_engine::config::{
-    AiModelInfo, AiProviderInfo, ConfigFieldValue, ConfigHubFieldDto, ModelUpsert, ProviderUpsert,
-    ReviewModelGroups, ReviewModelRef, RiskRuleDto, RiskRuleSource, RiskTier,
+    AiModelInfo, AiProviderInfo, ConfigFieldValue, ConfigHubFieldDto, DisplayConfig, FeatureFlags,
+    ModelUpsert, ProviderUpsert, ReviewModelGroups, ReviewModelRef, RiskRuleDto, RiskRuleSource,
+    RiskTier,
 };
 use er_engine::uninstall::{UninstallOptions, UninstallPreview};
 use er_protocol as wire;
@@ -26,6 +27,31 @@ pub fn settings_resource(view: &SettingsView) -> wire::Settings {
         active_effort: hub.active_effort.clone(),
         family_options: hub.family_options.clone(),
         uninstall_preview: view.uninstall_preview.as_ref().map(uninstall_preview),
+        theme: view.config.display.theme.clone(),
+        features: features(&view.config.features),
+        display: display(&view.config.display),
+        arena_enabled: true,
+    }
+}
+
+fn features(f: &FeatureFlags) -> wire::FeatureFlags {
+    wire::FeatureFlags {
+        view_branch: f.view_branch,
+        view_unstaged: f.view_unstaged,
+        view_staged: f.view_staged,
+        view_history: f.view_history,
+        view_conflicts: f.view_conflicts,
+        view_hidden: f.view_hidden,
+        view_tour: f.view_tour,
+    }
+}
+
+fn display(d: &DisplayConfig) -> wire::DisplayConfig {
+    wire::DisplayConfig {
+        line_numbers: d.line_numbers,
+        wrap_lines: d.wrap_lines,
+        split_diff: d.split_diff,
+        tab_width: d.tab_width,
     }
 }
 
@@ -134,11 +160,23 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
             remote_repo,
             paths,
         },
+        wire::Command::SetAiSelection {
+            provider_id,
+            model_id,
+            effort,
+        } => SettingsCommand::SetDefaultAiSelection {
+            provider_id,
+            model_id,
+            effort,
+        },
+        wire::Command::SetAiEffort { effort } => SettingsCommand::SetDefaultAiEffort { effort },
         other @ (wire::Command::ReorderProjects { .. }
         | wire::Command::DeleteProject { .. }
         | wire::Command::AddTrackedBranch { .. }
         | wire::Command::RemoveTrackedBranch { .. }
-        | wire::Command::PatchProjectReviewSettings { .. }) => return Err(Box::new(other)),
+        | wire::Command::PatchProjectReviewSettings { .. }
+        | wire::Command::CheckAppUpdate
+        | wire::Command::TogglePanel { .. }) => return Err(Box::new(other)),
     })
 }
 

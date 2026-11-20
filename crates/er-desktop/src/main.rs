@@ -702,6 +702,7 @@ fn active_pr_identity(
 fn run_active_branch_watcher(
     watcher_app: Arc<Mutex<App>>,
     watcher_status: WatchStatusState,
+    watcher_session: er_desktop::state::SessionClock,
     watcher_desktop_rev: Arc<std::sync::atomic::AtomicU64>,
 ) {
     use er_engine::watch::{FileWatcher, WatchEvent};
@@ -726,25 +727,25 @@ fn run_active_branch_watcher(
                 match FileWatcher::new(Path::new(root_path), 250, tx.clone()) {
                     Ok(w) => {
                         _watcher = Some(w);
-                        if let Ok(mut s) = watcher_status.lock() {
-                            *s = WatchStatusSnapshot {
+                        watcher_session.set_watch_status(
+                            &watcher_status,
+                            WatchStatusSnapshot {
                                 active: true,
                                 branch: Some(branch.clone()),
                                 root_path: Some(root_path.clone()),
-                            };
-                        }
+                            },
+                        );
                     }
                     Err(e) => {
                         log::error!(
                             "er-desktop: active-branch watcher failed for {root_path}: {e}"
                         );
-                        if let Ok(mut s) = watcher_status.lock() {
-                            *s = WatchStatusSnapshot::default();
-                        }
+                        watcher_session
+                            .set_watch_status(&watcher_status, WatchStatusSnapshot::default());
                     }
                 }
-            } else if let Ok(mut s) = watcher_status.lock() {
-                *s = WatchStatusSnapshot::default();
+            } else {
+                watcher_session.set_watch_status(&watcher_status, WatchStatusSnapshot::default());
             }
 
             // Mirror checkout root onto the active tab so refresh_diff
@@ -1088,6 +1089,9 @@ fn main() {
     // The resource relay's wakes; the relay starts with the window.
     #[cfg(feature = "v1-service")]
     let (resource_wake, resource_wakes) = std::sync::mpsc::channel();
+    let session = er_desktop::state::SessionClock::default();
+    #[cfg(feature = "v1-service")]
+    session.wake_with(resource_wake.clone());
     #[cfg(feature = "v1-service")]
     let service = Arc::new(
         er_desktop::service::ServiceState::with_revision_relay(ports.clone(), {
@@ -1144,6 +1148,7 @@ fn main() {
         tauri_app_handle: Arc::clone(&tauri_app_handle),
         auto_triage_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         line_commits_cache: Arc::default(),
+        session: session.clone(),
     };
     let state = AppState::new(desktop.clone(), Arc::clone(&app_arc));
     #[cfg(feature = "v1-service")]
@@ -1583,8 +1588,16 @@ fn main() {
     std::thread::spawn({
         let watcher_app = Arc::clone(&app_arc);
         let watcher_status = Arc::clone(&watch_status);
+        let watcher_session = session.clone();
         let watcher_desktop_rev = Arc::clone(&desktop_revision);
-        move || run_active_branch_watcher(watcher_app, watcher_status, watcher_desktop_rev)
+        move || {
+            run_active_branch_watcher(
+                watcher_app,
+                watcher_status,
+                watcher_session,
+                watcher_desktop_rev,
+            );
+        }
     });
 
     // Global notifications refresh across ALL configured project remotes.
@@ -1926,6 +1939,13 @@ fn main() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
                     *h = Some(app.handle().clone());
                 }
+                // The wire's AI picks copy the saved selection into the App
+                // through this, and through nothing else of the App.
+                #[cfg(feature = "v1-service")]
+                app.manage(er_desktop::ai_selection_service::SessionPick::new(
+                    Arc::clone(&state.app),
+                    Arc::clone(&state.desktop_revision),
+                ));
                 native_notify::initialize(app.handle());
                 let prefs = commands::clone_inbox_prefs(&state.app);
                 commands::flush_pending_native_notifications(

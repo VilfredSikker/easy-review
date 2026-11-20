@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{AvailableBranches, Branches, Projects, Risk, Settings};
+use crate::{AvailableBranches, Branches, Panels, Projects, Risk, Session, Settings};
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
 /// a wire key is resolved by looking it up among the published tabs, never by
@@ -41,6 +41,10 @@ pub enum ResourceKey {
     Settings,
     /// One repo's risk rules, by the rules key `load_risk` answered.
     Risk { key: String },
+    /// The app chrome: AI pick labels, watcher, version, update check.
+    Session,
+    /// Which side panels are open.
+    Panels,
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -53,6 +57,8 @@ pub enum Resource {
     AvailableBranches(AvailableBranches),
     Settings(Box<Settings>),
     Risk(Risk),
+    Session(Box<Session>),
+    Panels(Panels),
 }
 
 /// The open tabs in strip order, and the active one.

@@ -15,4 +15,8 @@ seq: number, level: NoticeLevel,
 /**
  * Text for the person, never parsed.
  */
-message: string, };
+message: string, 
+/**
+ * Worth leaving up longer than the page's default.
+ */
+long: boolean, };

@@ -3,4 +3,4 @@
 /**
  * Names one resource: a piece of published state with one writer.
  */
-export type ResourceKey = { "kind": "tabs" } | { "kind": "projects" } | { "kind": "branches", project: string, } | { "kind": "available_branches", project: string, } | { "kind": "settings" } | { "kind": "risk", key: string, };
+export type ResourceKey = { "kind": "tabs" } | { "kind": "projects" } | { "kind": "branches", project: string, } | { "kind": "available_branches", project: string, } | { "kind": "settings" } | { "kind": "risk", key: string, } | { "kind": "session" } | { "kind": "panels" };

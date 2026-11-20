@@ -34,6 +34,15 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         }
         ResourceKey::Settings => settings(desktop),
         ResourceKey::Risk { key } => risk(desktop, key)?,
+        ResourceKey::Session => {
+            let (version, session) =
+                super::session::session(desktop, &desktop.service.settings().view());
+            (version, Resource::Session(Box::new(session)))
+        }
+        ResourceKey::Panels => {
+            let (version, panels) = super::session::panels(desktop);
+            (version, Resource::Panels(panels))
+        }
     };
     Ok(Versioned {
         key,
@@ -55,6 +64,10 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
             Some(view) => view.version,
             None => return Err(risk_not_loaded(key)),
         },
+        ResourceKey::Session => {
+            super::session::session_version(desktop, Some(&desktop.service.settings().view()))
+        }
+        ResourceKey::Panels => super::session::panels_version(desktop),
     };
     Ok(ResourceVersion(version))
 }
@@ -94,7 +107,8 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
             crate::projects::patch_project_review_settings(&project, patch)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
-        // The settings actor applies these; `send::apply` routes them there.
+        // The settings actor applies these, and the desktop itself the panel
+        // mirror and the update check; `send::apply` routes them there.
         other @ (Command::ReloadSettings
         | Command::ApplyConfigPatch { .. }
         | Command::SetReviewFlowModels { .. }
@@ -105,7 +119,11 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::DeleteAiModel { .. }
         | Command::PreviewUninstall { .. }
         | Command::RunUninstall { .. }
-        | Command::LoadRisk { .. }) => {
+        | Command::LoadRisk { .. }
+        | Command::SetAiSelection { .. }
+        | Command::SetAiEffort { .. }
+        | Command::CheckAppUpdate
+        | Command::TogglePanel { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),
@@ -203,6 +221,8 @@ pub enum Watched {
     Settings,
     /// One rules key's risk view.
     Risk(String),
+    Session,
+    Panels,
     Diff(TabKey),
     Reviewed(TabKey),
     Ai(TabKey),
@@ -219,6 +239,8 @@ impl Watched {
             Self::Sidebar(key) => Some(key.clone()),
             Self::Settings => Some(ResourceKey::Settings),
             Self::Risk(key) => Some(ResourceKey::Risk { key: key.clone() }),
+            Self::Session => Some(ResourceKey::Session),
+            Self::Panels => Some(ResourceKey::Panels),
             Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Pr(_) | Self::Mode(_) => None,
         }
     }
@@ -228,15 +250,22 @@ impl Watched {
 /// until something reads `settings`, the settings actor is not watched.
 pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
     let tabs = desktop.service.app_registry().tabs_view();
-    let mut versions = BTreeMap::from([(Watched::Tabs, tabs.revision)]);
+    let settings = desktop.service.settings_if_started().map(|s| s.view());
+    let mut versions = BTreeMap::from([
+        (Watched::Tabs, tabs.revision),
+        (
+            Watched::Session,
+            super::session::session_version(desktop, settings.as_deref()),
+        ),
+        (Watched::Panels, super::session::panels_version(desktop)),
+    ]);
     let sidebar = sidebar(desktop).versions();
     versions.extend(
         sidebar
             .into_iter()
             .map(|(key, v)| (Watched::Sidebar(key), v)),
     );
-    if let Some(settings) = desktop.service.settings_if_started() {
-        let view = settings.view();
+    if let Some(view) = settings {
         versions.insert(Watched::Settings, view.revision);
         versions.extend(
             view.risk
