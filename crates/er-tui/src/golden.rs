@@ -369,7 +369,7 @@ pub const CHROME: &[Fixture] = &[
     }),
 ];
 
-/// The panels, the diff modes, the split diff and a watched file.
+/// The panels, the diff modes, the split diff and the watched files.
 pub const PANES: &[Fixture] = &[
     fixture("pane_file_detail", 140, 24, || {
         with(|app| {
@@ -514,6 +514,38 @@ pub const PANES: &[Fixture] = &[
             modified: std::time::SystemTime::now() - std::time::Duration::from_hours(48),
             size: 42,
         }];
+        tab.selected_watched = Some(0);
+        app
+    }),
+    fixture("diff_hidden", 100, 16, || {
+        let snapshot = "diff --git a/.env.local b/.env.local\n--- a/.env.local\n+++ b/.env.local\n@@ -1,1 +1,2 @@\n KEY=1\n+TOKEN=abc\n";
+        let git = FakeGit::default().with_diff_watched_file_snapshot(Ok(Some(snapshot.into())));
+        let mut app = App::new_for_test_with_ports(
+            er_engine::git::parse_diff(RAW_DIFF),
+            Ports::with_git(Arc::new(git)),
+        );
+        // What `set_mode(Hidden)` leaves, without its global config read and
+        // watched-file scan: the regular diff cleared, only watched files.
+        let tab = app.tab_mut();
+        tab.mode = DiffMode::Hidden;
+        tab.files.clear();
+        tab.watched_config.paths = vec![".env*".into()];
+        tab.watched_config.diff_mode = "snapshot".into();
+        tab.show_watched = true;
+        let age = |hours| std::time::SystemTime::now() - std::time::Duration::from_hours(hours);
+        tab.watched_files = vec![
+            er_engine::git::WatchedFile {
+                path: ".env.local".into(),
+                modified: age(48),
+                size: 42,
+            },
+            er_engine::git::WatchedFile {
+                path: ".env.test".into(),
+                modified: age(72),
+                size: 17,
+            },
+        ];
+        tab.watched_not_ignored = vec![".env.test".into()];
         tab.selected_watched = Some(0);
         app
     }),

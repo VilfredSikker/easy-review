@@ -1,0 +1,17 @@
+ feature · feature
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY   5  HIDDEN
+ FILES (0) · 2 watched         │ .env.local
+ ────────── watched ───────────│  ◉ .env.local  (watched · not tracked by git)
+ ◉ .env.local          2d ago  │  Size: 42 B
+ ⚠ .env.test           3d ago  │
+                               │  diff vs snapshot
+                               │
+                               │  @@ -1,1 +1,2 @@
+                               │   1    1 │ KEY=1
+                               │        2 │+TOKEN=abc
+                               │
+                               │  Press s to update snapshot
+                               │
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+  [watched: 2]
+styles efac62a54607a239
