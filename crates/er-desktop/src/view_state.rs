@@ -95,7 +95,7 @@ impl DesktopViewState {
 
     /// Filters `key`'s list by `expr`, or clears the filter when it is
     /// blank. A new expression goes to the front of the tab's recent ones, as
-    /// the App's filter does. Answers the tick the write took.
+    /// the engine's filter does. Answers the tick the write took.
     pub fn set_filter(&mut self, key: TabKey, expr: &str) -> u64 {
         let expr = expr.trim();
         self.filter_clock += 1;

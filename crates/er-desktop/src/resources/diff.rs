@@ -292,7 +292,11 @@ fn sync_branch(
 
 /// Syncs each tab; one that fails is logged and the rest go on, as the App's
 /// syncs do.
-fn sync_each(desktop: &DesktopState, keys: &[TabKey], effects: &Effects<'_>) -> Result<Ack, ErError> {
+fn sync_each(
+    desktop: &DesktopState,
+    keys: &[TabKey],
+    effects: &Effects<'_>,
+) -> Result<Ack, ErError> {
     for &key in keys {
         if let Err(error) = refresh(desktop, key, true, effects) {
             log::warn!("er-desktop: a sync of a tab failed: {}", error.message);
@@ -312,7 +316,11 @@ fn open_tabs(desktop: &DesktopState) -> impl Iterator<Item = TabEntry> {
 }
 
 fn descriptor_remote(tab: &er_engine::tabs_record::TabDescriptor) -> Option<String> {
-    Some(format!("{}/{}", tab.pr_owner.as_ref()?, tab.pr_repo.as_ref()?))
+    Some(format!(
+        "{}/{}",
+        tab.pr_owner.as_ref()?,
+        tab.pr_repo.as_ref()?
+    ))
 }
 
 /// The `Ack` of a command that moved `keys`' diffs.
