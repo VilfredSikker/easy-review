@@ -158,7 +158,7 @@ export function sliceFromResource(diff: TabDiff, snapshot: DiffSlice | null, pr:
   const baseStaleness = snapshot?.diff_stale?.kind === "base" ? snapshot.diff_stale : undefined;
   return {
     files: diff.files.map(fileFromRow),
-    mode: diff.mode,
+    mode: diff.mode as DiffSlice["mode"],
     branch: diff.branch || pr?.head_ref || "",
     base: diff.base || pr?.base_ref || "",
     total_count: diff.total_count,

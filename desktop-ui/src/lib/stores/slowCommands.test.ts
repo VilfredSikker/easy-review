@@ -94,7 +94,7 @@ describe("SLOW_COMMANDS", () => {
     expect(src).toContain("return this.cmdOptimistic(command, args ?? {});");
     expect(src).toContain("applyOptimisticOp(snap, op);");
     expect(src).toContain("rollbackOptimisticOp(originSnap, op);");
-    expect(src).toContain("this.snapshot !== originSnap");
+    expect(src).toContain("this.raw !== originSnap");
     expect(src).toContain("this.keepOptimisticOps();");
     // A blocked paint explains itself instead of silently dropping the click.
     expect(src).toContain("if (global ? this.switching : !this.canPaintOptimistic()) {");

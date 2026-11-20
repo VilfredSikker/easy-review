@@ -80,9 +80,8 @@
   let filterDraft = $state("");
   let inputFocused = $state(false);
 
-  const sourceFiles = $derived(
-    pickerMode && filesOverride !== undefined ? filesOverride : snapshot ? diff.files : [],
-  );
+  const listed = $derived(snapshot ? diff.files : []);
+  const sourceFiles = $derived(pickerMode && filesOverride !== undefined ? filesOverride : listed);
 
   function localFilterFiles(list: FileSnapshot[], query: string): FileSnapshot[] {
     const q = query.trim().toLowerCase();
@@ -128,7 +127,7 @@
 
   /** Quick filters listed under the box for the current draft. */
   const suggestions = $derived(
-    pickerMode ? [] : visibleSuggestions(diff.filter_suggestions, filterDraft),
+    pickerMode ? [] : visibleSuggestions(diff.filter_suggestions ?? [], filterDraft),
   );
   /** Row the arrow keys have moved to; -1 while the caret is in the input. */
   let highlight = $state(-1);
