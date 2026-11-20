@@ -5,6 +5,7 @@
   import { arena } from "$lib/stores/arena.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { inboxView } from "$lib/stores/inboxView.svelte";
+  import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import TabOpenModal from "$lib/components/TabOpenModal.svelte";
   import { INBOX_CATEGORY_LABELS, formatInboxUpdated, inboxItemCategory, inboxKindMeta } from "$lib/inboxCategories";
@@ -34,7 +35,7 @@
   import { longAge, shortAge } from "$lib/relativeTime";
   import type { InboxItemSnapshot, ProjectSnapshot, TabSummary } from "$lib/types";
 
-  const projects = $derived<ProjectSnapshot[]>(app.snapshot?.projects ?? []);
+  const projects = $derived<ProjectSnapshot[]>(projectsResource.projects);
   const tabs = $derived<TabSummary[]>(app.snapshot?.tabs ?? []);
   const lastRefreshMs = $derived(app.snapshot?.inbox_last_refresh_ms ?? 0);
   const threads = $derived(groupInboxThreads(app.snapshot?.inbox_items ?? [], projects));

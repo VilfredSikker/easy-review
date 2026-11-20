@@ -4237,7 +4237,7 @@ pub fn kick_worktrees_warm(ports: er_engine::ports::Ports, repo_root: &str, base
     });
 }
 
-fn build_worktrees(
+pub(crate) fn build_worktrees(
     github: &dyn er_engine::github::GitHub,
     git: &dyn er_engine::git::Git,
     repo_root: &str,
@@ -4545,7 +4545,7 @@ fn resolve_recent_prs(
 /// keeps 50 closed PRs, so this bounds the snapshot payload, not the fetch.
 const RECENTLY_MERGED_LIMIT: usize = 25;
 
-fn recently_merged_prs(mut prs: Vec<PrInfo>) -> Vec<PrInfo> {
+pub(crate) fn recently_merged_prs(mut prs: Vec<PrInfo>) -> Vec<PrInfo> {
     prs.retain(|pr| pr.state == "MERGED");
     prs.sort_by_key(|pr| std::cmp::Reverse(pr.merged_at.clone()));
     prs.truncate(RECENTLY_MERGED_LIMIT);
@@ -4607,27 +4607,9 @@ fn build_projects_cache_key(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
 
-    // pr_cache fingerprint: combine remote names, len per remote, and last
-    // fetched timestamps. Any fetch bumps the timestamp, so this catches all
-    // mutations without needing a separate revision counter.
-    let mut h = DefaultHasher::new();
-    if let Some(cache) = pr_cache.and_then(|m| m.lock().ok()) {
-        let mut entries: Vec<(&String, usize)> = cache.iter().map(|(k, v)| (k, v.len())).collect();
-        entries.sort_by(|a, b| a.0.cmp(b.0));
-        for (k, n) in entries {
-            k.hash(&mut h);
-            n.hash(&mut h);
-        }
-    }
-    if let Some(fetched) = pr_cache_fetched_at.and_then(|m| m.lock().ok()) {
-        let mut entries: Vec<(&String, u64)> = fetched.iter().map(|(k, v)| (k, *v)).collect();
-        entries.sort_by(|a, b| a.0.cmp(b.0));
-        for (k, ts) in entries {
-            k.hash(&mut h);
-            ts.hash(&mut h);
-        }
-    }
-    let pr_cache_fingerprint = h.finish();
+    // Fetch timestamps alone miss the 30s head probe, which patches one row's
+    // head_oid in place without a fetch; the shared fingerprint hashes head_oid.
+    let pr_cache_fingerprint = pr_cache_fingerprint(pr_cache, pr_cache_fetched_at);
 
     // meta_cache fingerprint: project id + branch counts. Branch list changes
     // bump the count or the current_branch string; both included.
@@ -6779,6 +6761,50 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
         );
         // Identical caches still fingerprint equal (no spurious churn).
         assert_eq!(fp_v1, pr_cache_fingerprint(Some(&cache_v1), None));
+    }
+
+    /// The 30s head probe patches one row's head_oid in place, leaving the PR
+    /// count and fetch timestamps alone. The sidebar's projects cache key must
+    /// still move, or the sidebar keeps serving the old head_oid until the next
+    /// full PR sweep.
+    #[test]
+    fn projects_cache_key_changes_when_head_probe_patches_head_oid() {
+        let storage = tempfile::tempdir().unwrap();
+        er_engine::storage::with_test_storage_root(storage.path(), || {
+            let mut pr = minimal_pr_info(42, "PR");
+            pr.head_oid = "head1".to_string();
+            let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([(
+                "owner/repo".to_string(),
+                vec![pr],
+            )])));
+            let fetched_at: PrCacheFetchedAt = Arc::new(Mutex::new(HashMap::from([(
+                "owner/repo".to_string(),
+                1_000,
+            )])));
+            let tab = TabState::new_for_test(vec![]);
+
+            let before =
+                build_projects_cache_key(&tab, Some(&pr_cache), Some(&fetched_at), None, None);
+            assert!(crate::pr_cache::patch_pr_head_oid(
+                &pr_cache,
+                "owner/repo",
+                42,
+                "head2"
+            ));
+            let after =
+                build_projects_cache_key(&tab, Some(&pr_cache), Some(&fetched_at), None, None);
+
+            assert_eq!(
+                pr_cache.lock().unwrap()["owner/repo"][0].head_oid,
+                "head2",
+                "the probe write landed in the cache the sidebar reads"
+            );
+            assert_ne!(
+                before.pr_cache_fingerprint, after.pr_cache_fingerprint,
+                "a probe-patched head_oid must move the projects cache key"
+            );
+            assert_ne!(before, after);
+        });
     }
 
     #[test]
