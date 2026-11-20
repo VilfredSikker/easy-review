@@ -115,7 +115,6 @@ pub enum Command {
         url: String,
         replace: bool,
     },
-    /// Opens a branch of a project's checkout.
     OpenLocalBranch {
         project_id: String,
         name: String,

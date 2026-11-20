@@ -9658,7 +9658,6 @@ pub fn open_project_branch(
     return open_project_branch_tab(project_id, branch, replace, &state);
 }
 
-/// Opens the branch and makes its project the active one.
 #[cfg(feature = "v1-service")]
 pub(crate) fn service_open_project_branch(
     state: &DesktopState,

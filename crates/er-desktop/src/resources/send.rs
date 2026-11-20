@@ -1,9 +1,8 @@
 //! `er_send`'s body: each wire command applied by the one owner of what it
-//! writes. The tab commands and the opens go to the app registry and the
-//! workspace actors (`tabs`); a settings write, an AI pick or a risk read
-//! goes to the settings actor (ADR 0069); a project or branch edit goes to the
-//! sidebar's owner; the panel mirror and the update check are the desktop's
-//! own.
+//! writes. A settings write, an AI pick or a risk read goes to the settings
+//! actor (ADR 0069); a project or branch edit goes to the sidebar's owner;
+//! the panel mirror and the update check are the desktop's own.
+//! A tab command or an open goes to the app registry (`tabs`).
 
 use er_engine::config::AiSelection;
 use er_engine::uninstall::UninstallResult;
@@ -35,7 +34,6 @@ pub struct Effects<'a> {
     /// Compares the running build with the latest release. Blocking; runs
     /// on a thread of its own.
     pub check_update: fn() -> AppUpdate,
-    /// The review webviews a browser command drives.
     pub webviews: &'a dyn crate::browser_webview::TabWebviews,
     /// Asks for a folder to open; none when the pick is cancelled.
     pub pick_folder: &'a dyn Fn() -> Option<String>,

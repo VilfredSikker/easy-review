@@ -169,9 +169,7 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
             crate::projects::unsave_pr(&project, number)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
-        // The settings actor applies these, the desktop itself the panel
-        // mirror and the update check, and the app registry the tab commands
-        // and the opens; `send::apply` routes them there.
+        // Other owners apply these; `send::apply` routes them there.
         other @ (Command::ReloadSettings
         | Command::ApplyConfigPatch { .. }
         | Command::SetReviewFlowModels { .. }

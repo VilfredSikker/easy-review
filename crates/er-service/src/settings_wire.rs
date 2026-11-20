@@ -170,7 +170,6 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
             effort,
         },
         wire::Command::SetAiEffort { effort } => SettingsCommand::SetDefaultAiEffort { effort },
-        // The sidebar's owner, the desktop and the app registry apply these.
         other @ (wire::Command::ReorderProjects { .. }
         | wire::Command::DeleteProject { .. }
         | wire::Command::AddTrackedBranch { .. }

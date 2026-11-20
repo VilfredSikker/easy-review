@@ -83,7 +83,6 @@ pub async fn er_versions(
     .await
 }
 
-/// The system folder picker.
 #[cfg(feature = "v1-service")]
 fn pick_folder() -> Option<String> {
     rfd::FileDialog::new()
