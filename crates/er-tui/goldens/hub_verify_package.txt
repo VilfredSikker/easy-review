@@ -1,0 +1,21 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                           0/2 reviewed
+ FILES (2)                     │ src/auth.rs                                  Hunk 1/1
+ ~ src/auth.rs          +2 -1  │  ~ src/auth.rs  +2 -1
+ ~ README.md            +1 -0  │
+                               │ ▶ @@ -1,5 +1,6 @@
+                               │   1    1 │ fn check(token: &str) -> bool {
+                 ┌ VERIFY / Web (Enter=select, Esc=close) ─────────────┐
+                 │▶ Run tests  pnpm test                               │of(token);
+                 │  Run linter  pnpm lint                              │ience == "er"
+                 │  Type check  set in [packages] in the global config.│
+                 │  Security scan  set in [packages] in the global conf│
+                 └─────────────────────────────────────────────────────┘-> &str {
+                               │
+                               │
+                               │
+                               │
+                               │
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help
+ ^q quit
+styles 071dca755155f811

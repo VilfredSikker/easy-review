@@ -1,0 +1,21 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                           0/2 reviewed
+ FILES (2)                     │ src/auth.rs                                  Hunk 1/1
+ ~ src/auth.rs          +2 -1  │  ~ src/auth.rs  +2 -1
+ ~ README.md            +1 -0  │
+                 ┌ SPECIALIZED REVIEW (Enter=select, Esc=close) ───────┐
+                 │▶ Security  AuthZ/authN, injection, secrets, unsafe d│l {
+                 │  Performance  Hot paths, allocations, blocking I/O, │
+                 │  Reliability  Error handling, retries, timeouts, res│of(token);
+                 │  Testing  Assertion quality, missing negative cases │ience == "er"
+                 │  API / contracts  Breaking changes, public surface, │
+                 │  Patterns  Consistency with existing code in the sam│
+                 │  Simplifying  Hard-to-read complexity — simplify or │-> &str {
+                 │  Mentorship  Exemplary patterns and quality worth fo│
+                 └─────────────────────────────────────────────────────┘
+                               │
+                               │
+                               │
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help
+ ^q quit
+styles dbea3a33a60db748
