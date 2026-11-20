@@ -162,9 +162,19 @@ const PR_HOVER_PREFETCH_DELAY_MS = 150;
 
 type InvokeFn = (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
 
+let prefetchSend: InvokeFn = invoke;
+
+/** With the flag on the tabs adapter sends the prefetches through `er_send`. */
+export function routePrefetches(send: InvokeFn): void {
+  prefetchSend = send;
+}
+
 /** One debounce-timer set per sidebar instance. `invokeFn` and `delayMs` are
  *  the test seam. */
-export function createPrPrefetch(invokeFn: InvokeFn = invoke, delayMs = PR_HOVER_PREFETCH_DELAY_MS) {
+export function createPrPrefetch(
+  invokeFn: InvokeFn = (command, args) => prefetchSend(command, args),
+  delayMs = PR_HOVER_PREFETCH_DELAY_MS,
+) {
   const prPrefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   function schedulePrPrefetch(projectId: string, pr: PrInfo) {

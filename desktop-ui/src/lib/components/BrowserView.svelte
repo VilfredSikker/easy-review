@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { browser, pageKey } from "$lib/stores/browser.svelte";
   import {
     annotationMatchesPage,
@@ -36,7 +37,7 @@
   } from "$lib/stores/keyboard";
   import { overlay } from "$lib/stores/overlay.svelte";
 
-  const activeTabIdx = $derived(app.snapshot?.active_tab ?? 0);
+  const activeTabIdx = $derived(tabsResource.active);
   const showBrowserPane = $derived(browser.open);
   const nativeWebviewVisible = $derived(showBrowserPane && !overlay.blocksNativeBrowser);
 

@@ -26,7 +26,10 @@ Raw `invoke` is for commands whose result must not replace the live snapshot:
 - a non-snapshot return — `export_review`, `get_background_task_log`, `list_available_branches`, the `arena_*` reads the arena store polls itself;
 - the settings panel, which reads and writes through `settingsResource` (`settingsAdapter.ts`): the old commands with the flag off, the `settings` resource and `er_send` with it on, never the snapshot;
 - the app chrome and the AI picker (theme, view switches, AI labels, watcher, version, update check, providers, reviewers, picks), which read and write through `sessionResource` (`sessionAdapter.ts`) the same way over `settings` and `session`; with the flag off Settings invokes the picks itself and the palette sends them through `app.cmd`;
-- `toggle_panel`, which paints the layout locally first and mirrors through `panelMirror.ts`.
+- `toggle_panel`, which paints the layout locally first and mirrors through `panelMirror.ts`;
+- the hover prefetches in `prOpen.ts`, which go through `er_send` with the flag on.
+
+With the flag on, `app.cmd` first offers each command to the route `tabsResource` (`tabsAdapter.ts`) registers: the tab commands, the opens and the browser writes go through `er_send` and answer no snapshot, so their content follows the next poll. The open tabs read from `tabsResource`, and the active tab's review browser from `browserView` (`browserView.ts`, the tab's `view` resource), with either flag.
 
 A raw `invoke` reports its own failure; nothing else will.
 

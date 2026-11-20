@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ChecklistSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { checklistProgress, groupChecklistItems } from "$lib/checklist";
   import { navigateToFinding } from "$lib/dom";
@@ -20,7 +21,7 @@
   const groups = $derived(groupChecklistItems(items));
   const progress = $derived(checklistProgress(items));
   const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
-  const activeTab = $derived(app.snapshot?.tabs.find((tab) => tab.is_active));
+  const activeTab = $derived(tabsResource.activeTab ?? undefined);
   const reviewBranch = $derived(app.snapshot?.local_branch ?? app.snapshot?.branch);
   const reviewRunning = $derived(
     (app.snapshot?.background_tasks ?? []).some(
