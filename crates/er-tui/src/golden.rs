@@ -18,7 +18,10 @@ pub struct Fixture {
 
 pub fn draw(app: &App, width: u16, height: u16, hl: &mut ui::highlight::Highlighter) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal.draw(|f| ui::draw(f, app, hl)).unwrap();
+    let mut cache = crate::screen::ViewCache::default();
+    terminal
+        .draw(|f| ui::draw(f, &crate::screen::from_app(app, &mut cache), hl))
+        .unwrap();
     terminal.backend().buffer().clone()
 }
 
@@ -54,7 +57,11 @@ pub fn check(fixtures: &[Fixture]) {
     for fixture in fixtures {
         let app = build(fixture);
         let actual = golden_text(&draw(&app, fixture.width, fixture.height, &mut hl));
-        let path = format!("{}/goldens/{}.txt", env!("CARGO_MANIFEST_DIR"), fixture.name);
+        let path = format!(
+            "{}/goldens/{}.txt",
+            env!("CARGO_MANIFEST_DIR"),
+            fixture.name
+        );
         if update {
             std::fs::write(&path, &actual).unwrap();
             continue;
@@ -210,7 +217,11 @@ pub const CHROME: &[Fixture] = &[
             };
             app.overlay = Some(OverlayData::DirectoryBrowser {
                 current_path: "/src".into(),
-                entries: vec![entry("er", true, true), entry("notes", true, false), entry("todo.md", false, false)],
+                entries: vec![
+                    entry("er", true, true),
+                    entry("notes", true, false),
+                    entry("todo.md", false, false),
+                ],
                 selected: 0,
             });
         })
@@ -224,7 +235,13 @@ pub const CHROME: &[Fixture] = &[
     fixture("overlay_config_hub", 90, 24, || {
         with(|app| {
             app.open_config_hub();
-            if let Some(OverlayData::ConfigHub { items, selected, editing, .. }) = &mut app.overlay {
+            if let Some(OverlayData::ConfigHub {
+                items,
+                selected,
+                editing,
+                ..
+            }) = &mut app.overlay
+            {
                 let index = items
                     .iter()
                     .position(|item| matches!(item, ConfigItem::StringEdit { .. }))
@@ -287,7 +304,10 @@ pub const CHROME: &[Fixture] = &[
                     er_dir: "/er/bucket".into(),
                     run_id: "run-1".into(),
                     diff_hash: "hash".into(),
-                    findings: vec![finding("f1", "Audience read early", false), finding("f2", "Empty token", true)],
+                    findings: vec![
+                        finding("f1", "Audience read early", false),
+                        finding("f2", "Empty token", true),
+                    ],
                 },
                 selected: 0,
                 selected_ids: ["f1".to_string()].into(),

@@ -6,14 +6,14 @@ use ratatui::{
 };
 
 use super::styles;
-use er_engine::app::{App, ConfigEditState};
-use er_engine::config::{ConfigItem, SettingsScope};
+use crate::screen::view::ConfigEditState;
+use er_engine::config::{ConfigItem, ErConfig, SettingsScope};
 
 /// Render the config hub overlay
 pub fn render_config_hub(
     f: &mut Frame,
     area: Rect,
-    app: &App,
+    config: &ErConfig,
     tab: SettingsScope,
     items: &[ConfigItem],
     selected: usize,
@@ -67,7 +67,7 @@ pub fn render_config_hub(
                 get,
                 ..
             } => {
-                let value = get(&app.config);
+                let value = get(config);
                 let checkbox = if value { "[x]" } else { "[ ]" };
                 let marker = if is_sel { "▸ " } else { "  " };
 
@@ -112,7 +112,7 @@ pub fn render_config_hub(
                 get,
                 ..
             } => {
-                let value = get(&app.config);
+                let value = get(config);
                 let marker = if is_sel { "▸ " } else { "  " };
 
                 let mut spans = vec![
@@ -151,7 +151,7 @@ pub fn render_config_hub(
                 get,
                 ..
             } => {
-                let value = get(&app.config);
+                let value = get(config);
                 let marker = if is_sel { "▸ " } else { "  " };
                 let mut spans = vec![
                     Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN())),
@@ -204,7 +204,7 @@ pub fn render_config_hub(
                         Span::styled("█", ratatui::style::Style::default().fg(styles::CYAN())),
                     ])
                 } else {
-                    let value = get(&app.config);
+                    let value = get(config);
                     let (value_span, _placeholder_used) = if value.is_empty() {
                         (
                             Span::styled(
@@ -257,7 +257,7 @@ pub fn render_config_hub(
                 get,
                 ..
             } => {
-                let value = get(&app.config);
+                let value = get(config);
                 let marker = if is_sel { "▸ " } else { "  " };
 
                 let mut spans = vec![
