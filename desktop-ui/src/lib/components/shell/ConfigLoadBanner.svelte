@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { app } from "$lib/stores/app.svelte";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
 
   /**
    * Persistent while `config.toml` cannot be loaded. Settings re-reads and
    * adopts the file on open, so reopening the page is the reload path.
    */
-  const message = $derived(app.snapshot?.config_load_error ?? null);
+  const message = $derived(sessionResource.configLoadError);
 </script>
 
 {#if message}

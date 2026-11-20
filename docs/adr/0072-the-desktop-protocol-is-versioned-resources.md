@@ -33,7 +33,15 @@ one writer that stamps a version when it replaces the content.
   settings editor's soft warning or a provider whose model listing failed,
   goes out on `er://notice` with a sequence number. An `Ack` carries only
   versions, and a notice has nothing to refetch, so neither a resource nor
-  the `Ack` holds it. The frontend shows each sequence number once.
+  the `Ack` holds it. The frontend shows each sequence number once. The
+  App's own notifications go out the same way until the App leaves the flag
+  path, each once, with the level and dwell the snapshot's toast had.
+- **One resource may join two owners.** `session` carries the AI pick's
+  labels, which the settings actor owns, beside the watcher, the version and
+  the update check, which the desktop owns. Its version is the settings
+  revision plus a count of the desktop's writes: both only rise, so the sum
+  does, and a write on either side moves it. Splitting it would give the page
+  two keys for one strip of chrome.
 - **The frontend refetches by version.** A store holds each shown key at the
   version it fetched and refetches only when a push, an `Ack` or a version
   check names a higher one. The client refetches what an `Ack` names as soon

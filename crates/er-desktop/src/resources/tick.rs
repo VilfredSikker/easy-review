@@ -16,12 +16,13 @@
 //! the App beside the `DesktopState`.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use er_engine::app::App;
+use er_engine::app::{App, Notification};
+use er_protocol::Notice;
 use er_service::Command;
 
 use crate::service::actor_key;
@@ -88,6 +89,10 @@ pub fn run(desktop: &DesktopState, app: &Mutex<App>) {
         // Completion and failure lines land after the commands are checked.
         app.drain_agent_log();
         let ai_reloaded = app.tab_mut().check_ai_files_changed();
+        if let Some(notice) = app_notice(app.notification.as_ref(), &desktop.session.app_notice_seq)
+        {
+            emit_notice(desktop, &notice);
+        }
         ai_reloaded || AppStamp::of(&app) != before
     };
     if let Some((root, base)) = warm_target(desktop) {
@@ -96,6 +101,27 @@ pub fn run(desktop: &DesktopState, app: &Mutex<App>) {
     desktop.app_owner.publish();
     if moved {
         crate::profile_log::bump_desktop_revision(&desktop.desktop_revision, "backend_tick");
+    }
+}
+
+/// The App's notification as a notice, once: `sent` holds the engine's
+/// sequence number of the last one sent, and the App keeps its last
+/// notification set, so every later tick sees it again.
+pub fn app_notice(notification: Option<&Notification>, sent: &AtomicU64) -> Option<Notice> {
+    let notification = notification?;
+    let before = sent.fetch_max(notification.seq, Ordering::AcqRel);
+    (before < notification.seq)
+        .then(|| super::notice::engine_notice(notification.message.clone(), notification.long))
+}
+
+fn emit_notice(desktop: &DesktopState, notice: &Notice) {
+    let handle = desktop
+        .tauri_app_handle
+        .lock()
+        .ok()
+        .and_then(|handle| handle.clone());
+    if let Some(handle) = handle {
+        super::notice::emit(&handle, notice);
     }
 }
 

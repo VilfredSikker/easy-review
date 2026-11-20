@@ -19,6 +19,8 @@ pub type ViewStateHandle = Arc<Mutex<DesktopViewState>>;
 #[derive(Debug, Default)]
 pub struct DesktopViewState {
     panels: PanelsVisible,
+    /// Rises with each toggle, so `panels` has a version to push.
+    panels_revision: u64,
     tabs: HashMap<TabKey, TabBrowserState>,
     /// Selection and scroll on the service path, keyed by the app registry's
     /// tab keys. The default build keeps these on the engine tab until the
@@ -31,14 +33,19 @@ impl DesktopViewState {
         &self.panels
     }
 
+    pub fn panels_revision(&self) -> u64 {
+        self.panels_revision
+    }
+
     pub fn toggle_panel(&mut self, name: &str) {
         let panels = &mut self.panels;
         match name {
             "left" => panels.left = !panels.left,
             "tree" => panels.tree = !panels.tree,
             "right" => panels.right = !panels.right,
-            _ => {}
+            _ => return,
         }
+        self.panels_revision += 1;
     }
 
     /// The tab's browser state; a tab that never set one gets the defaults.

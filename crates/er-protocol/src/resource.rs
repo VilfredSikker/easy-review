@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{AvailableBranches, AvailablePrs, Branches, Projects, Prs, Risk, Settings, Worktrees};
+use crate::{
+    AvailableBranches, AvailablePrs, Branches, Panels, Projects, Prs, Risk, Session, Settings,
+    Worktrees,
+};
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
 /// a wire key is resolved by looking it up among the published tabs, never by
@@ -50,6 +53,10 @@ pub enum ResourceKey {
     /// The worktrees of the repository an open tab shows, by that tab's root.
     /// The backend tick lists the active tab's.
     Worktrees { root: String },
+    /// The app chrome: AI pick labels, watcher, version, update check.
+    Session,
+    /// Which side panels are open.
+    Panels,
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -65,6 +72,8 @@ pub enum Resource {
     Prs(Prs),
     AvailablePrs(AvailablePrs),
     Worktrees(Worktrees),
+    Session(Box<Session>),
+    Panels(Panels),
 }
 
 /// The open tabs in strip order, and the active one.

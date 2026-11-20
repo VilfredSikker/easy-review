@@ -55,6 +55,55 @@ describe("resource source scans", () => {
     ).toEqual([]);
   });
 
+  // The chrome's snapshot fields, which the session adapter reads with the flag off.
+  const CHROME_FIELDS =
+    "theme|features|display|arena_enabled|config_load_error|active_ai_label|active_ai_provider_label|active_ai_model_label|active_ai_effort|app_version|watch_active|watch_status|panels|notification";
+  const sources = () =>
+    readdirSync(srcDir, { recursive: true, encoding: "utf8" }).filter(
+      (f) =>
+        /\.(ts|svelte)$/.test(f) &&
+        !/\.test\.ts$/.test(f) &&
+        !f.includes("protocol/generated/") &&
+        !f.startsWith(join("lib", "stories")),
+    );
+  const stripped = (f: string) =>
+    read(f)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+
+  it("the chrome reads the session adapter, not the snapshot", () => {
+    const field = new RegExp(`\\b(snapshot|snap)\\??\\.(${CHROME_FIELDS})\\b`);
+    // The adapter's flag-off reads, the snapshot plumbing that copies the
+    // fields between snapshots, and the flag-off toast in the app store.
+    const allowed = [
+      join("lib", "stores", "sessionAdapter.ts"),
+      join("lib", "tabSnapshotCache.ts"),
+      join("lib", "snapshotChrome.ts"),
+      APP_STORE,
+    ];
+    expect(sources().filter((f) => !allowed.includes(f) && field.test(stripped(f)))).toEqual([]);
+  });
+
+  it("the picker, update check and panel mirror call the old commands only from their adapters", () => {
+    const old = /(invoke|cmd)(<[^>]*>)?\(\s*"(list_ai_providers|list_ai_reviewers|set_ai_selection|set_ai_effort|check_app_update|toggle_panel)"/;
+    const allowed = [join("lib", "stores", "sessionAdapter.ts"), join("lib", "stores", "panelMirror.ts")];
+    expect(sources().filter((f) => !allowed.includes(f) && old.test(stripped(f)))).toEqual([]);
+  });
+
+  it("with the flag off Settings invokes the picks and the palette sends them through app.cmd", () => {
+    expect(stripped(join("lib", "components", "CommandPalette.svelte"))).toMatch(
+      /\.setAiSelection\(providerId, modelId, effort, "app"\)/,
+    );
+    expect(stripped(join("lib", "components", "settings", "AiSettings.svelte"))).not.toMatch(/setAi\w+\([^)]*"app"/);
+  });
+
+  it("with the flag on the app store shows no snapshot notification, which the notices carry", () => {
+    const store = stripped(APP_STORE);
+    const start = store.indexOf("private syncSnapshotToast(");
+    const body = store.slice(start, store.indexOf("snapshot?.notification", start));
+    expect(body).toMatch(/if \(v1ServiceRequested\(\)\) return false;/);
+  });
+
   it("app.svelte.ts only starts and stops the resource store, and persists view prefs only", () => {
     const code = read(APP_STORE)
       .replace(/\/\*[\s\S]*?\*\//g, "")

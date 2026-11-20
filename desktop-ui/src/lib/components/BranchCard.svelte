@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { PrSnapshot, GithubStatusSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import PrMergeBox from "$lib/components/PrMergeBox.svelte";
@@ -82,7 +83,7 @@
   // pending line comments go out with the decision; this opens it.
   const reviewEntry = $derived(reviewGate(resolveActivePrNumber(app.snapshot), github));
 
-  const watchStatus = $derived(app.snapshot?.watch_status ?? null);
+  const watchStatus = $derived(sessionResource.watchStatus);
   const isWatching = $derived(watchStatus?.active === true);
   const watchTitle = $derived(
     watchStatus?.active && watchStatus.branch && watchStatus.root_path
