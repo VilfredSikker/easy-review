@@ -7,7 +7,12 @@ use er_engine::app::{
 };
 use er_engine::arena::{ArenaRunSnapshot, ArenaRunSummary};
 use er_engine::git::{DiffFile, FileStatus, LineType};
+use er_engine::file_rows::{
+    active_finding_count, file_lines_key, finding_is_escalated, severity_str, status_str,
+};
 use serde::{Deserialize, Serialize};
+
+pub(crate) use er_engine::file_rows::mode_str;
 
 use crate::inbox::InboxHandle;
 use crate::projects::{self, normalize_remote_slug};
@@ -97,40 +102,6 @@ impl SentFilesState {
 
 pub type SentFilesHandle = Arc<Mutex<SentFilesState>>;
 
-/// Stable content hash over exactly what `build_hunks` serializes for a file
-/// (headers, line kinds/numbers, text). Per-file — unlike the old
-/// whole-diff-hash-based `cache_key`, editing one file does not re-key the
-/// others, so highlight caches and differential snapshots survive watch
-/// refreshes.
-fn file_lines_key(f: &DiffFile) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    f.path.hash(&mut h);
-    f.compacted.hash(&mut h);
-    f.hunks.len().hash(&mut h);
-    for hunk in &f.hunks {
-        hunk.header.hash(&mut h);
-        hunk.old_start.hash(&mut h);
-        hunk.new_start.hash(&mut h);
-        hunk.lines.len().hash(&mut h);
-        for line in &hunk.lines {
-            match line.line_type {
-                LineType::Add => 1u8.hash(&mut h),
-                LineType::Delete => 2u8.hash(&mut h),
-                LineType::Context => 3u8.hash(&mut h),
-                LineType::Fold(hidden) => {
-                    4u8.hash(&mut h);
-                    hidden.hash(&mut h);
-                }
-            }
-            line.old_num.hash(&mut h);
-            line.new_num.hash(&mut h);
-            line.content.hash(&mut h);
-        }
-    }
-    h.finish()
-}
-
 /// Fingerprint of the full hunk payload: lines + inline threads. Threads are
 /// hashed via their serialized form so any visible change (new reply,
 /// resolved toggle, synthetic "thinking" reply) re-sends the file.
@@ -144,19 +115,6 @@ fn file_delta_key(lines_key: u64, threads_by_hunk: &[Vec<ThreadSnapshot>]) -> u6
         }
     }
     h.finish()
-}
-
-pub(crate) const fn mode_str(mode: DiffMode) -> &'static str {
-    match mode {
-        DiffMode::Branch => "branch",
-        DiffMode::Unstaged => "unstaged",
-        DiffMode::Staged => "staged",
-        DiffMode::History => "history",
-        DiffMode::Conflicts => "conflicts",
-        DiffMode::Hidden => "hidden",
-        DiffMode::PrDiff => "pr",
-        DiffMode::Tour => "tour",
-    }
 }
 
 /// View the frontend painted before an optimistic sidecar write. Must match
@@ -2136,14 +2094,6 @@ fn default_thread_side() -> String {
     "RIGHT".to_string()
 }
 
-const fn severity_str(r: RiskLevel) -> &'static str {
-    match r {
-        RiskLevel::High => "high",
-        RiskLevel::Medium => "med",
-        RiskLevel::Low | RiskLevel::Info => "low",
-    }
-}
-
 const fn risk_sort_ord(r: RiskLevel) -> u8 {
     match r {
         RiskLevel::High => 0,
@@ -2567,36 +2517,6 @@ pub fn pr_cache_fingerprint(
         }
     }
     crate::profile_log::finish_hash(h)
-}
-
-fn finding_is_escalated(
-    ai: &er_engine::ai::AiState,
-    path: &str,
-    finding: &er_engine::ai::Finding,
-) -> bool {
-    matches!(
-        ai.arbiter_verdicts.get(&er_engine::ai::finding_key(
-            path,
-            finding.line_start,
-            &finding.title
-        )),
-        Some((er_engine::ai::ArbiterRuling::Escalated, _))
-    )
-}
-
-fn active_finding_count(ai: &er_engine::ai::AiState, file: Option<&str>) -> usize {
-    let Some(review) = &ai.review else { return 0 };
-    let files: Box<dyn Iterator<Item = (&String, &er_engine::ai::ErFileReview)> + '_> = match file {
-        Some(file) => Box::new(review.files.get_key_value(file).into_iter()),
-        None => Box::new(review.files.iter()),
-    };
-    let rows = files.flat_map(|(path, review)| {
-        review.findings.iter().filter_map(move |finding| {
-            (!finding.resolved && (finding.is_active() || finding_is_escalated(ai, path, finding)))
-                .then_some((path.as_str(), finding))
-        })
-    });
-    er_engine::ai::project_visible_findings(rows, &ai.arbiter_graded_keys).len()
 }
 
 /// Build a single `FileSnapshot`.
@@ -5495,18 +5415,6 @@ fn detect_pr_meta(
     let is_merged = !base.is_empty() && branch != base && merged.contains(branch);
 
     (pr_number.is_some(), pr_number, is_merged)
-}
-
-fn status_str(status: &FileStatus) -> String {
-    match status {
-        FileStatus::Added => "added",
-        FileStatus::Modified => "modified",
-        FileStatus::Deleted => "deleted",
-        FileStatus::Renamed(_) => "renamed",
-        FileStatus::Copied(_) => "copied",
-        FileStatus::Unmerged => "unmerged",
-    }
-    .to_string()
 }
 
 #[cfg(test)]
