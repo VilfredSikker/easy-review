@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { aggregateJobs } from "$lib/runningJobs";
   import { otherJobs, ownAgentCommands, runningPillView } from "$lib/runningPill";
   import JobsPopover from "./JobsPopover.svelte";
@@ -35,8 +36,8 @@
       backgroundTasks: snapshot?.background_tasks,
       agentCommands: ownAgentCommands(snapshot?.agent_commands, snapshot?.background_tasks),
       arenaRuns: snapshot?.background_arena_runs,
-      tabs: snapshot?.tabs ?? [],
-      activeTabIdx: snapshot?.active_tab ?? null,
+      tabs: tabsResource.tabs,
+      activeTabIdx: tabsResource.active,
       nowMs: now,
       commandDoneAtMs: commandDoneAt,
     }),

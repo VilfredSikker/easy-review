@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { AiSnapshot, Confidence, FlatFinding } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
   import { confidenceGlyph } from "$lib/diffAnnotations";
@@ -106,7 +107,7 @@
   const flowActive = $derived(app.snapshot?.review_flow != null);
 
   const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
-  const activeTab = $derived(app.snapshot?.tabs.find((tab) => tab.is_active));
+  const activeTab = $derived(tabsResource.activeTab ?? undefined);
   const hasExpertFindings = $derived((ai?.findings ?? []).some((f) => f.expert_label != null));
   const canValidateGeneralReview = $derived(
     !!ai?.has_review_json && !!reviewScope && !!activeTab && activeTab.kind !== "remote_pr",

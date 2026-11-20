@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { exportOptions } from "$lib/stores/exportOptions.svelte";
@@ -30,7 +31,12 @@
   // The branch bar's copy buttons, which the top bar left without a home.
   // ⌘-click goes one step further than copying: reveal the worktree, open the PR.
   const branch = $derived(resolveContextIdentity(snap).branch);
-  const activeTab = $derived(snap?.tabs.find((t) => t.is_active) ?? snap?.tabs[snap?.active_tab ?? 0]);
+  // A story passes its own snapshot; the page reads the tabs adapter.
+  const activeTab = $derived(
+    snapshotOverride !== undefined
+      ? snapshotOverride?.tabs.find((t) => t.is_active)
+      : (tabsResource.activeTab ?? undefined),
+  );
   // A remote PR tab has no checkout, so there is no path to offer.
   const worktree = $derived(resolveTabRoot(snap, activeTab) || null);
   const prUrl = $derived(resolveActivePrUrl(snap));

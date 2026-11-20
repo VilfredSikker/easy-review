@@ -1,6 +1,7 @@
 <script lang="ts">
   import { annotationDrafts } from "$lib/stores/annotationDrafts.svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import type { ThreadSnapshot } from "$lib/types";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
   import EditMessageModal from "$lib/components/EditMessageModal.svelte";
@@ -207,7 +208,7 @@
 
   const agentButton = $derived(
     sendToAgentButton({
-      remotePr: app.snapshot?.tabs.find((t) => t.is_active)?.kind === "remote_pr",
+      remotePr: tabsResource.activeTab?.kind === "remote_pr",
       running: (app.snapshot?.agent_commands ?? []).some(
         (c) => c.name === SEND_TO_AGENT_COMMAND && c.status === "running",
       ),

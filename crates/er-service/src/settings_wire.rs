@@ -184,7 +184,22 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::SavePr { .. }
         | wire::Command::UnsavePr { .. }
         | wire::Command::CheckAppUpdate
-        | wire::Command::TogglePanel { .. }) => return Err(Box::new(other)),
+        | wire::Command::TogglePanel { .. }
+        | wire::Command::NewTab
+        | wire::Command::CloseTab { .. }
+        | wire::Command::SelectTab { .. }
+        | wire::Command::ReorderTabs { .. }
+        | wire::Command::OpenPrReview { .. }
+        | wire::Command::OpenRemotePr { .. }
+        | wire::Command::OpenPrUrl { .. }
+        | wire::Command::OpenLocalBranch { .. }
+        | wire::Command::OpenProjectBranch { .. }
+        | wire::Command::OpenWorktree
+        | wire::Command::SetActiveProject { .. }
+        | wire::Command::PrefetchPrOpen { .. }
+        | wire::Command::PrefetchRemotePrOpen { .. }
+        | wire::Command::UpdateTabBrowser { .. }
+        | wire::Command::CycleTabBrowserLayout) => return Err(Box::new(other)),
     })
 }
 

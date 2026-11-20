@@ -31,6 +31,8 @@ pub async fn er_send(
             notify: &notify,
             follow_selection: &|selection| pick.follow(selection),
             check_update: || super::session::app_update(crate::commands::app_update_cached()),
+            webviews: &emitter,
+            pick_folder: &pick_folder,
         };
         super::send::apply(&desktop, command, &effects)
     })
@@ -79,6 +81,14 @@ pub async fn er_versions(
             .collect()
     })
     .await
+}
+
+#[cfg(feature = "v1-service")]
+fn pick_folder() -> Option<String> {
+    rfd::FileDialog::new()
+        .set_title("Select a git repository")
+        .pick_folder()
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[cfg(feature = "v1-service")]

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import AppMark from "$lib/components/AppMark.svelte";
@@ -46,7 +47,7 @@
   const worktrees = $derived(snapshot?.worktrees ?? []);
   const projects = $derived<ProjectSnapshot[]>(projectsResource.projects);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
-  const activeTab = $derived(snapshot?.tabs?.find((t) => t.is_active) ?? null);
+  const activeTab = $derived(tabsResource.activeTab);
   // Counted per PR like the Inbox rows (and InboxPanel's badge), so the
   // collapsed rail's badge matches what a click lands on.
   const unreadPrs = $derived(
@@ -756,7 +757,7 @@
   async function openPr(project: ProjectSnapshot, prNumber: number, _headRef: string, e: MouseEvent, hint?: PrInfo) {
     // Clear any pending hover-prefetch timer for this PR — the click supersedes it.
     cancelPrPrefetch(project.id, prNumber);
-    const tabs = snapshot?.tabs ?? [];
+    const tabs = tabsResource.tabs;
     const existing = findPrTab(project, prNumber, tabs);
     if (existing) {
       if (!existing.is_active) await app.cmd("select_tab", { idx: existing.idx });
@@ -1630,7 +1631,7 @@
 
 <TabOpenModal
   request={prOpenRequest}
-  tabCount={snapshot?.tabs?.length ?? 0}
+  tabCount={tabsResource.tabs.length}
   currentTabLabel={activeTab?.label ?? null}
   onChoose={choosePrOpen}
   onClose={() => (pendingPrOpen = null)}

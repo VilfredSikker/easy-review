@@ -60,6 +60,7 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
             let (version, panels) = super::session::panels(desktop);
             (version, Resource::Panels(panels))
         }
+        ResourceKey::View { tab } => super::tabs::view(desktop, *tab)?,
     };
     Ok(Versioned {
         key,
@@ -87,6 +88,7 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
             super::session::session_version(desktop, Some(&desktop.service.settings().view()))
         }
         ResourceKey::Panels => super::session::panels_version(desktop),
+        ResourceKey::View { tab } => super::tabs::view_version(desktop, *tab)?,
     };
     Ok(ResourceVersion(version))
 }
@@ -167,8 +169,7 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
             crate::projects::unsave_pr(&project, number)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
-        // The settings actor applies these, and the desktop itself the panel
-        // mirror and the update check; `send::apply` routes them there.
+        // Other owners apply these; `send::apply` routes them there.
         other @ (Command::ReloadSettings
         | Command::ApplyConfigPatch { .. }
         | Command::SetReviewFlowModels { .. }
@@ -183,7 +184,22 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::SetAiSelection { .. }
         | Command::SetAiEffort { .. }
         | Command::CheckAppUpdate
-        | Command::TogglePanel { .. }) => {
+        | Command::TogglePanel { .. }
+        | Command::NewTab
+        | Command::CloseTab { .. }
+        | Command::SelectTab { .. }
+        | Command::ReorderTabs { .. }
+        | Command::OpenPrReview { .. }
+        | Command::OpenRemotePr { .. }
+        | Command::OpenPrUrl { .. }
+        | Command::OpenLocalBranch { .. }
+        | Command::OpenProjectBranch { .. }
+        | Command::OpenWorktree
+        | Command::SetActiveProject { .. }
+        | Command::PrefetchPrOpen { .. }
+        | Command::PrefetchRemotePrOpen { .. }
+        | Command::UpdateTabBrowser { .. }
+        | Command::CycleTabBrowserLayout) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),
@@ -300,6 +316,8 @@ pub enum Watched {
     Pr(TabKey),
     /// A view the tab records without loading it.
     Mode(TabKey),
+    /// A tab's desktop view, under the key the registry issued.
+    View(TabKey),
 }
 
 impl Watched {
@@ -312,6 +330,9 @@ impl Watched {
             Self::Risk(key) => Some(ResourceKey::Risk { key: key.clone() }),
             Self::Session => Some(ResourceKey::Session),
             Self::Panels => Some(ResourceKey::Panels),
+            Self::View(key) => Some(ResourceKey::View {
+                tab: er_service::wire_tab_key(*key),
+            }),
             Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Pr(_) | Self::Mode(_) => None,
         }
     }
@@ -336,6 +357,12 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
             .into_iter()
             .map(|(key, v)| (Watched::Sidebar(key), v)),
     );
+    if let Ok(view) = desktop.view.lock() {
+        versions.extend(
+            view.browser_revisions()
+                .map(|(key, tick)| (Watched::View(key), tick)),
+        );
+    }
     if let Some(view) = settings {
         versions.insert(Watched::Settings, view.revision);
         versions.extend(

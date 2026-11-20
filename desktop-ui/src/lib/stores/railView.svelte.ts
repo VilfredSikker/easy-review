@@ -1,4 +1,5 @@
 import { app } from "./app.svelte";
+import { tabsResource } from "./tabsResource.svelte";
 import { sessionResource } from "./sessionResource.svelte";
 import { localScopes, viewIsPr, type LocalScope } from "$lib/scopeRail";
 import type { TabSummary } from "$lib/types";
@@ -23,7 +24,7 @@ function tabKey(tab: TabSummary | null): string {
 export function railView() {
   const snapshot = $derived(app.snapshot);
   const mode = $derived(snapshot?.mode ?? "branch");
-  const activeTab = $derived(snapshot?.tabs?.find((t) => t.is_active) ?? null);
+  const activeTab = $derived(tabsResource.activeTab);
   const key = $derived(tabKey(activeTab));
   const remote = $derived(activeTab?.kind === "remote_pr");
   const readOnly = $derived(

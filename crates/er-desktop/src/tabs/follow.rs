@@ -13,6 +13,7 @@ use er_engine::ports::Ports;
 use er_engine::TabKey;
 use er_service::{AppCommand, AppRegistry, Reply, TabsView};
 
+use crate::service::ServiceState;
 use crate::view_state::ViewStateHandle;
 
 /// The tabs a view lists that `have` lacks, built under the registry's keys,
@@ -79,9 +80,8 @@ pub fn follow_registry(app: &mut App, view: &TabsView, built: Vec<TabState>) {
     app.sync_config_from_active_tab();
 }
 
-/// Applies `view` to the App, then hands each new tab its saved browser state
-/// and drops the view state of tabs that left. The view lock is taken after
-/// the engine lock (ADR 0068).
+/// Applies `view` to the App and hands each new tab its saved browser state.
+/// The view lock is taken after the engine lock (ADR 0068).
 fn apply(app: &Mutex<App>, view_state: &ViewStateHandle, view: &TabsView, built: Vec<TabState>) {
     let Ok(mut app) = app.lock() else {
         return;
@@ -95,8 +95,34 @@ fn apply(app: &Mutex<App>, view_state: &ViewStateHandle, view: &TabsView, built:
         }
     }
     follow_registry(&mut app, view, built);
-    let live: Vec<TabKey> = app.tabs.iter().map(TabState::key).collect();
-    desktop.retain_tabs(&live);
+}
+
+/// Drops the view state of every tab the registry no longer lists.
+pub fn prune(view_state: &ViewStateHandle, registry: &AppRegistry) {
+    let live: Vec<TabKey> = registry
+        .tabs_view()
+        .tabs
+        .iter()
+        .map(|tab| tab.key)
+        .collect();
+    if let Ok(mut view) = view_state.lock() {
+        view.retain_tabs(&live);
+    }
+}
+
+/// From now on, after each tab-list change: the view state drops the tabs
+/// that left, and the App follows the list. Each runs on a thread of its own,
+/// so the prune never waits on the App lock.
+pub fn follow_service(
+    service: &ServiceState,
+    app: Arc<Mutex<App>>,
+    view_state: ViewStateHandle,
+    ports: Ports,
+) {
+    let registry = Arc::clone(service.app_registry());
+    let (pruned, pruning) = (Arc::clone(&view_state), Arc::clone(&registry));
+    service.follow_tabs(move || prune(&pruned, &pruning));
+    service.follow_tabs(move || follow(&app, &view_state, &registry, &ports));
 }
 
 /// Follows the registry once. A tab whose descriptor no longer builds is
@@ -123,19 +149,32 @@ pub fn follow(
 /// stubs: on the flag path a select only sends `SelectTab`, and nothing calls
 /// `kick_deferred_tab_refresh` for them, so they show no diff until 2c. With no
 /// saved tab, the App's startup tab joins the registry under the key the
-/// registry gives it.
+/// registry gives it. When no saved tab builds, a Working tab on
+/// `fallback_root` (the launch directory's repo, else the active project's
+/// root) opens first, since the registry keeps its last tab; with no
+/// fallback either, the last broken tab stays.
 pub fn restore(
     app: &Mutex<App>,
     view_state: &ViewStateHandle,
     registry: &Arc<AppRegistry>,
     ports: &Ports,
+    fallback_root: Option<&str>,
 ) {
     let view = registry.tabs_view();
     if view.tabs.is_empty() {
         join_startup_tab(app, view_state, registry);
         return;
     }
-    let (built, failed) = build_missing(&[], &view, ports, view.active);
+    let (mut built, failed) = build_missing(&[], &view, ports, view.active);
+    if built.is_empty() {
+        if let Some(root) = fallback_root.filter(|root| !root.is_empty()) {
+            let tab = crate::commands::content_routes::working_tab(root.to_string());
+            if registry.send(AppCommand::NewTab { tab }).is_ok() {
+                let opened = registry.tabs_view();
+                built = build_missing(&failed, &opened, ports, opened.active).0;
+            }
+        }
+    }
     let view = close_failed(registry, &failed).unwrap_or(view);
     apply(app, view_state, &view, built);
 }

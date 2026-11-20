@@ -94,6 +94,8 @@ fn effects<'a>(
         notify,
         follow_selection: follow,
         check_update: || panic!("no update check in this test"),
+        webviews: &crate::browser_webview::NoWebviews,
+        pick_folder: &|| None,
     }
 }
 
@@ -392,6 +394,8 @@ fn an_update_check_lands_in_session() {
                     update_available: true,
                     release_url: Some("https://example.invalid/r".into()),
                 },
+                webviews: &crate::browser_webview::NoWebviews,
+                pick_folder: &|| None,
             },
         );
         assert!(applied.is_ok(), "{applied:?}");
