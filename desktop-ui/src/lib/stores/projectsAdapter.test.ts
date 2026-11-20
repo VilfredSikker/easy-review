@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { resourceClient, type Invoke } from "$lib/protocol/client";
 import type { Command } from "$lib/protocol/generated/Command";
-import type { ProjectSnapshot, TabSummary } from "$lib/types";
+import type { AppSnapshot, ProjectSnapshot, TabSummary } from "$lib/types";
 import { ProjectsAdapter, branchRows, branchesKey, isActiveProject, remoteKey } from "./projectsAdapter";
 import { prsKey } from "./prsAdapter";
 import { ResourceStore } from "./resourceStore";
@@ -131,9 +131,15 @@ function backend() {
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
-function adapter(flagOn: boolean, active: TabSummary | null = tab()) {
+/** What the old `patch_project_review_settings` answers. */
+const patchedSnapshot = { projects: [] } as unknown as AppSnapshot;
+
+function adapter(flagOn: boolean, active: TabSummary | null = tab(), invokeFails: string | null = null) {
   const { calls, client, store } = backend();
   const old: { name: string; args: Record<string, unknown> }[] = [];
+  const commanded: string[] = [];
+  const ingested: AppSnapshot[] = [];
+  const reported: { command: string; message: string }[] = [];
   const projects = new ProjectsAdapter({
     flagOn,
     store,
@@ -142,16 +148,23 @@ function adapter(flagOn: boolean, active: TabSummary | null = tab()) {
     activeTab: () => active,
     command: async (name, args) => {
       old.push({ name, args });
+      commanded.push(name);
     },
     invoke: async <T,>(name: string, args: Record<string, unknown>) => {
       old.push({ name, args });
-      return ["old-path"] as T;
+      if (invokeFails !== null) throw invokeFails;
+      return (name === "patch_project_review_settings" ? patchedSnapshot : ["old-path"]) as T;
     },
-    report: () => {},
+    report: (command, e) => {
+      reported.push({ command, message: e.message });
+    },
+    ingest: (s) => {
+      ingested.push(s);
+    },
     now: () => 61_000,
     sleep: settle,
   });
-  return { calls, old, projects, store };
+  return { calls, old, commanded, ingested, reported, projects, store };
 }
 
 describe("ProjectsAdapter", () => {
@@ -253,6 +266,32 @@ describe("ProjectsAdapter", () => {
       project: "a",
       patch: { autoTriageMaxDiffKb: 12, reviewIgnoreGlobAdd: null, reviewIgnoreGlobRemove: null },
     });
+  });
+
+  // `app.cmd` drops a non-tab command while a tab switch is in flight, with
+  // no toast; SettingsPage called the command directly before this adapter.
+  it("with the flag off sends the review-settings change straight to the old command and applies its snapshot", async () => {
+    const { calls, old, commanded, ingested, projects } = adapter(false);
+    await projects.patchReviewSettings("a", { reviewIgnoreGlobAdd: "*.snap" });
+    expect(old).toEqual([
+      {
+        name: "patch_project_review_settings",
+        args: {
+          projectId: "a",
+          patch: { autoTriageMaxDiffKb: null, reviewIgnoreGlobAdd: "*.snap", reviewIgnoreGlobRemove: null },
+        },
+      },
+    ]);
+    expect(commanded).toEqual([]);
+    expect(ingested).toEqual([patchedSnapshot]);
+    expect(calls).toEqual([]);
+  });
+
+  it("with the flag off reports a failed review-settings change as the old toast did", async () => {
+    const { ingested, reported, projects } = adapter(false, tab(), "no such project");
+    await projects.patchReviewSettings("a", { autoTriageMaxDiffKb: 12 });
+    expect(reported).toEqual([{ command: "patch_project_review_settings", message: "no such project" }]);
+    expect(ingested).toEqual([]);
   });
 
   it("marks the branch the active tab views as current in the active project", async () => {

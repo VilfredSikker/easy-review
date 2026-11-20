@@ -68,6 +68,13 @@ describe("projects source scans", () => {
     expect(read("main.ts")).toContain('import "$lib/stores/projectsResource.svelte";');
   });
 
+  // The adapter's flag-off review-settings change applies what it answers
+  // through this; without it the page would show the old values until the next snapshot.
+  it("the projects wiring applies the old command's snapshot through the app", () => {
+    const wiring = stripped(join("lib", "stores", "projectsResource.svelte.ts"));
+    expect(wiring).toMatch(/\bingest:\s*\(snapshot\)\s*=>\s*app\.ingestCommandSnapshot\(snapshot\)\s*,/);
+  });
+
   it("the page reads the projects, the worktrees and the detected PR through the sidebar reads", () => {
     const field = /\b(snapshot|snap)\??\.(projects|worktrees|detected_pr_number)\b/;
     // The flag-off default of the reads, and the flag-off paints of the optimistic layer.

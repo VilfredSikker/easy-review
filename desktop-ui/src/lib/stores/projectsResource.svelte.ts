@@ -29,6 +29,7 @@ export const projectsResource = new ProjectsAdapter({
   command: (name, args) => app.cmd(name, args),
   invoke,
   report: (command, e) => app.showToast("error", `${command}: ${e.message}`),
+  ingest: (snapshot) => app.ingestCommandSnapshot(snapshot),
   now: () => now,
   profile: (command, ms) => profileLog("sidebar_write_painted", { command, ms: Math.round(ms) }),
 });

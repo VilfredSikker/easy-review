@@ -106,9 +106,11 @@ interface ProjectsAdapterDeps {
   activeTab: () => TabSummary | null;
   /** The old command path, which answers a snapshot; used with the flag off. */
   command: (name: string, args: Record<string, unknown>) => Promise<void>;
-  /** A plain command call, for the old path's one command that answers a list. */
+  /** A plain command call: the old path's list read, and its review-settings change, which `command` could drop. */
   invoke: <T>(name: string, args: Record<string, unknown>) => Promise<T>;
   report: (command: string, e: ErError) => void;
+  /** Applies the snapshot an old command answered (`app.ingestCommandSnapshot`); flag off only. */
+  ingest: (snapshot: AppSnapshot) => void;
   /** The clock the PR lists are aged by. */
   now?: () => number;
   /** Told how long a flag-on write took from the call until its `Ack`'s versions were held. */
@@ -205,6 +207,7 @@ export class ProjectsAdapter {
       reviewIgnoreGlobRemove: null,
       ...change,
     };
+    if (!this.deps.flagOn) return this.invokeAndIngest("patch_project_review_settings", { projectId, patch });
     return this.write(
       "patch_project_review_settings",
       { projectId, patch },
@@ -286,6 +289,20 @@ export class ProjectsAdapter {
       await sleep(16);
     }
     this.deps.profile?.(name, performance.now() - started);
+  }
+
+  /**
+   * The old command called directly and its snapshot applied, as SettingsPage
+   * did before. `command` (`app.cmd`) drops any non-tab command while a tab
+   * switch is in flight, with no toast, which would lose a review-settings edit.
+   */
+  private async invokeAndIngest(name: string, args: Record<string, unknown>): Promise<void> {
+    try {
+      this.deps.ingest(await this.deps.invoke<AppSnapshot>(name, args));
+    } catch (e) {
+      // The old command rejects with a string; the toast reads as it did.
+      this.deps.report(name, { kind: "internal", message: String(e) });
+    }
   }
 
   private prs(remote: string): Prs | undefined {
