@@ -180,8 +180,18 @@ fn the_relay_hands_on_only_the_sections_that_moved() {
 
         let moved = bursts.recv_timeout(WAIT).expect("no burst after the write");
         let reviewed = content(&state, &tabs[1]).reviewed.revision;
-        assert_eq!(moved, vec![(Watched::Reviewed(active), reviewed)]);
-        assert!(relay::wire(&moved).is_empty(), "{moved:?}");
+        // The tab's diff lists each file's reviewed mark, so it moves too.
+        let diff = resources::diff::published_version(&state.desktop, active, &tabs[1].1);
+        assert_eq!(
+            moved,
+            vec![
+                (Watched::Reviewed(active), reviewed),
+                (Watched::TabDiff(active), diff)
+            ]
+        );
+        let wire: Vec<ResourceKey> = relay::wire(&moved).into_iter().map(|c| c.key).collect();
+        let tab = er_service::wire_tab_key(active);
+        assert_eq!(wire, [ResourceKey::Diff { tab }], "{moved:?}");
     });
 }
 

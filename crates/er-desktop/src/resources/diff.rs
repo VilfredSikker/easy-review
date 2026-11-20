@@ -12,8 +12,7 @@ use er_engine::config::ErConfig;
 use er_engine::TabKey;
 use er_protocol::{ErError, ErErrorKind, Resource, TabDiff};
 use er_service::{
-    diff_load_error, diff_resource, diff_version, resolve_tab_key, DiffInputs, TabContent,
-    TabEntry,
+    diff_load_error, diff_resource, diff_version, resolve_tab_key, DiffInputs, TabContent, TabEntry,
 };
 
 use crate::service::actor_key;
@@ -53,7 +52,11 @@ pub fn version(desktop: &DesktopState, wire: er_protocol::TabKey) -> Result<u64,
 
 /// The version `diff(key)` answers at, for the relay. Zero while nothing
 /// loaded or failed.
-pub fn published_version(desktop: &DesktopState, key: TabKey, tab: &er_engine::tabs_record::TabDescriptor) -> u64 {
+pub fn published_version(
+    desktop: &DesktopState,
+    key: TabKey,
+    tab: &er_engine::tabs_record::TabDescriptor,
+) -> u64 {
     let entry = TabEntry {
         key,
         descriptor: tab.clone(),

@@ -6,10 +6,10 @@ use er_engine::app::{
     AgentLogSource, App, CommandStatus, DiffMode, InputMode, StackState, TabState,
 };
 use er_engine::arena::{ArenaRunSnapshot, ArenaRunSummary};
-use er_engine::git::{DiffFile, FileStatus, LineType};
 use er_engine::file_rows::{
     active_finding_count, file_lines_key, finding_is_escalated, severity_str, status_str,
 };
+use er_engine::git::{DiffFile, FileStatus, LineType};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use er_engine::file_rows::mode_str;

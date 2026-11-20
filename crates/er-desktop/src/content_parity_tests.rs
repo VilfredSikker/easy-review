@@ -120,7 +120,8 @@ fn ports(lazy: bool) -> Ports {
         FakeGit::default()
             .with_current_branch(Ok("feature".to_string()))
             .with_detect_base_branch(Ok("main".to_string()))
-            .with_diff_shortstat((0, 0, 0))
+            .with_diff_shortstat((2, 5, 1))
+            .with_commit_shortstats(HashMap::new())
             .with_diff_raw(Ok(raw.clone()))
             .with_is_merge_in_progress(false)
             .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string()))
@@ -244,10 +245,28 @@ fn resource_fields(value: &Value) -> Value {
         "cache_key",
         "preview_key",
     ];
+    // A field one side leaves out reads as null on the other.
+    fn without_nulls(value: Value) -> Value {
+        match value {
+            Value::Object(map) => map
+                .into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, without_nulls(v)))
+                .collect::<serde_json::Map<_, _>>()
+                .into(),
+            Value::Array(items) => items.into_iter().map(without_nulls).collect(),
+            other => other,
+        }
+    }
     let pick = |value: &Value, names: &[&str]| -> Value {
         names
             .iter()
-            .map(|name| ((*name).to_string(), value.get(*name).cloned().unwrap_or(Value::Null)))
+            .map(|name| {
+                (
+                    (*name).to_string(),
+                    value.get(*name).cloned().unwrap_or(Value::Null),
+                )
+            })
             .collect::<serde_json::Map<_, _>>()
             .into()
     };
@@ -260,7 +279,7 @@ fn resource_fields(value: &Value) -> Value {
     if let Some(map) = picked.as_object_mut() {
         map.insert("files".into(), rows.into());
     }
-    picked
+    without_nulls(picked)
 }
 
 /// What a reader holds of one tab, borrowed from its own types.
@@ -631,10 +650,29 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
         service.preview_keys, app.preview_keys,
         "{case}: the preview keys differ"
     );
-    assert_eq!(
-        service.resource, app.resource,
-        "{case}: diff(tab) differs from the snapshot's fields"
-    );
+    if service.resource != app.resource {
+        let field = |v: &Value, k: &str| v.get(k).cloned().unwrap_or(Value::Null);
+        let keys = app
+            .resource
+            .as_object()
+            .map(|m| m.keys().cloned().collect::<Vec<_>>());
+        let differing: Vec<String> = keys
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|k| field(&service.resource, k) != field(&app.resource, k))
+            .collect();
+        panic!(
+            "{case}: diff(tab) differs from the snapshot in {differing:?}:\n{}\nagainst\n{}",
+            serde_json::json!(differing
+                .iter()
+                .map(|k| field(&service.resource, k))
+                .collect::<Vec<_>>()),
+            serde_json::json!(differing
+                .iter()
+                .map(|k| field(&app.resource, k))
+                .collect::<Vec<_>>()),
+        );
+    }
 }
 
 /// Every section the fixture fills must hold something on the App's side,
