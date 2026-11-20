@@ -24,4 +24,4 @@ pub mod tabs;
 pub mod tick;
 
 #[cfg(feature = "v1-service")]
-pub use host::{fetch, version, watched, Watched};
+pub use host::{fetch, send, version, watched, Watched};

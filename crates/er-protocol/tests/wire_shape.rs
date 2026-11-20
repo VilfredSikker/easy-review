@@ -5,10 +5,11 @@
 //! fails here before the frontend sees a missing field.
 
 use er_protocol::{
-    Ack, Branch, Branches, BrowserLayout, BrowserView, Command, ConfigFieldValue, ErError,
-    ErErrorKind, ModelUpsert, Notice, NoticeLevel, Panel, Panels, Project, Projects, Resource,
-    ResourceChanged, ResourceKey, ResourceVersion, TabKey, TabKind, TabRow, TabView, Tabs,
-    UninstallOptions, Versioned,
+    Ack, AvailableBranches, AvailablePrs, Branch, Branches, BrowserLayout, BrowserView, Command,
+    ConfigFieldValue, ErError, ErErrorKind, ModelUpsert, Notice, NoticeLevel, Panel, Panels, PrRow,
+    Project, ProjectPrs, ProjectReviewSettingsPatch, Projects, Prs, Resource, ResourceChanged,
+    ResourceKey, ResourceVersion, TabKey, TabKind, TabRow, TabView, Tabs, UninstallOptions,
+    Versioned, Worktree, Worktrees,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -282,6 +283,147 @@ fn wire_integers_are_typescript_numbers() {
         "{}",
         Branch::decl(&cfg)
     );
+    assert!(PrRow::decl(&cfg).contains("number: number,"));
+    assert!(Prs::decl(&cfg).contains("fetchedAtMs: number | null"));
+    assert!(ProjectPrs::decl(&cfg).contains("toReview: number[]"));
+    assert!(Command::decl(&cfg).contains("\"save_pr\", project: string, number: number"));
+}
+
+#[test]
+fn the_prs_resource_is_keyed_by_its_remote() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::Prs {
+            remote: "acme/er".into(),
+        },
+        r#"{"kind":"prs","remote":"acme/er"}"#,
+    )?;
+    assert_wire(
+        &Resource::Prs(Prs {
+            rows: vec![PrRow {
+                number: 7,
+                title: "Fix".into(),
+                head_ref: "fix".into(),
+                base_ref: "main".into(),
+                head_oid: "abc".into(),
+                state: "OPEN".into(),
+                is_draft: false,
+                author: "me".into(),
+                assignees: Vec::new(),
+                reviewers: vec!["you".into()],
+                checks_state: None,
+                review_decision: Some("APPROVED".into()),
+                merged_at: None,
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                approved_by_me: false,
+            }],
+            fetched_at_ms: Some(1_000),
+            projects: vec![ProjectPrs {
+                project: "er".into(),
+                mine: vec![7],
+                to_review: Vec::new(),
+                recently_merged: Vec::new(),
+                saved: vec![7],
+                recent: Vec::new(),
+                dismissed: vec![3],
+            }],
+        }),
+        r#"{"kind":"prs","rows":[{"number":7,"title":"Fix","headRef":"fix","baseRef":"main","headOid":"abc","state":"OPEN","isDraft":false,"author":"me","assignees":[],"reviewers":["you"],"checksState":null,"reviewDecision":"APPROVED","mergedAt":null,"updatedAt":"2026-01-01T00:00:00Z","approvedByMe":false}],"fetchedAtMs":1000,"projects":[{"project":"er","mine":[7],"toReview":[],"recentlyMerged":[],"saved":[7],"recent":[],"dismissed":[3]}]}"#,
+    )?;
+    assert_wire(
+        &ResourceKey::AvailablePrs {
+            project: "er".into(),
+        },
+        r#"{"kind":"available_prs","project":"er"}"#,
+    )?;
+    assert_wire(
+        &Resource::AvailablePrs(AvailablePrs { prs: Vec::new() }),
+        r#"{"kind":"available_prs","prs":[]}"#,
+    )
+}
+
+#[test]
+fn the_worktrees_resource_is_keyed_by_its_root() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::Worktrees {
+            root: "/src/er".into(),
+        },
+        r#"{"kind":"worktrees","root":"/src/er"}"#,
+    )?;
+    assert_wire(
+        &Resource::Worktrees(Worktrees {
+            worktrees: vec![Worktree {
+                path: "/src/er-7".into(),
+                branch: "pr-7".into(),
+                is_pr: true,
+                pr_number: Some(7),
+                is_merged: false,
+                remote: Some("acme/er".into()),
+            }],
+        }),
+        r#"{"kind":"worktrees","worktrees":[{"path":"/src/er-7","branch":"pr-7","isPr":true,"prNumber":7,"isMerged":false,"remote":"acme/er"}]}"#,
+    )?;
+    assert!(Worktree::decl(&Config::new()).contains("prNumber: number | null"));
+    Ok(())
+}
+
+#[test]
+fn the_pr_commands_are_tagged_by_kind() -> serde_json::Result<()> {
+    assert_wire(&Command::RefreshPrList, r#"{"kind":"refresh_pr_list"}"#)?;
+    assert_wire(
+        &Command::RefreshProjectPrList {
+            project: "a".into(),
+        },
+        r#"{"kind":"refresh_project_pr_list","project":"a"}"#,
+    )?;
+    assert_wire(
+        &Command::SavePr {
+            project: "a".into(),
+            number: 7,
+            title: None,
+        },
+        r#"{"kind":"save_pr","project":"a","number":7,"title":null}"#,
+    )?;
+    for (command, kind) in [
+        (
+            Command::DismissPr {
+                project: "a".into(),
+                number: 7,
+            },
+            "dismiss_pr",
+        ),
+        (
+            Command::UndismissPr {
+                project: "a".into(),
+                number: 7,
+            },
+            "undismiss_pr",
+        ),
+        (
+            Command::TrackPr {
+                project: "a".into(),
+                number: 7,
+            },
+            "track_pr",
+        ),
+        (
+            Command::UntrackPr {
+                project: "a".into(),
+                number: 7,
+            },
+            "untrack_pr",
+        ),
+        (
+            Command::UnsavePr {
+                project: "a".into(),
+                number: 7,
+            },
+            "unsave_pr",
+        ),
+    ] {
+        let json = format!(r#"{{"kind":"{kind}","project":"a","number":7}}"#);
+        assert_wire(&command, &json)?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -327,4 +469,66 @@ fn the_branches_resource_is_keyed_by_its_project() -> serde_json::Result<()> {
         },
         r#"{"key":{"kind":"branches","project":"er"},"version":4,"value":{"kind":"branches","currentBranch":"main","localBranches":[{"name":"feature","upstream":"origin/feature","isMerged":false,"worktreePath":"/src/er-feature","prNumber":12}],"autoBranches":[]}}"#,
     )
+}
+
+#[test]
+fn the_available_branches_are_read_by_project() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::AvailableBranches {
+            project: "er".into(),
+        },
+        r#"{"kind":"available_branches","project":"er"}"#,
+    )?;
+    assert_wire(
+        &Resource::AvailableBranches(AvailableBranches {
+            branches: vec!["spare".into()],
+        }),
+        r#"{"kind":"available_branches","branches":["spare"]}"#,
+    )
+}
+
+#[test]
+fn the_project_commands_are_tagged_by_kind() -> serde_json::Result<()> {
+    assert_wire(
+        &Command::ReorderProjects {
+            ordered: vec!["b".into(), "a".into()],
+        },
+        r#"{"kind":"reorder_projects","ordered":["b","a"]}"#,
+    )?;
+    assert_wire(
+        &Command::DeleteProject {
+            project: "a".into(),
+        },
+        r#"{"kind":"delete_project","project":"a"}"#,
+    )?;
+    assert_wire(
+        &Command::AddTrackedBranch {
+            project: "a".into(),
+            name: "feature".into(),
+        },
+        r#"{"kind":"add_tracked_branch","project":"a","name":"feature"}"#,
+    )?;
+    assert_wire(
+        &Command::RemoveTrackedBranch {
+            project: "a".into(),
+            name: "feature".into(),
+        },
+        r#"{"kind":"remove_tracked_branch","project":"a","name":"feature"}"#,
+    )?;
+    assert_wire(
+        &Command::PatchProjectReviewSettings {
+            project: "a".into(),
+            patch: ProjectReviewSettingsPatch {
+                auto_triage_max_diff_kb: Some(256),
+                review_ignore_glob_add: None,
+                review_ignore_glob_remove: Some(1),
+            },
+        },
+        r#"{"kind":"patch_project_review_settings","project":"a","patch":{"autoTriageMaxDiffKb":256,"reviewIgnoreGlobAdd":null,"reviewIgnoreGlobRemove":1}}"#,
+    )?;
+    // A patch names only what it changes.
+    let partial: ProjectReviewSettingsPatch =
+        serde_json::from_str(r#"{"reviewIgnoreGlobAdd":"*.snap"}"#)?;
+    assert_eq!(partial.review_ignore_glob_add.as_deref(), Some("*.snap"));
+    Ok(())
 }

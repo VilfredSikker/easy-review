@@ -20,7 +20,7 @@ mod settings;
 mod sidebar;
 mod tabs;
 
-pub use command::{Ack, Command};
+pub use command::{Ack, Command, ProjectReviewSettingsPatch};
 pub use error::{ErError, ErErrorKind};
 pub use notice::{Notice, NoticeLevel};
 pub use resource::{
@@ -33,5 +33,8 @@ pub use settings::{
     ModelUpsert, ProviderUpsert, ReviewModelGroups, ReviewModelRef, Settings, SettingsRows,
     UninstallOptions, UninstallPreview, UninstallTarget,
 };
-pub use sidebar::{Branch, Branches, Project, Projects};
+pub use sidebar::{
+    AvailableBranches, AvailablePrs, Branch, Branches, PrRow, Project, ProjectPrs, Projects, Prs,
+    Worktree, Worktrees,
+};
 pub use tabs::{BrowserLayout, BrowserView, PrOpenHint, TabKind, TabRow, TabView};

@@ -6605,14 +6605,6 @@ fn find_project_id_for_remote(file: &projects::ProjectsFile, remote_slug: &str) 
     })
 }
 
-fn now_epoch_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 fn fetch_single_pr_for_remote(
     github: &dyn er_engine::github::GitHub,
     remote: &str,
@@ -6720,18 +6712,7 @@ fn cache_single_pr_for_remote(
         }
     }
     let fetched_pr = fetch_single_pr_for_remote(&*state.ports.github, remote, pr_number)?;
-    if let Ok(mut cache) = state.pr_cache.lock() {
-        let entry = cache.entry(remote.to_string()).or_default();
-        if let Some(idx) = entry.iter().position(|pr| pr.number == pr_number) {
-            entry[idx] = fetched_pr.clone();
-        } else {
-            entry.push(fetched_pr.clone());
-        }
-    }
-    if let Ok(mut fetched) = state.pr_cache_fetched_at.lock() {
-        fetched.insert(remote.to_string(), now_epoch_ms());
-    }
-    crate::pr_cache::save_persisted_pr_cache(&state.pr_cache, &state.pr_cache_fetched_at);
+    state.app_owner.cache_pr(remote, fetched_pr.clone());
     Ok(fetched_pr)
 }
 
@@ -9043,64 +9024,12 @@ fn prefetch_remote_pr_open_impl(
 /// running, this is a no-op.
 #[tauri::command]
 pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
-    // Atomic check-and-set under a single lock acquisition to avoid TOCTOU.
-    let already_running = {
-        let mut flags = state.loading.lock().map_err(|e| e.to_string())?;
-        if flags.pr_list {
-            true
-        } else {
-            flags.pr_list = true;
-            false
-        }
-    };
-
-    if !already_running {
-        let cache = Arc::clone(&state.pr_cache);
-        let fetched_at = Arc::clone(&state.pr_cache_fetched_at);
-        let loading = Arc::clone(&state.loading);
-        let desktop_rev = Arc::clone(&state.desktop_revision);
-        let pr_cache = Arc::clone(&state.pr_cache);
-        let gh_user = Arc::clone(&state.gh_user);
-        let inbox = Arc::clone(&state.inbox);
-        let app_handle_state = Arc::clone(&state.tauri_app_handle);
-        let app = Arc::clone(&state.app);
-        let github = Arc::clone(&state.ports.github);
-        std::thread::spawn(move || {
-            #[expect(
-                clippy::expect_used,
-                reason = "a worker thread that cannot build its runtime has nothing to fall back to"
-            )]
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to build tokio runtime");
-            let failed = rt.block_on(async move {
-                crate::pr_cache::refresh_pr_cache(github, &cache, &fetched_at).await
-            });
-            let prefs = clone_inbox_prefs(&app);
-            let handles = InboxRefreshHandles {
-                pr_cache: &pr_cache,
-                gh_user: &gh_user,
-                inbox: &inbox,
-                desktop_revision: &desktop_rev,
-                app_handle: &app_handle_state,
-            };
-            for remote in failed {
-                process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
-            }
-            process_inbox_after_pr_refresh(handles, &prefs, None);
-            if let Ok(mut f) = loading.lock() {
-                f.pr_list = false;
-            }
-            crate::profile_log::bump_desktop_revision(&desktop_rev, "pr_cache_refresh_manual");
-        });
-    }
-
+    let app = Arc::clone(&state.app);
+    kick_pr_list_refresh(&state, None, move || clone_inbox_prefs(&app))?;
     snap!(state)
 }
 
 /// Trigger a PR-list refresh scoped to a single project's remote. Returns the
-///
 /// current snapshot immediately (the refresh runs in the background).
 /// Deduplicates: if a full PR refresh is already running, this is a no-op.
 /// If the project has no remote configured, returns the current snapshot without error.
@@ -9117,70 +9046,73 @@ pub fn refresh_project_pr_list(
         },
         None => return snap!(state),
     };
-
-    let already_running = {
-        let mut flags = state.loading.lock().map_err(|e| e.to_string())?;
-        if flags.pr_list {
-            true
-        } else {
-            flags.pr_list = true;
-            false
-        }
-    };
-
-    if !already_running {
-        let cache = Arc::clone(&state.pr_cache);
-        let fetched_at = Arc::clone(&state.pr_cache_fetched_at);
-        let loading = Arc::clone(&state.loading);
-        let desktop_rev = Arc::clone(&state.desktop_revision);
-        let pr_cache = Arc::clone(&state.pr_cache);
-        let gh_user = Arc::clone(&state.gh_user);
-        let inbox = Arc::clone(&state.inbox);
-        let app_handle_state = Arc::clone(&state.tauri_app_handle);
-        let app = Arc::clone(&state.app);
-        let github = Arc::clone(&state.ports.github);
-        std::thread::spawn(move || {
-            #[expect(
-                clippy::expect_used,
-                reason = "a worker thread that cannot build its runtime has nothing to fall back to"
-            )]
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to build tokio runtime");
-            let remote_clone = remote.clone();
-            let success = rt.block_on(async move {
-                crate::pr_cache::refresh_pr_cache_for_remote(
-                    github,
-                    &remote_clone,
-                    &cache,
-                    &fetched_at,
-                )
-                .await
-            });
-            let prefs = clone_inbox_prefs(&app);
-            let handles = InboxRefreshHandles {
-                pr_cache: &pr_cache,
-                gh_user: &gh_user,
-                inbox: &inbox,
-                desktop_revision: &desktop_rev,
-                app_handle: &app_handle_state,
-            };
-            if !success {
-                process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
-            }
-            process_inbox_after_pr_refresh(handles, &prefs, None);
-            if let Ok(mut f) = loading.lock() {
-                f.pr_list = false;
-            }
-            crate::profile_log::bump_desktop_revision(
-                &desktop_rev,
-                "pr_cache_refresh_project_manual",
-            );
-        });
-    }
-
+    let app = Arc::clone(&state.app);
+    kick_pr_list_refresh(&state, Some(remote), move || clone_inbox_prefs(&app))?;
     snap!(state)
+}
+
+/// Starts a PR-list fetch through the sidebar's owner, of every project
+/// remote or of `remote` alone, and runs the inbox over the result. A fetch
+/// already running absorbs it. `prefs` reads the inbox prefs once the fetch
+/// is done.
+pub(crate) fn kick_pr_list_refresh(
+    desktop: &DesktopState,
+    remote: Option<String>,
+    prefs: impl FnOnce() -> InboxConfig + Send + 'static,
+) -> Result<(), String> {
+    // Atomic check-and-set under a single lock acquisition to avoid TOCTOU.
+    let already_running = {
+        let mut flags = desktop.loading.lock().map_err(|e| e.to_string())?;
+        std::mem::replace(&mut flags.pr_list, true)
+    };
+    if already_running {
+        return Ok(());
+    }
+    let desktop = desktop.clone();
+    std::thread::spawn(move || {
+        #[expect(
+            clippy::expect_used,
+            reason = "a worker thread that cannot build its runtime has nothing to fall back to"
+        )]
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build tokio runtime");
+        let github = Arc::clone(&desktop.ports.github);
+        let owner = &desktop.app_owner;
+        let (failed, reason) = match &remote {
+            None => (
+                rt.block_on(owner.refresh_prs(github)),
+                "pr_cache_refresh_manual",
+            ),
+            Some(remote) => {
+                let fetched = rt.block_on(owner.refresh_remote_prs(github, remote));
+                let failed = if fetched {
+                    Vec::new()
+                } else {
+                    vec![remote.clone()]
+                };
+                (failed, "pr_cache_refresh_project_manual")
+            }
+        };
+        let prefs = prefs();
+        let handles = InboxRefreshHandles {
+            pr_cache: &desktop.pr_cache,
+            gh_user: &desktop.gh_user,
+            inbox: &desktop.inbox,
+            desktop_revision: &desktop.desktop_revision,
+            app_handle: &desktop.tauri_app_handle,
+        };
+        for remote in failed {
+            process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
+        }
+        process_inbox_after_pr_refresh(handles, &prefs, None);
+        if let Ok(mut f) = desktop.loading.lock() {
+            f.pr_list = false;
+        }
+        crate::profile_log::bump_desktop_revision(&desktop.desktop_revision, reason);
+    });
+    Ok(())
 }
 
 /// Apply an inbox mutation the frontend has already painted optimistically.
@@ -9528,24 +9460,7 @@ pub fn add_tracked_branch(
     name: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let file = projects::load();
-    let proj = file
-        .projects
-        .iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Project not found: {project_id}"))?;
-
-    // Confirm the branch actually exists locally before tracking it.
-    let exists = state
-        .ports
-        .git
-        .show_ref_verify(&proj.root_path, &format!("refs/heads/{name}"))
-        .map_err(|e| format!("git show-ref failed: {e}"))?;
-    if !exists {
-        return Err(format!("Branch '{name}' does not exist locally"));
-    }
-
-    projects::add_tracked_branch(&project_id, &name).map_err(|e| e.to_string())?;
+    track_branch(&state, &project_id, &name)?;
     let root = state
         .app
         .lock()
@@ -9562,25 +9477,7 @@ pub fn remove_tracked_branch(
     name: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let file = projects::load();
-    let proj = file
-        .projects
-        .iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Project not found: {project_id}"))?;
-
-    let current = state
-        .ports
-        .git
-        .current_branch_show(&proj.root_path)
-        .unwrap_or_default();
-    if !current.is_empty() && current == name {
-        return Err(
-            "Cannot remove the currently-checked-out branch from view; switch first.".to_string(),
-        );
-    }
-
-    projects::remove_tracked_branch(&project_id, &name).map_err(|e| e.to_string())?;
+    untrack_branch(&state, &project_id, &name)?;
     let root = state
         .app
         .lock()
@@ -9591,10 +9488,72 @@ pub fn remove_tracked_branch(
     snap!(state)
 }
 
+/// Tracks `name` under its project once git confirms the branch exists
+/// locally.
+pub(crate) fn track_branch(
+    desktop: &DesktopState,
+    project_id: &str,
+    name: &str,
+) -> Result<(), String> {
+    let file = projects::load();
+    let proj = file
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+
+    // Confirm the branch actually exists locally before tracking it.
+    let exists = desktop
+        .ports
+        .git
+        .show_ref_verify(&proj.root_path, &format!("refs/heads/{name}"))
+        .map_err(|e| format!("git show-ref failed: {e}"))?;
+    if !exists {
+        return Err(format!("Branch '{name}' does not exist locally"));
+    }
+
+    projects::add_tracked_branch(project_id, name).map_err(|e| e.to_string())
+}
+
+/// Hides `name` from its project's list; the checked-out branch stays.
+pub(crate) fn untrack_branch(
+    desktop: &DesktopState,
+    project_id: &str,
+    name: &str,
+) -> Result<(), String> {
+    let file = projects::load();
+    let proj = file
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+
+    let current = desktop
+        .ports
+        .git
+        .current_branch_show(&proj.root_path)
+        .unwrap_or_default();
+    if !current.is_empty() && current == name {
+        return Err(
+            "Cannot remove the currently-checked-out branch from view; switch first.".to_string(),
+        );
+    }
+
+    projects::remove_tracked_branch(project_id, name).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn list_available_branches(
     project_id: String,
     state: State<AppState>,
+) -> Result<Vec<String>, String> {
+    project_available_branches(&state, &project_id)
+}
+
+/// The project's local branches neither checked out nor tracked.
+pub(crate) fn project_available_branches(
+    desktop: &DesktopState,
+    project_id: &str,
 ) -> Result<Vec<String>, String> {
     let file = projects::load();
     let proj = file
@@ -9603,7 +9562,7 @@ pub fn list_available_branches(
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Project not found: {project_id}"))?;
 
-    available_branches(&*state.ports.git, &proj.root_path, &proj.tracked_branches)
+    available_branches(&*desktop.ports.git, &proj.root_path, &proj.tracked_branches)
 }
 
 /// Branch names not checked out and not already tracked.
@@ -9631,13 +9590,24 @@ fn available_branches(
 
 #[tauri::command]
 pub fn delete_project(project_id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    delete_project_and_its_prs(&state, &project_id)?;
+    snap!(state)
+}
+
+/// Deletes the project, and the cached PRs of its remote when no other
+/// project shares it.
+pub(crate) fn delete_project_and_its_prs(
+    desktop: &DesktopState,
+    project_id: &str,
+) -> Result<(), String> {
+    let state = desktop;
     let before = projects::load();
     let deleted_remote = before
         .projects
         .iter()
         .find(|p| p.id == project_id)
         .and_then(|p| p.remote.clone());
-    projects::delete_project(&project_id).map_err(|e| e.to_string())?;
+    projects::delete_project(project_id).map_err(|e| e.to_string())?;
     if let Some(remote) = deleted_remote {
         let remaining = projects::load();
         let target = normalize_remote_slug(&remote);
@@ -9647,17 +9617,11 @@ pub fn delete_project(project_id: String, state: State<AppState>) -> Result<AppS
                 .is_some_and(|r| normalize_remote_slug(r) == target)
         });
         if !remote_still_used {
-            if let Ok(mut cache) = state.pr_cache.lock() {
-                cache.retain(|r, _| normalize_remote_slug(r) != target);
-            }
-            if let Ok(mut fetched_at) = state.pr_cache_fetched_at.lock() {
-                fetched_at.retain(|r, _| normalize_remote_slug(r) != target);
-            }
-            crate::pr_cache::save_persisted_pr_cache(&state.pr_cache, &state.pr_cache_fetched_at);
+            state.app_owner.forget_remote_prs(&remote);
         }
     }
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    snap!(state)
+    Ok(())
 }
 
 #[tauri::command]
@@ -9948,11 +9912,11 @@ pub fn track_pr(
     snap!(state)
 }
 
-fn resolve_pr_title_for_project(
+pub(crate) fn resolve_pr_title_for_project(
     project_id: &str,
     pr_number: u64,
     title: Option<String>,
-    state: &AppState,
+    state: &DesktopState,
 ) -> Result<String, String> {
     if let Some(t) = title {
         let trimmed = t.trim().to_string();
@@ -10044,6 +10008,14 @@ pub fn untrack_pr(
 pub fn list_available_prs(
     project_id: String,
     state: State<AppState>,
+) -> Result<Vec<PrInfo>, String> {
+    project_available_prs(&state, &project_id)
+}
+
+/// The project's cached PRs that no sidebar list shows.
+pub(crate) fn project_available_prs(
+    state: &DesktopState,
+    project_id: &str,
 ) -> Result<Vec<PrInfo>, String> {
     let file = projects::load();
     let proj = file
@@ -12706,6 +12678,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod settings_resource_tests;
     #[cfg(feature = "v1-service")]
+    mod sidebar_pr_tests;
+    #[cfg(feature = "v1-service")]
     mod sidebar_tests;
     #[cfg(feature = "v1-service")]
     mod tab_key_tests;
@@ -12999,9 +12973,11 @@ mod tests {
         let meta_cache = Arc::new(Mutex::new(HashMap::new()));
         let pr_cache = Arc::new(Mutex::new(HashMap::new()));
         let gh_user = Arc::new(Mutex::new(None));
+        let pr_cache_fetched_at = Arc::new(Mutex::new(HashMap::new()));
         let app_owner = Arc::new(crate::app_owner::AppOwner::new(
             Arc::clone(&meta_cache),
             Arc::clone(&pr_cache),
+            Arc::clone(&pr_cache_fetched_at),
             Arc::clone(&gh_user),
         ));
         let gh_status_cache = Arc::new(Mutex::new(HashMap::new()));
@@ -13016,7 +12992,7 @@ mod tests {
             )),
             view: Default::default(),
             pr_cache,
-            pr_cache_fetched_at: Arc::new(Mutex::new(HashMap::new())),
+            pr_cache_fetched_at,
             branch_base_remote_oid: Arc::new(Mutex::new(HashMap::new())),
             pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
             app_owner,

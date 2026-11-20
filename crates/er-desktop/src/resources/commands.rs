@@ -10,7 +10,8 @@ use tauri::State;
 use crate::state::DesktopState;
 
 /// Applies one command and names the versions it moved. Off the main thread:
-/// a settings write waits on the actor and its save.
+/// a settings write waits on the actor and its save, and a sidebar command
+/// may call git.
 #[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn er_send(
@@ -144,7 +145,21 @@ mod tests {
         assert_eq!(fetched.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
         let versions = super::er_versions(vec![ResourceKey::Tabs]);
         assert_eq!(versions.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
+        let sent = super::er_send(Command::DeleteProject {
+            project: "p".into(),
+        });
+        assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
         let sent = super::er_send(Command::ReloadSettings);
         assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
+        let sent = super::er_send(Command::SavePr {
+            project: "p".into(),
+            number: 1,
+            title: None,
+        });
+        assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
+        let fetched = super::er_fetch(vec![ResourceKey::Prs {
+            remote: "acme/p".into(),
+        }]);
+        assert_eq!(fetched.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
     }
 }

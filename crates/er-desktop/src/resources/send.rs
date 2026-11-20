@@ -1,8 +1,9 @@
 //! `er_send`'s body: each wire command applied by the one owner of what it
 //! writes. The tab commands and the opens go to the app registry and the
-//! workspace actors (`tabs`); the settings writes, the AI picks and the risk
-//! reads go to the settings actor (ADR 0069); the panel mirror and the update
-//! check are the desktop's own.
+//! workspace actors (`tabs`); a settings write, an AI pick or a risk read
+//! goes to the settings actor (ADR 0069); a project or branch edit goes to the
+//! sidebar's owner; the panel mirror and the update check are the desktop's
+//! own.
 
 use er_engine::config::AiSelection;
 use er_engine::uninstall::UninstallResult;
@@ -56,19 +57,15 @@ pub fn apply(
         super::tabs::Routed::Other(command) => command,
     };
     let refreshed = match &command {
-        Command::TogglePanel { panel } => return Ok(toggle_panel(desktop, *panel)),
-        Command::CheckAppUpdate => return Ok(check_update(desktop, effects.check_update)),
         Command::RefreshAiModels {
             provider_id: Some(id),
             ..
         } => Some(id.clone()),
         _ => None,
     };
-    let Some(settings_command) = er_service::settings_command(command) else {
-        return Ok(Applied {
-            ack: Ack::default(),
-            uninstalled: None,
-        });
+    let settings_command = match er_service::settings_command(command) {
+        Ok(command) => command,
+        Err(command) => return apply_elsewhere(desktop, *command, effects),
     };
     let settings = desktop.service.settings();
     let reply = settings.send_and_wait(settings_command)?;
@@ -132,6 +129,23 @@ pub fn apply(
         },
         uninstalled,
     })
+}
+
+/// A command the settings actor does not own: the panel mirror and the update
+/// check are the desktop's own, and the rest go to the sidebar's owner.
+fn apply_elsewhere(
+    desktop: &DesktopState,
+    command: Command,
+    effects: &Effects<'_>,
+) -> Result<Applied, ErError> {
+    match command {
+        Command::TogglePanel { panel } => Ok(toggle_panel(desktop, panel)),
+        Command::CheckAppUpdate => Ok(check_update(desktop, effects.check_update)),
+        command => super::host::send(desktop, command).map(|ack| Applied {
+            ack,
+            uninstalled: None,
+        }),
+    }
 }
 
 /// "Codex: 12 models", what the page showed after a refresh with the flag

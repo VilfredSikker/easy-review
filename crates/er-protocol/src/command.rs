@@ -160,6 +160,81 @@ pub enum Command {
     },
     /// Hidden, split, fullscreen, hidden: the active tab's browser layout.
     CycleTabBrowserLayout,
+    /// Puts the projects in this order. Ids it does not name keep their order
+    /// after the named ones; an empty list changes nothing.
+    ReorderProjects {
+        ordered: Vec<String>,
+    },
+    DeleteProject {
+        project: String,
+    },
+    /// Lists a local branch under its project.
+    AddTrackedBranch {
+        project: String,
+        name: String,
+    },
+    /// Hides a branch from its project's list. The checked-out branch stays.
+    RemoveTrackedBranch {
+        project: String,
+        name: String,
+    },
+    PatchProjectReviewSettings {
+        project: String,
+        patch: ProjectReviewSettingsPatch,
+    },
+    /// Fetches every project remote's pull requests in the background; the
+    /// push brings the new `prs` versions. A refresh already running absorbs it.
+    RefreshPrList,
+    /// Fetches one project's remote in the background; a project with no
+    /// remote changes nothing.
+    RefreshProjectPrList {
+        project: String,
+    },
+    /// Hides a pull request from the project's lists.
+    DismissPr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+    UndismissPr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+    /// Tracks a pull request, which also undoes its dismissal.
+    TrackPr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+    UntrackPr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+    /// Saves a pull request at the front of the project's saved list, which
+    /// keeps the newest 50. With no title the cached one is used.
+    SavePr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+        title: Option<String>,
+    },
+    UnsavePr {
+        project: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+}
+
+/// The review settings a patch changes; a field left empty stays as it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProjectReviewSettingsPatch {
+    pub auto_triage_max_diff_kb: Option<u32>,
+    pub review_ignore_glob_add: Option<String>,
+    /// The index of the glob to remove.
+    pub review_ignore_glob_remove: Option<u32>,
 }
 
 /// A command was applied.
