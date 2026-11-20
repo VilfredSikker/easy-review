@@ -2,7 +2,8 @@
 //! writes. A settings write, an AI pick or a risk read goes to the settings
 //! actor (ADR 0069); a project or branch edit goes to the sidebar's owner;
 //! the panel mirror and the update check are the desktop's own.
-//! A tab command or an open goes to the app registry (`tabs`).
+//! A tab command or an open goes to the app registry (`tabs`); a diff
+//! command goes to the tab's workspace actor (`diff(tab)`).
 
 use er_engine::config::AiSelection;
 use er_engine::uninstall::UninstallResult;
@@ -46,6 +47,15 @@ pub fn apply(
     effects: &Effects<'_>,
 ) -> Result<Applied, ErError> {
     let command = match super::tabs::apply(desktop, command, effects) {
+        super::tabs::Routed::Applied(ack) => {
+            return ack.map(|ack| Applied {
+                ack,
+                uninstalled: None,
+            })
+        }
+        super::tabs::Routed::Other(command) => command,
+    };
+    let command = match super::diff::apply(desktop, command, effects) {
         super::tabs::Routed::Applied(ack) => {
             return ack.map(|ack| Applied {
                 ack,

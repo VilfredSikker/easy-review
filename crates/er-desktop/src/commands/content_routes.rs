@@ -70,15 +70,34 @@ fn load(state: &DesktopState, key: TabKey, tab: &TabDescriptor) -> Result<usize,
 /// The active tab and its content, loaded on its first use.
 fn active_content(state: &DesktopState) -> Result<(Active, Arc<TabContent>), String> {
     let active = active(state)?;
-    if let Some(content) = state.service.content(active.key, &active.tab) {
-        return Ok((active, content));
-    }
-    load(state, active.key, &active.tab)?;
-    let content = state
-        .service
-        .content(active.key, &active.tab)
-        .ok_or("The tab's content did not load")?;
+    let content = content_of(state, &active)?;
     Ok((active, content))
+}
+
+/// The tab the registry lists under `key`.
+fn listed(state: &DesktopState, key: TabKey) -> Result<Active, String> {
+    let view = state.service.app_registry().tabs_view();
+    let entry = view
+        .tabs
+        .iter()
+        .find(|entry| entry.key == key)
+        .ok_or("no open tab has that key")?;
+    Ok(Active {
+        key,
+        tab: entry.descriptor.clone(),
+    })
+}
+
+/// `entry`'s content, loaded on its first use.
+fn content_of(state: &DesktopState, entry: &Active) -> Result<Arc<TabContent>, String> {
+    if let Some(content) = state.service.content(entry.key, &entry.tab) {
+        return Ok(content);
+    }
+    load(state, entry.key, &entry.tab)?;
+    state
+        .service
+        .content(entry.key, &entry.tab)
+        .ok_or_else(|| "The tab's content did not load".to_string())
 }
 
 /// Opens `tab` in the registry, then loads its content under the key the
@@ -257,10 +276,17 @@ pub(crate) fn close_key(state: &DesktopState, key: TabKey) -> Result<TabsView, S
 /// how many reviewed marks the refresh cleared.
 pub(super) fn refresh(state: &AppState, force: bool) -> Result<usize, String> {
     let active = active(state)?;
+    refresh_tab(state, active.key, force)
+}
+
+/// Refreshes `key`'s diff, or loads it if it never loaded, which is how a
+/// tab whose first load failed tries again. Answers how many reviewed marks
+/// the refresh cleared.
+pub(crate) fn refresh_tab(state: &DesktopState, key: TabKey, force: bool) -> Result<usize, String> {
+    let active = listed(state, key)?;
     if state.service.content(active.key, &active.tab).is_none() {
         return load(state, active.key, &active.tab);
     }
-    let key = active.key;
     let command = Command::RefreshDiff {
         key,
         force,
@@ -270,7 +296,7 @@ pub(super) fn refresh(state: &AppState, force: bool) -> Result<usize, String> {
 }
 
 /// What a sync leaves to the caller's background refreshes.
-pub(super) struct Synced {
+pub(crate) struct Synced {
     pub reviewed_cleared: usize,
     /// The synced tab's root, whose branch metadata the caller refreshes.
     pub repo_root: String,
@@ -279,16 +305,22 @@ pub(super) struct Synced {
     pub status_key: Option<(String, String, u64)>,
 }
 
-/// Refetches the active tab's diff as a sync does, and lines the stale pill's
+/// Refetches the active tab's diff as a sync does.
+pub(super) fn sync(state: &AppState) -> Result<Synced, String> {
+    let active = active(state)?;
+    sync_tab(state, active.key)
+}
+
+/// Refetches `key`'s diff as a sync does, and lines the stale pill's
 /// baselines up with what the pill compares: a PR tab adopts the PR list's
 /// head, and a branch view records the base it just fetched as the probed one.
-pub(super) fn sync(state: &AppState) -> Result<Synced, String> {
-    let (active, content) = active_content(state)?;
+pub(crate) fn sync_tab(state: &DesktopState, key: TabKey) -> Result<Synced, String> {
+    let active = listed(state, key)?;
+    let content = content_of(state, &active)?;
     let adopt_head_oid = content
         .tab
         .pr_number
         .and_then(|number| super::pr_cache_head_oid_for_pr(state, number));
-    let key = active.key;
     let command = Command::RefreshDiff {
         key,
         force: true,
@@ -326,7 +358,7 @@ pub(super) fn shows_history(state: &AppState) -> bool {
 
 /// The modes the workspace loads. The others stay on the App until the
 /// snapshot reads the content.
-pub(super) fn routed_mode(mode: &str) -> Option<DiffMode> {
+pub(crate) fn routed_mode(mode: &str) -> Option<DiffMode> {
     match mode {
         "branch" => Some(DiffMode::Branch),
         "unstaged" => Some(DiffMode::Unstaged),
@@ -399,17 +431,46 @@ pub(super) fn set_mode(
             return Ok(AppSnapshot::default());
         }
     }
-    let (active, content) = active_content(state)?;
-    if content.tab.mode != diff_mode {
-        let key = active.key;
-        let command = Command::SetDiffMode {
-            key,
-            mode: diff_mode,
-            pr_number,
-        };
-        send(state, &active.tab, command)?;
-    }
+    let active = active(state)?;
+    set_tab_mode(state, active.key, mode, diff_mode, pr_number)?;
     Ok(AppSnapshot::default())
+}
+
+/// Shows `key` in `mode`, under the same feature gate as the active tab's
+/// switch.
+pub(crate) fn set_tab_mode(
+    state: &DesktopState,
+    key: TabKey,
+    name: &str,
+    mode: DiffMode,
+    pr_number: Option<u64>,
+) -> Result<(), String> {
+    let features = state.service.settings().view().config.features.clone();
+    if !super::feature_allows_mode_str(&features, name) {
+        return Err(format!("'{name}' view is disabled in settings"));
+    }
+    let entry = listed(state, key)?;
+    let content = content_of(state, &entry)?;
+    if content.tab.mode != mode {
+        send(state, &entry.tab, Command::SetDiffMode { key, mode, pr_number })?;
+    }
+    Ok(())
+}
+
+/// Diffs `key` against `base` and keeps it as the tab's saved base, as the
+/// App's base change persists the tab.
+pub(crate) fn change_tab_base(state: &DesktopState, key: TabKey, base: &str) -> Result<(), String> {
+    let entry = listed(state, key)?;
+    content_of(state, &entry)?;
+    let base = base.to_string();
+    send(state, &entry.tab, Command::ChangeBase { key, base })?;
+    let changed = state
+        .service
+        .content(key, &entry.tab)
+        .ok_or("The tab's content did not load")?;
+    let base_ref = changed.tab.base_branch.clone();
+    app_command(state, AppCommand::SetBaseRef { key, base_ref })?;
+    Ok(())
 }
 
 /// Selects the file at `idx` in the active tab's view state (D20) and parses
