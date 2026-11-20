@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { resourceClient, type Invoke } from "$lib/protocol/client";
+import type { Ack } from "$lib/protocol/generated/Ack";
+import type { Command } from "$lib/protocol/generated/Command";
+import type { ResourceChanged } from "$lib/protocol/generated/ResourceChanged";
+import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabRow } from "$lib/protocol/generated/TabRow";
 import type { TabSummary } from "$lib/types";
 import { ResourceStore } from "./resourceStore";
@@ -177,57 +184,136 @@ describe("tabsFromResource", () => {
 });
 
 describe("TabsAdapter.route", () => {
+  /** The Ack names two keys, so a route that waits for only one of them still resolves early. */
+  const ACK_CHANGED: ResourceChanged[] = [
+    { key: { kind: "tabs" }, version: 4 },
+    { key: { kind: "view", tab: 12 }, version: 2 },
+  ];
+
+  /** A store whose `whenAt` holds each wait until the test releases it. */
   function sender() {
-    const sent: unknown[] = [];
-    const waited: unknown[] = [];
+    const sent: Command[] = [];
+    const waited: [ResourceKey, number][] = [];
+    const releases: (() => void)[] = [];
     const store = {
       get: () => ({ key: { kind: "tabs" as const }, version: 3, value: { kind: "tabs" as const, ...wireTabs } }),
       show: () => () => {},
-      send: async (command: unknown) => {
+      send: async (command: Command): Promise<Ack> => {
         sent.push(command);
-        return { changed: [{ key: { kind: "tabs" as const }, version: 4 }], created: null };
+        return { changed: ACK_CHANGED, created: null };
       },
-      whenAt: async (key: unknown, version: number) => {
+      whenAt: (key: ResourceKey, version: number) => {
         waited.push([key, version]);
+        return new Promise<void>((resolve) => releases.push(resolve));
       },
     };
-    return { sent, waited, store };
+    return { sent, waited, releases, store };
   }
+
+  const hint = { baseRef: "main", headRef: "feature", headOid: "abc123", updatedAt: "2026-01-02T03:04:05Z" };
+
+  /** Every command `wireCommand` maps, the arguments its callers pass, and the wire command it sends. */
+  const ROUTED: [string, Record<string, unknown>, Command][] = [
+    ["new_tab", {}, { kind: "new_tab" }],
+    ["select_tab", { idx: 1 }, { kind: "select_tab", key: 12 }],
+    ["close_tab", { idx: 0 }, { kind: "close_tab", key: 11 }],
+    ["reorder_tabs", { fromIdx: 1, toIdx: 0 }, { kind: "reorder_tabs", key: 12, toIdx: 0 }],
+    [
+      "update_tab_browser",
+      { splitRatio: 0.6 },
+      { kind: "update_tab_browser", layout: null, url: null, navigate: false, annotate: null, tooltips: null, splitRatio: 0.6 },
+    ],
+    [
+      "update_tab_browser",
+      { layout: "split", url: "https://example.com", navigate: true, annotate: true, tooltips: false },
+      {
+        kind: "update_tab_browser",
+        layout: "split",
+        url: "https://example.com",
+        navigate: true,
+        annotate: true,
+        tooltips: false,
+        splitRatio: null,
+      },
+    ],
+    ["cycle_tab_browser_layout", {}, { kind: "cycle_tab_browser_layout" }],
+    ["open_pr_review", { projectId: "p", prNumber: 7 }, { kind: "open_pr_review", projectId: "p", prNumber: 7, replace: false }],
+    [
+      "open_pr_branch",
+      { projectId: "p", prNumber: 7, headRef: "h", replace: true },
+      { kind: "open_pr_review", projectId: "p", prNumber: 7, replace: true },
+    ],
+    [
+      "open_remote_pr",
+      { owner: "acme", repo: "gadgets", number: 9, replace: true },
+      { kind: "open_remote_pr", owner: "acme", repo: "gadgets", number: 9, replace: true },
+    ],
+    [
+      "open_pr_url",
+      { url: "https://github.com/a/b/pull/1" },
+      { kind: "open_pr_url", url: "https://github.com/a/b/pull/1", replace: false },
+    ],
+    [
+      "open_local_branch",
+      { projectId: "p", name: "feature" },
+      { kind: "open_local_branch", projectId: "p", name: "feature", replace: false },
+    ],
+    [
+      "open_project_branch",
+      { projectId: "p", branch: "main", replace: true },
+      { kind: "open_project_branch", projectId: "p", branch: "main", replace: true },
+    ],
+    ["open_worktree", {}, { kind: "open_worktree" }],
+    ["set_active_project", { id: "p" }, { kind: "set_active_project", projectId: "p" }],
+    ["prefetch_pr_open", { projectId: "p", prNumber: 7, hint }, { kind: "prefetch_pr_open", projectId: "p", prNumber: 7, hint }],
+    [
+      "prefetch_remote_pr_open",
+      { owner: "acme", repo: "gadgets", number: 9 },
+      { kind: "prefetch_remote_pr_open", owner: "acme", repo: "gadgets", number: 9 },
+    ],
+  ];
 
   it("leaves every command to app.cmd with the flag off", () => {
     const { store } = sender();
     const tabs = new TabsAdapter({ flagOn: false, store, snapshot: () => snapshot });
-    expect(tabs.route("select_tab", { idx: 1 })).toBeNull();
-    expect(tabs.route("open_worktree", {})).toBeNull();
+    for (const [name, args] of ROUTED) expect(tabs.route(name, args)).toBeNull();
   });
 
-  it("sends the tab commands and the opens by key through er_send with the flag on, and waits for the Ack", async () => {
+  it("covers every command wireCommand maps", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "tabsAdapter.ts"), "utf8");
+    const arms = [...source.matchAll(/case "(\w+)":/g)].map((m) => m[1]);
+    expect([...new Set(ROUTED.map(([name]) => name))].sort()).toEqual(arms.sort());
+  });
+
+  for (const [name, args, wire] of ROUTED) {
+    it(`sends ${name} ${JSON.stringify(args)} through er_send with the flag on, and resolves once the Ack's versions are held`, async () => {
+      const { sent, waited, releases, store } = sender();
+      const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
+      const routed = tabs.route(name, args);
+      if (routed === null) throw new Error(`${name} fell back to app.cmd`);
+      let settled = false;
+      const done = routed.then(() => {
+        settled = true;
+      });
+      await settle();
+      expect(sent).toEqual([wire]);
+      expect(waited).toEqual(ACK_CHANGED.map(({ key, version }) => [key, version]));
+      expect(settled).toBe(false);
+      releases[0]?.();
+      await settle();
+      expect(settled).toBe(false);
+      releases[1]?.();
+      await done;
+      expect(settled).toBe(true);
+    });
+  }
+
+  it("resolves a prefetch with no hint at once and sends nothing", async () => {
     const { sent, waited, store } = sender();
     const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
-    await tabs.route("select_tab", { idx: 1 });
-    await tabs.route("close_tab", { idx: 0 });
-    await tabs.route("reorder_tabs", { fromIdx: 1, toIdx: 0 });
-    await tabs.route("open_pr_branch", { projectId: "p", prNumber: 7, headRef: "h", replace: true });
-    await tabs.route("open_pr_url", { url: "https://github.com/a/b/pull/1" });
-    await tabs.route("update_tab_browser", { splitRatio: 0.6 });
     await tabs.route("prefetch_pr_open", { projectId: "p", prNumber: 7 });
-    expect(sent).toEqual([
-      { kind: "select_tab", key: 12 },
-      { kind: "close_tab", key: 11 },
-      { kind: "reorder_tabs", key: 12, toIdx: 0 },
-      { kind: "open_pr_review", projectId: "p", prNumber: 7, replace: true },
-      { kind: "open_pr_url", url: "https://github.com/a/b/pull/1", replace: false },
-      {
-        kind: "update_tab_browser",
-        layout: null,
-        url: null,
-        navigate: false,
-        annotate: null,
-        tooltips: null,
-        splitRatio: 0.6,
-      },
-    ]);
-    expect(waited).toHaveLength(6);
+    expect(sent).toEqual([]);
+    expect(waited).toEqual([]);
     expect(tabs.route("run_ai_review", {})).toBeNull();
   });
 
