@@ -3,7 +3,7 @@ use ts_rs::TS;
 
 use crate::{
     AvailableBranches, AvailablePrs, Branches, Panels, Projects, Prs, Risk, Session, Settings,
-    TabRow, Worktrees,
+    TabRow, TabView, Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -57,6 +57,8 @@ pub enum ResourceKey {
     Session,
     /// Which side panels are open.
     Panels,
+    /// One open tab's desktop view, by its key.
+    View { tab: TabKey },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -74,6 +76,7 @@ pub enum Resource {
     Worktrees(Worktrees),
     Session(Box<Session>),
     Panels(Panels),
+    View(TabView),
 }
 
 /// The open tabs in strip order, and the active one.

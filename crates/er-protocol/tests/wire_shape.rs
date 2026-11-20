@@ -5,11 +5,11 @@
 //! fails here before the frontend sees a missing field.
 
 use er_protocol::{
-    Ack, AvailableBranches, AvailablePrs, Branch, Branches, Command, ConfigFieldValue, ErError,
-    ErErrorKind, ModelUpsert, Notice, NoticeLevel, Panel, Panels, PrRow, Project, ProjectPrs,
-    ProjectReviewSettingsPatch, Projects, Prs, Resource, ResourceChanged, ResourceKey,
-    ResourceVersion, TabKey, TabKind, TabRow, Tabs, UninstallOptions, Versioned, Worktree,
-    Worktrees,
+    Ack, AvailableBranches, AvailablePrs, Branch, Branches, BrowserLayout, BrowserView, Command,
+    ConfigFieldValue, ErError, ErErrorKind, ModelUpsert, Notice, NoticeLevel, Panel, Panels, PrRow,
+    Project, ProjectPrs, ProjectReviewSettingsPatch, Projects, Prs, Resource, ResourceChanged,
+    ResourceKey, ResourceVersion, TabKey, TabKind, TabRow, TabView, Tabs, UninstallOptions,
+    Versioned, Worktree, Worktrees,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -101,6 +101,44 @@ fn the_tabs_resource_is_tagged_by_its_key() -> serde_json::Result<()> {
             }),
         },
         r#"{"key":{"kind":"tabs"},"version":3,"value":{"kind":"tabs","tabs":[{"key":2,"kind":"remote_pr","label":"gadgets#9","repo_root":"","branch":null,"pr_number":9,"remote":"acme/gadgets"}],"active":2}}"#,
+    )
+}
+
+/// A tab's view is keyed by the tab, and the tab commands name tabs by key
+/// with the fields the strip already sends.
+#[test]
+fn the_tab_commands_and_the_view_key_are_tagged() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::View { tab: TabKey(4) },
+        r#"{"kind":"view","tab":4}"#,
+    )?;
+    assert_wire(&Command::NewTab, r#"{"kind":"new_tab"}"#)?;
+    assert_wire(
+        &Command::ReorderTabs {
+            key: TabKey(4),
+            to_idx: 0,
+        },
+        r#"{"kind":"reorder_tabs","key":4,"toIdx":0}"#,
+    )?;
+    assert_wire(
+        &Command::OpenPrReview {
+            project_id: "p".into(),
+            pr_number: 12,
+            replace: false,
+        },
+        r#"{"kind":"open_pr_review","projectId":"p","prNumber":12,"replace":false}"#,
+    )?;
+    assert_wire(
+        &Resource::View(TabView {
+            browser: BrowserView {
+                url: "http://localhost:5173".into(),
+                layout: BrowserLayout::Split,
+                split_ratio: 0.5,
+                annotate_mode: false,
+                show_tooltips: true,
+            },
+        }),
+        r#"{"kind":"view","browser":{"url":"http://localhost:5173","layout":"split","split_ratio":0.5,"annotate_mode":false,"show_tooltips":true}}"#,
     )
 }
 

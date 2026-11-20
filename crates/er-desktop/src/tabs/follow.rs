@@ -13,6 +13,7 @@ use er_engine::ports::Ports;
 use er_engine::TabKey;
 use er_service::{AppCommand, AppRegistry, Reply, TabsView};
 
+use crate::service::ServiceState;
 use crate::view_state::ViewStateHandle;
 
 /// The tabs a view lists that `have` lacks, built under the registry's keys,
@@ -79,9 +80,8 @@ pub fn follow_registry(app: &mut App, view: &TabsView, built: Vec<TabState>) {
     app.sync_config_from_active_tab();
 }
 
-/// Applies `view` to the App, then hands each new tab its saved browser state
-/// and drops the view state of tabs that left. The view lock is taken after
-/// the engine lock (ADR 0068).
+/// Applies `view` to the App and hands each new tab its saved browser state.
+/// The view lock is taken after the engine lock (ADR 0068).
 fn apply(app: &Mutex<App>, view_state: &ViewStateHandle, view: &TabsView, built: Vec<TabState>) {
     let Ok(mut app) = app.lock() else {
         return;
@@ -95,8 +95,34 @@ fn apply(app: &Mutex<App>, view_state: &ViewStateHandle, view: &TabsView, built:
         }
     }
     follow_registry(&mut app, view, built);
-    let live: Vec<TabKey> = app.tabs.iter().map(TabState::key).collect();
-    desktop.retain_tabs(&live);
+}
+
+/// Drops the view state of every tab the registry no longer lists.
+pub fn prune(view_state: &ViewStateHandle, registry: &AppRegistry) {
+    let live: Vec<TabKey> = registry
+        .tabs_view()
+        .tabs
+        .iter()
+        .map(|tab| tab.key)
+        .collect();
+    if let Ok(mut view) = view_state.lock() {
+        view.retain_tabs(&live);
+    }
+}
+
+/// From now on, after each tab-list change: the view state drops the tabs
+/// that left, and the App follows the list. Each runs on a thread of its own,
+/// so the prune never waits on the App lock.
+pub fn follow_service(
+    service: &ServiceState,
+    app: Arc<Mutex<App>>,
+    view_state: ViewStateHandle,
+    ports: Ports,
+) {
+    let registry = Arc::clone(service.app_registry());
+    let (pruned, pruning) = (Arc::clone(&view_state), Arc::clone(&registry));
+    service.follow_tabs(move || prune(&pruned, &pruning));
+    service.follow_tabs(move || follow(&app, &view_state, &registry, &ports));
 }
 
 /// Follows the registry once. A tab whose descriptor no longer builds is

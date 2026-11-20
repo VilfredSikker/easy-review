@@ -111,8 +111,9 @@ fn assert_one_key(state: &AppState, step: &str) -> TabKey {
         desktop.browser_mut(active).url = format!("https://example.invalid/{step}");
     }
 
-    // A follow prunes the view state to the App's keys, so the nav and
-    // browser entries survive it only when they share the App's key.
+    // The prune keeps the registry's keys, so the nav and browser entries
+    // survive it and a follow only when they share the App's key.
+    crate::tabs::prune(&state.view, state.service.app_registry());
     follow(state);
     let desktop = state.view.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(desktop.nav(app_active).selected_file, 1, "{step}: nav key");

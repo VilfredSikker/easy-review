@@ -14,7 +14,7 @@ use crate::view_state::{BrowserLayout, DesktopViewState, TabBrowserState, ViewSt
 #[cfg(feature = "v1-service")]
 mod follow;
 #[cfg(feature = "v1-service")]
-pub use follow::{follow, follow_registry, restore};
+pub use follow::{follow, follow_registry, follow_service, prune, restore};
 
 /// Serialize the live tab list and active index to disk. Each tab's browser URL
 /// and layout come from the desktop view state.
@@ -50,15 +50,19 @@ fn persisted_tabs(
 /// engine lock held after a tab-list change, so it also drops the browser
 /// state of tabs that are gone.
 ///
-/// With `v1-service` the service's app registry is the record's one writer,
-/// so this only prunes the view state.
+/// With `v1-service` it does nothing: the service's app registry is the
+/// record's one writer, and the view state is pruned over the registry's list
+/// on each tab-list change ([`follow_service`]).
 pub fn persist_app_tabs(app: &er_engine::app::App, view: &ViewStateHandle) {
+    #[cfg(feature = "v1-service")]
+    let _ = (app, view);
+    #[cfg(not(feature = "v1-service"))]
     let Ok(mut view) = view.lock() else {
         log::warn!("er-desktop: view state lock poisoned; tabs not persisted");
         return;
     };
-    let live: Vec<er_engine::TabKey> = app.tabs.iter().map(|t| t.key()).collect();
-    view.retain_tabs(&live);
+    #[cfg(not(feature = "v1-service"))]
+    view.retain_tabs(&app.tabs.iter().map(|t| t.key()).collect::<Vec<_>>());
     #[cfg(not(feature = "v1-service"))]
     if let Err(e) = save_app_tabs(app, &view) {
         log::warn!("er-desktop: failed to persist tabs: {e}");

@@ -37,4 +37,4 @@ pub use sidebar::{
     AvailableBranches, AvailablePrs, Branch, Branches, PrRow, Project, ProjectPrs, Projects, Prs,
     Worktree, Worktrees,
 };
-pub use tabs::{TabKind, TabRow};
+pub use tabs::{BrowserLayout, BrowserView, PrOpenHint, TabKind, TabRow, TabView};

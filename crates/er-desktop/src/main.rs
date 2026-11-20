@@ -1095,8 +1095,8 @@ fn main() {
     {
         let registry = Arc::clone(service.app_registry());
         tabs::restore(&app_arc, &view_arc, &registry, &ports);
-        let (app, view, ports) = (Arc::clone(&app_arc), Arc::clone(&view_arc), ports.clone());
-        service.follow_tabs(move || tabs::follow(&app, &view, &registry, &ports));
+        let (app, view) = (Arc::clone(&app_arc), Arc::clone(&view_arc));
+        tabs::follow_service(&service, app, view, ports.clone());
     }
     #[cfg(feature = "v1-service")]
     if let Ok(app) = app_arc.lock() {
