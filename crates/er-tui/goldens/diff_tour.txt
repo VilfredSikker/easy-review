@@ -1,0 +1,19 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY   5  TOUR                                     1/2 reviewed
+ PILLARS (2)                   │ Token check                                                      File 1/2
+ ● Token check ✓               │ Where the audience is read.
+   ✓ src/auth.rs               │──────────────────────────────────────────────────────────────────────────────
+────────────────────────────── │ ▶ ~ src/auth.rs  +2 -1  ✓ reviewed
+ ○ Other changes 00/01         │
+     README.md                 │ ▶ @@ -1,5 +1,6 @@
+────────────────────────────── │   1    1 │ fn check(token: &str) -> bool {
+                               │   2      │-    token.len() > 0
+                               │        2 │+    let audience = audience_of(token);
+                               │        3 │+    !token.is_empty() && audience == "er"
+                               │   3    4 │ }
+                               │   4    5 │
+                               │   5    6 │ fn audience_of(token: &str) -> &str {
+                               │
+                               │
+ j/k pillars n/N files u/d scroll ↑↓ lines ␣ reviewed b review pillar g git
+styles 31b2c0e7366c2e5d
