@@ -1,7 +1,8 @@
 # Addendum 07: phase 5b, the TUI on the service
 
-Draft for the owner's review. The owner approved writing it beside phase 5's
-builds. It follows [PLAN.md "Re-planning at a phase
+The owner approved this plan on 2026-11-19 and took every default in
+"Decisions". It was written beside phase 5's builds, with the owner's
+agreement. It follows [PLAN.md "Re-planning at a phase
 gate"](./PLAN.md#re-planning-at-a-phase-gate) as far as a plan written early
 can. Where this file disagrees with PLAN.md or an issue body, this file wins
 once committed. [ADDENDUM-01](./ADDENDUM-01-decisions.md),
@@ -25,9 +26,10 @@ PLAN's phase-5b milestone:
   deferred it.
 - Known risk: key handling that relied on `App` fields.
 
-Because phase 5 is still building, the gate steps of PLAN (every phase-5 issue
-closed, `main` merged, `just ci` green) cannot run yet. Builds start when the
-owner approves this plan; each entry that depends on a phase-5 entry names it.
+Because phase 5 is still building, the gate steps of PLAN (every phase-5
+issue closed, `main` merged, `just ci` green) cannot run yet. The owner
+approved the plan on 2026-11-19, so builds may start; each entry that depends
+on a phase-5 entry names it.
 
 ## Hand-offs from earlier addenda
 
@@ -176,8 +178,8 @@ counts; `wc -l` gives one fewer per file.
 
 ## Decisions
 
-Each question has a recommended default, and planning proceeds on the
-defaults until the owner answers.
+**Owner questions (answered 2026-11-19).** The owner took every default
+below, and approved the plan. Each item's answer is its default.
 
 1. **A third track beside phase 5.** ADDENDUM-06 caps phase 5 at "two tracks
    at most, plus a C-only entry". 5b would be a third track. Default: allow
@@ -185,6 +187,7 @@ defaults until the owner answers.
    one build at a time, and every heavy check takes the machine-wide lock. A
    C-only entry waits while three tracks run. Alternative: start 5b when the
    sidebar track ends (after P55.3).
+   Answered: 5b runs as a third track.
 2. **The TUI renders what the er-service builders compute.** Default: the
    TUI holds each actor's `Arc<WorkspaceView>` and the registry's
    `TabsView`, and calls the same er-service builders the desktop's resource
@@ -204,9 +207,11 @@ defaults until the owner answers.
    phase-5 entry that adds it. Alternative: render the sections and compute
    those values in er-tui, which writes the same rule in two front ends,
    which the review rules rank as the most severe finding.
+   Answered: the TUI calls the er-service builders in-process.
 3. **Where the actor host lives.** Default: a new er-service module, so the
    TUI and phase 6's MCP share one host. The desktop keeps its `ServiceState`
    until phase 6. Alternative: a host in er-tui, copied from the desktop's.
+   Answered: a new er-service module.
 4. **The TUI's tab list.** Default: the TUI uses an `AppRegistry` in a new
    in-memory mode that reads and writes neither `tabs.json` nor
    `pr-open-cache.json`. The TUI's tabs come from its arguments today, and a
@@ -214,6 +219,7 @@ defaults until the owner answers.
    every key and lists every tab, so P54's refusal holds. Alternative: share
    the open cache file with the desktop and accept last-writer-wins on a
    cache.
+   Answered: an in-memory `AppRegistry`.
 5. **A dual path behind two seams, and an incomplete flag-on TUI.** Default:
    first make every renderer draw from one read model (P63) and every key
    produce an action without reading the App (P64), with the flag-off TUI
@@ -223,11 +229,13 @@ defaults until the owner answers.
    `test-v1` covers each ported area. Alternative: port in place with the
    service always on, which leaves the App and the actor writing one bucket
    for the whole phase.
+   Answered: a dual path behind the two seams.
 6. **TUI review submission is built on the service path only.** Default: P68
    builds it over the existing pending-review commands, so it reaches users
    when P76 removes the flag. If P76 has not merged at 1.0.0, the release
    notes keep D3's line. Alternative: build it on the App path first, which
    ships it earlier and is deleted in P76.
+   Answered: the service path only.
 7. **Code that leaves the App.** Default: TUI-only view code (the view types,
    the hub builders, the composer and the overlays) is written into er-tui;
    the App keeps its copy until P77 deletes it. A domain step that a phase-5
@@ -236,24 +244,28 @@ defaults until the owner answers.
    into a new always-compiled file with a parity test against the App's
    method, so a 5b entry need not wait; ADDENDUM-05 B1 rejected lasting
    duplication of use cases.
+   Answered: TUI-only view code in er-tui; 5b waits for phase-5 extractions.
 8. **Git working-tree writes are domain writes.** Stage, unstage, stage all,
    commit, push, the watched snapshot, the watched-file delete and context
    expansion change the repo or the published diff. Default: each becomes an
    er-service command whose effect runs the `Git` port off the actor and
    refreshes the tab (P69; context lines in P71). Alternative: keep them as
    TUI calls to the port, which the exit criterion forbids.
+   Answered: er-service commands.
 9. **The use cases move into er-service in phase 6, with MCP.** ADDENDUM-06
    A11 kept them in the engine "until 5b". After P77 the only callers outside
    er-service are er-mcp's direct calls, which phase 6 moves onto the service.
    Default: move them in phase 6, so MCP and the use cases move together.
    Alternative: move them in 5b and give er-mcp an er-service dependency
    early.
+   Answered: phase 6, with MCP.
 10. **5b deletes the App and the `ui` feature.** After P62.2 and P76 nothing
     enables `ui`. Default: P77 deletes `er_engine::app`, the `ui`-gated
     export wrapper, the feature and the re-exports P58.2 and P61 left in
     `er_engine::app`; after P76 no TUI build can reach a `ui`-gated
     re-export, so they serve nothing. Alternative: leave the dead half to
     phase 6.
+    Answered: P77 deletes them.
 11. **The TUI's one-action AI pick.** The TUI's AI hub can pick a provider and
     model for the next action only (`pending_ai_selection_override`,
     `app/state/mod.rs:4729`, set at `:5247`, cleared after each run at
@@ -265,6 +277,7 @@ defaults until the owner answers.
     notes say so. P74 owns it, since it depends on P60.2. Alternative: keep
     the one-action pick, which needs P60.1's and P60.2's run commands to take
     an optional per-job selection, or P74 to add that field (lane S).
+    Answered: every pick saves through the settings actor.
 
 ## Lane T and the files 5b shares with phase 5
 
@@ -555,10 +568,10 @@ sidecars on disk must match.
   its source fails the promote test (ADR 0053), and a sync that does not move
   the AI section's revision fails the sync test; Request changes sent as
   Comment fails the event test; a submit that skips `GetPendingReview` and
-  posts a bare decision while a draft exists fails the draft test; a remove sent with the
-  wrong node id fails; an approve through `gh_pr_approve` fails the source
-  scan; an own-PR approval that shows no message fails the refusal test; a
-  GitHub composer that opens on a tab known to have no PR fails; a hub that
+  posts a bare decision while a draft exists fails the draft test; a remove
+  sent with the wrong node id fails; an approve through `gh_pr_approve` fails
+  the source scan; an own-PR approval that shows no message fails the refusal
+  test; a GitHub composer that opens on a tab known to have no PR fails; a hub that
   ignores `PendingReviewChanged` still lists a removed comment and fails the
   refresh test; a probe that records a failed lookup as absent refuses the
   composer on a tab whose PR is unknown and fails the probe test.
