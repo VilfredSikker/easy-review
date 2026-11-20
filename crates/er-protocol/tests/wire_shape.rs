@@ -6,9 +6,10 @@
 
 use er_protocol::{
     Ack, AvailableBranches, AvailablePrs, Branch, Branches, Command, ConfigFieldValue, ErError,
-    ErErrorKind, ModelUpsert, Notice, NoticeLevel, Panel, Panels, PrRow, Project, ProjectPrs,
-    ProjectReviewSettingsPatch, Projects, Prs, Resource, ResourceChanged, ResourceKey,
-    ResourceVersion, TabKey, Tabs, UninstallOptions, Versioned, Worktree, Worktrees,
+    ErErrorKind, Inbox, InboxItem, InboxTarget, ModelUpsert, Notice, NoticeLevel, Panel, Panels,
+    PrRow, Project, ProjectPrs, ProjectReviewSettingsPatch, Projects, Prs, Resource,
+    ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, UninstallOptions, Versioned,
+    Worktree, Worktrees,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -240,6 +241,74 @@ fn wire_integers_are_typescript_numbers() {
     assert!(Prs::decl(&cfg).contains("fetchedAtMs: number | null"));
     assert!(ProjectPrs::decl(&cfg).contains("toReview: number[]"));
     assert!(Command::decl(&cfg).contains("\"save_pr\", project: string, number: number"));
+    let inbox = Inbox::decl(&cfg);
+    assert!(inbox.contains("unreadCount: number,"), "{inbox}");
+    assert!(inbox.contains("lastRefreshMs: number"), "{inbox}");
+    let item = InboxItem::decl(&cfg);
+    assert!(item.contains("createdAtMs: number,"), "{item}");
+    assert!(item.contains("readAtMs: number | null"), "{item}");
+    assert!(InboxTarget::decl(&cfg).contains("prNumber: number | null"));
+}
+
+#[test]
+fn the_inbox_resource_is_one_app_wide_key() -> serde_json::Result<()> {
+    assert_wire(&ResourceKey::Inbox, r#"{"kind":"inbox"}"#)?;
+    assert_wire(
+        &Resource::Inbox(Inbox {
+            items: vec![InboxItem {
+                id: "i-1".into(),
+                kind: "ci_failed".into(),
+                category: "ci".into(),
+                severity: "warning".into(),
+                title: "CI failed".into(),
+                body: "lint".into(),
+                source: "github".into(),
+                target: InboxTarget {
+                    project_id: Some("er".into()),
+                    repo_root: None,
+                    remote: Some("acme/er".into()),
+                    pr_number: Some(7),
+                    branch: None,
+                    url: None,
+                },
+                created_at_ms: 5,
+                read_at_ms: None,
+                dedupe_key: "ci:7".into(),
+            }],
+            unread_count: 1,
+            last_refresh_ms: 9,
+        }),
+        r#"{"kind":"inbox","items":[{"id":"i-1","kind":"ci_failed","category":"ci","severity":"warning","title":"CI failed","body":"lint","source":"github","target":{"projectId":"er","repoRoot":null,"remote":"acme/er","prNumber":7,"branch":null,"url":null},"createdAtMs":5,"readAtMs":null,"dedupeKey":"ci:7"}],"unreadCount":1,"lastRefreshMs":9}"#,
+    )
+}
+
+#[test]
+fn the_inbox_commands_are_tagged_by_kind() -> serde_json::Result<()> {
+    assert_wire(
+        &Command::MarkInboxItemRead { id: "i-1".into() },
+        r#"{"kind":"mark_inbox_item_read","id":"i-1"}"#,
+    )?;
+    assert_wire(
+        &Command::MarkInboxItemsRead {
+            ids: vec!["i-1".into()],
+        },
+        r#"{"kind":"mark_inbox_items_read","ids":["i-1"]}"#,
+    )?;
+    assert_wire(
+        &Command::ClearInboxItems {
+            ids: vec!["i-1".into()],
+        },
+        r#"{"kind":"clear_inbox_items","ids":["i-1"]}"#,
+    )?;
+    for (command, kind) in [
+        (Command::MarkAllInboxRead, "mark_all_inbox_read"),
+        (Command::ClearReadInboxItems, "clear_read_inbox_items"),
+        (Command::RefreshNotifications, "refresh_notifications"),
+        (Command::TestNativeNotification, "test_native_notification"),
+    ] {
+        assert_wire(&command, &format!(r#"{{"kind":"{kind}"}}"#))?;
+    }
+    Ok(())
 }
 
 #[test]

@@ -33,6 +33,6 @@ pub use settings::{
     UninstallOptions, UninstallPreview, UninstallTarget,
 };
 pub use sidebar::{
-    AvailableBranches, AvailablePrs, Branch, Branches, PrRow, Project, ProjectPrs, Projects, Prs,
-    Worktree, Worktrees,
+    AvailableBranches, AvailablePrs, Branch, Branches, Inbox, InboxItem, InboxTarget, PrRow,
+    Project, ProjectPrs, Projects, Prs, Worktree, Worktrees,
 };

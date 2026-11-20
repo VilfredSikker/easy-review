@@ -144,6 +144,26 @@ pub enum Command {
         #[ts(type = "number")]
         number: u64,
     },
+    /// Marks one inbox item read; an id the inbox does not hold changes
+    /// nothing.
+    MarkInboxItemRead {
+        id: String,
+    },
+    MarkAllInboxRead,
+    MarkInboxItemsRead {
+        ids: Vec<String>,
+    },
+    /// Removes every read inbox item.
+    ClearReadInboxItems,
+    /// Removes the named inbox items that are read; unread ones stay.
+    ClearInboxItems {
+        ids: Vec<String>,
+    },
+    /// Runs the PR sweep that fills the inbox, as `RefreshPrList` does.
+    RefreshNotifications,
+    /// Shows a test native notification; refused when the system would not
+    /// show it.
+    TestNativeNotification,
 }
 
 /// The review settings a patch changes; a field left empty stays as it is.
