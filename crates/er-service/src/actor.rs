@@ -700,6 +700,18 @@ fn handle_command(
             });
         }
         Command::LoadTab { key, tab, mode } => {
+            // A key the app registry no longer lists belongs to a closed tab.
+            // Its drop reached no actor when this one was not up yet, so the
+            // closed keys cannot tell; the registry's list can.
+            if deps
+                .app_registry()
+                .is_some_and(|registry| !registry.tabs_view().tabs.iter().any(|t| t.key == key))
+            {
+                let _ = reply.send(Err(WorkspaceError::Failed(
+                    "the tab closed before its load".into(),
+                )));
+                return;
+            }
             spawn_load(deps, state, tx, reply, key, move |deps, _| {
                 crate::effect::first_load(deps, &tab, mode)
             });
@@ -828,6 +840,18 @@ fn apply(
     subscribers: &Mutex<Vec<Sender<Event>>>,
     view: &RwLock<Arc<WorkspaceView>>,
 ) {
+    // A drop of a key that holds no content changes no view, so it moves no
+    // revision and publishes nothing.
+    let result = match result {
+        Ok(Effected {
+            reply: value,
+            patch: Some(ContentPatch::Dropped { key }),
+        }) if state.drop_unloaded(key) => {
+            let _ = reply.send(Ok(value));
+            return;
+        }
+        other => other,
+    };
     // A content patch lands before the reply, so a caller that reads the view
     // after its reply sees the change. A refused patch answers with why.
     let result = result.and_then(|Effected { reply, patch }| match patch {

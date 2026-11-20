@@ -115,12 +115,22 @@ pub(crate) fn open(state: &DesktopState, tab: TabDescriptor, replace: bool) -> R
     Ok(())
 }
 
-/// Two descriptors of one PR tab: the same kind, root and PR.
+/// Two descriptors of one PR, whatever the tab kind (A15): the same PR number
+/// in the same repo. The repo is `owner/repo` when both carry it, since a
+/// local PR's actor is its clone and a remote PR's is the repo; a descriptor
+/// without it (a local PR saved by the flag-off build) is matched by its actor.
 fn same_pr(open: &TabDescriptor, tab: &TabDescriptor) -> bool {
+    fn repo(d: &TabDescriptor) -> Option<(&String, &String)> {
+        d.pr_owner.as_ref().zip(d.pr_repo.as_ref())
+    }
     tab.pr_number.is_some()
-        && open.kind == tab.kind
         && open.pr_number == tab.pr_number
-        && open.workspace_key() == tab.workspace_key()
+        && match (repo(open), repo(tab)) {
+            (Some((a_owner, a_repo)), Some((b_owner, b_repo))) => {
+                a_owner.eq_ignore_ascii_case(b_owner) && a_repo.eq_ignore_ascii_case(b_repo)
+            }
+            _ => open.workspace_key() == tab.workspace_key(),
+        }
 }
 
 pub(crate) fn app_command(state: &DesktopState, command: AppCommand) -> Result<TabsView, String> {

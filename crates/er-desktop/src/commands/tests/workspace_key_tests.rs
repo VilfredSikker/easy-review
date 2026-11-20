@@ -139,10 +139,12 @@ fn every_view_of_a_tab_names_one_workspace() {
         let mut branch = content_routes::working_tab(root.clone());
         branch.kind = TabKind::LocalBranch;
         branch.branch = Some("feature".to_string());
+        // Another PR than the remote row's: an open of a PR already open as a
+        // local PR selects that tab (A15), and this test is about the keys.
         let local_pr = content_routes::pr_tab(&OpenTarget::PrReview {
             project_id: "widgets".to_string(),
             remote: REMOTE.to_string(),
-            pr_number: 7,
+            pr_number: 8,
             repo_root: root.clone(),
         })
         .expect("local PR tab");
@@ -179,8 +181,8 @@ fn every_view_of_a_tab_names_one_workspace() {
                 "local PR",
                 app_tab(&root, |tab| {
                     tab.remote_repo = Some(REMOTE.to_string());
-                    tab.pr_number = Some(7);
-                    tab.local_branch_view = Some("pr/7".to_string());
+                    tab.pr_number = Some(8);
+                    tab.local_branch_view = Some("pr/8".to_string());
                 }),
                 local_pr,
                 &root,
