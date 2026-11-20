@@ -339,6 +339,38 @@ fn an_uncached_saved_pr_has_a_title_only_row() {
     });
 }
 
+/// The owner keeps the worktree lists of roots an open tab shows and drops
+/// the rest, so the keys do not grow with every tab ever opened.
+#[test]
+fn the_owner_keeps_the_worktrees_of_open_roots_only() {
+    in_storage(|| {
+        let owner = owner();
+        let list = |path: &str| {
+            super::worktree_rows(vec![crate::snapshot::WorktreeSnapshot {
+                path: path.into(),
+                branch: "main".into(),
+                is_current: true,
+                is_pr: false,
+                pr_number: None,
+                is_merged: false,
+                remote: None,
+            }])
+        };
+        let open = |roots: &[&str]| roots.iter().map(|r| r.to_string()).collect();
+        owner.hold_worktrees("/a", list("/a"), &open(&["/a", "/b"]));
+        owner.hold_worktrees("/b", list("/b"), &open(&["/a", "/b"]));
+        owner.publish();
+        assert!(owner.worktrees("/a").0 > 0);
+        assert_eq!(owner.worktrees("/b").1.worktrees[0].path, "/b");
+
+        owner.hold_worktrees("/c", list("/c"), &open(&["/b", "/c"]));
+        owner.publish();
+        assert_eq!(owner.worktrees("/a"), (0, Default::default()));
+        assert!(owner.worktrees("/b").0 > 0);
+        assert!(owner.worktrees("/c").0 > 0);
+    });
+}
+
 /// The PR cache has one writer, the owner, over the helpers in
 /// `pr_cache.rs`: no other file locks it or its fetch times to write, or
 /// calls a helper that does.

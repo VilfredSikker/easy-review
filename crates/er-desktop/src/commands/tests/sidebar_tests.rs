@@ -171,6 +171,17 @@ fn service_git() -> er_git::FakeGit {
 /// A loaded tab on `loaded`, active in the registry, beside the App's tab on
 /// `app-repo`; the desktop's git records what the tick asks of it.
 fn loaded_fixture(dir: &ReviewFlowTestDir) -> (AppState, String, Arc<er_git::FakeGit>) {
+    let desktop_git = er_git::FakeGit::default()
+        .with_list_worktrees(Ok(Vec::new()))
+        .with_branch_merged(Ok(String::new()));
+    loaded_with(dir, desktop_git)
+}
+
+/// `loaded_fixture` with `desktop_git` as the desktop's git.
+fn loaded_with(
+    dir: &ReviewFlowTestDir,
+    desktop_git: er_git::FakeGit,
+) -> (AppState, String, Arc<er_git::FakeGit>) {
     let mut state = review_flow_test_state(dir);
     state.app.lock().unwrap().tab_mut().repo_root =
         dir.path().join("app-repo").to_string_lossy().into_owned();
@@ -180,11 +191,7 @@ fn loaded_fixture(dir: &ReviewFlowTestDir) -> (AppState, String, Arc<er_git::Fak
     };
     let settings = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_settings_path(service_ports, settings));
-    let desktop_git = Arc::new(
-        er_git::FakeGit::default()
-            .with_list_worktrees(Ok(Vec::new()))
-            .with_branch_merged(Ok(String::new())),
-    );
+    let desktop_git = Arc::new(desktop_git);
     state.ports = er_engine::ports::Ports {
         git: desktop_git.clone(),
         github: Arc::new(er_engine::github::FakeGitHub::default()),
@@ -219,6 +226,118 @@ fn the_tick_warms_the_registry_active_tab() {
         let app_root = state.app.lock().unwrap().tab().repo_root.clone();
         let app_warm = format!("list_worktrees(repo_root={app_root:?})");
         assert!(!git.calls().contains(&app_warm), "{:?}", git.calls());
+    });
+}
+
+fn worktree(path: &str, branch: &str) -> er_git::Worktree {
+    er_git::Worktree {
+        path: path.into(),
+        branch: branch.into(),
+        head: "1".repeat(40),
+    }
+}
+
+/// The tick serves the active tab's worktrees as `build_worktrees` lists
+/// them for the same root and base, less which one is current, and asks
+/// which branches are merged into the base the loaded tab holds. A PR's merge
+/// ref, a merged branch, a detached checkout and a worktree on a branch the
+/// project dismissed all stay, which `branches(project)` cannot show.
+#[test]
+fn the_tick_serves_the_active_tab_worktrees_as_build_worktrees_lists_them() {
+    with_storage(|dir| {
+        let root = dir.path().join("loaded").to_string_lossy().into_owned();
+        let git = er_git::FakeGit::default()
+            .with_list_worktrees(Ok(vec![
+                worktree(&root, "main"),
+                worktree("/src/pr-7", "pr-7"),
+                worktree("/src/old", "old"),
+                worktree("/src/gone", "gone"),
+                worktree("/src/loose", "(detached)"),
+            ]))
+            .with_branch_merged(Ok("old\n".into()))
+            .with_config_get_regexp(Ok(
+                "remote.origin.url https://github.com/acme/widgets.git\n\
+                 branch.pr-7.merge refs/pull/7/head\n"
+                    .into(),
+            ));
+        let (state, loaded, git) = loaded_with(dir, git);
+        assert_eq!(loaded, root);
+        save(vec![ProjectRecord {
+            dismissed_branches: vec!["gone".into()],
+            ..record("p", &root, Some("acme/widgets"))
+        }]);
+        tick::run(&state.desktop, &state.app);
+        // The fake answers the merged list for any base, so the rows alone
+        // cannot show the tick asked with the loaded tab's base.
+        let merged_asks: Vec<String> = git
+            .calls()
+            .into_iter()
+            .filter(|call| call.starts_with("branch_merged("))
+            .collect();
+        let asked = format!("branch_merged(root={root:?}, base=\"main\")");
+        assert!(
+            !merged_asks.is_empty() && merged_asks.iter().all(|call| *call == asked),
+            "the tick asked {merged_asks:?}, expected only {asked}"
+        );
+
+        let key = ResourceKey::Worktrees { root: root.clone() };
+        let fetched = resources::fetch(&state.desktop, key.clone()).unwrap();
+        assert!(fetched.version.0 > 0, "the tick published no worktrees");
+        assert_eq!(resources::version(&state.desktop, key), Ok(fetched.version));
+        let Resource::Worktrees(served) = fetched.value else {
+            panic!("{:?}", fetched.value);
+        };
+        let ports = &state.desktop.ports;
+        let listed =
+            crate::snapshot::build_worktrees(&*ports.github, &*ports.git, &root, "main", &root);
+        let listed: Vec<_> = listed
+            .into_iter()
+            .map(|w| {
+                (
+                    w.path,
+                    w.branch,
+                    w.is_pr,
+                    w.pr_number,
+                    w.is_merged,
+                    w.remote,
+                )
+            })
+            .collect();
+        let served: Vec<_> = served
+            .worktrees
+            .into_iter()
+            .map(|w| {
+                (
+                    w.path,
+                    w.branch,
+                    w.is_pr,
+                    w.pr_number,
+                    w.is_merged,
+                    w.remote,
+                )
+            })
+            .collect();
+        assert_eq!(served, listed);
+        let covers = |what: &str, found: bool| assert!(found, "the fixture covers {what}");
+        covers(
+            "a PR merge ref",
+            listed.iter().any(|w| w.3 == Some(7) && w.2),
+        );
+        covers(
+            "a merged branch",
+            listed.iter().any(|w| w.1 == "old" && w.4),
+        );
+        covers(
+            "a detached checkout",
+            listed.iter().any(|w| w.1 == "(detached)"),
+        );
+        covers("a dismissed branch", listed.iter().any(|w| w.1 == "gone"));
+        covers(
+            "the remote",
+            listed
+                .iter()
+                .all(|w| w.5.as_deref() == Some("acme/widgets")),
+        );
     });
 }
 
