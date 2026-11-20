@@ -1027,15 +1027,16 @@ fn main() {
             .flatten()
             .unwrap_or_default(),
     ));
+    let inbox = Arc::new(Mutex::new(inbox::load_inbox_state()));
     let app_owner = Arc::new(er_desktop::app_owner::AppOwner::new(
         Arc::clone(&meta_cache),
         Arc::clone(&pr_cache),
         Arc::clone(&pr_cache_fetched_at),
         Arc::clone(&gh_user),
+        Arc::clone(&inbox),
     ));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
-    let inbox = Arc::new(Mutex::new(inbox::load_inbox_state()));
     let tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
 
     // Resolve the gh user login once at launch in a background thread.
@@ -1151,6 +1152,8 @@ fn main() {
         session: session.clone(),
     };
     let state = AppState::new(desktop.clone(), Arc::clone(&app_arc));
+    #[cfg(feature = "v1-service")]
+    er_desktop::app_owner::startup::read_inbox_prefs_from_settings(&desktop);
     #[cfg(feature = "v1-service")]
     er_desktop::app_owner::startup::register_open_projects(&state);
 
@@ -1610,7 +1613,7 @@ fn main() {
     let bg_gh_user = Arc::clone(&gh_user);
     let bg_inbox = Arc::clone(&inbox);
     let bg_handle = Arc::clone(&tauri_app_handle);
-    let bg_app = Arc::clone(&app_arc);
+    let bg_state = state.clone();
     let bg_github = Arc::clone(&ports.github);
     std::thread::spawn(move || {
         // Inbox native notifications need `tauri_app_handle`; setup stores it after
@@ -1635,7 +1638,7 @@ fn main() {
                 f.pr_list = true;
             }
             let failed = rt.block_on(bg_owner.refresh_prs(Arc::clone(&bg_github)));
-            let prefs = commands::clone_inbox_prefs(&bg_app);
+            let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
             let handles = commands::InboxRefreshHandles {
                 pr_cache: &bg_cache,
                 gh_user: &bg_gh_user,
@@ -1661,7 +1664,7 @@ fn main() {
             }
             let success =
                 rt.block_on(bg_owner.refresh_remote_prs(Arc::clone(&bg_github), &active_remote));
-            let prefs = commands::clone_inbox_prefs(&bg_app);
+            let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
             let handles = commands::InboxRefreshHandles {
                 pr_cache: &bg_cache,
                 gh_user: &bg_gh_user,
@@ -1939,12 +1942,7 @@ fn main() {
                     Arc::clone(&state.desktop_revision),
                 ));
                 native_notify::initialize(app.handle());
-                let prefs = commands::clone_inbox_prefs(&state.app);
-                commands::flush_pending_native_notifications(
-                    &state.inbox,
-                    &state.tauri_app_handle,
-                    &prefs,
-                );
+                er_desktop::app_owner::startup::flush_pending_notifications(&state);
                 // Revision watcher: emit a Tauri event whenever the backend's
                 // `desktop_revision` advances. The frontend listens and only
                 // calls `poll` on demand instead of every 2s — cuts idle
