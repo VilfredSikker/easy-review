@@ -43,6 +43,10 @@ pub enum Command {
     /// own timeout fires.
     #[cfg(any(test, feature = "test-support"))]
     Stall,
+    /// Test support: hold the actor thread forever, so a reader can prove it
+    /// never waits on the actor's queue.
+    #[cfg(any(test, feature = "test-support"))]
+    Hold,
 
     // ── Annotation commands (P41.1) ──
     /// Flip one path's reviewed mark against the stored map.

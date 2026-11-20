@@ -270,7 +270,10 @@ pub(crate) fn load_tab(
         .unwrap_or_else(|| ErRoot::unresolved(&tab.repo_root, git))
         .er_dir();
     let comments_dir = id.pr_bucket_er_dir(git).unwrap_or_else(|| er_dir.clone());
-    let remote_only = id.is_remote().then_some(tab.remote_repo.as_deref()).flatten();
+    let remote_only = id
+        .is_remote()
+        .then_some(tab.remote_repo.as_deref())
+        .flatten();
     let rules_key = er_engine::storage::rules_key(git, &tab.repo_root, remote_only);
     let risk_artifact = er_engine::config::load_risk_rules_table(&rules_key);
     let store = store_registry::store();

@@ -111,7 +111,11 @@ pub fn diff_resource(content: &TabContent, inputs: &DiffInputs<'_>) -> wire::Tab
         local_branch_checked_out: tab.checkout_root.is_some(),
         unstaged_stat: scope_stat(meta.scope_stats.unstaged),
         staged_stat: scope_stat(meta.scope_stats.staged),
-        built_from_head_oid: content.pr.head_oid.clone().filter(|_| tab.pr_number.is_some()),
+        built_from_head_oid: content
+            .pr
+            .head_oid
+            .clone()
+            .filter(|_| tab.pr_number.is_some()),
         pr_diff_head_oid: meta
             .preview_head_oid
             .clone()
@@ -218,12 +222,15 @@ fn suggestions(files: &[&DiffFile], inputs: &DiffInputs<'_>) -> Vec<wire::Filter
         expr: p.expr.into(),
         files: None,
     });
-    let history = inputs.filter_history.iter().map(|expr| wire::FilterSuggestion {
-        kind: "history".into(),
-        name: expr.clone(),
-        expr: expr.clone(),
-        files: None,
-    });
+    let history = inputs
+        .filter_history
+        .iter()
+        .map(|expr| wire::FilterSuggestion {
+            kind: "history".into(),
+            name: expr.clone(),
+            expr: expr.clone(),
+            files: None,
+        });
     kinds.chain(presets).chain(history).collect()
 }
 

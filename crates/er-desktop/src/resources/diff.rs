@@ -61,7 +61,11 @@ pub fn version(desktop: &DesktopState, wire: er_protocol::TabKey) -> Result<u64,
 
 /// The version `diff(key)` answers at, for the relay. Zero while nothing
 /// loaded or failed.
-pub fn published_version(desktop: &DesktopState, key: TabKey, tab: &er_engine::tabs_record::TabDescriptor) -> u64 {
+pub fn published_version(
+    desktop: &DesktopState,
+    key: TabKey,
+    tab: &er_engine::tabs_record::TabDescriptor,
+) -> u64 {
     let entry = TabEntry {
         key,
         descriptor: tab.clone(),

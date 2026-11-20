@@ -75,8 +75,11 @@ pub fn status_str(status: &FileStatus) -> String {
 
 pub fn finding_is_escalated(ai: &AiState, path: &str, finding: &Finding) -> bool {
     matches!(
-        ai.arbiter_verdicts
-            .get(&crate::ai::finding_key(path, finding.line_start, &finding.title)),
+        ai.arbiter_verdicts.get(&crate::ai::finding_key(
+            path,
+            finding.line_start,
+            &finding.title
+        )),
         Some((ArbiterRuling::Escalated, _))
     )
 }
