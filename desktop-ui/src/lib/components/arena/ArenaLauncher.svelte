@@ -4,6 +4,7 @@
   import { openDiffFilePicker } from "$lib/components/AiReviewFilesModal.svelte";
   import { arena, type ArenaStartConfig } from "$lib/stores/arena.svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { triageRecommendedPaths } from "$lib/triageSuggestions";
   import type { AiProviderInfo, ReviewerInfo } from "$lib/types";
   import type { ArenaEstimate, ArenaLauncherScope, ArenaScope, ReviewerRef } from "$lib/types/arena";
@@ -117,7 +118,7 @@
     return levels;
   });
   const globalEffortLabel = $derived(
-    app.snapshot?.active_ai_effort ? effortLabel(app.snapshot.active_ai_effort) : "CLI default",
+    sessionResource.activeAiEffort ? effortLabel(sessionResource.activeAiEffort) : "CLI default",
   );
 
   function runEffort(): string | undefined {
@@ -297,7 +298,7 @@
   $effect(() => {
     if (!open) return;
     loadingProviders = true;
-    Promise.all([invoke<AiProviderInfo[]>("list_ai_providers"), invoke<ReviewerInfo[]>("list_ai_reviewers")])
+    Promise.all([sessionResource.providers(), sessionResource.reviewers()])
       .then(([list, reviewerList]) => {
         providers = list;
         agents = reviewerList;

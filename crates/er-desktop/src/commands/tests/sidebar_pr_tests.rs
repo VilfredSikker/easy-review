@@ -103,9 +103,17 @@ fn command_fixture(dir: &ReviewFlowTestDir) -> AppState {
 }
 
 fn send(state: &AppState, command: Command) -> er_protocol::Ack {
-    resources::send::apply(&state.desktop, command, &|_, _| {})
-        .unwrap()
-        .ack
+    resources::send::apply(
+        &state.desktop,
+        command,
+        &resources::send::Effects {
+            notify: &|_, _| {},
+            follow_selection: &|_| {},
+            check_update: || panic!("no update check in this test"),
+        },
+    )
+    .unwrap()
+    .ack
 }
 
 /// A dismiss through `er_send` leaves the PR out of mine, to review and
@@ -390,7 +398,15 @@ fn every_pr_command_reaches_the_sidebar_owner() {
             },
         ];
         for command in commands {
-            let applied = resources::send::apply(&state.desktop, command.clone(), &|_, _| {});
+            let applied = resources::send::apply(
+                &state.desktop,
+                command.clone(),
+                &resources::send::Effects {
+                    notify: &|_, _| {},
+                    follow_selection: &|_| {},
+                    check_update: || panic!("no update check in this test"),
+                },
+            );
             assert!(applied.is_ok(), "{command:?}: {applied:?}");
         }
         let missing = resources::send::apply(
@@ -398,7 +414,11 @@ fn every_pr_command_reaches_the_sidebar_owner() {
             Command::RefreshProjectPrList {
                 project: "gone".into(),
             },
-            &|_, _| {},
+            &resources::send::Effects {
+                notify: &|_, _| {},
+                follow_selection: &|_| {},
+                check_update: || panic!("no update check in this test"),
+            },
         );
         assert_eq!(
             missing.map(|_| ()).map_err(|e| e.kind),

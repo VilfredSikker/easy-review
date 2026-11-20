@@ -1,8 +1,8 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { showDiagrams } from "$lib/components/overview/overviewNav";
   import { arena } from "$lib/stores/arena.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
@@ -93,7 +93,7 @@
     const validateAvailable = hasReviewJson || eligibleCommentCount > 0;
     const tourAvailable = snapshot?.tour?.available ?? false;
     const runningCommands = (snapshot?.agent_commands ?? []).filter((c) => c.status === "running");
-    const activeAiLabel = snapshot?.active_ai_label ?? "";
+    const activeAiLabel = sessionResource.activeAiLabel;
     const validateHint = validateDescription({
       inScope: !!reviewScope,
       scopeDescription,
@@ -300,8 +300,15 @@
   }
 
   // ── Provider / model / effort nested picker ──────────────────────────────
+  /** Saves the pick as the default; a refused one shows why. With the flag off it goes through `app.cmd`, as it always has. */
+  function pickAi(providerId: string, modelId: string | null, effort?: string): Promise<void> {
+    return sessionResource
+      .setAiSelection(providerId, modelId, effort, "app")
+      .catch((e) => app.showToast("error", `set_ai_selection: ${e}`));
+  }
+
   function providerItems(): CommandItem[] {
-    const currentEffort = snapshot?.active_ai_effort ?? null;
+    const currentEffort = sessionResource.activeAiEffort;
     return aiProviders.map((p) => ({
       id: `provider-${p.id}`,
       label: p.label,
@@ -309,9 +316,7 @@
       group: "AI" as const,
       run: () => {
         if (p.models.length === 0) {
-          void dismissAndRun(() =>
-            app.cmd("set_ai_selection", { providerId: p.id, modelId: null, persist: true }),
-          );
+          void dismissAndRun(() => pickAi(p.id, null));
         }
       },
       submenuItems: p.models.length > 0
@@ -333,9 +338,7 @@
       group: "AI" as const,
       run: () => {
         if (choices.length === 0) {
-          void dismissAndRun(() =>
-            app.cmd("set_ai_selection", { providerId, modelId: m.id, persist: true }),
-          );
+          void dismissAndRun(() => pickAi(providerId, m.id));
         }
       },
       submenuItems: choices.length > 0
@@ -345,14 +348,7 @@
             description: choice.selected ? "currently selected" : "",
             group: "AI" as const,
             run: () => {
-              void dismissAndRun(() =>
-                app.cmd("set_ai_selection", {
-                  providerId,
-                  modelId: m.id,
-                  effort: choice.id,
-                  persist: true,
-                }),
-              );
+              void dismissAndRun(() => pickAi(providerId, m.id, choice.id));
             },
           }))
         : undefined,
@@ -361,7 +357,7 @@
 
   async function openProviderPicker() {
     try {
-      const list = await invoke<AiProviderInfo[]>("list_ai_providers");
+      const list = await sessionResource.providers();
       aiProviders = list;
       if (list.length === 0) {
         app.showToast("error", "No [ai_hub] providers configured — add one in Settings → AI Hub");
@@ -401,7 +397,7 @@
   // ── Root menu containers ──────────────────────────────────────────────────
   function buildItems(): CommandItem[] {
     const reviewScope = reviewScopeFromMode(snapshot?.mode);
-    const activeAiLabel = snapshot?.active_ai_label ?? "";
+    const activeAiLabel = sessionResource.activeAiLabel;
     const aiDescription = reviewScope
       ? "Reviews, triage, Professor, model"
       : "Model picker available; reviews need a diff view";

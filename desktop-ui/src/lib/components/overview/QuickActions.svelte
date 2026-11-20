@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { exportOptions } from "$lib/stores/exportOptions.svelte";
   import { reviewScopeFromMode } from "$lib/reviewScope";
@@ -135,7 +136,7 @@
     title="Choose what goes into the export"
     onclick={() => app.setMainView("export-review")}
   >Export…</button>
-  {#if snap?.arena_enabled !== false}
+  {#if sessionResource.arenaEnabled}
     <button type="button" class={qa} title="Open the AI review arena" onclick={() => arena.openLauncher()}>
       <span class="{ic} bg-question/14 text-question" aria-hidden="true">⚔</span>
       Arena

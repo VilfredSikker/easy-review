@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { app } from "$lib/stores/app.svelte";
   import { themeByName } from "$lib/themes";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { renderMermaid } from "$lib/mermaidClient";
 
   interface Props {
@@ -87,7 +87,7 @@
   // and cached by `theme::source` in the client, so remounts and theme
   // switches back to a previously-seen combination are free.
   $effect(() => {
-    const theme = themeByName(app.snapshot?.theme);
+    const theme = themeByName(sessionResource.theme);
     const src = source;
     let cancelled = false;
     svg = null;

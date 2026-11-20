@@ -19,6 +19,36 @@ pub struct Settings {
     pub family_options: Vec<String>,
     /// What an uninstall would remove, once a preview was asked for.
     pub uninstall_preview: Option<UninstallPreview>,
+    /// `display.theme`, which every view paints with.
+    pub theme: String,
+    /// Which diff views the page offers.
+    pub features: FeatureFlags,
+    pub display: DisplayConfig,
+    /// The arena has no switch, so this is always on.
+    pub arena_enabled: bool,
+}
+
+/// The `[features]` view switches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FeatureFlags {
+    pub view_branch: bool,
+    pub view_unstaged: bool,
+    pub view_staged: bool,
+    pub view_history: bool,
+    pub view_conflicts: bool,
+    pub view_hidden: bool,
+    pub view_tour: bool,
+}
+
+/// The `[display]` settings the diff view reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayConfig {
+    pub line_numbers: bool,
+    pub wrap_lines: bool,
+    pub split_diff: bool,
+    pub tab_width: u8,
 }
 
 /// The form rows by page section.

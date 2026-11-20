@@ -7,6 +7,7 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { settingsResource } from "$lib/stores/settingsResource.svelte";
+  import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { rightRail } from "$lib/stores/rightRail.svelte";
@@ -65,7 +66,7 @@
   // patch does not push a snapshot, so without it a second click would read
   // the old theme and switch to the one already showing.
   let paintedTheme = $state<string | null>(null);
-  const snapshotTheme = $derived(snapshot?.theme);
+  const snapshotTheme = $derived(sessionResource.theme);
   $effect(() => {
     void snapshotTheme;
     paintedTheme = null;

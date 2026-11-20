@@ -15,6 +15,34 @@ pub fn notice(level: NoticeLevel, message: String) -> Notice {
         seq: SEQ.fetch_add(1, Ordering::Relaxed) + 1,
         level,
         message,
+        long: false,
+    }
+}
+
+/// An engine notification as a notice, with the level the page gave it when
+/// it read the snapshot: an error by its wording, otherwise a success, and
+/// a long dwell only for a success.
+pub fn engine_notice(message: String, long: bool) -> Notice {
+    let lower = message.to_lowercase();
+    let failed = ["failed", "error", "invalid", "not found", "cannot", "no "]
+        .iter()
+        .any(|word| lower.contains(word));
+    let level = if failed {
+        NoticeLevel::Error
+    } else {
+        NoticeLevel::Success
+    };
+    Notice {
+        long: long && !failed,
+        ..notice(level, message)
+    }
+}
+
+/// Emits `notice` to the page.
+pub fn emit(handle: &tauri::AppHandle, notice: &Notice) {
+    use tauri::Emitter;
+    if let Err(e) = handle.emit(NOTICE_EVENT, notice) {
+        log::warn!("notice emit failed: {e}");
     }
 }
 
@@ -33,5 +61,15 @@ mod tests {
             first.seq,
             second.seq
         );
+    }
+
+    /// The page read the App's notification as an error by its wording and
+    /// left a long one up longer; the notice keeps both.
+    #[test]
+    fn an_engine_notification_keeps_its_toast() {
+        let failed = engine_notice("Review failed: no provider".to_owned(), true);
+        assert_eq!((failed.level, failed.long), (NoticeLevel::Error, false));
+        let started = engine_notice("AI review started".to_owned(), true);
+        assert_eq!((started.level, started.long), (NoticeLevel::Success, true));
     }
 }
