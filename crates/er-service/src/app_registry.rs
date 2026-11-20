@@ -183,6 +183,11 @@ pub enum AppCommand {
         key: TabKey,
         to_idx: usize,
     },
+    /// Save `base_ref` as the base the tab diffs against, under its key.
+    SetBaseRef {
+        key: TabKey,
+        base_ref: String,
+    },
     /// Warm the local open cache for a project's PR.
     PrefetchOpenTarget {
         project_id: String,
@@ -589,6 +594,10 @@ fn apply_tab_command(state: &mut TabsView, command: AppCommand) -> Result<(), Wo
             }
             let tab = state.tabs.remove(from);
             state.tabs.insert(to_idx, tab);
+        }
+        AppCommand::SetBaseRef { key, base_ref } => {
+            let idx = state.position(key)?;
+            state.tabs[idx].descriptor.base_ref = Some(base_ref);
         }
         AppCommand::PrefetchOpenTarget { .. } | AppCommand::PrefetchRemoteOpenTarget { .. } => {}
     }

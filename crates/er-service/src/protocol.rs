@@ -241,6 +241,10 @@ pub enum Command {
         mode: DiffMode,
         pr_number: Option<u64>,
     },
+    /// Diff a loaded tab against `base`, resolved to a local ref as the App's
+    /// base change resolves it, and reload. A PR with no clone has no base to
+    /// change: its diff comes from GitHub.
+    ChangeBase { key: TabKey, base: String },
     /// Parse the named lazy files of a loaded tab's diff. `expand` also
     /// parses a compacted file in full, and keeps it expanded across loads.
     ParseFiles {
