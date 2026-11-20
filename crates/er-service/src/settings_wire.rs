@@ -175,6 +175,14 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::AddTrackedBranch { .. }
         | wire::Command::RemoveTrackedBranch { .. }
         | wire::Command::PatchProjectReviewSettings { .. }
+        | wire::Command::RefreshPrList
+        | wire::Command::RefreshProjectPrList { .. }
+        | wire::Command::DismissPr { .. }
+        | wire::Command::UndismissPr { .. }
+        | wire::Command::TrackPr { .. }
+        | wire::Command::UntrackPr { .. }
+        | wire::Command::SavePr { .. }
+        | wire::Command::UnsavePr { .. }
         | wire::Command::CheckAppUpdate
         | wire::Command::TogglePanel { .. }) => return Err(Box::new(other)),
     })

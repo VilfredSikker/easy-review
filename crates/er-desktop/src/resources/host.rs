@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 use er_engine::TabKey;
 use er_protocol::{
-    Ack, AvailableBranches, Command, ErError, ErErrorKind, Resource, ResourceChanged, ResourceKey,
-    ResourceVersion, Versioned,
+    Ack, AvailableBranches, AvailablePrs, Command, ErError, ErErrorKind, Resource, ResourceChanged,
+    ResourceKey, ResourceVersion, Versioned,
 };
 
 use crate::app_owner::SidebarOwner;
@@ -34,6 +34,19 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         }
         ResourceKey::Settings => settings(desktop),
         ResourceKey::Risk { key } => risk(desktop, key)?,
+        ResourceKey::Prs { remote } => {
+            let (version, prs) = sidebar(desktop).prs(remote);
+            (version, Resource::Prs(prs))
+        }
+        ResourceKey::AvailablePrs { project } => {
+            let prs = crate::commands::project_available_prs(desktop, project)
+                .map_err(|message| failed(project, message))?;
+            let prs = prs
+                .iter()
+                .map(|pr| crate::app_owner::pr_row(pr, None))
+                .collect();
+            (0, Resource::AvailablePrs(AvailablePrs { prs }))
+        }
         ResourceKey::Session => {
             let (version, session) =
                 super::session::session(desktop, &desktop.service.settings().view());
@@ -57,8 +70,9 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::Tabs => desktop.service.app_registry().tabs_view().revision,
         ResourceKey::Projects => sidebar(desktop).projects().0,
         ResourceKey::Branches { project } => sidebar(desktop).branches(project).0,
-        // Computed on each read, so it never has a newer version to announce.
-        ResourceKey::AvailableBranches { .. } => 0,
+        // Computed on each read, so they never have a newer version to announce.
+        ResourceKey::AvailableBranches { .. } | ResourceKey::AvailablePrs { .. } => 0,
+        ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Settings => desktop.service.settings().view().revision,
         ResourceKey::Risk { key } => match desktop.service.settings().view().risk.get(key) {
             Some(view) => view.version,
@@ -74,7 +88,8 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
 
 /// Applies `command` and answers the versions it moved. A branch change
 /// refreshes its project's metadata before the answer, so the `Ack` names
-/// that project's `branches` and the frontend refetches them at once.
+/// that project's `branches` and the frontend refetches them at once. A PR
+/// list refresh fetches in the background, and the push brings what it moved.
 pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
     let before = sidebar(desktop).versions();
     let git = &*desktop.ports.git;
@@ -105,6 +120,46 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
                     .and_then(|index| usize::try_from(index).ok()),
             };
             crate::projects::patch_project_review_settings(&project, patch)
+                .map_err(|e| failed(&project, e.to_string()))?;
+        }
+        Command::RefreshPrList => refresh_prs(desktop, None)?,
+        Command::RefreshProjectPrList { project } => {
+            let file = crate::projects::load();
+            let Some(record) = file.projects.iter().find(|p| p.id == project) else {
+                return Err(failed(&project, format!("Project not found: {project}")));
+            };
+            if let Some(remote) = record.remote.clone() {
+                refresh_prs(desktop, Some(remote))?;
+            }
+        }
+        Command::DismissPr { project, number } => {
+            crate::projects::dismiss_pr(&project, number);
+        }
+        Command::UndismissPr { project, number } => {
+            crate::projects::undismiss_pr(&project, number)
+                .map_err(|e| failed(&project, e.to_string()))?;
+        }
+        Command::TrackPr { project, number } => {
+            crate::projects::track_pr(&project, number)
+                .map_err(|e| failed(&project, e.to_string()))?;
+        }
+        Command::UntrackPr { project, number } => {
+            crate::projects::untrack_pr(&project, number)
+                .map_err(|e| failed(&project, e.to_string()))?;
+        }
+        Command::SavePr {
+            project,
+            number,
+            title,
+        } => {
+            let title =
+                crate::commands::resolve_pr_title_for_project(&project, number, title, desktop)
+                    .map_err(|message| failed(&project, message))?;
+            crate::projects::save_pr(&project, number, &title)
+                .map_err(|e| failed(&project, e.to_string()))?;
+        }
+        Command::UnsavePr { project, number } => {
+            crate::projects::unsave_pr(&project, number)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
         // The settings actor applies these, and the desktop itself the panel
@@ -146,6 +201,17 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
     Ok(Ack {
         changed,
         created: None,
+    })
+}
+
+/// Starts a PR-list fetch. The inbox prefs come from the settings actor,
+/// which owns the config; the App's copy is not this module's to read.
+fn refresh_prs(desktop: &DesktopState, remote: Option<String>) -> Result<(), ErError> {
+    let service = desktop.service.clone();
+    let prefs = move || service.settings().view().config.inbox.clone();
+    crate::commands::kick_pr_list_refresh(desktop, remote, prefs).map_err(|message| ErError {
+        kind: ErErrorKind::Internal,
+        message,
     })
 }
 

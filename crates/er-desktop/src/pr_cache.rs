@@ -91,7 +91,7 @@ pub fn save_persisted_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAt
 ///
 /// Successful remotes replace their old entries; failed remotes keep stale data.
 /// This is a pure function — no I/O, no locks — making it straightforward to test.
-pub fn merge_pr_results(
+pub(crate) fn merge_pr_results(
     existing: &mut HashMap<String, Vec<PrInfo>>,
     results: Vec<(String, Option<Vec<PrInfo>>)>,
 ) {
@@ -104,14 +104,19 @@ pub fn merge_pr_results(
 }
 
 /// Patch a single PR's `head_oid` in place. Used by the 30s per-PR head probe
-///
-/// (`main.rs`) so the stale pill can light without waiting for the 10-min
-/// `pr_cache` sweep. Returns `true` iff the oid actually changed (caller bumps
-/// the desktop revision only then, to avoid churning polls on every tick).
+/// (`main.rs`, through the app owner) so the stale pill can light without
+/// waiting for the 10-min `pr_cache` sweep. Returns `true` iff the oid
+/// actually changed (caller bumps the desktop revision only then, to avoid
+/// churning polls on every tick).
 ///
 /// Does NOT persist to disk — the next full `refresh_pr_cache` sweep persists.
 /// Keeps the probe off the disk-write path so a 30s cadence is cheap.
-pub fn patch_pr_head_oid(cache: &PrCacheMap, remote: &str, pr_number: u64, head_oid: &str) -> bool {
+pub(crate) fn patch_pr_head_oid(
+    cache: &PrCacheMap,
+    remote: &str,
+    pr_number: u64,
+    head_oid: &str,
+) -> bool {
     let Some(mut guard) = cache.lock().ok() else {
         return false;
     };
@@ -126,6 +131,39 @@ pub fn patch_pr_head_oid(cache: &PrCacheMap, remote: &str, pr_number: u64, head_
     }
     pr.head_oid = head_oid.to_string();
     true
+}
+
+/// Puts one PR fetched on its own into its remote's list, replacing the
+/// cached row with its number, and persists.
+pub(crate) fn cache_pr(
+    cache: &PrCacheMap,
+    fetched_at: &PrCacheFetchedAtMap,
+    remote: &str,
+    pr: PrInfo,
+) {
+    if let Ok(mut cache) = cache.lock() {
+        let entry = cache.entry(remote.to_string()).or_default();
+        match entry.iter().position(|cached| cached.number == pr.number) {
+            Some(idx) => entry[idx] = pr,
+            None => entry.push(pr),
+        }
+    }
+    if let Ok(mut fetched) = fetched_at.lock() {
+        fetched.insert(remote.to_string(), now_epoch_ms());
+    }
+    save_persisted_pr_cache(cache, fetched_at);
+}
+
+/// Drops every cached remote whose slug is `remote`'s, and persists.
+pub(crate) fn forget_remote(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtMap, remote: &str) {
+    let target = projects::normalize_remote_slug(remote);
+    if let Ok(mut cache) = cache.lock() {
+        cache.retain(|r, _| projects::normalize_remote_slug(r) != target);
+    }
+    if let Ok(mut fetched_at) = fetched_at.lock() {
+        fetched_at.retain(|r, _| projects::normalize_remote_slug(r) != target);
+    }
+    save_persisted_pr_cache(cache, fetched_at);
 }
 
 /// Whether the startup full PR sweep should run (any configured remote missing
@@ -159,7 +197,7 @@ pub fn active_project_remote() -> Option<String> {
 
 /// Refresh a single remote and merge into the cache. Used at startup so the
 /// active project's PR list is hot before the full multi-remote sweep runs.
-pub async fn refresh_pr_cache_for_remote(
+pub(crate) async fn refresh_pr_cache_for_remote(
     github: Arc<dyn er_engine::github::GitHub>,
     remote: &str,
     cache: &PrCacheMap,
@@ -203,7 +241,7 @@ fn refreshable_remotes(file: &projects::ProjectsFile) -> Vec<String> {
 
 /// Refresh PRs for every project with a remote. Fetches all remotes in parallel.
 /// Preserves stale cache entries for remotes that fail.
-pub async fn refresh_pr_cache(
+pub(crate) async fn refresh_pr_cache(
     github: Arc<dyn er_engine::github::GitHub>,
     cache: &PrCacheMap,
     fetched_at: &PrCacheFetchedAtMap,

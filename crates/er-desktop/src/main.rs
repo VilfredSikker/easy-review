@@ -650,24 +650,6 @@ fn probe_recently_done(
     last_probe.is_some_and(|last_at| now.saturating_duration_since(*last_at) < ttl)
 }
 
-/// The active tab's PR as `(owner/repo, pr_number)` for the pr-head probe.
-/// `None` when the app is busy, the tab is not a PR tab, or its origin cannot
-/// be resolved — every case skips this tick.
-fn pr_head_probe_target(app: &Mutex<App>) -> Option<(String, u64)> {
-    let guard = app.try_lock().ok()?;
-    let tab = guard.tab();
-    let pr_number = tab.pr_number?;
-    // Remote tabs carry `remote_repo`; local-PR tabs resolve owner/repo from origin.
-    if let Some(slug) = tab.remote_repo.as_ref() {
-        return slug.split_once('/').map(|_| (slug.clone(), pr_number));
-    }
-    if tab.repo_root.is_empty() {
-        return None;
-    }
-    let (owner, repo) = er_engine::github::get_repo_info(&*tab.ports.git, &tab.repo_root).ok()?;
-    Some((format!("{owner}/{repo}"), pr_number))
-}
-
 /// The active tab's PR as `(owner, repo, number)`. A remote PR tab names it
 /// directly; a working-tree or local-branch tab is looked up in the PR cache by
 /// head ref, preferring an open PR.
@@ -1041,6 +1023,7 @@ fn main() {
     let app_owner = Arc::new(er_desktop::app_owner::AppOwner::new(
         Arc::clone(&meta_cache),
         Arc::clone(&pr_cache),
+        Arc::clone(&pr_cache_fetched_at),
         Arc::clone(&gh_user),
     ));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
@@ -1155,13 +1138,8 @@ fn main() {
     er_desktop::app_owner::startup::register_open_projects(&state);
 
     match pr_cache::load_persisted_pr_cache() {
-        Ok(Some((cached_prs, cached_fetched_at))) => {
-            if let Ok(mut g) = pr_cache.lock() {
-                *g = cached_prs;
-            }
-            if let Ok(mut g) = pr_cache_fetched_at.lock() {
-                *g = cached_fetched_at;
-            }
+        Ok(Some(restored)) => {
+            app_owner.restore_prs(restored);
             profile_log::bump_desktop_revision(&desktop_revision, "pr_cache_restore");
         }
         Ok(None) => {}
@@ -1331,13 +1309,14 @@ fn main() {
     //   Phase 2 (no lock)    — `gh pr view <n> --repo <owner/repo> --json
     //                          headRefOid --jq .headRefOid`. ANY failure no-ops
     //                          (preserves the "don't guess" stale-pill rule).
-    //   Phase 3 (brief lock) — `patch_pr_head_oid` updates the single cache
-    //                          entry in place; bump the revision ONLY when it
-    //                          actually changed. Does NOT persist to disk (the
-    //                          next 10-min sweep persists) so 30s is cheap.
+    //   Phase 3 (brief lock) — the owner's `patch_pr_head_oid` updates the
+    //                          single cache entry in place and publishes;
+    //                          bump the revision ONLY when it actually
+    //                          changed. Does NOT persist to disk (the next
+    //                          10-min sweep persists) so 30s is cheap.
+    // The target comes from the registry's tabs on the flag path.
     {
-        let probe_app = Arc::clone(&app_arc);
-        let probe_pr_cache = Arc::clone(&pr_cache);
+        let probe_state = state.clone();
         let probe_rev = Arc::clone(&desktop_revision);
         let probe_github = Arc::clone(&ports.github);
         std::thread::spawn(move || {
@@ -1352,7 +1331,9 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(30));
 
                 // Phase 1: brief lock — capture the active PR tab's identity.
-                let Some((slug, pr_number)) = pr_head_probe_target(&probe_app) else {
+                let Some((slug, pr_number)) =
+                    er_desktop::app_owner::startup::pr_head_probe_target(&probe_state)
+                else {
                     continue;
                 };
 
@@ -1381,7 +1362,9 @@ fn main() {
                 let Some(oid) = oid else { continue };
 
                 // Phase 3: brief lock — patch the cache entry; bump only on change.
-                let changed = pr_cache::patch_pr_head_oid(&probe_pr_cache, &slug, pr_number, &oid);
+                let changed = probe_state
+                    .app_owner
+                    .patch_pr_head_oid(&slug, pr_number, &oid);
 
                 // Re-arm the 60s throttle window on every successful probe.
                 probe_throttle.insert((slug.clone(), pr_number), std::time::Instant::now());
@@ -1604,6 +1587,7 @@ fn main() {
     // Startup fetch + conservative 10-minute cadence (not high-frequency polling).
     let bg_cache = Arc::clone(&pr_cache);
     let bg_fetched_at = Arc::clone(&pr_cache_fetched_at);
+    let bg_owner = Arc::clone(&app_owner);
     let bg_loading = Arc::clone(&loading);
     let bg_desktop_rev = Arc::clone(&desktop_revision);
     let bg_gh_user = Arc::clone(&gh_user);
@@ -1633,9 +1617,7 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = true;
             }
-            let failed = rt.block_on(async {
-                pr_cache::refresh_pr_cache(Arc::clone(&bg_github), &bg_cache, &bg_fetched_at).await
-            });
+            let failed = rt.block_on(bg_owner.refresh_prs(Arc::clone(&bg_github)));
             let prefs = commands::clone_inbox_prefs(&bg_app);
             let handles = commands::InboxRefreshHandles {
                 pr_cache: &bg_cache,
@@ -1660,15 +1642,8 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = true;
             }
-            let success = rt.block_on(async {
-                pr_cache::refresh_pr_cache_for_remote(
-                    Arc::clone(&bg_github),
-                    &active_remote,
-                    &bg_cache,
-                    &bg_fetched_at,
-                )
-                .await
-            });
+            let success =
+                rt.block_on(bg_owner.refresh_remote_prs(Arc::clone(&bg_github), &active_remote));
             let prefs = commands::clone_inbox_prefs(&bg_app);
             let handles = commands::InboxRefreshHandles {
                 pr_cache: &bg_cache,

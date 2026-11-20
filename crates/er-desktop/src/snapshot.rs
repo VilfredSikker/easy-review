@@ -4545,7 +4545,7 @@ fn resolve_recent_prs(
 /// keeps 50 closed PRs, so this bounds the snapshot payload, not the fetch.
 const RECENTLY_MERGED_LIMIT: usize = 25;
 
-fn recently_merged_prs(mut prs: Vec<PrInfo>) -> Vec<PrInfo> {
+pub(crate) fn recently_merged_prs(mut prs: Vec<PrInfo>) -> Vec<PrInfo> {
     prs.retain(|pr| pr.state == "MERGED");
     prs.sort_by_key(|pr| std::cmp::Reverse(pr.merged_at.clone()));
     prs.truncate(RECENTLY_MERGED_LIMIT);

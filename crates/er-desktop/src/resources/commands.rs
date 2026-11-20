@@ -140,5 +140,15 @@ mod tests {
         assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
         let sent = super::er_send(Command::ReloadSettings);
         assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
+        let sent = super::er_send(Command::SavePr {
+            project: "p".into(),
+            number: 1,
+            title: None,
+        });
+        assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
+        let fetched = super::er_fetch(vec![ResourceKey::Prs {
+            remote: "acme/p".into(),
+        }]);
+        assert_eq!(fetched.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
     }
 }
