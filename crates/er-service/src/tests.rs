@@ -166,7 +166,10 @@ fn a_held_actor_answers_nothing_after_the_hold() {
     let handle = actor(github(Ok("OPEN")));
     drop(handle.send(Command::Hold));
     let result = handle.send_and_wait_with(Command::Ping, Duration::from_millis(300));
-    assert_eq!(result, Err(WorkspaceError::Timeout(Duration::from_millis(300))));
+    assert_eq!(
+        result,
+        Err(WorkspaceError::Timeout(Duration::from_millis(300)))
+    );
 }
 
 #[test]
