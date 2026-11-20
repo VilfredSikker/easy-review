@@ -38,6 +38,7 @@ fn ports() -> er_engine::ports::Ports {
         er_git::FakeGit::default()
             .with_current_branch(Ok("feature".to_string()))
             .with_detect_base_branch(Ok("main".to_string()))
+            .with_diff_shortstat((0, 0, 0))
             .with_diff_raw(Ok(raw_diff()))
             .with_is_merge_in_progress(false)
             .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string())),
