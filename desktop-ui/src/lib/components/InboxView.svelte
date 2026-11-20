@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { inboxView } from "$lib/stores/inboxView.svelte";
@@ -36,7 +37,7 @@
   import type { InboxItemSnapshot, ProjectSnapshot, TabSummary } from "$lib/types";
 
   const projects = $derived<ProjectSnapshot[]>(projectsResource.projects);
-  const tabs = $derived<TabSummary[]>(app.snapshot?.tabs ?? []);
+  const tabs = $derived<TabSummary[]>(tabsResource.tabs);
   const lastRefreshMs = $derived(app.snapshot?.inbox_last_refresh_ms ?? 0);
   const threads = $derived(groupInboxThreads(app.snapshot?.inbox_items ?? [], projects));
 
@@ -113,8 +114,7 @@
 
   /** The open failed (no project for the target) when the active tab is not the target. */
   function landedOn(thread: InboxThread): boolean {
-    const snap = app.snapshot;
-    const active = snap?.tabs.find((t) => t.idx === snap.active_tab);
+    const active = tabsResource.activeTab;
     if (!active) return false;
     if (thread.prNumber != null) return active.pr_number === thread.prNumber;
     return active.branch === (thread.latest.target.branch ?? null);

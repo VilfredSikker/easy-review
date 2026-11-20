@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { app } from "./app.svelte";
+import { tabsResource } from "./tabsResource.svelte";
 import { diffSel } from "./diffSelection.svelte";
 import { refHighlight } from "./referenceHighlight.svelte";
 import { searchPrefillFromSelection } from "$lib/referenceHighlight";
@@ -207,7 +208,7 @@ function handleEscape(e: KeyboardEvent): boolean {
 function selectTabByDigit(e: KeyboardEvent, { inField }: KeyContext): boolean {
   if (!withMod(e) || e.shiftKey || inField || !/^[1-9]$/.test(e.key)) return false;
   const tabIdx = parseInt(e.key, 10) - 1;
-  const tabs = app.snapshot?.tabs ?? [];
+  const tabs = tabsResource.tabs;
   if (tabIdx < tabs.length) {
     e.preventDefault();
     app.cmd("select_tab", { idx: tabIdx });
@@ -288,7 +289,7 @@ const GLOBAL_SHORTCUTS: Shortcut[] = [
   (e, { inField }) => {
     if (!withMod(e) || e.shiftKey || !isLetter(e, "w") || inField) return false;
     e.preventDefault();
-    const idx = app.snapshot?.active_tab ?? 0;
+    const idx = tabsResource.active;
     app.cmd("close_tab", { idx });
     return true;
   },

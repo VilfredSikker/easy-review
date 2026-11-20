@@ -5,7 +5,7 @@
 //! the revision, and swaps the `Arc`; a reader that grabbed the previous view
 //! keeps rendering it until it asks again.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 
@@ -148,10 +148,16 @@ pub struct LiveArenaRun {
 pub(crate) struct WorkspaceState {
     view: WorkspaceView,
     revision: u64,
-    /// Keys whose tab closed. A key is never issued twice, so a load that
-    /// lands for one after its drop belongs to a tab that is gone.
+    /// Keys whose tab closed, the newest `CLOSED_KEPT`. A key is never issued
+    /// twice, so a load that lands for one after its drop belongs to a tab
+    /// that is gone. A load sent after the close is refused at dispatch, by
+    /// the app registry's list, so only the loads in flight need the set.
     closed: HashSet<TabKey>,
+    closed_order: VecDeque<TabKey>,
 }
+
+/// How many closed keys the workspace remembers for the loads still in flight.
+pub(crate) const CLOSED_KEPT: usize = 256;
 
 impl WorkspaceState {
     pub(crate) fn new() -> Self {
@@ -159,6 +165,7 @@ impl WorkspaceState {
             view: WorkspaceView::default(),
             revision: 0,
             closed: HashSet::new(),
+            closed_order: VecDeque::new(),
         }
     }
 
@@ -237,10 +244,41 @@ impl WorkspaceState {
             return Err(PatchRefused::Moved);
         }
         content::check(&self.view.tabs, &patch)?;
-        self.closed.extend(drops);
+        for key in drops {
+            self.remember_closed(key);
+        }
         let revision = self.bump();
         let cleared = content::apply(&mut self.view.tabs, patch, revision);
         Ok((revision, cleared))
+    }
+
+    /// Records the close of a key that holds no content, so a first load in
+    /// flight for it is refused when it lands, and moves no revision: the view
+    /// does not change. False when the key holds content, which a drop patch
+    /// removes with a new revision.
+    pub(crate) fn drop_unloaded(&mut self, key: TabKey) -> bool {
+        if self.view.tabs.contains_key(&key) {
+            return false;
+        }
+        self.remember_closed(key);
+        true
+    }
+
+    fn remember_closed(&mut self, key: TabKey) {
+        if !self.closed.insert(key) {
+            return;
+        }
+        self.closed_order.push_back(key);
+        while self.closed_order.len() > CLOSED_KEPT {
+            if let Some(oldest) = self.closed_order.pop_front() {
+                self.closed.remove(&oldest);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn closed_len(&self) -> usize {
+        self.closed.len()
     }
 
     fn bump(&mut self) -> u64 {

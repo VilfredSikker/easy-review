@@ -192,6 +192,13 @@ const TAB_CHANGE_COMMANDS = new Set([
 
 const VOID_COMMANDS = new Set(["open_url_in_browser"]);
 
+/**
+ * Sends a command some other way than its snapshot path, or answers null to
+ * leave it to `cmd`. With the flag on the tabs adapter takes the tab commands
+ * and the opens; this module does not import it.
+ */
+export type CmdRoute = (command: string, args: Record<string, unknown> | undefined) => Promise<void> | null;
+
 function timingSegmentMs(start: number, end: number): number {
   return Math.max(0, Math.round(end - start));
 }
@@ -1032,11 +1039,34 @@ class AppStore {
     }
   }
 
+  private cmdRoute: CmdRoute | null = null;
+
+  /** Hands `cmd` a route that runs before its snapshot path. */
+  routeCmds(route: CmdRoute): void {
+    this.cmdRoute = route;
+  }
+
+  /** A routed command answers no snapshot; the content follows the next poll. */
+  private async cmdRouted(
+    command: string,
+    routed: Promise<void>,
+    options: { throwOnError?: boolean },
+  ): Promise<void> {
+    try {
+      await routed;
+    } catch (e) {
+      this.reportCmdError(command, e);
+      this.throwCmdErrorIfRequested(e, options);
+    }
+  }
+
   async cmd(
     command: string,
     args?: Record<string, unknown>,
     options: { throwOnError?: boolean } = {},
   ): Promise<void> {
+    const routed = this.cmdRoute?.(command, args) ?? null;
+    if (routed) return this.cmdRouted(command, routed, options);
     // Reviewed toggling uses an optimistic path that preserves hunks + spans.
     if (command === "mark_reviewed" || command === "unmark_reviewed") {
       const path = (args as { path?: string } | undefined)?.path;

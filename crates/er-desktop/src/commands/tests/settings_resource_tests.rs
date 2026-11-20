@@ -42,6 +42,8 @@ fn effects(notify: &dyn Fn(NoticeLevel, String)) -> Effects<'_> {
         notify,
         follow_selection: &|_| {},
         check_update: || panic!("no update check in this test"),
+        webviews: &crate::browser_webview::NoWebviews,
+        pick_folder: &|| None,
     }
 }
 

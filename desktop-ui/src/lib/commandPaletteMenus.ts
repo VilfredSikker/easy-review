@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { app } from "$lib/stores/app.svelte";
+import { tabsResource } from "$lib/stores/tabsResource.svelte";
 import { arena } from "$lib/stores/arena.svelte";
 import { browser } from "$lib/stores/browser.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
@@ -50,9 +51,8 @@ export interface PaletteRunners {
   dismissLocal: (fn: () => void) => void;
 }
 
-function activeTabOf(snapshot: AppSnapshot | null): TabSummary | undefined {
-  const tabs = snapshot?.tabs ?? [];
-  return tabs.find((t) => t.is_active) ?? tabs[snapshot?.active_tab ?? 0];
+function activeTabOf(): TabSummary | undefined {
+  return tabsResource.activeTab ?? undefined;
 }
 
 function openExportReviewView() {
@@ -92,7 +92,7 @@ function exportItems(r: PaletteRunners): CommandItem[] {
 function checkoutItems(snapshot: AppSnapshot | null, r: PaletteRunners): CommandItem[] {
   const branch = resolveContextIdentity(snapshot).branch;
   // Remote PR tabs have no local checkout, so there is no path to offer.
-  const worktree = resolveTabRoot(snapshot, activeTabOf(snapshot)) || null;
+  const worktree = resolveTabRoot(snapshot, activeTabOf()) || null;
   const items: CommandItem[] = [];
   if (branch) {
     items.push({
@@ -248,7 +248,7 @@ export function navigateMenu(snapshot: AppSnapshot | null, r: PaletteRunners): C
  * A tour attached to the PR diff counts as PR, as in the toggle (ADR 0025).
  */
 function sourceItem(snapshot: AppSnapshot | null, r: PaletteRunners): CommandItem | null {
-  const tab = activeTabOf(snapshot);
+  const tab = activeTabOf();
   if (!snapshot || !tab) return null;
   const prNumber = resolveActivePrNumber(snapshot);
   const toggle = sourceToggleState({

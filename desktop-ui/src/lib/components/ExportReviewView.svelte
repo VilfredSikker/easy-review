@@ -12,6 +12,7 @@
     type ExportItem,
   } from "$lib/exportOptions";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { exportOptions } from "$lib/stores/exportOptions.svelte";
 
   let preview = $state("");
@@ -81,7 +82,7 @@
     void exportOptions.current;
     void app.snapshot?.ai;
     void app.snapshot?.ui_annotations;
-    void app.snapshot?.active_tab;
+    void tabsResource.active;
     void refreshPreview();
   });
 

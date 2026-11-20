@@ -111,8 +111,9 @@ fn assert_one_key(state: &AppState, step: &str) -> TabKey {
         desktop.browser_mut(active).url = format!("https://example.invalid/{step}");
     }
 
-    // A follow prunes the view state to the App's keys, so the nav and
-    // browser entries survive it only when they share the App's key.
+    // The prune keeps the registry's keys, so the nav and browser entries
+    // survive it and a follow only when they share the App's key.
+    crate::tabs::prune(&state.view, state.service.app_registry());
     follow(state);
     let desktop = state.view.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(desktop.nav(app_active).selected_file, 1, "{step}: nav key");
@@ -157,6 +158,8 @@ fn kinds(dir: &ReviewFlowTestDir) -> Vec<(&'static str, TabDescriptor)> {
 #[test]
 fn every_kind_keeps_one_key_through_open_duplicate_and_replace() {
     with_storage(|dir| {
+        // A remote PR's Cmd-T opens on the root of the project tracking it.
+        register_project(&dir_in(dir, "repo"));
         let replacement = content_routes::working_tab(dir_in(dir, "replacement"));
         for (kind, tab) in kinds(dir) {
             let state = state(dir);
@@ -181,6 +184,218 @@ fn every_kind_keeps_one_key_through_open_duplicate_and_replace() {
             );
         }
     });
+}
+
+/// A project on `root` that tracks the remote.
+fn register_project(root: &str) {
+    let record = crate::projects::ProjectRecord {
+        id: "widgets".to_string(),
+        name: "widgets".to_string(),
+        root_path: root.to_string(),
+        remote: Some(REMOTE.to_string()),
+        ..Default::default()
+    };
+    let saved = er_engine::projects_pins::update(|file| {
+        file.projects.push(record);
+        Ok(true)
+    });
+    assert!(saved.is_ok(), "{saved:?}");
+    crate::projects::invalidate_load_cache();
+}
+
+/// A descriptor that no longer builds: a local PR with no PR number.
+fn broken_tab(dir: &ReviewFlowTestDir, name: &str) -> TabDescriptor {
+    TabDescriptor {
+        kind: TabKind::LocalPr,
+        pr_number: None,
+        ..content_routes::working_tab(dir_in(dir, name))
+    }
+}
+
+/// With every saved tab broken, the restore opens a Working tab on the
+/// launch root and closes the broken ones; the registry keeps its last tab,
+/// so the Working tab opens first.
+#[test]
+fn a_restore_with_every_tab_broken_leaves_a_working_tab_on_the_launch_root() {
+    with_storage(|dir| {
+        let saved = crate::tabs::save_tabs(&[broken_tab(dir, "gone"), broken_tab(dir, "lost")], 1);
+        assert!(saved.is_ok(), "{saved:?}");
+        let state = state(dir);
+        let launch = dir_in(dir, "launch");
+
+        crate::tabs::restore(
+            &state.app,
+            &state.view,
+            state.service.app_registry(),
+            &ports(),
+            Some(&launch),
+        );
+
+        let view = state.service.app_registry().tabs_view();
+        let tabs: Vec<_> = view
+            .tabs
+            .iter()
+            .map(|tab| {
+                (
+                    tab.descriptor.kind.clone(),
+                    tab.descriptor.repo_root.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(tabs, vec![(TabKind::Working, launch.clone())]);
+        let (app, app_active) = app_keys(&state);
+        assert_eq!(app, vec![view.tabs[0].key], "the App's keys");
+        assert_eq!(Some(app_active), view.active);
+        let root = crate::app_owner::startup::launch_root(state.service.app_registry(), None);
+        assert_eq!(root, launch, "the launch root");
+    });
+}
+
+/// The flag-on launch root is the registry's active tab after the restore,
+/// not the App's startup tab, and a remote PR takes the fallback.
+#[test]
+fn the_launch_root_comes_from_the_registry() {
+    with_storage(|dir| {
+        let (one, two) = (dir_in(dir, "one"), dir_in(dir, "two"));
+        let saved = crate::tabs::save_tabs(
+            &[
+                content_routes::working_tab(one),
+                content_routes::working_tab(two.clone()),
+            ],
+            1,
+        );
+        assert!(saved.is_ok(), "{saved:?}");
+        let state = state(dir);
+        let startup = app(&state).tab().repo_root.clone();
+        assert_ne!(startup, two, "the App starts on another root");
+        crate::tabs::restore(
+            &state.app,
+            &state.view,
+            state.service.app_registry(),
+            &ports(),
+            None,
+        );
+
+        let registry = state.service.app_registry();
+        let fallback = dir_in(dir, "fallback");
+        assert_eq!(
+            crate::app_owner::startup::launch_root(registry, Some(&fallback)),
+            two
+        );
+        let remote = content_routes::pr_tab(&OpenTarget::RemotePr {
+            owner: "acme".to_string(),
+            repo: "widgets".to_string(),
+            number: 7,
+            repo_root: String::new(),
+        })
+        .expect("remote PR tab");
+        assert!(content_routes::open(&state, remote, false).is_ok());
+        assert_eq!(
+            crate::app_owner::startup::launch_root(registry, Some(&fallback)),
+            fallback
+        );
+    });
+}
+
+/// `main.rs` takes the flag-on launch root from the registry after the
+/// restore; no flag-on test runs `main`, so the source is what is checked.
+#[test]
+fn main_takes_the_flag_on_launch_root_from_the_registry() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e}"));
+    let source = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let restore = source.find("tabs::restore(").expect("the flag-on restore");
+    let flag_on = "#[cfg(feature = \"v1-service\")] let launch_root = \
+                   er_desktop::app_owner::startup::launch_root( service.app_registry(), \
+                   restore_root.as_deref(), );";
+    let at = source
+        .find(flag_on)
+        .expect("the flag-on launch root reads the registry");
+    assert!(at > restore, "the launch root is read before the restore");
+    let reads_app = "#[cfg(not(feature = \"v1-service\"))] let launch_root: String = \
+                     app.tab().repo_root.clone();";
+    assert!(
+        source.contains(reads_app),
+        "the App's root is the flag-off launch root only"
+    );
+    assert_eq!(
+        source.matches("let launch_root").count(),
+        2,
+        "another launch root"
+    );
+}
+
+/// Cmd-T on a remote PR tab opens a Working tab on the root of the project
+/// that tracks the PR's repo.
+#[test]
+fn cmd_t_on_a_remote_pr_tab_opens_a_working_tab_with_a_root() {
+    with_storage(|dir| {
+        let root = dir_in(dir, "widgets");
+        register_project(&root);
+        let state = state(dir);
+        let remote = content_routes::pr_tab(&OpenTarget::RemotePr {
+            owner: "acme".to_string(),
+            repo: "widgets".to_string(),
+            number: 7,
+            repo_root: String::new(),
+        })
+        .expect("remote PR tab");
+        assert!(content_routes::open(&state, remote, false).is_ok());
+
+        let opened = service_new_tab(&state);
+
+        assert!(opened.is_ok(), "{opened:?}");
+        let view = state.service.app_registry().tabs_view();
+        let active = view.active_entry().expect("an active tab");
+        assert_eq!(active.descriptor.kind, TabKind::Working);
+        assert_eq!(active.descriptor.repo_root, root);
+    });
+}
+
+/// An open of a PR that is open as a local PR selects that tab when the
+/// same PR opens as a remote PR, and the other way round (A15).
+#[test]
+fn an_open_pr_is_selected_whatever_its_tab_kind() {
+    for remote_first in [false, true] {
+        with_storage(|dir| open_one_pr_as_both_kinds(dir, remote_first));
+    }
+}
+
+fn open_one_pr_as_both_kinds(dir: &ReviewFlowTestDir, remote_first: bool) {
+    {
+        let root = dir_in(dir, "widgets");
+        let local = content_routes::pr_tab(&OpenTarget::PrReview {
+            project_id: "widgets".to_string(),
+            remote: REMOTE.to_string(),
+            pr_number: 7,
+            repo_root: root.clone(),
+        })
+        .expect("local PR tab");
+        let remote = content_routes::pr_tab(&OpenTarget::RemotePr {
+            owner: "acme".to_string(),
+            repo: "widgets".to_string(),
+            number: 7,
+            repo_root: String::new(),
+        })
+        .expect("remote PR tab");
+        let (open, again) = if remote_first {
+            (remote, local)
+        } else {
+            (local, remote)
+        };
+        let state = state(dir);
+        assert!(content_routes::open(&state, open, false).is_ok());
+        let key = state.service.app_registry().tabs_view().active;
+        let other = content_routes::working_tab(dir_in(dir, "other"));
+        assert!(content_routes::open(&state, other, false).is_ok());
+
+        let opened = content_routes::open(&state, again.clone(), false);
+
+        assert!(opened.is_ok(), "{opened:?}");
+        let view = state.service.app_registry().tabs_view();
+        assert_eq!(view.tabs.len(), 2, "{:?} opened a second tab", again.kind);
+        assert_eq!(view.active, key, "the open PR's tab is not active");
+    }
 }
 
 /// Two Working tabs on one repo are two tabs: two keys, two contents.
@@ -230,6 +445,7 @@ fn a_restore_follows_the_registry_and_closes_a_broken_tab() {
             &state.view,
             state.service.app_registry(),
             &ports(),
+            None,
         );
 
         let view = state.service.app_registry().tabs_view();
@@ -257,6 +473,7 @@ fn a_restore_with_no_saved_tabs_keys_the_startup_tab_in_the_registry() {
             &state.view,
             state.service.app_registry(),
             &ports(),
+            None,
         );
         let view = state.service.app_registry().tabs_view();
         let registry: Vec<TabKey> = view.tabs.iter().map(|entry| entry.key).collect();
