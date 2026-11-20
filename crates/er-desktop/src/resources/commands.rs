@@ -150,5 +150,9 @@ mod tests {
             remote: "acme/p".into(),
         }]);
         assert_eq!(fetched.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
+        let sent = super::er_send(Command::MarkInboxItemRead { id: "i".into() });
+        assert_eq!(sent.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
+        let fetched = super::er_fetch(vec![ResourceKey::Inbox]);
+        assert_eq!(fetched.map_err(|e| e.kind), Err(ErErrorKind::Unsupported));
     }
 }
