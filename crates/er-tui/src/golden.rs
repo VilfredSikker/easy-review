@@ -511,7 +511,7 @@ pub const PANES: &[Fixture] = &[
         tab.show_watched = true;
         tab.watched_files = vec![er_engine::git::WatchedFile {
             path: ".env.local".into(),
-            modified: std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86_400),
+            modified: std::time::SystemTime::now() - std::time::Duration::from_hours(48),
             size: 42,
         }];
         tab.selected_watched = Some(0);

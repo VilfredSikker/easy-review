@@ -1,20 +1,81 @@
 //! The one function that builds the flag-off `Screen` from the App.
 
 use super::view::{self, ConfirmAction, HubKind, InputMode, OverlayData};
-use super::{AppData, Chrome, HistoryView, MemoryBudget, Screen, TabData, TabView};
+use super::watched::WatchedSnapshot;
+use super::{
+    AppData, Chrome, HistoryView, MemoryBudget, Screen, SymbolRefsView, TabData, TabView, TourView,
+};
 use er_engine::app::{self, App};
 
 /// The App's lists whose rows are App types, converted to view rows and kept
-/// between frames. A list is converted again only when its rows change, so a
-/// frame copies none.
+/// between frames, and the watched snapshot diff. A list is converted again
+/// only when its rows change, and the agent log converts only its new tail, so
+/// a frame copies none.
 #[derive(Default)]
 pub struct ViewCache {
     hub_items: Vec<view::HubItem>,
     dir_entries: Vec<view::DirEntry>,
+    tour_pillars: Vec<view::TourPillar>,
+    refs_in_diff: Vec<view::SymbolRef>,
+    refs_external: Vec<view::SymbolRef>,
+    log_tab: Option<er_engine::TabKey>,
+    agent_log: Vec<view::AgentLogEntry>,
+    pub watched: WatchedSnapshot,
 }
 
 impl ViewCache {
     fn sync(&mut self, app: &App) {
+        let tab = app.tab();
+        // The App's row types here are not exported, so the rows are read
+        // field by field.
+        if let Some(tour) = &tab.tour {
+            let same = self.tour_pillars.len() == tour.pillars.len()
+                && self.tour_pillars.iter().zip(&tour.pillars).all(|(row, p)| {
+                    row.id == p.id
+                        && row.title == p.title
+                        && row.description == p.description
+                        && row.importance == p.importance
+                        && row.foundation == p.foundation
+                });
+            if !same {
+                self.tour_pillars = tour
+                    .pillars
+                    .iter()
+                    .map(|p| view::TourPillar {
+                        id: p.id.clone(),
+                        title: p.title.clone(),
+                        description: p.description.clone(),
+                        importance: p.importance,
+                        foundation: p.foundation,
+                    })
+                    .collect();
+            }
+        }
+        if let Some(refs) = &tab.symbol_refs {
+            for (rows, entries) in [
+                (&mut self.refs_in_diff, &refs.in_diff),
+                (&mut self.refs_external, &refs.external),
+            ] {
+                let same = rows.len() == entries.len()
+                    && rows.iter().zip(entries).all(|(row, e)| {
+                        row.file == e.file
+                            && row.line_num == e.line_num
+                            && row.line_content == e.line_content
+                    });
+                if !same {
+                    *rows = entries
+                        .iter()
+                        .map(|e| view::SymbolRef {
+                            file: e.file.clone(),
+                            line_num: e.line_num,
+                            line_content: e.line_content.clone(),
+                        })
+                        .collect();
+                }
+            }
+        }
+        self.sync_agent_log(tab);
+        self.watched.sync(app);
         match &app.overlay {
             Some(app::OverlayData::ModalHub { items, .. }) if self.hub_items[..] != items[..] => {
                 self.hub_items = items.iter().map(hub_item).collect();
@@ -27,6 +88,33 @@ impl ViewCache {
             _ => {}
         }
     }
+
+    /// The App appends to the log and evicts from its front, so the rows
+    /// already converted stay valid: drop the evicted ones, convert the new
+    /// tail. Anything else (another tab, a cleared log) converts it whole.
+    fn sync_agent_log(&mut self, tab: &app::TabState) {
+        let log = &tab.agent_log;
+        let same_tab = self.log_tab == Some(tab.key());
+        let evicted = log
+            .front()
+            .and_then(|front| self.agent_log.iter().position(|row| same_entry(row, front)));
+        let kept = evicted.map_or(0, |n| self.agent_log.len() - n);
+        let still_valid = same_tab
+            && kept <= log.len()
+            && (kept == 0
+                || self
+                    .agent_log
+                    .last()
+                    .is_some_and(|row| same_entry(row, &log[kept - 1])));
+        if still_valid && (kept > 0 || self.agent_log.is_empty()) {
+            self.agent_log.drain(..evicted.unwrap_or(0));
+            self.agent_log
+                .extend(log.range(kept..).map(agent_log_entry));
+        } else {
+            self.log_tab = Some(tab.key());
+            self.agent_log = log.iter().map(agent_log_entry).collect();
+        }
+    }
 }
 
 /// Builds the frame's read model. Converts a cached list only when the App's
@@ -36,6 +124,7 @@ pub fn from_app<'a>(app: &'a App, cache: &'a mut ViewCache) -> Screen<'a> {
     cache.sync(app);
     let cache: &'a ViewCache = cache;
     let tab = app.tab();
+    let selected_watched = tab.selected_watched_file();
     Screen {
         chrome: Chrome {
             tab_names: app.tabs.iter().map(app::TabState::tab_name).collect(),
@@ -95,17 +184,72 @@ pub fn from_app<'a>(app: &'a App, cache: &'a mut ViewCache) -> Screen<'a> {
             comment_textarea: &tab.comment_textarea,
             filter_input: &tab.filter_input,
             commit_input: &tab.commit_input,
+            visible_files: tab.visible_files(),
+            selected_diff_file: tab.selected_diff_file(),
+            diff_scroll: tab.active_diff_scroll(),
+            current_hunk: tab.active_current_hunk(),
+            current_line: tab.active_current_line(),
+            h_scroll: tab.h_scroll,
+            h_scroll_old: tab.h_scroll_old,
+            h_scroll_new: tab.h_scroll_new,
+            split_focus: match tab.split_focus {
+                app::SplitSide::Old => view::SplitSide::Old,
+                app::SplitSide::New => view::SplitSide::New,
+            },
+            context_overrides: &tab.context_overrides,
+            mtime_cache: &tab.mtime_cache,
+            panel_scroll: tab.panel_scroll,
+            review_cursor: tab.review_cursor,
+            branch_diff_hash: &tab.branch_diff_hash,
+            repo_root: &tab.repo_root,
+            visible_watched: tab.visible_watched_files(),
+            selected_watched,
+            selected_watched_index: tab.selected_watched,
+            watched_not_ignored: &tab.watched_not_ignored,
+            watched_snapshot: selected_watched
+                .and_then(|file| cache.watched.diff(&tab.repo_root, &file.path)),
         },
         data: TabData::App(AppData {
             files: &tab.files,
+            reviewed: &tab.reviewed,
             ai: &tab.ai,
             pr_data: tab.pr_data.as_ref(),
             history: tab.history.as_ref().map(|history| HistoryView {
                 commits: &history.commits,
+                visible_commits: tab.visible_commits(),
                 selected_commit: history.selected_commit,
                 commit_files: &history.commit_files,
                 selected_file: history.selected_file,
+                current_hunk: history.current_hunk,
+                current_line: history.current_line,
+                diff_scroll: history.diff_scroll,
+                h_scroll: history.h_scroll,
             }),
+            tour: tab.tour.as_ref().map(|tour| TourView {
+                pillars: &cache.tour_pillars,
+                selected_pillar: tour.selected_pillar,
+                files: &tour.files,
+                file_is_related: &tour.file_is_related,
+                pillar_file_ranges: &tour.pillar_file_ranges,
+                selected_file: tour.selected_file,
+                current_hunk: tour.current_hunk,
+                current_line: tour.current_line,
+                diff_scroll: tour.diff_scroll,
+                h_scroll: tour.h_scroll,
+            }),
+            symbol_refs: tab.symbol_refs.as_ref().map(|refs| SymbolRefsView {
+                symbol: &refs.symbol,
+                in_diff: &cache.refs_in_diff,
+                external: &cache.refs_external,
+                cursor: refs.cursor,
+            }),
+            agent_log: &cache.agent_log,
+            agent_log_auto_scroll: tab.agent_log_auto_scroll,
+            running_command_count: tab
+                .command_status
+                .values()
+                .filter(|status| matches!(status, app::CommandStatus::Running))
+                .count(),
             reviewed_count: tab.reviewed_count(),
             filtered_reviewed_count: tab.filtered_reviewed_count(),
             running_commands: tab
@@ -119,7 +263,6 @@ pub fn from_app<'a>(app: &'a App, cache: &'a mut ViewCache) -> Screen<'a> {
                 compacted_files: tab.mem_budget.compacted_files,
             },
         }),
-        app,
     }
 }
 
@@ -305,6 +448,25 @@ impl PartialEq<app::DirEntry> for view::DirEntry {
     }
 }
 
+fn agent_log_entry(entry: &app::AgentLogEntry) -> view::AgentLogEntry {
+    view::AgentLogEntry {
+        timestamp: entry.timestamp,
+        command_name: entry.command_name.clone(),
+        source: match entry.source {
+            app::AgentLogSource::Stdout => view::AgentLogSource::Stdout,
+            app::AgentLogSource::Stderr => view::AgentLogSource::Stderr,
+            app::AgentLogSource::Status => view::AgentLogSource::Status,
+        },
+        text: entry.text.clone(),
+    }
+}
+
+fn same_entry(row: &view::AgentLogEntry, entry: &app::AgentLogEntry) -> bool {
+    row.timestamp == entry.timestamp
+        && std::sync::Arc::ptr_eq(&row.command_name, &entry.command_name)
+        && row.text == entry.text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,5 +526,51 @@ mod tests {
             screen.chrome.overlay,
             Some(OverlayData::DirectoryBrowser { entries, .. }) if entries.len() == 2
         ));
+    }
+
+    /// A frame with the same log converts no row; an appended line converts
+    /// only itself, and a line the App evicts leaves the rest as they were.
+    #[test]
+    fn the_agent_log_converts_only_its_new_tail() {
+        let mut app = App::new_for_test(Vec::new());
+        let name: std::sync::Arc<str> = "review".into();
+        let now = std::time::Instant::now();
+        let push = |app: &mut App, text: &str| {
+            app.tab_mut().agent_log.push_back(app::AgentLogEntry {
+                timestamp: now,
+                command_name: name.clone(),
+                source: app::AgentLogSource::Stdout,
+                text: text.into(),
+            });
+        };
+        push(&mut app, "one");
+        push(&mut app, "two");
+        let mut cache = ViewCache::default();
+        from_app(&app, &mut cache);
+        let texts = |cache: &ViewCache| -> Vec<*const u8> {
+            cache
+                .agent_log
+                .iter()
+                .map(|row| row.text.as_ptr())
+                .collect()
+        };
+        let first = texts(&cache);
+        from_app(&app, &mut cache);
+        assert_eq!(texts(&cache), first, "same log, converted again");
+
+        push(&mut app, "three");
+        from_app(&app, &mut cache);
+        assert_eq!(texts(&cache)[..2], first[..], "old rows converted again");
+        assert_eq!(cache.agent_log[2].text, "three");
+
+        app.tab_mut().agent_log.pop_front();
+        from_app(&app, &mut cache);
+        assert_eq!(texts(&cache)[..1], first[1..], "kept rows converted again");
+        let rows: Vec<_> = cache
+            .agent_log
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect();
+        assert_eq!(rows, ["two", "three"]);
     }
 }

@@ -8,9 +8,10 @@ use std::time::SystemTime;
 
 use super::styles;
 use super::utils::{horizontal_rule, word_wrap};
+use crate::screen::Screen;
 use er_engine::ai::{Finding, RiskLevel};
-use er_engine::app::{App, DiffMode};
 use er_engine::git::FileStatus;
+use er_engine::tab_identity::DiffMode;
 
 /// Format a SystemTime as a relative time string (e.g. "2m ago", "1h ago")
 fn format_relative_time(mtime: SystemTime) -> String {
@@ -77,30 +78,31 @@ fn finding_dot_spans(findings: &[&Finding], stale: bool) -> Vec<Span<'static>> {
 }
 
 /// Render the file tree panel (left side)
-pub fn render(f: &mut Frame, area: Rect, app: &App) {
-    let tab = app.tab();
+pub fn render(f: &mut Frame, area: Rect, screen: &Screen) {
+    let tab = &screen.tab;
+    let ai = screen.data.ai_or_empty();
 
     // History mode: render commit list instead of file tree
     if tab.mode == DiffMode::History {
-        render_commit_list(f, area, app);
+        render_commit_list(f, area, screen);
         return;
     }
 
     // Tour mode: render pillar list instead of file tree
     if tab.mode == DiffMode::Tour {
-        render_pillar_list(f, area, app);
+        render_pillar_list(f, area, screen);
         return;
     }
 
     // Conflicts mode uses the standard file tree (falls through below)
 
-    let visible = tab.visible_files();
-    let total = tab.files.len();
+    let visible = &tab.visible_files;
+    let total = screen.data.file_count();
     let in_overlay = tab.layers.show_ai_findings;
-    let ai_stale = tab.ai.is_stale;
+    let ai_stale = ai.is_stale;
 
-    let stale_count = tab.ai.stale_files.len();
-    let visible_watched = tab.visible_watched_files();
+    let stale_count = ai.stale_files.len();
+    let visible_watched = &tab.visible_watched;
     let watched_count = visible_watched.len();
     let visible_count = visible.len();
     let has_filter =
@@ -110,8 +112,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     } else {
         format!("{}", total)
     };
-    let title = if in_overlay && tab.ai.has_data() {
-        let findings = tab.ai.total_findings();
+    let title = if in_overlay && ai.has_data() {
+        let findings = ai.total_findings();
         if ai_stale && stale_count > 0 {
             format!(
                 " FILES ({}) ⚠ {} findings · {} stale ",
@@ -154,7 +156,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let mut items: Vec<ListItem> = viewport_slice
         .iter()
         .map(|(idx, file)| {
-            let is_selected = tab.selected_watched.is_none() && *idx == tab.selected_file;
+            let is_selected = tab.selected_watched_index.is_none() && *idx == tab.selected_file;
 
             // Status symbol with color
             let is_conflicts_mode = tab.mode == DiffMode::Conflicts;
@@ -174,18 +176,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 }
             };
 
-            let file_stale = in_overlay && tab.ai.is_file_stale(&file.path);
+            let file_stale = in_overlay && ai.is_file_stale(&file.path);
             let active_findings = if in_overlay {
-                tab.ai.file_active_findings(&file.path, &tab.layers)
+                ai.file_active_findings(&file.path, tab.layers)
             } else {
                 Vec::new()
             };
             let finding_width = finding_dots_display_width(active_findings.len());
 
             // Comment indicators (questions = yellow ◆N, notes = yellow ▪N, github = cyan ◆N)
-            let question_count = tab.ai.file_question_count(&file.path);
-            let note_count = tab.ai.file_note_count(&file.path);
-            let gh_comment_count = tab.ai.file_github_comment_count(&file.path);
+            let question_count = ai.file_question_count(&file.path);
+            let note_count = ai.file_note_count(&file.path);
+            let gh_comment_count = ai.file_github_comment_count(&file.path);
             let has_questions = question_count > 0;
             let has_notes = note_count > 0;
             let has_gh_comments = gh_comment_count > 0;
@@ -235,7 +237,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             // Stats: +adds -dels
             let stats = format!("+{} -{}", file.adds, file.dels);
 
-            let is_reviewed = tab.reviewed.contains_key(&file.path);
+            let is_reviewed = screen.data.reviewed().contains_key(&file.path);
             let is_compacted = file.compacted;
 
             let line_style = if is_selected {
@@ -335,8 +337,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         );
 
         // Watched files
-        for (idx, watched) in &visible_watched {
-            let is_selected = tab.selected_watched == Some(*idx);
+        for (idx, watched) in visible_watched {
+            let is_selected = tab.selected_watched_index == Some(*idx);
             let age = format_relative_time(watched.modified);
             let not_ignored = tab.watched_not_ignored.contains(&watched.path);
 
@@ -377,7 +379,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let title_style = if in_overlay && tab.ai.has_data() && !ai_stale {
+    let title_style = if in_overlay && ai.has_data() && !ai_stale {
         ratatui::style::Style::default().fg(styles::PURPLE())
     } else if ai_stale {
         styles::stale_style()
@@ -397,11 +399,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the commit list panel (left side, History mode)
-fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
-    let tab = app.tab();
-    let visible = tab.visible_commits();
-    let total = tab.history.as_ref().map(|h| h.commits.len()).unwrap_or(0);
-    let selected_commit = tab.history.as_ref().map(|h| h.selected_commit).unwrap_or(0);
+fn render_commit_list(f: &mut Frame, area: Rect, screen: &Screen) {
+    let history = screen.data.history();
+    let visible = history.map_or(&[][..], |h| &h.visible_commits[..]);
+    let total = history.map(|h| h.commits.len()).unwrap_or(0);
+    let selected_commit = history.map(|h| h.selected_commit).unwrap_or(0);
 
     let title = format!(" COMMITS ({}) ", total);
 
@@ -543,9 +545,9 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
 
 /// Render the tour pillar list (left panel in Tour mode). Each pillar shows its
 /// title, a foundation/importance badge, a reviewed/total count, and its files.
-fn render_pillar_list(f: &mut Frame, area: Rect, app: &App) {
-    let tab = app.tab();
-    let Some(tour) = tab.tour.as_ref() else {
+fn render_pillar_list(f: &mut Frame, area: Rect, screen: &Screen) {
+    let reviewed_marks = screen.data.reviewed();
+    let Some(tour) = screen.data.tour() else {
         let block = Block::default()
             .title(Span::styled(
                 " TOUR ",
@@ -569,7 +571,7 @@ fn render_pillar_list(f: &mut Frame, area: Rect, app: &App) {
         let files = tour.files.get(start..end).unwrap_or(&[]);
         let reviewed = files
             .iter()
-            .filter(|fd| tab.reviewed.contains_key(&fd.path))
+            .filter(|fd| reviewed_marks.contains_key(&fd.path))
             .count();
         let total_files = files.len();
         let all_reviewed = total_files > 0 && reviewed == total_files;
@@ -632,7 +634,7 @@ fn render_pillar_list(f: &mut Frame, area: Rect, app: &App) {
             // Co-located related files (tests/styles/stories/snapshots) render
             // indented under their primary file with a "↳" marker.
             let is_related = tour.file_is_related.get(abs_idx).copied().unwrap_or(false);
-            let reviewed_mark = if tab.reviewed.contains_key(&fd.path) {
+            let reviewed_mark = if reviewed_marks.contains_key(&fd.path) {
                 "✓ "
             } else {
                 "  "
@@ -647,7 +649,7 @@ fn render_pillar_list(f: &mut Frame, area: Rect, app: &App) {
             let name = shorten_path(&fd.path, inner_width.saturating_sub(indent_cols + 3));
             let fstyle = if is_file_selected {
                 ratatui::style::Style::default().fg(styles::BRIGHT())
-            } else if tab.reviewed.contains_key(&fd.path) || is_related {
+            } else if reviewed_marks.contains_key(&fd.path) || is_related {
                 ratatui::style::Style::default().fg(styles::DIM())
             } else {
                 ratatui::style::Style::default().fg(styles::TEXT())
