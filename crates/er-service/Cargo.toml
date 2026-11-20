@@ -7,8 +7,8 @@ license.workspace = true
 description = "Workspace actor and use cases for easy-review"
 
 [features]
-# Compiles `Command::Stall`, which holds the actor so a dependent's test can
-# show that a read never waits on it.
+# Compiles `Command::Stall` and `Command::Hold`; a dependent's test holds an
+# actor with them to show that a read never waits on it.
 test-support = []
 
 [dependencies]

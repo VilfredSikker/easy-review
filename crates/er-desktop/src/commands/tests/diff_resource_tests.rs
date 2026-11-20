@@ -69,7 +69,9 @@ fn listed(state: &AppState, dir: &ReviewFlowTestDir, repo: &str) -> (TabKey, Tab
     let root = dir.path().join(repo);
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
     let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
-    let added = state.service.send_app(AppCommand::NewTab { tab: tab.clone() });
+    let added = state
+        .service
+        .send_app(AppCommand::NewTab { tab: tab.clone() });
     assert!(added.is_ok(), "{added:?}");
     let view = state.service.app_registry().tabs_view();
     let key = view.active.unwrap_or_else(|| panic!("no active tab"));
@@ -117,7 +119,9 @@ fn diff_of(fetched: &Versioned<Resource>) -> &TabDiff {
 
 /// Holds `tab`'s actor: every later command to it queues behind this one.
 fn hold(state: &AppState, tab: &TabDescriptor) {
-    let held = state.service.post_if_started(&actor_key(tab), Command::Stall);
+    let held = state
+        .service
+        .post_if_started(&actor_key(tab), Command::Stall);
     assert!(held, "the actor was not up");
 }
 
@@ -201,6 +205,7 @@ fn an_unlisted_key_is_not_found() {
     });
 }
 
+#[cfg(test)]
 fn git(dir: &std::path::Path, args: &[&str]) {
     let status = std::process::Command::new("git")
         .args(["-c", "user.name=er", "-c", "user.email=er@example.com"])

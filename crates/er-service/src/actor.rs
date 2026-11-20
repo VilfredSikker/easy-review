@@ -284,15 +284,16 @@ fn spawn_load(
     let deps = deps.clone();
     let failed = tx.clone();
     spawn_effect(tx, reply, move || {
-        let input = load(&deps, current.as_deref())?;
         // A first load that fails is recorded for its key, so a reader of
         // the key sees why instead of an empty tab.
-        let loaded = crate::effect::load_tab(&deps, input).inspect_err(|error| {
-            if since.is_none() {
-                let message = error.to_string();
-                let _ = failed.send(ActorMsg::LoadFailed { key, message });
-            }
-        })?;
+        let loaded = load(&deps, current.as_deref())
+            .and_then(|input| crate::effect::load_tab(&deps, input))
+            .inspect_err(|error| {
+                if since.is_none() {
+                    let message = error.to_string();
+                    let _ = failed.send(ActorMsg::LoadFailed { key, message });
+                }
+            })?;
         let reviewed_cleared = loaded.cleared;
         Ok(Effected::patched(
             Reply::ContentLoaded {
@@ -833,9 +834,14 @@ fn handle_command(
         }
         #[cfg(any(test, feature = "test-support"))]
         Command::Stall => {
-            // Hold the actor thread, so every later command queues behind it
-            // and a caller's own timeout fires. The reply is never sent; this
-            // command exists only for tests.
+            // Hold the reply sender so the caller's own timeout fires. Leaked
+            // on purpose; this command exists only in tests.
+            std::mem::forget(reply);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        Command::Hold => {
+            // Hold the actor thread, so every later command queues behind
+            // this one. Exists only in tests.
             std::mem::forget(reply);
             loop {
                 thread::park();
