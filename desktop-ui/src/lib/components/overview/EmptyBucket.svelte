@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { reviewScopeFromMode } from "$lib/reviewScope";
   import { resolveActivePrNumber } from "$lib/prUrl";
   import { sourceToggleState } from "$lib/sourceToggle";
@@ -15,6 +16,10 @@
 
   const { snapshot: snapshotOverride }: Props = $props();
   const snap = $derived(snapshotOverride !== undefined ? snapshotOverride : app.snapshot);
+  // A story passes its own snapshot; the page reads the tabs adapter.
+  const activeRow = $derived(
+    snapshotOverride !== undefined ? snapshotOverride?.tabs.find((t) => t.is_active) : (tabsResource.activeTab ?? undefined),
+  );
   const copy = $derived(emptyBucketCopy(snap));
   const scope = $derived(reviewScopeFromMode(snap?.mode));
   const prNumber = $derived(resolveActivePrNumber(snap ?? null));
@@ -24,7 +29,7 @@
   const toggle = $derived(
     sourceToggleState({
       prNumber,
-      tabKind: snap?.tabs.find((t) => t.is_active)?.kind,
+      tabKind: activeRow?.kind,
       localBranchCheckedOut: snap?.local_branch_checked_out,
     }),
   );

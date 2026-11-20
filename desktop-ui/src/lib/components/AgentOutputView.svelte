@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { copyToClipboard } from "$lib/clipboard";
 
   interface RevisionSummary {
@@ -36,7 +37,7 @@
   }
 
   $effect(() => {
-    const tab = app.snapshot?.active_tab ?? -1;
+    const tab = tabsResource.tabs.length > 0 ? tabsResource.active : -1;
     if (tab === lastRevisionsTab) return;
     lastRevisionsTab = tab;
     void loadRevisions();

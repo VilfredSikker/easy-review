@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { localBranchBannerCopy } from "$lib/shellBanners";
   import { activeDiffSource, sourceToggleState } from "$lib/sourceToggle";
   import { resolveActivePrNumber } from "$lib/prUrl";
@@ -18,7 +19,7 @@
   );
 
   const prNumber = $derived(resolveActivePrNumber(snapshot));
-  const activeTab = $derived(snapshot?.tabs.find((t) => t.is_active));
+  const activeTab = $derived(tabsResource.activeTab ?? undefined);
   const prAvailable = $derived(
     sourceToggleState({
       prNumber,

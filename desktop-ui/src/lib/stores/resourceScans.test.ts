@@ -7,6 +7,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const srcDir = join(here, "../..");
 const read = (path: string) => readFileSync(join(srcDir, path), "utf8");
 const APP_STORE = join("lib", "stores", "app.svelte.ts");
+const APP_ROOT = "App.svelte";
 
 describe("resource source scans", () => {
   it("the tab strip reads its tabs from the adapter, not the snapshot", () => {
@@ -30,17 +31,23 @@ describe("resource source scans", () => {
       (f) => /\.(ts|svelte)$/.test(f) && !/\.test\.ts$/.test(f) && !f.includes("protocol/generated/"),
     );
     const importsResourceStore = /from\s+["'][^"']*\/resourceStore["']/;
+    const importsTabs = /from\s+["'][^"']*\/(tabsAdapter|tabsResource\.svelte)["']/;
     const clauses = [
       /\bTabKey\b/,
       /from\s+["'][^"']*\/protocol\//,
       /\bTABS_KEY\b/,
       importsResourceStore,
-      /from\s+["'][^"']*\/(tabsAdapter|tabsResource\.svelte)["']/,
+      importsTabs,
     ];
-    // app.svelte.ts imports the store only to start and stop it (the next test
-    // holds it to that), so for it alone the store import does not count.
+    // app.svelte.ts imports the store only to start and stop it, and App.svelte
+    // the tabs adapter only to read its rows, which carry no key (the tests
+    // below hold both to that), so for each its import does not count.
     const clausesFor = (f: string) =>
-      f === APP_STORE ? clauses.filter((c) => c !== importsResourceStore) : clauses;
+      f === APP_STORE
+        ? clauses.filter((c) => c !== importsResourceStore)
+        : f === APP_ROOT
+          ? clauses.filter((c) => c !== importsTabs)
+          : clauses;
     const holders = files.filter((f) => clauses.some((c) => c.test(read(f))));
     expect(holders).toContain(join("lib", "stores", "tabsAdapter.ts"));
     expect(holders).toContain(APP_STORE);
@@ -134,5 +141,69 @@ describe("resource source scans", () => {
         "MARK_LINES_KEY",
       ]),
     );
+  });
+  // The tab rows and the browser state, which the tabs adapter and the browser
+  // view read with the flag off.
+  it("the page reads the tabs and the browser through their adapters, not the snapshot", () => {
+    const field = /\b(snapshot|snap)\??\.(tabs|active_tab|browser)\b/;
+    // The adapters' flag-off reads, the app store, the snapshot plumbing, and
+    // the helpers that name which tab a snapshot's content belongs to: keying
+    // those on the registry while the content still comes from the App would
+    // file a draft, a preview or a request under the wrong tab for a round trip.
+    const allowed = [
+      join("lib", "stores", "tabsAdapter.ts"),
+      join("lib", "stores", "browserView.ts"),
+      APP_STORE,
+      join("lib", "snapshotChrome.ts"),
+      join("lib", "tabSnapshotCache.ts"),
+      join("lib", "contextIdentity.ts"),
+      join("lib", "stores", "reviewPageModel.ts"),
+      join("lib", "prUrl.ts"),
+      join("lib", "annotationDraftCache.ts"),
+      join("lib", "documentPreviewCache.ts"),
+      join("lib", "imagePreview.ts"),
+      join("lib", "commentAutoPull.ts"),
+      join("lib", "riskRequests.ts"),
+      join("lib", "exportOptions.ts"),
+      join("lib", "components", "overview", "overviewModel.ts"),
+      join("lib", "components", "FlatDiffView.svelte"),
+    ];
+    expect(sources().filter((f) => !allowed.includes(f) && field.test(stripped(f)))).toEqual([]);
+  });
+
+  it("the tab commands and the opens reach the backend only through app.cmd and the prefetch seam", () => {
+    const old =
+      /\binvoke(<[^>]*>)?\(\s*"(open_remote_pr|open_pr_url|open_worktree|open_local_branch|open_pr_review|open_pr_branch|prefetch_pr_open|prefetch_remote_pr_open|open_project_branch|new_tab|close_tab|select_tab|reorder_tabs|update_tab_browser|cycle_tab_browser_layout|set_active_project)"/;
+    expect(sources().filter((f) => old.test(stripped(f)))).toEqual([]);
+    const prOpen = stripped(join("lib", "prOpen.ts"));
+    expect(prOpen).toMatch(/invokeFn: InvokeFn = \(command, args\) => prefetchSend\(command, args\)/);
+  });
+
+  it("with the flag on app.cmd hands a routed command to the tabs adapter before its snapshot path", () => {
+    const store = stripped(APP_STORE);
+    const start = store.indexOf("  async cmd(");
+    const body = store.slice(start, store.indexOf("this.beginCmd(", start));
+    expect(body).toMatch(/const routed = this\.cmdRoute\?\.\(command, args\) \?\? null;\s*if \(routed\) return this\.cmdRouted\(command, routed, options\);/);
+    const wiring = stripped(join("lib", "stores", "tabsResource.svelte.ts"));
+    expect(wiring).toMatch(/if \(flagOn\) \{\s*app\.routeCmds\(\(command, args\) => tabsResource\.route\(command, args\)\);\s*routePrefetches\(/);
+  });
+
+  // The key handler's modes are the frontend's own; the App keeps input_mode
+  // for the TUI (D20), and no resource carries it.
+  it("no module reads input_mode off the snapshot", () => {
+    const field = /\.input_mode\b|\binput_mode:\s*(prev|next|snap|snapshot)\b/;
+    expect(sources().filter((f) => f !== join("lib", "types.ts") && field.test(stripped(f)))).toEqual([]);
+  });
+
+  it("App.svelte reads only the adapter's rows, and persists its two panel sizes only", () => {
+    const code = read(APP_ROOT)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(new Set(code.match(/\btabsResource\b(\.\w+)?/g))).toEqual(
+      new Set(["tabsResource", "tabsResource.svelte", "tabsResource.tabs", "tabsResource.active"]),
+    );
+    const keys = [...code.matchAll(/\blocalStorage\.(?:getItem|setItem)\(\s*([^,)\s]+)/g)].map((m) => m[1]);
+    expect(new Set(keys)).toEqual(new Set(["RIGHT_PANEL_STORAGE_KEY", "DRAWER_STORAGE_KEY"]));
+    expect(code.replace(/\blocalStorage\.(getItem|setItem)\(/g, "")).not.toMatch(/\b(localStorage|sessionStorage)\b/);
   });
 });

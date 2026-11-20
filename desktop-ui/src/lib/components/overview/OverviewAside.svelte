@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppSnapshot, GhReviewerSummary } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { openOverviewFile } from "$lib/overviewFileOpen";
   import { rightRail } from "$lib/stores/rightRail.svelte";
@@ -28,6 +29,10 @@
 
   const { snapshot: snapshotOverride }: Props = $props();
   const snap = $derived(snapshotOverride !== undefined ? snapshotOverride : app.snapshot);
+  // A story passes its own snapshot; the page reads the tabs adapter.
+  const activeRow = $derived(
+    snapshotOverride !== undefined ? snapshotOverride?.tabs.find((t) => t.is_active) : (tabsResource.activeTab ?? undefined),
+  );
 
   const github = $derived(snap ? githubStatusForActiveTab(snap) : null);
   const ai = $derived(snap?.ai ?? null);
@@ -55,7 +60,7 @@
 
   // ── Branch & PR (the right panel's old Branch tab) ────────────────────────
   const identity = $derived(resolveContextIdentity(snap));
-  const tabOwnsPr = $derived(snap?.tabs.find((t) => t.is_active)?.pr_number != null);
+  const tabOwnsPr = $derived(activeRow?.pr_number != null);
   const isMerged = $derived(
     github?.state === "MERGED" ||
       (!tabOwnsPr && (snap?.worktrees.find((w) => w.is_current)?.is_merged ?? false)),

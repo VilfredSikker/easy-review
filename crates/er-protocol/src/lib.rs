@@ -18,6 +18,7 @@ mod risk;
 mod session;
 mod settings;
 mod sidebar;
+mod tabs;
 
 pub use command::{Ack, Command, ProjectReviewSettingsPatch};
 pub use error::{ErError, ErErrorKind};
@@ -36,3 +37,4 @@ pub use sidebar::{
     AvailableBranches, AvailablePrs, Branch, Branches, PrRow, Project, ProjectPrs, Projects, Prs,
     Worktree, Worktrees,
 };
+pub use tabs::{BrowserLayout, BrowserView, PrOpenHint, TabKind, TabRow, TabView};
