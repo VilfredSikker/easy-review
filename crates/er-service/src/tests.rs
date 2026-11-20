@@ -159,6 +159,16 @@ fn a_command_without_a_reply_times_out_within_its_own_deadline() -> anyhow::Resu
     Ok(())
 }
 
+/// `Hold` keeps the actor thread, so a command sent after it is never
+/// answered and its caller's own timeout fires.
+#[test]
+fn a_held_actor_answers_nothing_after_the_hold() {
+    let handle = actor(github(Ok("OPEN")));
+    drop(handle.send(Command::Hold));
+    let result = handle.send_and_wait_with(Command::Ping, Duration::from_millis(300));
+    assert_eq!(result, Err(WorkspaceError::Timeout(Duration::from_millis(300))));
+}
+
 #[test]
 fn the_actor_refuses_a_port_call_on_its_own_thread() -> anyhow::Result<()> {
     let handle = actor(github(Ok("OPEN")));

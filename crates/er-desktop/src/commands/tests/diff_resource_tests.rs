@@ -121,7 +121,7 @@ fn diff_of(fetched: &Versioned<Resource>) -> &TabDiff {
 fn hold(state: &AppState, tab: &TabDescriptor) {
     let held = state
         .service
-        .post_if_started(&actor_key(tab), Command::Stall);
+        .post_if_started(&actor_key(tab), Command::Hold);
     assert!(held, "the actor was not up");
 }
 
