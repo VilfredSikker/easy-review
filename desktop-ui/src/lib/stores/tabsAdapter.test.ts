@@ -190,8 +190,8 @@ describe("TabsAdapter.route", () => {
     { key: { kind: "view", tab: 12 }, version: 2 },
   ];
 
-  /** A store whose `whenAt` holds each wait until the test releases it. */
-  function sender() {
+  /** A store whose `whenAt` holds each wait until the test releases it, or answers at once with `held`. */
+  function sender(held = false) {
     const sent: Command[] = [];
     const waited: [ResourceKey, number][] = [];
     const releases: (() => void)[] = [];
@@ -204,7 +204,7 @@ describe("TabsAdapter.route", () => {
       },
       whenAt: (key: ResourceKey, version: number) => {
         waited.push([key, version]);
-        return new Promise<void>((resolve) => releases.push(resolve));
+        return held ? Promise.resolve() : new Promise<void>((resolve) => releases.push(resolve));
       },
     };
     return { sent, waited, releases, store };
@@ -309,7 +309,7 @@ describe("TabsAdapter.route", () => {
   }
 
   it("resolves a prefetch with no hint at once and sends nothing", async () => {
-    const { sent, waited, store } = sender();
+    const { sent, waited, store } = sender(true);
     const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
     await tabs.route("prefetch_pr_open", { projectId: "p", prNumber: 7 });
     expect(sent).toEqual([]);
@@ -318,7 +318,7 @@ describe("TabsAdapter.route", () => {
   });
 
   it("rejects a position the resource does not list", async () => {
-    const { sent, store } = sender();
+    const { sent, store } = sender(true);
     const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
     await expect(tabs.route("select_tab", { idx: 5 }) ?? Promise.resolve()).rejects.toThrow("no tab at position 5");
     expect(sent).toEqual([]);
