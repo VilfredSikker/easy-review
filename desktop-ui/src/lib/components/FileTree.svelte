@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { diffResource } from "$lib/stores/diffResource.svelte";
   import { buildTree, filesByPathMap, resolveTreeFile, visibleTree } from "$lib/treeFromPaths";
   import ScopeSelector from "./ScopeSelector.svelte";
   import ScopeSegment from "./ScopeSegment.svelte";
@@ -46,6 +47,7 @@
   const showScope = $derived(!pickerMode && rail.scopes.length > 1 && !rail.isPr);
 
   const snapshot = $derived(app.snapshot);
+  const diff = $derived(diffResource.read());
 
   /** Accurate tooltip for the annotation badge — breaks out comments / questions
    *  / findings so a question never reads as a "comment". */
@@ -79,7 +81,7 @@
   let inputFocused = $state(false);
 
   const sourceFiles = $derived(
-    pickerMode && filesOverride !== undefined ? filesOverride : (snapshot?.files ?? []),
+    pickerMode && filesOverride !== undefined ? filesOverride : snapshot ? diff.files : [],
   );
 
   function localFilterFiles(list: FileSnapshot[], query: string): FileSnapshot[] {
@@ -104,7 +106,7 @@
 
   $effect(() => {
     if (pickerMode) return;
-    const backendValue = snapshot?.filter ?? "";
+    const backendValue = diff.filter ?? "";
     if (!inputFocused || filterDraft === backendValue) {
       filterDraft = backendValue;
     }
@@ -126,7 +128,7 @@
 
   /** Quick filters listed under the box for the current draft. */
   const suggestions = $derived(
-    pickerMode ? [] : visibleSuggestions(snapshot?.filter_suggestions ?? [], filterDraft),
+    pickerMode ? [] : visibleSuggestions(diff.filter_suggestions, filterDraft),
   );
   /** Row the arrow keys have moved to; -1 while the caret is in the input. */
   let highlight = $state(-1);
@@ -366,7 +368,7 @@
     </button>
     {#if snapshot}
       <div class="mono text-[10px] text-muted [writing-mode:vertical-rl] mt-2">
-        {files.length} files · {snapshot.reviewed_count}/{snapshot.total_count}
+        {files.length} files · {snapshot.reviewed_count}/{diff.total_count}
       </div>
     {/if}
   </div>
@@ -424,7 +426,7 @@
           {/each}
           {#if snapshot}
             <div class="border-t border-hairline mt-1 pt-1.5 px-2 pb-0.5 text-[11px] text-fg-3">
-              {suggestionFooter(files.length, snapshot.reviewed_count, snapshot.total_count)}
+              {suggestionFooter(files.length, snapshot.reviewed_count, diff.total_count)}
             </div>
           {/if}
         </div>
@@ -438,18 +440,18 @@
       {#if pickerMode && selectedPaths}
         <span>{selectedPaths.size} selected</span>
       {:else if !pickerMode && snapshot}
-        <span>{snapshot.reviewed_count}/{snapshot.total_count} reviewed</span>
+        <span>{snapshot.reviewed_count}/{diff.total_count} reviewed</span>
       {/if}
     </div>
   {/if}
 
-  {#if !pickerMode && snapshot && snapshot.total_count > 0}
+  {#if !pickerMode && snapshot && diff.total_count > 0}
     <!-- Review progress meter: single fill (O(1) DOM regardless of file count) -->
     <div class="px-3 pb-1.5 shrink-0">
       <div class="h-[3px] rounded-[2px] overflow-hidden" style="background: color-mix(in srgb, var(--color-fg) 6%, transparent)">
         <div
           class="h-full rounded-[2px] transition-[width] duration-150"
-          style="width: {(snapshot.reviewed_count / snapshot.total_count) * 100}%; background: var(--color-periwinkle)"
+          style="width: {(snapshot.reviewed_count / diff.total_count) * 100}%; background: var(--color-periwinkle)"
         ></div>
       </div>
     </div>
@@ -539,8 +541,8 @@
   {#if snapshot && !pickerMode}
     <ScopeSelector
       showScopeSegment={false}
-      mode={snapshot.mode}
-      total_count={snapshot.total_count}
+      mode={diff.mode}
+      total_count={diff.total_count}
       reviewed_count={snapshot.reviewed_count}
     />
   {/if}

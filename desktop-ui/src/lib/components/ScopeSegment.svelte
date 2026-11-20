@@ -1,10 +1,11 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { diffResource } from "$lib/stores/diffResource.svelte";
   import { railView } from "$lib/stores/railView.svelte";
   import { pressedScope, type LocalScope } from "$lib/scopeRail";
 
   const view = railView();
-  const snapshot = $derived(app.snapshot);
+  const diff = $derived(diffResource.read());
 
   const LABELS: Record<LocalScope, string> = {
     branch: "Branch",
@@ -18,8 +19,8 @@
   const pressed = $derived(pressedScope(view.mode));
 
   function fileCount(scope: LocalScope): number | null {
-    if (scope === "unstaged") return snapshot?.unstaged_stat?.files ?? null;
-    if (scope === "staged") return snapshot?.staged_stat?.files ?? null;
+    if (scope === "unstaged") return diff.unstaged_stat?.files ?? null;
+    if (scope === "staged") return diff.staged_stat?.files ?? null;
     return null;
   }
 

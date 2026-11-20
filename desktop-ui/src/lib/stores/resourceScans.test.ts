@@ -183,7 +183,7 @@ describe("resource source scans", () => {
     const store = stripped(APP_STORE);
     const start = store.indexOf("  async cmd(");
     const body = store.slice(start, store.indexOf("this.beginCmd(", start));
-    expect(body).toMatch(/const routed = this\.cmdRoute\?\.\(command, args\) \?\? null;\s*if \(routed\) return this\.cmdRouted\(command, routed, options\);/);
+    expect(body).toMatch(/const routed = this\.routed\(command, args\);\s*if \(routed\) return this\.cmdRouted\(command, routed, options\);/);
     const wiring = stripped(join("lib", "stores", "tabsResource.svelte.ts"));
     expect(wiring).toMatch(/if \(flagOn\) \{\s*app\.routeCmds\(\(command, args\) => tabsResource\.route\(command, args\)\);\s*routePrefetches\(/);
   });
