@@ -1,12 +1,14 @@
 //! The desktop app owner: the one writer of the sidebar's resources.
 //!
-//! It publishes `projects`, each project's `branches`, each remote's `prs`
-//! and each open root's `worktrees` from the projects record, the metadata
-//! cache, the PR cache and the tick's worktree listing, and
+//! It publishes `projects`, each project's `branches`, each remote's `prs`,
+//! each open root's `worktrees` and the `inbox` from the projects record, the
+//! metadata cache, the PR cache, the tick's worktree listing and the inbox
+//! state, and
 //! stamps a key's version only when the value it builds differs from the one
 //! it last published, so any row field that moves moves the version. It is
 //! also the one writer of the metadata cache and of the PR cache: every
-//! refresh, sweep and patch runs through it and publishes after. Changes it
+//! refresh, sweep and patch runs through it and publishes after, and so does
+//! every inbox command. Changes it
 //! does not make (another process writing the projects record, the GitHub
 //! login arriving after launch) reach the resources at the next publish,
 //! which the backend tick runs.
@@ -18,13 +20,15 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
+use er_engine::config::InboxConfig;
 use er_protocol::{
-    Branch, Branches, PrRow, Project, ProjectPrs, Projects, Prs, ResourceChanged, ResourceKey,
-    ResourceVersion, Worktree, Worktrees,
+    Branch, Branches, Inbox, InboxItem, InboxTarget, PrRow, Project, ProjectPrs, Projects, Prs,
+    ResourceChanged, ResourceKey, ResourceVersion, Worktree, Worktrees,
 };
 
+use crate::inbox::{InboxHandle, InboxState};
 use crate::pr_cache::{self, PrCacheFetchedAtMap, PrCacheMap};
 use crate::projects::{self, ProjectRecord, ProjectsFile};
 use crate::snapshot::{self, BranchInfo, GhUser, MetaCache, PrInfo, ProjectMeta, WorktreeSnapshot};
@@ -49,6 +53,9 @@ pub trait SidebarOwner: Send + Sync {
     /// The worktrees of one open tab's root at their version; a root the
     /// tick has not listed reads empty at version 0.
     fn worktrees(&self, root: &str) -> (u64, Worktrees);
+    /// The inbox at its version; empty at version 0 until the owner reads
+    /// the inbox prefs.
+    fn inbox(&self) -> (u64, Inbox);
     /// Every key the owner has published, with its version.
     fn versions(&self) -> Vec<(ResourceKey, u64)>;
 }
@@ -60,6 +67,11 @@ pub struct AppOwner {
     gh_user: GhUser,
     /// The worktree list of each open tab's root, as the tick last listed it.
     worktrees: Mutex<BTreeMap<String, Worktrees>>,
+    inbox: InboxHandle,
+    /// Where the inbox's kind filter comes from. Set on the flag path only:
+    /// the default build's snapshot reads the App's prefs, and no reader of
+    /// `inbox` exists there.
+    inbox_prefs: OnceLock<InboxPrefs>,
     published: Mutex<Published>,
     /// Wakes the resource relay after a publish that moved a version.
     wake: Mutex<Option<Sender<()>>>,
@@ -75,7 +87,10 @@ struct Published {
     branches: BTreeMap<String, Stamped<Branches>>,
     prs: BTreeMap<String, Stamped<Prs>>,
     worktrees: BTreeMap<String, Stamped<Worktrees>>,
+    inbox: Option<Stamped<Inbox>>,
 }
+
+type InboxPrefs = Box<dyn Fn() -> Option<InboxConfig> + Send + Sync>;
 
 struct Stamped<T> {
     version: u64,
@@ -83,12 +98,14 @@ struct Stamped<T> {
 }
 
 impl AppOwner {
-    /// The owner over the desktop's metadata cache, PR cache and GitHub login.
+    /// The owner over the desktop's metadata cache, PR cache, GitHub login
+    /// and inbox.
     pub fn new(
         meta: MetaCache,
         pr_cache: PrCacheMap,
         pr_fetched_at: PrCacheFetchedAtMap,
         gh_user: GhUser,
+        inbox: InboxHandle,
     ) -> Self {
         Self {
             meta,
@@ -96,6 +113,8 @@ impl AppOwner {
             pr_fetched_at,
             gh_user,
             worktrees: Mutex::default(),
+            inbox,
+            inbox_prefs: OnceLock::new(),
             published: Mutex::default(),
             wake: Mutex::default(),
         }
@@ -103,6 +122,27 @@ impl AppOwner {
 
     pub fn set_wake(&self, wake: Sender<()>) {
         *lock(&self.wake) = Some(wake);
+    }
+
+    /// Builds `inbox` from here on, with the kind filter `prefs` reads at
+    /// each publish; while it answers none the held inbox stays as it is.
+    /// The first call wins.
+    pub fn read_inbox_prefs_from(
+        &self,
+        prefs: impl Fn() -> Option<InboxConfig> + Send + Sync + 'static,
+    ) {
+        let _ = self.inbox_prefs.set(Box::new(prefs));
+    }
+
+    /// Applies one write to the inbox and publishes, then saves the inbox.
+    pub fn write_inbox(&self, write: impl FnOnce(&mut InboxState)) -> Result<(), String> {
+        {
+            let mut inbox = self.inbox.lock().map_err(|e| e.to_string())?;
+            write(&mut inbox);
+        }
+        self.publish();
+        crate::inbox::save_inbox_state(&self.inbox);
+        Ok(())
     }
 
     /// Refreshes every project's metadata, then publishes. Answers whether
@@ -211,7 +251,12 @@ impl AppOwner {
                 .collect();
             let prs = build_prs(&file, &cache, &fetched_at, me.as_deref());
             let worktrees = lock(&self.worktrees).clone();
-            published.replace(build_projects(&file), branches, prs, worktrees)
+            let inbox = self
+                .inbox_prefs
+                .get()
+                .and_then(|prefs| prefs())
+                .map(|prefs| build_inbox(&lock(&self.inbox), &prefs));
+            published.replace(build_projects(&file), branches, prs, worktrees, inbox)
         };
         if !changed.is_empty() {
             if let Some(wake) = lock(&self.wake).as_ref() {
@@ -255,6 +300,14 @@ impl SidebarOwner for AppOwner {
             .unwrap_or_default()
     }
 
+    fn inbox(&self) -> (u64, Inbox) {
+        lock(&self.published)
+            .inbox
+            .as_ref()
+            .map(|stamped| (stamped.version, stamped.value.clone()))
+            .unwrap_or_default()
+    }
+
     fn versions(&self) -> Vec<(ResourceKey, u64)> {
         let published = lock(&self.published);
         let projects = published
@@ -277,24 +330,31 @@ impl SidebarOwner for AppOwner {
             let key = ResourceKey::Worktrees { root: root.clone() };
             (key, stamped.version)
         });
+        let inbox = published
+            .inbox
+            .as_ref()
+            .map(|stamped| (ResourceKey::Inbox, stamped.version));
         projects
             .into_iter()
             .chain(branches)
             .chain(prs)
             .chain(worktrees)
+            .chain(inbox)
             .collect()
     }
 }
 
 impl Published {
     /// Replaces each value that differs from the one held, under a new
-    /// version, and drops the keys of projects and remotes that left.
+    /// version, and drops the keys of projects and remotes that left. No
+    /// inbox leaves the held one as it is.
     fn replace(
         &mut self,
         projects: Projects,
         branches: BTreeMap<String, Branches>,
         prs: BTreeMap<String, Prs>,
         worktrees: BTreeMap<String, Worktrees>,
+        inbox: Option<Inbox>,
     ) -> Vec<ResourceChanged> {
         let mut changed = Vec::new();
         if self.projects.as_ref().map(|held| &held.value) != Some(&projects) {
@@ -323,6 +383,16 @@ impl Published {
             worktrees_key,
             &mut changed,
         );
+        if let Some(inbox) = inbox {
+            if self.inbox.as_ref().map(|held| &held.value) != Some(&inbox) {
+                self.stamp += 1;
+                self.inbox = Some(Stamped {
+                    version: self.stamp,
+                    value: inbox,
+                });
+                changed.push(moved(ResourceKey::Inbox, self.stamp));
+            }
+        }
         changed
     }
 }
@@ -564,6 +634,47 @@ pub fn pr_row(pr: &PrInfo, me: Option<&str>) -> PrRow {
         merged_at: pr.merged_at.clone(),
         updated_at: pr.updated_at.clone(),
         approved_by_me,
+    }
+}
+
+/// The inbox as the snapshot shows it: the kinds `prefs` hides are left out
+/// of the items and of the unread count.
+pub fn build_inbox(state: &InboxState, prefs: &InboxConfig) -> Inbox {
+    let items: Vec<InboxItem> = state
+        .items
+        .iter()
+        .filter(|item| prefs.shows(&item.kind))
+        .map(|item| InboxItem {
+            id: item.id.clone(),
+            kind: item.kind.clone(),
+            category: crate::inbox::category_for_kind(&item.kind)
+                .as_str()
+                .to_string(),
+            severity: item.severity.clone(),
+            title: item.title.clone(),
+            body: item.body.clone(),
+            source: item.source.clone(),
+            target: InboxTarget {
+                project_id: item.target.project_id.clone(),
+                repo_root: item.target.repo_root.clone(),
+                remote: item.target.remote.clone(),
+                pr_number: item.target.pr_number,
+                branch: item.target.branch.clone(),
+                url: item.target.url.clone(),
+            },
+            created_at_ms: item.created_at_ms,
+            read_at_ms: item.read_at_ms,
+            dedupe_key: item.dedupe_key.clone(),
+        })
+        .collect();
+    let unread = items
+        .iter()
+        .filter(|item| item.read_at_ms.is_none())
+        .count();
+    Inbox {
+        items,
+        unread_count: u64::try_from(unread).unwrap_or(u64::MAX),
+        last_refresh_ms: state.last_refresh_ms,
     }
 }
 
