@@ -789,7 +789,11 @@ fn handle_command(
             });
         }
         Command::ChangeBase { key, base } => {
-            let Some(current) = state.view().tabs.get(&key).map(|c| c.tab.base_branch.clone())
+            let Some(current) = state
+                .view()
+                .tabs
+                .get(&key)
+                .map(|c| c.tab.base_branch.clone())
             else {
                 return refuse_unknown_tab(reply);
             };

@@ -57,7 +57,10 @@ fn with_tab(test: impl FnOnce(&AppState, (TabKey, TabDescriptor))) {
         let opened = content_routes::open(&state, tab.clone(), false);
         assert!(opened.is_ok(), "{opened:?}");
         let key = state.service.app_registry().tabs_view().active;
-        test(&state, (key.unwrap_or_else(|| panic!("no active tab")), tab));
+        test(
+            &state,
+            (key.unwrap_or_else(|| panic!("no active tab")), tab),
+        );
     });
 }
 
@@ -90,7 +93,11 @@ fn diff(state: &AppState, key: TabKey) -> (u64, TabDiff) {
 fn assert_moved(state: &AppState, key: TabKey, before: u64, ack: &Ack) -> TabDiff {
     let (version, diff) = diff(state, key);
     assert!(version > before, "the diff stayed at {before}");
-    let named: Vec<u64> = ack.changed.iter().map(|changed| changed.version.0).collect();
+    let named: Vec<u64> = ack
+        .changed
+        .iter()
+        .map(|changed| changed.version.0)
+        .collect();
     assert_eq!(named, [version], "the ack names another version");
     diff
 }
@@ -100,39 +107,65 @@ fn each_diff_command_moves_its_tab_diff_with_the_app_lock_held() {
     with_tab(|state, (key, tab)| {
         let wire = er_service::wire_tab_key(key);
         let commands = [
-            ("set_diff_mode", Command::SetDiffMode {
-                tab: wire,
-                mode: "staged".into(),
-                pr_number: None,
-            }),
-            ("set_filter", Command::SetFilter {
-                tab: wire,
-                query: "src/f1.rs".into(),
-            }),
-            ("refresh_diff", Command::RefreshDiff {
-                tab: wire,
-                sync: false,
-            }),
-            ("sync", Command::RefreshDiff {
-                tab: wire,
-                sync: true,
-            }),
-            ("change_base", Command::ChangeBase {
-                tab: wire,
-                base: "dev".into(),
-            }),
+            (
+                "set_diff_mode",
+                Command::SetDiffMode {
+                    tab: wire,
+                    mode: "staged".into(),
+                    pr_number: None,
+                },
+            ),
+            (
+                "set_filter",
+                Command::SetFilter {
+                    tab: wire,
+                    query: "src/f1.rs".into(),
+                },
+            ),
+            (
+                "refresh_diff",
+                Command::RefreshDiff {
+                    tab: wire,
+                    sync: false,
+                },
+            ),
+            (
+                "sync",
+                Command::RefreshDiff {
+                    tab: wire,
+                    sync: true,
+                },
+            ),
+            (
+                "change_base",
+                Command::ChangeBase {
+                    tab: wire,
+                    base: "dev".into(),
+                },
+            ),
         ];
         for (name, command) in commands {
             let before = diff(state, key).0;
             let ack = send(state, name, command).unwrap_or_else(|e| panic!("{name}: {e:?}"));
             assert_moved(state, key, before, &ack);
         }
-        let content = state.service.content(key, &tab).unwrap_or_else(|| panic!("no content"));
+        let content = state
+            .service
+            .content(key, &tab)
+            .unwrap_or_else(|| panic!("no content"));
         assert_eq!(content.tab.mode, DiffMode::Staged);
         assert_eq!(content.tab.base_branch, "dev");
         let saved = state.service.app_registry().tabs_view();
-        let base_ref = saved.tabs.iter().find(|entry| entry.key == key).map(|entry| entry.descriptor.base_ref.clone());
-        assert_eq!(base_ref, Some(Some("dev".to_string())), "the base was not saved");
+        let base_ref = saved
+            .tabs
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| entry.descriptor.base_ref.clone());
+        assert_eq!(
+            base_ref,
+            Some(Some("dev".to_string())),
+            "the base was not saved"
+        );
     });
 }
 
@@ -148,7 +181,10 @@ fn a_filter_lists_only_the_files_it_keeps_and_joins_the_recent_filters() {
         assert_eq!(paths, ["src/f1.rs"]);
         assert_eq!(filtered.total_count, 3, "the total counts the whole diff");
         assert_eq!(filtered.filter.as_deref(), Some("src/f1.rs"));
-        let recent = filtered.filter_suggestions.iter().any(|s| s.kind == "history" && s.expr == "src/f1.rs");
+        let recent = filtered
+            .filter_suggestions
+            .iter()
+            .any(|s| s.kind == "history" && s.expr == "src/f1.rs");
         assert!(recent, "the filter is not among the recent ones");
 
         let query = String::new();
@@ -164,7 +200,14 @@ fn a_filter_lists_only_the_files_it_keeps_and_joins_the_recent_filters() {
 #[test]
 fn the_flag_on_filter_never_reads_the_app_tab() {
     let source = include_str!("../../resources/diff.rs");
-    for app in ["state.app", ".app.lock", "TabState", "filter_input", "apply_filter_expr", ".tab()"] {
+    for app in [
+        "state.app",
+        ".app.lock",
+        "TabState",
+        "filter_input",
+        "apply_filter_expr",
+        ".tab()",
+    ] {
         assert!(!source.contains(app), "resources/diff.rs reads {app}");
     }
 }

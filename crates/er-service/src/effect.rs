@@ -204,7 +204,9 @@ pub(crate) fn resolve_base(
             .into_iter()
             .find(|candidate| er_engine::github::ref_exists_locally(git, &tab.repo_root, candidate))
             .ok_or_else(|| {
-                WorkspaceError::Failed(format!("No local ref for '{base}' — fetch the branch first"))
+                WorkspaceError::Failed(format!(
+                    "No local ref for '{base}' — fetch the branch first"
+                ))
             });
     }
     er_engine::github::ensure_base_ref_available(git, &tab.repo_root, base)

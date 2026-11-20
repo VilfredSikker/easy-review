@@ -452,7 +452,15 @@ pub(crate) fn set_tab_mode(
     let entry = listed(state, key)?;
     let content = content_of(state, &entry)?;
     if content.tab.mode != mode {
-        send(state, &entry.tab, Command::SetDiffMode { key, mode, pr_number })?;
+        send(
+            state,
+            &entry.tab,
+            Command::SetDiffMode {
+                key,
+                mode,
+                pr_number,
+            },
+        )?;
     }
     Ok(())
 }
