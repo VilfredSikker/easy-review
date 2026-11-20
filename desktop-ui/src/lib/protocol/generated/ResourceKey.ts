@@ -4,4 +4,4 @@ import type { TabKey } from "./TabKey";
 /**
  * Names one resource: a piece of published state with one writer.
  */
-export type ResourceKey = { "kind": "tabs" } | { "kind": "projects" } | { "kind": "branches", project: string, } | { "kind": "settings" } | { "kind": "risk", key: string, } | { "kind": "session" } | { "kind": "panels" } | { "kind": "view", tab: TabKey, };
+export type ResourceKey = { "kind": "tabs" } | { "kind": "projects" } | { "kind": "branches", project: string, } | { "kind": "available_branches", project: string, } | { "kind": "settings" } | { "kind": "risk", key: string, } | { "kind": "prs", remote: string, } | { "kind": "available_prs", project: string, } | { "kind": "worktrees", root: string, } | { "kind": "session" } | { "kind": "panels" } | { "kind": "view", tab: TabKey, };

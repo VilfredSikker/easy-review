@@ -39,6 +39,44 @@ pub fn launch_root(registry: &er_service::AppRegistry, fallback: Option<&str>) -
         .unwrap_or_default()
 }
 
+/// The active tab's PR as `(owner/repo, number)` for the 30s head probe.
+/// None when the tab shows no PR or its origin cannot be resolved, and, off
+/// the flag, while the App is busy: each skips this tick. On the flag the
+/// registry's active tab names it, so a held App lock never skips one.
+pub fn pr_head_probe_target(state: &AppState) -> Option<(String, u64)> {
+    #[cfg(feature = "v1-service")]
+    let (remote, number, root) = {
+        let view = state.service.app_registry().tabs_view();
+        let tab = &view.active_entry()?.descriptor;
+        let remote = match (&tab.kind, &tab.pr_owner, &tab.pr_repo) {
+            (er_engine::tabs_record::TabKind::RemotePr, Some(owner), Some(repo)) => {
+                Some(format!("{owner}/{repo}"))
+            }
+            _ => None,
+        };
+        (remote, tab.pr_number?, tab.repo_root.clone())
+    };
+    #[cfg(not(feature = "v1-service"))]
+    let (remote, number, root) = {
+        let app = state.app.try_lock().ok()?;
+        let tab = app.tab();
+        (
+            tab.remote_repo.clone(),
+            tab.pr_number?,
+            tab.repo_root.clone(),
+        )
+    };
+    // A remote tab names its repository; a local PR tab resolves it from origin.
+    if let Some(slug) = remote {
+        return slug.split_once('/').map(|_| (slug.clone(), number));
+    }
+    if root.is_empty() {
+        return None;
+    }
+    let (owner, repo) = er_engine::github::get_repo_info(&*state.ports.git, &root).ok()?;
+    Some((format!("{owner}/{repo}"), number))
+}
+
 /// Registers the project of every tab the registry lists, and, while no
 /// project is registered at all, the active tab's repository; then
 /// publishes. It reads the registry's list and never the App: before the

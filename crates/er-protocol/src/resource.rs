@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{Branches, Panels, Projects, Risk, Session, Settings, TabRow, TabView};
+use crate::{
+    AvailableBranches, AvailablePrs, Branches, Panels, Projects, Prs, Risk, Session, Settings,
+    TabRow, TabView, Worktrees,
+};
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
 /// a wire key is resolved by looking it up among the published tabs, never by
@@ -34,10 +37,22 @@ pub enum ResourceKey {
     Projects,
     /// One project's branches, by project id.
     Branches { project: String },
+    /// One project's local branches that are neither checked out nor tracked,
+    /// computed on each read and never pushed.
+    AvailableBranches { project: String },
     /// The Settings page's rows and AI defaults.
     Settings,
     /// One repo's risk rules, by the rules key `load_risk` answered.
     Risk { key: String },
+    /// One remote's pull requests, by the exact remote string the projects
+    /// record holds (`owner/repo`).
+    Prs { remote: String },
+    /// One project's pull requests no list shows, computed on each read and
+    /// never pushed.
+    AvailablePrs { project: String },
+    /// The worktrees of the repository an open tab shows, by that tab's root.
+    /// The backend tick lists the active tab's.
+    Worktrees { root: String },
     /// The app chrome: AI pick labels, watcher, version, update check.
     Session,
     /// Which side panels are open.
@@ -53,8 +68,12 @@ pub enum Resource {
     Tabs(Tabs),
     Projects(Projects),
     Branches(Branches),
+    AvailableBranches(AvailableBranches),
     Settings(Box<Settings>),
     Risk(Risk),
+    Prs(Prs),
+    AvailablePrs(AvailablePrs),
+    Worktrees(Worktrees),
     Session(Box<Session>),
     Panels(Panels),
     View(TabView),

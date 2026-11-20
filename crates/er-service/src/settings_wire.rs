@@ -84,10 +84,10 @@ pub fn risk_resource(view: &SettingsView, key: &str) -> Option<wire::Risk> {
     })
 }
 
-/// The settings actor's command for a wire command; none for a command the
-/// desktop applies itself.
-pub fn settings_command(command: wire::Command) -> Option<SettingsCommand> {
-    Some(match command {
+/// The settings actor's command for a wire command. A command another owner
+/// applies comes back unchanged.
+pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<wire::Command>> {
+    Ok(match command {
         wire::Command::ReloadSettings => SettingsCommand::ReloadIfFailed,
         wire::Command::ApplyConfigPatch { key, value } => SettingsCommand::ApplyConfigPatch {
             key,
@@ -170,9 +170,22 @@ pub fn settings_command(command: wire::Command) -> Option<SettingsCommand> {
             effort,
         },
         wire::Command::SetAiEffort { effort } => SettingsCommand::SetDefaultAiEffort { effort },
-        wire::Command::CheckAppUpdate | wire::Command::TogglePanel { .. } => return None,
-        // The tab commands and the opens go to the app registry.
-        wire::Command::NewTab
+        other @ (wire::Command::ReorderProjects { .. }
+        | wire::Command::DeleteProject { .. }
+        | wire::Command::AddTrackedBranch { .. }
+        | wire::Command::RemoveTrackedBranch { .. }
+        | wire::Command::PatchProjectReviewSettings { .. }
+        | wire::Command::RefreshPrList
+        | wire::Command::RefreshProjectPrList { .. }
+        | wire::Command::DismissPr { .. }
+        | wire::Command::UndismissPr { .. }
+        | wire::Command::TrackPr { .. }
+        | wire::Command::UntrackPr { .. }
+        | wire::Command::SavePr { .. }
+        | wire::Command::UnsavePr { .. }
+        | wire::Command::CheckAppUpdate
+        | wire::Command::TogglePanel { .. }
+        | wire::Command::NewTab
         | wire::Command::CloseTab { .. }
         | wire::Command::SelectTab { .. }
         | wire::Command::ReorderTabs { .. }
@@ -186,7 +199,7 @@ pub fn settings_command(command: wire::Command) -> Option<SettingsCommand> {
         | wire::Command::PrefetchPrOpen { .. }
         | wire::Command::PrefetchRemotePrOpen { .. }
         | wire::Command::UpdateTabBrowser { .. }
-        | wire::Command::CycleTabBrowserLayout => return None,
+        | wire::Command::CycleTabBrowserLayout) => return Err(Box::new(other)),
     })
 }
 

@@ -68,7 +68,6 @@ impl DesktopViewState {
         self.browser_revisions.get(&key).copied().unwrap_or(0)
     }
 
-    /// Every tab whose browser state was written, with its tick.
     pub fn browser_revisions(&self) -> impl Iterator<Item = (TabKey, u64)> + '_ {
         self.browser_revisions
             .iter()

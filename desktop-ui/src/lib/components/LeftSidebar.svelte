@@ -2,6 +2,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
+  import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import AppMark from "$lib/components/AppMark.svelte";
   import InboxPanel from "$lib/components/InboxPanel.svelte";
   import type { BackgroundTaskSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
@@ -44,7 +45,7 @@
   const snapshot = $derived(app.snapshot);
   const theme = $derived(themeByName(sessionResource.theme));
   const worktrees = $derived(snapshot?.worktrees ?? []);
-  const projects = $derived<ProjectSnapshot[]>(snapshot?.projects ?? []);
+  const projects = $derived<ProjectSnapshot[]>(projectsResource.projects);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
   const activeTab = $derived(tabsResource.activeTab);
   // Counted per PR like the Inbox rows (and InboxPanel's badge), so the
@@ -239,9 +240,9 @@
     branchPickerFlip = flip;
     pickerLoading = true;
     try {
-      availableBranches = await invoke<string[]>("list_available_branches", { projectId });
+      availableBranches = await projectsResource.availableBranches(projectId);
     } catch (err) {
-      app.pushLog("error", "list_available_branches", String(err));
+      app.pushLog("error", "list_available_branches", (err as { message?: string }).message ?? String(err));
       availableBranches = [];
     } finally {
       pickerLoading = false;
@@ -249,7 +250,7 @@
   }
 
   async function pickBranch(projectId: string, name: string) {
-    await app.cmd("add_tracked_branch", { projectId, name });
+    await projectsResource.addTrackedBranch(projectId, name);
     addingTo = null;
   }
 
@@ -436,7 +437,7 @@
     );
     pendingOrder = orderedIds;
     try {
-      await app.cmd("reorder_projects", { orderedIds });
+      await projectsResource.reorder(orderedIds);
     } finally {
       pendingOrder = null;
     }
@@ -506,7 +507,7 @@
     pendingDeleteProjectId = null;
     projectMenuOpen = null;
     addingTo = null;
-    await app.cmd("delete_project", { projectId: project.id });
+    await projectsResource.deleteProject(project.id);
   }
 
   async function syncProject(project: ProjectSnapshot) {
@@ -657,7 +658,7 @@
 
   function removeBranchFromMenu(projectId: string, name: string) {
     closeRowActionMenu();
-    app.cmd("remove_tracked_branch", { projectId, name });
+    void projectsResource.removeTrackedBranch(projectId, name);
   }
 
   function isPrPinned(project: ProjectSnapshot, prNumber: number): boolean {
