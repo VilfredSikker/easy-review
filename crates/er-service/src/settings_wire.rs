@@ -183,6 +183,13 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::UntrackPr { .. }
         | wire::Command::SavePr { .. }
         | wire::Command::UnsavePr { .. }
+        | wire::Command::MarkInboxItemRead { .. }
+        | wire::Command::MarkAllInboxRead
+        | wire::Command::MarkInboxItemsRead { .. }
+        | wire::Command::ClearReadInboxItems
+        | wire::Command::ClearInboxItems { .. }
+        | wire::Command::RefreshNotifications
+        | wire::Command::TestNativeNotification
         | wire::Command::CheckAppUpdate
         | wire::Command::TogglePanel { .. }
         | wire::Command::NewTab
