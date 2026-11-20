@@ -10,6 +10,7 @@ use er_protocol::{
 };
 
 use crate::app_owner::SidebarOwner;
+use crate::inbox::InboxState;
 use crate::state::DesktopState;
 
 /// `key`'s content at the version its owner last published.
@@ -41,6 +42,10 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::Worktrees { root } => {
             let (version, worktrees) = sidebar(desktop).worktrees(root);
             (version, Resource::Worktrees(worktrees))
+        }
+        ResourceKey::Inbox => {
+            let (version, inbox) = sidebar(desktop).inbox();
+            (version, Resource::Inbox(inbox))
         }
         ResourceKey::AvailablePrs { project } => {
             let prs = crate::commands::project_available_prs(desktop, project)
@@ -79,6 +84,7 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::AvailableBranches { .. } | ResourceKey::AvailablePrs { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
+        ResourceKey::Inbox => sidebar(desktop).inbox().0,
         ResourceKey::Settings => desktop.service.settings().view().revision,
         ResourceKey::Risk { key } => match desktop.service.settings().view().risk.get(key) {
             Some(view) => view.version,
@@ -97,6 +103,7 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
 /// refreshes its project's metadata before the answer, so the `Ack` names
 /// that project's `branches` and the frontend refetches them at once. A PR
 /// list refresh fetches in the background, and the push brings what it moved.
+/// An inbox write publishes before the answer, so the `Ack` names `inbox`.
 pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
     let before = sidebar(desktop).versions();
     let git = &*desktop.ports.git;
@@ -169,6 +176,31 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
             crate::projects::unsave_pr(&project, number)
                 .map_err(|e| failed(&project, e.to_string()))?;
         }
+        Command::MarkInboxItemRead { id } => {
+            let now = crate::inbox::now_epoch_ms();
+            write_inbox(desktop, |inbox| {
+                inbox.mark_item_read(&id, now);
+            })?;
+        }
+        Command::MarkAllInboxRead => {
+            let now = crate::inbox::now_epoch_ms();
+            write_inbox(desktop, |inbox| inbox.mark_all_read(now))?;
+        }
+        Command::MarkInboxItemsRead { ids } => {
+            let now = crate::inbox::now_epoch_ms();
+            write_inbox(desktop, |inbox| inbox.mark_items_read(&ids, now))?;
+        }
+        Command::ClearReadInboxItems => write_inbox(desktop, InboxState::clear_read)?,
+        Command::ClearInboxItems { ids } => {
+            write_inbox(desktop, |inbox| inbox.clear_read_items(&ids))?;
+        }
+        Command::RefreshNotifications => refresh_prs(desktop, None)?,
+        Command::TestNativeNotification => {
+            crate::commands::show_test_notification(desktop).map_err(|message| ErError {
+                kind: ErErrorKind::Refused,
+                message,
+            })?;
+        }
         // Other owners apply these; `send::apply` routes them there.
         other @ (Command::ReloadSettings
         | Command::ApplyConfigPatch { .. }
@@ -223,6 +255,20 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         changed,
         created: None,
     })
+}
+
+/// One inbox write through the sidebar's owner, which publishes before it
+/// saves. The inbox's kind filter is the settings actor's, so this starts
+/// the actor, and the publish builds `inbox` for the `Ack` to name.
+fn write_inbox(desktop: &DesktopState, write: impl FnOnce(&mut InboxState)) -> Result<(), ErError> {
+    desktop.service.settings();
+    desktop
+        .app_owner
+        .write_inbox(write)
+        .map_err(|message| ErError {
+            kind: ErErrorKind::Internal,
+            message,
+        })
 }
 
 /// Starts a PR-list fetch. The inbox prefs come from the settings actor,
