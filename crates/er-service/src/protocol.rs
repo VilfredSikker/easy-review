@@ -41,7 +41,7 @@ pub enum Command {
     PortProbe,
     /// Test support: hold the reply open forever, so a caller can prove its
     /// own timeout fires.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Stall,
 
     // ── Annotation commands (P41.1) ──

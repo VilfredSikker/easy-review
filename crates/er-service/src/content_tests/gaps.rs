@@ -54,6 +54,7 @@ fn a_load_takes_the_preview_stamps_its_keys_read() -> anyhow::Result<()> {
         let git = Arc::new(
             FakeGit::default()
                 .with_current_branch(Ok("feature".to_string()))
+                .with_diff_shortstat((0, 0, 0))
                 .with_diff_raw(Ok(RENAMED.to_string()))
                 .with_blob_oid(Ok(blob.clone())),
         );
@@ -343,6 +344,7 @@ fn an_expanded_file_stays_expanded_across_a_refresh() -> anyhow::Result<()> {
         let git = Arc::new(
             FakeGit::default()
                 .with_current_branch(Ok("feature".to_string()))
+                .with_diff_shortstat((0, 0, 0))
                 .with_diff_raw(Ok(WITH_LOCK.to_string()))
                 .with_diff_raw_file(Ok(lock.to_string())),
         );

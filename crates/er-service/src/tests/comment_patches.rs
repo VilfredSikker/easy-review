@@ -45,6 +45,7 @@ fn with_loaded_tab(
         let git: Arc<dyn er_git::Git> = Arc::new(
             FakeGit::default()
                 .with_current_branch(Ok("feature".to_string()))
+                .with_diff_shortstat((0, 0, 0))
                 .with_diff_raw(Ok(RAW.to_string())),
         );
         let github: Arc<dyn er_github::GitHub> = Arc::new(github);
