@@ -54,6 +54,13 @@ describe("projects source scans", () => {
 
   // With the flag on the projects adapter, the worktrees adapter and the PR
   // rows answer these; the snapshot's copies are read only on the flag-off path.
+  // Without it the helpers would read the snapshot's copies with the flag on.
+  it("with the flag on the sidebar wiring installs the adapters as the sidebar reads", () => {
+    const wiring = stripped(join("lib", "stores", "projectsResource.svelte.ts"));
+    expect(wiring).toMatch(/if \(flagOn\) \{\s*readSidebarFrom\(\{/);
+    expect(read("main.ts")).toContain('import "$lib/stores/projectsResource.svelte";');
+  });
+
   it("the page reads the projects, the worktrees and the detected PR through the sidebar reads", () => {
     const field = /\b(snapshot|snap)\??\.(projects|worktrees|detected_pr_number)\b/;
     // The flag-off default of the reads, and the flag-off paints of the optimistic layer.

@@ -50,10 +50,12 @@ export class WorktreesAdapter {
     this.shown = root ? { root, release: this.deps.store.show(worktreesKey(root)) } : null;
   }
 
+  /** A tab with no checkout, a remote PR's, has none. */
   get worktrees(): WorktreeSnapshot[] {
     const rows = this.deps.snapshot()?.worktrees ?? [];
+    if (!this.deps.flagOn) return rows;
     const root = this.root();
-    if (!this.deps.flagOn || !root) return rows;
+    if (!root) return [];
     const held = this.deps.store.get(worktreesKey(root))?.value;
     return held?.kind === "worktrees" ? worktreesFromResource(held, root) : rows;
   }

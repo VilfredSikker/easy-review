@@ -78,6 +78,16 @@ describe("WorktreesAdapter", () => {
     expect(fetched).toEqual(["/a", "/b"]);
   });
 
+  it("lists none for a tab with no checkout, a remote PR's", async () => {
+    const { activate, fetched, store, worktrees } = adapter(true);
+    activate("/a");
+    await settle();
+    activate("");
+    expect(store.get({ kind: "worktrees", root: "/a" })).toBeUndefined();
+    expect(worktrees.worktrees).toEqual([]);
+    expect(fetched).toEqual(["/a"]);
+  });
+
   it("derives is_current against the root it was given", () => {
     const rows = worktreesFromResource(wire("/a") as never, "/a-pr");
     expect(rows.map((w) => w.is_current)).toEqual([false, true]);
