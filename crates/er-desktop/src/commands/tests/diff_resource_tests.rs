@@ -199,6 +199,8 @@ fn the_push_after_the_load_brings_the_rows_of_a_tab_nothing_loaded() {
 fn an_unlisted_key_is_not_found() {
     with_storage(|dir| {
         let state = state_over(dir, fake_ports());
+        // A listed tab, so a fetch that fell back to any tab would answer.
+        listed(&state, dir, "one");
         let fetched = resources::fetch(&state.desktop, diff_key(TabKey::next()));
         let kind = fetched.err().map(|e| e.kind);
         assert_eq!(kind, Some(ErErrorKind::NotFound));
