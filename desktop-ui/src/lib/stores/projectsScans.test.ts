@@ -58,6 +58,13 @@ describe("projects source scans", () => {
   it("with the flag on the sidebar wiring installs the adapters as the sidebar reads", () => {
     const wiring = stripped(join("lib", "stores", "projectsResource.svelte.ts"));
     expect(wiring).toMatch(/if \(flagOn\) \{\s*readSidebarFrom\(\{/);
+    // Each read, inside the block it installs.
+    const reads = wiring.slice(wiring.indexOf("readSidebarFrom({")).split("});")[0];
+    expect(reads).toMatch(/\bprojects:\s*\(\)\s*=>\s*projectsResource\.projects\s*,/);
+    expect(reads).toMatch(/\bworktrees:\s*\(\)\s*=>\s*worktreesResource\.worktrees\s*,/);
+    expect(reads).toMatch(
+      /\bdetectedPrNumber:\s*\(snapshot,\s*tab\)\s*=>\s*detectPrNumber\(tab,\s*snapshot\.branch,\s*projectsResource\.heldPrs\)\s*,/,
+    );
     expect(read("main.ts")).toContain('import "$lib/stores/projectsResource.svelte";');
   });
 
