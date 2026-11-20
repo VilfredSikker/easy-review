@@ -326,6 +326,7 @@ mod tests {
         from_app(&app, &mut cache);
         let hub = cache.hub_items.as_ptr();
         from_app(&app, &mut cache);
+        assert_eq!(cache.hub_items.as_ptr(), hub, "same rows, converted again");
         if let Some(app::OverlayData::ModalHub { selected, .. }) = &mut app.overlay {
             *selected += 1;
         }
