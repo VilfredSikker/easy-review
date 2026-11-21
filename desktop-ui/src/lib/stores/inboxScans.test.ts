@@ -26,8 +26,10 @@ describe("inbox source scans", () => {
   // With the flag on the server counts the unread items (A8: the rule moved
   // to the server). The flag-off paint recounts the snapshot it painted; the
   // per-PR thread badges count threads, which no resource carries. Only these
-  // modules read an item's read state at all, so a count written anywhere
-  // else fails however it is spelled; no component is among them.
+  // modules read an item's read state, and no component is among them. The
+  // item ids they hand out (a thread's unread ids, the read item ids) may not
+  // be counted anywhere either. It stays a text scan: a count spread over
+  // several statements could still pass.
   const READ_STATE = [
     join("lib", "types.ts"), // declares the snapshot field
     ADAPTER, // maps the wire's readAtMs to it
@@ -50,6 +52,8 @@ describe("inbox source scans", () => {
     expect(counted).toEqual([]);
     const unreadIds = /\bunreadIds\)*\.length\b(?!\s*(===|!==|==|!=|>)\s*0\b)/;
     expect(sources().filter((f) => unreadIds.test(stripped(f)))).toEqual([]);
+    const readIds = /\breadThreadItemIds\([^;\n]*?\)\)*\s*\.(length|size)\b/;
+    expect(sources().filter((f) => readIds.test(stripped(f)))).toEqual([]);
     const adapter = stripped(ADAPTER);
     const getter = adapter.slice(adapter.indexOf("get unreadCount()"), adapter.indexOf("get lastRefreshMs()"));
     expect(getter).toMatch(/return this\.held\(\)\?\.unreadCount \?\? 0;/);
