@@ -1,0 +1,13 @@
+ feature · feature  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                     0/2 reviewed
+ FILES (2)                     │ src/auth.rs                                            Hunk 1/1
+ ~ src/auth.rs          +2 -1  │  ~ src/auth.rs  +2 -1
+ ~ README.md            +1 -0  │
+                               │ ▶ @@ -1,5 +1,6 @@
+                               │   1    1 │ fn check(token: &str) -> bool {
+                               │   2      │-    token.len() > 0
+                               │        2 │+    let audience = audience_of(token);
+                               │        3 │+    !token.is_empty() && audience == "er"
+ j/k nav n/N hunks +/- context ␣ review / search s stage c commit g git a ai o open v verify
+ ? help ^q quit
+styles a59f2ab533a7c30a
