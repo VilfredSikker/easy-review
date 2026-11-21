@@ -208,6 +208,9 @@ type OpenCache = Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>;
 /// The registry. Shared as an `Arc`; the prefetch effects hold a clone.
 pub struct AppRegistry {
     ports: Ports,
+    /// Whether the tab list and the open cache are read from and saved to
+    /// their app records. A registry that does not persist starts empty.
+    persists: bool,
     /// Loaded from `tabs.json` on first use.
     tabs: OnceLock<Mutex<TabsView>>,
     view: RwLock<Arc<TabsView>>,
@@ -226,6 +229,7 @@ impl AppRegistry {
     pub fn new(ports: Ports) -> Self {
         Self {
             ports,
+            persists: true,
             tabs: OnceLock::new(),
             view: RwLock::new(Arc::new(TabsView::default())),
             subscribers: Mutex::new(Vec::new()),
@@ -235,6 +239,17 @@ impl AppRegistry {
             pr_open_save: Mutex::new(()),
             remote: Arc::default(),
             remote_in_flight: Arc::default(),
+        }
+    }
+
+    /// A registry that never reads or writes `tabs.json` or
+    /// `pr-open-cache.json`. A front end whose tabs come from its own start
+    /// uses this, so it neither opens another front end's saved tabs nor
+    /// overwrites them.
+    pub fn in_memory(ports: Ports) -> Self {
+        Self {
+            persists: false,
+            ..Self::new(ports)
         }
     }
 
@@ -308,7 +323,11 @@ impl AppRegistry {
 
     fn loaded_tabs(&self) -> &Mutex<TabsView> {
         self.tabs.get_or_init(|| {
-            let loaded = load_tabs().map(restored_view).unwrap_or_default();
+            let loaded = if self.persists {
+                load_tabs().map(restored_view).unwrap_or_default()
+            } else {
+                TabsView::default()
+            };
             self.publish(&loaded);
             Mutex::new(loaded)
         })
@@ -337,6 +356,9 @@ impl AppRegistry {
     /// Saves the current list. The turn lock orders saves, and the state is
     /// read inside the turn, so the last save always writes the newest list.
     fn save_tabs_record(&self) -> Result<(), WorkspaceError> {
+        if !self.persists {
+            return Ok(());
+        }
         let _turn = lock(&self.tabs_save);
         let (descriptors, active_idx) = {
             let state = lock(self.loaded_tabs());
@@ -367,12 +389,19 @@ impl AppRegistry {
 
     fn pr_open(&self) -> &OpenCache {
         self.pr_open.get_or_init(|| {
-            let loaded = load_persisted_pr_open_cache().ok().flatten();
+            let loaded = if self.persists {
+                load_persisted_pr_open_cache().ok().flatten()
+            } else {
+                None
+            };
             Arc::new(Mutex::new(loaded.unwrap_or_default()))
         })
     }
 
     fn save_pr_open(&self) {
+        if !self.persists {
+            return;
+        }
         let _turn = lock(&self.pr_open_save);
         save_persisted_pr_open_cache(self.pr_open());
     }

@@ -42,6 +42,8 @@ v1-service = ["dep:er-service"]
 [dev-dependencies]
 # Thread-scoped ER_STORAGE_ROOT override for tests that seed the projects record.
 er-engine = { path = "../er-engine", features = ["test-support"] }
+# The scripted GitHub port, for the flag-on `--pr` start.
+er-github = { path = "../er-github" }
 
 [lints]
 workspace = true

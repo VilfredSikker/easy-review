@@ -26,6 +26,7 @@ mod github_comments;
 mod github_sync;
 mod guard;
 mod handle;
+mod host;
 mod jobs;
 mod pending_review;
 mod pr_posts;
@@ -49,6 +50,7 @@ pub use diff_resource::{diff_load_error, diff_resource, diff_version, DiffInputs
 pub use flows::read_flow_run;
 pub use freshness::{BaseBehind, Divergence, Freshness, RemoteTips};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
+pub use host::{ReplyReceiver, ServiceHost};
 pub use pending_review::OWN_PR_APPROVAL_REFUSED;
 pub use protocol::{
     AcceptanceDiff, AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event,

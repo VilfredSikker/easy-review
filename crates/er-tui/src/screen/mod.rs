@@ -121,13 +121,6 @@ pub struct TabView<'a> {
 pub enum TabData<'a> {
     App(AppData<'a>),
     #[cfg(feature = "v1-service")]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the service path builds it from the published tab content"
-        )
-    )]
     Sections(SectionData<'a>),
 }
 
