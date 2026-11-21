@@ -1,0 +1,559 @@
+//! The flag-on path's tests: what the start opens, what each frame draws
+//! beside the App path's frame, and that no key waits on an actor. The tests
+//! build the App to compare against; the modules they test never name it.
+
+use std::path::{Path, PathBuf};
+use std::process::Command as Git;
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use er_engine::ports::Ports;
+use er_engine::tabs_record::TabKind;
+use er_engine::TabKey;
+use er_service::{Command, ServiceHost, WorkspaceError};
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::Terminal;
+
+use super::shell::Shell;
+use super::startup::{self, Args, Start};
+use super::tui_view::Overlay;
+use crate::screen::UNPORTED;
+use crate::ui::highlight::Highlighter;
+
+const WAIT: Duration = Duration::from_secs(20);
+const WIDTH: u16 = 120;
+const HEIGHT: u16 = 30;
+
+/// The flag-on modules, as text.
+const SOURCES: [(&str, &str); 4] = [
+    ("mod.rs", include_str!("mod.rs")),
+    ("shell.rs", include_str!("shell.rs")),
+    ("startup.rs", include_str!("startup.rs")),
+    ("tui_view.rs", include_str!("tui_view.rs")),
+];
+
+/// No flag-on module reaches the App, fetches a PR's refs itself, or waits on
+/// an actor: the service owns the domain, and a key never blocks the loop.
+#[test]
+fn flag_on_modules_name_no_app_and_never_wait() {
+    let banned = [
+        "er_engine::app",
+        "app::",
+        "fetch_pr_head",
+        "ensure_base_ref_available",
+        "send_and_wait",
+        "recv_timeout",
+    ];
+    for (name, text) in SOURCES {
+        // Joined into one line, so a grouped import or a split call is seen.
+        let flat: String = text.split_whitespace().collect();
+        for needle in banned {
+            assert!(!flat.contains(needle), "{name} names {needle}");
+        }
+        let grouped = flat
+            .split("er_engine::{")
+            .skip(1)
+            .filter_map(|rest| rest.split('}').next())
+            .any(|group| {
+                group
+                    .split(',')
+                    .any(|item| item == "app" || item.starts_with("app::"))
+            });
+        assert!(!grouped, "{name} imports the App in a group");
+    }
+}
+
+// The lint gate reads this file alone, without the module's `cfg(test)`.
+#[cfg(test)]
+fn git(dir: &Path, args: &[&str]) {
+    let out = Git::new("git")
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|error| panic!("git {args:?}: {error}"));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A repo on `feature` over `main`, where each of `files` files changes in
+/// two hunks. Past 500 files a diff this size loads with stubs.
+fn fixture(files: usize) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    let body = |changed: bool| {
+        (0..40)
+            .map(|line| match line {
+                3 | 30 if changed => format!("let changed_{line} = {line}; // edited\n"),
+                _ => format!("let line_{line} = {line};\n"),
+            })
+            .collect::<String>()
+    };
+    let write_all = |changed: bool| {
+        for idx in 0..files {
+            let path = root.join(format!("src/f{idx:03}.rs"));
+            std::fs::create_dir_all(root.join("src")).unwrap_or_else(|e| panic!("{e}"));
+            std::fs::write(path, body(changed)).unwrap_or_else(|e| panic!("{e}"));
+        }
+    };
+    write_all(false);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    git(root, &["checkout", "-q", "-b", "feature"]);
+    write_all(true);
+    git(root, &["commit", "-q", "-am", "change"]);
+    dir
+}
+
+fn path_of(dir: &tempfile::TempDir) -> String {
+    let canonical: PathBuf = std::fs::canonicalize(dir.path()).unwrap_or_else(|e| panic!("{e}"));
+    canonical.to_string_lossy().into_owned()
+}
+
+fn plan(args: &Args) -> Start {
+    startup::plan(args, &*Ports::cli().git).unwrap_or_else(|e| panic!("{e:#}"))
+}
+
+fn shell(args: &Args, config_dir: &Path) -> Shell {
+    shell_on(Ports::cli(), &plan(args), config_dir)
+}
+
+fn shell_on(ports: Ports, start: &Start, config_dir: &Path) -> Shell {
+    let (tx, events) = mpsc::channel();
+    let host = ServiceHost::new(ports, config_dir.join("config.toml")).with_events(tx);
+    Shell::start(host, events, start).unwrap_or_else(|e| panic!("{e:#}"))
+}
+
+/// Ticks the loop until `ready` holds.
+fn settle(shell: &mut Shell, ready: impl Fn(&Shell) -> bool) {
+    assert!(settle_within(shell, WAIT, ready), "the shell never settled");
+}
+
+/// Ticks the loop until `ready` holds or `wait` passes; answers which.
+fn settle_within(shell: &mut Shell, wait: Duration, ready: impl Fn(&Shell) -> bool) -> bool {
+    let deadline = Instant::now() + wait;
+    while !ready(shell) && Instant::now() < deadline {
+        shell.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    shell.tick(Instant::now());
+    ready(shell)
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn shell_frame(shell: &mut Shell, highlighter: &mut Highlighter) -> Buffer {
+    let mut terminal =
+        Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap_or_else(|e| panic!("{e}"));
+    terminal
+        .draw(|f| shell.draw(f, highlighter))
+        .unwrap_or_else(|e| panic!("{e}"));
+    terminal.backend().buffer().clone()
+}
+
+fn app_frame(app: &er_engine::app::App, highlighter: &mut Highlighter) -> Buffer {
+    let mut terminal =
+        Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap_or_else(|e| panic!("{e}"));
+    let mut cache = crate::screen::ViewCache::default();
+    terminal
+        .draw(|f| crate::ui::draw(f, &crate::screen::from_app(app, &mut cache), highlighter))
+        .unwrap_or_else(|e| panic!("{e}"));
+    terminal.backend().buffer().clone()
+}
+
+fn rows(buffer: &Buffer) -> Vec<String> {
+    buffer
+        .content
+        .chunks(usize::from(WIDTH))
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+        .collect()
+}
+
+/// Every cell matches in text and style, except on the single-tab mode row
+/// from the AI selection's padded label rightwards: that label (P66) and the
+/// reviewed count (P70) are not on the flag-on path yet.
+fn assert_parity(app: &er_engine::app::App, flag_on: &Buffer, hl: &mut Highlighter, step: &str) {
+    const MODES_ROW: usize = 1;
+    let ai_label = app.active_ai_selection_label();
+    let app = &app_frame(app, hl);
+    let start = |buffer: &Buffer, label: &str| {
+        let label: Vec<String> = label.chars().map(String::from).collect();
+        let at = MODES_ROW * usize::from(WIDTH);
+        buffer.content[at..at + usize::from(WIDTH)]
+            .windows(label.len())
+            .position(|cells| cells.iter().zip(&label).all(|(c, l)| c.symbol() == l))
+            .unwrap_or_else(|| panic!("{step}: no {label:?} on the mode row"))
+    };
+    let masked = (start(app, &ai_label).min(start(flag_on, UNPORTED))).saturating_sub(1);
+    let (app_rows, flag_rows) = (rows(app), rows(flag_on));
+    for row in 0..usize::from(HEIGHT) {
+        let width = if row == MODES_ROW {
+            masked
+        } else {
+            usize::from(WIDTH)
+        };
+        let head = |text: &str| text.chars().take(width).collect::<String>();
+        assert_eq!(
+            head(&app_rows[row]),
+            head(&flag_rows[row]),
+            "{step}: row {row} differs\napp:\n{}\nflag-on:\n{}",
+            app_rows.join("\n"),
+            flag_rows.join("\n")
+        );
+        let at =
+            |buffer: &Buffer, col: usize| buffer.content[row * usize::from(WIDTH) + col].style();
+        for col in 0..width {
+            assert_eq!(
+                at(app, col),
+                at(flag_on, col),
+                "{step}: style at row {row}, col {col}"
+            );
+        }
+    }
+}
+
+/// The App path, on the same repo, with context expansion off: that refetch
+/// is a service command no entry has ported yet.
+fn app_on(path: &str) -> er_engine::app::App {
+    let mut app = er_engine::app::App::new_with_args(&[path.to_string()], Ports::cli())
+        .unwrap_or_else(|e| panic!("{e:#}"));
+    app.config.display.auto_context_threshold = 0;
+    app
+}
+
+fn press_app(app: &mut er_engine::app::App, code: KeyCode) {
+    let (tx, _rx) = mpsc::channel();
+    let mut cache = crate::screen::ViewCache::default();
+    crate::handle_key(app, key(code), &tx, &mut None, &mut cache).unwrap_or_else(|e| panic!("{e}"));
+}
+
+fn loaded(shell: &Shell) -> bool {
+    shell.active_content().is_some()
+}
+
+/// The start opens the arguments' tabs and loads the first; the files, the
+/// reviewed marks, the hunks and the status bar draw as on the App path, and
+/// file, hunk, line and scroll moves land where the App's do.
+#[test]
+fn flag_on_frames_match_the_app_frames() {
+    let repo = fixture(3);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut app = app_on(&path);
+        // A reviewed mark, saved where the service reads it.
+        app.toggle_reviewed().unwrap_or_else(|e| panic!("{e}"));
+        app.clear_notification();
+        let args = Args {
+            paths: vec![path.clone()],
+            ..Args::default()
+        };
+        let mut shell = shell(&args, storage.path());
+        settle(&mut shell, loaded);
+        let mut hl = Highlighter::new();
+        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
+        let steps = [
+            KeyCode::Char('k'),
+            KeyCode::Char('n'),
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Char('N'),
+            KeyCode::PageDown,
+            KeyCode::Char('U'),
+            KeyCode::Char('j'),
+        ];
+        for code in steps {
+            // Each path lets the last step's message go before the next key.
+            app.clear_notification();
+            shell.tick(Instant::now() + Duration::from_secs(60));
+            press_app(&mut app, code);
+            shell.handle_key(key(code));
+            shell.tick(Instant::now());
+            let step = format!("{code:?}");
+            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, &step);
+        }
+        // An overlay the view holds draws as the App draws the same one.
+        app.open_export_picker();
+        shell.view_mut().overlay = Some(Overlay::ExportPicker {
+            include_comments: true,
+            include_findings: true,
+            include_questions: true,
+            include_notes: true,
+            selected: 0,
+        });
+        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "overlay");
+    });
+}
+
+/// A stub the selection reaches parses on the service, and draws its hunks
+/// as the App, which parses it in place, draws them.
+#[test]
+fn a_selected_stub_parses_and_draws_like_the_app() {
+    let repo = fixture(520);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut app = app_on(&path);
+        let args = Args {
+            paths: vec![path.clone()],
+            ..Args::default()
+        };
+        let mut shell = shell(&args, storage.path());
+        settle(&mut shell, loaded);
+        let stub = |shell: &Shell, idx: usize| {
+            shell
+                .active_content()
+                .is_some_and(|content| super::tui_view::is_stub(&content.diff.files[idx]))
+        };
+        assert!(stub(&shell, 1), "the fixture loaded no stub");
+        // The first file is selected from the start, so it parses with no key.
+        settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 0));
+        let mut hl = Highlighter::new();
+        assert_parity(
+            &app,
+            &shell_frame(&mut shell, &mut hl),
+            &mut hl,
+            "stub-start",
+        );
+        press_app(&mut app, KeyCode::Char('k'));
+        shell.handle_key(key(KeyCode::Char('k')));
+        // Without a parse the stub never fills; the frames then differ.
+        settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 1));
+        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "stub");
+    });
+}
+
+/// The start lists every tab and loads the first; a flag with no service
+/// route says so, and a load for a key the registry does not list is refused.
+#[test]
+fn the_start_opens_listed_tabs_and_reports_unported_flags() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let ports = Ports::cli();
+        let pr = startup::plan(
+            &Args {
+                paths: vec![path.clone()],
+                pr: Some(7),
+                ..Args::default()
+            },
+            &*ports.git,
+        )
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(pr.tabs[0].tab.kind, TabKind::LocalPr);
+        assert_eq!(pr.tabs[0].tab.pr_number, Some(7));
+        assert!(pr.tabs[0].fetch_pr_refs, "--pr leaves its refs unfetched");
+        let remote = startup::plan(
+            &Args {
+                paths: vec!["https://github.com/acme/widgets/pull/9".into()],
+                remote: true,
+                ..Args::default()
+            },
+            &*ports.git,
+        )
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(remote.tabs[0].tab.kind, TabKind::RemotePr);
+        assert_eq!(
+            remote.tabs[0].tab.workspace_key(),
+            er_engine::tab_identity::workspace_key(None, "acme/widgets")
+        );
+
+        let args = Args {
+            paths: vec![path.clone(), path.clone()],
+            target: Some("develop".into()),
+            ..Args::default()
+        };
+        let mut shell = shell(&args, storage.path());
+        let notice = shell.view().notification.clone().unwrap_or_default();
+        assert!(
+            notice.contains(&format!("--target is {UNPORTED}")),
+            "{notice:?}"
+        );
+        let tabs = shell.host().registry().tabs_view();
+        assert_eq!(tabs.tabs.len(), 2);
+        assert_eq!(tabs.active, tabs.key_at(0));
+        settle(&mut shell, loaded);
+
+        let tab = tabs.tabs[0].descriptor.clone();
+        let refused = shell
+            .host()
+            .post(
+                &tab.workspace_key(),
+                Command::LoadTab {
+                    key: TabKey::next(),
+                    tab,
+                    mode: None,
+                },
+            )
+            .recv_timeout(WAIT)
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            refused,
+            Err(WorkspaceError::Failed(
+                "the tab closed before its load".into()
+            ))
+        );
+    });
+}
+
+/// `--pr` opens a local PR tab, and once its first load lands the service
+/// fetches the PR's head and base refs.
+#[test]
+fn a_pr_start_has_the_service_fetch_the_pr_refs() {
+    let repo = fixture(1);
+    let origin = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    git(origin.path(), &["init", "-q", "--bare"]);
+    let remote = path_of(&origin);
+    git(repo.path(), &["remote", "add", "origin", &remote]);
+    git(
+        repo.path(),
+        &["push", "-q", "origin", "main", "feature:refs/pull/7/head"],
+    );
+    git(repo.path(), &["fetch", "-q", "origin"]);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let raw = "diff --git a/src/f000.rs b/src/f000.rs\n--- a/src/f000.rs\n+++ b/src/f000.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let github = er_github::FakeGitHub::default()
+            .with_pr_diff(Ok(raw.to_string()))
+            .with_pr_base_branch_and_commits(Ok(("main".to_string(), Vec::new())))
+            .with_fetch_pr_base_ref(Ok("origin/main".to_string()));
+        let ports = Ports {
+            git: Arc::new(er_git::CliGit),
+            github: Arc::new(github),
+        };
+        let args = Args {
+            paths: vec![path],
+            pr: Some(7),
+            ..Args::default()
+        };
+        let mut shell = shell_on(ports, &plan(&args), storage.path());
+        let fetched = |shell: &Shell| {
+            shell
+                .active_content()
+                .is_some_and(|content| content.pr_refs_fetched)
+        };
+        assert!(
+            settle_within(&mut shell, WAIT, fetched),
+            "the PR refs were not fetched: {:?}",
+            shell.view().notification
+        );
+    });
+}
+
+/// A tab whose first load fails says why in place of the diff, and a start
+/// notice stays up while the tab has drawn no content.
+#[test]
+fn a_failed_first_load_shows_its_error_and_the_notices() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let args = Args {
+        paths: vec![path_of(&repo)],
+        target: Some("develop".into()),
+        ..Args::default()
+    };
+    let start = plan(&args);
+    std::fs::remove_dir_all(repo.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut hl = Highlighter::new();
+        let mut text = |shell: &mut Shell| rows(&shell_frame(shell, &mut hl)).join("\n");
+        let deadline = Instant::now() + WAIT;
+        while !text(&mut shell).contains("did not load") && Instant::now() < deadline {
+            shell.tick(Instant::now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        shell.tick(Instant::now() + Duration::from_secs(60));
+        assert!(
+            shell.view().notification.is_some(),
+            "a message expired while loading"
+        );
+        let frame = text(&mut shell);
+        assert!(frame.contains("This tab did not load"), "{frame}");
+        assert!(
+            frame.contains(&format!("--target is {UNPORTED}")),
+            "{frame}"
+        );
+    });
+}
+
+/// Tabs after the first load when first shown, and the tab keys run on a
+/// frame with no content: a failed tab can be left, and shown again it loads
+/// again.
+#[test]
+fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
+    let (first, second, broken) = (fixture(1), fixture(1), fixture(1));
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let args = Args {
+        paths: vec![path_of(&first), path_of(&second), path_of(&broken)],
+        ..Args::default()
+    };
+    let start = plan(&args);
+    std::fs::remove_dir_all(broken.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut hl = Highlighter::new();
+        let mut text = |shell: &mut Shell| rows(&shell_frame(shell, &mut hl)).join("\n");
+        let tabs = shell.host().registry().tabs_view();
+        let keys: Vec<TabKey> = tabs.tabs.iter().map(|tab| tab.key).collect();
+        let active = |shell: &Shell| shell.host().registry().tabs_view().active;
+        settle(&mut shell, loaded);
+
+        shell.handle_key(key(KeyCode::Char(']')));
+        assert_eq!(active(&shell), Some(keys[1]));
+        assert!(
+            settle_within(&mut shell, WAIT, loaded),
+            "the second tab never loaded"
+        );
+
+        shell.handle_key(key(KeyCode::Char(']')));
+        let deadline = Instant::now() + WAIT;
+        while !text(&mut shell).contains("did not load") && Instant::now() < deadline {
+            shell.tick(Instant::now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let frame = text(&mut shell);
+        assert!(frame.contains("This tab did not load"), "{frame}");
+
+        shell.handle_key(key(KeyCode::Char('[')));
+        assert_eq!(
+            active(&shell),
+            Some(keys[1]),
+            "'[' stayed on the failed tab"
+        );
+        let frame = text(&mut shell);
+        assert!(frame.contains("src/f000.rs"), "{frame}");
+
+        // Shown again, the failed tab loads again: until that reply drains,
+        // it says it is loading.
+        shell.handle_key(key(KeyCode::Char(']')));
+        let frame = text(&mut shell);
+        assert!(frame.contains("Loading…"), "{frame}");
+        let deadline = Instant::now() + WAIT;
+        while !text(&mut shell).contains("did not load") && Instant::now() < deadline {
+            shell.tick(Instant::now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let frame = text(&mut shell);
+        assert!(frame.contains("This tab did not load"), "{frame}");
+
+        shell.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        assert!(shell.should_quit, "Ctrl+Q did not quit a failed tab");
+    });
+}
