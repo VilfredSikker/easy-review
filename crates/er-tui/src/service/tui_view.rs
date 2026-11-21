@@ -19,17 +19,54 @@ use er_engine::TabKey;
 use er_service::TabContent;
 use tui_textarea::TextArea;
 
-use crate::screen::view::{InputMode, SplitSide};
+use crate::screen::view::{InputMode, OverlayData, SplitSide};
 use crate::screen::{Chrome, Screen, SectionData, TabData, TabView};
 
 /// What the flag-on loop shows: per tab its view state, and app wide the
-/// input mode and the status line. The overlay joins with the first entry
-/// that opens one on this path.
+/// input mode, the overlay and the status line.
 #[derive(Default)]
 pub struct TuiView {
     tabs: HashMap<TabKey, TabViewState>,
     pub input_mode: Mode,
+    pub overlay: Option<Overlay>,
     pub notification: Option<String>,
+}
+
+/// The overlays the flag-on path holds. No key opens one yet; each entry
+/// that ports an overlay's actions adds its variant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Overlay {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no key opens an overlay on this path yet")
+    )]
+    ExportPicker {
+        include_comments: bool,
+        include_findings: bool,
+        include_questions: bool,
+        include_notes: bool,
+        selected: usize,
+    },
+}
+
+impl Overlay {
+    fn data(&self) -> OverlayData<'_> {
+        match *self {
+            Self::ExportPicker {
+                include_comments,
+                include_findings,
+                include_questions,
+                include_notes,
+                selected,
+            } => OverlayData::ExportPicker {
+                include_comments,
+                include_findings,
+                include_questions,
+                include_notes,
+                selected,
+            },
+        }
+    }
 }
 
 /// The input modes the flag-on path can be in. Only Normal has a service
@@ -349,7 +386,7 @@ pub fn screen<'a>(view: &'a TuiView, state: &'a TabViewState, frame: Frame<'a>) 
             input_mode: match view.input_mode {
                 Mode::Normal => InputMode::Normal,
             },
-            overlay: None,
+            overlay: view.overlay.as_ref().map(Overlay::data),
             remote_url_input: "",
             ai_selection_label: crate::screen::UNPORTED.to_string(),
             has_comment_draft: !state.draft.textarea.is_empty(),
