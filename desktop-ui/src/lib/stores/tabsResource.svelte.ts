@@ -9,11 +9,15 @@ import { TabsAdapter } from "./tabsAdapter";
 
 const flagOn = v1ServiceRequested();
 
-/** The open tabs, from the snapshot or the `tabs` resource by build. */
+/**
+ * The open tabs, from the snapshot or the `tabs` resource by build. It reads
+ * the App's snapshot: the diff overlay reads the active tab through this
+ * adapter while `app.snapshot` computes, so reading that would loop.
+ */
 export const tabsResource = new TabsAdapter({
   flagOn,
   store: resources,
-  snapshot: () => app.snapshot,
+  snapshot: () => app.appSnapshot,
   stale: (row, isActive) => tabIsStale(resources, row, isActive),
 });
 

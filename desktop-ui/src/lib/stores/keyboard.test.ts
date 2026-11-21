@@ -44,6 +44,10 @@ mock.module("./app.svelte", () => ({
         { path: "b.ts", source_index: 1, reviewed: true },
       ],
     },
+    // The tabs adapter reads the App's snapshot, which no overlay changes here.
+    get appSnapshot() {
+      return this.snapshot;
+    },
     cmd: (name: string, args?: Record<string, unknown>) => {
       const arg =
         args && "idx" in args ? `:${String(args.idx)}` : args && "path" in args ? `:${String(args.path)}` : "";
