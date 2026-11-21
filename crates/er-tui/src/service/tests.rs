@@ -532,7 +532,11 @@ fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
         assert!(frame.contains("This tab did not load"), "{frame}");
 
         shell.handle_key(key(KeyCode::Char('[')));
-        assert_eq!(active(&shell), Some(keys[1]), "'[' left the failed tab");
+        assert_eq!(
+            active(&shell),
+            Some(keys[1]),
+            "'[' stayed on the failed tab"
+        );
         let frame = text(&mut shell);
         assert!(frame.contains("src/f000.rs"), "{frame}");
 
