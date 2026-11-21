@@ -8,8 +8,8 @@ use er_protocol::{
     Ack, AvailableBranches, AvailablePrs, Branch, Branches, BrowserLayout, BrowserView, Command,
     ConfigFieldValue, ErError, ErErrorKind, Inbox, InboxItem, InboxTarget, ModelUpsert, Notice,
     NoticeLevel, Panel, Panels, PrRow, Project, ProjectPrs, ProjectReviewSettingsPatch, Projects,
-    Prs, Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, TabKind, TabRow, TabView,
-    Tabs, UninstallOptions, Versioned, Worktree, Worktrees,
+    Prs, Resource, ResourceChanged, ResourceKey, ResourceVersion, ScopeStat, TabDiff, TabKey,
+    TabKind, TabRow, TabView, Tabs, UninstallOptions, Versioned, Worktree, Worktrees,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -598,5 +598,23 @@ fn the_project_commands_are_tagged_by_kind() -> serde_json::Result<()> {
     let partial: ProjectReviewSettingsPatch =
         serde_json::from_str(r#"{"reviewIgnoreGlobAdd":"*.snap"}"#)?;
     assert_eq!(partial.review_ignore_glob_add.as_deref(), Some("*.snap"));
+    Ok(())
+}
+
+/// A tab's diff is keyed by the tab, and its counts reach TypeScript as numbers.
+#[test]
+fn the_diff_resource_is_keyed_by_its_tab() -> serde_json::Result<()> {
+    assert_wire(
+        &ResourceKey::Diff { tab: TabKey(3) },
+        r#"{"kind":"diff","tab":3}"#,
+    )?;
+    let empty = Resource::Diff(Box::default());
+    let json = serde_json::to_value(&empty)?;
+    assert_eq!(json["kind"], "diff");
+    assert_eq!(json["files"], serde_json::json!([]));
+    assert_eq!(json["load_error"], serde_json::Value::Null);
+    let cfg = Config::new();
+    assert!(TabDiff::decl(&cfg).contains("total_count: number,"));
+    assert!(ScopeStat::decl(&cfg).contains("files: number,"));
     Ok(())
 }

@@ -41,8 +41,12 @@ pub enum Command {
     PortProbe,
     /// Test support: hold the reply open forever, so a caller can prove its
     /// own timeout fires.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Stall,
+    /// Test support: hold the actor thread forever, so a reader can prove it
+    /// never waits on the actor's queue.
+    #[cfg(any(test, feature = "test-support"))]
+    Hold,
 
     // ── Annotation commands (P41.1) ──
     /// Flip one path's reviewed mark against the stored map.

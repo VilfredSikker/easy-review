@@ -11,6 +11,7 @@
 //! move when an internal type does.
 
 mod command;
+mod diff;
 mod error;
 mod notice;
 mod resource;
@@ -21,6 +22,7 @@ mod sidebar;
 mod tabs;
 
 pub use command::{Ack, Command, ProjectReviewSettingsPatch};
+pub use diff::{DiffLineStats, FileRow, FilterSuggestion, ScopeStat, TabDiff};
 pub use error::{ErError, ErErrorKind};
 pub use notice::{Notice, NoticeLevel};
 pub use resource::{

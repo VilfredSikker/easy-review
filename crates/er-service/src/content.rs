@@ -252,6 +252,20 @@ pub struct DiffMeta {
     pub preview_head_oid: Option<String>,
     /// What the preview keys read beside the diff, taken when it loaded.
     pub stamps: PreviewStamps,
+    /// The checkout's unstaged and staged counts, which the scope picker
+    /// shows without switching views. Zero for a tab with no live checkout.
+    pub scope_stats: ScopeStats,
+    /// The key the repo's `[file_kinds]` and risk tables live under, and its
+    /// committed risk table, read when the diff loaded.
+    pub rules_key: String,
+    pub risk_artifact: Option<er_engine::config::RiskRuleTable>,
+}
+
+/// Files, added and deleted lines in the working tree and in the index.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScopeStats {
+    pub unstaged: (usize, usize, usize),
+    pub staged: (usize, usize, usize),
 }
 
 /// The tab's reviewed marks, as saved.

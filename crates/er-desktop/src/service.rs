@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use er_engine::ports::Ports;
 use er_engine::tabs_record::TabDescriptor;
@@ -19,6 +20,7 @@ use er_engine::TabKey;
 use er_service::{
     spawn, spawn_settings, AppCommand, AppRegistry, Command, Event, OpenTarget, Reply,
     SettingsHandle, TabContent, WorkspaceDeps, WorkspaceError, WorkspaceHandle, WorkspaceView,
+    REPLY_TIMEOUT,
 };
 
 /// Told the revision of every view an actor publishes.
@@ -40,6 +42,9 @@ pub struct ServiceState {
     /// The one app registry: the tab list and the PR open caches. A fixed slot,
     /// never keyed by a tab, since its records are app-scoped.
     app_registry: Arc<AppRegistry>,
+    /// When each key's last unawaited load was posted, so readers that ask
+    /// while it loads post no second one.
+    load_requests: Mutex<HashMap<TabKey, Instant>>,
 }
 
 impl ServiceState {
@@ -98,6 +103,7 @@ impl ServiceState {
             settings: OnceLock::new(),
             settings_path: None,
             app_registry,
+            load_requests: Mutex::new(HashMap::new()),
         }
     }
 
@@ -231,6 +237,31 @@ impl ServiceState {
             Err(poisoned) => poisoned.into_inner(),
         };
         handles.get(key).cloned()
+    }
+
+    /// Posts a load of `key` to `tab`'s actor without waiting, starting the
+    /// actor when none runs. A key asked for within the reply bound is not
+    /// asked for again: the first load is still on its way, and its publish
+    /// brings the content or the failure. Answers whether it posted.
+    pub fn request_load(&self, key: TabKey, tab: &TabDescriptor) -> bool {
+        {
+            let mut asked = match self.load_requests.lock() {
+                Ok(asked) => asked,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            asked.retain(|_, at| at.elapsed() < REPLY_TIMEOUT);
+            if asked.contains_key(&key) {
+                return false;
+            }
+            asked.insert(key, Instant::now());
+        }
+        let load = Command::LoadTab {
+            key,
+            tab: tab.clone(),
+            mode: None,
+        };
+        drop(self.handle_for(&actor_key(tab)).send(load));
+        true
     }
 
     /// The last published view of every actor that is up. Starts none.

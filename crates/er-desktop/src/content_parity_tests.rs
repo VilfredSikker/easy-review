@@ -120,6 +120,8 @@ fn ports(lazy: bool) -> Ports {
         FakeGit::default()
             .with_current_branch(Ok("feature".to_string()))
             .with_detect_base_branch(Ok("main".to_string()))
+            .with_diff_shortstat((2, 5, 1))
+            .with_commit_shortstats(HashMap::new())
             .with_diff_raw(Ok(raw.clone()))
             .with_is_merge_in_progress(false)
             .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string()))
@@ -199,6 +201,85 @@ struct Observed {
     pr: (Option<String>, Vec<String>, Option<String>),
     preview_keys: Vec<(String, String)>,
     stamps: (BTreeMap<String, SystemTime>, BTreeMap<String, String>),
+    /// The fields `diff(tab)` carries, as the snapshot names them: from the
+    /// snapshot on the App's side, from the resource builder on the other.
+    resource: Value,
+}
+
+/// The fields of a snapshot, or of a `diff(tab)`, that both must agree on.
+/// The review bucket is a storage path, which each side roots apart.
+fn resource_fields(value: &Value) -> Value {
+    const FIELDS: [&str; 13] = [
+        "mode",
+        "branch",
+        "base",
+        "total_count",
+        "diff_stats",
+        "filter",
+        "filter_suggestions",
+        "preview_context_key",
+        "local_branch",
+        "local_branch_checked_out",
+        "unstaged_stat",
+        "staged_stat",
+        "pr_diff_head_oid",
+    ];
+    const ROW: [&str; 19] = [
+        "path",
+        "status",
+        "old_path",
+        "similarity",
+        "kind",
+        "additions",
+        "deletions",
+        "reviewed",
+        "compacted",
+        "risk",
+        "risk_tier",
+        "risk_rule",
+        "finding_count",
+        "comment_count",
+        "question_count",
+        "is_lazy_stub",
+        "source_index",
+        "cache_key",
+        "preview_key",
+    ];
+    // A field one side leaves out reads as null on the other.
+    fn without_nulls(value: Value) -> Value {
+        match value {
+            Value::Object(map) => map
+                .into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, without_nulls(v)))
+                .collect::<serde_json::Map<_, _>>()
+                .into(),
+            Value::Array(items) => items.into_iter().map(without_nulls).collect(),
+            other => other,
+        }
+    }
+    let pick = |value: &Value, names: &[&str]| -> Value {
+        names
+            .iter()
+            .map(|name| {
+                (
+                    (*name).to_string(),
+                    value.get(*name).cloned().unwrap_or(Value::Null),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+    };
+    let mut picked = pick(value, &FIELDS);
+    let rows: Vec<Value> = value
+        .get("files")
+        .and_then(Value::as_array)
+        .map(|files| files.iter().map(|row| pick(row, &ROW)).collect())
+        .unwrap_or_default();
+    if let Some(map) = picked.as_object_mut() {
+        map.insert("files".into(), rows.into());
+    }
+    without_nulls(picked)
 }
 
 /// What a reader holds of one tab, borrowed from its own types.
@@ -217,6 +298,7 @@ struct Read<'a> {
     preview_keys: Vec<(String, String)>,
     /// The mtimes and blob ids the keys read.
     stamps: (&'a HashMap<String, SystemTime>, &'a HashMap<String, String>),
+    resource: Value,
 }
 
 /// The keys the snapshot reads, given the key functions of one reader.
@@ -248,6 +330,7 @@ fn observe(read: Read<'_>, er_dir: &str) -> anyhow::Result<Observed> {
     let reviewed: Marks = read.reviewed.clone().into_iter().collect();
     let (overview, commits, head) = read.pr;
     Ok(Observed {
+        resource: resource_fields(&read.resource),
         files: read
             .files
             .iter()
@@ -404,6 +487,15 @@ fn through_tab_state(
             tab.pr_commits = github.pr_commits(&tab.repo_root, number, limit)?;
             tab.seed_last_diff_head_oid_from_local_ref();
         }
+        let mut app = er_engine::app::App::new_for_test(Vec::new());
+        app.tabs = vec![tab];
+        app.active_tab = 0;
+        let snapshot = crate::snapshot::build_snapshot_with_delta(
+            &app,
+            &crate::snapshot::SnapshotSources::default(),
+        );
+        let resource = serde_json::to_value(&snapshot)?;
+        let tab = app.tab();
         let files: Vec<&DiffFile> = tab.files.iter().collect();
         let preview_keys = preview_keys(&files, tab.preview_context_key(), |path| {
             tab.file_preview_key(path)
@@ -422,6 +514,7 @@ fn through_tab_state(
                 ),
                 preview_keys,
                 stamps: (&tab.mtime_cache, &tab.preview_blob_ids),
+                resource,
             },
             &er_dir,
         )
@@ -489,6 +582,10 @@ fn through_the_workspace(
             preview_key::file_preview_key(&inputs, path)
         });
         let stamps = &content.diff.meta.stamps;
+        let resource = serde_json::to_value(er_service::diff_resource(
+            content,
+            &er_service::DiffInputs::default(),
+        ))?;
         observe(
             Read {
                 files,
@@ -502,6 +599,7 @@ fn through_the_workspace(
                 pr: (pr.overview.as_ref(), &pr.commits, pr.head_oid.as_deref()),
                 preview_keys,
                 stamps: (&stamps.mtimes, &stamps.blob_ids),
+                resource,
             },
             &er_dir,
         )
@@ -552,6 +650,29 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
         service.preview_keys, app.preview_keys,
         "{case}: the preview keys differ"
     );
+    if service.resource != app.resource {
+        let field = |v: &Value, k: &str| v.get(k).cloned().unwrap_or(Value::Null);
+        let keys = app
+            .resource
+            .as_object()
+            .map(|m| m.keys().cloned().collect::<Vec<_>>());
+        let differing: Vec<String> = keys
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|k| field(&service.resource, k) != field(&app.resource, k))
+            .collect();
+        panic!(
+            "{case}: diff(tab) differs from the snapshot in {differing:?}:\n{}\nagainst\n{}",
+            serde_json::json!(differing
+                .iter()
+                .map(|k| field(&service.resource, k))
+                .collect::<Vec<_>>()),
+            serde_json::json!(differing
+                .iter()
+                .map(|k| field(&app.resource, k))
+                .collect::<Vec<_>>()),
+        );
+    }
 }
 
 /// Every section the fixture fills must hold something on the App's side,

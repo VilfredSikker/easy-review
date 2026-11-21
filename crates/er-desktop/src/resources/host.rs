@@ -66,6 +66,7 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
             (version, Resource::Panels(panels))
         }
         ResourceKey::View { tab } => super::tabs::view(desktop, *tab)?,
+        ResourceKey::Diff { tab } => super::diff::diff(desktop, *tab)?,
     };
     Ok(Versioned {
         key,
@@ -95,6 +96,7 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         }
         ResourceKey::Panels => super::session::panels_version(desktop),
         ResourceKey::View { tab } => super::tabs::view_version(desktop, *tab)?,
+        ResourceKey::Diff { tab } => super::diff::version(desktop, *tab)?,
     };
     Ok(ResourceVersion(version))
 }
@@ -364,6 +366,9 @@ pub enum Watched {
     Mode(TabKey),
     /// A tab's desktop view, under the key the registry issued.
     View(TabKey),
+    /// A listed tab's `diff(tab)`: every section its rows read, or its load
+    /// failure.
+    TabDiff(TabKey),
 }
 
 impl Watched {
@@ -377,6 +382,9 @@ impl Watched {
             Self::Session => Some(ResourceKey::Session),
             Self::Panels => Some(ResourceKey::Panels),
             Self::View(key) => Some(ResourceKey::View {
+                tab: er_service::wire_tab_key(*key),
+            }),
+            Self::TabDiff(key) => Some(ResourceKey::Diff {
                 tab: er_service::wire_tab_key(*key),
             }),
             Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Pr(_) | Self::Mode(_) => None,
@@ -417,6 +425,12 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
                 .map(|(key, risk)| (Watched::Risk(key.clone()), risk.version)),
         );
     }
+    // Only a tab that loaded or failed has a diff to announce; a tab still
+    // at version 0 announces nothing until it does.
+    versions.extend(tabs.tabs.iter().filter_map(|entry| {
+        let version = super::diff::published_version(desktop, entry.key, &entry.descriptor);
+        (version > 0).then_some((Watched::TabDiff(entry.key), version))
+    }));
     for view in desktop.service.published_views() {
         for (&key, content) in &view.tabs {
             versions.extend([

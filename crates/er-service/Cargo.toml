@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 description = "Workspace actor and use cases for easy-review"
 
+[features]
+# Compiles `Command::Stall` and `Command::Hold`; a dependent's test holds an
+# actor with them to show that a read never waits on it.
+test-support = []
+
 [dependencies]
 # P40's actor reads these types; declared here so P40 is manifest-free.
 er-agent = { path = "../er-agent" }

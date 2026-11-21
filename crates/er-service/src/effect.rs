@@ -21,8 +21,8 @@ use er_engine::tabs_record::TabDescriptor;
 use crate::actor::WorkspaceDeps;
 use crate::annotations::failed;
 use crate::content::{
-    AiSection, DiffMeta, DiffSection, LoadedDiff, LoadedTab, PrSection, ReloadedAi, SidecarStamp,
-    TabContent,
+    AiSection, DiffMeta, DiffSection, LoadedDiff, LoadedTab, PrSection, ReloadedAi, ScopeStats,
+    SidecarStamp, TabContent,
 };
 use crate::handle::WorkspaceError;
 use crate::protocol::{OpenTarget, TabContext};
@@ -238,6 +238,12 @@ pub(crate) fn load_tab(
         .unwrap_or_else(|| ErRoot::unresolved(&tab.repo_root, git))
         .er_dir();
     let comments_dir = id.pr_bucket_er_dir(git).unwrap_or_else(|| er_dir.clone());
+    let remote_only = id
+        .is_remote()
+        .then_some(tab.remote_repo.as_deref())
+        .flatten();
+    let rules_key = er_engine::storage::rules_key(git, &tab.repo_root, remote_only);
+    let risk_artifact = er_engine::config::load_risk_rules_table(&rules_key);
     let store = store_registry::store();
     let scope = crate::annotations::bucket_scope(&er_dir)?;
     let mut marks = session_store::load_reviewed(&store, &scope).unwrap_or_default();
@@ -319,6 +325,16 @@ pub(crate) fn load_tab(
                 .or(tab.pr_head_ref.as_deref()),
         },
     );
+    // Only a live checkout has a working tree and an index to count: not a
+    // remote PR, and not a branch view whose branch is checked out nowhere.
+    let scope_stats = if !id.is_remote() && (!branch_view || tab.checkout_root.is_some()) {
+        ScopeStats {
+            unstaged: git.diff_shortstat(&tab.repo_root, false),
+            staged: git.diff_shortstat(&tab.repo_root, true),
+        }
+    } else {
+        ScopeStats::default()
+    };
     let diff_hash = ai::compute_diff_hash(&raw);
     // A tour entered from the branch view walks the branch diff itself.
     let raw_is_branch_diff = is_remote_pr
@@ -434,6 +450,9 @@ pub(crate) fn load_tab(
                 branch_diff_hash,
                 preview_head_oid,
                 stamps,
+                scope_stats,
+                rules_key,
+                risk_artifact,
             },
             expanded,
         },

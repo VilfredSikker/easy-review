@@ -48,6 +48,7 @@ fn git(raw: &str) -> Arc<FakeGit> {
     Arc::new(
         FakeGit::default()
             .with_current_branch(Ok("feature".to_string()))
+            .with_diff_shortstat((0, 0, 0))
             .with_diff_raw(Ok(raw.to_string())),
     )
 }
@@ -374,6 +375,7 @@ fn a_mode_switch_seeds_the_detected_pr_only_onto_a_tab_without_one() -> anyhow::
         let git = Arc::new(
             FakeGit::default()
                 .with_current_branch(Ok("feature".to_string()))
+                .with_diff_shortstat((0, 0, 0))
                 .with_diff_raw(Ok(RAW.to_string()))
                 .with_fetch(Ok(())),
         );
@@ -562,6 +564,9 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
                 branch_diff_hash: String::new(),
                 preview_head_oid: None,
                 stamps: Default::default(),
+                scope_stats: Default::default(),
+                rules_key: String::new(),
+                risk_artifact: None,
             },
             expanded: Default::default(),
         },
@@ -776,4 +781,46 @@ fn the_closed_keys_stay_bounded_after_ten_thousand_closes() {
         state.apply_patch(late).is_err(),
         "the newest closed key loaded again"
     );
+}
+
+/// `diff(tab)` lists the newest file first when the view sorts by mtime, by
+/// the mtimes the load stamped, and keeps each file's index in the diff, which
+/// the file commands name.
+#[test]
+fn the_diff_resource_keeps_the_mtime_order() {
+    let file = |path: &str| er_engine::git::DiffFile {
+        path: path.to_string(),
+        status: er_engine::git::FileStatus::Modified,
+        hunks: Vec::new(),
+        adds: 1,
+        dels: 1,
+        compacted: false,
+        raw_hunk_count: 0,
+        similarity: None,
+    };
+    let at = |secs: u64| std::time::UNIX_EPOCH + Duration::from_secs(secs);
+    let mut loaded = loaded_tab("/repo");
+    loaded.diff.files = vec![file("a.rs"), file("b.rs"), file("c.rs")];
+    loaded.diff.meta.stamps.mtimes = HashMap::from([
+        ("a.rs".to_string(), at(100)),
+        ("b.rs".to_string(), at(300)),
+        ("c.rs".to_string(), at(200)),
+    ]);
+    let content = crate::content::TabContent::from_loaded(TabKey::next(), *loaded, 1);
+    let listed = |sort_by_mtime| {
+        let inputs = crate::DiffInputs {
+            sort_by_mtime,
+            ..crate::DiffInputs::default()
+        };
+        crate::diff_resource(&content, &inputs)
+            .files
+            .into_iter()
+            .map(|row| (row.path, row.source_index))
+            .collect::<Vec<_>>()
+    };
+    let by_mtime = [("b.rs", 1), ("c.rs", 2), ("a.rs", 0)];
+    let in_diff = [("a.rs", 0), ("b.rs", 1), ("c.rs", 2)];
+    let named = |rows: [(&str, u64); 3]| rows.map(|(p, i)| (p.to_string(), i)).to_vec();
+    assert_eq!(listed(true), named(by_mtime));
+    assert_eq!(listed(false), named(in_diff));
 }

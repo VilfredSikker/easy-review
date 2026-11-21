@@ -20,6 +20,7 @@ pub mod diff_load;
 pub mod env_path;
 #[cfg(feature = "ui")]
 pub mod export;
+pub mod file_rows;
 pub mod filter;
 pub use er_github::actions as gh_pr_actions;
 mod env_var;

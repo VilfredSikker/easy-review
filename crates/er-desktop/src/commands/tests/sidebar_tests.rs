@@ -161,6 +161,7 @@ fn service_git() -> er_git::FakeGit {
     er_git::FakeGit::default()
         .with_current_branch(Ok("feature".to_string()))
         .with_detect_base_branch(Ok("main".to_string()))
+        .with_diff_shortstat((0, 0, 0))
         .with_diff_raw(Ok(
             "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-old\n+new\n".into(),
         ))

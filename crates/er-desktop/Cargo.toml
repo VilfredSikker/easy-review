@@ -60,6 +60,8 @@ block2 = "0.6"
 [dev-dependencies]
 er-engine = { path = "../er-engine", features = ["test-support"] }
 er-git = { path = "../er-git" }
+# `Command::Hold`, which the held-actor tests send to a workspace actor.
+er-service = { path = "../er-service", features = ["test-support"] }
 tempfile = "3"
 
 [build-dependencies]

@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use er_agent::job::JobProgress;
 use er_engine::jobs::JobId;
+use er_engine::TabKey;
 
 use crate::content::ContentPatch;
 use crate::protocol::{Command, Event, JobOutcome, Reply};
@@ -104,6 +105,12 @@ pub(crate) enum ActorMsg {
     Command {
         command: Command,
         reply: ReplySender,
+    },
+    /// A tab's first load failed. The actor records it for the key before
+    /// the failed effect's answer, which publishes it.
+    LoadFailed {
+        key: TabKey,
+        message: String,
     },
     /// An off-actor effect finished; the actor applies it and answers.
     EffectDone {

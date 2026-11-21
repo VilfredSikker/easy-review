@@ -57,6 +57,16 @@ pub struct WorkspaceView {
     /// Each loaded tab's content, by the key its caller gave. A publish
     /// copies these pointers; the sections behind them are shared.
     pub tabs: BTreeMap<TabKey, Arc<TabContent>>,
+    /// Why a tab's first load failed, by its key, until a load succeeds or
+    /// the tab closes. A tab that loaded keeps its content instead.
+    pub load_errors: BTreeMap<TabKey, LoadError>,
+}
+
+/// A failed first load, at the revision that recorded it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadError {
+    pub revision: u64,
+    pub message: String,
 }
 
 /// Content compares by its section revisions: a section is replaced, never
@@ -84,6 +94,7 @@ impl PartialEq for WorkspaceView {
             && self.last_error == other.last_error
             && self.arena_runs == other.arena_runs
             && self.review_flows == other.review_flows
+            && self.load_errors == other.load_errors
             && revisions(self) == revisions(other)
     }
 }
@@ -98,6 +109,7 @@ impl fmt::Debug for WorkspaceView {
             .field("arena_runs", &self.arena_runs)
             .field("review_flows", &self.review_flows)
             .field("tabs", &self.tabs.values().collect::<Vec<_>>())
+            .field("load_errors", &self.load_errors)
             .finish()
     }
 }
@@ -244,12 +256,27 @@ impl WorkspaceState {
             return Err(PatchRefused::Moved);
         }
         content::check(&self.view.tabs, &patch)?;
+        for key in loads.iter().chain(&drops) {
+            self.view.load_errors.remove(key);
+        }
         for key in drops {
             self.remember_closed(key);
         }
         let revision = self.bump();
         let cleared = content::apply(&mut self.view.tabs, patch, revision);
         Ok((revision, cleared))
+    }
+
+    /// Records why `key`'s first load failed, at a new revision the caller
+    /// publishes. A key that closed meanwhile records nothing.
+    pub(crate) fn record_load_error(&mut self, key: TabKey, message: String) {
+        if self.closed.contains(&key) || self.view.tabs.contains_key(&key) {
+            return;
+        }
+        let revision = self.bump();
+        self.view
+            .load_errors
+            .insert(key, LoadError { revision, message });
     }
 
     /// Records the close of a key that holds no content, so a first load in
@@ -260,6 +287,7 @@ impl WorkspaceState {
         if self.view.tabs.contains_key(&key) {
             return false;
         }
+        self.view.load_errors.remove(&key);
         self.remember_closed(key);
         true
     }
