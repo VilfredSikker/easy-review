@@ -2380,6 +2380,7 @@ fn apply_watch_checkout_root(
 }
 
 /// Read the persisted active project's root path, if any.
+#[cfg(not(feature = "v1-service"))]
 fn active_root_from_projects() -> Option<String> {
     let file = projects::load();
     let active_id = file.active_id.as_ref()?;
