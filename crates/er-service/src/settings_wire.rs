@@ -206,7 +206,13 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::PrefetchPrOpen { .. }
         | wire::Command::PrefetchRemotePrOpen { .. }
         | wire::Command::UpdateTabBrowser { .. }
-        | wire::Command::CycleTabBrowserLayout) => return Err(Box::new(other)),
+        | wire::Command::CycleTabBrowserLayout
+        | wire::Command::SetDiffMode { .. }
+        | wire::Command::ChangeBase { .. }
+        | wire::Command::SetFilter { .. }
+        | wire::Command::RefreshDiff { .. }
+        | wire::Command::SyncPr { .. }
+        | wire::Command::SyncBranch { .. }) => return Err(Box::new(other)),
     })
 }
 

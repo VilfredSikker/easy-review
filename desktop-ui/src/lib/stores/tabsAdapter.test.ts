@@ -99,17 +99,25 @@ describe("TabsAdapter", () => {
 });
 
 describe("tabsFromResource", () => {
-  it("keeps the snapshot's staleness and change token while the rows agree", () => {
-    const rows = [{ ...row(0, "a", true), stale: true }, row(1, "b", false)];
+  it("keeps the snapshot's change token while the rows agree", () => {
+    const rows = [row(0, "a", true), row(1, "b", false)];
     const view = tabsFromResource(wireTabs, rows);
-    expect(view.tabs.map((t) => [t.stale, t.change_token])).toEqual([
-      [true, "a"],
-      [false, "b"],
-    ]);
+    expect(view.tabs.map((t) => t.change_token)).toEqual(["a", "b"]);
     const lagging = tabsFromResource(wireTabs, rows.slice(0, 1));
-    expect(lagging.tabs.map((t) => [t.stale, t.change_token])).toEqual([
-      [false, ""],
-      [false, ""],
+    expect(lagging.tabs.map((t) => t.change_token)).toEqual(["", ""]);
+  });
+
+  it("takes each tab's staleness from its diff and PR list, never the snapshot row", () => {
+    const rows = [{ ...row(0, "a", true), stale: true }, { ...row(1, "b", false), stale: true }];
+    const asked: [number, boolean][] = [];
+    const view = tabsFromResource(wireTabs, rows, (wire, isActive) => {
+      asked.push([wire.key, isActive]);
+      return wire.key === 11;
+    });
+    expect(view.tabs.map((t) => t.stale)).toEqual([true, false]);
+    expect(asked).toEqual([
+      [11, false],
+      [12, true],
     ]);
   });
 
@@ -150,15 +158,15 @@ describe("tabsFromResource", () => {
       change_token: "t1",
     };
     const pick = (rows: TabSummary[]) =>
-      tabsFromResource(wire, rows).tabs.map((t) => [t.label, t.stale, t.change_token]);
+      tabsFromResource(wire, rows).tabs.map((t) => [t.label, t.change_token]);
     expect(pick([row(0, "a", true), remotePr])).toEqual([
-      ["a", false, "a"],
-      ["gadgets#9", true, "t1"],
+      ["a", "a"],
+      ["gadgets#9", "t1"],
     ]);
     // Same length, other tabs: another PR number, and a branch in another repo.
     expect(pick([{ ...row(0, "a", true), repo_root: "/r/other" }, { ...remotePr, pr_number: 10 }])).toEqual([
-      ["a", false, ""],
-      ["gadgets#9", false, ""],
+      ["a", ""],
+      ["gadgets#9", ""],
     ]);
   });
 
@@ -322,5 +330,15 @@ describe("TabsAdapter.route", () => {
     const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
     await expect(tabs.route("select_tab", { idx: 5 }) ?? Promise.resolve()).rejects.toThrow("no tab at position 5");
     expect(sent).toEqual([]);
+  });
+});
+
+describe("the strip's staleness with the flag on", () => {
+  it("reads no snapshot row's stale mark", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const source = readFileSync(join(here, "tabsAdapter.ts"), "utf8");
+    const body = source.slice(source.indexOf("export function tabsFromResource"), source.indexOf("type Args"));
+    expect(body).not.toMatch(/seen\??\.stale|snapshotRows\[[^\]]*\]\??\.stale|candidate\??\.stale/);
+    expect(body).toMatch(/stale: stale\(row, idx === active\)/);
   });
 });

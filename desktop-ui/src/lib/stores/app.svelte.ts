@@ -230,7 +230,30 @@ function nextAnimationFrame(): Promise<void> {
 }
 
 class AppStore {
-  snapshot = $state<AppSnapshot | null>(null);
+  /** The snapshot as the App built it. */
+  private raw = $state<AppSnapshot | null>(null);
+  /** Rewrites what readers see of the snapshot; with the flag on, the diff adapter's fields replace the App's. */
+  private overlay = $state<((raw: AppSnapshot) => AppSnapshot) | null>(null);
+  private readonly shown = $derived(this.raw && this.overlay ? this.overlay(this.raw) : this.raw);
+
+  /** The snapshot the page reads. */
+  get snapshot(): AppSnapshot | null {
+    return this.shown;
+  }
+
+  set snapshot(next: AppSnapshot | null) {
+    this.raw = next;
+  }
+
+  /** The snapshot as the App built it, for an adapter that replaces some of its fields. */
+  get appSnapshot(): AppSnapshot | null {
+    return this.raw;
+  }
+
+  /** Hands the page's snapshot reads an overlay over the App's snapshot. */
+  overlaySnapshot(overlay: (raw: AppSnapshot) => AppSnapshot): void {
+    this.overlay = overlay;
+  }
   loading = $state(false);
   initialLoadDone = $state(false);
   /** True while a slow tab-switch or branch-open command is in flight. */
@@ -475,12 +498,12 @@ class AppStore {
     this.loading = true;
     try {
       const snap = await invoke<AppSnapshot>("get_snapshot");
-      resolveOmittedHunks(this.snapshot, snap);
-      this.snapshot = snap;
+      resolveOmittedHunks(this.raw, snap);
+      this.raw = snap;
       this.keepOptimisticOps();
       this.rememberSnapshot(snap);
       this.lastConfirmedSnapshot = snap;
-      this.syncSnapshotToast(this.snapshot);
+      this.syncSnapshotToast(this.raw);
       this.lastPollRevision = null;
       this.lastPollContentRevision = null;
       this.lastPollChromeRevision = null;
@@ -506,8 +529,8 @@ class AppStore {
       contentChanged,
     };
     if (
-      this.snapshot !== null &&
-      !snapshotsShareTabCacheKey(this.snapshot, snapshot)
+      this.raw !== null &&
+      !snapshotsShareTabCacheKey(this.raw, snapshot)
     ) {
       // Cache-hit paint of tab B can race a poll still built from tab A.
       // Drop it. select_tab ingest applies B. Do not pollPending here
@@ -518,7 +541,7 @@ class AppStore {
         trigger,
       });
     } else if (
-      shouldDeferChromeIdentityChange(this.snapshot, snapshot, mergeOpts)
+      shouldDeferChromeIdentityChange(this.raw, snapshot, mergeOpts)
     ) {
       if (!this.pendingTabSwitch && !this.switching) {
         this.pollPending = true;
@@ -544,9 +567,9 @@ class AppStore {
     this.lastPollRevision = next.revision;
     this.lastPollContentRevision = next.content_revision;
     this.lastPollChromeRevision = next.chrome_revision;
-    const prev = this.snapshot;
+    const prev = this.raw;
     if (prev !== null && canChromeMerge(prev, snapshot, mergeOpts)) {
-      this.snapshot = mergeChromeSnapshot(prev, snapshot, "prev");
+      this.raw = mergeChromeSnapshot(prev, snapshot, "prev");
       profileLog("snapshot_chrome_merge", {
         invoke_ms: invokeMs,
         revision: next.revision,
@@ -559,7 +582,7 @@ class AppStore {
           ? prev
           : this.tabCache.peek(tabSnapshotCacheKey(snapshot));
       const delta = resolveOmittedHunks(hunkPrev, snapshot);
-      this.snapshot = snapshot;
+      this.raw = snapshot;
       profileLog("snapshot_replace", {
         invoke_ms: invokeMs,
         revision: next.revision,
@@ -569,10 +592,10 @@ class AppStore {
         trigger,
       });
     }
-    this.rememberSnapshot(this.snapshot);
-    this.lastConfirmedSnapshot = this.snapshot;
+    this.rememberSnapshot(this.raw);
+    this.lastConfirmedSnapshot = this.raw;
     this.keepOptimisticOps();
-    this.syncSnapshotToast(this.snapshot);
+    this.syncSnapshotToast(this.raw);
   }
 
   /**
@@ -732,7 +755,7 @@ class AppStore {
   }
 
   private cachedSnapshotForTabIdx(idx: number): AppSnapshot | null {
-    const current = this.snapshot;
+    const current = this.raw;
     if (!current) return null;
     const tab = current.tabs.find((t) => t.idx === idx) ?? current.tabs[idx];
     if (!tab) return null;
@@ -742,8 +765,8 @@ class AppStore {
   private spliceAndConfirmSnapshot(snapshot: AppSnapshot): void {
     const incomingKey = tabSnapshotCacheKey(snapshot);
     const hunkPrev =
-      this.snapshot !== null && tabSnapshotCacheKey(this.snapshot) === incomingKey
-        ? this.snapshot
+      this.raw !== null && tabSnapshotCacheKey(this.raw) === incomingKey
+        ? this.raw
         : this.tabCache.peek(incomingKey);
     resolveOmittedHunks(hunkPrev, snapshot);
     this.lastConfirmedSnapshot = snapshot;
@@ -767,7 +790,7 @@ class AppStore {
       });
       return false;
     }
-    if (shouldDropCommandSnapshot(this.snapshot, snapshot, opts?.allowTabChange === true)) {
+    if (shouldDropCommandSnapshot(this.raw, snapshot, opts?.allowTabChange === true)) {
       profileLog("snapshot_ingest_wrong_tab", {
         allow_tab_change: opts?.allowTabChange ? 1 : 0,
       });
@@ -775,13 +798,13 @@ class AppStore {
     }
     this.snapshotGeneration += 1;
     if (
-      this.snapshot === null ||
-      snapshotViewIdentity(this.snapshot) !== snapshotViewIdentity(snapshot)
+      this.raw === null ||
+      snapshotViewIdentity(this.raw) !== snapshotViewIdentity(snapshot)
     ) {
       aiReviewFilter.reset();
     }
     this.spliceAndConfirmSnapshot(snapshot);
-    this.snapshot = snapshot;
+    this.raw = snapshot;
     this.keepOptimisticOps();
     this.rememberSnapshot(snapshot);
     this.initialLoadDone = true;
@@ -794,9 +817,9 @@ class AppStore {
 
   private restoreConfirmedSnapshot(): void {
     if (!this.lastConfirmedSnapshot) return;
-    this.snapshot = this.lastConfirmedSnapshot;
+    this.raw = this.lastConfirmedSnapshot;
     this.keepOptimisticOps();
-    this.rememberSnapshot(this.snapshot);
+    this.rememberSnapshot(this.raw);
     this.snapshotGeneration += 1;
     this.lastPollRevision = null;
     this.lastPollContentRevision = null;
@@ -804,8 +827,8 @@ class AppStore {
   }
 
   private keepOptimisticOps() {
-    if (!this.snapshot || this.pendingOps.length === 0) return;
-    reapplyOptimisticOps(this.snapshot, this.pendingOps);
+    if (!this.raw || this.pendingOps.length === 0) return;
+    reapplyOptimisticOps(this.raw, this.pendingOps);
   }
 
   private dropPendingOp(id: string) {
@@ -854,7 +877,7 @@ class AppStore {
    * is in flight. Composers that clear drafts must check this first.
    */
   canPaintOptimistic(): boolean {
-    return this.snapshot !== null && !this.pendingTabSwitch && !this.switching;
+    return this.raw !== null && !this.pendingTabSwitch && !this.switching;
   }
 
   /**
@@ -879,7 +902,7 @@ class AppStore {
    * never rolled back.
    */
   private async cmdOptimistic(command: string, args: Record<string, unknown>): Promise<void> {
-    const snap = this.snapshot;
+    const snap = this.raw;
     if (!snap) return;
 
     const op = buildOptimisticOp(command, args, snap);
@@ -906,16 +929,16 @@ class AppStore {
       const rollbackPaintedView = () => {
         rollbackOptimisticOp(originSnap, op);
         if (
-          this.snapshot &&
-          this.snapshot !== originSnap &&
-          (global || snapshotViewIdentity(this.snapshot) === viewAtStart)
+          this.raw &&
+          this.raw !== originSnap &&
+          (global || snapshotViewIdentity(this.raw) === viewAtStart)
         ) {
-          rollbackOptimisticOp(this.snapshot, op);
+          rollbackOptimisticOp(this.raw, op);
         }
       };
       if (!global) {
         const stillHere =
-          this.snapshot != null && snapshotViewIdentity(this.snapshot) === viewAtStart;
+          this.raw != null && snapshotViewIdentity(this.raw) === viewAtStart;
         if (!stillHere) {
           rollbackPaintedView();
           this.dropPendingOp(op.id);
@@ -930,8 +953,8 @@ class AppStore {
         if (global) {
           this.mergeGlobalConfirm(returned);
         } else if (
-          this.snapshot &&
-          snapshotViewIdentity(this.snapshot) === viewAtStart &&
+          this.raw &&
+          snapshotViewIdentity(this.raw) === viewAtStart &&
           snapshotViewIdentity(returned) === viewAtStart
         ) {
           this.ingestCommandSnapshot(returned);
@@ -948,7 +971,7 @@ class AppStore {
       } catch (e) {
         this.dropPendingOp(op.id);
         rollbackPaintedView();
-        if (global || (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart)) {
+        if (global || (this.raw && snapshotViewIdentity(this.raw) === viewAtStart)) {
           this.reportCmdError(command, e);
         }
       }
@@ -962,7 +985,7 @@ class AppStore {
    * write succeeded and the revision-bump poll carries the truth.
    */
   private mergeGlobalConfirm(returned: AppSnapshot): void {
-    const current = this.snapshot;
+    const current = this.raw;
     if (
       !current ||
       this.pendingTabSwitch ||
@@ -971,12 +994,12 @@ class AppStore {
     ) {
       return;
     }
-    this.snapshot = mergeChromeSnapshot(current, returned, "prev");
+    this.raw = mergeChromeSnapshot(current, returned, "prev");
     // A poll that started before the click must not land on this merge with
     // pre-write chrome; a new generation discards it.
     this.snapshotGeneration += 1;
-    this.rememberSnapshot(this.snapshot);
-    this.lastConfirmedSnapshot = this.snapshot;
+    this.rememberSnapshot(this.raw);
+    this.lastConfirmedSnapshot = this.raw;
     this.keepOptimisticOps();
   }
 
@@ -988,7 +1011,7 @@ class AppStore {
    */
   private async cmdReviewed(command: "mark_reviewed" | "unmark_reviewed", path: string): Promise<void> {
     if (this.pendingTabSwitch) return;
-    const snap = this.snapshot;
+    const snap = this.raw;
     if (!snap) return;
     const originKey = tabSnapshotCacheKey(snap);
     const file = snap.files.find((f) => f.path === path);
@@ -1013,21 +1036,21 @@ class AppStore {
       // hunks/spans. reviewed_count + files are intentionally preserved from the
       // optimistic state by mergeChromeSnapshot (the count must stay consistent
       // with the kept files' reviewed flags).
-      if (this.snapshot && snapshotsShareTabCacheKey(this.snapshot, returned)) {
-        this.snapshot = mergeChromeSnapshot(this.snapshot, returned);
-        this.rememberSnapshot(this.snapshot);
-        this.lastConfirmedSnapshot = this.snapshot;
+      if (this.raw && snapshotsShareTabCacheKey(this.raw, returned)) {
+        this.raw = mergeChromeSnapshot(this.raw, returned);
+        this.rememberSnapshot(this.raw);
+        this.lastConfirmedSnapshot = this.raw;
         // The merge takes inbox/projects from the backend response; reapply
         // any in-flight global op (inbox read, pin) painted on the old object.
         this.keepOptimisticOps();
       }
     } catch (e) {
       // Roll back optimistic mutation only on the tab we mutated.
-      if (this.snapshot && tabSnapshotCacheKey(this.snapshot) === originKey) {
-        const f = this.snapshot.files.find((ff) => ff.path === path);
+      if (this.raw && tabSnapshotCacheKey(this.raw) === originKey) {
+        const f = this.raw.files.find((ff) => ff.path === path);
         if (f) f.reviewed = wasReviewed;
-        this.snapshot.reviewed_count -= newReviewed ? 1 : -1;
-        bumpPillarReviewedCounts(this.snapshot, path, newReviewed ? -1 : 1);
+        this.raw.reviewed_count -= newReviewed ? 1 : -1;
+        bumpPillarReviewedCounts(this.raw, path, newReviewed ? -1 : 1);
       }
       console.error(`${command} failed:`, e);
       this.pushLog("error", command, String(e));
@@ -1039,11 +1062,19 @@ class AppStore {
     }
   }
 
-  private cmdRoute: CmdRoute | null = null;
+  private readonly cmdRoutes: CmdRoute[] = [];
 
-  /** Hands `cmd` a route that runs before its snapshot path. */
+  /** Hands `cmd` a route that runs before its snapshot path; the first route that takes a command runs it. */
   routeCmds(route: CmdRoute): void {
-    this.cmdRoute = route;
+    this.cmdRoutes.push(route);
+  }
+
+  private routed(command: string, args: Record<string, unknown> | undefined): Promise<void> | null {
+    for (const route of this.cmdRoutes) {
+      const routed = route(command, args);
+      if (routed) return routed;
+    }
+    return null;
   }
 
   /** A routed command answers no snapshot; the content follows the next poll. */
@@ -1065,7 +1096,7 @@ class AppStore {
     args?: Record<string, unknown>,
     options: { throwOnError?: boolean } = {},
   ): Promise<void> {
-    const routed = this.cmdRoute?.(command, args) ?? null;
+    const routed = this.routed(command, args);
     if (routed) return this.cmdRouted(command, routed, options);
     // Reviewed toggling uses an optimistic path that preserves hunks + spans.
     if (command === "mark_reviewed" || command === "unmark_reviewed") {
@@ -1128,7 +1159,7 @@ class AppStore {
     if (this.pendingTabSwitch && !isTabChange && !isSetMode) return null;
     const startedGen = this.tabChangeGeneration;
     const myTabChangeGen = isTabChange ? ++this.tabChangeGeneration : null;
-    const modeTabIdx = isSetMode ? this.snapshot?.active_tab : undefined;
+    const modeTabIdx = isSetMode ? this.raw?.active_tab : undefined;
     const selectIdx =
       command === "select_tab" && typeof args?.idx === "number" ? args.idx : null;
     const cachedTab =
@@ -1137,8 +1168,8 @@ class AppStore {
       this.inflightTabChanges += 1;
       this.pendingTabSwitch = true;
     }
-    if (cachedTab && this.snapshot && selectIdx !== null) {
-      this.paintCachedTab(cachedTab, this.snapshot, selectIdx);
+    if (cachedTab && this.raw && selectIdx !== null) {
+      this.paintCachedTab(cachedTab, this.raw, selectIdx);
     }
     return {
       isTabChange,
@@ -1201,7 +1232,7 @@ class AppStore {
 
   /** Ingest a command's snapshot and toast success unless the backend already did. */
   private applyCmdSnapshot(command: string, snapshot: AppSnapshot, run: CmdRun): boolean {
-    const before = this.snapshot;
+    const before = this.raw;
     const applied = this.ingestCommandSnapshot(snapshot, {
       allowTabChange: run.isTabChange,
       tabChangeGen: run.myTabChangeGen ?? undefined,
@@ -1229,7 +1260,7 @@ class AppStore {
     if (snapshotViewIdentity(current) !== snapshotViewIdentity(painted)) {
       aiReviewFilter.reset();
     }
-    this.snapshot = painted;
+    this.raw = painted;
     this.followReviewPage(painted);
     this.keepOptimisticOps();
     this.initialLoadDone = true;

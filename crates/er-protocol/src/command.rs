@@ -244,6 +244,43 @@ pub enum Command {
     /// Shows a test native notification; refused when the system would not
     /// show it.
     TestNativeNotification,
+    /// Shows a tab's diff in another view: `branch`, `unstaged`, `staged`,
+    /// `pr` (or `pr_diff`) or `tour`. History, Conflicts and Hidden keep
+    /// their old command, since the App loads them. `pr_number` is a PR the
+    /// header detected for a tab that has none.
+    SetDiffMode {
+        tab: TabKey,
+        mode: String,
+        #[ts(type = "number | null")]
+        pr_number: Option<u64>,
+    },
+    /// Diffs a tab against another base, which the tab keeps.
+    ChangeBase {
+        tab: TabKey,
+        base: String,
+    },
+    /// Filters a tab's file list; an empty query clears the filter.
+    SetFilter {
+        tab: TabKey,
+        query: String,
+    },
+    /// Reads a tab's diff again. `sync` also fetches its PR or base refs
+    /// first and lines the stale mark up with the PR list, as Sync does.
+    RefreshDiff {
+        tab: TabKey,
+        sync: bool,
+    },
+    /// Syncs every open tab of a project's PR, after reading the PR again.
+    SyncPr {
+        project_id: String,
+        #[ts(type = "number")]
+        pr_number: u64,
+    },
+    /// Syncs every open tab that shows a project's branch.
+    SyncBranch {
+        project_id: String,
+        branch: String,
+    },
 }
 
 /// The review settings a patch changes; a field left empty stays as it is.

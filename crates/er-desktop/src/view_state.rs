@@ -30,6 +30,10 @@ pub struct DesktopViewState {
     /// tab keys. The default build keeps these on the engine tab until the
     /// TUI's view state moves too, so it never writes here.
     nav: HashMap<TabKey, TabNavState>,
+    /// Each tab's file filter on the service path, and the clock its writes
+    /// move, which `diff(tab)`'s version adds so a filter change moves it.
+    filters: HashMap<TabKey, TabFilter>,
+    filter_clock: u64,
 }
 
 impl DesktopViewState {
@@ -81,6 +85,29 @@ impl DesktopViewState {
         self.tabs.retain(|key, _| live.contains(key));
         self.browser_revisions.retain(|key, _| live.contains(key));
         self.nav.retain(|key, _| live.contains(key));
+        self.filters.retain(|key, _| live.contains(key));
+    }
+
+    /// The tab's filter; a tab that never set one lists every file.
+    pub fn filter(&self, key: TabKey) -> TabFilter {
+        self.filters.get(&key).cloned().unwrap_or_default()
+    }
+
+    /// Filters `key`'s list by `expr`, or clears the filter when it is
+    /// blank. A new expression goes to the front of the tab's recent ones, as
+    /// the engine's filter does. Answers the tick the write took.
+    pub fn set_filter(&mut self, key: TabKey, expr: &str) -> u64 {
+        let expr = expr.trim();
+        self.filter_clock += 1;
+        let filter = self.filters.entry(key).or_default();
+        if !expr.is_empty() {
+            filter.history.retain(|recent| recent != expr);
+            filter.history.insert(0, expr.to_string());
+            filter.history.truncate(FILTER_HISTORY);
+        }
+        filter.expr = expr.to_string();
+        filter.tick = self.filter_clock;
+        filter.tick
     }
 
     /// The tab's selection and scroll; a tab that never moved starts at the top.
@@ -91,6 +118,18 @@ impl DesktopViewState {
     pub fn nav_mut(&mut self, key: TabKey) -> &mut TabNavState {
         self.nav.entry(key).or_default()
     }
+}
+
+/// How many recent filters a tab keeps.
+const FILTER_HISTORY: usize = 20;
+
+/// One tab's file filter and its recent expressions, newest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TabFilter {
+    pub expr: String,
+    pub history: Vec<String>,
+    /// The filter clock's tick at this tab's last filter write; 0 when never.
+    pub tick: u64,
 }
 
 /// One tab's selection and scroll positions. `selected_file` indexes the

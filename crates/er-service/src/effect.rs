@@ -179,6 +179,40 @@ fn fetch_branch_base(git: &dyn er_git::Git, tab: &mut ResolvedTab) {
     }
 }
 
+/// `base` as a ref the diff can use, by the App's rule: a read-only branch
+/// view takes a ref already present, `origin/<base>` first; every other tab
+/// takes the local branch, `origin/<base>`, or fetches it from origin.
+pub(crate) fn resolve_base(
+    deps: &WorkspaceDeps,
+    tab: &ResolvedTab,
+    base: &str,
+) -> Result<String, WorkspaceError> {
+    let base = base.trim();
+    if base.is_empty() {
+        return Err(WorkspaceError::Failed("Base branch cannot be empty".into()));
+    }
+    if tab.identity().is_remote() {
+        return Err(WorkspaceError::Failed(
+            "Cannot change the compare base of a remote-only PR — the diff comes from GitHub's PR API"
+                .into(),
+        ));
+    }
+    let git = &*deps.ports().git;
+    if tab.local_branch_view.is_some() && tab.checkout_root.is_none() {
+        let short = base.strip_prefix("origin/").unwrap_or(base);
+        return [format!("origin/{short}"), short.to_string()]
+            .into_iter()
+            .find(|candidate| er_engine::github::ref_exists_locally(git, &tab.repo_root, candidate))
+            .ok_or_else(|| {
+                WorkspaceError::Failed(format!(
+                    "No local ref for '{base}' — fetch the branch first"
+                ))
+            });
+    }
+    er_engine::github::ensure_base_ref_available(git, &tab.repo_root, base)
+        .map_err(|error| failed("resolve the base", error))
+}
+
 /// Loads one tab's content in its mode, by the steps a full diff refresh
 /// runs on a `TabState`: fetch and parse the diff, hash it, load and assemble
 /// the AI sidecars, follow moved comments, mark stale findings, and clear the

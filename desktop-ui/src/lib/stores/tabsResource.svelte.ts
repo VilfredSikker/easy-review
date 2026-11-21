@@ -3,6 +3,7 @@ import { routePrefetches } from "$lib/prOpen";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import { app } from "./app.svelte";
 import { BrowserViewAdapter } from "./browserView";
+import { tabIsStale } from "./diffAdapter";
 import { resources } from "./resourceStore";
 import { TabsAdapter } from "./tabsAdapter";
 
@@ -13,6 +14,7 @@ export const tabsResource = new TabsAdapter({
   flagOn,
   store: resources,
   snapshot: () => app.snapshot,
+  stale: (row, isActive) => tabIsStale(resources, row, isActive),
 });
 
 // With the flag on the tab commands, the opens and the prefetches go through

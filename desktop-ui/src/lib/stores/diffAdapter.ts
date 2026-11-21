@@ -1,0 +1,289 @@
+import type { Command } from "$lib/protocol/generated/Command";
+import type { FileRow } from "$lib/protocol/generated/FileRow";
+import type { PrRow } from "$lib/protocol/generated/PrRow";
+import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
+import type { TabDiff } from "$lib/protocol/generated/TabDiff";
+import type { TabKey } from "$lib/protocol/generated/TabKey";
+import type { AppSnapshot, DiffStaleSnapshot, FileSnapshot } from "$lib/types";
+import type { ResourceStore } from "./resourceStore";
+
+/** The snapshot fields `diff(tab)` replaces with the flag on. */
+export type DiffSlice = Pick<
+  AppSnapshot,
+  | "files"
+  | "mode"
+  | "branch"
+  | "base"
+  | "total_count"
+  | "diff_stats"
+  | "filter"
+  | "filter_suggestions"
+  | "preview_context_key"
+  | "review_bucket_er_dir"
+  | "local_branch"
+  | "local_branch_checked_out"
+  | "unstaged_stat"
+  | "staged_stat"
+  | "diff_stale"
+  | "pr_diff_head_oid"
+  | "local_branch_divergence"
+>;
+
+/**
+ * The views the workspace records but does not load. The App still shows
+ * them, so the adapter reads their slice from the snapshot.
+ */
+export const RECORDED_MODES: ReadonlySet<string> = new Set(["history", "conflicts", "hidden"]);
+
+export function diffKey(tab: TabKey): ResourceKey {
+  return { kind: "diff", tab };
+}
+
+const EMPTY: DiffSlice = {
+  files: [],
+  mode: "branch",
+  branch: "",
+  base: "",
+  total_count: 0,
+  diff_stats: { total: { files: 0, additions: 0, deletions: 0 }, code: { files: 0, additions: 0, deletions: 0 } },
+  filter: null,
+  filter_suggestions: [],
+  preview_context_key: "",
+  review_bucket_er_dir: "",
+  local_branch: null,
+  local_branch_checked_out: false,
+  unstaged_stat: { files: 0, additions: 0, deletions: 0 },
+  staged_stat: { files: 0, additions: 0, deletions: 0 },
+  diff_stale: undefined,
+  pr_diff_head_oid: null,
+  local_branch_divergence: undefined,
+};
+
+export function sliceFromSnapshot(snapshot: DiffSlice | null): DiffSlice {
+  return snapshot ?? EMPTY;
+}
+
+/** A file row as the list shows it. Its hunks stay on the snapshot until they are served by hash. */
+export function fileFromRow(row: FileRow): FileSnapshot {
+  return {
+    ...row,
+    status: row.status as FileSnapshot["status"],
+    hunks: [],
+    delta_key: "",
+    hunks_omitted: false,
+  } as FileSnapshot;
+}
+
+/**
+ * The App's snapshot with `slice` in place of its fields. A file the App
+ * lists too keeps the App's hunks, their keys and its stub flag, since the
+ * hunks the page draws are still the App's until they are served by hash.
+ */
+export function overlaySnapshot(raw: AppSnapshot, slice: DiffSlice): AppSnapshot {
+  const held = new Map(raw.files.map((f) => [f.path, f]));
+  const files = slice.files.map((row) => {
+    const app = held.get(row.path);
+    if (!app) return row;
+    return {
+      ...row,
+      hunks: app.hunks,
+      delta_key: app.delta_key,
+      hunks_omitted: app.hunks_omitted,
+      is_lazy_stub: app.is_lazy_stub,
+      cache_key: app.cache_key,
+      preview_key: app.preview_key,
+    };
+  });
+  return { ...raw, ...slice, files };
+}
+
+/** The PR stale mark: the diff was built from one head while the PR list names another. */
+export function prStale(builtFrom: string | null, latest: string | null): DiffStaleSnapshot | undefined {
+  if (!builtFrom || !latest || builtFrom === latest) return undefined;
+  return {
+    kind: "pr_head",
+    message: "PR head updated on origin — Sync to refresh",
+    built_from_oid: builtFrom,
+    latest_oid: latest,
+  };
+}
+
+/** The PR list's row for a PR, from the `prs(remote)` resource the page holds. */
+export function prListRow(
+  store: Pick<ResourceStore, "get">,
+  remote: string | null,
+  number: number | null,
+): PrRow | null {
+  if (!remote || number === null) return null;
+  const held = store.get({ kind: "prs", remote })?.value;
+  if (held?.kind !== "prs") return null;
+  return held.rows.find((row) => row.number === number) ?? null;
+}
+
+/**
+ * Whether an inactive PR tab's diff was built from an older head than the PR
+ * list names now: its `diff(tab)` against its `prs(remote)` row.
+ */
+export function tabIsStale(
+  store: Pick<ResourceStore, "get">,
+  tab: { key: TabKey; pr_number: number | null; remote: string | null },
+  isActive: boolean,
+): boolean {
+  if (isActive) return false;
+  const diff = store.get(diffKey(tab.key))?.value;
+  const builtFrom = diff?.kind === "diff" ? diff.built_from_head_oid : null;
+  const latest = prListRow(store, tab.remote, tab.pr_number)?.headOid || null;
+  return prStale(builtFrom, latest) !== undefined;
+}
+
+/** The PR list's head and refs for the active tab's PR, when the list holds it. */
+export interface PrHead {
+  head_oid: string;
+  head_ref: string;
+  base_ref: string;
+}
+
+/**
+ * `diff(tab)` as the slice the page reads. The two values no resource carries
+ * yet come from the snapshot: a branch view's base staleness and the local
+ * branch's divergence from its PR.
+ */
+export function sliceFromResource(diff: TabDiff, snapshot: DiffSlice | null, pr: PrHead | null): DiffSlice {
+  const prStaleness = prStale(diff.built_from_head_oid, pr?.head_oid || null);
+  const baseStaleness = snapshot?.diff_stale?.kind === "base" ? snapshot.diff_stale : undefined;
+  return {
+    files: diff.files.map(fileFromRow),
+    mode: diff.mode as DiffSlice["mode"],
+    branch: diff.branch || pr?.head_ref || "",
+    base: diff.base || pr?.base_ref || "",
+    total_count: diff.total_count,
+    diff_stats: diff.diff_stats,
+    filter: diff.filter,
+    filter_suggestions: diff.filter_suggestions as DiffSlice["filter_suggestions"],
+    preview_context_key: diff.preview_context_key,
+    review_bucket_er_dir: diff.review_bucket_er_dir,
+    local_branch: diff.local_branch,
+    local_branch_checked_out: diff.local_branch_checked_out,
+    unstaged_stat: diff.unstaged_stat,
+    staged_stat: diff.staged_stat,
+    diff_stale: diff.built_from_head_oid ? prStaleness : baseStaleness,
+    pr_diff_head_oid: diff.pr_diff_head_oid,
+    local_branch_divergence: snapshot?.local_branch_divergence,
+  };
+}
+
+type Args = Record<string, unknown>;
+
+/**
+ * The wire command for one of the diff commands `app.cmd` was asked for, on
+ * `tab`; undefined for any other command and for a switch to a view the App
+ * still loads, which keeps its old route.
+ */
+export function wireDiffCommand(command: string, a: Args, tab: TabKey): Command | undefined {
+  switch (command) {
+    case "set_mode": {
+      const mode = String(a.mode);
+      if (RECORDED_MODES.has(mode)) return undefined;
+      const prNumber = typeof a.prNumber === "number" ? a.prNumber : null;
+      return { kind: "set_diff_mode", tab, mode, prNumber };
+    }
+    case "change_base":
+      return { kind: "change_base", tab, base: String(a.branch) };
+    case "set_filter":
+      return { kind: "set_filter", tab, query: String(a.query ?? "") };
+    case "clear_filter":
+      return { kind: "set_filter", tab, query: "" };
+    case "refresh_diff":
+      return { kind: "refresh_diff", tab, sync: false };
+    case "force_refresh_diff":
+      return { kind: "refresh_diff", tab, sync: true };
+    case "sync_pr":
+      return { kind: "sync_pr", projectId: String(a.projectId), prNumber: Number(a.prNumber) };
+    case "sync_branch":
+      return { kind: "sync_branch", projectId: String(a.projectId), branch: String(a.branch) };
+    default:
+      return undefined;
+  }
+}
+
+interface DiffAdapterDeps {
+  /** Whether the backend serves resources (the `v1-service` build). */
+  flagOn: boolean;
+  store: Pick<ResourceStore, "get" | "send" | "whenAt">;
+  snapshot: () => DiffSlice | null;
+  /** The registry's active tab, whose diff the page shows. */
+  activeKey: () => TabKey | null;
+  /** The wire key of the strip's row at `idx`. */
+  keyAt: (idx: number) => TabKey | null;
+  /** The PR list's row for the active tab's PR. */
+  prHead: () => PrHead | null;
+}
+
+/**
+ * The active tab's file list, mode, base and staleness: from `app.snapshot`
+ * with the flag off, and from `diff(tab)` with it on. In the views the
+ * workspace only records (History, Conflicts, Hidden) the flag-on read takes
+ * the snapshot's slice too, since the App is what loads them.
+ */
+export class DiffAdapter {
+  constructor(private readonly deps: DiffAdapterDeps) {}
+
+  read(): DiffSlice {
+    const snapshot = this.deps.snapshot();
+    if (!this.deps.flagOn) return sliceFromSnapshot(snapshot);
+    const held = this.held();
+    if (!held) return sliceFromSnapshot(snapshot);
+    if (RECORDED_MODES.has(held.mode)) return sliceFromSnapshot(snapshot);
+    return sliceFromResource(held, snapshot, this.deps.prHead());
+  }
+
+  /** `raw` with this adapter's fields in place of the App's. */
+  overlay(raw: AppSnapshot): AppSnapshot {
+    return overlaySnapshot(raw, this.read());
+  }
+
+  /** The active tab's diff as the resource holds it; null with the flag off or before the first fetch. */
+  held(): TabDiff | null {
+    if (!this.deps.flagOn) return null;
+    const key = this.deps.activeKey();
+    if (key === null) return null;
+    const value = this.deps.store.get(diffKey(key))?.value;
+    return value?.kind === "diff" ? value : null;
+  }
+
+  /** Why the active tab's last load failed; null while it loaded or loads. */
+  get loadError(): string | null {
+    return this.held()?.load_error ?? null;
+  }
+
+  get files(): FileSnapshot[] {
+    return this.read().files;
+  }
+
+  /** Sends a wire command and resolves once every key its `Ack` names is held at that version. */
+  async send(command: Command): Promise<void> {
+    let ack;
+    try {
+      ack = await this.deps.store.send(command);
+    } catch (e) {
+      throw new Error((e as { message?: string }).message ?? String(e), { cause: e });
+    }
+    await Promise.all(ack.changed.map(({ key, version }) => this.deps.store.whenAt(key, version)));
+  }
+
+  /**
+   * With the flag on, a diff command goes through `er_send` on the active
+   * tab and resolves once every key its `Ack` names is held; null for any
+   * other command, for a view the App loads, and for every command with the
+   * flag off. A click painted on a tab that is no longer active does nothing.
+   */
+  route(command: string, args: Args = {}): Promise<void> | null {
+    if (!this.deps.flagOn) return null;
+    const active = this.deps.activeKey();
+    if (active === null) return null;
+    const wire = wireDiffCommand(command, args, active);
+    if (wire === undefined) return null;
+    if (typeof args.tabIdx === "number" && this.deps.keyAt(args.tabIdx) !== active) return Promise.resolve();
+    return this.send(wire);
+  }
+}
