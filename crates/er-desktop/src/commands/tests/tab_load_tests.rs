@@ -122,3 +122,49 @@ fn an_open_succeeds_when_the_follower_loads_its_tab_first() {
         );
     });
 }
+
+/// A route's first load can overlap another first load of the same key, as
+/// the follower's: whichever lands second is refused, and the route still
+/// answers, since the key holds content. Nothing follows the registry here,
+/// so each overlap is posted by hand.
+#[test]
+fn a_route_load_refused_behind_another_first_load_answers_from_its_content() {
+    with_storage(|dir| {
+        let state = state_over(dir, fake_ports());
+        let mut failed = Vec::new();
+        for n in 0..40 {
+            let (key, tab) = listed(&state, dir, &format!("race{n}"));
+            assert!(state.service.request_load(key, &tab), "load {n} not posted");
+            if let Err(error) = content_routes::refresh_tab(&state, key, false) {
+                failed.push(error);
+                continue;
+            }
+            assert!(
+                loaded(&state, key, &tab),
+                "load {n} answered before its tab loaded"
+            );
+        }
+        assert!(
+            failed.is_empty(),
+            "{} of 40 loads failed, first: {:?}",
+            failed.len(),
+            failed.first()
+        );
+    });
+}
+
+/// A route's load claims its key, so a follower that reaches the key while
+/// the route's load is on its way posts no second one.
+#[test]
+fn a_route_load_claims_its_key() {
+    with_storage(|dir| {
+        let state = state_over(dir, fake_ports());
+        let (key, tab) = listed(&state, dir, "claimed");
+        let refreshed = content_routes::refresh_tab(&state, key, false);
+        assert!(refreshed.is_ok(), "{refreshed:?}");
+        assert!(
+            !state.service.request_load(key, &tab),
+            "a second load was posted for a key the route claimed"
+        );
+    });
+}
