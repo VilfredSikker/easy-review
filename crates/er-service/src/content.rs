@@ -21,6 +21,7 @@ use er_engine::preview_key::{PreviewKeyInputs, PreviewStamps};
 use er_engine::tab_identity::{DiffMode, ResolvedTab};
 use er_engine::TabKey;
 
+use crate::freshness::Freshness;
 use crate::protocol::TabContext;
 
 /// One open tab's content.
@@ -41,6 +42,14 @@ pub struct TabContent {
     pub reviewed: Arc<ReviewedSection>,
     pub ai: Arc<AiSection>,
     pub pr: Arc<PrSection>,
+    pub freshness: Arc<FreshnessSection>,
+}
+
+/// How far origin has moved past what the tab shows. A probe's post moves
+/// it without a load, so a load over it is never refused.
+pub struct FreshnessSection {
+    pub revision: u64,
+    pub value: Freshness,
 }
 
 /// Whether the workspace loads a diff for `mode`. History, Conflicts and
@@ -114,6 +123,10 @@ impl TabContent {
                 overview: loaded.pr.overview,
                 commits: loaded.pr.commits,
                 head_oid: loaded.pr.head_oid,
+            }),
+            freshness: Arc::new(FreshnessSection {
+                revision,
+                value: loaded.freshness,
             }),
         }
     }
@@ -223,6 +236,7 @@ impl fmt::Debug for TabContent {
             .field("reviewed", &self.reviewed.revision)
             .field("ai", &self.ai.revision)
             .field("pr", &self.pr.revision)
+            .field("freshness", &self.freshness.revision)
             .finish_non_exhaustive()
     }
 }
@@ -340,6 +354,7 @@ pub(crate) struct LoadedTab {
     pub ai: AiState,
     pub ai_stamp: SidecarStamp,
     pub pr: LoadedPr,
+    pub freshness: Freshness,
     /// How many reviewed marks the load cleared.
     pub cleared: usize,
 }
@@ -406,6 +421,11 @@ pub(crate) enum ContentPatch {
         er_dir: String,
         marks: HashMap<String, String>,
     },
+    /// What a probe's tips show against the tab, measured off the actor.
+    Freshness {
+        key: TabKey,
+        freshness: Box<Freshness>,
+    },
     /// The tab closed: its content leaves the view.
     Dropped {
         key: TabKey,
@@ -445,6 +465,7 @@ pub(crate) fn lifecycle_keys(
         ContentPatch::Parsed { .. }
         | ContentPatch::Mode { .. }
         | ContentPatch::Ai { .. }
+        | ContentPatch::Freshness { .. }
         | ContentPatch::Sidecar { .. }
         | ContentPatch::Reviewed { .. } => {}
     }
@@ -473,6 +494,7 @@ pub(crate) fn check(
         },
         ContentPatch::Several(patches) => patches.iter().try_for_each(|patch| check(tabs, patch)),
         ContentPatch::Ai { .. }
+        | ContentPatch::Freshness { .. }
         | ContentPatch::Sidecar { .. }
         | ContentPatch::Reviewed { .. }
         | ContentPatch::Dropped { .. } => Ok(()),
@@ -530,6 +552,21 @@ pub(crate) fn apply(
         ContentPatch::Reviewed { er_dir, marks } => {
             for content in tabs.values_mut() {
                 if let Some(next) = content.with_marks(&er_dir, &marks, revision) {
+                    *content = Arc::new(next);
+                }
+            }
+            0
+        }
+        ContentPatch::Freshness { key, freshness } => {
+            if let Some(content) = tabs.get_mut(&key) {
+                // An unchanged measure keeps its revision, so the diff's
+                // version moves only when what it shows does.
+                if content.freshness.value != *freshness {
+                    let mut next = TabContent::clone(content);
+                    next.freshness = Arc::new(FreshnessSection {
+                        revision,
+                        value: *freshness,
+                    });
                     *content = Arc::new(next);
                 }
             }

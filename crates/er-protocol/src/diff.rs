@@ -37,9 +37,37 @@ pub struct TabDiff {
     /// The head the PR diff on screen was fetched at; set only while the view
     /// shows the PR's own head.
     pub pr_diff_head_oid: Option<String>,
+    /// A branch view's base when origin's tip of it has moved past the commit
+    /// the diff was built from.
+    pub base_behind: Option<BaseBehind>,
+    /// The checkout against its PR's head in the PR list.
+    pub local_branch_divergence: Option<BranchDivergence>,
     /// Why the tab's last load failed. Set only while nothing loaded; a
     /// refresh loads again.
     pub load_error: Option<String>,
+}
+
+/// A branch view's base, built from one commit while origin's tip is another.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct BaseBehind {
+    pub built_from_oid: String,
+    pub latest_oid: String,
+    /// Commits the tip has that the base lacks; none while either commit is
+    /// missing locally.
+    #[ts(type = "number | null")]
+    pub commits_behind: Option<u64>,
+}
+
+/// A checkout against its PR's head.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct BranchDivergence {
+    pub pr_head_oid: String,
+    /// Commits on the checkout's HEAD that the PR head lacks; none while the
+    /// PR head is missing locally.
+    #[ts(type = "number | null")]
+    pub ahead: Option<u64>,
+    #[ts(type = "number")]
+    pub unstaged_files: u64,
 }
 
 /// One file as the list shows it, without its hunks.
