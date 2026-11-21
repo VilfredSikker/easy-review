@@ -189,6 +189,23 @@ describe("resource source scans", () => {
     expect(wiring).toMatch(/if \(flagOn\) \{\s*app\.routeCmds\(\(command, args\) => tabsResource\.route\(command, args\)\);\s*routePrefetches\(/);
   });
 
+  // With the flag on `app.snapshot` runs the diff overlay, which reads the
+  // active tab and its PR head through these adapters, so a read of
+  // `app.snapshot` in either recurses until the stack overflows.
+  it("the adapters the diff overlay reads take the App's snapshot", () => {
+    const block = (f: string, ctor: string) => {
+      const code = stripped(join("lib", "stores", f));
+      const start = code.indexOf(`new ${ctor}({`);
+      return code.slice(start, code.indexOf("});", start));
+    };
+    for (const [f, ctor] of [
+      ["tabsResource.svelte.ts", "TabsAdapter"],
+      ["diffResource.svelte.ts", "DiffAdapter"],
+    ]) {
+      expect(block(f, ctor)).toMatch(/snapshot: \(\) => app\.appSnapshot,/);
+    }
+  });
+
   // The key handler's modes are the frontend's own; the App keeps input_mode
   // for the TUI (D20), and no resource carries it.
   it("no module reads input_mode off the snapshot", () => {
