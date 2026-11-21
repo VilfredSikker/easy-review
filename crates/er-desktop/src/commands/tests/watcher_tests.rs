@@ -377,14 +377,24 @@ fn the_divergence_counts_the_checkout_against_the_pr_head() {
             base_tip: None,
             pr_head: Some(pr_head.clone()),
         };
-        post(&state, tips);
-        let divergence = er_protocol::BranchDivergence {
+        post(&state, tips.clone());
+        let mut divergence = er_protocol::BranchDivergence {
             pr_head_oid: pr_head,
             ahead: Some(1),
             unstaged_files: 1,
         };
         wait_until("the divergence", || {
             diff_of(&state, key, &tab).local_branch_divergence.as_ref() == Some(&divergence)
+        });
+
+        // A local commit moves the count while the tips hold still.
+        git(&root, &["commit", "-q", "-am", "local"]);
+        post(&state, tips);
+        divergence.ahead = Some(2);
+        divergence.unstaged_files = 0;
+        wait_until("the count after a commit", || {
+            let held = diff_of(&state, key, &tab).local_branch_divergence;
+            held.is_some_and(|held| held.ahead == divergence.ahead)
         });
     });
 }
