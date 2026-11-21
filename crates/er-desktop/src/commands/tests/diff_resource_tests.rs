@@ -66,7 +66,11 @@ pub(super) fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
 }
 
 /// A working tab on `repo` in the registry, which nothing has loaded.
-fn listed(state: &AppState, dir: &ReviewFlowTestDir, repo: &str) -> (TabKey, TabDescriptor) {
+pub(super) fn listed(
+    state: &AppState,
+    dir: &ReviewFlowTestDir,
+    repo: &str,
+) -> (TabKey, TabDescriptor) {
     let root = dir.path().join(repo);
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
     let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
@@ -79,7 +83,11 @@ fn listed(state: &AppState, dir: &ReviewFlowTestDir, repo: &str) -> (TabKey, Tab
     (key, tab)
 }
 
-fn opened(state: &AppState, dir: &ReviewFlowTestDir, repo: &str) -> (TabKey, TabDescriptor) {
+pub(super) fn opened(
+    state: &AppState,
+    dir: &ReviewFlowTestDir,
+    repo: &str,
+) -> (TabKey, TabDescriptor) {
     let root = dir.path().join(repo);
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
     let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
