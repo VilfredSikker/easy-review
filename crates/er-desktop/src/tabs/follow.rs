@@ -111,10 +111,12 @@ pub fn prune(view_state: &ViewStateHandle, registry: &AppRegistry) {
 }
 
 /// From now on, after each tab-list change: the view state drops the tabs
-/// that left, and the App follows the list. Each runs on a thread of its own,
-/// so the prune never waits on the App lock.
+/// that left, the active tab loads when nothing has, and the App follows the
+/// list. Each runs on a thread of its own, so neither the prune nor the load
+/// waits on the App lock. The active tab also loads now, since the restore
+/// that runs first sends no change.
 pub fn follow_service(
-    service: &ServiceState,
+    service: &Arc<ServiceState>,
     app: Arc<Mutex<App>>,
     view_state: ViewStateHandle,
     ports: Ports,
@@ -122,7 +124,12 @@ pub fn follow_service(
     let registry = Arc::clone(service.app_registry());
     let (pruned, pruning) = (Arc::clone(&view_state), Arc::clone(&registry));
     service.follow_tabs(move || prune(&pruned, &pruning));
+    let loader = Arc::clone(service);
+    service.follow_tabs(move || {
+        super::load_active(&loader);
+    });
     service.follow_tabs(move || follow(&app, &view_state, &registry, &ports));
+    super::load_active(service);
 }
 
 /// Follows the registry once. A tab whose descriptor no longer builds is

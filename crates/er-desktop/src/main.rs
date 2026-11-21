@@ -1023,6 +1023,8 @@ fn main() {
 
     // Scope background tab warmup to the active project (or the restored active
     // tab's repo). Never warm cross-project stubs when active_id is missing.
+    // With `v1-service` the registry's active tab scopes it (`tabs::warm`).
+    #[cfg(not(feature = "v1-service"))]
     let warmer_scope_root: Option<String> = active_root_from_projects()
         .or_else(|| {
             app.tabs
@@ -1773,6 +1775,14 @@ fn main() {
     // **active project**. Tabs from other projects stay stubs until the user
     // focuses them (`commands::kick_deferred_tab_refresh` loads the diff then).
     // Avoids paying `git diff` cost on launch for repos the user didn't open.
+    // With `v1-service` the warmer loads the registry's tabs through the
+    // service (`tabs::spawn_warmer`), after the same grace period.
+    #[cfg(feature = "v1-service")]
+    {
+        let _ = deferred_tab_indices;
+        tabs::spawn_warmer(Arc::clone(&service), std::time::Duration::from_secs(2));
+    }
+    #[cfg(not(feature = "v1-service"))]
     if !deferred_tab_indices.is_empty() {
         let warmer_app = Arc::clone(&app_arc);
         let warmer_rev = Arc::clone(&desktop_revision);
@@ -2370,6 +2380,7 @@ fn apply_watch_checkout_root(
 }
 
 /// Read the persisted active project's root path, if any.
+#[cfg(not(feature = "v1-service"))]
 fn active_root_from_projects() -> Option<String> {
     let file = projects::load();
     let active_id = file.active_id.as_ref()?;

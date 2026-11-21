@@ -244,23 +244,44 @@ impl ServiceState {
     /// asked for again: the first load is still on its way, and its publish
     /// brings the content or the failure. Answers whether it posted.
     pub fn request_load(&self, key: TabKey, tab: &TabDescriptor) -> bool {
-        {
-            let mut asked = match self.load_requests.lock() {
-                Ok(asked) => asked,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            asked.retain(|_, at| at.elapsed() < REPLY_TIMEOUT);
-            if asked.contains_key(&key) {
-                return false;
-            }
-            asked.insert(key, Instant::now());
+        if !self.claim_load(key) {
+            return false;
         }
-        let load = Command::LoadTab {
-            key,
-            tab: tab.clone(),
-            mode: None,
+        drop(
+            self.handle_for(&actor_key(tab))
+                .send(load_command(key, tab)),
+        );
+        true
+    }
+
+    /// Loads `key` on `tab`'s actor and waits for its bounded reply, unless
+    /// a load of it is already on its way. Answers whether this call loaded.
+    pub fn load_and_wait(&self, key: TabKey, tab: &TabDescriptor) -> bool {
+        self.claim_load(key)
+            && self
+                .handle_for(&actor_key(tab))
+                .send_and_wait(load_command(key, tab))
+                .is_ok()
+    }
+
+    /// Whether `tab`'s actor has published `key`'s content or a failed
+    /// load. Never starts an actor.
+    pub fn has_published(&self, key: TabKey, tab: &TabDescriptor) -> bool {
+        self.published_view(&actor_key(tab))
+            .is_some_and(|view| view.tab(key).is_some() || view.load_errors.contains_key(&key))
+    }
+
+    /// Claims `key`'s load for the reply bound; false when it is claimed.
+    fn claim_load(&self, key: TabKey) -> bool {
+        let mut asked = match self.load_requests.lock() {
+            Ok(asked) => asked,
+            Err(poisoned) => poisoned.into_inner(),
         };
-        drop(self.handle_for(&actor_key(tab)).send(load));
+        asked.retain(|_, at| at.elapsed() < REPLY_TIMEOUT);
+        if asked.contains_key(&key) {
+            return false;
+        }
+        asked.insert(key, Instant::now());
         true
     }
 
@@ -314,6 +335,14 @@ impl ServiceState {
             .into_iter()
             .find(|(_, handle)| handle.view().review_flow(er_dir).is_some())
             .map(|(key, _)| key)
+    }
+}
+
+fn load_command(key: TabKey, tab: &TabDescriptor) -> Command {
+    Command::LoadTab {
+        key,
+        tab: tab.clone(),
+        mode: None,
     }
 }
 
