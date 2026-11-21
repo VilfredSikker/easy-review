@@ -472,10 +472,20 @@ fn through_tab_state(
 ) -> anyhow::Result<Observed> {
     er_engine::storage::with_process_test_storage_root(root.join("app-storage"), || {
         let ports = ports(lazy);
-        let github = Arc::clone(&ports.github);
+        let (git, github) = (Arc::clone(&ports.git), Arc::clone(&ports.github));
         let resolved = resolved(kind, repo, mode, &ports)?;
         let er_dir = write_fixture(&resolved, &*ports.git)?;
         let mut tab = TabState::from_resolved(resolved, ports)?;
+        // The running App's watcher sets the checkout root before a refresh,
+        // by the rule the workspace's load runs on every load.
+        let branch = er_engine::checkout::watched_branch(
+            tab.is_remote(),
+            tab.local_branch_view.as_deref(),
+            &tab.current_branch,
+        );
+        tab.local_branch_checkout_root = branch.and_then(|branch| {
+            er_engine::checkout::resolve_head_checkout(&*git, &tab.repo_root, &branch)
+        });
         tab.sync_managed_storage_light();
         for _ in 0..refreshes {
             tab.refresh_diff()?;

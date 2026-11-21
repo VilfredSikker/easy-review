@@ -6256,34 +6256,10 @@ fn finding_fields_for_ref(
 
 // ── PR URL open ──────────────────────────────────────────────────────────────
 
-/// Resolve the working-tree path where `branch` is checked out: the project
-///
-/// root (if `git rev-parse --abbrev-ref HEAD` == `branch`) or a linked
-/// worktree. Returns `None` when the branch isn't checked out anywhere.
-///
-/// Shared by the PR-open path (`open_pr_review_impl`) and the desktop
-/// active-branch watcher (`main.rs::desired_local_branch_watch`) so both
-/// attach a checkout root using the same logic — making Saved/My PRs/Recent
-/// behave like Tracked when the PR's head branch is checked out.
-pub fn resolve_head_checkout(
-    git: &dyn er_engine::git::Git,
-    repo_root: &str,
-    branch: &str,
-) -> Option<String> {
-    if branch.is_empty() {
-        return None;
-    }
-    // Project root checkout? An unreadable HEAD (an unborn branch, say) must
-    // still fall through to the linked-worktree check, as the raw command did.
-    let head = git.current_branch(repo_root).unwrap_or_default();
-    if head == branch {
-        return Some(repo_root.to_string());
-    }
-    // Linked worktree checkout?
-    let worktrees = git.list_worktrees(repo_root).ok()?;
-    let wt = worktrees.into_iter().find(|w| w.branch == branch)?;
-    Some(wt.path)
-}
+/// Shared by the PR-open path (`open_pr_review_impl`), the desktop
+/// active-branch watcher and the workspace's load, so all three attach a
+/// checkout root by the same rule.
+pub use er_engine::checkout::resolve_head_checkout;
 
 /// Place `tab` into the app: replace the active slot when `replace` is true
 /// (Cmd-click / middle-click semantics), otherwise push a new tab.
@@ -12722,6 +12698,8 @@ mod tests {
     mod tab_load_tests;
     #[cfg(feature = "v1-service")]
     mod tab_resource_tests;
+    #[cfg(feature = "v1-service")]
+    mod watcher_tests;
     #[cfg(feature = "v1-service")]
     mod workspace_key_tests;
     #[cfg(not(feature = "v1-service"))]
