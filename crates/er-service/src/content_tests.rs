@@ -873,15 +873,14 @@ fn each_section_the_diff_reads_raises_its_version() {
     }
     let fresh = || TabContent::from_loaded(TabKey::next(), *loaded_tab("/repo"), 1);
     let base = crate::diff_version(&fresh());
-    let raises: [(&str, fn(&mut TabContent)); 4] = [
-        ("reviewed", |c| section(&mut c.reviewed).revision += 5),
-        ("ai", |c| section(&mut c.ai).revision += 5),
-        ("pr", |c| section(&mut c.pr).revision += 5),
-        ("mode", |c| c.mode_revision += 5),
-    ];
-    for (name, raise) in raises {
+    for name in ["reviewed", "ai", "pr", "mode"] {
         let mut content = fresh();
-        raise(&mut content);
+        match name {
+            "reviewed" => section(&mut content.reviewed).revision += 5,
+            "ai" => section(&mut content.ai).revision += 5,
+            "pr" => section(&mut content.pr).revision += 5,
+            _ => content.mode_revision += 5,
+        }
         assert!(crate::diff_version(&content) > base, "{name} left {base}");
     }
 }
