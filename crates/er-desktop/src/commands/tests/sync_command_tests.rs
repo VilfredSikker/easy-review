@@ -23,8 +23,7 @@ const WAIT: Duration = Duration::from_secs(10);
 /// The diff fixture's git, which also diffs a branch view, and a GitHub that
 /// answers the open cache's PR diff.
 fn ports() -> er_engine::ports::Ports {
-    let git: Arc<dyn er_git::Git> =
-        Arc::new(fake_git().with_diff_against_branch(Ok(raw_diff())));
+    let git: Arc<dyn er_git::Git> = Arc::new(fake_git().with_diff_against_branch(Ok(raw_diff())));
     let github: Arc<dyn er_engine::github::GitHub> = Arc::new(
         er_engine::github::FakeGitHub::default()
             .with_pr_diff(Ok(raw_diff()))
@@ -129,7 +128,10 @@ fn a_pr_sync_moves_only_the_prs_tabs_and_warms_its_open_cache() {
         let registry = state.service.app_registry();
         let deadline = Instant::now() + WAIT;
         while registry.pr_open_entry(&key).is_none() {
-            assert!(Instant::now() < deadline, "the sync left the open cache cold");
+            assert!(
+                Instant::now() < deadline,
+                "the sync left the open cache cold"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     });

@@ -9,7 +9,7 @@ use er_engine::tabs_record::TabDescriptor;
 use er_engine::TabKey;
 use er_service::AppCommand;
 
-use super::diff_resource_tests::{fake_ports, listed, opened, state_over, with_storage};
+use super::diff_resource_tests::{fake_ports, listed, state_over, with_storage};
 use crate::commands::AppState;
 use crate::tabs;
 
@@ -28,11 +28,6 @@ fn wait_for_load(state: &AppState, key: TabKey, tab: &TabDescriptor) -> bool {
         std::thread::sleep(Duration::from_millis(10));
     }
     true
-}
-
-fn version(state: &AppState, key: TabKey, tab: &TabDescriptor) -> Option<u64> {
-    let content = state.service.content(key, tab)?;
-    Some(er_service::diff_version(&content))
 }
 
 /// Nothing fetches `diff(tab)` here, so only the follower can load: the
@@ -65,16 +60,16 @@ fn a_followed_stub_gets_its_first_diff_when_it_becomes_active() {
 }
 
 /// The warmer loads the other tabs on the active tab's repo, once each, and
-/// leaves the active tab and another repo's tab alone.
+/// leaves another repo's tab alone. It never loads the active tab, which its
+/// activation loads: here nothing follows the registry, so the active tab
+/// stays unloaded.
 #[test]
 fn the_warmer_loads_each_unloaded_tab_of_the_active_repo_once() {
     with_storage(|dir| {
         let state = state_over(dir, fake_ports());
         let (elsewhere, elsewhere_tab) = listed(&state, dir, "elsewhere");
         let (stub, stub_tab) = listed(&state, dir, "repo");
-        let (active, active_tab) = opened(&state, dir, "repo");
-        let before = version(&state, active, &active_tab);
-        assert!(before.is_some(), "the active tab did not load");
+        let (active, active_tab) = listed(&state, dir, "repo");
 
         assert_eq!(tabs::warm(&state.service, Duration::ZERO), 1);
         assert!(loaded(&state, stub, &stub_tab), "the warmer skipped a stub");
@@ -82,10 +77,9 @@ fn the_warmer_loads_each_unloaded_tab_of_the_active_repo_once() {
             !loaded(&state, elsewhere, &elsewhere_tab),
             "the warmer loaded another repo's tab"
         );
-        assert_eq!(
-            version(&state, active, &active_tab),
-            before,
-            "the warmer loaded the active tab again"
+        assert!(
+            !loaded(&state, active, &active_tab),
+            "the warmer loaded the active tab"
         );
         assert_eq!(tabs::warm(&state.service, Duration::ZERO), 0);
     });

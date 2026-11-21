@@ -247,7 +247,10 @@ impl ServiceState {
         if !self.claim_load(key) {
             return false;
         }
-        drop(self.handle_for(&actor_key(tab)).send(load_command(key, tab)));
+        drop(
+            self.handle_for(&actor_key(tab))
+                .send(load_command(key, tab)),
+        );
         true
     }
 
