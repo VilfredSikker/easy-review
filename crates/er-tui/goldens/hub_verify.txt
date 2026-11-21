@@ -1,0 +1,21 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                           0/2 reviewed
+ FILES (2)                     │ src/auth.rs                                  Hunk 1/1
+ ~ src/auth.rs          +2 -1  │  ~ src/auth.rs  +2 -1
+ ~ README.md            +1 -0  │
+                 ┌ VERIFY (Enter=select, Esc=close) ───────────────────┐
+                 │── Packages ──                                       │l {
+                 │▶ Web  [web]  2 command(s) configured                │
+                 │── Global ──                                         │of(token);
+                 │  Run tests  cargo test                              │ience == "er"
+                 │  Run linter  set in [commands] in the config hub (,)│
+                 │  Type check  set in [commands] in the config hub (,)│
+                 │  Security scan  set in [commands] in the config hub │-> &str {
+                 └─────────────────────────────────────────────────────┘
+                               │
+                               │
+                               │
+                               │
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help
+ ^q quit
+styles 7283703ab37e4188

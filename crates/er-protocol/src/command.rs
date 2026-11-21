@@ -224,6 +224,26 @@ pub enum Command {
         #[ts(type = "number")]
         number: u64,
     },
+    /// Marks one inbox item read; an id the inbox does not hold changes
+    /// nothing.
+    MarkInboxItemRead {
+        id: String,
+    },
+    MarkAllInboxRead,
+    MarkInboxItemsRead {
+        ids: Vec<String>,
+    },
+    /// Removes every read inbox item.
+    ClearReadInboxItems,
+    /// Removes the named inbox items that are read; unread ones stay.
+    ClearInboxItems {
+        ids: Vec<String>,
+    },
+    /// Runs the PR sweep that fills the inbox, as `RefreshPrList` does.
+    RefreshNotifications,
+    /// Shows a test native notification; refused when the system would not
+    /// show it.
+    TestNativeNotification,
     /// Shows a tab's diff in another view: `branch`, `unstaged`, `staged`,
     /// `pr` (or `pr_diff`) or `tour`. History, Conflicts and Hidden keep
     /// their old command, since the App loads them. `pr_number` is a PR the

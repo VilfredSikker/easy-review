@@ -404,6 +404,9 @@ fn now_ms() -> u64 {
 }
 
 /// Clone inbox prefs from the live `App`. Callers must not hold the inbox lock.
+/// The flag build reads them from the settings actor instead
+/// (`app_owner::startup::inbox_prefs`), so it has no caller there.
+#[cfg(not(feature = "v1-service"))]
 pub fn clone_inbox_prefs(app: &Arc<Mutex<App>>) -> InboxConfig {
     app.lock()
         .ok()
@@ -9024,8 +9027,9 @@ fn prefetch_remote_pr_open_impl(
 /// running, this is a no-op.
 #[tauri::command]
 pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let app = Arc::clone(&state.app);
-    kick_pr_list_refresh(&state, None, move || clone_inbox_prefs(&app))?;
+    let prefs_state = state.inner().clone();
+    let prefs = move || crate::app_owner::startup::inbox_prefs(&prefs_state);
+    kick_pr_list_refresh(&state, None, prefs)?;
     snap!(state)
 }
 
@@ -9046,8 +9050,9 @@ pub fn refresh_project_pr_list(
         },
         None => return snap!(state),
     };
-    let app = Arc::clone(&state.app);
-    kick_pr_list_refresh(&state, Some(remote), move || clone_inbox_prefs(&app))?;
+    let prefs_state = state.inner().clone();
+    let prefs = move || crate::app_owner::startup::inbox_prefs(&prefs_state);
+    kick_pr_list_refresh(&state, Some(remote), prefs)?;
     snap!(state)
 }
 
@@ -9126,14 +9131,10 @@ fn mutate_inbox(
     command: &'static str,
     f: impl FnOnce(&mut InboxState),
 ) -> Result<AppSnapshot, String> {
-    {
-        let mut inbox = state.inbox.lock().map_err(|e| {
-            log::error!("[inbox] command={command} failed to lock inbox: {e}");
-            e.to_string()
-        })?;
-        f(&mut inbox);
-    }
-    crate::inbox::save_inbox_state(&state.inbox);
+    state.app_owner.write_inbox(f).map_err(|e| {
+        log::error!("[inbox] command={command} failed to lock inbox: {e}");
+        e
+    })?;
     // Clearing read items changes neither hashed inbox input (unread count,
     // last refresh), so the bump is what lets the poll notice the change.
     crate::profile_log::bump_desktop_revision(&state.desktop_revision, command);
@@ -9216,6 +9217,11 @@ pub fn refresh_notifications(state: State<AppState>) -> Result<AppSnapshot, Stri
 
 #[tauri::command]
 pub fn test_native_notification(state: State<AppState>) -> Result<(), String> {
+    show_test_notification(&state)
+}
+
+/// Shows a test banner, or says how to get one when the system would not.
+pub(crate) fn show_test_notification(state: &DesktopState) -> Result<(), String> {
     let handle = state.tauri_app_handle.lock().ok().and_then(|g| g.clone());
     if show_native_notification(handle.as_ref(), "Easy Review", "Test notification") {
         Ok(())
@@ -9380,20 +9386,21 @@ fn open_inbox_item_impl(
 ) -> Result<AppSnapshot, String> {
     let replace = Some(!new_tab);
     let now = now_ms();
-    let target = {
-        let mut inbox = state.inbox.lock().map_err(|e| {
+    let mut target = None;
+    state
+        .app_owner
+        .write_inbox(|inbox| {
+            target = inbox
+                .items
+                .iter()
+                .find(|i| i.id == id)
+                .map(|i| i.target.clone());
+            inbox.mark_item_read(&id, now);
+        })
+        .map_err(|e| {
             log::error!("[inbox] command=open_inbox_item failed to lock inbox: {e}");
-            e.to_string()
+            e
         })?;
-        let target = inbox
-            .items
-            .iter()
-            .find(|i| i.id == id)
-            .map(|i| i.target.clone());
-        inbox.mark_item_read(&id, now);
-        target
-    };
-    crate::inbox::save_inbox_state(&state.inbox);
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
     #[cfg(feature = "v1-service")]
@@ -12702,6 +12709,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod settings_resource_tests;
     #[cfg(feature = "v1-service")]
+    mod sidebar_inbox_tests;
+    #[cfg(feature = "v1-service")]
     mod sidebar_pr_tests;
     #[cfg(feature = "v1-service")]
     mod sidebar_tests;
@@ -12998,11 +13007,13 @@ mod tests {
         let pr_cache = Arc::new(Mutex::new(HashMap::new()));
         let gh_user = Arc::new(Mutex::new(None));
         let pr_cache_fetched_at = Arc::new(Mutex::new(HashMap::new()));
+        let inbox = Arc::new(Mutex::new(crate::inbox::InboxState::default()));
         let app_owner = Arc::new(crate::app_owner::AppOwner::new(
             Arc::clone(&meta_cache),
             Arc::clone(&pr_cache),
             Arc::clone(&pr_cache_fetched_at),
             Arc::clone(&gh_user),
+            Arc::clone(&inbox),
         ));
         let gh_status_cache = Arc::new(Mutex::new(HashMap::new()));
         let loading = Arc::new(Mutex::new(crate::snapshot::LoadingFlags::default()));
@@ -13034,12 +13045,14 @@ mod tests {
             remote_pr_open_in_flight: Arc::new(Mutex::new(HashSet::new())),
             desktop_revision,
             watch_status,
-            inbox: Arc::new(Mutex::new(crate::inbox::InboxState::default())),
+            inbox,
             tauri_app_handle: Arc::new(Mutex::new(None)),
             auto_triage_in_flight: Arc::new(Mutex::new(HashSet::new())),
             line_commits_cache: Arc::default(),
             session: Default::default(),
         };
+        #[cfg(feature = "v1-service")]
+        crate::app_owner::startup::read_inbox_prefs_from_settings(&desktop);
         AppState::new(desktop, app)
     }
 
@@ -15790,6 +15803,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn clone_inbox_prefs_reads_app_config() {
         let storage = tempfile::tempdir().unwrap();

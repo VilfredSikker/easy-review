@@ -170,3 +170,53 @@ pub struct Worktree {
 pub struct AvailableBranches {
     pub branches: Vec<String>,
 }
+
+/// The inbox, built on the server: the items newest first with the kinds the
+/// person hid left out, how many of those are unread, and when the PR sweep
+/// last ran. The frontend shows the count and never counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Inbox {
+    pub items: Vec<InboxItem>,
+    /// The unread items among `items`.
+    // JSON over IPC delivers a number, never a BigInt; the inbox keeps 200 items.
+    #[ts(type = "number")]
+    pub unread_count: u64,
+    /// When the PR sweep last ran, in ms since the epoch; 0 before the first.
+    #[ts(type = "number")]
+    pub last_refresh_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxItem {
+    pub id: String,
+    /// What happened, as the sweep names it (`ci_failed`, `pr_merged`, …).
+    pub kind: String,
+    /// The filter group of `kind` (`ci`, `lifecycle`, …).
+    pub category: String,
+    pub severity: String,
+    pub title: String,
+    pub body: String,
+    pub source: String,
+    pub target: InboxTarget,
+    #[ts(type = "number")]
+    pub created_at_ms: u64,
+    /// None while the item is unread.
+    #[ts(type = "number | null")]
+    pub read_at_ms: Option<u64>,
+    pub dedupe_key: String,
+}
+
+/// What an inbox item opens; each part is what the event named.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxTarget {
+    pub project_id: Option<String>,
+    pub repo_root: Option<String>,
+    pub remote: Option<String>,
+    #[ts(type = "number | null")]
+    pub pr_number: Option<u64>,
+    pub branch: Option<String>,
+    pub url: Option<String>,
+}

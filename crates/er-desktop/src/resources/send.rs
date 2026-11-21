@@ -1,8 +1,8 @@
 //! `er_send`'s body: each wire command applied by the one owner of what it
 //! writes. A settings write, an AI pick or a risk read goes to the settings
-//! actor (ADR 0069); a project or branch edit goes to the sidebar's owner;
-//! the panel mirror and the update check are the desktop's own.
-//! A tab command or an open goes to the app registry (`tabs`); a diff
+//! actor (ADR 0069); a project, branch, PR or inbox edit goes to the
+//! sidebar's owner; the panel mirror and the update check are the desktop's
+//! own. A tab command or an open goes to the app registry (`tabs`); a diff
 //! command goes to the tab's workspace actor (`diff(tab)`).
 
 use er_engine::config::AiSelection;

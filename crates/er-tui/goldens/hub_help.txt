@@ -1,0 +1,21 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                           0/2 reviewed
+ FILES (2)┌ HELP (Esc=close) ──────────────────────────────────────────────────┐nk 1/1
+ ~ src/aut│── Navigation ──                                                    │
+ ~ README.│  j / k       Previous / next file                                  │
+          │  n / N       Next / previous hunk                                  │
+          │  ↑ / ↓   Line navigation                                           │
+          │  Shift+↑/↓Extend line selection                                    │
+          │  h / l       Scroll left / right                                   │);
+          │  d / u       Scroll half page ↓ / ↑                                │ "er"
+          │  PgDn / PgUp Scroll full page ↓ / ↑                                │
+          │  Home        Reset horizontal scroll                               │
+          │  1-6         Switch diff mode                                      │{
+          │── Review ──                                                        │
+          │  Space       Toggle file reviewed                                  │
+          │  Shift+Space Show unreviewed only                                  │
+          │  U           Jump to next unreviewed file                          │
+          └────────────────────────────────────────────────────────────────────┘
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help
+ ^q quit
+styles 7aa1ef1a02dc5c10

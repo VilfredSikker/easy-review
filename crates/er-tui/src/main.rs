@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod golden;
 mod input;
 mod os_launch;
 mod ui;

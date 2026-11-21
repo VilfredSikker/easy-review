@@ -1,0 +1,21 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                           0/2 reviewed
+ FILES (2)                     │ src/auth.rs                                  Hunk 1/1
+ ~ src/auth.rs          +2 -1  │  ~ src/auth.rs  +2 -1
+ ~ README.md   ┌ FILTERS (Enter=apply, Esc=close) ────────────────────────┐
+               │▶ frontend  *.ts,*.tsx,*.js,*.jsx,*.html,*.css,*.scss,*.sv│
+               │  backend   *.rs,*.py,*.go,*.java,*.sql,*.ts              │
+               │  config    *.toml,*.yaml,*.yml,*.json,*.env              │
+               │  docs      *.md,*.txt,*.rst                              │token);
+               │  review    -risk:info                                    │ce == "er"
+               │  schema    *.sql,*.prisma,*.graphql,migration            │
+               │  api       *.proto,openapi,api/,routes/,handlers/,control│
+               │── history ──                                             │&str {
+               │  +*.rs                                                   │
+               │  -*.lock                                                 │
+               └──────────────────────────────────────────────────────────┘
+                               │
+                               │
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help
+ ^q quit
+styles 67312dafced88566

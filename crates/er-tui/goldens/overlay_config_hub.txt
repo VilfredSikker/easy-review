@@ -1,0 +1,25 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                           0/2 reviewed
+ FILES (2)┌ Config — General ──────────────────────────────────────────────────┐nk 1/1
+ ~ src/aut│ Commands                                                           │
+ ~ README.│▸ Test: vim█                                                        │
+          │  Lint: e.g. cargo clippy                                           │
+          │  Typecheck: e.g. tsc --noEmit                                      │
+          │  Security: e.g. cargo audit                                        │
+          │  [ ] Push summary to PR body                                       │);
+          │ Agent                                                              │ "er"
+          │  Command: claude                                                   │
+          │  Args: --print --output-format stream-json -p {prompt}             │
+          │ AI Hub                                                             │{
+          │  Provider: Auto  ◀▶                                                │
+          │  Model: Auto  ◀▶                                                   │
+          │  Effort / reasoning: Auto  ◀▶                                      │
+          │  [x] Model discovery                                               │
+          │ Watched Paths                                                      │
+          │  Diff mode:   ◀▶                                                   │
+          │                                                                    │
+          │ Enter confirm  Esc cancel edit                                     │
+          └────────────────────────────────────────────────────────────────────┘
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help
+ ^q quit
+styles 232a7ebd71af9ecb

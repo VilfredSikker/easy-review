@@ -1,11 +1,15 @@
 //! The sidebar steps `main.rs` runs, kept in the library so the tests run
 //! the code the app runs. They are handed the `AppState` because the default
-//! build still reads the App here; the service build reads only the
-//! registry's published tab list.
+//! build still reads the App here; the service build reads only what the
+//! registry and the settings actor publish.
 
 use std::time::Duration;
 
+use er_engine::config::InboxConfig;
+
 use crate::commands::AppState;
+#[cfg(feature = "v1-service")]
+use crate::state::DesktopState;
 
 /// How long the metadata loop waits before its next refresh: twice as long
 /// while the active tab is a remote PR.
@@ -75,6 +79,45 @@ pub fn pr_head_probe_target(state: &AppState) -> Option<(String, u64)> {
     }
     let (owner, repo) = er_engine::github::get_repo_info(&*state.ports.git, &root).ok()?;
     Some((format!("{owner}/{repo}"), number))
+}
+
+/// The inbox prefs the PR sweep and the setup hook's flush read. On the flag
+/// they come from the settings actor's view, which owns the config, so a held
+/// App lock never holds them up; off it, from the App's config.
+pub fn inbox_prefs(state: &AppState) -> InboxConfig {
+    #[cfg(feature = "v1-service")]
+    return settings_inbox_prefs(state);
+    #[cfg(not(feature = "v1-service"))]
+    return crate::commands::clone_inbox_prefs(&state.app);
+}
+
+/// The inbox prefs as the settings actor last published them.
+#[cfg(feature = "v1-service")]
+pub fn settings_inbox_prefs(desktop: &DesktopState) -> InboxConfig {
+    desktop.service.settings().view().config.inbox.clone()
+}
+
+/// Has the sidebar's owner build `inbox` with the settings actor's prefs.
+/// A publish never starts the actor: until something starts it, the owner
+/// holds the inbox it has.
+#[cfg(feature = "v1-service")]
+pub fn read_inbox_prefs_from_settings(desktop: &DesktopState) {
+    let service = std::sync::Arc::clone(&desktop.service);
+    desktop.app_owner.read_inbox_prefs_from(move || {
+        let settings = service.settings_if_started()?;
+        Some(settings.view().config.inbox.clone())
+    });
+}
+
+/// The setup hook's step: shows the inbox items the sweep added before the
+/// window had a handle to notify through.
+pub fn flush_pending_notifications(state: &AppState) {
+    let prefs = inbox_prefs(state);
+    crate::commands::flush_pending_native_notifications(
+        &state.inbox,
+        &state.tauri_app_handle,
+        &prefs,
+    );
 }
 
 /// Registers the project of every tab the registry lists, and, while no

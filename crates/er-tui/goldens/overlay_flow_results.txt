@@ -1,0 +1,25 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  ┌ REVIEW RESULTS · run-1 · 1 of 2 · Space select · a accept · PgUp/PgDn detail · Esc close ────┐d
+ F│┌Findings 1–2────────────────────────────────────────────────────────────────────────────────┐│
+ ~││[x] src/auth.rs:2 · Audience read early                                                     ││
+ ~││[accepted] src/auth.rs:2 · Empty token                                                      ││
+  ││                                                                                            ││
+  ││                                                                                            ││
+  ││                                                                                            ││
+  ││                                                                                            ││
+  ││                                                                                            ││
+  │└────────────────────────────────────────────────────────────────────────────────────────────┘│
+  │┌Selected finding────────────────────────────────────────────────────────────────────────────┐│
+  ││src/auth.rs:2                                                                               ││
+  ││Audience read early                                                                         ││
+  ││Kept · 82% confidence · raised by security                                                  ││
+  ││[ ]                                                                                         ││
+  ││                                                                                            ││
+  ││The audience is read before the token is validated.                                         ││
+  ││                                                                                            ││
+  ││                                                                                            ││
+  ││                                                                                            ││
+  │└────────────────────────────────────────────────────────────────────────────────────────────┘│
+  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+styles 4025349943cc00c5
