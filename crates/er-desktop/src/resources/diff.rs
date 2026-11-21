@@ -243,17 +243,48 @@ fn sync_pr(
         .remote
         .clone()
         .ok_or_else(|| refused("Project has no remote configured".into()))?;
-    commands::cache_single_pr_for_remote(desktop, &remote, pr_number).map_err(refused)?;
-    let keys: Vec<TabKey> = open_tabs(desktop)
+    let pr = commands::cache_single_pr_for_remote(desktop, &remote, pr_number).map_err(refused)?;
+    let tabs: Vec<TabEntry> = open_tabs(desktop)
         .filter(|entry| {
             let tab = &entry.descriptor;
             tab.pr_number == Some(pr_number)
                 && (descriptor_remote(tab).as_deref() == Some(remote.as_str())
                     || tab.repo_root == project.root_path)
         })
-        .map(|entry| entry.key)
         .collect();
-    sync_each(desktop, &keys, effects)
+    let keys: Vec<TabKey> = tabs.iter().map(|entry| entry.key).collect();
+    let ack = sync_each(desktop, &keys, effects)?;
+    remember_synced_diff(desktop, &project, &pr, &tabs);
+    Ok(ack)
+}
+
+/// Warms the open cache for a synced local PR at the head its diff now
+/// shows, so the next open of it reads the cache, as the flag-off sync
+/// stores it. The registry fetches the diff on its own thread. A remote
+/// tab's diff has no local open key.
+fn remember_synced_diff(
+    desktop: &DesktopState,
+    project: &crate::projects::ProjectRecord,
+    pr: &crate::snapshot::PrInfo,
+    tabs: &[TabEntry],
+) {
+    let Some(content) = tabs
+        .iter()
+        .filter(|entry| entry.descriptor.kind != er_engine::tabs_record::TabKind::RemotePr)
+        .find_map(|entry| desktop.service.content(entry.key, &entry.descriptor))
+    else {
+        return;
+    };
+    let head = content.diff.meta.preview_head_oid.as_deref();
+    let command = er_service::AppCommand::PrefetchOpenTarget {
+        project_id: project.id.clone(),
+        repo_root: project.root_path.clone(),
+        pr_number: pr.number,
+        freshness: commands::freshness_from_pr_info(pr, head),
+    };
+    if let Err(error) = desktop.service.send_app(command) {
+        log::warn!("er-desktop: the synced PR's open cache was not warmed: {error}");
+    }
 }
 
 /// Syncs every open tab of the project's clone that shows `branch`: a view

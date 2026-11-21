@@ -7811,7 +7811,10 @@ fn freshness_from_hint(hint: &PrOpenHint) -> PrOpenFreshness {
 /// diff's own oid keeps the post-Sync reopen a clean hit — the persisted oid matches
 /// the diff it was built against, so the staleness pill stays dark until the head
 /// actually moves again.
-fn freshness_from_pr_info(pr: &PrInfo, diff_head_oid: Option<&str>) -> PrOpenFreshness {
+pub(crate) fn freshness_from_pr_info(
+    pr: &PrInfo,
+    diff_head_oid: Option<&str>,
+) -> PrOpenFreshness {
     PrOpenFreshness {
         base_branch: pr.base_ref.clone(),
         head_branch: pr.head_ref.clone(),
@@ -12714,6 +12717,8 @@ mod tests {
     mod sidebar_pr_tests;
     #[cfg(feature = "v1-service")]
     mod sidebar_tests;
+    #[cfg(feature = "v1-service")]
+    mod sync_command_tests;
     #[cfg(feature = "v1-service")]
     mod tab_key_tests;
     #[cfg(feature = "v1-service")]
