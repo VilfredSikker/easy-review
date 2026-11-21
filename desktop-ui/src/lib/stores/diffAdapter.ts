@@ -127,17 +127,16 @@ export function prListRow(
 /**
  * Whether a tab's diff is behind. A PR diff compares the head it was built
  * from with its `prs(remote)` row. A branch view's base mark is the active
- * tab's only, and until P56.1c it is the App's (`appStale`).
+ * tab's only, from its `diff(tab)`'s `base_behind`.
  */
 export function tabIsStale(
   store: Pick<ResourceStore, "get">,
   tab: { key: TabKey; pr_number: number | null; remote: string | null },
   isActive: boolean,
-  appStale?: DiffStaleSnapshot | null,
 ): boolean {
   const diff = store.get(diffKey(tab.key))?.value;
   const builtFrom = diff?.kind === "diff" ? diff.built_from_head_oid : null;
-  if (!builtFrom) return isActive && appStale?.kind === "base";
+  if (!builtFrom) return isActive && diff?.kind === "diff" && baseStale(diff.base, diff.base_behind) !== undefined;
   const latest = prListRow(store, tab.remote, tab.pr_number)?.headOid || null;
   return prStale(builtFrom, latest) !== undefined;
 }

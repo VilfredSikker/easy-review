@@ -273,12 +273,16 @@ describe("tabIsStale", () => {
     expect(tabIsStale(store, tab, true)).toBe(true);
   });
 
-  it("marks only the active branch view, from the App's base mark", () => {
-    const { store } = backend([]);
+  it("marks only the active branch view, once its diff(tab) is behind origin's base", async () => {
     const tab = { key: KEY, pr_number: null, remote: null };
-    const base = { kind: "base", message: "", built_from_oid: "b1", latest_oid: "b2" } as const;
-    expect(tabIsStale(store, tab, true, base)).toBe(true);
-    expect(tabIsStale(store, tab, false, base)).toBe(false);
-    expect(tabIsStale(store, tab, true, { ...base, kind: "pr_head" })).toBe(false);
+    const behind = { built_from_oid: "b1", latest_oid: "b2", commits_behind: 1 };
+    const { store } = backend([{ version: 1, value: { kind: "diff", ...tabDiff({ base_behind: behind }) } }]);
+    const { store: fresh } = backend([{ version: 1, value: { kind: "diff", ...tabDiff() } }]);
+    store.show(diffKey(KEY));
+    fresh.show(diffKey(KEY));
+    await settle();
+    expect(tabIsStale(store, tab, true)).toBe(true);
+    expect(tabIsStale(store, tab, false)).toBe(false);
+    expect(tabIsStale(fresh, tab, true)).toBe(false);
   });
 });
