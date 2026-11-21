@@ -283,7 +283,7 @@ mod tests {
             let files = [tabs_file, cache_file];
             let before = files
                 .iter()
-                .map(std::fs::read)
+                .map(std::fs::read_to_string)
                 .collect::<Result<Vec<_>, _>>()?;
 
             let host = host(dir.path());
@@ -303,7 +303,7 @@ mod tests {
 
             let after = files
                 .iter()
-                .map(std::fs::read)
+                .map(std::fs::read_to_string)
                 .collect::<Result<Vec<_>, _>>()?;
             assert_eq!(
                 before, after,
