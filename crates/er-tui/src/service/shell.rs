@@ -2,7 +2,7 @@
 //! event from an actor or the registry. No key waits on an actor: commands
 //! go out with `post`, and their replies land here on the next tick.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
@@ -16,6 +16,7 @@ use crossterm::terminal::{
 use er_engine::TabKey;
 use er_service::{Command, Event, Reply, ServiceHost, TabContent};
 use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
@@ -58,6 +59,13 @@ pub struct Shell {
     /// How each tab was opened, so a tab first shown later loads the same way.
     starts: HashMap<TabKey, StartTab>,
     pending: Vec<Pending>,
+    /// The stubs already sent to parse, per tab and diff revision, so a
+    /// parse that fails is not sent again every tick.
+    parses_sent: HashSet<(TabKey, u64, String)>,
+    /// Why a tab that has no content yet did not load.
+    load_errors: HashMap<TabKey, String>,
+    /// What the start said about its flags, shown until a tab has content.
+    start_notice: Option<String>,
     redraw: bool,
     notified_at: Option<Instant>,
     pub should_quit: bool,
@@ -79,12 +87,17 @@ impl Shell {
             view: TuiView::default(),
             starts,
             pending,
+            parses_sent: HashSet::new(),
+            load_errors: HashMap::new(),
+            start_notice: None,
             redraw: true,
             notified_at: None,
             should_quit: false,
         };
         if !start.notices.is_empty() {
-            shell.notify(start.notices.join("; "));
+            let notice = start.notices.join("; ");
+            shell.start_notice = Some(notice.clone());
+            shell.notify(notice);
         }
         Ok(shell)
     }
@@ -122,6 +135,11 @@ impl Shell {
         &self.view
     }
 
+    #[cfg(test)]
+    pub fn view_mut(&mut self) -> &mut TuiView {
+        &mut self.view
+    }
+
     /// The active tab's content, once its load has published.
     #[cfg(test)]
     pub fn active_content(&self) -> Option<Arc<TabContent>> {
@@ -144,8 +162,10 @@ impl Shell {
     }
 
     /// The loop's duties, none of which waits: an event from an actor or the
-    /// registry asks for a draw, landed replies are applied, and an old
-    /// status-line message is cleared.
+    /// registry asks for a draw, landed replies are applied, a selected stub
+    /// is sent to parse, and an old status-line message is cleared. A message
+    /// holds while the active tab loads, so its dwell runs on frames that
+    /// show the tab.
     pub fn tick(&mut self, now: Instant) {
         loop {
             match self.events.try_recv() {
@@ -155,7 +175,10 @@ impl Shell {
             }
         }
         self.drain_replies();
-        if self
+        let loaded = self.parse_selected_stub();
+        if !loaded && self.notified_at.is_some() {
+            self.notified_at = Some(now);
+        } else if self
             .notified_at
             .is_some_and(|at| now.duration_since(at) >= NOTIFICATION_DWELL)
         {
@@ -196,6 +219,9 @@ impl Shell {
                     });
                 }
                 Ok(_) => {}
+                Err(error) if self.host.content(&workspace, key).is_none() => {
+                    self.load_errors.insert(key, error.to_string());
+                }
                 Err(error) => self.notify(error.to_string()),
             }
         }
@@ -210,12 +236,20 @@ impl Shell {
         Some((entry.key, workspace, content))
     }
 
-    /// Picks the key's action from this frame's screen and runs it.
+    /// Picks the key's action from this frame's screen and runs it. A tab
+    /// with no content has no screen, so there only the tab keys and Ctrl+Q
+    /// run, the same keys the table binds: a tab that is loading or failed
+    /// never traps the user.
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.redraw = true;
         let Some((tab, workspace, Some(content))) = self.active() else {
-            if key.code == KeyCode::Char('q') && key.modifiers == KeyModifiers::CONTROL {
-                self.should_quit = true;
+            match key.code {
+                KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.should_quit = true;
+                }
+                KeyCode::Char(']') => self.step_tab(true),
+                KeyCode::Char('[') => self.step_tab(false),
+                _ => {}
             }
             return;
         };
@@ -321,13 +355,28 @@ impl Shell {
         }
     }
 
+    /// Sends the active tab's selected file to parse when it is a stub: a
+    /// load, a reload or a tab switch can each leave one selected. Answers
+    /// whether the active tab has content.
+    fn parse_selected_stub(&mut self) -> bool {
+        let Some((key, workspace, Some(content))) = self.active() else {
+            return false;
+        };
+        // The view state is made here, as the load lands and before the parse,
+        // so the start scrolls where the App's lazy load leaves it.
+        let index = self.view.tab_mut(key, &content).selected_file;
+        self.parse_if_stub(key, &workspace, &content, index);
+        true
+    }
+
     /// A file the selection reached that is still a stub parses on the
     /// service; the frame shows it once the parse publishes.
     fn parse_if_stub(&mut self, key: TabKey, workspace: &str, content: &TabContent, index: usize) {
         let Some(file) = content.diff.files.get(index) else {
             return;
         };
-        if !tui_view::is_stub(file) {
+        let sent = (key, content.diff.revision, file.path.clone());
+        if !tui_view::is_stub(file) || !self.parses_sent.insert(sent) {
             return;
         }
         let replies = self.host.post(
@@ -379,6 +428,7 @@ impl Shell {
             .is_some();
         let loading = self.pending.iter().any(|pending| pending.key == key);
         if let (false, false, Some(start_tab)) = (loaded, loading, self.starts.get(&key)) {
+            self.load_errors.remove(&key);
             let pending = startup::load(&self.host, key, start_tab);
             self.pending.push(pending);
         }
@@ -397,12 +447,28 @@ impl Shell {
     }
 
     /// Draws the active tab from its published content and its view state.
+    /// Until the content lands, the frame says why it is missing, then the
+    /// start's notice and the status line, each once.
     pub fn draw(&mut self, f: &mut ratatui::Frame, highlighter: &mut Highlighter) {
         let Some((key, _, content)) = self.active() else {
             return f.render_widget(Paragraph::new("No tab is open"), f.area());
         };
         let Some(content) = content else {
-            return f.render_widget(Paragraph::new("Loading…"), f.area());
+            let status = match self.load_errors.get(&key) {
+                Some(error) => {
+                    format!("This tab did not load: {error}. [ and ] switch tabs, Ctrl+Q quits.")
+                }
+                None => "Loading…".to_string(),
+            };
+            let mut lines = vec![status];
+            let notices = [self.start_notice.clone(), self.view.notification.clone()];
+            for notice in notices.into_iter().flatten() {
+                if !lines.iter().any(|line| line.contains(&notice)) {
+                    lines.push(notice);
+                }
+            }
+            let lines: Vec<Line> = lines.into_iter().map(Line::from).collect();
+            return f.render_widget(Paragraph::new(lines), f.area());
         };
         self.with_screen(key, &content, |screen| {
             crate::ui::draw(f, screen, highlighter);

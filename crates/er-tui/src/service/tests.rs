@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command as Git;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -17,7 +17,8 @@ use ratatui::buffer::Buffer;
 use ratatui::Terminal;
 
 use super::shell::Shell;
-use super::startup::{self, Args};
+use super::startup::{self, Args, Start};
+use super::tui_view::Overlay;
 use crate::screen::UNPORTED;
 use crate::ui::highlight::Highlighter;
 
@@ -122,12 +123,18 @@ fn path_of(dir: &tempfile::TempDir) -> String {
     canonical.to_string_lossy().into_owned()
 }
 
+fn plan(args: &Args) -> Start {
+    startup::plan(args, &*Ports::cli().git).unwrap_or_else(|e| panic!("{e:#}"))
+}
+
 fn shell(args: &Args, config_dir: &Path) -> Shell {
-    let ports = Ports::cli();
-    let start = startup::plan(args, &*ports.git).unwrap_or_else(|e| panic!("{e:#}"));
+    shell_on(Ports::cli(), &plan(args), config_dir)
+}
+
+fn shell_on(ports: Ports, start: &Start, config_dir: &Path) -> Shell {
     let (tx, events) = mpsc::channel();
     let host = ServiceHost::new(ports, config_dir.join("config.toml")).with_events(tx);
-    Shell::start(host, events, &start).unwrap_or_else(|e| panic!("{e:#}"))
+    Shell::start(host, events, start).unwrap_or_else(|e| panic!("{e:#}"))
 }
 
 /// Ticks the loop until `ready` holds.
@@ -177,22 +184,40 @@ fn rows(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
-/// Every row below the single-tab top bar, which carries the reviewed count
-/// the flag-on path leaves out, matches in text and style.
-fn assert_parity(app: &Buffer, flag_on: &Buffer, step: &str) {
-    const TOP: usize = 2;
+/// Every cell matches in text and style, except on the single-tab mode row
+/// from the AI selection's padded label rightwards: that label (P66) and the
+/// reviewed count (P70) are not on the flag-on path yet.
+fn assert_parity(app: &er_engine::app::App, flag_on: &Buffer, hl: &mut Highlighter, step: &str) {
+    const MODES_ROW: usize = 1;
+    let ai_label = app.active_ai_selection_label();
+    let app = &app_frame(app, hl);
+    let start = |buffer: &Buffer, label: &str| {
+        let label: Vec<String> = label.chars().map(String::from).collect();
+        let at = MODES_ROW * usize::from(WIDTH);
+        buffer.content[at..at + usize::from(WIDTH)]
+            .windows(label.len())
+            .position(|cells| cells.iter().zip(&label).all(|(c, l)| c.symbol() == l))
+            .unwrap_or_else(|| panic!("{step}: no {label:?} on the mode row"))
+    };
+    let masked = (start(app, &ai_label).min(start(flag_on, UNPORTED))).saturating_sub(1);
     let (app_rows, flag_rows) = (rows(app), rows(flag_on));
-    for row in TOP..usize::from(HEIGHT) {
+    for row in 0..usize::from(HEIGHT) {
+        let width = if row == MODES_ROW {
+            masked
+        } else {
+            usize::from(WIDTH)
+        };
+        let head = |text: &str| text.chars().take(width).collect::<String>();
         assert_eq!(
-            app_rows[row],
-            flag_rows[row],
+            head(&app_rows[row]),
+            head(&flag_rows[row]),
             "{step}: row {row} differs\napp:\n{}\nflag-on:\n{}",
             app_rows.join("\n"),
             flag_rows.join("\n")
         );
         let at =
             |buffer: &Buffer, col: usize| buffer.content[row * usize::from(WIDTH) + col].style();
-        for col in 0..usize::from(WIDTH) {
+        for col in 0..width {
             assert_eq!(
                 at(app, col),
                 at(flag_on, col),
@@ -241,11 +266,7 @@ fn flag_on_frames_match_the_app_frames() {
         let mut shell = shell(&args, storage.path());
         settle(&mut shell, loaded);
         let mut hl = Highlighter::new();
-        assert_parity(
-            &app_frame(&app, &mut hl),
-            &shell_frame(&mut shell, &mut hl),
-            "start",
-        );
+        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "start");
         let steps = [
             KeyCode::Char('k'),
             KeyCode::Char('n'),
@@ -264,12 +285,18 @@ fn flag_on_frames_match_the_app_frames() {
             shell.handle_key(key(code));
             shell.tick(Instant::now());
             let step = format!("{code:?}");
-            assert_parity(
-                &app_frame(&app, &mut hl),
-                &shell_frame(&mut shell, &mut hl),
-                &step,
-            );
+            assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, &step);
         }
+        // An overlay the view holds draws as the App draws the same one.
+        app.open_export_picker();
+        shell.view_mut().overlay = Some(Overlay::ExportPicker {
+            include_comments: true,
+            include_findings: true,
+            include_questions: true,
+            include_notes: true,
+            selected: 0,
+        });
+        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "overlay");
     });
 }
 
@@ -294,16 +321,20 @@ fn a_selected_stub_parses_and_draws_like_the_app() {
                 .is_some_and(|content| super::tui_view::is_stub(&content.diff.files[idx]))
         };
         assert!(stub(&shell, 1), "the fixture loaded no stub");
+        // The first file is selected from the start, so it parses with no key.
+        settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 0));
+        let mut hl = Highlighter::new();
+        assert_parity(
+            &app,
+            &shell_frame(&mut shell, &mut hl),
+            &mut hl,
+            "stub-start",
+        );
         press_app(&mut app, KeyCode::Char('k'));
         shell.handle_key(key(KeyCode::Char('k')));
         // Without a parse the stub never fills; the frames then differ.
         settle_within(&mut shell, Duration::from_secs(5), |shell| !stub(shell, 1));
-        let mut hl = Highlighter::new();
-        assert_parity(
-            &app_frame(&app, &mut hl),
-            &shell_frame(&mut shell, &mut hl),
-            "stub",
-        );
+        assert_parity(&app, &shell_frame(&mut shell, &mut hl), &mut hl, "stub");
     });
 }
 
@@ -378,5 +409,151 @@ fn the_start_opens_listed_tabs_and_reports_unported_flags() {
                 "the tab closed before its load".into()
             ))
         );
+    });
+}
+
+/// `--pr` opens a local PR tab, and once its first load lands the service
+/// fetches the PR's head and base refs.
+#[test]
+fn a_pr_start_has_the_service_fetch_the_pr_refs() {
+    let repo = fixture(1);
+    let origin = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    git(origin.path(), &["init", "-q", "--bare"]);
+    let remote = path_of(&origin);
+    git(repo.path(), &["remote", "add", "origin", &remote]);
+    git(
+        repo.path(),
+        &["push", "-q", "origin", "main", "feature:refs/pull/7/head"],
+    );
+    git(repo.path(), &["fetch", "-q", "origin"]);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let path = path_of(&repo);
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let raw = "diff --git a/src/f000.rs b/src/f000.rs\n--- a/src/f000.rs\n+++ b/src/f000.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let github = er_github::FakeGitHub::default()
+            .with_pr_diff(Ok(raw.to_string()))
+            .with_pr_base_branch_and_commits(Ok(("main".to_string(), Vec::new())))
+            .with_fetch_pr_base_ref(Ok("origin/main".to_string()));
+        let ports = Ports {
+            git: Arc::new(er_git::CliGit),
+            github: Arc::new(github),
+        };
+        let args = Args {
+            paths: vec![path],
+            pr: Some(7),
+            ..Args::default()
+        };
+        let mut shell = shell_on(ports, &plan(&args), storage.path());
+        let fetched = |shell: &Shell| {
+            shell
+                .active_content()
+                .is_some_and(|content| content.pr_refs_fetched)
+        };
+        assert!(
+            settle_within(&mut shell, WAIT, fetched),
+            "the PR refs were not fetched: {:?}",
+            shell.view().notification
+        );
+    });
+}
+
+/// A tab whose first load fails says why in place of the diff, and a start
+/// notice stays up while the tab has drawn no content.
+#[test]
+fn a_failed_first_load_shows_its_error_and_the_notices() {
+    let repo = fixture(1);
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let args = Args {
+        paths: vec![path_of(&repo)],
+        target: Some("develop".into()),
+        ..Args::default()
+    };
+    let start = plan(&args);
+    std::fs::remove_dir_all(repo.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut hl = Highlighter::new();
+        let mut text = |shell: &mut Shell| rows(&shell_frame(shell, &mut hl)).join("\n");
+        let deadline = Instant::now() + WAIT;
+        while !text(&mut shell).contains("did not load") && Instant::now() < deadline {
+            shell.tick(Instant::now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        shell.tick(Instant::now() + Duration::from_secs(60));
+        assert!(
+            shell.view().notification.is_some(),
+            "a message expired while loading"
+        );
+        let frame = text(&mut shell);
+        assert!(frame.contains("This tab did not load"), "{frame}");
+        assert!(
+            frame.contains(&format!("--target is {UNPORTED}")),
+            "{frame}"
+        );
+    });
+}
+
+/// Tabs after the first load when first shown, and the tab keys run on a
+/// frame with no content: a failed tab can be left, and shown again it loads
+/// again.
+#[test]
+fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
+    let (first, second, broken) = (fixture(1), fixture(1), fixture(1));
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let args = Args {
+        paths: vec![path_of(&first), path_of(&second), path_of(&broken)],
+        ..Args::default()
+    };
+    let start = plan(&args);
+    std::fs::remove_dir_all(broken.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut hl = Highlighter::new();
+        let mut text = |shell: &mut Shell| rows(&shell_frame(shell, &mut hl)).join("\n");
+        let tabs = shell.host().registry().tabs_view();
+        let keys: Vec<TabKey> = tabs.tabs.iter().map(|tab| tab.key).collect();
+        let active = |shell: &Shell| shell.host().registry().tabs_view().active;
+        settle(&mut shell, loaded);
+
+        shell.handle_key(key(KeyCode::Char(']')));
+        assert_eq!(active(&shell), Some(keys[1]));
+        assert!(
+            settle_within(&mut shell, WAIT, loaded),
+            "the second tab never loaded"
+        );
+
+        shell.handle_key(key(KeyCode::Char(']')));
+        let deadline = Instant::now() + WAIT;
+        while !text(&mut shell).contains("did not load") && Instant::now() < deadline {
+            shell.tick(Instant::now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let frame = text(&mut shell);
+        assert!(frame.contains("This tab did not load"), "{frame}");
+
+        shell.handle_key(key(KeyCode::Char('[')));
+        assert_eq!(
+            active(&shell),
+            Some(keys[1]),
+            "'[' stayed on the failed tab"
+        );
+        let frame = text(&mut shell);
+        assert!(frame.contains("src/f000.rs"), "{frame}");
+
+        // Shown again, the failed tab loads again: until that reply drains,
+        // it says it is loading.
+        shell.handle_key(key(KeyCode::Char(']')));
+        let frame = text(&mut shell);
+        assert!(frame.contains("Loading…"), "{frame}");
+        let deadline = Instant::now() + WAIT;
+        while !text(&mut shell).contains("did not load") && Instant::now() < deadline {
+            shell.tick(Instant::now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let frame = text(&mut shell);
+        assert!(frame.contains("This tab did not load"), "{frame}");
+
+        shell.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        assert!(shell.should_quit, "Ctrl+Q did not quit a failed tab");
     });
 }
