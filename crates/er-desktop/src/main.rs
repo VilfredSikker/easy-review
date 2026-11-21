@@ -709,7 +709,9 @@ fn run_active_branch_watcher(
 
     loop {
         #[cfg(feature = "v1-service")]
-        let desired = follower.next(&watcher_service, &*watcher_git).and_then(|w| w.target());
+        let desired = follower
+            .next(&watcher_service, &*watcher_git)
+            .and_then(|w| w.target());
         #[cfg(not(feature = "v1-service"))]
         let desired = match watcher_app.lock() {
             Ok(g) => desired_local_branch_watch(&g),
@@ -799,6 +801,48 @@ fn run_active_branch_watcher(
             }
         });
     }
+}
+
+/// The flag path's branch-base probe, on the same cadence. It reads its
+/// target from the registry and the content (`watcher::probe_target`), never
+/// the App, and posts origin's tip of a branch view's base and the PR list's
+/// head for the checkout to the tab's actor, whose content then carries the
+/// stale mark and the divergence.
+#[cfg(feature = "v1-service")]
+fn spawn_base_probe(
+    service: Arc<er_desktop::service::ServiceState>,
+    git: Arc<dyn er_engine::git::Git>,
+    pr_cache: pr_cache::PrCacheMap,
+) {
+    use er_desktop::watcher;
+    std::thread::spawn(move || {
+        let mut interval = PROBE_INTERVAL_SECS;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(interval));
+            let Some(target) = watcher::probe_target(&service) else {
+                interval = PROBE_INTERVAL_SECS;
+                continue;
+            };
+            let base_tip = match target.base.as_deref() {
+                Some(base) => match watcher::remote_tip(&*git, &target.repo_root, base) {
+                    Some(tip) => Some(tip),
+                    None => {
+                        // A failed read backs off, as the flag-off probe does.
+                        interval = next_probe_interval_secs(interval, false);
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            let pr_head = pr_cache
+                .lock()
+                .ok()
+                .and_then(|lists| watcher::pr_head(&lists, &target));
+            let tips = er_service::RemoteTips { base_tip, pr_head };
+            let changed = watcher::post_tips(&service, &target, tips);
+            interval = next_probe_interval_secs(interval, changed);
+        }
+    });
 }
 
 /// The App tab's refresh on a watched file change. With `v1-service` the
@@ -1289,6 +1333,14 @@ fn main() {
     //                          tip. ANY failure (error/non-zero/empty) no-ops.
     //   Phase 3 (brief lock) — cache the oid; bump the revision ONLY when it
     //                          actually changed, so we don't churn polls.
+    // With `v1-service` the probe posts to the tab's actor (`spawn_base_probe`).
+    #[cfg(feature = "v1-service")]
+    spawn_base_probe(
+        Arc::clone(&service),
+        Arc::clone(&ports.git),
+        Arc::clone(&pr_cache),
+    );
+    #[cfg(not(feature = "v1-service"))]
     {
         let probe_app = Arc::clone(&app_arc);
         let probe_cache = Arc::clone(&branch_base_remote_oid);
