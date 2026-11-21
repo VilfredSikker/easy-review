@@ -6,9 +6,16 @@ use er_engine::app::{
     AiActionKind, App, ConfirmAction, DiffMode, HubAction, InputMode,
 };
 use er_engine::github;
+use er_engine::watch::{FileWatcher, WatchEvent};
+#[cfg(test)]
+use keys::{review_flow_results_key_action, ReviewFlowResultsKeyAction};
+use keys::{Edit, OverlayAction, TuiAction};
+use std::sync::mpsc;
 
+pub mod keys;
 pub mod normal;
 
+#[cfg(test)]
 pub use normal::handle_normal_input;
 
 /// How a gate level reads in a notification.
@@ -37,145 +44,88 @@ fn next_char_boundary(s: &str, pos: usize) -> usize {
         .unwrap_or(s.len())
 }
 
+/// Runs a key's action on the App. Each arm calls the App methods the key's
+/// handler called before the key table, in the same order.
+pub fn execute(
+    app: &mut App,
+    action: TuiAction,
+    watch_tx: &mpsc::Sender<WatchEvent>,
+    watcher: &mut Option<FileWatcher>,
+) -> Result<()> {
+    match action {
+        TuiAction::Noop => Ok(()),
+        TuiAction::Normal(action) => normal::execute(app, action, watch_tx, watcher),
+        TuiAction::AiSummary(action) => normal::execute_ai_summary(app, action),
+        TuiAction::History(action) => normal::execute_history(app, action),
+        TuiAction::Tour(action) => normal::execute_tour(app, action),
+        TuiAction::Overlay(action) => execute_overlay(app, action),
+    }
+}
+
+/// The key's action on a Screen of the App as it stands. The loop builds its
+/// Screen from its own view cache; a test has none, so this starts a fresh one.
+#[cfg(test)]
+fn step(app: &App, key: KeyEvent) -> TuiAction {
+    let mut cache = crate::screen::ViewCache::default();
+    keys::key_action(key, &crate::screen::from_app(app, &mut cache))
+}
+
+#[cfg(test)]
 pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    if matches!(
-        app.overlay,
-        Some(app::OverlayData::ReviewFlowProgress { .. })
-    ) {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
-            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
-            KeyCode::PageDown => scroll_review_flow_detail(app, 8),
-            KeyCode::PageUp => scroll_review_flow_detail(app, -8),
-            KeyCode::Char('r') => {
-                if let Some(app::OverlayData::ReviewFlowProgress { er_dir, .. }) = &app.overlay {
-                    let er_dir = er_dir.clone();
-                    app.rerun_review_flow(&er_dir)?;
-                    app.overlay_close();
-                }
+    let (watch_tx, _) = mpsc::channel();
+    execute(app, step(app, key), &watch_tx, &mut None)
+}
+
+fn execute_overlay(app: &mut App, action: OverlayAction) -> Result<()> {
+    match action {
+        OverlayAction::Next => app.overlay_next(),
+        OverlayAction::Prev => app.overlay_prev(),
+        OverlayAction::ScrollDetail(delta) => scroll_review_flow_detail(app, delta),
+        OverlayAction::RerunReviewFlow => {
+            if let Some(app::OverlayData::ReviewFlowProgress { er_dir, .. }) = &app.overlay {
+                let er_dir = er_dir.clone();
+                app.rerun_review_flow(&er_dir)?;
+                app.overlay_close();
             }
-            KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
-            _ => {}
         }
-        return Ok(());
-    }
-    if matches!(
-        app.overlay,
-        Some(app::OverlayData::ReviewFlowResults { .. })
-    ) {
-        match review_flow_results_key_action(key.code) {
-            ReviewFlowResultsKeyAction::Next => app.overlay_next(),
-            ReviewFlowResultsKeyAction::Previous => app.overlay_prev(),
-            ReviewFlowResultsKeyAction::PageDown => scroll_review_flow_detail(app, 8),
-            ReviewFlowResultsKeyAction::PageUp => scroll_review_flow_detail(app, -8),
-            ReviewFlowResultsKeyAction::Toggle => toggle_review_flow_result_selection(app),
-            ReviewFlowResultsKeyAction::Accept => accept_selected_review_flow_results(app)?,
-            ReviewFlowResultsKeyAction::Close => app.overlay_close(),
-            ReviewFlowResultsKeyAction::Ignore => {}
-        }
-        return Ok(());
-    }
-
-    // Export picker — multiselect + Enter copies markdown to clipboard
-    if matches!(app.overlay, Some(app::OverlayData::ExportPicker { .. })) {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
-            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
-            KeyCode::Char(' ') => app.export_picker_toggle_selected(),
-            KeyCode::Enter => app.export_picker_confirm()?,
-            KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
-            _ => {}
-        }
-        return Ok(());
-    }
-
-    // Config hub overlay — handles inline string editing
-    if matches!(app.overlay, Some(app::OverlayData::ConfigHub { .. })) {
-        let is_editing = matches!(
-            &app.overlay,
-            Some(app::OverlayData::ConfigHub {
-                editing: Some(_),
+        OverlayAction::Close => app.overlay_close(),
+        OverlayAction::ToggleFlowFinding => toggle_review_flow_result_selection(app),
+        OverlayAction::AcceptFlowFindings => accept_selected_review_flow_results(app)?,
+        OverlayAction::ToggleExportKind => app.export_picker_toggle_selected(),
+        OverlayAction::Export => app.export_picker_confirm()?,
+        OverlayAction::EditSetting(Edit::Submit) => app.config_hub_confirm_edit(),
+        OverlayAction::EditSetting(Edit::Cancel) => app.config_hub_cancel_edit(),
+        OverlayAction::EditSetting(key) => {
+            if let Some(app::OverlayData::ConfigHub {
+                editing: Some(ref mut edit),
                 ..
-            })
-        );
-
-        if is_editing {
-            match key.code {
-                KeyCode::Enter => app.config_hub_confirm_edit(),
-                KeyCode::Esc => app.config_hub_cancel_edit(),
-                code => {
-                    if let Some(app::OverlayData::ConfigHub {
-                        editing: Some(ref mut edit),
-                        ..
-                    }) = &mut app.overlay
-                    {
-                        match code {
-                            KeyCode::Char(c) => {
-                                edit.buffer.insert(edit.cursor_pos, c);
-                                edit.cursor_pos += c.len_utf8();
-                            }
-                            KeyCode::Backspace if edit.cursor_pos > 0 => {
-                                edit.cursor_pos = prev_char_boundary(&edit.buffer, edit.cursor_pos);
-                                edit.buffer.remove(edit.cursor_pos);
-                            }
-                            KeyCode::Left if edit.cursor_pos > 0 => {
-                                edit.cursor_pos = prev_char_boundary(&edit.buffer, edit.cursor_pos);
-                            }
-                            KeyCode::Right if edit.cursor_pos < edit.buffer.len() => {
-                                edit.cursor_pos = next_char_boundary(&edit.buffer, edit.cursor_pos);
-                            }
-                            _ => {}
-                        }
+            }) = &mut app.overlay
+            {
+                match key {
+                    Edit::Insert(c) => {
+                        edit.buffer.insert(edit.cursor_pos, c);
+                        edit.cursor_pos += c.len_utf8();
                     }
+                    Edit::Backspace if edit.cursor_pos > 0 => {
+                        edit.cursor_pos = prev_char_boundary(&edit.buffer, edit.cursor_pos);
+                        edit.buffer.remove(edit.cursor_pos);
+                    }
+                    Edit::Left if edit.cursor_pos > 0 => {
+                        edit.cursor_pos = prev_char_boundary(&edit.buffer, edit.cursor_pos);
+                    }
+                    Edit::Right if edit.cursor_pos < edit.buffer.len() => {
+                        edit.cursor_pos = next_char_boundary(&edit.buffer, edit.cursor_pos);
+                    }
+                    _ => {}
                 }
-            }
-        } else {
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
-                KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
-                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => app.config_hub_activate(),
-                KeyCode::Left => app.config_hub_activate_prev(),
-                KeyCode::Char('d') => app.config_hub_delete_selected(),
-                KeyCode::Char('1') => {
-                    app.config_hub_switch_tab(er_engine::config::SettingsScope::General);
-                }
-                KeyCode::Char('2') => {
-                    app.config_hub_switch_tab(er_engine::config::SettingsScope::Terminal);
-                }
-                KeyCode::Char('[') => {
-                    let tab = match &app.overlay {
-                        Some(er_engine::app::OverlayData::ConfigHub { tab, .. }) => *tab,
-                        _ => return Ok(()),
-                    };
-                    let prev = match tab.tab_index() {
-                        0 => er_engine::config::SettingsScope::Terminal,
-                        _ => er_engine::config::SettingsScope::General,
-                    };
-                    app.config_hub_switch_tab(prev);
-                }
-                KeyCode::Char(']') => {
-                    let tab = match &app.overlay {
-                        Some(er_engine::app::OverlayData::ConfigHub { tab, .. }) => *tab,
-                        _ => return Ok(()),
-                    };
-                    let next = match tab.tab_index() {
-                        0 => er_engine::config::SettingsScope::Terminal,
-                        _ => er_engine::config::SettingsScope::General,
-                    };
-                    app.config_hub_switch_tab(next);
-                }
-                KeyCode::Char('s' | 'S') => app.config_hub_close(),
-                KeyCode::Esc | KeyCode::Char('q') => app.config_hub_close(),
-                _ => {}
             }
         }
-        return Ok(());
-    }
-
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
-        KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
-        KeyCode::Char('b') => {
+        OverlayAction::ActivateSetting => app.config_hub_activate(),
+        OverlayAction::ActivateSettingBack => app.config_hub_activate_prev(),
+        OverlayAction::DeleteSetting => app.config_hub_delete_selected(),
+        OverlayAction::SwitchSettingsTab(tab) => app.config_hub_switch_tab(tab),
+        OverlayAction::CloseSettings => app.config_hub_close(),
+        OverlayAction::SecondaryRow => {
             // Secondary action for the selected row. Only stacked-PR rows define
             // one (open on GitHub); everywhere else this is a no-op.
             if let Some(action) = app.overlay_secondary_hub_action() {
@@ -183,7 +133,7 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 dispatch_hub_action(app, action)?;
             }
         }
-        KeyCode::Enter => {
+        OverlayAction::SelectRow => {
             app.overlay_select()?;
             // Dispatch pending hub action if overlay_select set one
             if let Some(action) = app.pending_hub_action.take() {
@@ -191,36 +141,9 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 dispatch_hub_action(app, action)?;
             }
         }
-        KeyCode::Backspace => app.overlay_go_up(),
-        KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
-        _ => {}
+        OverlayAction::GoUp => app.overlay_go_up(),
     }
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReviewFlowResultsKeyAction {
-    Next,
-    Previous,
-    PageDown,
-    PageUp,
-    Toggle,
-    Accept,
-    Close,
-    Ignore,
-}
-
-fn review_flow_results_key_action(key: KeyCode) -> ReviewFlowResultsKeyAction {
-    match key {
-        KeyCode::Char('j') | KeyCode::Down => ReviewFlowResultsKeyAction::Next,
-        KeyCode::Char('k') | KeyCode::Up => ReviewFlowResultsKeyAction::Previous,
-        KeyCode::PageDown => ReviewFlowResultsKeyAction::PageDown,
-        KeyCode::PageUp => ReviewFlowResultsKeyAction::PageUp,
-        KeyCode::Char(' ') | KeyCode::Enter => ReviewFlowResultsKeyAction::Toggle,
-        KeyCode::Char('a') => ReviewFlowResultsKeyAction::Accept,
-        KeyCode::Esc | KeyCode::Char('q') => ReviewFlowResultsKeyAction::Close,
-        _ => ReviewFlowResultsKeyAction::Ignore,
-    }
 }
 
 fn scroll_review_flow_detail(app: &mut App, delta: isize) {
