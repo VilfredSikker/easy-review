@@ -18,10 +18,6 @@ use er_engine::app::{self, App, InputMode};
 use er_engine::{github, uninstall, watch};
 #[cfg(test)]
 use input::handle_normal_input;
-use input::{
-    handle_base_branch_input, handle_comment_input, handle_commit_input, handle_confirm_input,
-    handle_filter_input, handle_remote_url_input, handle_search_input,
-};
 use ratatui::prelude::*;
 use std::io::{self, Write};
 use std::sync::mpsc;
@@ -466,25 +462,7 @@ fn handle_key(
     watcher: &mut Option<FileWatcher>,
     view_cache: &mut screen::ViewCache,
 ) -> Result<()> {
-    if app.overlay.is_none() {
-        match &app.input_mode {
-            InputMode::Search => {
-                handle_search_input(app, key);
-                return Ok(());
-            }
-            InputMode::Comment => return handle_comment_input(app, key),
-            InputMode::Confirm(_) => return handle_confirm_input(app, key),
-            InputMode::Filter => {
-                handle_filter_input(app, key);
-                return Ok(());
-            }
-            InputMode::Commit => return handle_commit_input(app, key),
-            InputMode::RemoteUrl => return handle_remote_url_input(app, key),
-            InputMode::BaseBranch => return handle_base_branch_input(app, key),
-            InputMode::Normal => {}
-        }
-    }
-    let normal = app.overlay.is_none();
+    let normal = app.overlay.is_none() && app.input_mode == InputMode::Normal;
     let action = input::keys::key_action(key, &screen::from_app(app, view_cache));
     input::execute(app, action, watch_tx, watcher)?;
     if normal && key.code == event::KeyCode::Char('s') && key.modifiers == event::KeyModifiers::NONE

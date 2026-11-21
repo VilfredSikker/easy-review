@@ -3,8 +3,10 @@
 //! picks the action; the executor in `input/` runs it, so nothing here reads
 //! the App or writes anything.
 
+mod confirm;
 mod normal;
 mod overlay;
+mod text;
 
 use crate::screen::view::InputMode;
 use crate::screen::Screen;
@@ -27,6 +29,16 @@ pub enum TuiAction {
     History(HistoryAction),
     Tour(TourAction),
     Overlay(OverlayAction),
+    Search(Edit),
+    Filter(Edit),
+    Commit(Edit),
+    RemoteUrl(Edit),
+    BaseBranch(Edit),
+    Comment(CommentAction),
+    /// A y/n prompt's answer other than yes.
+    Confirm(ConfirmKey),
+    /// A y/n prompt's yes: the write it asked about.
+    Write(Write),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +191,46 @@ pub enum OverlayAction {
     GoUp,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommentAction {
+    NewLine,
+    Submit,
+    Cancel,
+    /// Keeps the draft and returns to Normal mode.
+    Pause,
+    ToggleType,
+    ScrollDown(u16),
+    ScrollUp(u16),
+    /// Any other key goes to the text area.
+    Type(KeyEvent),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmKey {
+    Cancel,
+    /// Runs the agent and keeps what its last run left.
+    KeepAndRunReview,
+    KeepAndRunQuestions,
+    KeepAndRunNotes,
+}
+
+/// Every domain write a y/n prompt confirms. The push, the watched-file
+/// delete, the approve and the sidecar clears are the writes er-tui makes
+/// itself, outside the App's methods; only the executor runs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Write {
+    DeleteComment,
+    Push,
+    ClearQuestionsAndNotes,
+    DeleteWatchedFile,
+    ClearReviews,
+    /// Clears the review, then runs a new one.
+    ClearReviewAndRun,
+    ClearAnswersAndRunQuestions,
+    ClearRepliesAndRunNotes,
+    ApprovePr,
+}
+
 /// A key in a one-line text field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edit {
@@ -204,9 +256,13 @@ pub fn key_action(key: KeyEvent, screen: &Screen) -> TuiAction {
     }
     match screen.chrome.input_mode {
         InputMode::Normal => normal::action(key, screen),
-        // The text inputs and the y/n prompt still read keys in their own
-        // handlers.
-        _ => TuiAction::Noop,
+        InputMode::Search => text::edit(key).map_or(TuiAction::Noop, TuiAction::Search),
+        InputMode::Filter => text::edit(key).map_or(TuiAction::Noop, TuiAction::Filter),
+        InputMode::Commit => text::edit(key).map_or(TuiAction::Noop, TuiAction::Commit),
+        InputMode::RemoteUrl => text::edit(key).map_or(TuiAction::Noop, TuiAction::RemoteUrl),
+        InputMode::BaseBranch => text::edit(key).map_or(TuiAction::Noop, TuiAction::BaseBranch),
+        InputMode::Comment => TuiAction::Comment(text::comment(key)),
+        InputMode::Confirm(asked) => confirm::action(key, asked),
     }
 }
 
@@ -277,7 +333,7 @@ mod tests {
                 continue;
             };
             for key in keys.split_whitespace() {
-                let names = match key.strip_prefix('*') {
+                let names = match key.strip_prefix('*').filter(|bare| !bare.is_empty()) {
                     Some(bare) => vec![bare.to_owned(), format!("S-{bare}"), format!("C-{bare}")],
                     None => vec![key.to_owned()],
                 };
@@ -303,6 +359,25 @@ mod tests {
             wrong.push(format!("{name}: not a probe key"));
         }
         assert!(wrong.is_empty(), "{context}:\n{}", wrong.join("\n"));
+    }
+
+    /// A one-line field's table: `wrap` names the action around each edit.
+    fn typing(wrap: &dyn Fn(&str) -> String) -> String {
+        let mut table = format!(
+            "*Enter => {}\n*Esc => {}\n*Backspace => {}\n",
+            wrap("Submit"),
+            wrap("Cancel"),
+            wrap("Backspace")
+        );
+        for c in ' '..='~' {
+            let name = if c == ' ' {
+                "Space".to_owned()
+            } else {
+                c.to_string()
+            };
+            table.push_str(&format!("*{name} => {}\n", wrap(&format!("Insert({c:?})"))));
+        }
+        table
     }
 
     const GLOBAL: &str = "
@@ -628,22 +703,10 @@ mod tests {
                 buffer: &buffer,
             }),
         });
-        let mut editing = String::from(
-            "
-            *Enter => Overlay(EditSetting(Submit))
-            *Esc => Overlay(EditSetting(Cancel))
-            *Backspace => Overlay(EditSetting(Backspace))
+        let editing = typing(&|edit| format!("Overlay(EditSetting({edit}))"))
+            + "
             *Left => Overlay(EditSetting(Left))
-            *Right => Overlay(EditSetting(Right))",
-        );
-        for c in ' '..='~' {
-            let name = if c == ' ' {
-                "Space".to_owned()
-            } else {
-                c.to_string()
-            };
-            editing.push_str(&format!("\n*{name} => Overlay(EditSetting(Insert({c:?})))"));
-        }
+            *Right => Overlay(EditSetting(Right))";
         assert_table("settings edit", &screen, &[&editing]);
 
         screen.chrome.overlay = Some(OverlayData::ModalHub {
@@ -657,6 +720,98 @@ mod tests {
             *Enter => Overlay(SelectRow)
             *Backspace => Overlay(GoUp)";
         assert_table("hub", &screen, &[LIST, rows]);
+    }
+
+    #[test]
+    fn the_key_table_pins_every_key_in_the_text_inputs_and_the_prompt() {
+        let app = crate::golden::base_app();
+        let mut cache = crate::screen::ViewCache::default();
+        let mut screen = crate::screen::from_app(&app, &mut cache);
+        for (mode, name) in [
+            (InputMode::Search, "Search"),
+            (InputMode::Filter, "Filter"),
+            (InputMode::Commit, "Commit"),
+            (InputMode::RemoteUrl, "RemoteUrl"),
+            (InputMode::BaseBranch, "BaseBranch"),
+        ] {
+            screen.chrome.input_mode = mode;
+            assert_table(name, &screen, &[&typing(&|edit| format!("{name}({edit})"))]);
+        }
+
+        // Every key the comment composer does not bind goes to its text area.
+        screen.chrome.input_mode = InputMode::Comment;
+        let mut comment = String::from(
+            "
+            S-Enter => Comment(NewLine)
+            Enter C-Enter => Comment(Submit)
+            *Esc => Comment(Cancel)
+            *Tab *BackTab => Comment(Pause)
+            C-t => Comment(ToggleType)
+            C-d => Comment(ScrollDown(10))
+            C-u => Comment(ScrollUp(10))
+            *PageDown => Comment(ScrollDown(20))
+            *PageUp => Comment(ScrollUp(20))",
+        );
+        for key in probe_keys() {
+            comment.push_str(&format!("\n{} => Comment(Type({key:?}))", key_name(key)));
+        }
+        assert_table("comment", &screen, &[&comment]);
+
+        for (asked, write, keep) in [
+            (view::ConfirmAction::DeleteComment, "DeleteComment", None),
+            (
+                view::ConfirmAction::DeleteWatchedFile { path: "a.env" },
+                "DeleteWatchedFile",
+                None,
+            ),
+            (view::ConfirmAction::Push, "Push", None),
+            (
+                view::ConfirmAction::CleanupQuestions { count: 1 },
+                "ClearQuestionsAndNotes",
+                None,
+            ),
+            (
+                view::ConfirmAction::CleanupReviews { count: 1 },
+                "ClearReviews",
+                None,
+            ),
+            (
+                view::ConfirmAction::RunAgentReview,
+                "ClearReviewAndRun",
+                Some("KeepAndRunReview"),
+            ),
+            (
+                view::ConfirmAction::RunAgentQuestions,
+                "ClearAnswersAndRunQuestions",
+                Some("KeepAndRunQuestions"),
+            ),
+            (
+                view::ConfirmAction::RunAgentNotes,
+                "ClearRepliesAndRunNotes",
+                Some("KeepAndRunNotes"),
+            ),
+            (view::ConfirmAction::ApprovePR, "ApprovePr", None),
+        ] {
+            screen.chrome.input_mode = InputMode::Confirm(asked);
+            let mut table = format!("*y => Write({write})\n*n *Esc => Confirm(Cancel)\n");
+            if let Some(keep) = keep {
+                table.push_str(&format!("*k => Confirm({keep})"));
+            }
+            assert_table(write, &screen, &[&table]);
+        }
+
+        // An open overlay takes the key before the input mode.
+        screen.chrome.overlay = Some(OverlayData::ModalHub {
+            kind: view::HubKind::Git,
+            title: None,
+            items: &[],
+            selected: 0,
+        });
+        let next = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(
+            key_action(next, &screen),
+            TuiAction::Overlay(OverlayAction::Next)
+        );
     }
 
     /// The key table reads only the Screen and writes nothing: no step names

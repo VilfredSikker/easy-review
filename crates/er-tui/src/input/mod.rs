@@ -1,4 +1,5 @@
 use anyhow::Result;
+#[cfg(test)]
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::app;
 use er_engine::app::{
@@ -9,7 +10,7 @@ use er_engine::github;
 use er_engine::watch::{FileWatcher, WatchEvent};
 #[cfg(test)]
 use keys::{review_flow_results_key_action, ReviewFlowResultsKeyAction};
-use keys::{Edit, OverlayAction, TuiAction};
+use keys::{CommentAction, ConfirmKey, Edit, OverlayAction, TuiAction, Write};
 use std::sync::mpsc;
 
 pub mod keys;
@@ -59,6 +60,20 @@ pub fn execute(
         TuiAction::History(action) => normal::execute_history(app, action),
         TuiAction::Tour(action) => normal::execute_tour(app, action),
         TuiAction::Overlay(action) => execute_overlay(app, action),
+        TuiAction::Search(key) => {
+            execute_search(app, key);
+            Ok(())
+        }
+        TuiAction::Filter(key) => {
+            execute_filter(app, key);
+            Ok(())
+        }
+        TuiAction::Commit(key) => execute_commit(app, key),
+        TuiAction::RemoteUrl(key) => execute_remote_url(app, key),
+        TuiAction::BaseBranch(key) => execute_base_branch(app, key),
+        TuiAction::Comment(action) => execute_comment(app, action),
+        TuiAction::Confirm(key) => execute_confirm(app, key),
+        TuiAction::Write(write) => execute_write(app, write),
     }
 }
 
@@ -70,10 +85,26 @@ fn step(app: &App, key: KeyEvent) -> TuiAction {
     keys::key_action(key, &crate::screen::from_app(app, &mut cache))
 }
 
+/// Runs one key outside the loop, as the loop would.
 #[cfg(test)]
-pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
+fn press(app: &mut App, key: KeyEvent) -> Result<()> {
     let (watch_tx, _) = mpsc::channel();
     execute(app, step(app, key), &watch_tx, &mut None)
+}
+
+#[cfg(test)]
+pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    press(app, key)
+}
+
+#[cfg(test)]
+pub fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    press(app, key)
+}
+
+#[cfg(test)]
+pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    press(app, key)
 }
 
 fn execute_overlay(app: &mut App, action: OverlayAction) -> Result<()> {
@@ -704,11 +735,11 @@ fn execute_ai_action_with_selection(
     result
 }
 
-pub fn handle_search_input(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Enter | KeyCode::Esc => {
+fn execute_search(app: &mut App, key: Edit) {
+    match key {
+        Edit::Submit | Edit::Cancel => {
             app.input_mode = InputMode::Normal;
-            if key.code == KeyCode::Esc {
+            if key == Edit::Cancel {
                 let tab = app.tab_mut();
                 tab.search_query.clear();
                 tab.search_query_lower.clear();
@@ -717,12 +748,12 @@ pub fn handle_search_input(app: &mut App, key: KeyEvent) {
                 app.tab_mut().snap_to_visible();
             }
         }
-        KeyCode::Char(c) => {
+        Edit::Insert(c) => {
             let tab = app.tab_mut();
             tab.search_query.push(c);
             tab.search_query_lower = tab.search_query.to_lowercase();
         }
-        KeyCode::Backspace => {
+        Edit::Backspace => {
             let tab = app.tab_mut();
             tab.search_query.pop();
             tab.search_query_lower = tab.search_query.to_lowercase();
@@ -731,9 +762,9 @@ pub fn handle_search_input(app: &mut App, key: KeyEvent) {
     }
 }
 
-pub fn handle_filter_input(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Enter => {
+fn execute_filter(app: &mut App, key: Edit) {
+    match key {
+        Edit::Submit => {
             let expr = app.tab().filter_input.clone();
             app.tab_mut().apply_filter_expr(&expr);
             app.input_mode = InputMode::Normal;
@@ -745,23 +776,23 @@ pub fn handle_filter_input(app: &mut App, key: KeyEvent) {
                 app.notify(&format!("Filter: {} ({}/{})", expr.trim(), visible, total));
             }
         }
-        KeyCode::Esc => {
+        Edit::Cancel => {
             app.tab_mut().filter_input.clear();
             app.input_mode = InputMode::Normal;
         }
-        KeyCode::Char(c) => {
+        Edit::Insert(c) => {
             app.tab_mut().filter_input.push(c);
         }
-        KeyCode::Backspace => {
+        Edit::Backspace => {
             app.tab_mut().filter_input.pop();
         }
         _ => {}
     }
 }
 
-pub fn handle_remote_url_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    match key.code {
-        KeyCode::Enter => {
+fn execute_remote_url(app: &mut App, key: Edit) -> Result<()> {
+    match key {
+        Edit::Submit => {
             let url = app.remote_url_input.clone();
             app.input_mode = InputMode::Normal;
             if url.trim().is_empty() {
@@ -772,14 +803,14 @@ pub fn handle_remote_url_input(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             app.remote_url_input.clear();
         }
-        KeyCode::Esc => {
+        Edit::Cancel => {
             app.remote_url_input.clear();
             app.input_mode = InputMode::Normal;
         }
-        KeyCode::Char(c) => {
+        Edit::Insert(c) => {
             app.remote_url_input.push(c);
         }
-        KeyCode::Backspace => {
+        Edit::Backspace => {
             app.remote_url_input.pop();
         }
         _ => {}
@@ -788,9 +819,9 @@ pub fn handle_remote_url_input(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 /// Text entry for changing the compare/base branch of the active tab.
-pub fn handle_base_branch_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    match key.code {
-        KeyCode::Enter => {
+fn execute_base_branch(app: &mut App, key: Edit) -> Result<()> {
+    match key {
+        Edit::Submit => {
             let input = app.remote_url_input.clone();
             app.input_mode = InputMode::Normal;
             app.remote_url_input.clear();
@@ -803,14 +834,14 @@ pub fn handle_base_branch_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 Err(e) => app.notify(&format!("Could not change base: {}", e)),
             }
         }
-        KeyCode::Esc => {
+        Edit::Cancel => {
             app.remote_url_input.clear();
             app.input_mode = InputMode::Normal;
         }
-        KeyCode::Char(c) => {
+        Edit::Insert(c) => {
             app.remote_url_input.push(c);
         }
-        KeyCode::Backspace => {
+        Edit::Backspace => {
             app.remote_url_input.pop();
         }
         _ => {}
@@ -818,13 +849,13 @@ pub fn handle_base_branch_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    match key.code {
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+fn execute_comment(app: &mut App, action: CommentAction) -> Result<()> {
+    match action {
+        CommentAction::NewLine => {
             // Shift+Enter inserts a newline
             app.tab_mut().comment_textarea.insert_newline();
         }
-        KeyCode::Enter => {
+        CommentAction::Submit => {
             // A GitHub-kind create posts now; a failure leaves the composer
             // open with its text so the user can retry.
             if app.github_comment_intent().is_some() {
@@ -835,60 +866,60 @@ pub fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.notify(&format!("Comment not saved: {e}"));
             }
         }
-        KeyCode::Esc => {
+        CommentAction::Cancel => {
             app.cancel_comment();
         }
-        KeyCode::Tab | KeyCode::BackTab => {
+        CommentAction::Pause => {
             app.pause_comment();
         }
-        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        CommentAction::ToggleType => {
             app.toggle_comment_type();
         }
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.tab_mut().scroll_down(10);
-        }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.tab_mut().scroll_up(10);
-        }
-        KeyCode::PageDown => app.tab_mut().scroll_down(20),
-        KeyCode::PageUp => app.tab_mut().scroll_up(20),
-        _ => {
+        CommentAction::ScrollDown(amount) => app.tab_mut().scroll_down(amount),
+        CommentAction::ScrollUp(amount) => app.tab_mut().scroll_up(amount),
+        CommentAction::Type(key) => {
             // Delegate to textarea (arrows, chars, backspace, etc.)
-            // But intercept Enter so it doesn't insert newlines via the default handler
-            if key.code != KeyCode::Enter {
-                app.tab_mut().comment_textarea.input(key);
-            }
+            app.tab_mut().comment_textarea.input(key);
         }
     }
     Ok(())
 }
 
-pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    match key.code {
-        KeyCode::Char('y') => {
-            let action = app.input_mode.clone();
-            if let InputMode::Confirm(ConfirmAction::DeleteComment { comment_id }) = action {
+/// Runs the write a y/n prompt confirmed. These are the only domain writes
+/// er-tui makes itself; every other one is an App method.
+fn execute_write(app: &mut App, write: Write) -> Result<()> {
+    match write {
+        Write::DeleteComment => {
+            if let InputMode::Confirm(ConfirmAction::DeleteComment { comment_id }) =
+                app.input_mode.clone()
+            {
                 app.confirm_delete_comment(&comment_id)?;
-            } else if action == InputMode::Confirm(ConfirmAction::Push) {
-                app.input_mode = InputMode::Normal;
-                let repo_root = app.tab().repo_root.clone();
-                match app.ports.git.push(&repo_root) {
-                    Ok(_) => {
-                        app.tab_mut().committed_unpushed = false;
-                        let _ = app.tab_mut().refresh_diff();
-                        app.notify("Pushed!");
-                    }
-                    Err(e) => {
-                        app.notify(&format!("Push failed: {}", e));
-                    }
+            }
+        }
+        Write::Push => {
+            app.input_mode = InputMode::Normal;
+            let repo_root = app.tab().repo_root.clone();
+            match app.ports.git.push(&repo_root) {
+                Ok(_) => {
+                    app.tab_mut().committed_unpushed = false;
+                    let _ = app.tab_mut().refresh_diff();
+                    app.notify("Pushed!");
                 }
-            } else if let InputMode::Confirm(ConfirmAction::CleanupQuestions { .. }) = action {
-                app.input_mode = InputMode::Normal;
-                let er_dir = app.tab().er_dir();
-                cleanup_questions_and_notes(&er_dir);
-                app.tab_mut().reload_ai_state();
-                app.notify("Questions & notes cleared");
-            } else if let InputMode::Confirm(ConfirmAction::DeleteWatchedFile { ref path }) = action
+                Err(e) => {
+                    app.notify(&format!("Push failed: {}", e));
+                }
+            }
+        }
+        Write::ClearQuestionsAndNotes => {
+            app.input_mode = InputMode::Normal;
+            let er_dir = app.tab().er_dir();
+            cleanup_questions_and_notes(&er_dir);
+            app.tab_mut().reload_ai_state();
+            app.notify("Questions & notes cleared");
+        }
+        Write::DeleteWatchedFile => {
+            if let InputMode::Confirm(ConfirmAction::DeleteWatchedFile { path }) =
+                app.input_mode.clone()
             {
                 let full_path = format!("{}/{}", app.tab().repo_root, path);
                 app.input_mode = InputMode::Normal;
@@ -910,107 +941,111 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.notify(&format!("Delete failed: {}", e));
                     }
                 }
-            } else if let InputMode::Confirm(ConfirmAction::CleanupReviews { .. }) = action {
-                app.input_mode = InputMode::Normal;
-                let er_dir = app.tab().er_dir();
-                if let Err(error) = app.check_review_bucket_admission(&er_dir) {
-                    app.notify(&format!("Review clear skipped: {error}"));
-                    return Ok(());
-                }
+            }
+        }
+        Write::ClearReviews => {
+            app.input_mode = InputMode::Normal;
+            let er_dir = app.tab().er_dir();
+            if let Err(error) = app.check_review_bucket_admission(&er_dir) {
+                app.notify(&format!("Review clear skipped: {error}"));
+                return Ok(());
+            }
+            if let Err(error) = cleanup_reviews(&er_dir) {
+                app.notify(&format!("Review clear failed: {error}"));
+                return Ok(());
+            }
+            app.tab_mut().reload_ai_state();
+            app.notify("Review cleared");
+        }
+        Write::ClearReviewAndRun => {
+            // Prepare before clearing so an ignored-only diff leaves the old review intact.
+            app.input_mode = InputMode::Normal;
+            if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
                 if let Err(error) = cleanup_reviews(&er_dir) {
-                    app.notify(&format!("Review clear failed: {error}"));
+                    app.notify(&format!("Review not started: {error}"));
                     return Ok(());
                 }
                 app.tab_mut().reload_ai_state();
-                app.notify("Review cleared");
-            } else if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = action {
-                // Prepare before clearing so an ignored-only diff leaves the old review intact.
-                app.input_mode = InputMode::Normal;
-                if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
-                    if let Err(error) = cleanup_reviews(&er_dir) {
-                        app.notify(&format!("Review not started: {error}"));
-                        return Ok(());
-                    }
-                    app.tab_mut().reload_ai_state();
-                    start_agent_review_with_prepared_diff(app, &er_dir, &diff_hash)?;
-                }
-                app.clear_ai_selection_override();
-            } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) = action {
-                // User said "yes" to clearing previous answers — clear answers, then run
-                app.input_mode = InputMode::Normal;
-                let er_dir = app.tab().er_dir();
-                cleanup_question_answers(&er_dir);
-                app.tab_mut().reload_ai_state();
-                if let Some(prompt) = build_agent_questions_prompt(app) {
-                    app.spawn_agent_prompt("questions", &prompt)?;
-                }
-                app.clear_ai_selection_override();
-            } else if let InputMode::Confirm(ConfirmAction::RunAgentNotes { .. }) = action {
-                app.input_mode = InputMode::Normal;
-                let er_dir = app.tab().er_dir();
-                cleanup_note_replies(&er_dir);
-                app.tab_mut().reload_ai_state();
-                if let Some(prompt) = build_agent_notes_prompt(app) {
-                    app.spawn_agent_prompt("notes", &prompt)?;
-                }
-                app.clear_ai_selection_override();
-            } else if action == InputMode::Confirm(ConfirmAction::ApprovePR) {
-                app.input_mode = InputMode::Normal;
-                let repo_root = app.tab().repo_root.clone();
-                let remote = app.tab().remote_repo.clone();
-                let pr = app.tab().pr_number;
-                match er_engine::github::gh_pr_approve(&repo_root, remote.as_deref(), pr) {
-                    Ok(()) => app.notify("PR approved"),
-                    Err(e) => app.notify(&format!("Approve failed: {}", e)),
-                }
+                start_agent_review_with_prepared_diff(app, &er_dir, &diff_hash)?;
+            }
+            app.clear_ai_selection_override();
+        }
+        Write::ClearAnswersAndRunQuestions => {
+            // User said "yes" to clearing previous answers — clear answers, then run
+            app.input_mode = InputMode::Normal;
+            let er_dir = app.tab().er_dir();
+            cleanup_question_answers(&er_dir);
+            app.tab_mut().reload_ai_state();
+            if let Some(prompt) = build_agent_questions_prompt(app) {
+                app.spawn_agent_prompt("questions", &prompt)?;
+            }
+            app.clear_ai_selection_override();
+        }
+        Write::ClearRepliesAndRunNotes => {
+            app.input_mode = InputMode::Normal;
+            let er_dir = app.tab().er_dir();
+            cleanup_note_replies(&er_dir);
+            app.tab_mut().reload_ai_state();
+            if let Some(prompt) = build_agent_notes_prompt(app) {
+                app.spawn_agent_prompt("notes", &prompt)?;
+            }
+            app.clear_ai_selection_override();
+        }
+        Write::ApprovePr => {
+            app.input_mode = InputMode::Normal;
+            let repo_root = app.tab().repo_root.clone();
+            let remote = app.tab().remote_repo.clone();
+            let pr = app.tab().pr_number;
+            match er_engine::github::gh_pr_approve(&repo_root, remote.as_deref(), pr) {
+                Ok(()) => app.notify("PR approved"),
+                Err(e) => app.notify(&format!("Approve failed: {}", e)),
             }
         }
-        KeyCode::Char('n') => {
-            app.cancel_confirm();
-        }
-        KeyCode::Char('k') => {
-            // For agent prompts, 'k' = keep previous data but still run
-            if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = &app.input_mode {
-                app.input_mode = InputMode::Normal;
-                start_agent_review(app)?;
-                app.clear_ai_selection_override();
-            } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) =
-                &app.input_mode
-            {
-                app.input_mode = InputMode::Normal;
-                if let Some(prompt) = build_agent_questions_prompt(app) {
-                    app.spawn_agent_prompt("questions", &prompt)?;
-                }
-                app.clear_ai_selection_override();
-            } else if let InputMode::Confirm(ConfirmAction::RunAgentNotes { .. }) = &app.input_mode
-            {
-                app.input_mode = InputMode::Normal;
-                if let Some(prompt) = build_agent_notes_prompt(app) {
-                    app.spawn_agent_prompt("notes", &prompt)?;
-                }
-                app.clear_ai_selection_override();
-            }
-        }
-        KeyCode::Esc => {
-            app.cancel_confirm();
-        }
-        _ => {} // Ignore all other keys in confirm mode
     }
     Ok(())
 }
 
-pub fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    match key.code {
-        KeyCode::Enter => {
+fn execute_confirm(app: &mut App, key: ConfirmKey) -> Result<()> {
+    match key {
+        ConfirmKey::Cancel => {
+            app.cancel_confirm();
+        }
+        // For agent prompts, 'k' = keep previous data but still run
+        ConfirmKey::KeepAndRunReview => {
+            app.input_mode = InputMode::Normal;
+            start_agent_review(app)?;
+            app.clear_ai_selection_override();
+        }
+        ConfirmKey::KeepAndRunQuestions => {
+            app.input_mode = InputMode::Normal;
+            if let Some(prompt) = build_agent_questions_prompt(app) {
+                app.spawn_agent_prompt("questions", &prompt)?;
+            }
+            app.clear_ai_selection_override();
+        }
+        ConfirmKey::KeepAndRunNotes => {
+            app.input_mode = InputMode::Normal;
+            if let Some(prompt) = build_agent_notes_prompt(app) {
+                app.spawn_agent_prompt("notes", &prompt)?;
+            }
+            app.clear_ai_selection_override();
+        }
+    }
+    Ok(())
+}
+
+fn execute_commit(app: &mut App, key: Edit) -> Result<()> {
+    match key {
+        Edit::Submit => {
             app.submit_commit()?;
         }
-        KeyCode::Esc => {
+        Edit::Cancel => {
             app.cancel_commit();
         }
-        KeyCode::Char(c) => {
+        Edit::Insert(c) => {
             app.tab_mut().commit_input.push(c);
         }
-        KeyCode::Backspace => {
+        Edit::Backspace => {
             app.tab_mut().commit_input.pop();
         }
         _ => {}
