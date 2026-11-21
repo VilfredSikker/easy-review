@@ -36,6 +36,7 @@ fn ports() -> er_engine::ports::Ports {
             .with_diff_shortstat((0, 0, 0))
             .with_diff_raw(Ok(diff()))
             .with_diff_against_branch(Ok(diff()))
+            .with_diff_checkout_against_base(Ok(diff()))
             .with_is_merge_in_progress(false)
             .with_remote_url(Ok(format!("https://github.com/{REMOTE}.git"))),
     );
