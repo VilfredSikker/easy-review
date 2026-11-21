@@ -1,16 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
-import {
-  applyInboxFilters,
-  formatInboxAge,
-  groupInboxItems,
-  inboxItemCategory,
-  inboxItemProjectId,
-  inboxKindMeta,
-  inboxReadIds,
-  inboxUnreadIds,
-  sortInboxItems,
-} from "./inboxCategories";
+import { formatInboxAge, inboxItemCategory, inboxItemProjectId, inboxKindMeta } from "./inboxCategories";
 
 function item(
   partial: Partial<InboxItemSnapshot> & Pick<InboxItemSnapshot, "id" | "kind">,
@@ -38,37 +28,6 @@ describe("inboxItemCategory", () => {
   it("falls back to kind when category is missing", () => {
     expect(inboxItemCategory(item({ id: "1", kind: "pr_comment" }))).toBe("pr_comment");
     expect(inboxItemCategory(item({ id: "2", kind: "mystery" }))).toBe("other");
-  });
-});
-
-describe("groupInboxItems", () => {
-  it("groups by taxonomy order and omits empty categories", () => {
-    const grouped = groupInboxItems([
-      item({ id: "ci", kind: "ci_failed", category: "ci" }),
-      item({ id: "c1", kind: "pr_comment", category: "pr_comment" }),
-      item({ id: "a1", kind: "pr_review_approved", category: "approved" }),
-      item({ id: "c2", kind: "pr_comment", category: "pr_comment" }),
-    ]);
-    expect(grouped.map((g) => g.category)).toEqual(["pr_comment", "approved", "ci"]);
-    expect(grouped[0].label).toBe("Comment on your PR");
-    expect(grouped[0].items.map((i) => i.id)).toEqual(["c1", "c2"]);
-  });
-});
-
-describe("sortInboxItems", () => {
-  it("puts unread first then newest", () => {
-    const sorted = sortInboxItems([
-      item({ id: "old-unread", kind: "ci_failed", category: "ci", created_at_ms: 1 }),
-      item({
-        id: "new-read",
-        kind: "pr_merged",
-        category: "lifecycle",
-        created_at_ms: 9,
-        read_at_ms: 10,
-      }),
-      item({ id: "new-unread", kind: "pr_comment", category: "pr_comment", created_at_ms: 8 }),
-    ]);
-    expect(sorted.map((i) => i.id)).toEqual(["new-unread", "old-unread", "new-read"]);
   });
 });
 
@@ -168,95 +127,3 @@ describe("formatInboxAge", () => {
   });
 });
 
-describe("applyInboxFilters", () => {
-  it("filters the full list without capping it", () => {
-    const items = Array.from({ length: 25 }, (_, i) =>
-      item({
-        id: `n${i}`,
-        kind: "pr_comment",
-        category: "pr_comment",
-        created_at_ms: i,
-      }),
-    );
-    items.push(
-      item({
-        id: "ci-old",
-        kind: "ci_failed",
-        category: "ci",
-        created_at_ms: 0,
-      }),
-    );
-    const filtered = applyInboxFilters(items, {
-      projects: [],
-      projectId: "all",
-      read: "all",
-      category: "ci",
-    });
-    expect(filtered.map((i) => i.id)).toEqual(["ci-old"]);
-  });
-
-  it("keeps every matching item so the popover can scroll the full inbox", () => {
-    const items = Array.from({ length: 40 }, (_, i) =>
-      item({
-        id: `m${i}`,
-        kind: "pr_merged",
-        category: "lifecycle",
-        created_at_ms: i,
-        read_at_ms: i % 2 === 0 ? 10 : null,
-      }),
-    );
-    const filtered = applyInboxFilters(items, {
-      projects: [],
-      projectId: "all",
-      read: "all",
-      category: "lifecycle",
-    });
-    expect(filtered).toHaveLength(40);
-    const grouped = groupInboxItems(filtered);
-    expect(grouped).toHaveLength(1);
-    expect(grouped[0].items).toHaveLength(40);
-  });
-});
-
-describe("inboxUnreadIds / inboxReadIds", () => {
-  it("splits ids for group mark-read and clear-read", () => {
-    const items = [
-      item({ id: "u1", kind: "pr_comment", category: "pr_comment" }),
-      item({
-        id: "r1",
-        kind: "pr_merged",
-        category: "lifecycle",
-        read_at_ms: 10,
-      }),
-      item({ id: "u2", kind: "pr_merged", category: "lifecycle" }),
-    ];
-    expect(inboxUnreadIds(items)).toEqual(["u1", "u2"]);
-    expect(inboxReadIds(items)).toEqual(["r1"]);
-    expect(inboxUnreadIds([])).toEqual([]);
-    expect(inboxReadIds([])).toEqual([]);
-  });
-
-  it("keeps a single-category filter as one group with those ids", () => {
-    const items = [
-      item({ id: "u", kind: "pr_merged", category: "lifecycle" }),
-      item({
-        id: "r",
-        kind: "pr_merged",
-        category: "lifecycle",
-        read_at_ms: 1,
-      }),
-      item({ id: "other", kind: "pr_comment", category: "pr_comment" }),
-    ];
-    const filtered = applyInboxFilters(items, {
-      projects: [],
-      projectId: "all",
-      read: "all",
-      category: "lifecycle",
-    });
-    const grouped = groupInboxItems(filtered);
-    expect(grouped).toHaveLength(1);
-    expect(grouped[0].category).toBe("lifecycle");
-    expect(inboxUnreadIds(grouped[0].items)).toEqual(["u"]);
-    expect(inboxReadIds(grouped[0].items)).toEqual(["r"]);
-  });
-});

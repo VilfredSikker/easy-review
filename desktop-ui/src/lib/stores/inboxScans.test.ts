@@ -33,7 +33,6 @@ describe("inbox source scans", () => {
     ADAPTER, // maps the wire's readAtMs to it
     OPTIMISTIC, // the flag-off paint
     join("lib", "inboxThreads.ts"), // a thread's unread ids
-    join("lib", "inboxCategories.ts"), // the sort, the filters and the id lists
   ];
   it("no module counts the unread items but the flag-off paint", () => {
     const readState = /\b(read_at_ms|readAtMs)\b/;
