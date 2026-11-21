@@ -863,3 +863,25 @@ fn the_diff_resource_names_both_pr_heads() {
     let plain = crate::content::TabContent::from_loaded(TabKey::next(), *plain, 1);
     assert_eq!(heads(&plain), (None, None), "a plain tab");
 }
+
+/// A write to any one section `diff(tab)` reads raises its version.
+#[test]
+fn each_section_the_diff_reads_raises_its_version() {
+    use crate::content::TabContent;
+    fn section<T>(arc: &mut Arc<T>) -> &mut T {
+        Arc::get_mut(arc).unwrap_or_else(|| panic!("a fresh section is shared"))
+    }
+    let fresh = || TabContent::from_loaded(TabKey::next(), *loaded_tab("/repo"), 1);
+    let base = crate::diff_version(&fresh());
+    let raises: [(&str, fn(&mut TabContent)); 4] = [
+        ("reviewed", |c| section(&mut c.reviewed).revision += 5),
+        ("ai", |c| section(&mut c.ai).revision += 5),
+        ("pr", |c| section(&mut c.pr).revision += 5),
+        ("mode", |c| c.mode_revision += 5),
+    ];
+    for (name, raise) in raises {
+        let mut content = fresh();
+        raise(&mut content);
+        assert!(crate::diff_version(&content) > base, "{name} left {base}");
+    }
+}
