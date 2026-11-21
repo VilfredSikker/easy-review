@@ -95,6 +95,16 @@ pub(crate) fn measure(
     }
 }
 
+/// `content` measured again against `tips`, off the actor.
+pub(crate) fn remeasure(
+    deps: &crate::actor::WorkspaceDeps,
+    content: &crate::content::TabContent,
+    tips: RemoteTips,
+) -> Freshness {
+    let unstaged = content.diff.meta.scope_stats.unstaged.0;
+    measure(&*deps.ports().git, &content.tab, tips, unstaged)
+}
+
 /// Commits reachable from `to` and not from `from`.
 fn count(git: &dyn Git, root: &str, from: &str, to: &str) -> Option<usize> {
     let range = format!("{from}..{to}");

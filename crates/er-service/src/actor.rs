@@ -764,9 +764,7 @@ fn handle_command(
             }
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
-                let unstaged = content.diff.meta.scope_stats.unstaged.0;
-                let git = &*deps.ports().git;
-                let freshness = crate::freshness::measure(git, &content.tab, tips, unstaged);
+                let freshness = crate::freshness::remeasure(&deps, &content, tips);
                 let patch = ContentPatch::Freshness {
                     key,
                     freshness: Box::new(freshness),
