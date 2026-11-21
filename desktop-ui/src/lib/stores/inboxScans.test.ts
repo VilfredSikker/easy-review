@@ -25,10 +25,32 @@ const stripped = (f: string) =>
 describe("inbox source scans", () => {
   // With the flag on the server counts the unread items (A8: the rule moved
   // to the server). The flag-off paint recounts the snapshot it painted; the
-  // per-PR thread badges count threads, which no resource carries.
+  // per-PR thread badges count threads, which no resource carries. Only these
+  // modules read an item's read state at all, so a count written anywhere
+  // else fails however it is spelled; no component is among them.
+  const READ_STATE = [
+    join("lib", "types.ts"), // declares the snapshot field
+    ADAPTER, // maps the wire's readAtMs to it
+    OPTIMISTIC, // the flag-off paint
+    join("lib", "inboxThreads.ts"), // a thread's unread ids
+    join("lib", "inboxCategories.ts"), // the sort, the filters and the id lists
+  ];
   it("no module counts the unread items but the flag-off paint", () => {
-    const counts = /\b(read_at_ms|readAtMs)\s*(==|===)\s*null\s*\)\s*\.length\b|\bunread(Count|_count)\s*[+-]=/;
-    expect(sources().filter((f) => f !== OPTIMISTIC && counts.test(stripped(f)))).toEqual([]);
+    const readState = /\b(read_at_ms|readAtMs)\b/;
+    expect(sources().filter((f) => !READ_STATE.includes(f) && readState.test(stripped(f)))).toEqual([]);
+    // In the modules that read it, no statement that names the read state
+    // also counts, and no module counts a thread's unread ids beyond testing
+    // them for none.
+    const counting = /\.length\b|\.size\b|\+=|\+\+|\breduce\(/;
+    const counted = READ_STATE.filter((f) => f !== OPTIMISTIC).flatMap((f) =>
+      stripped(f)
+        .split(/[;{}]/)
+        .filter((statement) => readState.test(statement) && counting.test(statement))
+        .map((statement) => `${f}: ${statement.trim()}`),
+    );
+    expect(counted).toEqual([]);
+    const unreadIds = /\bunreadIds\)*\.length\b(?!\s*(===|!==|==|!=|>)\s*0\b)/;
+    expect(sources().filter((f) => unreadIds.test(stripped(f)))).toEqual([]);
     const adapter = stripped(ADAPTER);
     const getter = adapter.slice(adapter.indexOf("get unreadCount()"), adapter.indexOf("get lastRefreshMs()"));
     expect(getter).toMatch(/return this\.held\(\)\?\.unreadCount \?\? 0;/);
