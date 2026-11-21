@@ -3,6 +3,7 @@
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { projectsResource, worktreesResource } from "$lib/stores/projectsResource.svelte";
+  import { inboxResource } from "$lib/stores/inboxResource.svelte";
   import AppMark from "$lib/components/AppMark.svelte";
   import InboxPanel from "$lib/components/InboxPanel.svelte";
   import type { BackgroundTaskSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
@@ -52,7 +53,7 @@
   // collapsed rail's badge matches what a click lands on.
   const unreadPrs = $derived(
     collapsed
-      ? groupInboxThreads(snapshot?.inbox_items ?? [], projects).filter(isThreadUnread).length
+      ? groupInboxThreads(inboxResource.items, projects).filter(isThreadUnread).length
       : 0,
   );
   // The collapsed-rail Inbox button closes the Inbox when it is open.

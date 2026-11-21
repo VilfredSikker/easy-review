@@ -143,6 +143,11 @@ function openCommand(command: string, a: Args): Command | null | undefined {
       return { kind: "open_worktree" };
     case "set_active_project":
       return { kind: "set_active_project", projectId: String(a.id) };
+    // The page asks for a new tab; the wire asks whether to replace the active one.
+    case "open_inbox_item":
+      return { kind: "open_inbox_item", id: String(a.id), replace: a.newTab !== true };
+    case "prefetch_inbox_item":
+      return { kind: "prefetch_inbox_item", id: String(a.id) };
     case "prefetch_pr_open":
       return prefetchCommand(a);
     case "prefetch_remote_pr_open":

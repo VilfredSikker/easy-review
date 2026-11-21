@@ -346,6 +346,17 @@ fn the_inbox_commands_are_tagged_by_kind() -> serde_json::Result<()> {
         },
         r#"{"kind":"clear_inbox_items","ids":["i-1"]}"#,
     )?;
+    assert_wire(
+        &Command::OpenInboxItem {
+            id: "i-1".into(),
+            replace: false,
+        },
+        r#"{"kind":"open_inbox_item","id":"i-1","replace":false}"#,
+    )?;
+    assert_wire(
+        &Command::PrefetchInboxItem { id: "i-1".into() },
+        r#"{"kind":"prefetch_inbox_item","id":"i-1"}"#,
+    )?;
     for (command, kind) in [
         (Command::MarkAllInboxRead, "mark_all_inbox_read"),
         (Command::ClearReadInboxItems, "clear_read_inbox_items"),

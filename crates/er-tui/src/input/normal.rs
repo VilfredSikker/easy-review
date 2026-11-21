@@ -1,53 +1,60 @@
+use super::keys::{AiSummaryAction, HistoryAction, NormalAction, TourAction};
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use er_engine::ai::{PanelContent, ReviewFocus};
+use er_engine::ai::ReviewFocus;
 use er_engine::app::{App, ConfirmAction, DiffMode, InputMode, SplitSide};
 use er_engine::watch::{FileWatcher, WatchEvent};
 use std::path::Path;
 use std::sync::mpsc;
 
+#[cfg(test)]
 pub fn handle_normal_input(
     app: &mut App,
-    key: KeyEvent,
+    key: crossterm::event::KeyEvent,
     watch_tx: &mpsc::Sender<WatchEvent>,
     watcher: &mut Option<FileWatcher>,
 ) -> Result<()> {
+    super::execute(app, super::step(app, key), watch_tx, watcher)
+}
+
+pub fn execute(
+    app: &mut App,
+    action: NormalAction,
+    watch_tx: &mpsc::Sender<WatchEvent>,
+    watcher: &mut Option<FileWatcher>,
+) -> Result<()> {
+    use NormalAction as A;
     // ── Global keys: work in all view modes including AiReview ──
 
-    match key.code {
+    match action {
         // Quit (Ctrl+q)
-        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        A::Quit => {
             app.should_quit = true;
             return Ok(());
         }
 
         // Personal question on current line (q)
-        KeyCode::Char('q') => {
+        A::StartQuestion => {
             app.start_comment(er_engine::ai::CommentType::Question);
             return Ok(());
         }
 
         // Mode switching — dynamic tab numbers based on visible modes
-        KeyCode::Char(c @ '1'..='9') => {
-            let idx = (c as usize) - ('1' as usize);
-            let visible = app.tab().visible_modes(&app.config);
-            if let Some(&mode) = visible.get(idx) {
-                if mode == DiffMode::PrDiff {
-                    // Only enter PrDiff when not already there (avoids re-fetching refs
-                    // on a remote tab that is already in PrDiff from construction).
-                    if app.tab().mode != DiffMode::PrDiff {
-                        if let Err(e) = app.tab_mut().enter_pr_diff() {
-                            app.notify(&format!("PR diff unavailable: {}", e));
-                        }
+        A::SwitchMode(mode) => {
+            if mode == DiffMode::PrDiff {
+                // Only enter PrDiff when not already there (avoids re-fetching refs
+                // on a remote tab that is already in PrDiff from construction).
+                if app.tab().mode != DiffMode::PrDiff {
+                    if let Err(e) = app.tab_mut().enter_pr_diff() {
+                        app.notify(&format!("PR diff unavailable: {}", e));
                     }
-                } else {
-                    app.tab_mut().set_mode(mode);
                 }
+            } else {
+                app.tab_mut().set_mode(mode);
             }
             return Ok(());
         }
         // Toggle mtime sort (works in any mode)
-        KeyCode::Char('m') => {
+        A::ToggleMtimeSort => {
             let tab = app.tab_mut();
             tab.sort_by_mtime = !tab.sort_by_mtime;
             let _ = tab.refresh_diff();
@@ -61,14 +68,14 @@ pub fn handle_normal_input(
         }
 
         // Reload/refresh diff
-        KeyCode::Char('R') => {
+        A::Refresh => {
             app.tab_mut().refresh_diff()?;
             app.notify("Refreshed");
             return Ok(());
         }
 
         // Toggle watch mode
-        KeyCode::Char('w') => {
+        A::ToggleWatch => {
             if app.tab().is_remote() {
                 app.notify("Watch not available in remote mode");
                 return Ok(());
@@ -95,7 +102,7 @@ pub fn handle_normal_input(
         }
 
         // Open in editor (or edit focused comment if own top-level)
-        KeyCode::Char('e') => {
+        A::Edit => {
             if let Some(id) = app.tab().focused_comment_id.clone() {
                 if let Some(comment) = app.tab().ai.find_comment(&id) {
                     if comment.author() == "You" && comment.in_reply_to().is_none() {
@@ -113,27 +120,25 @@ pub fn handle_normal_input(
         }
 
         // Unified hint jumping across files (Shift+J / Shift+K)
-        KeyCode::Char('J') => {
+        A::PrevHint => {
             app.prev_hint();
             return Ok(());
         }
-        KeyCode::Char('K') => {
+        A::NextHint => {
             app.next_hint();
             return Ok(());
         }
         // AI finding jumping across files (Ctrl+j / Ctrl+k)
-        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        A::NextFinding => {
             app.next_finding();
             return Ok(());
         }
-        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        A::PrevFinding => {
             app.prev_finding();
             return Ok(());
         }
         // Delete watched file in Hidden mode
-        KeyCode::Char('x')
-            if key.modifiers == KeyModifiers::NONE && app.tab().mode == DiffMode::Hidden =>
-        {
+        A::AskDeleteWatchedFile => {
             if let Some(idx) = app.tab().selected_watched {
                 if let Some(wf) = app.tab().watched_files.get(idx) {
                     let path = wf.path.clone();
@@ -143,9 +148,7 @@ pub fn handle_normal_input(
             return Ok(());
         }
         // Delete focused comment (after J/K jump) — only if deletable
-        KeyCode::Char('x')
-            if key.modifiers == KeyModifiers::NONE && app.tab().focused_comment_id.is_some() =>
-        {
+        A::AskDeleteComment => {
             if let Some(ref id) = app.tab().focused_comment_id.clone() {
                 if let Some(comment) = app.tab().ai.find_comment(id) {
                     if comment.can_delete() {
@@ -158,7 +161,7 @@ pub fn handle_normal_input(
             return Ok(());
         }
         // Reply to focused comment/question or finding
-        KeyCode::Char('r') => {
+        A::Reply => {
             if let Some(id) = app.tab().focused_comment_id.clone() {
                 if let Some(comment) = app.tab().ai.find_comment(&id) {
                     if comment.can_reply() {
@@ -171,7 +174,7 @@ pub fn handle_normal_input(
             return Ok(());
         }
         // Cleanup AI sidecar files
-        KeyCode::Char('z') if key.modifiers == KeyModifiers::NONE => {
+        A::AskClearQuestions => {
             if app.tab().is_remote() {
                 return Ok(());
             }
@@ -179,7 +182,7 @@ pub fn handle_normal_input(
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
             return Ok(());
         }
-        KeyCode::Char('Z') => {
+        A::AskClearReviews => {
             if app.tab().is_remote() {
                 return Ok(());
             }
@@ -187,28 +190,28 @@ pub fn handle_normal_input(
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews { count });
             return Ok(());
         }
-        KeyCode::Char('x') => {
+        A::CloseTab => {
             app.close_tab();
             return Ok(());
         }
         // Tab switching ([ / ])
-        KeyCode::Char(']') => {
+        A::NextTab => {
             app.next_tab();
             return Ok(());
         }
-        KeyCode::Char('[') => {
+        A::PrevTab => {
             app.prev_tab();
             return Ok(());
         }
 
         // Repo overlays
-        KeyCode::Char('o') => {
+        A::OpenOpenHub => {
             app.open_open_hub();
             return Ok(());
         }
 
         // Toggle watched files section visibility
-        KeyCode::Char('W') => {
+        A::ToggleWatchedFiles => {
             let tab = app.tab_mut();
             if tab.watched_config.paths.is_empty() {
                 app.notify("No watched paths configured — add them in the config hub (,)");
@@ -227,84 +230,48 @@ pub fn handle_normal_input(
         }
 
         // Resize file tree panel (</>)
-        KeyCode::Char('<') => {
+        A::ResizeFileTree(delta) => {
             let w = app.last_terminal_width;
-            app.tab_mut().resize_file_tree(-2, w);
-            return Ok(());
-        }
-        KeyCode::Char('>') => {
-            let w = app.last_terminal_width;
-            app.tab_mut().resize_file_tree(2, w);
+            app.tab_mut().resize_file_tree(delta, w);
             return Ok(());
         }
 
         // Resize side panel ({/})
-        KeyCode::Char('{') => {
+        A::ResizePanel(delta) => {
             let w = app.last_terminal_width;
-            app.tab_mut().resize_panel(-4, w);
-            return Ok(());
-        }
-        KeyCode::Char('}') => {
-            let w = app.last_terminal_width;
-            app.tab_mut().resize_panel(4, w);
+            app.tab_mut().resize_panel(delta, w);
             return Ok(());
         }
 
-        _ => {}
-    }
-
-    // ── Panel focused: route navigation keys to the appropriate panel handler ──
-    if app.tab().panel_focus && app.tab().panel.is_some() {
-        if app.tab().panel == Some(PanelContent::AiSummary) {
-            return handle_ai_review_input(app, key);
+        // ── Panel focused: FileDetail's j/k navigate findings when the current
+        // file has any, and scroll otherwise; PrOverview and the rest scroll ──
+        A::NavigatePanelFinding(forward) => {
+            app.navigate_panel_finding(forward);
+            return Ok(());
         }
-        // FileDetail: j/k navigate findings when the current file has any; fall back to scroll.
-        // PrOverview / other panels: always scroll.
-        let has_findings = app.tab().panel == Some(PanelContent::FileDetail)
-            && app
-                .tab()
-                .files
-                .get(app.tab().selected_file)
-                .and_then(|f| app.tab().ai.file_review(&f.path))
-                .is_some_and(|fr| !fr.findings.is_empty());
-
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down if has_findings => {
-                app.navigate_panel_finding(true);
-                return Ok(());
-            }
-            KeyCode::Char('k') | KeyCode::Up if has_findings => {
-                app.navigate_panel_finding(false);
-                return Ok(());
-            }
-            KeyCode::Enter if app.tab().focused_finding_id.is_some() => {
-                app.jump_to_focused_finding();
-                return Ok(());
-            }
-            KeyCode::Char('k') | KeyCode::Down => {
-                app.tab_mut().panel_scroll_down(1);
-                app.tab_mut().panel_scroll = app.tab().panel_scroll.min(4096);
-                return Ok(());
-            }
-            KeyCode::Char('j') | KeyCode::Up => {
-                app.tab_mut().panel_scroll_up(1);
-                return Ok(());
-            }
-            KeyCode::Esc => {
-                app.tab_mut().panel_focus = false;
-                app.tab_mut().focused_finding_id = None;
-                return Ok(());
-            }
-            _ => {}
+        A::JumpToFocusedFinding => {
+            app.jump_to_focused_finding();
+            return Ok(());
         }
-    }
+        A::PanelLineDown => {
+            app.tab_mut().panel_scroll_down(1);
+            app.tab_mut().panel_scroll = app.tab().panel_scroll.min(4096);
+            return Ok(());
+        }
+        A::PanelLineUp => {
+            app.tab_mut().panel_scroll_up(1);
+            return Ok(());
+        }
+        A::UnfocusPanel => {
+            app.tab_mut().panel_focus = false;
+            app.tab_mut().focused_finding_id = None;
+            return Ok(());
+        }
 
-    // ── Shared feature keys: work in all diff modes including History ──
-    let mode = app.tab().mode;
+        // ── Shared feature keys: work in all diff modes including History ──
 
-    match key.code {
         // Search
-        KeyCode::Char('/') => {
+        A::StartSearch => {
             app.input_mode = InputMode::Search;
             let tab = app.tab_mut();
             tab.search_query.clear();
@@ -313,7 +280,7 @@ pub fn handle_normal_input(
         }
 
         // Filter
-        KeyCode::Char('f') => {
+        A::StartFilter => {
             app.input_mode = InputMode::Filter;
             // Pre-populate with current expression for editing
             app.tab_mut().filter_input = app.tab().filter_expr.clone();
@@ -321,19 +288,19 @@ pub fn handle_normal_input(
         }
 
         // Filter history
-        KeyCode::Char('F') => {
+        A::OpenFilterHistory => {
             app.open_filter_history();
             return Ok(());
         }
 
         // Open config hub overlay
-        KeyCode::Char(',') => {
+        A::OpenConfigHub => {
             app.open_config_hub();
             return Ok(());
         }
 
         // Toggle AI findings layer (A)
-        KeyCode::Char('A') => {
+        A::ToggleAiFindings => {
             app.tab_mut().toggle_layer_ai();
             let on = app.tab().layers.show_ai_findings;
             app.notify(if on {
@@ -344,28 +311,8 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
-        // Stop every running agent command (Ctrl+x).
-        //
-        // All of them rather than a chosen one: the Agent Log panel lists
-        // running commands but is not focusable, so there is no selection to
-        // act on. In practice a tab runs one command at a time; if that stops
-        // being true this wants a focusable list instead of a broader hammer.
-        KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let runs = app.running_commands();
-            let count = runs.len();
-            for (_, run) in &runs {
-                run.kill();
-            }
-            app.notify(&match count {
-                0 => "No agent commands running".to_string(),
-                1 => "Stopping agent command...".to_string(),
-                n => format!("Stopping {n} agent commands..."),
-            });
-            return Ok(());
-        }
-
         // Push current branch to remote (Staged mode only)
-        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        A::AskPush => {
             if app.tab().mode == DiffMode::Staged && !app.tab().is_remote() {
                 app.input_mode = InputMode::Confirm(ConfirmAction::Push);
             }
@@ -373,40 +320,40 @@ pub fn handle_normal_input(
         }
 
         // Toggle context panel (p) — cycles through panel states
-        KeyCode::Char('p') => {
+        A::TogglePanel => {
             app.tab_mut().toggle_panel();
             return Ok(());
         }
 
         // Tab: resume comment draft, or toggle split/panel focus
-        KeyCode::Tab => {
-            if app.has_comment_draft() {
-                app.resume_comment();
-                return Ok(());
-            }
-            if !matches!(mode, DiffMode::History | DiffMode::Tour)
-                && app.split_diff_active(&app.config.clone())
-            {
-                let tab = app.tab_mut();
-                tab.split_focus = match tab.split_focus {
-                    SplitSide::Old => SplitSide::New,
-                    SplitSide::New => SplitSide::Old,
-                };
-            } else {
-                let tab = app.tab_mut();
-                if tab.panel.is_some() {
-                    tab.panel_focus = !tab.panel_focus;
-                }
+        A::ResumeComment => {
+            app.resume_comment();
+            return Ok(());
+        }
+        A::ToggleSplitFocus => {
+            let tab = app.tab_mut();
+            tab.split_focus = match tab.split_focus {
+                SplitSide::Old => SplitSide::New,
+                SplitSide::New => SplitSide::Old,
+            };
+            return Ok(());
+        }
+        A::TogglePanelFocus => {
+            let tab = app.tab_mut();
+            if tab.panel.is_some() {
+                tab.panel_focus = !tab.panel_focus;
             }
             return Ok(());
         }
 
         // In Staged mode, c = commit; otherwise c = GitHub comment. A tab
         // already probed with no PR gates the composer on that held state.
-        KeyCode::Char('c') => {
-            if app.tab().mode == DiffMode::Staged {
-                app.start_commit();
-            } else if app.tab().pr_absent {
+        A::StartCommit => {
+            app.start_commit();
+            return Ok(());
+        }
+        A::StartGithubComment => {
+            if app.tab().pr_absent {
                 app.notify(er_engine::github_post::NO_PR_FOR_COMMENT);
             } else {
                 app.start_comment(er_engine::ai::CommentType::GitHubComment);
@@ -415,7 +362,7 @@ pub fn handle_normal_input(
         }
 
         // Toggle comment layer visibility (C)
-        KeyCode::Char('C') => {
+        A::ToggleComments => {
             app.tab_mut().toggle_layer_comments();
             let on = app.tab().layers.show_github_comments;
             app.notify(if on {
@@ -427,7 +374,7 @@ pub fn handle_normal_input(
         }
 
         // Toggle question layer visibility (Q)
-        KeyCode::Char('Q') => {
+        A::ToggleQuestions => {
             app.tab_mut().toggle_layer_questions();
             let on = app.tab().layers.show_questions;
             app.notify(if on {
@@ -439,7 +386,7 @@ pub fn handle_normal_input(
         }
 
         // Toggle hide resolved comments (X)
-        KeyCode::Char('X') => {
+        A::ToggleHideResolved => {
             app.tab_mut().toggle_hide_resolved();
             let on = app.tab().layers.hide_resolved;
             app.notify(if on {
@@ -453,7 +400,7 @@ pub fn handle_normal_input(
         // Cycle the confidence gate (T). Tightening it is only meaningful once
         // an arbiter has graded the diff, so the message says which mode the
         // review is in rather than leaving the behaviour change silent.
-        KeyCode::Char('T') => {
+        A::CycleMinTrust => {
             let graded = app.tab().ai.arbiter_effect.graded();
             let next = app.tab_mut().cycle_min_trust();
             app.notify(&format!(
@@ -469,52 +416,49 @@ pub fn handle_normal_input(
         }
 
         // GitHub comment sync (pull)
-        KeyCode::Char('G') => {
+        A::SyncGithubComments => {
             app.sync_github_comments()?;
             return Ok(());
         }
 
         // Toggle context panel backward (P) — cycles through panel states in reverse
-        KeyCode::Char('P') => {
+        A::TogglePanelReverse => {
             app.tab_mut().toggle_panel_reverse();
             return Ok(());
         }
 
         // AI modal hub (a)
-        KeyCode::Char('a') => {
+        A::OpenAiHub => {
             app.open_ai_hub();
             return Ok(());
         }
 
         // Git modal hub (g)
-        KeyCode::Char('g') => {
+        A::OpenGitHub => {
             app.open_git_hub();
             return Ok(());
         }
 
         // Verify modal hub (v)
-        KeyCode::Char('v') => {
+        A::OpenVerifyHub => {
             app.open_verify_hub();
             return Ok(());
         }
 
         // Help modal hub (?)
-        KeyCode::Char('?') => {
+        A::OpenHelpHub => {
             app.open_help_hub();
             return Ok(());
         }
 
         // Expand/compact toggle for compacted files (no-op in History — commit files aren't compacted)
-        KeyCode::Enter => {
-            let is_compacted = app.tab().selected_diff_file().is_some_and(|f| f.compacted);
-            if is_compacted {
-                app.tab_mut().toggle_compacted()?;
-            }
+        A::ToggleCompacted => {
+            app.tab_mut().toggle_compacted()?;
             return Ok(());
         }
 
         // Expand / collapse context lines for current file
-        KeyCode::Char('+' | '=') => {
+        A::ExpandContext => {
             if app.tab().is_remote() {
                 app.notify("Context expansion not available in remote mode");
                 return Ok(());
@@ -522,7 +466,7 @@ pub fn handle_normal_input(
             app.tab_mut().expand_context()?;
             return Ok(());
         }
-        KeyCode::Char('-') => {
+        A::CollapseContext => {
             if app.tab().is_remote() {
                 app.notify("Context expansion not available in remote mode");
                 return Ok(());
@@ -532,103 +476,75 @@ pub fn handle_normal_input(
         }
 
         // Clear search first, then filter (History gains filter-clear, which is correct)
-        KeyCode::Esc => {
-            if !app.tab().search_query.is_empty() {
-                let tab = app.tab_mut();
-                tab.search_query.clear();
-                tab.search_query_lower.clear();
-            } else if !app.tab().filter_expr.is_empty() {
-                app.tab_mut().clear_filter();
-                app.notify("Filter cleared");
-            }
+        A::ClearSearch => {
+            let tab = app.tab_mut();
+            tab.search_query.clear();
+            tab.search_query_lower.clear();
+            return Ok(());
+        }
+        A::ClearFilter => {
+            app.tab_mut().clear_filter();
+            app.notify("Filter cleared");
             return Ok(());
         }
 
         // Stage/unstage file (or update snapshot for watched files) — not meaningful in History or remote mode
-        KeyCode::Char('s')
-            if !matches!(mode, DiffMode::History | DiffMode::Tour)
-                && !app.tab().is_remote()
-                && key.modifiers == KeyModifiers::NONE =>
-        {
-            if app.tab().selected_watched.is_some() {
-                // Update snapshot for watched file
-                if app.tab().watched_config.diff_mode == "snapshot" {
-                    match app.tab_mut().update_watched_snapshot() {
-                        Ok(()) => app.notify("Snapshot updated"),
-                        Err(e) => app.notify(&format!("Snapshot error: {}", e)),
-                    }
-                } else {
-                    app.notify("Snapshot mode not enabled (diff_mode = \"content\")");
+        A::UpdateWatchedSnapshot => {
+            if app.tab().watched_config.diff_mode == "snapshot" {
+                match app.tab_mut().update_watched_snapshot() {
+                    Ok(()) => app.notify("Snapshot updated"),
+                    Err(e) => app.notify(&format!("Snapshot error: {}", e)),
                 }
             } else {
-                app.toggle_stage_file()?;
+                app.notify("Snapshot mode not enabled (diff_mode = \"content\")");
             }
+            return Ok(());
+        }
+        A::ToggleStaged => {
+            app.toggle_stage_file()?;
             return Ok(());
         }
 
         // Toggle unreviewed-only filter — not meaningful in History/Tour
-        KeyCode::Char('!') if !matches!(mode, DiffMode::History | DiffMode::Tour) => {
+        A::ToggleUnreviewedOnly => {
             app.toggle_unreviewed_filter();
             return Ok(());
         }
 
         // Toggle reviewed — review tracking is per-branch, not meaningful in History.
         // Tour handles `space` in its own handler (operates on the tour file list).
-        KeyCode::Char(' ') if !matches!(mode, DiffMode::History | DiffMode::Tour) => {
+        A::ToggleReviewed => {
             app.toggle_reviewed()?;
             return Ok(());
         }
 
         // Jump to next unreviewed file — not meaningful in History/Tour
-        KeyCode::Char('U')
-            if !matches!(mode, DiffMode::History | DiffMode::Tour)
-                && key.modifiers == KeyModifiers::NONE =>
-        {
+        A::NextUnreviewedFile => {
             app.next_unreviewed_file();
             return Ok(());
         }
 
         // Copy hub — offers full file, path, hunk, or line copy options
-        KeyCode::Char('y')
-            if !matches!(mode, DiffMode::History | DiffMode::Tour)
-                && key.modifiers == KeyModifiers::NONE =>
-        {
+        A::OpenCopyHub => {
             app.open_copy_hub();
             return Ok(());
         }
 
         // Export picker — multiselect annotation kinds to clipboard
-        KeyCode::Char('E')
-            if !matches!(mode, DiffMode::History | DiffMode::Tour)
-                && key.modifiers.contains(KeyModifiers::SHIFT) =>
-        {
+        A::OpenExportPicker => {
             app.open_export_picker();
             return Ok(());
         }
 
-        _ => {}
-    }
+        // ── Non-History navigation keys ──
 
-    // ── History mode: route to dedicated handler (pure navigation only) ──
-    if mode == DiffMode::History {
-        return handle_history_input(app, key);
-    }
-
-    // ── Tour mode: route to dedicated handler ──
-    if mode == DiffMode::Tour {
-        return handle_tour_input(app, key);
-    }
-
-    // ── Non-History navigation keys ──
-
-    match key.code {
         // File navigation
-        KeyCode::Char('j') => {
+        A::PrevFile => {
             app.tab_mut().prev_file();
             let threshold = app.config.display.auto_context_threshold;
             app.tab_mut().maybe_auto_expand_context(threshold);
         }
-        KeyCode::Char('k') => {
+        A::NextFile => {
             app.tab_mut().next_file();
             let threshold = app.config.display.auto_context_threshold;
             app.tab_mut().maybe_auto_expand_context(threshold);
@@ -636,7 +552,7 @@ pub fn handle_normal_input(
 
         // Line/comment navigation (arrow keys: comments when focused, else lines)
         // Shift+arrow extends selection, plain arrow clears it
-        KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+        A::ExtendSelectionDown => {
             let tab = app.tab_mut();
             if tab.selection_anchor.is_none() {
                 tab.selection_anchor = tab.current_line.or(Some(0));
@@ -657,7 +573,7 @@ pub fn handle_normal_input(
                 }
             }
         }
-        KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+        A::ExtendSelectionUp => {
             let tab = app.tab_mut();
             if tab.selection_anchor.is_none() {
                 tab.selection_anchor = tab.current_line.or(Some(0));
@@ -671,33 +587,33 @@ pub fn handle_normal_input(
                 }
             }
         }
-        KeyCode::Down => {
+        A::NextLine => {
             app.tab_mut().next_line();
         }
-        KeyCode::Up => {
+        A::PrevLine => {
             app.tab_mut().prev_line();
         }
 
         // Hunk navigation
-        KeyCode::Char('n') => app.tab_mut().next_hunk(),
-        KeyCode::Char('N') => app.tab_mut().prev_hunk(),
+        A::NextHunk => app.tab_mut().next_hunk(),
+        A::PrevHunk => app.tab_mut().prev_hunk(),
 
         // Horizontal scroll (for long lines)
-        KeyCode::Char('l') | KeyCode::Right => {
+        A::ScrollRight => {
             if app.split_diff_active(&app.config.clone()) {
                 app.tab_mut().scroll_right_split();
             } else {
                 app.tab_mut().scroll_right(8);
             }
         }
-        KeyCode::Char('h') | KeyCode::Left => {
+        A::ScrollLeft => {
             if app.split_diff_active(&app.config.clone()) {
                 app.tab_mut().scroll_left_split();
             } else {
                 app.tab_mut().scroll_left(8);
             }
         }
-        KeyCode::Home => {
+        A::ScrollHome => {
             if app.split_diff_active(&app.config.clone()) {
                 let tab = app.tab_mut();
                 match tab.split_focus {
@@ -709,64 +625,37 @@ pub fn handle_normal_input(
         }
 
         // Scroll — routes to panel when panel is focused
-        KeyCode::Char('d')
-            if key.modifiers == KeyModifiers::NONE
-                || key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
+        A::ScrollDown(amount) => {
             if app.tab().panel_focus && app.tab().panel.is_some() {
-                app.tab_mut().panel_scroll_down(10);
+                app.tab_mut().panel_scroll_down(amount);
                 app.tab_mut().panel_scroll = app.tab().panel_scroll.min(4096);
             } else {
-                app.tab_mut().scroll_down(10);
+                app.tab_mut().scroll_down(amount);
             }
         }
-        KeyCode::Char('u')
-            if key.modifiers == KeyModifiers::NONE
-                || key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
+        A::ScrollUp(amount) => {
             if app.tab().panel_focus && app.tab().panel.is_some() {
-                app.tab_mut().panel_scroll_up(10);
+                app.tab_mut().panel_scroll_up(amount);
             } else {
-                app.tab_mut().scroll_up(10);
+                app.tab_mut().scroll_up(amount);
             }
         }
-        KeyCode::PageDown => {
-            if app.tab().panel_focus && app.tab().panel.is_some() {
-                app.tab_mut().panel_scroll_down(20);
-                app.tab_mut().panel_scroll = app.tab().panel_scroll.min(4096);
-            } else {
-                app.tab_mut().scroll_down(20);
-            }
-        }
-        KeyCode::PageUp => {
-            if app.tab().panel_focus && app.tab().panel.is_some() {
-                app.tab_mut().panel_scroll_up(20);
-            } else {
-                app.tab_mut().scroll_up(20);
-            }
-        }
-
-        _ => {}
     }
     Ok(())
 }
 
-pub fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    match key.code {
+pub fn execute_ai_summary(app: &mut App, action: AiSummaryAction) -> Result<()> {
+    match action {
         // Navigation within focused column
-        KeyCode::Char('k') | KeyCode::Down => {
+        AiSummaryAction::Next => {
             app.tab_mut().review_next();
         }
-        KeyCode::Char('j') | KeyCode::Up => {
+        AiSummaryAction::Prev => {
             app.tab_mut().review_prev();
         }
 
         // Switch focus between left/right columns
-        KeyCode::Tab
-        | KeyCode::Char('l' | 'h')
-        | KeyCode::Right
-        | KeyCode::BackTab
-        | KeyCode::Left => {
+        AiSummaryAction::ToggleFocus => {
             app.tab_mut().review_toggle_focus();
             let (files_offset, checklist_offset) = app.tab().ai_summary_section_offsets();
             app.tab_mut().panel_scroll = match app.tab().review_focus {
@@ -776,45 +665,31 @@ pub fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
 
         // Toggle checklist item
-        KeyCode::Char(' ') => {
+        AiSummaryAction::ToggleChecklistItem => {
             app.review_toggle_checklist()?;
         }
 
         // Jump to file
-        KeyCode::Enter => {
+        AiSummaryAction::JumpToFile => {
             app.review_jump_to_file();
         }
 
         // Scroll — routes to focused column's scroll offset
-        KeyCode::Char('d')
-            if key.modifiers == KeyModifiers::NONE
-                || key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            ai_review_scroll(app, 10, true);
-        }
-        KeyCode::Char('u')
-            if key.modifiers == KeyModifiers::NONE
-                || key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            ai_review_scroll(app, 10, false);
-        }
-        KeyCode::PageDown => ai_review_scroll(app, 20, true),
-        KeyCode::PageUp => ai_review_scroll(app, 20, false),
+        AiSummaryAction::ScrollDown(amount) => ai_review_scroll(app, amount, true),
+        AiSummaryAction::ScrollUp(amount) => ai_review_scroll(app, amount, false),
 
         // Esc closes panel focus
-        KeyCode::Esc => {
+        AiSummaryAction::Unfocus => {
             app.tab_mut().panel_focus = false;
         }
-
-        _ => {}
     }
     Ok(())
 }
 
-pub fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    match key.code {
+pub fn execute_history(app: &mut App, action: HistoryAction) -> Result<()> {
+    match action {
         // Commit navigation (left panel)
-        KeyCode::Char('k') => {
+        HistoryAction::NextCommit => {
             // Check if at the end and need to load more
             let at_end = app
                 .tab()
@@ -827,97 +702,69 @@ pub fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             app.tab_mut().history_next_commit();
         }
-        KeyCode::Char('j') => {
+        HistoryAction::PrevCommit => {
             app.tab_mut().history_prev_commit();
         }
 
         // File navigation within commit diff (n/N)
-        KeyCode::Char('n') => app.tab_mut().history_next_file(),
-        KeyCode::Char('N') => app.tab_mut().history_prev_file(),
+        HistoryAction::NextFile => app.tab_mut().history_next_file(),
+        HistoryAction::PrevFile => app.tab_mut().history_prev_file(),
 
         // Line navigation (arrows)
-        KeyCode::Down => app.tab_mut().history_next_line(),
-        KeyCode::Up => app.tab_mut().history_prev_line(),
+        HistoryAction::NextLine => app.tab_mut().history_next_line(),
+        HistoryAction::PrevLine => app.tab_mut().history_prev_line(),
 
         // Horizontal scroll
-        KeyCode::Char('l') | KeyCode::Right => app.tab_mut().history_scroll_right(8),
-        KeyCode::Char('h') | KeyCode::Left => app.tab_mut().history_scroll_left(8),
-        KeyCode::Home => {
+        HistoryAction::ScrollRight => app.tab_mut().history_scroll_right(8),
+        HistoryAction::ScrollLeft => app.tab_mut().history_scroll_left(8),
+        HistoryAction::ScrollHome => {
             if let Some(ref mut h) = app.tab_mut().history {
                 h.h_scroll = 0;
             }
         }
 
         // Scroll
-        KeyCode::Char('d')
-            if key.modifiers == KeyModifiers::NONE
-                || key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            app.tab_mut().history_scroll_down(10);
-        }
-        KeyCode::Char('u')
-            if key.modifiers == KeyModifiers::NONE
-                || key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            app.tab_mut().history_scroll_up(10);
-        }
-        KeyCode::PageDown => app.tab_mut().history_scroll_down(20),
-        KeyCode::PageUp => app.tab_mut().history_scroll_up(20),
-
-        _ => {}
+        HistoryAction::ScrollDown(amount) => app.tab_mut().history_scroll_down(amount),
+        HistoryAction::ScrollUp(amount) => app.tab_mut().history_scroll_up(amount),
     }
     Ok(())
 }
 
-pub fn handle_tour_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    match key.code {
+pub fn execute_tour(app: &mut App, action: TourAction) -> Result<()> {
+    match action {
         // Pillar navigation (left panel) — k next, j prev (matches History).
-        KeyCode::Char('k') => app.tab_mut().tour_next_pillar(),
-        KeyCode::Char('j') => app.tab_mut().tour_prev_pillar(),
+        TourAction::NextPillar => app.tab_mut().tour_next_pillar(),
+        TourAction::PrevPillar => app.tab_mut().tour_prev_pillar(),
 
         // File navigation within the tour (n/N)
-        KeyCode::Char('n') => app.tab_mut().tour_next_file(),
-        KeyCode::Char('N') => app.tab_mut().tour_prev_file(),
+        TourAction::NextFile => app.tab_mut().tour_next_file(),
+        TourAction::PrevFile => app.tab_mut().tour_prev_file(),
 
         // Line navigation (arrows)
-        KeyCode::Down => app.tab_mut().tour_next_line(),
-        KeyCode::Up => app.tab_mut().tour_prev_line(),
+        TourAction::NextLine => app.tab_mut().tour_next_line(),
+        TourAction::PrevLine => app.tab_mut().tour_prev_line(),
 
         // Horizontal scroll
-        KeyCode::Char('l') | KeyCode::Right => app.tab_mut().tour_scroll_right(8),
-        KeyCode::Char('h') | KeyCode::Left => app.tab_mut().tour_scroll_left(8),
-        KeyCode::Home => {
+        TourAction::ScrollRight => app.tab_mut().tour_scroll_right(8),
+        TourAction::ScrollLeft => app.tab_mut().tour_scroll_left(8),
+        TourAction::ScrollHome => {
             if let Some(ref mut t) = app.tab_mut().tour {
                 t.h_scroll = 0;
             }
         }
 
         // Vertical scroll (u/d page through all files; pillars switch as you go)
-        KeyCode::Char('d')
-            if key.modifiers == KeyModifiers::NONE
-                || key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            app.tab_mut().tour_scroll_down(10);
-        }
-        KeyCode::Char('u')
-            if key.modifiers == KeyModifiers::NONE
-                || key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            app.tab_mut().tour_scroll_up(10);
-        }
-        KeyCode::PageDown => app.tab_mut().tour_scroll_down(20),
-        KeyCode::PageUp => app.tab_mut().tour_scroll_up(20),
+        TourAction::ScrollDown(amount) => app.tab_mut().tour_scroll_down(amount),
+        TourAction::ScrollUp(amount) => app.tab_mut().tour_scroll_up(amount),
 
         // Toggle reviewed for the current file
-        KeyCode::Char(' ') => app.tab_mut().tour_toggle_reviewed(),
+        TourAction::ToggleReviewed => app.tab_mut().tour_toggle_reviewed(),
 
         // Bulk-review the whole pillar
-        KeyCode::Char('b') => {
+        TourAction::ReviewPillar => {
             app.tab_mut().tour_bulk_review_pillar();
             app.notify("Reviewed all files in pillar");
         }
-
-        _ => {}
     }
     Ok(())
 }

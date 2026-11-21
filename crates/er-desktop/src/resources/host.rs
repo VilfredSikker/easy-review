@@ -105,10 +105,12 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
 /// refreshes its project's metadata before the answer, so the `Ack` names
 /// that project's `branches` and the frontend refetches them at once. A PR
 /// list refresh fetches in the background, and the push brings what it moved.
-/// An inbox write publishes before the answer, so the `Ack` names `inbox`.
+/// An inbox write publishes before the answer, so the `Ack` names `inbox`;
+/// an inbox open also names `tabs` and the tab it left active.
 pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
     let before = sidebar(desktop).versions();
     let git = &*desktop.ports.git;
+    let mut opened = None;
     match command {
         Command::ReorderProjects { ordered } => {
             crate::projects::reorder_projects(&ordered).map_err(|e| failed("", e.to_string()))?;
@@ -203,6 +205,13 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
                 message,
             })?;
         }
+        Command::OpenInboxItem { id, replace } => {
+            crate::commands::service_open_inbox_item(desktop, &id, replace).map_err(refused)?;
+            opened = Some(super::tabs::opened(desktop));
+        }
+        Command::PrefetchInboxItem { id } => {
+            crate::commands::prefetch_inbox_target(&id, desktop).map_err(refused)?;
+        }
         // Other owners apply these; `send::apply` routes them there.
         other @ (Command::ReloadSettings
         | Command::ApplyConfigPatch { .. }
@@ -244,7 +253,7 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
     // The snapshot still carries the projects for the readers not yet on
     // these resources.
     crate::profile_log::bump_desktop_revision(&desktop.desktop_revision, "sidebar_command");
-    let changed = sidebar(desktop)
+    let mut changed: Vec<_> = sidebar(desktop)
         .versions()
         .into_iter()
         .filter(|entry| !before.contains(entry))
@@ -253,10 +262,18 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
             version: ResourceVersion(version),
         })
         .collect();
-    Ok(Ack {
-        changed,
-        created: None,
-    })
+    let created = opened.and_then(|tabs| {
+        changed.extend(tabs.changed);
+        tabs.created
+    });
+    Ok(Ack { changed, created })
+}
+
+fn refused(message: String) -> ErError {
+    ErError {
+        kind: ErErrorKind::Refused,
+        message,
+    }
 }
 
 /// One inbox write through the sidebar's owner, which publishes before it
