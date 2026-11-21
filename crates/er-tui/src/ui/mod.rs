@@ -18,7 +18,6 @@ use ratatui::Frame;
 /// Render the entire UI
 pub fn draw(f: &mut Frame, screen: &Screen, hl: &mut Highlighter) {
     themes::set_theme_by_name(screen.chrome.theme);
-    let app = screen.app;
     let top_height = status_bar::top_bar_height(screen, f.area().width);
 
     let bottom_height = status_bar::bottom_bar_height(screen, f.area().width);
@@ -58,20 +57,20 @@ pub fn draw(f: &mut Frame, screen: &Screen, hl: &mut Highlighter) {
                 Constraint::Length(tab.panel_width),
             ])
             .split(outer[1]);
-        file_tree::render(f, main_area[0], app);
-        diff_view::render(f, main_area[1], app, hl);
-        panel::render(f, main_area[2], app);
+        file_tree::render(f, main_area[0], screen);
+        diff_view::render(f, main_area[1], screen, hl);
+        panel::render(f, main_area[2], screen);
     } else {
         // 2-col layout: file_tree + diff
         let main_area = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(tab.file_tree_width), Constraint::Min(1)])
             .split(outer[1]);
-        file_tree::render(f, main_area[0], app);
+        file_tree::render(f, main_area[0], screen);
         if screen.chrome.split_diff {
-            diff_view::render_split(f, main_area[1], app, hl, screen.chrome.config);
+            diff_view::render_split(f, main_area[1], screen, hl, screen.chrome.config);
         } else {
-            diff_view::render(f, main_area[1], app, hl);
+            diff_view::render(f, main_area[1], screen, hl);
         }
     }
 
@@ -110,5 +109,49 @@ pub fn draw(f: &mut Frame, screen: &Screen, hl: &mut Highlighter) {
                 overlay::render_overlay(f, f.area(), overlay_data);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The renderers read only the `Screen`: no module here names the App or
+    /// a tab's state, or calls a port. Test modules and comments are skipped.
+    #[test]
+    fn renderers_name_no_app_type_and_call_no_port() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/ui");
+        let banned = |word: &str, code: &str| match word {
+            "ports." | "er_engine::app" => code.contains(word),
+            _ => code
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .any(|token| token == word),
+        };
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let mut code = String::new();
+            for (i, part) in source.split("#[cfg(test)]").enumerate() {
+                if i > 0 && part.trim_start().starts_with("mod ") {
+                    break;
+                }
+                code.push_str(part);
+            }
+            for (number, line) in code.lines().enumerate() {
+                let line = line.split("//").next().unwrap_or_default();
+                for word in ["er_engine::app", "App", "TabState", "ports."] {
+                    if banned(word, line) {
+                        found.push(format!("{}:{}: {word}", path.display(), number + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "renderers reach past the Screen:\n{}",
+            found.join("\n")
+        );
     }
 }

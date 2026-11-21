@@ -8,10 +8,14 @@ use ratatui::{
 use super::highlight::Highlighter;
 use super::styles;
 use super::utils::word_wrap;
+use crate::screen::view::SplitSide;
+use crate::screen::watched::SnapshotDiff;
+use crate::screen::{Screen, TabView};
+use er_engine::ai::AiState;
 use er_engine::ai::{CommentRef, CommentType, Finding, RiskLevel};
-use er_engine::app::{App, DiffMode, SplitSide, TabState};
 use er_engine::config::ErConfig;
 use er_engine::git::{DiffHunk, DiffLine, LineType};
+use er_engine::tab_identity::DiffMode;
 
 /// Expand tab characters to spaces based on configured tab width.
 /// Uses column-aware expansion (tabs align to tab stops, not fixed width).
@@ -113,7 +117,7 @@ fn build_split_rows(hunk: &er_engine::git::DiffHunk) -> Vec<TuiSplitRow<'_>> {
 }
 
 /// Whether a comment should render given layer visibility toggles.
-const fn comment_layer_visible(tab: &TabState, comment: &CommentRef<'_>) -> bool {
+const fn comment_layer_visible(tab: &TabView, comment: &CommentRef<'_>) -> bool {
     let visible = match comment {
         CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
         CommentRef::GithubComment(_) => tab.layers.show_github_comments,
@@ -130,12 +134,12 @@ const fn comment_layer_visible(tab: &TabState, comment: &CommentRef<'_>) -> bool
 /// add after the fold (still at its real `new_num`) would miss the hunk until
 /// the next refresh if we matched on visible lines.
 fn comments_for_hunk_resolved<'a>(
-    tab: &'a TabState,
+    ai: &'a AiState,
     path: &str,
     hunk_idx: usize,
     hunk: &DiffHunk,
 ) -> Vec<CommentRef<'a>> {
-    tab.ai.comments_for_diff_hunk(path, hunk_idx, hunk)
+    ai.comments_for_diff_hunk(path, hunk_idx, hunk)
 }
 
 fn hunk_level_comments<'a>(anchors: &'a [CommentRef<'a>]) -> Vec<&'a CommentRef<'a>> {
@@ -276,7 +280,8 @@ impl RenderWindow {
 /// Emits the multi-row comment and finding blocks one pane interleaves with
 /// diff lines. `side` is `None` for the unified view.
 struct BlockEmitter<'t> {
-    tab: &'t TabState,
+    tab: &'t TabView<'t>,
+    ai: &'t AiState,
     window: RenderWindow,
     width: u16,
     side: Option<SplitSide>,
@@ -317,7 +322,7 @@ impl BlockEmitter<'_> {
     }
 
     fn comment_focused(&self, id: &str) -> bool {
-        self.tab.focused_comment_id.as_deref() == Some(id)
+        self.tab.focused_comment_id == Some(id)
     }
 
     /// A comment followed by its replies.
@@ -332,7 +337,7 @@ impl BlockEmitter<'_> {
             let focused = focus && self.comment_focused(comment.id());
             render_comment_lines(l, comment, self.width, inline, focused);
         });
-        for reply in &self.tab.ai.replies_to(comment.id()) {
+        for reply in &self.ai.replies_to(comment.id()) {
             self.push(lines, logical_line, |l, focus| {
                 let focused = focus && self.comment_focused(reply.id());
                 render_reply_lines(l, reply, self.width, inline, focused);
@@ -348,7 +353,7 @@ impl BlockEmitter<'_> {
         file_stale: bool,
     ) {
         self.push(lines, logical_line, |l, focus| {
-            let focused = focus && self.tab.focused_finding_id.as_deref() == Some(&finding.id);
+            let focused = focus && self.tab.focused_finding_id == Some(finding.id.as_str());
             render_finding_banner(l, finding, self.width, file_stale, focused);
         });
     }
@@ -361,7 +366,7 @@ impl BlockEmitter<'_> {
         finding: &Finding,
     ) {
         let layers = &self.tab.layers;
-        for fc in &self.tab.ai.comments_for_finding(&finding.id) {
+        for fc in &self.ai.comments_for_finding(&finding.id) {
             if !layers.show_github_comments || (layers.hide_resolved && fc.is_resolved()) {
                 continue;
             }
@@ -374,28 +379,29 @@ impl BlockEmitter<'_> {
 }
 
 /// Render the diff view panel (right side)
-pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
-    let tab = app.tab();
+pub fn render(f: &mut Frame, area: Rect, screen: &Screen, hl: &mut Highlighter) {
+    let tab = &screen.tab;
+    let ai = screen.data.ai_or_empty();
 
     // History mode: render multi-file commit diff
     if tab.mode == DiffMode::History {
-        render_history_diff(f, area, app, hl);
+        render_history_diff(f, area, screen, hl);
         return;
     }
 
     // Tour mode: render the pillar-grouped walkthrough diff
     if tab.mode == DiffMode::Tour {
-        render_tour_diff(f, area, app, hl);
+        render_tour_diff(f, area, screen, hl);
         return;
     }
 
     // Check if a watched file is selected
-    if let Some(watched) = tab.selected_watched_file() {
-        render_watched(f, area, app, &watched.path, watched.size);
+    if let Some(watched) = tab.selected_watched {
+        render_watched(f, area, screen, &watched.path, watched.size);
         return;
     }
 
-    let file = match tab.selected_diff_file() {
+    let file = match tab.selected_diff_file {
         Some(f) => f,
         None => {
             render_empty(f, area);
@@ -410,7 +416,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     }
 
     let in_overlay = tab.layers.show_ai_findings;
-    let file_stale = tab.ai.is_file_stale(&file.path);
+    let file_stale = ai.is_file_stale(&file.path);
 
     let total_hunks = file.hunks.len();
 
@@ -435,7 +441,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     // Viewport window parameters
     let viewport_height = area.height as usize;
     let buffer_lines = if use_viewport { 20 } else { 0 };
-    let scroll = tab.active_diff_scroll() as usize;
+    let scroll = tab.diff_scroll as usize;
     let render_start = if use_viewport {
         scroll.saturating_sub(buffer_lines)
     } else {
@@ -456,6 +462,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let mut logical_line: usize = 0;
     let blocks = BlockEmitter {
         tab,
+        ai,
         window: RenderWindow {
             start: render_start,
             end: render_end,
@@ -483,7 +490,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     // Add AI risk + summary to file header in AI modes
     let show_ai_header = tab.layers.show_ai_findings || tab.panel.is_some();
     if show_ai_header {
-        if let Some(fr) = tab.ai.file_review(&file.path) {
+        if let Some(fr) = ai.file_review(&file.path) {
             let risk_style = if file_stale {
                 styles::stale_style()
             } else {
@@ -518,7 +525,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
     // Add file summary line in overlay mode
     if in_overlay {
-        if let Some(fr) = tab.ai.file_review(&file.path) {
+        if let Some(fr) = ai.file_review(&file.path) {
             if !fr.summary.is_empty() {
                 if logical_line >= render_start && logical_line < render_end {
                     lines.push(Line::from(vec![Span::styled(
@@ -538,7 +545,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
     // ── File-level (unanchored) comments ──
     {
-        let unanchored = tab.ai.comments_for_file_unanchored(&file.path);
+        let unanchored = ai.comments_for_file_unanchored(&file.path);
         for comment in &unanchored {
             let visible = match comment {
                 CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
@@ -556,7 +563,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
     // Unified gutter: "{old_num} {new_num} │" = 4+1+4+1+1=11 chars, plus prefix char = 12 total
     let unified_gutter_width: u16 = 12;
-    let wrap_lines = app.config.display.wrap_lines;
+    let wrap_lines = screen.chrome.config.display.wrap_lines;
     // Content width for wrapping: area width minus right padding (1) minus gutter
     let unified_wrap_width = (area
         .width
@@ -565,8 +572,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
     // Render hunks
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-        let is_current = hunk_idx == tab.active_current_hunk();
-        let hunk_anchors = comments_for_hunk_resolved(tab, &file.path, hunk_idx, hunk);
+        let is_current = hunk_idx == tab.current_hunk;
+        let hunk_anchors = comments_for_hunk_resolved(ai, &file.path, hunk_idx, hunk);
 
         // Early exit — past viewport, no need to process remaining hunks
         if use_viewport && logical_line > render_end + buffer_lines {
@@ -620,7 +627,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 continue;
             }
 
-            let is_selected_line = is_current && tab.active_current_line() == Some(line_idx);
+            let is_selected_line = is_current && tab.current_line == Some(line_idx);
 
             let old_num = diff_line
                 .old_num
@@ -668,7 +675,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 // Wrap the content and emit multiple logical lines.
                 // Segments are owned Strings; highlight them and convert to Span<'static>
                 // so they can safely outlive the local `segments` Vec.
-                let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                let content =
+                    expand_tabs(&diff_line.content, screen.chrome.config.display.tab_width);
                 let segments = word_wrap(&content, unified_wrap_width.max(1));
                 for (seg_idx, segment) in segments.iter().enumerate() {
                     let visible = blocks.window.contains(logical_line);
@@ -709,7 +717,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     if diff_line.content.is_empty() {
                         spans.push(Span::styled("", base_style));
                     } else {
-                        let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                        let content =
+                            expand_tabs(&diff_line.content, screen.chrome.config.display.tab_width);
                         let highlighted: Vec<Span<'static>> = hl
                             .highlight_line(&content, &file.path, base_style)
                             .into_iter()
@@ -740,12 +749,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             // ── Inline line-level findings (rendered after comments for the target line) ──
             if let Some(new_line_num) = diff_line.new_num.filter(|_| in_overlay) {
                 let line_findings = line_findings_for_mode(
-                    &tab.ai,
+                    ai,
                     tab.mode,
                     &file.path,
                     hunk_idx,
                     new_line_num,
-                    &tab.layers,
+                    tab.layers,
                 );
                 for finding in &line_findings {
                     blocks.finding(&mut lines, &mut logical_line, finding, file_stale);
@@ -758,13 +767,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         if in_overlay {
             let total_hunks = file.hunks.len();
             let findings = hunk_findings_for_mode(
-                &tab.ai,
+                ai,
                 tab.mode,
                 &file.path,
                 hunk,
                 hunk_idx,
                 total_hunks,
-                &tab.layers,
+                tab.layers,
             );
             for finding in &findings {
                 blocks.finding(&mut lines, &mut logical_line, finding, file_stale);
@@ -799,7 +808,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         let num_hunks = file.hunks.len();
         let orphaned: Vec<CommentRef> = {
             let mut v = Vec::new();
-            if let Some(qs) = &tab.ai.questions {
+            if let Some(qs) = &ai.questions {
                 for q in &qs.questions {
                     if q.file == file.path
                         && q.anchor_status == "lost"
@@ -811,7 +820,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     }
                 }
             }
-            if let Some(ns) = &tab.ai.notes {
+            if let Some(ns) = &ai.notes {
                 for n in &ns.notes {
                     if n.file == file.path
                         && n.anchor_status == "lost"
@@ -823,7 +832,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     }
                 }
             }
-            if let Some(gc) = &tab.ai.github_comments {
+            if let Some(gc) = &ai.github_comments {
                 for c in &gc.comments {
                     if c.file == file.path
                         && c.anchor_status == "lost"
@@ -848,7 +857,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             logical_line += 1;
 
             for comment in &orphaned {
-                let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
+                let is_focused = tab.focused_comment_id == Some(comment.id());
                 let pre_len = lines.len();
                 render_comment_lines(&mut lines, comment, area.width, false, is_focused);
                 let comment_line_count = lines.len() - pre_len;
@@ -872,7 +881,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
     // Apply scroll: for virtualized rendering, adjust scroll to offset into the rendered window.
     // When wrap_lines is enabled, disable horizontal scroll (lines fit within the viewport).
-    let effective_h_scroll = if app.config.display.wrap_lines {
+    let effective_h_scroll = if screen.chrome.config.display.wrap_lines {
         0
     } else {
         tab.h_scroll
@@ -881,7 +890,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
         (scroll_into_rendered, effective_h_scroll)
     } else {
-        (tab.active_diff_scroll(), effective_h_scroll)
+        (tab.diff_scroll, effective_h_scroll)
     };
 
     // Pre-slice to visible rows instead of relying on Paragraph::scroll() for vertical
@@ -947,7 +956,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
     // Render hunk indicator overlay in top-right corner
     if total_hunks > 0 {
-        let indicator_text = format!("Hunk {}/{}", tab.active_current_hunk() + 1, total_hunks);
+        let indicator_text = format!("Hunk {}/{}", tab.current_hunk + 1, total_hunks);
         let indicator_width = indicator_text.len() + 3;
         let indicator_area = Rect {
             x: area.x + area.width.saturating_sub(indicator_width as u16 + 1),
@@ -966,29 +975,35 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 /// Render the diff view in split (side-by-side) mode.
 /// Falls back to `render()` when the area is too narrow or when conditions
 /// (compacted file, watched file, empty, etc.) make split inapplicable.
-pub fn render_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter, config: &ErConfig) {
-    let tab = app.tab();
+pub fn render_split(
+    f: &mut Frame,
+    area: Rect,
+    screen: &Screen,
+    hl: &mut Highlighter,
+    config: &ErConfig,
+) {
+    let tab = &screen.tab;
 
     // Width guard — fall back to unified view when too narrow for split
     if area.width < 60 {
-        render(f, area, app, hl);
+        render(f, area, screen, hl);
         return;
     }
 
     // Delegate to unified for special states
-    if tab.selected_watched_file().is_some() {
-        render(f, area, app, hl);
+    if tab.selected_watched.is_some() {
+        render(f, area, screen, hl);
         return;
     }
-    let file = match tab.selected_diff_file() {
+    let file = match tab.selected_diff_file {
         Some(f) => f,
         None => {
-            render(f, area, app, hl);
+            render(f, area, screen, hl);
             return;
         }
     };
     if file.compacted {
-        render(f, area, app, hl);
+        render(f, area, screen, hl);
         return;
     }
     let _ = config; // used by caller for guard; flag already checked before calling
@@ -998,13 +1013,20 @@ pub fn render_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter, 
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
 
     // Render Old side first (borrows hl mutably), then New side
-    render_split_side(f, halves[0], app, hl, SplitSide::Old);
-    render_split_side(f, halves[1], app, hl, SplitSide::New);
+    render_split_side(f, halves[0], screen, hl, SplitSide::Old);
+    render_split_side(f, halves[1], screen, hl, SplitSide::New);
 }
 
 /// Render one pane of the split diff view.
-fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter, side: SplitSide) {
-    let tab = app.tab();
+fn render_split_side(
+    f: &mut Frame,
+    area: Rect,
+    screen: &Screen,
+    hl: &mut Highlighter,
+    side: SplitSide,
+) {
+    let tab = &screen.tab;
+    let ai = screen.data.ai_or_empty();
 
     // Border with focus indicator
     let border_style = if tab.split_focus == side {
@@ -1026,7 +1048,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     f.render_widget(Clear, area);
     f.render_widget(block, area);
 
-    let file = match tab.selected_diff_file() {
+    let file = match tab.selected_diff_file {
         Some(f) => f,
         None => return,
     };
@@ -1036,7 +1058,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     let use_viewport = total_diff_lines > VIRTUALIZE_THRESHOLD;
     let viewport_height = inner.height as usize;
     let buffer_lines = if use_viewport { 20 } else { 0 };
-    let scroll = tab.active_diff_scroll() as usize;
+    let scroll = tab.diff_scroll as usize;
     let render_start = if use_viewport {
         scroll.saturating_sub(buffer_lines)
     } else {
@@ -1049,8 +1071,8 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     };
 
     // In History mode there is a single h_scroll shared across both sides
-    let h_scroll = if tab.mode == er_engine::app::DiffMode::History {
-        tab.history.as_ref().map_or(0, |h| h.h_scroll)
+    let h_scroll = if tab.mode == DiffMode::History {
+        screen.data.history().map_or(0, |h| h.h_scroll)
     } else {
         match side {
             SplitSide::Old => tab.h_scroll_old,
@@ -1070,6 +1092,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     };
     let blocks = BlockEmitter {
         tab,
+        ai,
         window,
         width: inner.width,
         side: Some(side),
@@ -1107,7 +1130,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
     // File-level (unanchored) comments — New side renders, Old side pads with blanks.
     {
-        let unanchored = tab.ai.comments_for_file_unanchored(&file.path);
+        let unanchored = ai.comments_for_file_unanchored(&file.path);
         for comment in &unanchored {
             let visible = match comment {
                 CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
@@ -1125,7 +1148,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
     // Split gutter: "{num} │" = 4+1+1=6 chars, plus prefix char = 7 total
     let split_gutter_width: u16 = 7;
-    let wrap_lines = app.config.display.wrap_lines;
+    let wrap_lines = screen.chrome.config.display.wrap_lines;
     // Content width for wrapping: inner width minus gutter
     let split_wrap_width = (inner.width.saturating_sub(split_gutter_width)) as usize;
     let pane = SplitPane {
@@ -1134,13 +1157,13 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         window,
         wrap_lines,
         wrap_width: split_wrap_width,
-        tab_width: app.config.display.tab_width,
+        tab_width: screen.chrome.config.display.tab_width,
     };
 
     // Render hunks
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-        let is_current = hunk_idx == tab.active_current_hunk();
-        let hunk_anchors = comments_for_hunk_resolved(tab, &file.path, hunk_idx, hunk);
+        let is_current = hunk_idx == tab.current_hunk;
+        let hunk_anchors = comments_for_hunk_resolved(ai, &file.path, hunk_idx, hunk);
 
         // Early exit past viewport
         if use_viewport && logical_line > render_end + buffer_lines {
@@ -1222,13 +1245,13 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                 row.left.as_ref(),
                 wrap_lines,
                 split_wrap_width,
-                app.config.display.tab_width,
+                screen.chrome.config.display.tab_width,
             );
             let right_h = cell_wrap_height(
                 row.right.as_ref(),
                 wrap_lines,
                 split_wrap_width,
-                app.config.display.tab_width,
+                screen.chrome.config.display.tab_width,
             );
             let row_height = left_h.max(right_h);
             let this_h = match side {
@@ -1255,7 +1278,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
             // ── Render this side's cell ────────────────────────────────────────────
             if let Some(c) = cell {
-                let is_selected_line = is_current && tab.active_current_line() == Some(c.line_idx);
+                let is_selected_line = is_current && tab.current_line == Some(c.line_idx);
                 push_split_cell(
                     &mut lines,
                     hl,
@@ -1313,14 +1336,14 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             let finding_new_num = row.right.as_ref().and_then(|c| c.line.new_num);
             if let Some(new_line_num) = finding_new_num.filter(|_| tab.layers.show_ai_findings) {
                 let line_findings = line_findings_for_mode(
-                    &tab.ai,
+                    ai,
                     tab.mode,
                     &file.path,
                     hunk_idx,
                     new_line_num,
-                    &tab.layers,
+                    tab.layers,
                 );
-                let file_stale = tab.ai.is_file_stale(&file.path);
+                let file_stale = ai.is_file_stale(&file.path);
                 for finding in &line_findings {
                     blocks.finding(&mut lines, &mut logical_line, finding, file_stale);
                 }
@@ -1329,16 +1352,16 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
         // AI finding banners — hunk-level; New side renders, Old side pads.
         if tab.layers.show_ai_findings {
-            let file_stale = tab.ai.is_file_stale(&file.path);
+            let file_stale = ai.is_file_stale(&file.path);
             let total_hunks = file.hunks.len();
             let findings = hunk_findings_for_mode(
-                &tab.ai,
+                ai,
                 tab.mode,
                 &file.path,
                 hunk,
                 hunk_idx,
                 total_hunks,
-                &tab.layers,
+                tab.layers,
             );
             for finding in &findings {
                 blocks.finding(&mut lines, &mut logical_line, finding, file_stale);
@@ -1368,7 +1391,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
     // Apply scroll: adjust into the rendered viewport window.
     // When wrap_lines is enabled, disable horizontal scroll (lines fit within the viewport).
-    let effective_h_scroll = if app.config.display.wrap_lines {
+    let effective_h_scroll = if screen.chrome.config.display.wrap_lines {
         0
     } else {
         h_scroll
@@ -1377,7 +1400,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
         (scroll_into_rendered, effective_h_scroll)
     } else {
-        (tab.active_diff_scroll(), effective_h_scroll)
+        (tab.diff_scroll, effective_h_scroll)
     };
 
     // Pre-slice to visible rows — same fix as unified render path.
@@ -1545,9 +1568,8 @@ fn push_split_cell(
 }
 
 /// Render multi-file commit diff (History mode)
-fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
-    let tab = app.tab();
-    let history = match tab.history.as_ref() {
+fn render_history_diff(f: &mut Frame, area: Rect, screen: &Screen, hl: &mut Highlighter) {
+    let history = match screen.data.history() {
         Some(h) => h,
         None => {
             render_history_empty(f, area, "No history available");
@@ -1786,7 +1808,8 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                 if diff_line.content.is_empty() {
                     spans.push(Span::styled("", base_style));
                 } else {
-                    let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                    let content =
+                        expand_tabs(&diff_line.content, screen.chrome.config.display.tab_width);
                     let highlighted: Vec<Span<'static>> = hl
                         .highlight_line(&content, &file.path, base_style)
                         .into_iter()
@@ -1920,9 +1943,8 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 /// Render the Tour walkthrough diff: the branch diff reordered/grouped by
 /// pillar. Files are concatenated like History mode; the current pillar's title
 /// and description are pinned at the top of the viewport as a sticky header.
-fn render_tour_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
-    let tab = app.tab();
-    let tour = match tab.tour.as_ref() {
+fn render_tour_diff(f: &mut Frame, area: Rect, screen: &Screen, hl: &mut Highlighter) {
+    let tour = match screen.data.tour() {
         Some(t) => t,
         None => {
             render_history_empty(
@@ -2000,7 +2022,7 @@ fn render_tour_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) 
         } else {
             styles::BG()
         };
-        let reviewed = tab.reviewed.contains_key(&file.path);
+        let reviewed = screen.data.reviewed().contains_key(&file.path);
         let mut header_spans = vec![
             Span::styled(
                 if is_current_file { " ▶ " } else { "   " },
@@ -2156,7 +2178,8 @@ fn render_tour_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) 
                 if diff_line.content.is_empty() {
                     spans.push(Span::styled("", base_style));
                 } else {
-                    let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                    let content =
+                        expand_tabs(&diff_line.content, screen.chrome.config.display.tab_width);
                     let highlighted: Vec<Span<'static>> = hl
                         .highlight_line(&content, &file.path, base_style)
                         .into_iter()
@@ -2838,10 +2861,10 @@ fn render_empty(f: &mut Frame, area: Rect) {
 }
 
 /// Render a watched file's content in the diff view area
-fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
-    let tab = app.tab();
-    let repo_root = &tab.repo_root;
-    let not_ignored = tab.watched_not_ignored.contains(&path.to_string());
+fn render_watched(f: &mut Frame, area: Rect, screen: &Screen, path: &str, size: u64) {
+    let tab = &screen.tab;
+    let repo_root = tab.repo_root;
+    let not_ignored = tab.watched_not_ignored.iter().any(|p| p == path);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -2872,17 +2895,10 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
 
     lines.push(Line::from(""));
 
-    // Check for snapshot diff mode
-    let use_snapshot = tab.watched_config.diff_mode == "snapshot";
-
-    if use_snapshot {
-        // Try to get snapshot diff
-        match app.ports.git.diff_watched_file_snapshot(
-            repo_root,
-            path,
-            &tab.er_root.snapshots_dir(),
-        ) {
-            Ok(Some(raw)) if raw.is_empty() => {
+    // Snapshot mode: the loop has read the diff against the snapshot
+    if let Some(snapshot) = tab.watched_snapshot {
+        match snapshot {
+            SnapshotDiff::Unchanged => {
                 lines.push(Line::from(Span::styled(
                     "  No changes since snapshot",
                     ratatui::style::Style::default().fg(styles::MUTED()),
@@ -2893,18 +2909,20 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                     ratatui::style::Style::default().fg(styles::DIM()),
                 )));
             }
-            Ok(Some(raw)) => {
-                // Parse and render the diff
-                let parsed = er_engine::git::parse_diff(&raw);
-                if let Some(diff_file) = parsed.into_iter().next() {
-                    push_snapshot_diff(&mut lines, &diff_file, app.config.display.tab_width);
+            SnapshotDiff::Changed(diff_file) => {
+                if let Some(diff_file) = diff_file {
+                    push_snapshot_diff(
+                        &mut lines,
+                        diff_file,
+                        screen.chrome.config.display.tab_width,
+                    );
                 }
                 lines.push(Line::from(Span::styled(
                     "  Press s to update snapshot",
                     ratatui::style::Style::default().fg(styles::DIM()),
                 )));
             }
-            Ok(None) => {
+            SnapshotDiff::Created => {
                 // New file — snapshot just created
                 lines.push(Line::from(Span::styled(
                     "  Snapshot saved (first view)",
@@ -2913,7 +2931,7 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                 // Fall through to show content
                 render_watched_content_lines(&mut lines, repo_root, path, size);
             }
-            Err(_) => {
+            SnapshotDiff::Unreadable => {
                 // Error — fall back to content mode
                 render_watched_content_lines(&mut lines, repo_root, path, size);
             }
@@ -3307,7 +3325,7 @@ mod github_comment_fold_tests {
             raw_hunk_count: 1,
             similarity: None,
         };
-        let mut app = App::new_for_test(vec![file]);
+        let mut app = er_engine::app::App::new_for_test(vec![file]);
         app.tab_mut().ai.github_comments = Some(ErGithubComments {
             version: 1,
             diff_hash: "h".to_string(),
@@ -3318,7 +3336,7 @@ mod github_comment_fold_tests {
         let tab = app.tab();
         let path = tab.files[0].path.clone();
         let hunk = tab.files[0].hunks[0].clone();
-        let found = comments_for_hunk_resolved(tab, &path, 0, &hunk);
+        let found = comments_for_hunk_resolved(&tab.ai, &path, 0, &hunk);
         assert_eq!(
             found.len(),
             1,

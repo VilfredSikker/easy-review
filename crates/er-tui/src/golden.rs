@@ -4,9 +4,14 @@
 //! surely as a text change. `ER_UPDATE_GOLDENS=1` rewrites the files.
 
 use crate::ui;
+use er_engine::ai::PanelContent;
 use er_engine::app::{App, ConfigEditState, ConfirmAction, DirEntry, InputMode, OverlayData};
 use er_engine::config::{ConfigItem, PackageConfig};
+use er_engine::ports::Ports;
+use er_engine::tab_identity::DiffMode;
+use er_git::FakeGit;
 use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+use std::sync::Arc;
 use std::time::Instant;
 
 pub struct Fixture {
@@ -364,6 +369,212 @@ pub const CHROME: &[Fixture] = &[
     }),
 ];
 
+/// The panels, the diff modes, the split diff and the watched files.
+pub const PANES: &[Fixture] = &[
+    fixture("pane_file_detail", 140, 24, || {
+        with(|app| {
+            with_review(app);
+            let tab = app.tab_mut();
+            tab.panel = Some(PanelContent::FileDetail);
+            tab.focused_finding_id = Some("f1".into());
+            tab.reviewed.insert("README.md".into(), "hash".into());
+        })
+    }),
+    fixture("pane_ai_summary", 140, 24, || {
+        with(|app| {
+            with_review(app);
+            let tab = app.tab_mut();
+            tab.panel = Some(PanelContent::AiSummary);
+            tab.ai.summary = Some("Reads the audience before the token check.".into());
+            tab.ai.checklist = Some(
+                serde_json::from_value(serde_json::json!({
+                    "version": 1, "diff_hash": "hash",
+                    "items": [{"id": "c1", "text": "Empty tokens are rejected", "checked": true}]
+                }))
+                .unwrap(),
+            );
+        })
+    }),
+    fixture("pane_pr_overview", 140, 20, || {
+        with(|app| {
+            let tab = app.tab_mut();
+            tab.pr_number = Some(7);
+            tab.panel = Some(PanelContent::PrOverview);
+            tab.pr_data = Some(
+                serde_json::from_value(serde_json::json!({
+                    "number": 7, "title": "Validate the token audience",
+                    "body": "Rejects empty tokens.", "state": "OPEN", "author": "octo",
+                    "url": "https://github.com/o/r/pull/7", "base_branch": "main",
+                    "head_branch": "feature",
+                    "checks": [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}],
+                    "reviewers": [{"login": "hubot", "state": "APPROVED"}]
+                }))
+                .unwrap(),
+            );
+        })
+    }),
+    fixture("pane_agent_log", 140, 16, || {
+        with(|app| {
+            use er_engine::app::{AgentLogEntry, AgentLogSource, CommandStatus};
+            let tab = app.tab_mut();
+            tab.panel = Some(PanelContent::AgentLog);
+            tab.command_status
+                .insert("review".into(), CommandStatus::Running);
+            let now = std::time::Instant::now();
+            for (source, text) in [
+                (AgentLogSource::Status, "started"),
+                (AgentLogSource::Stdout, "reading src/auth.rs"),
+                (AgentLogSource::Stderr, "warning: no tests touched"),
+            ] {
+                tab.agent_log.push_back(AgentLogEntry {
+                    timestamp: now,
+                    command_name: "review".into(),
+                    source,
+                    text: text.into(),
+                });
+            }
+        })
+    }),
+    fixture("diff_unstaged", 100, 12, || {
+        with(|app| app.tab_mut().mode = DiffMode::Unstaged)
+    }),
+    fixture("diff_staged", 100, 12, || {
+        with(|app| app.tab_mut().mode = DiffMode::Staged)
+    }),
+    fixture("diff_pr", 100, 12, || {
+        with(|app| {
+            let tab = app.tab_mut();
+            tab.pr_number = Some(7);
+            tab.mode = DiffMode::PrDiff;
+        })
+    }),
+    fixture("diff_conflicts", 100, 12, || {
+        with(|app| {
+            let tab = app.tab_mut();
+            tab.mode = DiffMode::Conflicts;
+            tab.merge_active = true;
+            tab.unresolved_count = 1;
+        })
+    }),
+    fixture("diff_history", 110, 16, || {
+        let commit = er_engine::git::CommitInfo {
+            hash: "a".repeat(40),
+            short_hash: "aaaaaaa".into(),
+            subject: "Validate the token audience".into(),
+            author: "octo".into(),
+            date: "2026-11-20".into(),
+            relative_date: "2 days ago".into(),
+            file_count: 2,
+            adds: 3,
+            dels: 1,
+            is_merge: false,
+            diffstat_known: true,
+        };
+        let git = FakeGit::default()
+            .with_log_range(Ok(vec![commit]))
+            .with_diff_commit(Ok(RAW_DIFF.into()));
+        let mut app = App::new_for_test_with_ports(Vec::new(), Ports::with_git(Arc::new(git)));
+        app.tab_mut().set_mode(DiffMode::History);
+        app
+    }),
+    fixture("diff_tour", 110, 18, || {
+        with(|app| {
+            let tab = app.tab_mut();
+            tab.ai.tour = Some(
+                serde_json::from_value(serde_json::json!({
+                    "version": 1, "diff_hash": "hash", "created_at": "", "title": "Audience",
+                    "overview": "", "pillars": [{
+                        "id": "p1", "title": "Token check", "order": 0, "importance": 3,
+                        "description": "Where the audience is read.",
+                        "files": [{"path": "src/auth.rs"}]
+                    }]
+                }))
+                .unwrap(),
+            );
+            tab.rebuild_tour_state();
+            tab.mode = DiffMode::Tour;
+            tab.reviewed.insert("src/auth.rs".into(), "hash".into());
+        })
+    }),
+    fixture("diff_split", 120, 14, || {
+        with(|app| app.config.display.split_diff = true)
+    }),
+    fixture("watched_snapshot", 100, 16, || {
+        let snapshot = "diff --git a/.env.local b/.env.local\n--- a/.env.local\n+++ b/.env.local\n@@ -1,1 +1,2 @@\n KEY=1\n+TOKEN=abc\n";
+        let git = FakeGit::default().with_diff_watched_file_snapshot(Ok(Some(snapshot.into())));
+        let mut app = App::new_for_test_with_ports(
+            er_engine::git::parse_diff(RAW_DIFF),
+            Ports::with_git(Arc::new(git)),
+        );
+        let tab = app.tab_mut();
+        tab.watched_config.diff_mode = "snapshot".into();
+        tab.show_watched = true;
+        tab.watched_files = vec![er_engine::git::WatchedFile {
+            path: ".env.local".into(),
+            modified: std::time::SystemTime::now() - std::time::Duration::from_hours(48),
+            size: 42,
+        }];
+        tab.selected_watched = Some(0);
+        app
+    }),
+    fixture("diff_hidden", 100, 16, || {
+        let snapshot = "diff --git a/.env.local b/.env.local\n--- a/.env.local\n+++ b/.env.local\n@@ -1,1 +1,2 @@\n KEY=1\n+TOKEN=abc\n";
+        let git = FakeGit::default().with_diff_watched_file_snapshot(Ok(Some(snapshot.into())));
+        let mut app = App::new_for_test_with_ports(
+            er_engine::git::parse_diff(RAW_DIFF),
+            Ports::with_git(Arc::new(git)),
+        );
+        // What `set_mode(Hidden)` leaves, without its global config read and
+        // watched-file scan: the regular diff cleared, only watched files.
+        let tab = app.tab_mut();
+        tab.mode = DiffMode::Hidden;
+        tab.files.clear();
+        tab.watched_config.paths = vec![".env*".into()];
+        tab.watched_config.diff_mode = "snapshot".into();
+        tab.show_watched = true;
+        let age = |hours| std::time::SystemTime::now() - std::time::Duration::from_hours(hours);
+        tab.watched_files = vec![
+            er_engine::git::WatchedFile {
+                path: ".env.local".into(),
+                modified: age(48),
+                size: 42,
+            },
+            er_engine::git::WatchedFile {
+                path: ".env.test".into(),
+                modified: age(72),
+                size: 17,
+            },
+        ];
+        tab.watched_not_ignored = vec![".env.test".into()];
+        tab.selected_watched = Some(0);
+        app
+    }),
+];
+
+/// A review of `src/auth.rs` with two findings and a question on line 3.
+fn with_review(app: &mut App) {
+    let ai = &mut app.tab_mut().ai;
+    ai.review = Some(
+        serde_json::from_value(serde_json::json!({
+            "version": 1, "diff_hash": "hash",
+            "files": {"src/auth.rs": {"risk": "high", "summary": "Token check", "findings": [
+                {"id": "f1", "severity": "high", "title": "Audience read early",
+                 "description": "Read before validation.", "hunk_index": 0, "line_start": 2},
+                {"id": "f2", "severity": "low", "title": "Empty token", "hunk_index": 0}
+            ]}}
+        }))
+        .unwrap(),
+    );
+    ai.questions = Some(
+        serde_json::from_value(serde_json::json!({
+            "version": 1, "diff_hash": "hash",
+            "questions": [{"id": "q1", "file": "src/auth.rs", "hunk_index": 0,
+                           "line_start": 3, "text": "Why compare to er?"}]
+        }))
+        .unwrap(),
+    );
+}
+
 /// Configures one provider with two models, the first with effort levels.
 fn model_with_efforts(app: &mut App) -> (String, String) {
     use er_engine::config::{AiModelConfig, AiProviderConfig};
@@ -407,7 +618,13 @@ fn chrome_overlays_and_input_modes_match_their_goldens() {
 }
 
 #[test]
+fn panes_and_diff_modes_match_their_goldens() {
+    check(PANES);
+}
+
+#[test]
 #[ignore = "prints frame times for the PR; run with --ignored --nocapture"]
 fn frame_times() {
     print_frame_times(CHROME);
+    print_frame_times(PANES);
 }
