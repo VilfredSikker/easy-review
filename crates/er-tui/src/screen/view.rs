@@ -7,6 +7,47 @@ use er_engine::git::Worktree;
 use er_engine::review_flow_driver::ReviewFlowResults;
 use std::collections::HashSet;
 
+/// Which side of the split diff has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitSide {
+    Old,
+    New,
+}
+
+/// One pillar of the guided tour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TourPillar {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub importance: u32,
+    pub foundation: bool,
+}
+
+/// One reference in the symbol references panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolRef {
+    pub file: String,
+    pub line_num: usize,
+    pub line_content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentLogSource {
+    Stdout,
+    Stderr,
+    Status,
+}
+
+/// One line of agent output.
+#[derive(Debug, Clone)]
+pub struct AgentLogEntry {
+    pub timestamp: std::time::Instant,
+    pub command_name: std::sync::Arc<str>,
+    pub source: AgentLogSource,
+    pub text: String,
+}
+
 /// Whether the user is navigating or typing, and into what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode<'a> {
