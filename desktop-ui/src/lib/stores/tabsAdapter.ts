@@ -43,8 +43,8 @@ function sameTab(row: TabRow, seen: TabSummary): boolean {
  * The resource's rows, with what the registry does not hold yet taken from
  * the snapshot row at the same position: a Working tab's live branch label, a
  * local PR's head branch label, the diff's change token, a local PR's
- * `owner/repo` and the staleness, which stays the snapshot's until P55.2
- * derives it from `prs(remote)`. The snapshot row counts only while both lists
+ * `owner/repo` and the staleness, which stays the snapshot's until P56.1
+ * derives it from `diff(tab)` and `prs(remote)`. The snapshot row counts only while both lists
  * have the same length and the row is the same tab, since one side may not
  * have caught up with a change.
  */

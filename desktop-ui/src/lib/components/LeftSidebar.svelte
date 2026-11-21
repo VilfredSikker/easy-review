@@ -2,7 +2,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
-  import { projectsResource } from "$lib/stores/projectsResource.svelte";
+  import { projectsResource, worktreesResource } from "$lib/stores/projectsResource.svelte";
   import AppMark from "$lib/components/AppMark.svelte";
   import InboxPanel from "$lib/components/InboxPanel.svelte";
   import type { BackgroundTaskSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
@@ -44,7 +44,7 @@
 
   const snapshot = $derived(app.snapshot);
   const theme = $derived(themeByName(sessionResource.theme));
-  const worktrees = $derived(snapshot?.worktrees ?? []);
+  const worktrees = $derived(worktreesResource.worktrees);
   const projects = $derived<ProjectSnapshot[]>(projectsResource.projects);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
   const activeTab = $derived(tabsResource.activeTab);
@@ -514,7 +514,7 @@
     projectMenuOpen = null;
     syncingProject = project.id;
     try {
-      await app.cmd("refresh_project_pr_list", { projectId: project.id });
+      await projectsResource.refreshProjectPrList(project.id);
     } finally {
       syncingProject = null;
     }
@@ -672,9 +672,9 @@
   function togglePinPr(project: ProjectSnapshot, pr: PrInfo) {
     closeRowActionMenu();
     if (isPrPinned(project, pr.number)) {
-      void app.cmd("unsave_pr", { projectId: project.id, prNumber: pr.number });
+      void projectsResource.unsavePr(project.id, pr.number);
     } else {
-      void app.cmd("save_pr", { projectId: project.id, prNumber: pr.number, title: pr.title });
+      void projectsResource.savePr(project.id, pr.number, pr.title);
     }
   }
 
@@ -705,9 +705,9 @@
   function toggleIgnorePr(project: ProjectSnapshot, pr: PrInfo) {
     closeRowActionMenu();
     if (isPrIgnored(project, pr.number)) {
-      void app.cmd("undismiss_remote_pr", { projectId: project.id, prNumber: pr.number });
+      void projectsResource.undismissPr(project.id, pr.number);
     } else {
-      void app.cmd("dismiss_remote_pr", { projectId: project.id, prNumber: pr.number });
+      void projectsResource.dismissPr(project.id, pr.number);
     }
   }
 
@@ -959,7 +959,7 @@
         </button>
         <button
           type="button"
-          onclick={() => app.cmd("refresh_pr_list")}
+          onclick={() => projectsResource.refreshPrList()}
           disabled={loadingPrList}
           title="Refresh PR list"
           aria-label="Refresh PR list"

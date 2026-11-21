@@ -4,6 +4,7 @@
 // engine's mode set is what ADR 0006 asks for, so this module translates a page
 // into a main view plus, at most, one `set_mode`.
 
+import { detectedPrNumber, type DetectSnapshot } from "../sidebarReads";
 import type { AppSnapshot, FeatureFlagsSnapshot, TabSummary } from "../types";
 import type { MainViewMode } from "./app.svelte";
 
@@ -14,10 +15,7 @@ export interface SetModeArgs {
   prNumber?: number | null;
 }
 
-type ModeSnapshot = Pick<
-  AppSnapshot,
-  "mode" | "tour" | "features" | "detected_pr_number" | "github" | "pr"
->;
+type ModeSnapshot = Pick<AppSnapshot, "mode" | "tour" | "features" | "github" | "pr"> & DetectSnapshot;
 
 /** The main views that show a review page; every other main view replaces it. */
 export function isReviewMainView(view: MainViewMode): boolean {
@@ -61,7 +59,7 @@ export function setModeArgsFor(page: ReviewPage, snap: ModeSnapshot): SetModeArg
   if (page === "overview" || snap.mode !== "tour") return null;
   if (snap.tour?.scope === "pr") {
     const prNumber =
-      snap.detected_pr_number ?? snap.github?.number ?? snap.pr?.number ?? null;
+      detectedPrNumber(snap) ?? snap.github?.number ?? snap.pr?.number ?? null;
     return { mode: "pr_diff", prNumber };
   }
   return { mode: "branch" };

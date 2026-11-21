@@ -2,6 +2,7 @@
   import type { PrSnapshot, GithubStatusSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
+  import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
@@ -131,7 +132,7 @@
     if (effectiveGithubUrl) await app.cmd("open_url_in_browser", { url: effectiveGithubUrl });
   }
 
-  const activeProject = $derived(app.snapshot?.projects?.find((p) => p.is_active) ?? null);
+  const activeProject = $derived(projectsResource.projects.find((p) => p.is_active) ?? null);
   const effectivePrNumber = $derived(
     pr_number ?? resolveActivePrNumber(app.snapshot),
   );
@@ -144,16 +145,9 @@
     if (!activeProject || effectivePrNumber === null) return;
     const title = github?.title ?? pr?.title ?? "";
     if (isSaved) {
-      void app.cmd("unsave_pr", {
-        projectId: activeProject.id,
-        prNumber: effectivePrNumber,
-      });
+      void projectsResource.unsavePr(activeProject.id, effectivePrNumber);
     } else {
-      void app.cmd("save_pr", {
-        projectId: activeProject.id,
-        prNumber: effectivePrNumber,
-        title,
-      });
+      void projectsResource.savePr(activeProject.id, effectivePrNumber, title);
     }
   }
 

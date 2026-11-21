@@ -9,6 +9,7 @@ import {
   type OptimisticThread,
 } from "./optimisticComment";
 import { snapshotViewIdentity, type SnapshotViewParts } from "./snapshotChrome";
+import { v1ServiceRequested } from "./v1ServiceFlag";
 import type {
   AppSnapshot,
   FindingResponseSnapshot,
@@ -58,7 +59,23 @@ export const OPTIMISTIC_COMMANDS = [
 
 export type OptimisticCommand = (typeof OPTIMISTIC_COMMANDS)[number];
 
-export function isOptimisticCommand(command: string): command is OptimisticCommand {
+/**
+ * The PR pins and Ignore. With the flag on the server applies the pin cap and
+ * the dismissed filter, and the `prs` push shows the result, so these four
+ * leave the optimistic path and paint nothing (A8).
+ */
+const SNAPSHOT_PATH_ONLY: ReadonlySet<string> = new Set([
+  "save_pr",
+  "unsave_pr",
+  "dismiss_remote_pr",
+  "undismiss_remote_pr",
+]);
+
+export function isOptimisticCommand(
+  command: string,
+  flagOn: boolean = v1ServiceRequested(),
+): command is OptimisticCommand {
+  if (flagOn && SNAPSHOT_PATH_ONLY.has(command)) return false;
   return (OPTIMISTIC_COMMANDS as readonly string[]).includes(command);
 }
 
@@ -69,9 +86,6 @@ const DISMISSABLE_PR_LISTS: readonly DismissablePrList[] = [
   "prs_to_review",
   "recently_merged",
 ];
-
-/** Backend keeps at most this many saved PRs per project (`projects.rs`). */
-export const MAX_SAVED_PRS = 50;
 
 export type OptimisticOp =
   | { type: "add-thread"; id: string; viewIdentity: string; pending: OptimisticThread }
@@ -1054,10 +1068,8 @@ function applySavedPr(snap: AppSnapshot, op: Extract<OptimisticOp, { type: "save
   // Prefer the snapshot's own row: once the backend has confirmed, it is
   // the hydrated one, and the stub must not replace it on a reapply.
   const keep = at >= 0 ? list[at] : op.pr;
-  project.saved_prs = [keep, ...list.filter((p) => p.number !== op.prNumber)].slice(
-    0,
-    MAX_SAVED_PRS,
-  );
+  // The server keeps the cap; its confirming snapshot drops the oldest pin.
+  project.saved_prs = [keep, ...list.filter((p) => p.number !== op.prNumber)];
 }
 
 function applyDismissedPr(

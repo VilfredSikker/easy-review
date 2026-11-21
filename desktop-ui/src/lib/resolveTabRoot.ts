@@ -1,3 +1,4 @@
+import { sidebarWorktrees } from "./sidebarReads";
 import type { AppSnapshot, TabSummary } from "./types";
 
 /** Resolved filesystem root for the active tab: the linked worktree path when
@@ -9,7 +10,7 @@ export function resolveTabRoot(
   const branch = snapshot?.branch ?? activeTab?.branch ?? null;
   const fromWorktree =
     branch != null
-      ? snapshot?.worktrees?.find((w) => w.branch === branch)?.path
+      ? sidebarWorktrees(snapshot).find((w) => w.branch === branch)?.path
       : undefined;
   return fromWorktree?.trim() || activeTab?.repo_root?.trim() || "";
 }
