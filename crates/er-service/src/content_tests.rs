@@ -824,3 +824,42 @@ fn the_diff_resource_keeps_the_mtime_order() {
     assert_eq!(listed(true), named(by_mtime));
     assert_eq!(listed(false), named(in_diff));
 }
+
+/// `diff(tab)` names the PR head its diff was built from on any PR tab, which
+/// the stale mark compares with the newest head, and the head on screen only
+/// while the view shows the PR's own head, which the merge pins to.
+#[test]
+fn the_diff_resource_names_both_pr_heads() {
+    let pr_tab = |mode: DiffMode, remote: bool| {
+        let mut loaded = loaded_tab("/repo");
+        loaded.tab.mode = mode;
+        loaded.tab.pr_number = Some(12);
+        if remote {
+            loaded.tab.remote_repo = Some("acme/widgets".to_string());
+        } else {
+            loaded.tab.local_branch_view = Some("feature".to_string());
+        }
+        loaded.diff.meta.preview_head_oid = Some("shown-head".to_string());
+        loaded.pr.head_oid = Some("built-head".to_string());
+        crate::content::TabContent::from_loaded(TabKey::next(), *loaded, 1)
+    };
+    let heads = |content: &crate::content::TabContent| {
+        let diff = crate::diff_resource(content, &crate::DiffInputs::default());
+        (diff.built_from_head_oid, diff.pr_diff_head_oid)
+    };
+    let both = (
+        Some("built-head".to_string()),
+        Some("shown-head".to_string()),
+    );
+    assert_eq!(heads(&pr_tab(DiffMode::PrDiff, false)), both, "PR Diff");
+    assert_eq!(heads(&pr_tab(DiffMode::Branch, true)), both, "a remote PR");
+    // The local branch view shows the working tree, which no PR head names.
+    let local = (Some("built-head".to_string()), None);
+    assert_eq!(heads(&pr_tab(DiffMode::Branch, false)), local, "local view");
+
+    // A tab with no PR has no PR head, whatever its section holds.
+    let mut plain = loaded_tab("/repo");
+    plain.pr.head_oid = Some("built-head".to_string());
+    let plain = crate::content::TabContent::from_loaded(TabKey::next(), *plain, 1);
+    assert_eq!(heads(&plain), (None, None), "a plain tab");
+}
