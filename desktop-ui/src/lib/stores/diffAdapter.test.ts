@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { resourceClient, type Invoke } from "$lib/protocol/client";
 import type { FileRow } from "$lib/protocol/generated/FileRow";
 import type { Resource } from "$lib/protocol/generated/Resource";
@@ -38,6 +41,8 @@ function tabDiff(overrides: Partial<TabDiff> = {}): TabDiff {
     staged_stat: zero,
     built_from_head_oid: null,
     pr_diff_head_oid: null,
+    base_behind: null,
+    local_branch_divergence: null,
     load_error: null,
     ...overrides,
   };
@@ -143,6 +148,35 @@ describe("DiffAdapter", () => {
     expect(prStale(null, "h2")).toBeUndefined();
   });
 
+  it("marks a branch view stale from diff(tab) once origin's tip of its base moves, never from the snapshot", async () => {
+    const behind = { built_from_oid: "b1", latest_oid: "b2", commits_behind: 3 };
+    const { store } = backend([{ version: 2, value: { kind: "diff", ...tabDiff({ base: "origin/main", base_behind: behind }) } }]);
+    store.show(diffKey(KEY));
+    await settle();
+    expect(adapter(store).read().diff_stale).toEqual({
+      kind: "base",
+      message: "main has new commits on origin — Sync to refresh",
+      built_from_oid: "b1",
+      latest_oid: "b2",
+      commits_behind: 3,
+    });
+    const { store: fresh } = backend([{ version: 2, value: { kind: "diff", ...tabDiff() } }]);
+    fresh.show(diffKey(KEY));
+    await settle();
+    const snapStale = { kind: "base", message: "", built_from_oid: "x", latest_oid: "y" } as const;
+    expect(adapter(fresh, { snap: snapshot({ mode: "branch", diff_stale: snapStale }) }).read().diff_stale).toBeUndefined();
+  });
+
+  it("reads the local branch's divergence from diff(tab), never from the snapshot", async () => {
+    const divergence = { pr_head_oid: "p1", ahead: 2, unstaged_files: 1 };
+    const { store } = backend([{ version: 2, value: { kind: "diff", ...tabDiff({ local_branch_divergence: divergence }) } }]);
+    store.show(diffKey(KEY));
+    await settle();
+    const fromSnapshot = { pr_head_oid: "old", ahead: 9, unstaged_files: 9 };
+    const view = adapter(store, { snap: snapshot({ mode: "branch", local_branch_divergence: fromSnapshot }) }).read();
+    expect(view.local_branch_divergence).toEqual(divergence);
+  });
+
   it("answers a failed load as its error with no rows", async () => {
     const failed = tabDiff({ files: [], total_count: 0, load_error: "not a repository" });
     const { store } = backend([{ version: 2, value: { kind: "diff", ...failed } }]);
@@ -194,6 +228,17 @@ describe("DiffAdapter", () => {
       "sync_pr",
       "sync_branch",
     ]);
+  });
+});
+
+describe("the stale marks with the flag on", () => {
+  it("reads no snapshot stale mark or divergence", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "diffAdapter.ts"), "utf8");
+    const start = source.indexOf("export function sliceFromResource(");
+    const body = source.slice(start, source.indexOf("\n}\n", start));
+    expect(start).toBeGreaterThan(-1);
+    expect(body).not.toMatch(/snapshot|snap\b/);
+    expect(source).not.toMatch(/snap(shot)?\??\.(diff_stale|local_branch_divergence)/);
   });
 });
 
