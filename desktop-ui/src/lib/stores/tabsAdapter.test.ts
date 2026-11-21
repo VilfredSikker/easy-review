@@ -121,7 +121,7 @@ describe("tabsFromResource", () => {
     ]);
   });
 
-  it("labels a Working tab with the snapshot's live branch and a local PR with its remote", () => {
+  it("labels a Working tab with the snapshot's live branch and a local PR with its remote, which its stale mark reads", () => {
     const wire = {
       tabs: [
         wireRow(11, "a", { kind: "working", branch: null }),
@@ -133,10 +133,16 @@ describe("tabsFromResource", () => {
       { ...row(0, "main", true), repo_root: "/r/a" },
       { ...row(1, "b", false), kind: "local_branch" as const, remote: "acme/b" },
     ];
-    expect(tabsFromResource(wire, rows).tabs.map((t) => [t.label, t.kind, t.remote])).toEqual([
+    const asked: (string | null)[] = [];
+    const view = tabsFromResource(wire, rows, (tab) => {
+      asked.push(tab.remote);
+      return false;
+    });
+    expect(view.tabs.map((t) => [t.label, t.kind, t.remote])).toEqual([
       ["main", "working", null],
       ["b", "local_branch", "acme/b"],
     ]);
+    expect(asked).toEqual([null, "acme/b"]);
     expect(tabsFromResource(wire, []).tabs[0]?.label).toBe("a");
   });
 
@@ -343,6 +349,6 @@ describe("the strip's staleness with the flag on", () => {
     const source = readFileSync(join(here, "tabsAdapter.ts"), "utf8");
     const body = source.slice(source.indexOf("export function tabsFromResource"), source.indexOf("type Args"));
     expect(body).not.toMatch(/seen\??\.stale|snapshotRows\[[^\]]*\]\??\.stale|candidate\??\.stale/);
-    expect(body).toMatch(/stale: stale\(row, idx === active\)/);
+    expect(body).toMatch(/stale: stale\(\{ \.\.\.row, remote \}, idx === active\)/);
   });
 });
