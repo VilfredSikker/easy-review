@@ -4,7 +4,6 @@
 //! by the watcher's rule, a linked worktree included.
 
 use std::path::Path;
-use std::process::Command as Git;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -22,8 +21,11 @@ use crate::watcher;
 
 const WAIT: Duration = Duration::from_secs(20);
 
+/// The fixture's own git, run as a test process; the code under test reads
+/// the repo through the `Git` port.
+#[cfg(test)]
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Git::new("git")
+    let out = std::process::Command::new("git")
         .args([
             "-c",
             "user.name=t",
@@ -265,13 +267,13 @@ fn the_flag_on_watcher_never_reads_the_app_to_choose() {
     let start = source
         .find("fn run_active_branch_watcher(")
         .unwrap_or_else(|| panic!("no watcher"));
-    let body = &source[start..];
-    let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+    let body = source.get(start..).unwrap_or_default();
+    let body = body.split_once("\n}\n").map_or(body, |(body, _)| body);
     let flag_on = body
         .find("#[cfg(feature = \"v1-service\")]\n        let desired =")
         .unwrap_or_else(|| panic!("no flag-on target"));
-    let choice = &body[flag_on..];
-    let choice = &choice[..choice.find(';').unwrap_or(choice.len())];
+    let choice = body.get(flag_on..).unwrap_or_default();
+    let choice = choice.split_once(';').map_or(choice, |(choice, _)| choice);
     assert!(
         choice.contains(".next(&watcher_service"),
         "the flag-on watcher does not take the follower's target"
@@ -453,7 +455,7 @@ fn the_flag_on_probe_never_reads_the_app() {
     let old = source
         .find("let probe_app = Arc::clone(&app_arc);")
         .unwrap_or_else(|| panic!("no flag-off probe"));
-    let before = &source[..old];
+    let before = source.get(..old).unwrap_or_default();
     assert!(
         before
             .trim_end()
@@ -463,8 +465,8 @@ fn the_flag_on_probe_never_reads_the_app() {
     let start = source
         .find("fn spawn_base_probe(")
         .unwrap_or_else(|| panic!("no flag-on probe"));
-    let body = &source[start..];
-    let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+    let body = source.get(start..).unwrap_or_default();
+    let body = body.split_once("\n}\n").map_or(body, |(body, _)| body);
     assert!(body.contains("watcher::probe_target(&service)"));
     for app in ["App", "app_arc", "try_lock"] {
         assert!(!body.contains(app), "the flag-on probe reads {app}");
