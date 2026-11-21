@@ -111,12 +111,18 @@ describe("DiffAdapter", () => {
   it("shows the App's slice in a view the workspace only records", async () => {
     // The tab switched to History: the content records it, and the App loads
     // the selected commit's files, which only the snapshot carries.
-    const { store } = backend([{ version: 5, value: { kind: "diff", ...tabDiff({ mode: "history" }) } }]);
+    const { sent, store } = backend([{ version: 5, value: { kind: "diff", ...tabDiff({ mode: "history" }) } }]);
     store.show(diffKey(KEY));
     await settle();
-    const view = adapter(store, { snap: snapshot() }).read();
+    const diff = adapter(store, { snap: snapshot() });
+    const view = diff.read();
     expect(view.mode).toBe("history");
     expect(view.files.map((f) => f.path)).toEqual(["history/commit.rs"]);
+    // The App reads its own base and filter there, so those keep its command.
+    const kept = [["change_base", { branch: "dev" }], ["set_filter", { query: "*.rs" }], ["clear_filter", {}]] as const;
+    for (const [command, args] of kept) expect(diff.route(command, args)).toBeNull();
+    await diff.route("set_mode", { mode: "branch" });
+    expect(sent).toEqual([{ kind: "set_diff_mode", tab: KEY, mode: "branch", prNumber: null }]);
   });
 
   it("refetches the version-0 empty diff when the first push for it arrives", async () => {
@@ -198,7 +204,7 @@ describe("DiffAdapter", () => {
 });
 
 describe("tabIsStale", () => {
-  it("marks an inactive PR tab once its PR list's head moves past the head its diff was built from", async () => {
+  it("marks a PR tab, active or not, once its PR list's head moves past the head its diff was built from", async () => {
     let head = "h1";
     const tab = { key: KEY, pr_number: 9, remote: "acme/w" };
     const run: Invoke = async <T,>(command: string, args: Record<string, unknown>): Promise<T> => {
@@ -219,6 +225,15 @@ describe("tabIsStale", () => {
     store.applyChanges([{ key: { kind: "prs", remote: "acme/w" }, version: 2 }]);
     await settle();
     expect(tabIsStale(store, tab, false)).toBe(true);
-    expect(tabIsStale(store, tab, true)).toBe(false);
+    expect(tabIsStale(store, tab, true)).toBe(true);
+  });
+
+  it("marks only the active branch view, from the App's base mark", () => {
+    const { store } = backend([]);
+    const tab = { key: KEY, pr_number: null, remote: null };
+    const base = { kind: "base", message: "", built_from_oid: "b1", latest_oid: "b2" } as const;
+    expect(tabIsStale(store, tab, true, base)).toBe(true);
+    expect(tabIsStale(store, tab, false, base)).toBe(false);
+    expect(tabIsStale(store, tab, true, { ...base, kind: "pr_head" })).toBe(false);
   });
 });

@@ -35,6 +35,9 @@ export type DiffSlice = Pick<
  */
 export const RECORDED_MODES: ReadonlySet<string> = new Set(["history", "conflicts", "hidden"]);
 
+/** The commands those views leave to the App, whose base and filter they read. */
+const APP_IN_RECORDED: ReadonlySet<string> = new Set(["change_base", "set_filter", "clear_filter"]);
+
 export function diffKey(tab: TabKey): ResourceKey {
   return { kind: "diff", tab };
 }
@@ -65,13 +68,7 @@ export function sliceFromSnapshot(snapshot: DiffSlice | null): DiffSlice {
 
 /** A file row as the list shows it. Its hunks stay on the snapshot until they are served by hash. */
 export function fileFromRow(row: FileRow): FileSnapshot {
-  return {
-    ...row,
-    status: row.status as FileSnapshot["status"],
-    hunks: [],
-    delta_key: "",
-    hunks_omitted: false,
-  } as FileSnapshot;
+  return { ...row, status: row.status as FileSnapshot["status"], hunks: [], delta_key: "", hunks_omitted: false } as FileSnapshot;
 }
 
 /**
@@ -84,15 +81,8 @@ export function overlaySnapshot(raw: AppSnapshot, slice: DiffSlice): AppSnapshot
   const files = slice.files.map((row) => {
     const app = held.get(row.path);
     if (!app) return row;
-    return {
-      ...row,
-      hunks: app.hunks,
-      delta_key: app.delta_key,
-      hunks_omitted: app.hunks_omitted,
-      is_lazy_stub: app.is_lazy_stub,
-      cache_key: app.cache_key,
-      preview_key: app.preview_key,
-    };
+    const { hunks, delta_key, hunks_omitted, is_lazy_stub, cache_key, preview_key } = app;
+    return { ...row, hunks, delta_key, hunks_omitted, is_lazy_stub, cache_key, preview_key };
   });
   return { ...raw, ...slice, files };
 }
@@ -121,17 +111,19 @@ export function prListRow(
 }
 
 /**
- * Whether an inactive PR tab's diff was built from an older head than the PR
- * list names now: its `diff(tab)` against its `prs(remote)` row.
+ * Whether a tab's diff is behind. A PR diff compares the head it was built
+ * from with its `prs(remote)` row. A branch view's base mark is the active
+ * tab's only, and until P56.1c it is the App's (`appStale`).
  */
 export function tabIsStale(
   store: Pick<ResourceStore, "get">,
   tab: { key: TabKey; pr_number: number | null; remote: string | null },
   isActive: boolean,
+  appStale?: DiffStaleSnapshot | null,
 ): boolean {
-  if (isActive) return false;
   const diff = store.get(diffKey(tab.key))?.value;
   const builtFrom = diff?.kind === "diff" ? diff.built_from_head_oid : null;
+  if (!builtFrom) return isActive && appStale?.kind === "base";
   const latest = prListRow(store, tab.remote, tab.pr_number)?.headOid || null;
   return prStale(builtFrom, latest) !== undefined;
 }
@@ -230,10 +222,8 @@ export class DiffAdapter {
 
   read(): DiffSlice {
     const snapshot = this.deps.snapshot();
-    if (!this.deps.flagOn) return sliceFromSnapshot(snapshot);
     const held = this.held();
-    if (!held) return sliceFromSnapshot(snapshot);
-    if (RECORDED_MODES.has(held.mode)) return sliceFromSnapshot(snapshot);
+    if (!held || RECORDED_MODES.has(held.mode)) return sliceFromSnapshot(snapshot);
     return sliceFromResource(held, snapshot, this.deps.prHead());
   }
 
@@ -274,8 +264,8 @@ export class DiffAdapter {
   /**
    * With the flag on, a diff command goes through `er_send` on the active
    * tab and resolves once every key its `Ack` names is held; null for any
-   * other command, for a view the App loads, and for every command with the
-   * flag off. A click painted on a tab that is no longer active does nothing.
+   * other command, for a switch to a view the App loads or a base or filter
+   * change while one shows, and for every command with the flag off. A click painted on a tab that is no longer active does nothing.
    */
   route(command: string, args: Args = {}): Promise<void> | null {
     if (!this.deps.flagOn) return null;
@@ -283,6 +273,7 @@ export class DiffAdapter {
     if (active === null) return null;
     const wire = wireDiffCommand(command, args, active);
     if (wire === undefined) return null;
+    if (APP_IN_RECORDED.has(command) && RECORDED_MODES.has(this.held()?.mode ?? "")) return null;
     if (typeof args.tabIdx === "number" && this.deps.keyAt(args.tabIdx) !== active) return Promise.resolve();
     return this.send(wire);
   }

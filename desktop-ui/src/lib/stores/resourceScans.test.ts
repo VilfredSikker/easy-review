@@ -204,6 +204,9 @@ describe("resource source scans", () => {
     ]) {
       expect(block(f, ctor)).toMatch(/snapshot: \(\) => app\.appSnapshot,/);
     }
+    // The active branch view's dot is the App's base mark until P56.1c.
+    const stale = /tabIsStale\(resources, row, isActive, app\.appSnapshot\?\.diff_stale\)/;
+    expect(block("tabsResource.svelte.ts", "TabsAdapter")).toMatch(stale);
   });
 
   // The key handler's modes are the frontend's own; the App keeps input_mode
