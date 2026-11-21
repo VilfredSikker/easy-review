@@ -32,6 +32,7 @@
   import TourEmptyState from "$lib/components/TourEmptyState.svelte";
   import { tabPlaceholderTarget } from "$lib/tabPlaceholder";
   import { isReviewMainView } from "$lib/stores/reviewPageModel";
+  import { sidebarProjects } from "$lib/sidebarReads";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import OverviewView from "$lib/components/overview/OverviewView.svelte";
@@ -72,7 +73,7 @@
     app.snapshot !== null &&
       app.snapshot.branch === "" &&
       app.snapshot.files.length === 0 &&
-      (app.snapshot.projects?.length ?? 0) === 0,
+      sidebarProjects(app.snapshot).length === 0,
   );
   const hasOpenTabs = $derived(tabsResource.tabs.length > 0);
   const explicitFullWelcome = $derived(app.showEmptyState && app.snapshot !== null && !hasOpenTabs);

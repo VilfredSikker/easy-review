@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyOptimisticOp,
   buildOptimisticOp,
+  isOptimisticCommand,
+  OPTIMISTIC_COMMANDS,
   optimisticInvokeArgs,
   reapplyOptimisticOps,
   rollbackOptimisticOp,
@@ -886,6 +888,19 @@ describe("global chrome ops: inbox", () => {
   });
 });
 
+describe("the PR pins and Ignore with the flag on", () => {
+  const PR_WRITES = ["save_pr", "unsave_pr", "dismiss_remote_pr", "undismiss_remote_pr"];
+
+  it("leave the optimistic path, so saved-pr and dismissed-pr never paint", () => {
+    for (const command of PR_WRITES) {
+      expect({ command, flagOn: isOptimisticCommand(command, true) }).toEqual({ command, flagOn: false });
+      expect({ command, flagOff: isOptimisticCommand(command, false) }).toEqual({ command, flagOff: true });
+    }
+    const others = OPTIMISTIC_COMMANDS.filter((c) => !PR_WRITES.includes(c));
+    expect(others.filter((c) => !isOptimisticCommand(c, true))).toEqual([]);
+  });
+});
+
 describe("global chrome ops: saved and ignored PRs", () => {
   it("pins at the head with the sidebar row, keeps the hydrated row on reapply, unpins", () => {
     const hydrated = pr(7, { author: "bob" });
@@ -929,7 +944,7 @@ describe("global chrome ops: saved and ignored PRs", () => {
     expect(view.projects[0].saved_prs.map((p) => p.number)).toEqual([1, 2]);
   });
 
-  it("stubs an unknown PR with a non-empty title and caps the list at 50", () => {
+  it("stubs an unknown PR with a non-empty title and leaves the 50-pin cap to the server", () => {
     const many = Array.from({ length: 50 }, (_, i) => pr(100 + i));
     const view = snap({ projects: [project({ saved_prs: many })] });
     const op = buildOptimisticOp(
@@ -941,7 +956,8 @@ describe("global chrome ops: saved and ignored PRs", () => {
     if (op?.type !== "saved-pr") throw new Error("expected saved-pr");
     expect(op.pr.title).toBe("PR #9");
     applyOptimisticOp(view, op);
-    expect(view.projects[0].saved_prs).toHaveLength(50);
+    // The confirming snapshot carries the server's list, which drops the oldest.
+    expect(view.projects[0].saved_prs).toHaveLength(51);
     expect(view.projects[0].saved_prs[0].number).toBe(9);
     expect(buildOptimisticOp("save_pr", { projectId: "nope", prNumber: 9 }, view)).toBeNull();
   });

@@ -6,8 +6,10 @@ use ratatui::{
 };
 
 use super::styles;
+use crate::screen::view::{ConfirmAction, InputMode};
+use crate::screen::{Screen, UNPORTED};
 use er_engine::ai::PanelContent;
-use er_engine::app::{App, ConfirmAction, DiffMode, InputMode};
+use er_engine::tab_identity::DiffMode;
 
 /// Compute the display width of a list of spans
 fn spans_width(spans: &[Span]) -> usize {
@@ -39,8 +41,8 @@ fn line_stat_spans(stats: &er_engine::git::ProdDiffStats) -> Vec<Span<'static>> 
 }
 
 /// Calculate how many rows the top bar needs
-pub const fn top_bar_height(app: &App, _width: u16) -> u16 {
-    if app.tabs.len() > 1 {
+pub const fn top_bar_height(screen: &Screen, _width: u16) -> u16 {
+    if screen.chrome.tab_names.len() > 1 {
         3 // tabs row + branch info row + modes row
     } else {
         2 // branch info row + modes row
@@ -57,8 +59,10 @@ pub const fn top_bar_height(app: &App, _width: u16) -> u16 {
 /// Single-tab layout (2 rows):
 ///   Row 1: repo · branch (vs base)
 ///   Row 2: 1 BRANCH  2 UNSTAGED  3 STAGED          x/y reviewed
-pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
-    let tab = app.tab();
+pub fn render_top_bar(f: &mut Frame, area: Rect, screen: &Screen) {
+    let tab = &screen.tab;
+    let data = &screen.data;
+    let ai = data.ai_or_empty();
     let bar_width = area.width as usize;
 
     let mode_style = |mode: DiffMode, current: DiffMode| {
@@ -73,7 +77,8 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let panel_bg = ratatui::style::Style::default().bg(styles::PANEL());
-    let has_tabs = app.tabs.len() > 1;
+    let tab_names = &screen.chrome.tab_names;
+    let has_tabs = tab_names.len() > 1;
 
     // Split area into rows
     let row_count = if has_tabs { 3u16 } else { 2u16 };
@@ -90,9 +95,9 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     // ── Tab row (multi-tab only) ──
     if has_tabs {
         let mut tab_spans: Vec<Span> = Vec::new();
-        for (i, t) in app.tabs.iter().enumerate() {
-            let label = format!(" {} ", t.tab_name());
-            if i == app.active_tab {
+        for (i, name) in tab_names.iter().enumerate() {
+            let label = format!(" {} ", name);
+            if i == screen.chrome.active_tab {
                 tab_spans.push(Span::styled(
                     label,
                     ratatui::style::Style::default()
@@ -106,7 +111,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::DIM()),
                 ));
             }
-            if i < app.tabs.len() - 1 {
+            if i < tab_names.len() - 1 {
                 tab_spans.push(Span::styled(
                     " │ ",
                     ratatui::style::Style::default().fg(styles::BORDER()),
@@ -120,11 +125,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     // ── Branch info row: repo · branch (vs base) ──
     // For remote tabs, show full owner/repo slug; tab_name() is compact for the tab bar
-    let repo_label = tab
-        .remote_repo
-        .as_deref()
-        .unwrap_or(&tab.tab_name())
-        .to_string();
+    let repo_label = tab.remote_repo.unwrap_or(&tab.name).to_string();
     let mut info_spans: Vec<Span> = vec![
         Span::styled(
             format!(" {}", repo_label),
@@ -134,7 +135,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(" · ", ratatui::style::Style::default().fg(styles::BORDER())),
         Span::styled(
-            &tab.current_branch,
+            tab.current_branch,
             ratatui::style::Style::default().fg(styles::GREEN()),
         ),
     ];
@@ -146,7 +147,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
-    if tab.is_remote() {
+    if tab.is_remote {
         info_spans.push(Span::styled(
             " [remote]",
             ratatui::style::Style::default().fg(styles::ORANGE()),
@@ -156,12 +157,11 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         tab.mode,
         DiffMode::Branch | DiffMode::History | DiffMode::Tour
     ) {
-        let base = if er_engine::github::is_pinned_pr_base(&tab.base_branch) {
-            tab.pr_data
-                .as_ref()
+        let base = if er_engine::github::is_pinned_pr_base(tab.base_branch) {
+            data.pr_data()
                 .map_or("PR base", |pr| pr.base_branch.as_str())
         } else {
-            tab.base_branch.as_str()
+            tab.base_branch
         };
         info_spans.push(Span::styled(
             format!(" (vs {base})"),
@@ -176,7 +176,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     }
     // In History mode, show selected commit info
     if tab.mode == DiffMode::History {
-        if let Some(ref history) = tab.history {
+        if let Some(history) = data.history() {
             if let Some(commit) = history.commits.get(history.selected_commit) {
                 info_spans.push(Span::styled(
                     format!(" · {} · {}", commit.short_hash, commit.relative_date),
@@ -187,14 +187,14 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     }
     // Last, so a narrow terminal truncates the counts before the merge warning
     // or the selected commit.
-    info_spans.extend(line_stat_spans(&tab.diff_line_stats()));
+    info_spans.extend(line_stat_spans(&tab.line_stats));
     let info_bar = Paragraph::new(Line::from(info_spans)).style(panel_bg);
     f.render_widget(info_bar, rows[row_idx]);
     row_idx += 1;
 
     // ── Modes row: modes (left) + reviewed (right) ──
     let mut modes: Vec<Span> = vec![Span::raw(" ")];
-    let visible = tab.visible_modes(&app.config);
+    let visible = &tab.modes;
     for (i, &vmode) in visible.iter().enumerate() {
         let num = format!(" {} ", i + 1);
         let label = match vmode {
@@ -230,7 +230,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let mut right: Vec<Span> = Vec::new();
 
-    if let Some(version) = app.available_update.as_deref() {
+    if let Some(version) = screen.chrome.available_update {
         right.push(Span::styled(
             format!("↑ v{version} · er update"),
             ratatui::style::Style::default().fg(styles::GREEN()),
@@ -239,7 +239,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // Agent command status badges (persistent while running)
-    for (name, _label, _is_running) in tab.agent_statuses() {
+    for &name in data.running_commands() {
         let display_name = match name {
             "review" => "Review",
             "questions" => "Questions",
@@ -256,9 +256,9 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // AI badge + panel label
-    if tab.ai.has_data() {
-        if tab.ai.is_stale {
-            let stale_count = tab.ai.stale_files.len();
+    if ai.has_data() {
+        if ai.is_stale {
+            let stale_count = ai.stale_files.len();
             let stale_label = if stale_count > 0 {
                 format!(
                     "⚠ {} file{} changed",
@@ -289,9 +289,9 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         right.push(Span::raw("  "));
     }
-    if app.config.ai_hub.has_presets() {
+    if screen.chrome.config.ai_hub.has_presets() {
         right.push(Span::styled(
-            format!(" {} ", app.active_ai_selection_label()),
+            format!(" {} ", screen.chrome.ai_selection_label),
             ratatui::style::Style::default()
                 .fg(styles::BG())
                 .bg(styles::PURPLE())
@@ -323,7 +323,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     // Show conflict status badge when in Conflicts mode
     if tab.mode == DiffMode::Conflicts {
-        let total = tab.files.len();
+        let total = data.file_count();
         let unresolved = tab.unresolved_count;
         if unresolved > 0 {
             // Unresolved conflicts: show unresolved count highlighted in orange
@@ -362,7 +362,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // Show filtered reviewed count (yellow) then total reviewed count (blue)
-    if let Some((f_reviewed, f_total)) = tab.filtered_reviewed_count() {
+    if let Some((f_reviewed, f_total)) = data.filtered_reviewed_count() {
         right.push(Span::styled(
             format!("{}/{}", f_reviewed, f_total),
             ratatui::style::Style::default().fg(styles::YELLOW()),
@@ -372,14 +372,18 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::MUTED()),
         ));
     }
-    let (reviewed, total) = tab.reviewed_count();
-    if total > 0 {
-        right.push(Span::styled(
+    match data.reviewed_count() {
+        Some((reviewed, total)) if total > 0 => right.push(Span::styled(
             format!("{}/{} reviewed", reviewed, total),
             ratatui::style::Style::default().fg(styles::BLUE()),
-        ));
+        )),
+        Some(_) => {}
+        None => right.push(Span::styled(
+            format!("reviewed count {UNPORTED}"),
+            ratatui::style::Style::default().fg(styles::MUTED()),
+        )),
     }
-    if app.watching {
+    if screen.chrome.watching {
         if !right.is_empty() {
             right.push(Span::raw("  "));
         }
@@ -393,7 +397,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     // Memory budget indicator (debug mode)
     if std::env::var("ER_DEBUG").is_ok() {
-        let budget = &tab.mem_budget;
+        let budget = data.mem_budget();
         if !right.is_empty() {
             right.push(Span::raw("  "));
         }
@@ -447,8 +451,8 @@ impl Hint {
 }
 
 /// Build the hint list for when the AI Summary panel is focused
-fn build_ai_panel_hints(app: &App) -> Vec<Hint> {
-    let tab = app.tab();
+fn build_ai_panel_hints(screen: &Screen) -> Vec<Hint> {
+    let tab = &screen.tab;
     let mut hints = vec![
         Hint::new("j/k", " navigate "),
         Hint::new("Tab", " focus "),
@@ -470,8 +474,8 @@ fn build_ai_panel_hints(app: &App) -> Vec<Hint> {
 }
 
 /// Build hints for History mode
-fn build_tour_hints(app: &App) -> Vec<Hint> {
-    let h = &app.config.hints;
+fn build_tour_hints(screen: &Screen) -> Vec<Hint> {
+    let h = &screen.chrome.config.hints;
     let mut hints = Vec::new();
     if h.navigation {
         hints.push(Hint::new("j/k", " pillars "));
@@ -485,9 +489,10 @@ fn build_tour_hints(app: &App) -> Vec<Hint> {
     hints
 }
 
-fn build_history_hints(app: &App) -> Vec<Hint> {
-    let tab = app.tab();
-    let h = &app.config.hints;
+fn build_history_hints(screen: &Screen) -> Vec<Hint> {
+    let tab = &screen.tab;
+    let ai = screen.data.ai_or_empty();
+    let h = &screen.chrome.config.hints;
     let mut hints = Vec::new();
 
     // Navigation
@@ -500,8 +505,8 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
 
     // Context-sensitive: focused comment actions
     if h.comments {
-        if let Some(ref fid) = tab.focused_comment_id {
-            if let Some(comment) = tab.ai.find_comment(fid) {
+        if let Some(fid) = tab.focused_comment_id {
+            if let Some(comment) = ai.find_comment(fid) {
                 if comment.can_reply() {
                     hints.push(Hint::new("r", " reply "));
                 }
@@ -528,7 +533,7 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
     }
 
     // Show current file in commit if navigating
-    if let Some(ref history) = tab.history {
+    if let Some(history) = screen.data.history() {
         if !history.commit_files.is_empty() {
             let file_name = history
                 .commit_files
@@ -563,23 +568,24 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
 }
 
 /// Build the normal-mode hint list
-fn build_hints(app: &App) -> Vec<Hint> {
-    let tab = app.tab();
-    let h = &app.config.hints;
+fn build_hints(screen: &Screen) -> Vec<Hint> {
+    let tab = &screen.tab;
+    let ai = screen.data.ai_or_empty();
+    let h = &screen.chrome.config.hints;
 
     // Delegate to AI panel hints when focus is on the AI Summary panel
     if tab.panel_focus && tab.panel == Some(PanelContent::AiSummary) {
-        return build_ai_panel_hints(app);
+        return build_ai_panel_hints(screen);
     }
 
     // History mode has different hints
     if tab.mode == DiffMode::History {
-        return build_history_hints(app);
+        return build_history_hints(screen);
     }
 
     // Tour mode has its own hints
     if tab.mode == DiffMode::Tour {
-        return build_tour_hints(app);
+        return build_tour_hints(screen);
     }
 
     // Conflicts mode uses same hint structure as normal mode (staging not applicable)
@@ -587,7 +593,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
 
     let mut hints: Vec<Hint> = Vec::new();
 
-    if app.has_comment_draft() {
+    if screen.chrome.has_comment_draft {
         hints.insert(0, Hint::new("Tab", " resume draft "));
     }
 
@@ -606,8 +612,8 @@ fn build_hints(app: &App) -> Vec<Hint> {
 
         // Context-sensitive: focused comment actions (panel open)
         if h.comments {
-            if let Some(ref fid) = tab.focused_comment_id {
-                if let Some(comment) = tab.ai.find_comment(fid) {
+            if let Some(fid) = tab.focused_comment_id {
+                if let Some(comment) = ai.find_comment(fid) {
                     if comment.can_reply() {
                         hints.push(Hint::new("r", " reply "));
                     }
@@ -659,8 +665,8 @@ fn build_hints(app: &App) -> Vec<Hint> {
 
         // Context-sensitive: focused comment actions
         if h.comments {
-            if let Some(ref fid) = tab.focused_comment_id {
-                if let Some(comment) = tab.ai.find_comment(fid) {
+            if let Some(fid) = tab.focused_comment_id {
+                if let Some(comment) = ai.find_comment(fid) {
                     if comment.can_reply() {
                         hints.push(Hint::new("r", " reply "));
                     }
@@ -693,22 +699,22 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("!", " unreviewed "));
             hints.push(Hint::new("U", " next unreviewed "));
             hints.push(Hint::new("m", " recent "));
-            if tab.ai.has_data() {
+            if ai.has_data() {
                 hints.push(Hint::new("A", " AI toggle "));
             }
             // Show comment navigation hints when current file has comments
-            if let Some(file) = tab.files.get(tab.selected_file) {
-                let has_comments = tab.ai.file_question_count(&file.path) > 0
-                    || tab.ai.file_note_count(&file.path) > 0
-                    || tab.ai.file_github_comment_count(&file.path) > 0;
+            if let Some(file) = screen.data.file(tab.selected_file) {
+                let has_comments = ai.file_question_count(&file.path) > 0
+                    || ai.file_note_count(&file.path) > 0
+                    || ai.file_github_comment_count(&file.path) > 0;
                 if has_comments {
                     hints.push(Hint::new("J/K", " comments "));
                 }
             }
-            if tab.ai.has_questions() || tab.ai.has_notes() {
+            if ai.has_questions() || ai.has_notes() {
                 hints.push(Hint::new("z", " clear questions & notes "));
             }
-            if tab.ai.has_data() {
+            if ai.has_data() {
                 hints.push(Hint::new("Z", " clear reviews "));
             }
             hints.push(Hint::new(",", " settings "));
@@ -734,10 +740,10 @@ fn build_hints(app: &App) -> Vec<Hint> {
             label: " [unreviewed] ".to_string(),
         });
     }
-    if tab.show_watched && !tab.watched_files.is_empty() {
+    if tab.show_watched && tab.watched_count > 0 {
         hints.push(Hint {
             key: String::new(),
-            label: format!(" [watched: {}] ", tab.watched_files.len()),
+            label: format!(" [watched: {}] ", tab.watched_count),
         });
     }
 
@@ -792,8 +798,8 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
 }
 
 /// Calculate how many rows the bottom bar needs
-pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
-    match &app.input_mode {
+pub fn bottom_bar_height(screen: &Screen, width: u16) -> u16 {
+    match screen.chrome.input_mode {
         InputMode::Comment => 5,
         InputMode::Search
         | InputMode::Confirm(_)
@@ -802,7 +808,7 @@ pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
         | InputMode::RemoteUrl
         | InputMode::BaseBranch => 1,
         InputMode::Normal => {
-            let hints = build_hints(app);
+            let hints = build_hints(screen);
             let lines = pack_hint_lines(&hints, width as usize);
             (lines.len() as u16).max(1)
         }
@@ -810,15 +816,15 @@ pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
 }
 
 /// Render the bottom keybinding hints bar
-pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
-    let tab = app.tab();
+pub fn render_bottom_bar(f: &mut Frame, area: Rect, screen: &Screen) {
+    let tab = &screen.tab;
     let panel_bg = ratatui::style::Style::default().bg(styles::PANEL());
 
-    match &app.input_mode {
+    match &screen.chrome.input_mode {
         InputMode::Confirm(action) => {
             let prompt = match action {
                 ConfirmAction::DeleteComment { .. } => "Delete comment? (y/n)".to_string(),
-                ConfirmAction::DeleteWatchedFile { ref path } => {
+                ConfirmAction::DeleteWatchedFile { path } => {
                     format!("Delete {}? (y/n)", path)
                 }
                 ConfirmAction::Push => "Push branch to remote? (y/n)".to_string(),
@@ -886,7 +892,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 .comment_file
                 .rsplit('/')
                 .next()
-                .unwrap_or(&tab.comment_file);
+                .unwrap_or(tab.comment_file);
             let target_label = if let Some(ln) = tab.comment_line_num {
                 format!("{}:L{}", file_short, ln)
             } else {
@@ -924,7 +930,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled("Tab", styles::key_hint_style()),
                 Span::styled(" pause  ", dim),
             ];
-            if app.can_toggle_comment_type() {
+            if screen.chrome.can_toggle_comment_type {
                 header_spans.push(Span::styled("Ctrl+t", styles::key_hint_style()));
                 header_spans.push(Span::styled(" type  ", dim));
             }
@@ -934,7 +940,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             f.render_widget(header, rows[0]);
 
             // Textarea
-            f.render_widget(&tab.comment_textarea, rows[1]);
+            f.render_widget(tab.comment_textarea, rows[1]);
         }
         InputMode::Filter => {
             let spans = vec![
@@ -975,7 +981,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" {}", app.remote_url_input),
+                    format!(" {}", screen.chrome.remote_url_input),
                     ratatui::style::Style::default().fg(styles::TEXT()),
                 ),
                 Span::styled("█", ratatui::style::Style::default().fg(styles::CYAN())),
@@ -995,7 +1001,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             f.render_widget(bar, area);
         }
         InputMode::BaseBranch => {
-            let current = app.tab().base_branch.clone();
+            let current = tab.base_branch;
             let spans = vec![
                 Span::styled(
                     " compare-base ",
@@ -1005,7 +1011,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" {} ", app.remote_url_input),
+                    format!(" {} ", screen.chrome.remote_url_input),
                     ratatui::style::Style::default().fg(styles::TEXT()),
                 ),
                 Span::styled("█", ratatui::style::Style::default().fg(styles::PURPLE())),
@@ -1079,7 +1085,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             f.render_widget(bar, area);
         }
         InputMode::Normal => {
-            let hints = build_hints(app);
+            let hints = build_hints(screen);
             let lines = pack_hint_lines(&hints, area.width as usize);
 
             let row_count = lines.len() as u16;
@@ -1193,14 +1199,20 @@ mod tests {
             raw_hunk_count: 0,
             similarity: None,
         };
-        let mut app = App::new_for_test(vec![file("src/lib.rs", 10), file("src/lib.test.ts", 30)]);
+        let mut app = er_engine::app::App::new_for_test(vec![
+            file("src/lib.rs", 10),
+            file("src/lib.test.ts", 30),
+        ]);
         app.tab_mut().mode = DiffMode::Conflicts;
         app.tab_mut().merge_active = true;
 
         let backend = ratatui::backend::TestBackend::new(200, 2);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render_top_bar(f, f.area(), &app))
+            .draw(|f| {
+                let mut cache = crate::screen::ViewCache::default();
+                render_top_bar(f, f.area(), &crate::screen::from_app(&app, &mut cache));
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         let row: String = (0..200)

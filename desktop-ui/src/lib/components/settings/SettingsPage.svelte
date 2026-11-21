@@ -3,7 +3,9 @@
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import { riskResource, settingsResource } from "$lib/stores/settingsResource.svelte";
-  import type { AppSnapshot, ConfigFieldValue, SettingsTab } from "$lib/types";
+  import type { ReviewSettingsChange } from "$lib/stores/projectsAdapter";
+  import { projectsResource } from "$lib/stores/projectsResource.svelte";
+  import type { ConfigFieldValue, SettingsTab } from "$lib/types";
   import GeneralSettings from "./GeneralSettings.svelte";
   import AiSettings from "./AiSettings.svelte";
   import ReviewSettings from "./ReviewSettings.svelte";
@@ -49,7 +51,7 @@
   provideSettingsQuery(() => query);
 
   const tab = $derived(SETTINGS_TABS.find((t) => t.id === activeTab) ?? SETTINGS_TABS[0]);
-  const projects = $derived(app.snapshot?.projects ?? []);
+  const projects = $derived(projectsResource.projects);
   const searchIndex = $derived(
     buildSearchIndex({
       general: generalFields,
@@ -157,13 +159,8 @@
     }
   }
 
-  async function patchProject(projectId: string, changes: Record<string, unknown>) {
-    try {
-      const snap = await invoke<AppSnapshot>("patch_project_review_settings", { projectId, patch: changes });
-      app.ingestCommandSnapshot(snap);
-    } catch (e) {
-      app.showToast("error", `patch_project_review_settings: ${e}`);
-    }
+  function patchProject(projectId: string, change: ReviewSettingsChange): Promise<void> {
+    return projectsResource.patchReviewSettings(projectId, change);
   }
 
   function selectTab(id: SettingsTab) {

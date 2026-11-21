@@ -2,6 +2,8 @@ import { mount } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App.svelte";
 import { app } from "$lib/stores/app.svelte";
+// Installs the sidebar reads before the first mount reads them.
+import "$lib/stores/projectsResource.svelte";
 import { assertV1ServiceFlagAgreement } from "$lib/v1ServiceFlag";
 import { attachConsole, error as logError, warn as logWarn } from "@tauri-apps/plugin-log";
 
