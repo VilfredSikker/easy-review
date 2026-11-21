@@ -64,6 +64,8 @@ fn flag_on_modules_name_no_app_and_never_wait() {
     }
 }
 
+// The lint gate reads this file alone, without the module's `cfg(test)`.
+#[cfg(test)]
 fn git(dir: &Path, args: &[&str]) {
     let out = Git::new("git")
         .args([

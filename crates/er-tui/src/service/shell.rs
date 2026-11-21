@@ -405,7 +405,7 @@ impl Shell {
             return f.render_widget(Paragraph::new("Loading…"), f.area());
         };
         self.with_screen(key, &content, |screen| {
-            crate::ui::draw(f, screen, highlighter)
+            crate::ui::draw(f, screen, highlighter);
         });
     }
 }
