@@ -60,15 +60,21 @@ export const OPTIMISTIC_COMMANDS = [
 export type OptimisticCommand = (typeof OPTIMISTIC_COMMANDS)[number];
 
 /**
- * The PR pins and Ignore. With the flag on the server applies the pin cap and
- * the dismissed filter, and the `prs` push shows the result, so these four
- * leave the optimistic path and paint nothing (A8).
+ * The global ops' commands. With the flag on the server applies the pin cap,
+ * the dismissed filter and each inbox read or clear, and counts the unread
+ * items; the `prs` and `inbox` pushes show the result, so these leave the
+ * optimistic path and paint nothing (A8).
  */
 const SNAPSHOT_PATH_ONLY: ReadonlySet<string> = new Set([
   "save_pr",
   "unsave_pr",
   "dismiss_remote_pr",
   "undismiss_remote_pr",
+  "mark_inbox_item_read",
+  "mark_inbox_items_read",
+  "mark_all_inbox_read",
+  "clear_read_inbox_items",
+  "clear_inbox_items",
 ]);
 
 export function isOptimisticCommand(

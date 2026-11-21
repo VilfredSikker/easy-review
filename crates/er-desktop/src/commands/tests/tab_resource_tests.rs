@@ -43,12 +43,32 @@ fn ports() -> er_engine::ports::Ports {
         er_engine::github::FakeGitHub::default()
             .with_pr_state(Ok("OPEN".to_string()))
             .with_pr_diff_remote(Ok(diff()))
-            .with_pr_diff(Ok(diff())),
+            .with_pr_diff(Ok(diff()))
+            .with_pr_head_oid_remote(Ok("head-1".to_string()))
+            .with_overview_remote(Ok(Some(remote_overview())))
+            .with_commits_remote(Ok(Vec::new())),
     );
     er_engine::ports::Ports { git, github }
 }
 
-fn state(dir: &ReviewFlowTestDir) -> AppState {
+/// What GitHub answers for a PR with no checkout, so a remote warm-up fills
+/// the registry's remote open cache.
+fn remote_overview() -> er_engine::github::PrOverviewData {
+    er_engine::github::PrOverviewData {
+        number: 7,
+        title: "T".to_string(),
+        body: String::new(),
+        state: "OPEN".to_string(),
+        author: "octo".to_string(),
+        url: String::new(),
+        base_branch: "main".to_string(),
+        head_branch: "feature".to_string(),
+        checks: Vec::new(),
+        reviewers: Vec::new(),
+    }
+}
+
+pub(super) fn state(dir: &ReviewFlowTestDir) -> AppState {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_settings_path(ports(), settings));
@@ -61,14 +81,14 @@ fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
     er_engine::storage::with_process_test_storage_root(storage, || test(&dir));
 }
 
-fn dir_in(dir: &ReviewFlowTestDir, name: &str) -> String {
+pub(super) fn dir_in(dir: &ReviewFlowTestDir, name: &str) -> String {
     let path = dir.path().join(name);
     std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
     path.to_string_lossy().into_owned()
 }
 
 /// A project on `root` that tracks the remote.
-fn register_project(root: &str) {
+pub(super) fn register_project(root: &str) {
     let record = crate::projects::ProjectRecord {
         id: "widgets".to_string(),
         name: "widgets".to_string(),
@@ -115,7 +135,7 @@ impl TabWebviews for Webviews {
 }
 
 /// Sends `command` through `er_send`'s body while the App is locked.
-fn send_locked(
+pub(super) fn send_locked(
     state: &AppState,
     command: Command,
     picked: Option<String>,

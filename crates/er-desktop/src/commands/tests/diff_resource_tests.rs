@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use er_engine::tabs_record::TabDescriptor;
 use er_engine::TabKey;
 use er_protocol::{ErErrorKind, Resource, ResourceKey, TabDiff, Versioned};
-use er_service::{AppCommand, Command};
+use er_service::{AppCommand, Command, SettingsCommand};
 
 use super::{review_flow_test_state, ReviewFlowTestDir};
 use crate::commands::{content_routes, AppState};
@@ -259,5 +259,52 @@ fn a_failed_first_load_answers_its_error_and_a_refresh_loads_once_the_cause_is_g
         let (loaded, _) = fetch_within_bound(&state, key);
         assert!(loaded.version.0 > failed.version.0);
         assert_eq!(diff_of(&loaded).load_error, None);
+    });
+}
+
+/// The rows classify by the tables of `widgets`, `fake_ports`' origin: its
+/// `[file_kinds]` and `[risk]` entries in the config and its committed table.
+#[test]
+fn the_rows_read_the_repo_rule_tables_and_a_settings_write_moves_the_diff() {
+    with_storage(|dir| {
+        let config = "[file_kinds.widgets]\n\"src/f0.rs\" = \"generated\"\n\
+                      [risk.widgets]\n\"src/f1.rs\" = \"high\"\n";
+        std::fs::create_dir_all(dir.path().join("settings")).unwrap_or_else(|e| panic!("{e}"));
+        let path = dir.path().join("settings").join("config.toml");
+        std::fs::write(path, config).unwrap_or_else(|e| panic!("{e}"));
+        let committed = er_engine::config::RiskRuleProposal {
+            repo: "widgets".into(),
+            rules: [("src/f2.rs".to_string(), "low".into())].into(),
+            ..Default::default()
+        };
+        let store = er_engine::store_registry::store();
+        assert!(committed.commit_to_store("widgets", &store).is_ok());
+        let state = state_over(dir, fake_ports());
+        let settings = state.service.settings();
+        let (key, tab) = opened(&state, dir, "one");
+
+        let (fetched, _) = fetch_within_bound(&state, key);
+        let diff = diff_of(&fetched);
+        let rule = |f: &er_protocol::FileRow| f.risk_rule.as_ref().map(|r| r.key.clone());
+        let rows: Vec<_> = (diff.files.iter())
+            .map(|f| (&*f.kind, &*f.risk_tier, rule(f)))
+            .collect();
+        let want = [
+            ("generated", "ai", None),
+            ("production", "high", Some("src/f1.rs".into())),
+            ("production", "low", Some("src/f2.rs".into())),
+        ];
+        assert_eq!(rows, want);
+        assert_eq!(diff.diff_stats.code.files, 2);
+        let kinds: Vec<_> = (diff.filter_suggestions.iter().filter(|s| s.kind == "kind"))
+            .map(|s| (s.name.as_str(), s.files))
+            .collect();
+        assert_eq!(kinds, [("code", Some(2)), ("generated", Some(1))]);
+        let before = resources::diff::published_version(&state.desktop, key, &tab);
+        assert!(settings.send_and_wait(SettingsCommand::SaveConfig).is_ok());
+        let after = resources::diff::published_version(&state.desktop, key, &tab);
+        assert!(after > before, "a settings write left the diff at {before}");
+        let pushed = resources::watched(&state.desktop);
+        assert_eq!(pushed.get(&Watched::TabDiff(key)), Some(&after));
     });
 }

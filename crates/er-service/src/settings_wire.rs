@@ -190,6 +190,8 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::ClearInboxItems { .. }
         | wire::Command::RefreshNotifications
         | wire::Command::TestNativeNotification
+        | wire::Command::OpenInboxItem { .. }
+        | wire::Command::PrefetchInboxItem { .. }
         | wire::Command::CheckAppUpdate
         | wire::Command::TogglePanel { .. }
         | wire::Command::NewTab

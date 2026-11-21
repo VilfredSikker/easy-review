@@ -16,11 +16,8 @@ use crossterm::{
 };
 use er_engine::app::{self, App, InputMode};
 use er_engine::{github, uninstall, watch};
-use input::{
-    handle_base_branch_input, handle_comment_input, handle_commit_input, handle_confirm_input,
-    handle_filter_input, handle_normal_input, handle_overlay_input, handle_remote_url_input,
-    handle_search_input,
-};
+#[cfg(test)]
+use input::handle_normal_input;
 use ratatui::prelude::*;
 use std::io::{self, Write};
 use std::sync::mpsc;
@@ -454,9 +451,10 @@ fn apply_pr_probe(app: &mut App, probe: PrProbe) {
     }
 }
 
-/// Routes a key: an overlay takes it first, then the input mode's handler. A
-/// plain `s` in Normal mode may have updated the watched file's snapshot, so
-/// its diff is read again for the next frame.
+/// Routes a key: an overlay takes it first, then the input mode. The key
+/// table picks the action from this frame's Screen, and the executor runs it
+/// on the App. A plain `s` in Normal mode may have updated the watched
+/// file's snapshot, so its diff is read again for the next frame.
 fn handle_key(
     app: &mut App,
     key: event::KeyEvent,
@@ -464,23 +462,12 @@ fn handle_key(
     watcher: &mut Option<FileWatcher>,
     view_cache: &mut screen::ViewCache,
 ) -> Result<()> {
-    if app.overlay.is_some() {
-        return handle_overlay_input(app, key);
-    }
-    match &app.input_mode {
-        InputMode::Search => handle_search_input(app, key),
-        InputMode::Comment => handle_comment_input(app, key)?,
-        InputMode::Confirm(_) => handle_confirm_input(app, key)?,
-        InputMode::Filter => handle_filter_input(app, key),
-        InputMode::Commit => handle_commit_input(app, key)?,
-        InputMode::RemoteUrl => handle_remote_url_input(app, key)?,
-        InputMode::BaseBranch => handle_base_branch_input(app, key)?,
-        InputMode::Normal => {
-            handle_normal_input(app, key, watch_tx, watcher)?;
-            if key.code == event::KeyCode::Char('s') && key.modifiers == event::KeyModifiers::NONE {
-                view_cache.watched.reload(app);
-            }
-        }
+    let normal = app.overlay.is_none() && app.input_mode == InputMode::Normal;
+    let action = input::keys::key_action(key, &screen::from_app(app, view_cache));
+    input::execute(app, action, watch_tx, watcher)?;
+    if normal && key.code == event::KeyCode::Char('s') && key.modifiers == event::KeyModifiers::NONE
+    {
+        view_cache.watched.reload(app);
     }
     Ok(())
 }

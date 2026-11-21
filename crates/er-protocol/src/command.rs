@@ -244,6 +244,18 @@ pub enum Command {
     /// Shows a test native notification; refused when the system would not
     /// show it.
     TestNativeNotification,
+    /// Marks the inbox item read and opens what it names, in place of the
+    /// active tab or, with `replace` false, in a new one. The `Ack` names
+    /// `inbox` and `tabs`, and `created` is the tab it left active. A target
+    /// no project holds is refused, and the read still lands.
+    OpenInboxItem {
+        id: String,
+        replace: bool,
+    },
+    /// Warms the open cache for the inbox item's PR. The `Ack` comes at once.
+    PrefetchInboxItem {
+        id: String,
+    },
     /// Shows a tab's diff in another view: `branch`, `unstaged`, `staged`,
     /// `pr` (or `pr_diff`) or `tour`. History, Conflicts and Hidden keep
     /// their old command, since the App loads them. `pr_number` is a PR the
