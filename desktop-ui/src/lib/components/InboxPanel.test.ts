@@ -21,10 +21,11 @@ describe("InboxPanel nav row", () => {
 
 describe("InboxView", () => {
   it("keeps the open, read and clear commands reachable", () => {
-    // Tauri maps camelCase args to the command's snake_case `new_tab`.
+    // Tauri maps camelCase args to the command's snake_case `new_tab`; with
+    // the flag on the tabs adapter routes the open through er_send.
     expect(view).toContain('app.cmd("open_inbox_item", { id: thread.latest.id, newTab })');
-    expect(view).toContain('app.cmd("refresh_notifications")');
-    expect(view).toContain('app.cmd("mark_inbox_items_read", { ids: thread.unreadIds })');
+    expect(view).toContain("inboxResource.refresh()");
+    expect(view).toContain("inboxResource.markItemsRead(thread.unreadIds)");
   });
 
   it("selects a tab already on the PR instead of opening a second one", () => {
@@ -50,7 +51,7 @@ describe("InboxView", () => {
   it("marks read and clears only the threads shown, not the whole inbox", () => {
     expect(view).not.toContain("mark_all_inbox_read");
     expect(view).not.toContain("clear_read_inbox_items");
-    expect(view).toContain('app.cmd("clear_inbox_items", { ids: readThreadItemIds(visible) })');
+    expect(view).toContain("inboxResource.clearItems(readThreadItemIds(visible))");
   });
 
   it("builds the modal request once per open, not on every snapshot", () => {

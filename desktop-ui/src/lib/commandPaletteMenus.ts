@@ -9,6 +9,7 @@ import { arena } from "$lib/stores/arena.svelte";
 import { browser } from "$lib/stores/browser.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { exportOptions } from "$lib/stores/exportOptions.svelte";
+import { inboxResource } from "$lib/stores/inboxResource.svelte";
 import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
 import { reviewPage, type ReviewPage } from "$lib/stores/reviewPage.svelte";
 import { terminal } from "$lib/stores/terminal.svelte";
@@ -213,7 +214,7 @@ export function navigateMenu(snapshot: AppSnapshot | null, r: PaletteRunners): C
     {
       id: "open-inbox",
       label: "Open inbox",
-      description: `${snapshot?.inbox_unread_count ?? 0} unread`,
+      description: `${inboxResource.unreadCount} unread`,
       group: "Navigate",
       kbd: "i",
       run: () => r.dismissLocal(() => app.setMainView("inbox")),

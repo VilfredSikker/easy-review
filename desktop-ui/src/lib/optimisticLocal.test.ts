@@ -888,6 +888,14 @@ describe("global chrome ops: inbox", () => {
   });
 });
 
+const INBOX_WRITES: string[] = [
+  "mark_inbox_item_read",
+  "mark_inbox_items_read",
+  "mark_all_inbox_read",
+  "clear_read_inbox_items",
+  "clear_inbox_items",
+];
+
 describe("the PR pins and Ignore with the flag on", () => {
   const PR_WRITES = ["save_pr", "unsave_pr", "dismiss_remote_pr", "undismiss_remote_pr"];
 
@@ -896,8 +904,17 @@ describe("the PR pins and Ignore with the flag on", () => {
       expect({ command, flagOn: isOptimisticCommand(command, true) }).toEqual({ command, flagOn: false });
       expect({ command, flagOff: isOptimisticCommand(command, false) }).toEqual({ command, flagOff: true });
     }
-    const others = OPTIMISTIC_COMMANDS.filter((c) => !PR_WRITES.includes(c));
+    const others = OPTIMISTIC_COMMANDS.filter((c) => !PR_WRITES.includes(c) && !INBOX_WRITES.includes(c));
     expect(others.filter((c) => !isOptimisticCommand(c, true))).toEqual([]);
+  });
+});
+
+describe("the inbox reads and clears with the flag on", () => {
+  it("leave the optimistic path, so inbox-read and inbox-clear never paint", () => {
+    for (const command of INBOX_WRITES) {
+      expect({ command, flagOn: isOptimisticCommand(command, true) }).toEqual({ command, flagOn: false });
+      expect({ command, flagOff: isOptimisticCommand(command, false) }).toEqual({ command, flagOff: true });
+    }
   });
 });
 

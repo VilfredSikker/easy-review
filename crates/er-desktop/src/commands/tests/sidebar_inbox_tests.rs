@@ -3,14 +3,16 @@
 //! inbox commands go through `er_send` to the sidebar's owner; and the PR
 //! sweep and the setup hook read their prefs with the App locked.
 
-use std::sync::mpsc;
-use std::time::Duration;
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 use er_protocol::{Command, ConfigFieldValue, ErErrorKind, Inbox, Resource, ResourceKey};
 
+use super::tab_resource_tests::{dir_in, register_project, send_locked, state as tab_state};
+use super::while_the_app_is_locked;
 use super::{review_flow_test_state, snap_from, ReviewFlowTestDir};
-use crate::app_owner::startup;
-use crate::commands::AppState;
+use crate::app_owner::{startup, AppOwner};
+use crate::commands::{content_routes, AppState};
 use crate::inbox::{InboxItem, InboxTarget};
 use crate::resources;
 
@@ -299,5 +301,201 @@ fn the_setup_flush_reads_its_prefs_with_the_app_locked() {
         let state = review_flow_test_state(dir);
         let flushed = with_the_app_locked(&state, startup::flush_pending_notifications);
         assert!(flushed.is_some(), "the setup flush waited on the App");
+    });
+}
+
+/// An item that names a branch of the `widgets` project `register_project`
+/// records on `root`.
+fn branch_item(id: &str, root: &str) -> InboxItem {
+    let mut item = item(id, "ci_failed", 9, None);
+    item.target = InboxTarget {
+        project_id: Some("widgets".into()),
+        repo_root: Some(root.into()),
+        remote: Some("acme/widgets".into()),
+        pr_number: None,
+        branch: Some("feature".into()),
+        url: None,
+    };
+    item
+}
+
+/// A project known only by its remote, as the sidebar adds one for a PR
+/// opened by URL.
+fn register_remote_only(id: &str, remote: &str) {
+    let record = crate::projects::ProjectRecord {
+        id: id.to_string(),
+        name: id.to_string(),
+        root_path: String::new(),
+        remote: Some(remote.to_string()),
+        ..Default::default()
+    };
+    let saved = er_engine::projects_pins::update(|file| {
+        file.projects.push(record);
+        Ok(true)
+    });
+    assert!(saved.is_ok(), "{saved:?}");
+    crate::projects::invalidate_load_cache();
+}
+
+/// `tab_resource_tests`' state, which opens through fake ports, with the
+/// sidebar's owner reading its inbox prefs from that state's settings actor.
+fn open_state(dir: &ReviewFlowTestDir) -> AppState {
+    let mut state = tab_state(dir);
+    state.desktop.app_owner = Arc::new(AppOwner::new(
+        Arc::clone(&state.meta_cache),
+        Arc::clone(&state.pr_cache),
+        Arc::clone(&state.pr_cache_fetched_at),
+        Arc::clone(&state.gh_user),
+        Arc::clone(&state.inbox),
+    ));
+    startup::read_inbox_prefs_from_settings(&state.desktop);
+    state
+}
+
+/// An inbox open through `er_send` answers while the App is locked: it marks
+/// the item read and opens its target in a new tab beside the active one, and
+/// its `Ack` names `inbox` and `tabs`, with the new tab as created. A target
+/// no project holds is refused after the read lands. A prefetch answers at
+/// once and moves nothing, and the remote item's warms the registry's remote
+/// open cache. An open with `replace` takes the active tab's place.
+#[test]
+fn an_inbox_open_reads_the_item_and_opens_its_target_with_the_app_locked() {
+    with_storage(|dir| {
+        let state = open_state(dir);
+        let root = dir_in(dir, "widgets");
+        register_project(&root);
+        register_remote_only("gadgets", "acme/gadgets");
+        let mut remote = item("remote", "ci_failed", 7, Some(1));
+        remote.target.project_id = Some("gadgets".into());
+        remote.target.repo_root = None;
+        remote.target.remote = Some("acme/gadgets".into());
+        state.inbox.lock().unwrap().items = vec![
+            branch_item("feature", &root),
+            item("lost", "ci_failed", 3, None),
+            remote,
+        ];
+        state.service.settings();
+        state.app_owner.publish();
+        // A tab is active first, so an open that replaces it adds no tab.
+        let working = content_routes::working_tab(dir_in(dir, "working"));
+        let opened = while_the_app_is_locked(&state, "open", move |state| {
+            content_routes::open(state, working, false)
+        });
+        assert!(opened.is_ok(), "{opened:?}");
+        let registry = state.service.app_registry();
+        assert!(registry.tabs_view().active.is_some(), "no active tab");
+        let before = registry.tabs_view().tabs.len();
+
+        let open = Command::OpenInboxItem {
+            id: "feature".into(),
+            replace: false,
+        };
+        let ack = send_locked(&state, open, None).unwrap_or_else(|e| panic!("open: {e:?}"));
+        let view = state.service.app_registry().tabs_view();
+        assert_eq!(view.tabs.len(), before + 1, "the open added no tab");
+        let tabs = ack.changed.iter().find(|c| c.key == ResourceKey::Tabs);
+        assert_eq!(
+            tabs.map(|c| c.version.0),
+            Some(view.revision),
+            "the open's Ack does not name tabs: {ack:?}"
+        );
+        let active = view
+            .active
+            .map(|key| er_service::wire_tab_key(key).0.to_string());
+        assert_eq!(ack.created, active);
+        let (version, inbox) = fetch_inbox(&state);
+        let moved = ack.changed.iter().find(|c| c.key == ResourceKey::Inbox);
+        assert_eq!(
+            moved.map(|c| c.version.0),
+            Some(version),
+            "the open's Ack does not name inbox: {ack:?}"
+        );
+        assert_eq!(unread(&inbox), ["lost"]);
+
+        let lost = Command::OpenInboxItem {
+            id: "lost".into(),
+            replace: true,
+        };
+        let refused = send_locked(&state, lost, None).unwrap_err();
+        assert_eq!(refused.kind, ErErrorKind::Refused, "{refused:?}");
+        assert!(refused.message.contains("Could not open"), "{refused:?}");
+        assert!(
+            unread(&fetch_inbox(&state).1).is_empty(),
+            "the read did not land"
+        );
+
+        // `remote` names a project with no checkout, so its prefetch reaches
+        // the remote PR warm-up; the others warm nothing.
+        assert!(registry
+            .remote_pr_open_entry("acme", "gadgets", 7)
+            .is_none());
+        for id in ["remote", "feature", "lost", "gone"] {
+            let prefetch = Command::PrefetchInboxItem { id: id.into() };
+            let ack = send_locked(&state, prefetch, None);
+            assert_eq!(ack.map(|ack| ack.changed), Ok(Vec::new()), "{id}");
+        }
+        let warmed = wait_for(|| {
+            registry
+                .remote_pr_open_entry("acme", "gadgets", 7)
+                .is_some()
+        });
+        assert!(warmed, "the prefetch did not warm the remote open cache");
+
+        let before = registry.tabs_view().tabs.len();
+        let replace = Command::OpenInboxItem {
+            id: "remote".into(),
+            replace: true,
+        };
+        let ack = send_locked(&state, replace, None).unwrap_or_else(|e| panic!("replace: {e:?}"));
+        let view = registry.tabs_view();
+        assert_eq!(view.tabs.len(), before, "the open with replace added a tab");
+        let active = view
+            .active
+            .map(|key| er_service::wire_tab_key(key).0.to_string());
+        assert_eq!(ack.created, active);
+        let rows = er_service::tabs_resource(&view).tabs;
+        let remote = rows.iter().any(|row| row.label == "gadgets#7");
+        assert!(
+            remote,
+            "the open with replace opened no remote tab: {rows:?}"
+        );
+    });
+}
+
+/// The mark-read median on the resource path: `er_send`
+/// `mark_inbox_item_read` to its `Ack`, then `er_fetch` of what it names
+/// and the serialisation. The inbox holds one item, as the flag-off row's
+/// does; an untimed reset marks it unread before each run, so the version
+/// moves every time. Compare with the flag-off row in `latency_tests.rs`.
+#[test]
+#[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]
+fn the_mark_read_reports_its_flag_on_median() {
+    const RUNS: usize = 50;
+    const WARMUP: usize = 5;
+    with_storage(|dir| {
+        let state = inbox_fixture(dir);
+        state.inbox.lock().unwrap().items = vec![item("one", "ci_failed", 1, None)];
+        let mut samples = Vec::with_capacity(RUNS);
+        let mut bytes = 0;
+        for run in 0..RUNS {
+            state.inbox.lock().unwrap().items[0].read_at_ms = None;
+            state.app_owner.publish();
+            let started = Instant::now();
+            let ack = send(&state, Command::MarkInboxItemRead { id: "one".into() });
+            assert!(!ack.changed.is_empty(), "run {run} moved nothing");
+            let fetched: Vec<_> = ack
+                .changed
+                .into_iter()
+                .map(|changed| resources::fetch(&state.desktop, changed.key))
+                .collect::<Result<_, _>>()
+                .unwrap_or_else(|e| panic!("fetch: {e:?}"));
+            bytes = serde_json::to_vec(&fetched).map(|v| v.len()).unwrap_or(0);
+            if run >= WARMUP {
+                samples.push(started.elapsed());
+            }
+        }
+        samples.sort_unstable();
+        let median = samples[samples.len() / 2];
+        println!("flag-on mark read: median {median:?}, answer {bytes} bytes");
     });
 }

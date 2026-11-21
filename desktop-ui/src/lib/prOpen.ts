@@ -169,6 +169,11 @@ export function routePrefetches(send: InvokeFn): void {
   prefetchSend = send;
 }
 
+/** One open-cache warm-up, sent the way the build routes prefetches. */
+export function sendPrefetch(command: string, args: Record<string, unknown>): Promise<unknown> {
+  return prefetchSend(command, args);
+}
+
 /** One debounce-timer set per sidebar instance. `invokeFn` and `delayMs` are
  *  the test seam. */
 export function createPrPrefetch(

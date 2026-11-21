@@ -9275,7 +9275,7 @@ enum InboxOpenTarget {
     },
 }
 
-fn resolve_inbox_open_target(target: InboxTarget, state: &AppState) -> Option<InboxOpenTarget> {
+fn resolve_inbox_open_target(target: InboxTarget, state: &DesktopState) -> Option<InboxOpenTarget> {
     let file = projects::load();
     // A poisoned cache only costs the hint, not the open.
     let empty = HashMap::new();
@@ -9323,7 +9323,7 @@ fn inbox_open_target_in(
     })
 }
 
-fn inbox_item_target(id: &str, state: &AppState) -> Option<InboxTarget> {
+fn inbox_item_target(id: &str, state: &DesktopState) -> Option<InboxTarget> {
     let inbox = state.inbox.lock().ok()?;
     inbox
         .items
@@ -9337,30 +9337,40 @@ fn inbox_item_target(id: &str, state: &AppState) -> Option<InboxTarget> {
 /// `gh pr diff` round-trip that a warmed sidebar click skips.
 #[tauri::command]
 pub fn prefetch_inbox_item(id: String, state: State<AppState>) -> Result<(), String> {
-    let Some(target) = inbox_item_target(&id, &state) else {
+    prefetch_inbox_target(&id, state.inner())
+}
+
+/// What the open-cache prefetches take: the desktop's state with the flag
+/// on, the App's without.
+#[cfg(feature = "v1-service")]
+type PrefetchState = DesktopState;
+#[cfg(not(feature = "v1-service"))]
+type PrefetchState = AppState;
+
+/// Warms the open cache for the inbox item's PR; an item with no PR, or one
+/// gone from the inbox, warms nothing.
+pub(crate) fn prefetch_inbox_target(id: &str, state: &PrefetchState) -> Result<(), String> {
+    let Some(target) = inbox_item_target(id, state) else {
         return Ok(());
     };
-    match resolve_inbox_open_target(target, &state) {
+    match resolve_inbox_open_target(target, state) {
         Some(InboxOpenTarget::LocalPr {
             project_id,
             pr_number,
             hint: Some(hint),
-        }) => prefetch_pr_open_impl(project_id, pr_number, hint, &state),
+        }) => prefetch_pr_open_impl(project_id, pr_number, hint, state),
         Some(InboxOpenTarget::RemotePr {
             owner,
             repo,
             number,
-        }) => prefetch_remote_pr_open_impl(owner, repo, number, &state),
+        }) => prefetch_remote_pr_open_impl(owner, repo, number, state),
         _ => Ok(()),
     }
 }
 
-fn open_inbox_item_impl(
-    id: String,
-    new_tab: bool,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    let replace = Some(!new_tab);
+/// Marks the inbox item read through the sidebar's owner, and answers what
+/// it targets; none for an id the inbox does not hold.
+fn read_inbox_item(id: &str, state: &DesktopState) -> Result<Option<InboxTarget>, String> {
     let now = now_ms();
     let mut target = None;
     state
@@ -9371,12 +9381,39 @@ fn open_inbox_item_impl(
                 .iter()
                 .find(|i| i.id == id)
                 .map(|i| i.target.clone());
-            inbox.mark_item_read(&id, now);
+            inbox.mark_item_read(id, now);
         })
         .map_err(|e| {
             log::error!("[inbox] command=open_inbox_item failed to lock inbox: {e}");
             e
         })?;
+    Ok(target)
+}
+
+const NO_INBOX_TARGET: &str =
+    "Could not open notification target — add or select the project in Easy Review first";
+
+/// `er_send`'s inbox open: the read, then the open a sidebar click takes. A
+/// target no project holds is refused after the read has landed.
+#[cfg(feature = "v1-service")]
+pub(crate) fn service_open_inbox_item(
+    state: &DesktopState,
+    id: &str,
+    replace: bool,
+) -> Result<(), String> {
+    match read_inbox_item(id, state)?.and_then(|t| resolve_inbox_open_target(t, state)) {
+        Some(target) => service_open_inbox_target(state, target, Some(replace)),
+        None => Err(NO_INBOX_TARGET.into()),
+    }
+}
+
+fn open_inbox_item_impl(
+    id: String,
+    new_tab: bool,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
+    let replace = Some(!new_tab);
+    let target = read_inbox_item(&id, state)?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
     #[cfg(feature = "v1-service")]
@@ -9384,7 +9421,8 @@ fn open_inbox_item_impl(
         .clone()
         .and_then(|t| resolve_inbox_open_target(t, state))
     {
-        return service_open_inbox_target(state, target, replace);
+        service_open_inbox_target(state, target, replace)?;
+        return Ok(AppSnapshot::default());
     }
     match target.and_then(|t| resolve_inbox_open_target(t, state)) {
         Some(InboxOpenTarget::LocalPr {
@@ -9404,9 +9442,7 @@ fn open_inbox_item_impl(
     }
 
     if let Ok(mut app) = state.app.lock() {
-        app.notify(
-            "Could not open notification target — add or select the project in Easy Review first",
-        );
+        app.notify(NO_INBOX_TARGET);
     }
     snap!(state)
 }
@@ -9414,27 +9450,26 @@ fn open_inbox_item_impl(
 /// An inbox open through the same flag-on helpers as a sidebar click.
 #[cfg(feature = "v1-service")]
 fn service_open_inbox_target(
-    state: &AppState,
+    state: &DesktopState,
     target: InboxOpenTarget,
     replace: Option<bool>,
-) -> Result<AppSnapshot, String> {
+) -> Result<(), String> {
     match target {
         InboxOpenTarget::LocalPr {
             project_id,
             pr_number,
             ..
-        } => service_open_pr_review(state, project_id, pr_number, replace)?,
+        } => service_open_pr_review(state, project_id, pr_number, replace),
         InboxOpenTarget::RemotePr {
             owner,
             repo,
             number,
-        } => service_open_remote_pr(state, owner, repo, number, replace)?,
+        } => service_open_remote_pr(state, owner, repo, number, replace),
         InboxOpenTarget::Branch { project_id, branch } => {
             let tab = content_routes::branch_tab(&project_id, branch)?;
-            content_routes::open(state, tab, replace.unwrap_or(false))?;
+            content_routes::open(state, tab, replace.unwrap_or(false))
         }
     }
-    Ok(AppSnapshot::default())
 }
 
 #[tauri::command]

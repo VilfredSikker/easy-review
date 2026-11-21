@@ -174,7 +174,7 @@ describe("resource source scans", () => {
 
   it("the tab commands and the opens reach the backend only through app.cmd and the prefetch seam", () => {
     const old =
-      /\binvoke(<[^>]*>)?\(\s*"(open_remote_pr|open_pr_url|open_worktree|open_local_branch|open_pr_review|open_pr_branch|prefetch_pr_open|prefetch_remote_pr_open|open_project_branch|new_tab|close_tab|select_tab|reorder_tabs|update_tab_browser|cycle_tab_browser_layout|set_active_project)"/;
+      /\binvoke(<[^>]*>)?\(\s*"(open_remote_pr|open_pr_url|open_worktree|open_local_branch|open_pr_review|open_pr_branch|prefetch_pr_open|prefetch_remote_pr_open|open_project_branch|new_tab|close_tab|select_tab|reorder_tabs|update_tab_browser|cycle_tab_browser_layout|set_active_project|open_inbox_item|prefetch_inbox_item)"/;
     expect(sources().filter((f) => old.test(stripped(f)))).toEqual([]);
     const prOpen = stripped(join("lib", "prOpen.ts"));
     expect(prOpen).toMatch(/invokeFn: InvokeFn = \(command, args\) => prefetchSend\(command, args\)/);
