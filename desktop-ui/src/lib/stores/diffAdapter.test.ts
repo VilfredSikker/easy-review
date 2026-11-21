@@ -214,26 +214,17 @@ describe("DiffAdapter", () => {
   });
 
   it("maps each of the eight commands", () => {
-    const wire = (command: string, args: Record<string, unknown> = {}) => wireDiffCommand(command, args, KEY)?.kind;
-    expect([
-      wire("set_mode", { mode: "staged" }),
-      wire("change_base", { branch: "dev" }),
-      wire("set_filter", { query: "*.rs" }),
-      wire("clear_filter"),
-      wire("refresh_diff"),
-      wire("force_refresh_diff"),
-      wire("sync_pr", { projectId: "p", prNumber: 3 }),
-      wire("sync_branch", { projectId: "p", branch: "b" }),
-    ]).toEqual([
-      "set_diff_mode",
-      "change_base",
-      "set_filter",
-      "set_filter",
-      "refresh_diff",
-      "refresh_diff",
-      "sync_pr",
-      "sync_branch",
-    ]);
+    const cases: [string, Record<string, unknown>, string][] = [
+      ["set_mode", { mode: "staged" }, "set_diff_mode"],
+      ["change_base", { branch: "dev" }, "change_base"],
+      ["set_filter", { query: "*.rs" }, "set_filter"],
+      ["clear_filter", {}, "set_filter"],
+      ["refresh_diff", {}, "refresh_diff"],
+      ["force_refresh_diff", {}, "refresh_diff"],
+      ["sync_pr", { projectId: "p", prNumber: 3 }, "sync_pr"],
+      ["sync_branch", { projectId: "p", branch: "b" }, "sync_branch"],
+    ];
+    for (const [command, args, kind] of cases) expect(wireDiffCommand(command, args, KEY)?.kind).toBe(kind);
   });
 });
 

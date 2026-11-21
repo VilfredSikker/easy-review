@@ -49,7 +49,7 @@ export type TabStaleness = (row: TabRow, isActive: boolean) => boolean;
  * `owner/repo`. The snapshot row counts only while both lists have the same
  * length and the row is the same tab, since one side may not have caught up
  * with a change. The staleness comes from `stale`, which compares the tab's
- * `diff(tab)` with its PR list.
+ * `diff(tab)` with its PR list, found by that `owner/repo`.
  */
 export function tabsFromResource(
   wire: Tabs,
@@ -65,17 +65,18 @@ export function tabsFromResource(
     // No descriptor holds a Working tab's live branch or a local PR's head
     // branch, so the registry names the folder for those.
     const branchless = row.kind === "working" || (row.kind === "local_pr" && row.branch === null);
+    const remote = row.remote ?? seen?.remote ?? null;
     return {
       idx,
       label: branchless && seen ? seen.label : row.label,
       kind: summaryKind(row.kind),
       branch: row.branch,
       pr_number: row.pr_number,
-      remote: row.remote ?? seen?.remote ?? null,
+      remote,
       repo_root: row.repo_root,
       is_active: idx === active,
       change_token: seen?.change_token ?? "",
-      stale: stale(row, idx === active),
+      stale: stale({ ...row, remote }, idx === active),
     };
   });
   return { tabs, active: tabs[active]?.idx ?? 0 };
