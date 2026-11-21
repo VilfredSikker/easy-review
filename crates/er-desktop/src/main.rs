@@ -681,12 +681,19 @@ fn active_pr_identity(
 /// The desktop active-branch watcher thread. Follows the currently active tab's
 /// local-branch checkout (project root or linked worktree) and refreshes the
 /// diff when tracked files in that checkout change.
+///
+/// With `v1-service` the target comes from the registry's active tab and its
+/// content (`watcher::Follower`), never the App lock, and a file change
+/// refreshes that tab's content with auto-unmark. The App's tab still gets
+/// the checkout root and a refresh without unmark, since the page draws its
+/// hunks until they are served by hash.
 fn run_active_branch_watcher(
     watcher_app: Arc<Mutex<App>>,
     watcher_status: WatchStatusState,
     watcher_session: er_desktop::state::SessionClock,
     watcher_desktop_rev: Arc<std::sync::atomic::AtomicU64>,
     #[cfg(feature = "v1-service")] watcher_service: Arc<er_desktop::service::ServiceState>,
+    #[cfg(feature = "v1-service")] watcher_git: Arc<dyn er_engine::git::Git>,
 ) {
     use er_engine::watch::{FileWatcher, WatchEvent};
     use std::path::Path;
@@ -697,8 +704,13 @@ fn run_active_branch_watcher(
     let mut _watcher: Option<FileWatcher> = None;
     let mut current_key: Option<(String, String)> = None;
     let poll_interval = std::time::Duration::from_millis(400);
+    #[cfg(feature = "v1-service")]
+    let mut follower = er_desktop::watcher::Follower::default();
 
     loop {
+        #[cfg(feature = "v1-service")]
+        let desired = follower.next(&watcher_service, &*watcher_git).and_then(|w| w.target());
+        #[cfg(not(feature = "v1-service"))]
         let desired = match watcher_app.lock() {
             Ok(g) => desired_local_branch_watch(&g),
             Err(_) => None,
@@ -733,9 +745,7 @@ fn run_active_branch_watcher(
 
             // Mirror checkout root onto the active tab so refresh_diff
             // uses the working-tree helper.
-            if let Ok(mut g) = watcher_app.lock() {
-                apply_watch_checkout_root(g.tab_mut(), desired.clone());
-            }
+            mirror_checkout_root(&watcher_app, desired.clone());
             current_key = desired;
             profile_log::bump_desktop_revision(&watcher_desktop_rev, "watcher_status");
         }
@@ -758,7 +768,7 @@ fn run_active_branch_watcher(
             continue;
         };
         #[cfg(feature = "v1-service")]
-        post_active_refresh(&watcher_service);
+        follower.on_change(&watcher_service);
         let app = Arc::clone(&watcher_app);
         let rev = Arc::clone(&watcher_desktop_rev);
         std::thread::spawn(move || {
@@ -766,7 +776,7 @@ fn run_active_branch_watcher(
                 if active_tab_watched_branch(&g).as_deref() != Some(watched_branch.as_str()) {
                     return None;
                 }
-                Some(g.tab_mut().refresh_diff_quick_with_unmark())
+                Some(refresh_watched_app_tab(g.tab_mut()))
             });
             match result {
                 Some(Ok(())) => {
@@ -791,24 +801,33 @@ fn run_active_branch_watcher(
     }
 }
 
-/// With the flag on the page lists the active tab's files from its content,
-/// which the App's refresh does not move, so a file change refreshes the
-/// content too. Without waiting: the push brings the new diff.
-#[cfg(feature = "v1-service")]
-fn post_active_refresh(service: &er_desktop::service::ServiceState) {
-    let view = service.app_registry().tabs_view();
-    let Some(entry) = view.active_entry() else {
-        return;
-    };
-    if service.content(entry.key, &entry.descriptor).is_none() {
-        return;
+/// The App tab's refresh on a watched file change. With `v1-service` the
+/// content's refresh clears the reviewed marks, so the App's only redraws.
+fn refresh_watched_app_tab(tab: &mut er_engine::app::TabState) -> anyhow::Result<()> {
+    if cfg!(feature = "v1-service") {
+        tab.refresh_diff_quick()
+    } else {
+        tab.refresh_diff_quick_with_unmark()
     }
-    let refresh = er_service::Command::RefreshDiff {
-        key: entry.key,
-        force: false,
-        adopt_head_oid: None,
-    };
-    service.post_if_started(&er_desktop::service::actor_key(&entry.descriptor), refresh);
+}
+
+/// Mirrors the watcher's target onto the App's active tab. With
+/// `v1-service` on a thread of its own, so the watcher never waits on the
+/// App lock.
+fn mirror_checkout_root(app: &Arc<Mutex<App>>, desired: Option<(String, String)>) {
+    #[cfg(feature = "v1-service")]
+    {
+        let app = Arc::clone(app);
+        std::thread::spawn(move || {
+            if let Ok(mut g) = app.lock() {
+                apply_watch_checkout_root(g.tab_mut(), desired);
+            }
+        });
+    }
+    #[cfg(not(feature = "v1-service"))]
+    if let Ok(mut g) = app.lock() {
+        apply_watch_checkout_root(g.tab_mut(), desired);
+    }
 }
 
 /// The flag path's 45s comment tick. The same head-OID throttle decides
@@ -1620,6 +1639,8 @@ fn main() {
         let watcher_desktop_rev = Arc::clone(&desktop_revision);
         #[cfg(feature = "v1-service")]
         let watcher_service = Arc::clone(&service);
+        #[cfg(feature = "v1-service")]
+        let watcher_git = Arc::clone(&ports.git);
         move || {
             run_active_branch_watcher(
                 watcher_app,
@@ -1628,6 +1649,8 @@ fn main() {
                 watcher_desktop_rev,
                 #[cfg(feature = "v1-service")]
                 watcher_service,
+                #[cfg(feature = "v1-service")]
+                watcher_git,
             );
         }
     });
@@ -2353,6 +2376,7 @@ fn watch_branch_for_tab(tab: &er_engine::app::TabState) -> Option<String> {
 /// or tabs whose branch isn't checked out anywhere. Local PR tabs are allowed:
 /// if their head branch is checked out, the watcher attaches a checkout root
 /// so Unstaged/Staged/working-tree Branch views become available.
+#[cfg(not(feature = "v1-service"))]
 fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
     let tab = app.tab();
     let branch = watch_branch_for_tab(tab)?;
