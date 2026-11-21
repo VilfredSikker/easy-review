@@ -10,7 +10,7 @@ use er_engine::TabKey;
 use er_service::AppCommand;
 
 use super::diff_resource_tests::{fake_ports, listed, state_over, with_storage};
-use crate::commands::AppState;
+use crate::commands::{content_routes, AppState};
 use crate::tabs;
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -82,5 +82,43 @@ fn the_warmer_loads_each_unloaded_tab_of_the_active_repo_once() {
             "the warmer loaded the active tab"
         );
         assert_eq!(tabs::warm(&state.service, Duration::ZERO), 0);
+    });
+}
+
+/// An open's own load races the follower's activation load of the same new
+/// tab. The actor refuses whichever first load lands second, and the open
+/// still succeeds, since the tab loaded.
+#[test]
+fn an_open_succeeds_when_the_follower_loads_its_tab_first() {
+    with_storage(|dir| {
+        let state = state_over(dir, fake_ports());
+        tabs::follow_service(
+            &state.service,
+            Arc::clone(&state.app),
+            Arc::clone(&state.view),
+            fake_ports(),
+        );
+        let mut failed = Vec::new();
+        for n in 0..40 {
+            let root = dir.path().join(format!("open{n}"));
+            std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
+            let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
+            if let Err(error) = content_routes::open(&state, tab.clone(), false) {
+                failed.push(error);
+                continue;
+            }
+            let key = state.service.app_registry().tabs_view().active;
+            let key = key.unwrap_or_else(|| panic!("no active tab"));
+            assert!(
+                loaded(&state, key, &tab),
+                "open {n} answered before its tab loaded"
+            );
+        }
+        assert!(
+            failed.is_empty(),
+            "{} of 40 opens failed, first: {:?}",
+            failed.len(),
+            failed.first()
+        );
     });
 }

@@ -57,14 +57,24 @@ fn cleared(reply: Reply) -> Result<usize, String> {
     }
 }
 
+/// Loads `key` and waits for the reply. The claim keeps the activation
+/// follower from posting a second load once this one is on its way; the
+/// route loads either way, since it answers with the result. The follower
+/// can still claim first, when the tab change that opened `key` reaches it
+/// before this call: the actor then refuses whichever first load lands
+/// second, and a refused load whose key now holds content has loaded.
 fn load(state: &DesktopState, key: TabKey, tab: &TabDescriptor) -> Result<usize, String> {
-    let tab = tab.clone();
+    let _ = state.service.claim_load(key);
     let command = Command::LoadTab {
         key,
         tab: tab.clone(),
         mode: None,
     };
-    cleared(send(state, &tab, command)?)
+    match send(state, tab, command) {
+        Ok(reply) => cleared(reply),
+        Err(_) if state.service.content(key, tab).is_some() => Ok(0),
+        Err(error) => Err(error),
+    }
 }
 
 /// The active tab and its content, loaded on its first use.

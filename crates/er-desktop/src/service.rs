@@ -272,7 +272,7 @@ impl ServiceState {
     }
 
     /// Claims `key`'s load for the reply bound; false when it is claimed.
-    fn claim_load(&self, key: TabKey) -> bool {
+    pub(crate) fn claim_load(&self, key: TabKey) -> bool {
         let mut asked = match self.load_requests.lock() {
             Ok(asked) => asked,
             Err(poisoned) => poisoned.into_inner(),
