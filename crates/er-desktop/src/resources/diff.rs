@@ -275,7 +275,7 @@ fn remember_synced_diff(
     else {
         return;
     };
-    let head = content.diff.meta.preview_head_oid.as_deref();
+    let head = content.pr.head_oid.as_deref();
     let command = er_service::AppCommand::PrefetchOpenTarget {
         project_id: project.id.clone(),
         repo_root: project.root_path.clone(),
