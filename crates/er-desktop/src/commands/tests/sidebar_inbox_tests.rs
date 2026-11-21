@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 use er_protocol::{Command, ConfigFieldValue, ErErrorKind, Inbox, Resource, ResourceKey};
 
 use super::tab_resource_tests::{dir_in, register_project, send_locked, state as tab_state};
+use super::while_the_app_is_locked;
 use super::{review_flow_test_state, snap_from, ReviewFlowTestDir};
 use crate::app_owner::{startup, AppOwner};
-use crate::commands::AppState;
+use crate::commands::{content_routes, AppState};
 use crate::inbox::{InboxItem, InboxTarget};
 use crate::resources;
 
@@ -352,10 +353,11 @@ fn open_state(dir: &ReviewFlowTestDir) -> AppState {
 }
 
 /// An inbox open through `er_send` answers while the App is locked: it marks
-/// the item read and opens its target in a new tab, and its `Ack` names
-/// `inbox` and `tabs`, with the new tab as created. A target no project
-/// holds is refused after the read lands. A prefetch answers at once and
-/// moves nothing.
+/// the item read and opens its target in a new tab beside the active one, and
+/// its `Ack` names `inbox` and `tabs`, with the new tab as created. A target
+/// no project holds is refused after the read lands. A prefetch answers at
+/// once and moves nothing, and the remote item's warms the registry's remote
+/// open cache. An open with `replace` takes the active tab's place.
 #[test]
 fn an_inbox_open_reads_the_item_and_opens_its_target_with_the_app_locked() {
     with_storage(|dir| {
@@ -374,7 +376,15 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_with_the_app_locked() {
         ];
         state.service.settings();
         state.app_owner.publish();
-        let before = state.service.app_registry().tabs_view().tabs.len();
+        // A tab is active first, so an open that replaces it adds no tab.
+        let working = content_routes::working_tab(dir_in(dir, "working"));
+        let opened = while_the_app_is_locked(&state, "open", move |state| {
+            content_routes::open(state, working, false)
+        });
+        assert!(opened.is_ok(), "{opened:?}");
+        let registry = state.service.app_registry();
+        assert!(registry.tabs_view().active.is_some(), "no active tab");
+        let before = registry.tabs_view().tabs.len();
 
         let open = Command::OpenInboxItem {
             id: "feature".into(),
@@ -416,11 +426,39 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_with_the_app_locked() {
 
         // `remote` names a project with no checkout, so its prefetch reaches
         // the remote PR warm-up; the others warm nothing.
+        assert!(registry
+            .remote_pr_open_entry("acme", "gadgets", 7)
+            .is_none());
         for id in ["remote", "feature", "lost", "gone"] {
             let prefetch = Command::PrefetchInboxItem { id: id.into() };
             let ack = send_locked(&state, prefetch, None);
             assert_eq!(ack.map(|ack| ack.changed), Ok(Vec::new()), "{id}");
         }
+        let warmed = wait_for(|| {
+            registry
+                .remote_pr_open_entry("acme", "gadgets", 7)
+                .is_some()
+        });
+        assert!(warmed, "the prefetch did not warm the remote open cache");
+
+        let before = registry.tabs_view().tabs.len();
+        let replace = Command::OpenInboxItem {
+            id: "remote".into(),
+            replace: true,
+        };
+        let ack = send_locked(&state, replace, None).unwrap_or_else(|e| panic!("replace: {e:?}"));
+        let view = registry.tabs_view();
+        assert_eq!(view.tabs.len(), before, "the open with replace added a tab");
+        let active = view
+            .active
+            .map(|key| er_service::wire_tab_key(key).0.to_string());
+        assert_eq!(ack.created, active);
+        let rows = er_service::tabs_resource(&view).tabs;
+        let remote = rows.iter().any(|row| row.label == "gadgets#7");
+        assert!(
+            remote,
+            "the open with replace opened no remote tab: {rows:?}"
+        );
     });
 }
 

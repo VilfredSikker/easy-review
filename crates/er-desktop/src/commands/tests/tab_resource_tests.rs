@@ -42,9 +42,29 @@ fn ports() -> er_engine::ports::Ports {
         er_engine::github::FakeGitHub::default()
             .with_pr_state(Ok("OPEN".to_string()))
             .with_pr_diff_remote(Ok(diff()))
-            .with_pr_diff(Ok(diff())),
+            .with_pr_diff(Ok(diff()))
+            .with_pr_head_oid_remote(Ok("head-1".to_string()))
+            .with_overview_remote(Ok(Some(remote_overview())))
+            .with_commits_remote(Ok(Vec::new())),
     );
     er_engine::ports::Ports { git, github }
+}
+
+/// What GitHub answers for a PR with no checkout, so a remote warm-up fills
+/// the registry's remote open cache.
+fn remote_overview() -> er_engine::github::PrOverviewData {
+    er_engine::github::PrOverviewData {
+        number: 7,
+        title: "T".to_string(),
+        body: String::new(),
+        state: "OPEN".to_string(),
+        author: "octo".to_string(),
+        url: String::new(),
+        base_branch: "main".to_string(),
+        head_branch: "feature".to_string(),
+        checks: Vec::new(),
+        reviewers: Vec::new(),
+    }
 }
 
 pub(super) fn state(dir: &ReviewFlowTestDir) -> AppState {
