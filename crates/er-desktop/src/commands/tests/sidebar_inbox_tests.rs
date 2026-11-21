@@ -318,6 +318,24 @@ fn branch_item(id: &str, root: &str) -> InboxItem {
     item
 }
 
+/// A project known only by its remote, as the sidebar adds one for a PR
+/// opened by URL.
+fn register_remote_only(id: &str, remote: &str) {
+    let record = crate::projects::ProjectRecord {
+        id: id.to_string(),
+        name: id.to_string(),
+        root_path: String::new(),
+        remote: Some(remote.to_string()),
+        ..Default::default()
+    };
+    let saved = er_engine::projects_pins::update(|file| {
+        file.projects.push(record);
+        Ok(true)
+    });
+    assert!(saved.is_ok(), "{saved:?}");
+    crate::projects::invalidate_load_cache();
+}
+
 /// `tab_resource_tests`' state, which opens through fake ports, with the
 /// sidebar's owner reading its inbox prefs from that state's settings actor.
 fn open_state(dir: &ReviewFlowTestDir) -> AppState {
@@ -344,9 +362,15 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_with_the_app_locked() {
         let state = open_state(dir);
         let root = dir_in(dir, "widgets");
         register_project(&root);
+        register_remote_only("gadgets", "acme/gadgets");
+        let mut remote = item("remote", "ci_failed", 7, Some(1));
+        remote.target.project_id = Some("gadgets".into());
+        remote.target.repo_root = None;
+        remote.target.remote = Some("acme/gadgets".into());
         state.inbox.lock().unwrap().items = vec![
             branch_item("feature", &root),
             item("lost", "ci_failed", 3, None),
+            remote,
         ];
         state.service.settings();
         state.app_owner.publish();
@@ -390,7 +414,9 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_with_the_app_locked() {
             "the read did not land"
         );
 
-        for id in ["feature", "lost", "gone"] {
+        // `remote` names a project with no checkout, so its prefetch reaches
+        // the remote PR warm-up; the others warm nothing.
+        for id in ["remote", "feature", "lost", "gone"] {
             let prefetch = Command::PrefetchInboxItem { id: id.into() };
             let ack = send_locked(&state, prefetch, None);
             assert_eq!(ack.map(|ack| ack.changed), Ok(Vec::new()), "{id}");

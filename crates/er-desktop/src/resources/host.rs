@@ -198,7 +198,10 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         }
         Command::RefreshNotifications => refresh_prs(desktop, None)?,
         Command::TestNativeNotification => {
-            crate::commands::show_test_notification(desktop).map_err(refused)?;
+            crate::commands::show_test_notification(desktop).map_err(|message| ErError {
+                kind: ErErrorKind::Refused,
+                message,
+            })?;
         }
         Command::OpenInboxItem { id, replace } => {
             crate::commands::service_open_inbox_item(desktop, &id, replace).map_err(refused)?;
