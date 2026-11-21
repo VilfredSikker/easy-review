@@ -2,6 +2,7 @@
 mod golden;
 mod input;
 mod os_launch;
+mod screen;
 mod ui;
 mod update;
 
@@ -509,6 +510,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     const AI_POLL_TICKS: u16 = 20;
     const WATCHED_RESCAN_TICKS: u16 = 100;
 
+    let mut view_cache = screen::ViewCache::default();
     loop {
         // Update terminal width for resize calculations
         if let Ok(size) = terminal.size() {
@@ -516,7 +518,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         }
 
         // Draw
-        terminal.draw(|f| ui::draw(f, app, hl))?;
+        terminal.draw(|f| ui::draw(f, &screen::from_app(app, &mut view_cache), hl))?;
 
         // Poll for events with a timeout (lets us process watch events too)
         if event::poll(POLL_INTERVAL)? {

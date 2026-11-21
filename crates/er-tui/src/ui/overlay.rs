@@ -6,7 +6,8 @@ use ratatui::{
 };
 
 use super::styles;
-use er_engine::app::{DirEntry, HubAction, HubItem, HubKind, OverlayData, Worktree};
+use crate::screen::view::{DirEntry, HubItem, HubKind, OverlayData};
+use er_engine::git::Worktree;
 
 /// Render the active overlay on top of the main UI
 /// Note: ConfigHub overlay is rendered separately in ui/mod.rs since it needs App access.
@@ -307,7 +308,7 @@ fn render_filter_history(
     selected: usize,
     preset_count: usize,
 ) {
-    use er_engine::app::filter::FILTER_PRESETS;
+    use er_engine::filter::FILTER_PRESETS;
 
     let separator_lines = if !history.is_empty() { 1 } else { 0 };
     let total_rows = preset_count + separator_lines + history.len();
@@ -513,9 +514,7 @@ fn render_modal_hub(
 
     // Rows with a secondary action advertise it (stacked PRs: `b` opens the PR
     // on GitHub, Enter opens it for review).
-    let has_secondary = items
-        .iter()
-        .any(|item| item.enabled && matches!(item.action, HubAction::OpenStackPr { .. }));
+    let has_secondary = items.iter().any(|item| item.enabled && item.opens_stack_pr);
     let close_hint = if is_help {
         "Esc=close"
     } else if has_secondary {
@@ -1140,8 +1139,8 @@ mod review_progress_tests {
             total_rounds: Some(3),
         });
         let mut overlay = OverlayData::ReviewFlowProgress {
-            er_dir: "/captured/bucket".into(),
-            flow: Box::new(flow),
+            er_dir: "/captured/bucket",
+            flow: &flow,
             selected: 0,
             detail_scroll: 0,
         };

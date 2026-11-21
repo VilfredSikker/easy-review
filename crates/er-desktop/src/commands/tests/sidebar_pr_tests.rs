@@ -211,6 +211,53 @@ fn the_51st_save_drops_the_oldest() {
     });
 }
 
+/// The save-PR median on the resource path: `er_send` `save_pr` to its
+/// `Ack`, then `er_fetch` of what it names and the serialisation. Each run
+/// saves a PR the list does not hold, so the version moves; an untimed unsave
+/// follows. Compare with the flag-off row in `latency_tests.rs`.
+#[test]
+#[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]
+fn the_save_pr_reports_its_flag_on_median() {
+    const RUNS: usize = 50;
+    const WARMUP: usize = 5;
+    with_storage(|dir| {
+        let state = command_fixture(dir);
+        let mut samples = Vec::with_capacity(RUNS);
+        let mut bytes = 0;
+        for run in 0..RUNS {
+            let started = Instant::now();
+            let ack = send(
+                &state,
+                Command::SavePr {
+                    project: "p".into(),
+                    number: 7,
+                    title: Some("Saved 7".into()),
+                },
+            );
+            let fetched: Vec<_> = ack
+                .changed
+                .into_iter()
+                .map(|changed| resources::fetch(&state.desktop, changed.key))
+                .collect::<Result<_, _>>()
+                .unwrap_or_else(|e| panic!("fetch: {e:?}"));
+            bytes = serde_json::to_vec(&fetched).map(|v| v.len()).unwrap_or(0);
+            if run >= WARMUP {
+                samples.push(started.elapsed());
+            }
+            send(
+                &state,
+                Command::UnsavePr {
+                    project: "p".into(),
+                    number: 7,
+                },
+            );
+        }
+        samples.sort_unstable();
+        let median = samples[samples.len() / 2];
+        println!("flag-on save PR: median {median:?}, answer {bytes} bytes");
+    });
+}
+
 /// Every project's lists in `prs(remote)` name what the snapshot's project
 /// rows list, in their order, and the rows carry the fields the snapshot's
 /// rows show: two projects share a remote and dismiss differently, one is

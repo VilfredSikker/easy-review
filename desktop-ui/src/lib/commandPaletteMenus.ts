@@ -16,6 +16,7 @@ import { copyToClipboard } from "$lib/clipboard";
 import { resolveContextIdentity } from "$lib/contextIdentity";
 import { resolveActivePrNumber, resolveActivePrUrl } from "$lib/prUrl";
 import { resolveTabRoot } from "$lib/resolveTabRoot";
+import { sidebarProjects } from "$lib/sidebarReads";
 import { sourceToggleState } from "$lib/sourceToggle";
 import { recentPrs, type PaletteGroup } from "$lib/commandPaletteView";
 import {
@@ -349,10 +350,10 @@ function prLinkItems(snapshot: AppSnapshot | null, r: PaletteRunners): CommandIt
 
 function recentPrItems(snapshot: AppSnapshot | null, r: PaletteRunners): CommandItem[] {
   const current = {
-    projectId: snapshot?.projects?.find((p) => p.is_active)?.id ?? null,
+    projectId: sidebarProjects(snapshot).find((p) => p.is_active)?.id ?? null,
     prNumber: resolveActivePrNumber(snapshot),
   };
-  return recentPrs(snapshot?.projects, current).map(({ project, pr }) => ({
+  return recentPrs(sidebarProjects(snapshot), current).map(({ project, pr }) => ({
     id: `recent-pr-${project.id}-${pr.number}`,
     label: `#${pr.number} ${pr.title}`,
     description: project.name,
