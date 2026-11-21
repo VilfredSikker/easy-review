@@ -47,7 +47,7 @@ fn ports() -> er_engine::ports::Ports {
     er_engine::ports::Ports { git, github }
 }
 
-fn state(dir: &ReviewFlowTestDir) -> AppState {
+pub(super) fn state(dir: &ReviewFlowTestDir) -> AppState {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_settings_path(ports(), settings));
@@ -60,14 +60,14 @@ fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
     er_engine::storage::with_process_test_storage_root(storage, || test(&dir));
 }
 
-fn dir_in(dir: &ReviewFlowTestDir, name: &str) -> String {
+pub(super) fn dir_in(dir: &ReviewFlowTestDir, name: &str) -> String {
     let path = dir.path().join(name);
     std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
     path.to_string_lossy().into_owned()
 }
 
 /// A project on `root` that tracks the remote.
-fn register_project(root: &str) {
+pub(super) fn register_project(root: &str) {
     let record = crate::projects::ProjectRecord {
         id: "widgets".to_string(),
         name: "widgets".to_string(),
@@ -114,7 +114,7 @@ impl TabWebviews for Webviews {
 }
 
 /// Sends `command` through `er_send`'s body while the App is locked.
-fn send_locked(
+pub(super) fn send_locked(
     state: &AppState,
     command: Command,
     picked: Option<String>,
