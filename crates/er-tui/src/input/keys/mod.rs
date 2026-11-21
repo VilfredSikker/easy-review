@@ -817,15 +817,16 @@ mod tests {
     /// The key table reads only the Screen and writes nothing: no step names
     /// the App or a tab's state, and none calls a port, the GitHub CLI, a
     /// sidecar clear or a file write. Test modules and comments are skipped.
+    /// Each file is scanned as one string with the whitespace beside `.` and
+    /// `:` dropped, so a call chain rustfmt splits across lines still matches.
     #[test]
     fn the_key_table_names_no_app_and_makes_no_write() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/input/keys");
-        let banned = |word: &str, code: &str| match word {
-            "App" | "TabState" => code
-                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                .any(|token| token == word),
-            _ => code.contains(word),
-        };
+        // Whole tokens: `fs` matches `std::fs`, `fs::write` and `use std::{fs}`.
+        let tokens = ["App", "TabState", "fs"];
+        let words = ["er_engine::app", "ports.", "remove_file", "gh_", "cleanup_"];
+        let is_ident =
+            |byte: Option<&u8>| byte.is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
         let mut found = Vec::new();
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -837,24 +838,37 @@ mod tests {
                 }
                 code.push_str(part);
             }
+            // `line_of[i]` is the source line of `flat`'s byte `i`.
+            let mut flat = String::new();
+            let mut line_of = Vec::new();
             for (number, line) in code.lines().enumerate() {
-                let line = line.split("//").next().unwrap_or_default();
-                for word in [
-                    "er_engine::app",
-                    "App",
-                    "TabState",
-                    "ports.",
-                    "std::fs",
-                    "remove_file",
-                    "gh_",
-                    "cleanup_",
-                ] {
-                    if banned(word, line) {
-                        found.push(format!("{}:{}: {word}", path.display(), number + 1));
+                let mut space = true;
+                for c in line.split("//").next().unwrap_or_default().chars() {
+                    if c.is_whitespace() {
+                        space = true;
+                        continue;
+                    }
+                    if space && !flat.ends_with(['.', ':']) && c != '.' && c != ':' {
+                        flat.push(' ');
+                        line_of.push(number + 1);
+                    }
+                    space = false;
+                    flat.push(c);
+                    line_of.extend(std::iter::repeat_n(number + 1, c.len_utf8()));
+                }
+            }
+            let bytes = flat.as_bytes();
+            for word in tokens.iter().chain(&words) {
+                for (at, _) in flat.match_indices(word) {
+                    let whole = !is_ident(at.checked_sub(1).and_then(|i| bytes.get(i)))
+                        && !is_ident(bytes.get(at + word.len()));
+                    if whole || words.contains(word) {
+                        found.push(format!("{}:{}: {word}", path.display(), line_of[at]));
                     }
                 }
             }
         }
+        found.dedup();
         assert!(
             found.is_empty(),
             "the key table reaches past the Screen:\n{}",
