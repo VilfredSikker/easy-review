@@ -1,0 +1,21 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                           0/2 reviewed
+ FILES (2)                     │ src/auth.rs                                  Hunk 1/1
+ ~ src/auth.rs          +2 -1  │  ~ src/auth.rs  +2 -1
+ ~ README.md            +1 -0  │
+                               │ ▶ @@ -1,5 +1,6 @@
+                               │   1    1 │ fn check(token: &str) -> bool {
+                 ┌ COPY (Enter=select, Esc=close) ─────────────────────┐
+                 │▶ Full file diff  Copy all hunks for selected file   │of(token);
+                 │  File path  Copy file path to clipboard             │ience == "er"
+                 │  Hunk  Copy current hunk                            │
+                 │  Line  Copy current line content                    │
+                 └─────────────────────────────────────────────────────┘-> &str {
+                               │
+                               │
+                               │
+                               │
+                               │
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help
+ ^q quit
+styles 2bc50e656ed5d35d

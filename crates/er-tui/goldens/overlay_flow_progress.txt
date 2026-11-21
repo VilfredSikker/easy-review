@@ -1,0 +1,21 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  ┌ REVIEW TASKS · ↑↓ select · PgUp/PgDn detail · Esc close ───────────────────────────┐d
+ F│┌Captured tasks────────────────────────────────────────────────────────────────────┐│
+ ~││Running · Security · Opus                                                         ││
+ ~││                                                                                  ││
+  ││                                                                                  ││
+  ││                                                                                  ││
+  │└──────────────────────────────────────────────────────────────────────────────────┘│
+  │┌Selected task─────────────────────────────────────────────────────────────────────┐│
+  ││Bucket /er/bucket                                                                 ││
+  ││Flow Triaging                                                                     ││
+  ││Security                                                                          ││
+  ││Stage Finding · Status Running                                                    ││
+  ││Provider Claude (claude)                                                          ││
+  ││Model Opus (opus)                                                                 ││
+  ││Purpose Inspect authorization boundaries                                          ││
+  ││Deep round 1/2                                                                    ││
+  │└──────────────────────────────────────────────────────────────────────────────────┘│
+ j└────────────────────────────────────────────────────────────────────────────────────┘
+ ^q quit
+styles 52480c92d7c1a2fe

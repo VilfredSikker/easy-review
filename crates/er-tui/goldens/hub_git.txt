@@ -1,0 +1,21 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                           0/2 reviewed
+ FILES (2)                     │ src/auth.rs                                  Hunk 1/1
+ ~ src/auth.rs          +2 -1  │  ~ src/auth.rs  +2 -1
+ ~ README.md            +1 -0  │
+                 ┌ GIT (Enter=select, Esc=close) ──────────────────────┐
+                 │▶ Push to remote  Push current branch to origin      │l {
+                 │  Stage current file  [s]  Stage or unstage the selec│
+                 │  Stage all files  Stage all changed files           │of(token);
+                 │  Refresh diff  [R]  Re-run git diff and reload      │ience == "er"
+                 │  Pull GitHub comments  Sync review comments from Git│
+                 │  Comment on PR  Post a general comment on the PR (no│
+                 │  Approve PR  No PR detected                         │-> &str {
+                 └─────────────────────────────────────────────────────┘
+                               │
+                               │
+                               │
+                               │
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help
+ ^q quit
+styles 47005bfb0787c6c8

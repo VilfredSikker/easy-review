@@ -1,5 +1,5 @@
 use ratatui::style::Color;
-use std::sync::{OnceLock, RwLock, RwLockReadGuard};
+use std::sync::{RwLock, RwLockReadGuard};
 
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -260,17 +260,28 @@ fn build(t: &Tokens) -> Theme {
     }
 }
 
-static CURRENT_THEME: OnceLock<RwLock<Theme>> = OnceLock::new();
+#[cfg(not(test))]
+fn theme_lock() -> &'static RwLock<Theme> {
+    static CURRENT_THEME: std::sync::OnceLock<RwLock<Theme>> = std::sync::OnceLock::new();
+    CURRENT_THEME.get_or_init(|| RwLock::new(graphite()))
+}
+
+/// Every drawn frame sets the theme, and tests draw frames in parallel, so
+/// each test thread holds its own.
+#[cfg(test)]
+fn theme_lock() -> &'static RwLock<Theme> {
+    thread_local! {
+        static CURRENT_THEME: &'static RwLock<Theme> = Box::leak(Box::new(RwLock::new(graphite())));
+    }
+    CURRENT_THEME.with(|lock| *lock)
+}
 
 #[expect(
     clippy::expect_used,
     reason = "the lock is poisoned only if a theme write panicked; no styled frame can be drawn after that"
 )]
 pub fn current() -> RwLockReadGuard<'static, Theme> {
-    CURRENT_THEME
-        .get_or_init(|| RwLock::new(graphite()))
-        .read()
-        .expect("theme lock poisoned")
+    theme_lock().read().expect("theme lock poisoned")
 }
 
 #[expect(
@@ -278,8 +289,7 @@ pub fn current() -> RwLockReadGuard<'static, Theme> {
     reason = "the lock is poisoned only if a theme write panicked; no styled frame can be drawn after that"
 )]
 pub fn set_theme(theme: Theme) {
-    let lock = CURRENT_THEME.get_or_init(|| RwLock::new(graphite()));
-    *lock.write().expect("theme lock poisoned") = theme;
+    *theme_lock().write().expect("theme lock poisoned") = theme;
 }
 
 pub fn set_theme_by_name(name: &str) {

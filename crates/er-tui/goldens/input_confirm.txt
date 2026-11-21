@@ -1,0 +1,11 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                     0/2 reviewed
+ FILES (2)                     │ src/auth.rs                                            Hunk 1/1
+ ~ src/auth.rs          +2 -1  │  ~ src/auth.rs  +2 -1
+ ~ README.md            +1 -0  │
+                               │ ▶ @@ -1,5 +1,6 @@
+                               │   1    1 │ fn check(token: &str) -> bool {
+                               │   2      │-    token.len() > 0
+                               │        2 │+    let audience = audience_of(token);
+ ⚠  Delete .env.local? (y/n)
+styles c1a078a37bdc2a91

@@ -1,0 +1,21 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                           0/2 reviewed
+ FILES (2)       ┌ AI (Enter=select, Esc=close) ───────────────────────┐      Hunk 1/1
+ ~ src/auth.rs   │▶ Review  Start review flow on the active branch diff│
+ ~ README.md     │  Triage branch  Fast scan — first impression and rev│
+                 │── Advanced ──                                       │
+                 │  Review work  Full review: risk, order, checklist, s│l {
+                 │  Generate summary  Generate summary via Claude      │
+                 │  Generate guided tour  AI-guided walkthrough: pillar│of(token);
+                 │  Specialized review  Focused expert lens — security,│ience == "er"
+                 │  Professor  Learn the implementation — teaching insi│
+                 │  Validate review  Run review or add GitHub comments │
+                 │  Answer questions  No unresolved questions          │-> &str {
+                 │  Address notes  No unresolved notes                 │
+                 │  Change agent/model  Current: Claude                │
+                 │  Copy context to clipboard  Copy diff context for ag│
+                 │  Toggle AI findings  [A]  Show/hide inline AI findin│
+                 └─────────────────────────────────────────────────────┘
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help
+ ^q quit
+styles ba5486f74828a788
