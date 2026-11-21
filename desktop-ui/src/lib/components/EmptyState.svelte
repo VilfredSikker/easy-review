@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
+  import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
   import { startWindowDrag } from "$lib/windowDrag";
   import { openExternalUrl } from "$lib/openExternalUrl";
@@ -22,7 +23,7 @@
     if (prUrlInput) prUrl = prUrlInput.value;
   }
 
-  const projects = $derived(app.snapshot?.projects ?? []);
+  const projects = $derived(projectsResource.projects);
   let selectedProjectId = $state<string>("");
   let branchName = $state<string>("");
 

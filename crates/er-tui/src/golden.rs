@@ -18,7 +18,10 @@ pub struct Fixture {
 
 pub fn draw(app: &App, width: u16, height: u16, hl: &mut ui::highlight::Highlighter) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal.draw(|f| ui::draw(f, app, hl)).unwrap();
+    let mut cache = crate::screen::ViewCache::default();
+    terminal
+        .draw(|f| ui::draw(f, &crate::screen::from_app(app, &mut cache), hl))
+        .unwrap();
     terminal.backend().buffer().clone()
 }
 

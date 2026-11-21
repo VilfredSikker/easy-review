@@ -1,11 +1,12 @@
 <script lang="ts">
+  import type { ReviewSettingsChange } from "$lib/stores/projectsAdapter";
   import type { ProjectSnapshot } from "$lib/types";
   import Segmented from "./Segmented.svelte";
   import ProjectSettingsCard from "./ProjectSettingsCard.svelte";
 
   interface Props {
     projects: ProjectSnapshot[];
-    onpatch: (projectId: string, patch: Record<string, unknown>) => Promise<void>;
+    onpatch: (projectId: string, patch: ReviewSettingsChange) => Promise<void>;
   }
 
   const { projects, onpatch }: Props = $props();

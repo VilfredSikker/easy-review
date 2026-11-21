@@ -220,17 +220,19 @@ describe("optimistic local-write call sites", () => {
       expect(inbox).toContain(`void app.cmd("${command}"`);
     }
 
+    // The PR pins and Ignore go through the projects adapter, which sends
+    // the old optimistic command with the flag off and er_send with it on.
     const sidebar = component("LeftSidebar.svelte");
     const card = component("BranchCard.svelte");
-    for (const command of ["save_pr", "unsave_pr"]) {
-      expect(sidebar).toContain(`void app.cmd("${command}"`);
-      expect(sidebar).not.toContain(`await app.cmd("${command}"`);
-      expect(card).toContain(`void app.cmd("${command}"`);
-      expect(card).not.toContain(`await app.cmd("${command}"`);
+    for (const method of ["savePr", "unsavePr"]) {
+      expect(sidebar).toContain(`void projectsResource.${method}(`);
+      expect(sidebar).not.toContain(`await projectsResource.${method}(`);
+      expect(card).toContain(`void projectsResource.${method}(`);
+      expect(card).not.toContain(`await projectsResource.${method}(`);
     }
-    for (const command of ["dismiss_remote_pr", "undismiss_remote_pr"]) {
-      expect(sidebar).toContain(`void app.cmd("${command}"`);
-      expect(sidebar).not.toContain(`await app.cmd("${command}"`);
+    for (const method of ["dismissPr", "undismissPr"]) {
+      expect(sidebar).toContain(`void projectsResource.${method}(`);
+      expect(sidebar).not.toContain(`await projectsResource.${method}(`);
     }
   });
 
