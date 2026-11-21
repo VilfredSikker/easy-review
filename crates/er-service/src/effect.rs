@@ -24,6 +24,7 @@ use crate::content::{
     AiSection, DiffMeta, DiffSection, LoadedDiff, LoadedTab, PrSection, ReloadedAi, ScopeStats,
     SidecarStamp, TabContent,
 };
+use crate::freshness::RemoteTips;
 use crate::handle::WorkspaceError;
 use crate::protocol::{OpenTarget, TabContext};
 use crate::tab_pr::{load_pr, PrLoad};
@@ -133,6 +134,7 @@ pub(crate) fn first_load(
         prev_pr: None,
         refresh_pr: false,
         adopt_head_oid: None,
+        tips: RemoteTips::default(),
     })
 }
 
@@ -161,6 +163,9 @@ pub(crate) struct LoadInput {
     pub refresh_pr: bool,
     /// A PR head the caller confirmed, adopted as the diff's head.
     pub adopt_head_oid: Option<String>,
+    /// What the desktop's probes last posted, measured again against the
+    /// loaded diff.
+    pub tips: RemoteTips,
 }
 
 /// Fetches a branch view's `origin/<base>` again, so a sync compares against
@@ -229,6 +234,17 @@ pub(crate) fn load_tab(
             .current_branch(&tab.repo_root)
             .map_err(|error| failed("read the checkout's branch", error))?;
     }
+    // Resolved on every load by the desktop watcher's rule, so a branch
+    // checked out, or moved to another worktree, since the last load is read
+    // from where it is now.
+    let watched = er_engine::checkout::watched_branch(
+        tab.identity().is_remote(),
+        tab.local_branch_view.as_deref(),
+        &tab.current_branch,
+    );
+    tab.checkout_root = watched.and_then(|branch| {
+        er_engine::checkout::resolve_head_checkout(git, &tab.repo_root, &branch)
+    });
     let mut pr_refs_fetched = input.pr_refs_fetched;
     let (mut fetched_commits, mut fetched_head) = (None, None);
     if input.fetch_pr_refs && !tab.identity().is_remote() {
@@ -450,6 +466,7 @@ pub(crate) fn load_tab(
             adopt_head_oid: input.adopt_head_oid,
         },
     );
+    let freshness = crate::freshness::measure(git, &tab, input.tips, scope_stats.unstaged.0);
     let context = TabContext {
         er_dir,
         comments_dir,
@@ -495,6 +512,7 @@ pub(crate) fn load_tab(
         ai: state,
         ai_stamp,
         pr,
+        freshness,
         cleared,
     })
 }

@@ -22,7 +22,9 @@ mod sidebar;
 mod tabs;
 
 pub use command::{Ack, Command, ProjectReviewSettingsPatch};
-pub use diff::{DiffLineStats, FileRow, FilterSuggestion, ScopeStat, TabDiff};
+pub use diff::{
+    BaseBehind, BranchDivergence, DiffLineStats, FileRow, FilterSuggestion, ScopeStat, TabDiff,
+};
 pub use error::{ErError, ErErrorKind};
 pub use notice::{Notice, NoticeLevel};
 pub use resource::{

@@ -575,6 +575,7 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
         ai: AiState::default(),
         ai_stamp: Default::default(),
         pr: Default::default(),
+        freshness: Default::default(),
         cleared: 0,
     })
 }

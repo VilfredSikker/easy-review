@@ -325,6 +325,7 @@ fn reload_input(content: &TabContent, mode: DiffMode) -> LoadInput {
         prev_pr: Some(Arc::clone(&content.pr)),
         refresh_pr: false,
         adopt_head_oid: None,
+        tips: content.freshness.value.tips.clone(),
     }
 }
 
@@ -751,6 +752,26 @@ fn handle_command(
                 input.refresh_pr = force;
                 input.adopt_head_oid = adopt_head_oid;
                 Ok(input)
+            });
+        }
+        Command::SetRemoteTips { key, tips } => {
+            let Some(content) = state.view().tabs.get(&key).cloned() else {
+                return refuse_unknown_tab(reply);
+            };
+            // Measured again even with the same tips: a local commit or fetch
+            // moves the counts. A measure that changed nothing publishes
+            // nothing.
+            let deps = deps.clone();
+            spawn_effect(tx, reply, move || {
+                let freshness = crate::freshness::remeasure(&deps, &content, tips);
+                if freshness == content.freshness.value {
+                    return Ok(Effected::from(Reply::Acknowledged));
+                }
+                let patch = ContentPatch::Freshness {
+                    key,
+                    freshness: Box::new(freshness),
+                };
+                Ok(Effected::patched(Reply::Acknowledged, patch))
             });
         }
         Command::SetDiffMode {

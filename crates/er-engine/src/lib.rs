@@ -6,6 +6,7 @@ pub mod ai;
 #[cfg(feature = "ui")]
 pub mod app;
 pub mod arena;
+pub mod checkout;
 pub mod config;
 pub use config::{
     apply_config_field, config_hub_items_for_scope, ConfigFieldValue, ConfigHubFieldDto,
