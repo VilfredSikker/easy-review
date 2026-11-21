@@ -142,7 +142,8 @@ fn open(desktop: &DesktopState, run: impl FnOnce() -> Result<(), String>) -> Res
     Ok(opened(desktop))
 }
 
-fn opened(desktop: &DesktopState) -> Ack {
+/// The `Ack` of an open: `tabs`, and the tab it left active as created.
+pub(super) fn opened(desktop: &DesktopState) -> Ack {
     let active = desktop.service.app_registry().tabs_view().active;
     tabs_moved(desktop, active.map(|key| wire_tab_key(key).0.to_string()))
 }
