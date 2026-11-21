@@ -1,0 +1,184 @@
+//! The flag-on start: the command line's targets become registry tabs, each
+//! loaded on its workspace's actor.
+
+use anyhow::Context;
+use er_engine::github;
+use er_engine::tabs_record::{TabDescriptor, TabKind};
+use er_engine::TabKey;
+use er_service::{AppCommand, Command, Reply, ReplyReceiver, ServiceHost};
+
+use crate::screen::UNPORTED;
+
+/// The command line's targets and flags, as `main` parsed them.
+#[derive(Debug, Default)]
+pub struct Args {
+    pub paths: Vec<String>,
+    pub pr: Option<u64>,
+    pub filter: Option<String>,
+    pub remote: bool,
+    pub target: Option<String>,
+}
+
+/// One tab the start opens. A local PR tab has the service fetch its head
+/// and base refs once its first load lands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartTab {
+    pub tab: TabDescriptor,
+    pub fetch_pr_refs: bool,
+}
+
+/// The tabs to open, in order, and what the status line says about flags
+/// that have no service route yet.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Start {
+    pub tabs: Vec<StartTab>,
+    pub notices: Vec<String>,
+}
+
+/// Turns the arguments into tabs. Paths resolve to their repo roots; a PR
+/// URL opens a remote PR with `--remote`, or this clone's PR without;
+/// `--pr` makes the first tab that PR. Reads the repo roots and nothing else.
+pub fn plan(args: &Args, git: &dyn er_git::Git) -> anyhow::Result<Start> {
+    let mut start = Start::default();
+    if args.target.is_some() {
+        start.notices.push(format!("--target is {UNPORTED}"));
+    }
+    if args.filter.is_some() {
+        start.notices.push(format!("--filter is {UNPORTED}"));
+    }
+    if args.remote {
+        for url in args
+            .paths
+            .iter()
+            .filter(|path| github::is_github_pr_url(path))
+        {
+            let pr = github::parse_github_pr_url(url)
+                .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {url}"))?;
+            let mut tab = descriptor(TabKind::RemotePr, String::new());
+            tab.pr_owner = Some(pr.owner);
+            tab.pr_repo = Some(pr.repo);
+            tab.pr_number = Some(pr.number);
+            start.tabs.push(StartTab {
+                tab,
+                fetch_pr_refs: false,
+            });
+        }
+        return Ok(start);
+    }
+    if args.paths.is_empty() {
+        start.tabs.push(working(git.repo_root_cwd()?));
+    }
+    for path in &args.paths {
+        if github::is_github_pr_url(path) {
+            let pr = github::parse_github_pr_url(path)
+                .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {path}"))?;
+            let root = git
+                .repo_root_cwd()
+                .context("Cannot open PR URL: not in a git repository. Clone the repo first.")?;
+            start.tabs.push(local_pr(root, pr.number));
+        } else {
+            let dir =
+                std::fs::canonicalize(path).with_context(|| format!("Path not found: {path}"))?;
+            let root = git
+                .repo_root_in(&dir.to_string_lossy())
+                .with_context(|| format!("Not a git repository: {path}"))?;
+            start.tabs.push(working(root));
+        }
+    }
+    if let (Some(number), Some(first)) = (args.pr, start.tabs.first_mut()) {
+        *first = local_pr(first.tab.repo_root.clone(), number);
+    }
+    Ok(start)
+}
+
+fn descriptor(kind: TabKind, repo_root: String) -> TabDescriptor {
+    TabDescriptor {
+        kind,
+        repo_root,
+        branch: None,
+        pr_owner: None,
+        pr_repo: None,
+        pr_number: None,
+        pr_head_ref: None,
+        base_ref: None,
+        extra: serde_json::Map::new(),
+    }
+}
+
+fn working(repo_root: String) -> StartTab {
+    StartTab {
+        tab: descriptor(TabKind::Working, repo_root),
+        fetch_pr_refs: false,
+    }
+}
+
+fn local_pr(repo_root: String, number: u64) -> StartTab {
+    let mut tab = descriptor(TabKind::LocalPr, repo_root);
+    tab.pr_number = Some(number);
+    StartTab {
+        tab,
+        fetch_pr_refs: true,
+    }
+}
+
+/// What to do once a reply lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum After {
+    Nothing,
+    /// Fetch the PR's head and base refs on the service, as a sync does.
+    FetchPrRefs,
+}
+
+/// A command in flight. The loop drains its receiver each tick.
+pub struct Pending {
+    pub key: TabKey,
+    pub workspace: String,
+    pub replies: ReplyReceiver,
+    pub after: After,
+}
+
+/// Lists every tab in the registry, makes the first one active, and loads
+/// it. The others load when they are first shown. Answers the tab keys in
+/// order and the load in flight.
+pub fn open(host: &ServiceHost, start: &Start) -> anyhow::Result<(Vec<TabKey>, Vec<Pending>)> {
+    let mut keys = Vec::new();
+    for start_tab in &start.tabs {
+        let reply = host.registry().send(AppCommand::NewTab {
+            tab: start_tab.tab.clone(),
+        })?;
+        let Reply::Tabs(view) = reply else {
+            anyhow::bail!("a new tab answered {reply:?}");
+        };
+        keys.extend(view.active);
+    }
+    let mut pending = Vec::new();
+    if let (Some(&first), Some(start_tab)) = (keys.first(), start.tabs.first()) {
+        host.registry().send(AppCommand::SelectTab { key: first })?;
+        pending.push(load(host, first, start_tab));
+    }
+    Ok((keys, pending))
+}
+
+/// Sends a tab's first load without waiting for it.
+pub fn load(host: &ServiceHost, key: TabKey, start_tab: &StartTab) -> Pending {
+    let workspace = start_tab.tab.workspace_key();
+    let replies = host.post(
+        &workspace,
+        Command::LoadTab {
+            key,
+            tab: start_tab.tab.clone(),
+            mode: None,
+        },
+    );
+    let after = if start_tab.fetch_pr_refs {
+        After::FetchPrRefs
+    } else {
+        After::Nothing
+    };
+    Pending {
+        key,
+        workspace,
+        replies,
+        after,
+    }
+}

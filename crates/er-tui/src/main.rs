@@ -3,6 +3,8 @@ mod golden;
 mod input;
 mod os_launch;
 mod screen;
+#[cfg(feature = "v1-service")]
+mod service;
 mod ui;
 mod update;
 
@@ -220,6 +222,20 @@ fn main() -> Result<()> {
         if cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
             anyhow::bail!("Cannot use --target together with a PR URL argument");
         }
+    }
+
+    // The flag build runs on the service; the App path below stays compiled
+    // beside it until the flag goes.
+    #[cfg(feature = "v1-service")]
+    if service::RUNS_ON_SERVICE {
+        let args = service::Args {
+            paths: cli.paths,
+            pr: cli.pr,
+            filter: cli.filter,
+            remote: cli.remote,
+            target: cli.target,
+        };
+        return service::run(&args);
     }
 
     let ports = er_engine::ports::Ports::cli();
