@@ -32,6 +32,7 @@ fn owner() -> AppOwner {
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(Some("me".into()))),
+        Arc::new(Mutex::new(crate::inbox::InboxState::default())),
     )
 }
 
@@ -449,6 +450,73 @@ fn main_registers_projects_from_the_registry_on_the_flag_path() {
     }
     assert!(main.contains("startup::register_open_projects(&state)"));
     assert!(main.contains("startup::meta_refresh_interval(&meta_state)"));
+}
+
+/// An inbox write publishes before it answers: the owner's version of
+/// `inbox` moves with no publish between, and the read shows the write.
+/// Before the owner reads the prefs it publishes no inbox at all.
+#[test]
+fn an_inbox_write_moves_the_inbox() {
+    in_storage(|| {
+        let owner = owner();
+        owner.inbox.lock().unwrap().items = vec![inbox_item("a", "ci_failed")];
+        owner.publish();
+        assert_eq!(owner.inbox(), (0, er_protocol::Inbox::default()));
+        assert_eq!(version(&owner, &ResourceKey::Inbox), 0);
+
+        owner.read_inbox_prefs_from(|| Some(er_engine::config::InboxConfig::default()));
+        owner.publish();
+        let (before, inbox) = owner.inbox();
+        assert!(before > 0);
+        assert_eq!(inbox.unread_count, 1);
+
+        owner
+            .write_inbox(|inbox| {
+                inbox.mark_item_read("a", 9);
+            })
+            .unwrap();
+        let (after, inbox) = owner.inbox();
+        assert!(after > before, "the write did not move inbox");
+        assert_eq!(version(&owner, &ResourceKey::Inbox), after);
+        assert_eq!(
+            (inbox.unread_count, inbox.items[0].read_at_ms),
+            (0, Some(9))
+        );
+    });
+}
+
+fn inbox_item(id: &str, kind: &str) -> crate::inbox::InboxItem {
+    crate::inbox::InboxItem {
+        id: id.into(),
+        kind: kind.into(),
+        severity: "info".into(),
+        title: format!("title {id}"),
+        body: format!("body {id}"),
+        source: "github".into(),
+        target: crate::inbox::InboxTarget {
+            project_id: Some("a".into()),
+            repo_root: None,
+            remote: Some("acme/a".into()),
+            pr_number: Some(7),
+            branch: None,
+            url: None,
+        },
+        created_at_ms: 1,
+        read_at_ms: None,
+        dedupe_key: id.into(),
+    }
+}
+
+/// The PR sweep and the setup hook read the inbox prefs through the
+/// library, which reads the settings actor on the flag path; `main.rs`
+/// never reads them from the App.
+#[test]
+fn main_reads_the_inbox_prefs_through_startup() {
+    let main = production_source("src/main.rs");
+    assert!(!main.contains("clone_inbox_prefs"));
+    assert_eq!(main.matches("startup::inbox_prefs(&bg_state)").count(), 2);
+    assert!(main.contains("startup::flush_pending_notifications(&state)"));
+    assert!(main.contains("startup::read_inbox_prefs_from_settings(&desktop)"));
 }
 
 /// The head probe takes its target from the library, which reads the
