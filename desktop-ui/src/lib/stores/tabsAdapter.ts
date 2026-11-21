@@ -39,7 +39,7 @@ function sameTab(row: TabRow, seen: TabSummary): boolean {
   return seen.repo_root === row.repo_root;
 }
 
-/** Whether a tab's diff is behind its PR; the strip marks only inactive tabs. */
+/** Whether a tab's diff is behind its PR or, on the active branch view, its base. */
 export type TabStaleness = (row: TabRow, isActive: boolean) => boolean;
 
 /**
