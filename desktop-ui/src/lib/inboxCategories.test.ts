@@ -4,7 +4,6 @@ import {
   applyInboxFilters,
   formatInboxAge,
   groupInboxItems,
-  inboxCategoryChips,
   inboxItemCategory,
   inboxItemProjectId,
   inboxKindMeta,
@@ -53,29 +52,6 @@ describe("groupInboxItems", () => {
     expect(grouped.map((g) => g.category)).toEqual(["pr_comment", "approved", "ci"]);
     expect(grouped[0].label).toBe("Comment on your PR");
     expect(grouped[0].items.map((i) => i.id)).toEqual(["c1", "c2"]);
-  });
-});
-
-describe("inboxCategoryChips", () => {
-  it("returns chips with unread counts for present categories", () => {
-    const chips = inboxCategoryChips([
-      item({ id: "1", kind: "pr_comment", category: "pr_comment" }),
-      item({
-        id: "2",
-        kind: "pr_comment",
-        category: "pr_comment",
-        read_at_ms: 10,
-      }),
-      item({ id: "3", kind: "pr_review_received", category: "review_received" }),
-    ]);
-    expect(chips.map((c) => c.category)).toEqual(["pr_comment", "review_received"]);
-    expect(chips[0]).toEqual({
-      category: "pr_comment",
-      label: "Comment on your PR",
-      total: 2,
-      unread: 1,
-    });
-    expect(chips[1].unread).toBe(1);
   });
 });
 

@@ -97,36 +97,6 @@ export function groupInboxItems(items: InboxItemSnapshot[]): InboxCategoryGroup[
   return groups;
 }
 
-export interface InboxCategoryChip {
-  category: InboxCategoryId;
-  label: string;
-  total: number;
-  unread: number;
-}
-
-export function inboxCategoryChips(items: InboxItemSnapshot[]): InboxCategoryChip[] {
-  const counts = new Map<InboxCategoryId, { total: number; unread: number }>();
-  for (const item of items) {
-    const category = inboxItemCategory(item);
-    const entry = counts.get(category) ?? { total: 0, unread: 0 };
-    entry.total += 1;
-    if (item.read_at_ms == null) entry.unread += 1;
-    counts.set(category, entry);
-  }
-  return INBOX_CATEGORY_ORDER.flatMap((category) => {
-    const entry = counts.get(category);
-    if (!entry) return [];
-    return [
-      {
-        category,
-        label: INBOX_CATEGORY_LABELS[category],
-        total: entry.total,
-        unread: entry.unread,
-      },
-    ];
-  });
-}
-
 export function sortInboxItems(items: InboxItemSnapshot[]): InboxItemSnapshot[] {
   return [...items].sort((a, b) => {
     const aUnread = a.read_at_ms == null ? 0 : 1;

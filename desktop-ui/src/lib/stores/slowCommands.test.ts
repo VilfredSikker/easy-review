@@ -215,9 +215,12 @@ describe("optimistic local-write call sites", () => {
   });
 
   it("fires app-wide chrome writes without waiting on the backend", () => {
+    // The inbox reads and clears go through the inbox adapter, which sends
+    // the old optimistic command with the flag off and er_send with it on.
     const inbox = component("InboxView.svelte");
-    for (const command of ["mark_inbox_items_read", "clear_inbox_items"]) {
-      expect(inbox).toContain(`void app.cmd("${command}"`);
+    for (const method of ["markItemsRead", "clearItems"]) {
+      expect(inbox).toContain(`void inboxResource.${method}(`);
+      expect(inbox).not.toContain(`await inboxResource.${method}(`);
     }
 
     // The PR pins and Ignore go through the projects adapter, which sends
