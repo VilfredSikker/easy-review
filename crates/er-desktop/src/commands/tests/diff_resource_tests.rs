@@ -36,13 +36,14 @@ fn raw_diff() -> String {
     raw
 }
 
-fn fake_ports() -> er_engine::ports::Ports {
+pub(super) fn fake_ports() -> er_engine::ports::Ports {
     let git: Arc<dyn er_git::Git> = Arc::new(
         er_git::FakeGit::default()
             .with_current_branch(Ok("feature".to_string()))
             .with_detect_base_branch(Ok("main".to_string()))
             .with_diff_raw(Ok(raw_diff()))
             .with_diff_shortstat((3, 3, 3))
+            .with_rev_parse_verify(Ok(Some("b".repeat(40))))
             .with_is_merge_in_progress(false)
             .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string())),
     );
@@ -51,14 +52,14 @@ fn fake_ports() -> er_engine::ports::Ports {
     er_engine::ports::Ports { git, github }
 }
 
-fn state_over(dir: &ReviewFlowTestDir, ports: er_engine::ports::Ports) -> AppState {
+pub(super) fn state_over(dir: &ReviewFlowTestDir, ports: er_engine::ports::Ports) -> AppState {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_settings_path(ports, settings));
     state
 }
 
-fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
+pub(super) fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
     let dir = ReviewFlowTestDir::new();
     let storage = dir.path().join("storage");
     er_engine::storage::with_process_test_storage_root(storage, || test(&dir));

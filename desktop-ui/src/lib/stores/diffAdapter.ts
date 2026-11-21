@@ -60,12 +60,7 @@ const EMPTY: DiffSlice = {
 };
 
 export function sliceFromSnapshot(snapshot: DiffSlice | null): DiffSlice {
-  if (!snapshot) return EMPTY;
-  const pick: DiffSlice = { ...EMPTY };
-  for (const key of Object.keys(EMPTY) as (keyof DiffSlice)[]) {
-    (pick as Record<string, unknown>)[key] = snapshot[key];
-  }
-  return pick;
+  return snapshot ?? EMPTY;
 }
 
 /** A file row as the list shows it. Its hunks stay on the snapshot until they are served by hash. */
@@ -263,10 +258,6 @@ export class DiffAdapter {
 
   get files(): FileSnapshot[] {
     return this.read().files;
-  }
-
-  get mode(): string {
-    return this.read().mode;
   }
 
   /** Sends a wire command and resolves once every key its `Ack` names is held at that version. */

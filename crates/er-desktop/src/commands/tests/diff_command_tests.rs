@@ -2,65 +2,26 @@
 //! answers that version, with the App lock held; a filter is the desktop's
 //! own view state, never the App tab's.
 
-use std::sync::Arc;
-
 use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::TabDescriptor;
 use er_engine::TabKey;
 use er_protocol::{Ack, Command, ErError, Resource, ResourceKey, TabDiff};
 
-use super::{review_flow_test_state, while_the_app_is_locked, ReviewFlowTestDir};
+use super::diff_resource_tests::{fake_ports, state_over, with_storage};
+use super::while_the_app_is_locked;
 use crate::commands::{content_routes, AppState};
 use crate::resources::send::{apply, Effects};
-use crate::service::ServiceState;
-
-fn raw_diff() -> String {
-    use std::fmt::Write as _;
-
-    let mut raw = String::new();
-    for n in 0..3 {
-        let _ = write!(
-            raw,
-            "diff --git a/src/f{n}.rs b/src/f{n}.rs\n--- a/src/f{n}.rs\n+++ b/src/f{n}.rs\n\
-             @@ -1,2 +1,2 @@\n-old\n+new\n ctx\n"
-        );
-    }
-    raw
-}
-
-fn ports() -> er_engine::ports::Ports {
-    let git: Arc<dyn er_git::Git> = Arc::new(
-        er_git::FakeGit::default()
-            .with_current_branch(Ok("feature".to_string()))
-            .with_detect_base_branch(Ok("main".to_string()))
-            .with_diff_raw(Ok(raw_diff()))
-            .with_diff_shortstat((0, 0, 0))
-            .with_is_merge_in_progress(false)
-            .with_rev_parse_verify(Ok(Some("b".repeat(40))))
-            .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string())),
-    );
-    let github: Arc<dyn er_engine::github::GitHub> =
-        Arc::new(er_engine::github::FakeGitHub::default());
-    er_engine::ports::Ports { git, github }
-}
 
 fn with_tab(test: impl FnOnce(&AppState, (TabKey, TabDescriptor))) {
-    let dir = ReviewFlowTestDir::new();
-    let storage = dir.path().join("storage");
-    er_engine::storage::with_process_test_storage_root(storage, || {
-        let mut state = review_flow_test_state(&dir);
-        let settings = dir.path().join("settings").join("config.toml");
-        state.service = Arc::new(ServiceState::with_settings_path(ports(), settings));
+    with_storage(|dir| {
+        let state = state_over(dir, fake_ports());
         let root = dir.path().join("repo");
         std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
         let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
         let opened = content_routes::open(&state, tab.clone(), false);
         assert!(opened.is_ok(), "{opened:?}");
         let key = state.service.app_registry().tabs_view().active;
-        test(
-            &state,
-            (key.unwrap_or_else(|| panic!("no active tab")), tab),
-        );
+        test(&state, (key.unwrap_or_else(|| panic!("no active tab")), tab));
     });
 }
 

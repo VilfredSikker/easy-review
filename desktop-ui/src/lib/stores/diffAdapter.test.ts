@@ -11,27 +11,11 @@ import { ResourceStore } from "./resourceStore";
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 function fileRow(path: string, sourceIndex = 0): FileRow {
-  return {
-    path,
-    status: "modified",
-    old_path: null,
-    similarity: null,
-    kind: "production",
-    additions: 1,
-    deletions: 1,
-    reviewed: false,
-    compacted: false,
-    risk: null,
-    risk_tier: "ai",
-    risk_rule: null,
-    finding_count: 0,
-    comment_count: 0,
-    question_count: 0,
-    is_lazy_stub: false,
-    source_index: sourceIndex,
-    cache_key: "k",
-    preview_key: "",
-  };
+  const counts = { additions: 1, deletions: 1, finding_count: 0, comment_count: 0, question_count: 0 };
+  const flags = { reviewed: false, compacted: false, is_lazy_stub: false };
+  const risk = { risk: null, risk_tier: "ai", risk_rule: null };
+  const keys = { source_index: sourceIndex, cache_key: "k", preview_key: "" };
+  return { path, status: "modified", old_path: null, similarity: null, kind: "production", ...counts, ...flags, ...risk, ...keys };
 }
 
 const zero = { files: 0, additions: 0, deletions: 0 };
@@ -63,27 +47,10 @@ function file(path: string): FileSnapshot {
   return { ...fileRow(path), hunks: [], delta_key: "", hunks_omitted: false } as unknown as FileSnapshot;
 }
 
+/** The App's slice: a History view's selected commit, which only the snapshot carries. */
 function snapshot(overrides: Partial<DiffSlice> = {}): DiffSlice {
-  return {
-    files: [file("history/commit.rs")],
-    mode: "history",
-    branch: "feature",
-    base: "main",
-    total_count: 1,
-    diff_stats: { total: zero, code: zero },
-    filter: null,
-    filter_suggestions: [],
-    preview_context_key: "snap",
-    review_bucket_er_dir: "/er/snap",
-    local_branch: null,
-    local_branch_checked_out: false,
-    unstaged_stat: zero,
-    staged_stat: zero,
-    diff_stale: undefined,
-    pr_diff_head_oid: null,
-    local_branch_divergence: undefined,
-    ...overrides,
-  } as DiffSlice;
+  const files = [file("history/commit.rs")];
+  return { ...tabDiff({ total_count: 1 }), files, mode: "history", ...overrides } as unknown as DiffSlice;
 }
 
 /** A backend whose `er_fetch` answers each diff key from `answers`, in order. */
@@ -192,12 +159,14 @@ describe("DiffAdapter", () => {
     expect(diff.route("set_mode", { mode: "history" })).toBeNull();
     expect(diff.route("next_file", {})).toBeNull();
     await diff.route("set_mode", { mode: "pr_diff", prNumber: 4 });
+    await diff.route("set_filter", { query: "*.rs" });
     await diff.route("clear_filter");
     await diff.route("force_refresh_diff");
     // A click painted on another tab does nothing.
     await diff.route("set_mode", { mode: "staged", tabIdx: 1 });
     expect(sent).toEqual([
       { kind: "set_diff_mode", tab: KEY, mode: "pr_diff", prNumber: 4 },
+      { kind: "set_filter", tab: KEY, query: "*.rs" },
       { kind: "set_filter", tab: KEY, query: "" },
       { kind: "refresh_diff", tab: KEY, sync: true },
     ]);
