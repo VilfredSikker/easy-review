@@ -13,6 +13,7 @@ desktop-ui/storybook-static/
 !.claude/commands/
 !.claude/commands/*.md
 !.claude/settings.json
+!.claude/skills/
 
 .scratch/
 
