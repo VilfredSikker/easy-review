@@ -818,29 +818,40 @@ fn spawn_base_probe(
     std::thread::spawn(move || {
         let mut interval = PROBE_INTERVAL_SECS;
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(interval));
-            let Some(target) = watcher::probe_target(&service) else {
+            let probed = watcher::probe_target(&service).map(|target| {
+                // A failed read keeps the tip the content holds and backs
+                // off, as the flag-off probe does; the PR head still posts.
+                let read = target
+                    .base
+                    .as_deref()
+                    .map(|base| watcher::remote_tip(&*git, &target.repo_root, base));
+                let base_tip = match &read {
+                    Some(Some(tip)) => Some(tip.clone()),
+                    Some(None) => target.tips.base_tip.clone(),
+                    None => None,
+                };
+                let pr_head = pr_cache
+                    .lock()
+                    .ok()
+                    .and_then(|lists| watcher::pr_head(&lists, &target));
+                let tips = er_service::RemoteTips { base_tip, pr_head };
+                let moved = tips != target.tips && read != Some(None);
+                watcher::post_tips(&service, &target, tips);
+                interval = next_probe_interval_secs(interval, moved);
+                target.key
+            });
+            if probed.is_none() {
                 interval = PROBE_INTERVAL_SECS;
-                continue;
-            };
-            let base_tip = match target.base.as_deref() {
-                Some(base) => match watcher::remote_tip(&*git, &target.repo_root, base) {
-                    Some(tip) => Some(tip),
-                    None => {
-                        // A failed read backs off, as the flag-off probe does.
-                        interval = next_probe_interval_secs(interval, false);
-                        continue;
-                    }
-                },
-                None => None,
-            };
-            let pr_head = pr_cache
-                .lock()
-                .ok()
-                .and_then(|lists| watcher::pr_head(&lists, &target));
-            let tips = er_service::RemoteTips { base_tip, pr_head };
-            let changed = watcher::post_tips(&service, &target, tips);
-            interval = next_probe_interval_secs(interval, changed);
+            }
+            // Sleeps the interval, and probes again within a second when
+            // another tab becomes active, or while the active one has not
+            // loaded yet.
+            for _ in 0..interval {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if service.app_registry().tabs_view().active != probed {
+                    break;
+                }
+            }
         }
     });
 }

@@ -758,13 +758,15 @@ fn handle_command(
             let Some(content) = state.view().tabs.get(&key).cloned() else {
                 return refuse_unknown_tab(reply);
             };
-            if content.freshness.value.tips == tips {
-                let _ = reply.send(Ok(Reply::Acknowledged));
-                return;
-            }
+            // Measured again even with the same tips: a local commit or fetch
+            // moves the counts. A measure that changed nothing publishes
+            // nothing.
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
                 let freshness = crate::freshness::remeasure(&deps, &content, tips);
+                if freshness == content.freshness.value {
+                    return Ok(Effected::from(Reply::Acknowledged));
+                }
                 let patch = ContentPatch::Freshness {
                     key,
                     freshness: Box::new(freshness),

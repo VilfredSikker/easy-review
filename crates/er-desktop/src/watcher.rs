@@ -195,13 +195,11 @@ pub fn remote_tip(git: &dyn Git, repo_root: &str, base: &str) -> Option<String> 
         .filter(|oid| !oid.is_empty())
 }
 
-/// Posts `tips` to the target's actor when they differ from the ones its
-/// content holds. Never waits: the push brings the stale mark and the
-/// divergence. Answers whether it posted.
+/// Posts `tips` to the target's actor, which measures the tab against them
+/// again even when they held still: a local commit or fetch moves the counts
+/// too. Never waits: the push brings the stale mark and the divergence.
+/// Answers whether it posted.
 pub fn post_tips(service: &ServiceState, target: &ProbeTarget, tips: RemoteTips) -> bool {
-    if tips == target.tips {
-        return false;
-    }
     let command = Command::SetRemoteTips {
         key: target.key,
         tips,
