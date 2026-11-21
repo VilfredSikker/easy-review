@@ -82,6 +82,9 @@ fn raw(lazy: bool) -> String {
 
 const WAIT: Duration = Duration::from_secs(10);
 const PR: u64 = 12;
+/// The commit the fetched `refs/er/pr/12/head` names, which a restored PR
+/// tab takes as the head its diff was built from.
+const PR_HEAD: &str = "1234567890abcdef1234567890abcdef12345678";
 
 fn overview() -> PrOverviewData {
     PrOverviewData {
@@ -125,7 +128,7 @@ fn ports(lazy: bool) -> Ports {
             .with_diff_raw(Ok(raw.clone()))
             .with_is_merge_in_progress(false)
             .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string()))
-            .with_rev_parse_verify(Ok(Some("h-local".to_string())))
+            .with_rev_parse_verify(Ok(Some(PR_HEAD.to_string())))
             .with_blob_oid(Ok("b".repeat(40))),
     );
     let github: Arc<dyn er_engine::github::GitHub> = Arc::new(
@@ -209,7 +212,7 @@ struct Observed {
 /// The fields of a snapshot, or of a `diff(tab)`, that both must agree on.
 /// The review bucket is a storage path, which each side roots apart.
 fn resource_fields(value: &Value) -> Value {
-    const FIELDS: [&str; 13] = [
+    const FIELDS: [&str; 14] = [
         "mode",
         "branch",
         "base",
@@ -223,6 +226,7 @@ fn resource_fields(value: &Value) -> Value {
         "unstaged_stat",
         "staged_stat",
         "pr_diff_head_oid",
+        "built_from_head_oid",
     ];
     const ROW: [&str; 19] = [
         "path",
@@ -504,8 +508,17 @@ fn through_tab_state(
             &app,
             &crate::snapshot::SnapshotSources::default(),
         );
-        let resource = serde_json::to_value(&snapshot)?;
+        let mut resource = serde_json::to_value(&snapshot)?;
         let tab = app.tab();
+        // The snapshot names no built-from head: the stale pill compares the
+        // tab's `last_diff_head_oid` with the PR head, so that stands in.
+        if let Some(map) = resource.as_object_mut() {
+            let built_from = tab
+                .last_diff_head_oid
+                .clone()
+                .filter(|_| tab.pr_number.is_some());
+            map.insert("built_from_head_oid".into(), json!(built_from));
+        }
         let files: Vec<&DiffFile> = tab.files.iter().collect();
         let preview_keys = preview_keys(&files, tab.preview_context_key(), |path| {
             tab.file_preview_key(path)
@@ -596,6 +609,12 @@ fn through_the_workspace(
             content,
             &er_service::DiffInputs::default(),
         ))?;
+        anyhow::ensure!(
+            resource.get("built_from_head_oid") == Some(&json!(pr.head_oid)),
+            "diff(tab) was not built from the content's PR head: {:?} against {:?}",
+            resource.get("built_from_head_oid"),
+            pr.head_oid
+        );
         observe(
             Read {
                 files,
@@ -729,7 +748,13 @@ fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
         let (overview, commits, head) = &app.pr;
         assert!(overview.is_some(), "{case}: no PR overview");
         assert!(!commits.is_empty(), "{case}: no PR commits");
-        assert!(head.is_some(), "{case}: no PR head");
+        assert_eq!(head.as_deref(), Some(PR_HEAD), "{case}: no PR head");
+        // The parity drops nulls, so a head both sides lost would pass it.
+        // `pr_diff_head_oid` stays null here: a restored local PR tab has no
+        // remote slug to read a preview head with, on either side.
+        let built_from = app.resource.get("built_from_head_oid");
+        let built_from = built_from.and_then(Value::as_str);
+        assert_eq!(built_from, Some(PR_HEAD), "{case}: no built-from head");
     }
 }
 
