@@ -271,6 +271,10 @@ describe("TabsAdapter.route", () => {
       { owner: "acme", repo: "gadgets", number: 9 },
       { kind: "prefetch_remote_pr_open", owner: "acme", repo: "gadgets", number: 9 },
     ],
+    // The Inbox asks for a new tab; the wire asks whether to replace the active one.
+    ["open_inbox_item", { id: "i-1", newTab: false }, { kind: "open_inbox_item", id: "i-1", replace: true }],
+    ["open_inbox_item", { id: "i-1", newTab: true }, { kind: "open_inbox_item", id: "i-1", replace: false }],
+    ["prefetch_inbox_item", { id: "i-1" }, { kind: "prefetch_inbox_item", id: "i-1" }],
   ];
 
   it("leaves every command to app.cmd with the flag off", () => {

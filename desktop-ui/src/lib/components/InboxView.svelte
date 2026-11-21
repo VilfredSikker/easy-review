@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { inboxView } from "$lib/stores/inboxView.svelte";
+  import { inboxResource } from "$lib/stores/inboxResource.svelte";
   import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import TabOpenModal from "$lib/components/TabOpenModal.svelte";
@@ -32,14 +32,14 @@
     type InboxReadFilter,
     type InboxThread,
   } from "$lib/inboxThreads";
-  import { loadAlwaysOpenHere, resolvePrOpen, saveAlwaysOpenHere, type TabOpenRequest } from "$lib/prOpen";
+  import { loadAlwaysOpenHere, resolvePrOpen, saveAlwaysOpenHere, sendPrefetch, type TabOpenRequest } from "$lib/prOpen";
   import { longAge, shortAge } from "$lib/relativeTime";
   import type { InboxItemSnapshot, ProjectSnapshot, TabSummary } from "$lib/types";
 
   const projects = $derived<ProjectSnapshot[]>(projectsResource.projects);
   const tabs = $derived<TabSummary[]>(tabsResource.tabs);
-  const lastRefreshMs = $derived(app.snapshot?.inbox_last_refresh_ms ?? 0);
-  const threads = $derived(groupInboxThreads(app.snapshot?.inbox_items ?? [], projects));
+  const lastRefreshMs = $derived(inboxResource.lastRefreshMs);
+  const threads = $derived(groupInboxThreads(inboxResource.items, projects));
 
   const projectOptions = $derived(
     projects
@@ -87,15 +87,15 @@
 
   function markThreadRead(thread: InboxThread) {
     if (thread.unreadIds.length === 0) return;
-    void app.cmd("mark_inbox_items_read", { ids: thread.unreadIds });
+    void inboxResource.markItemsRead(thread.unreadIds);
   }
 
   function select(thread: InboxThread) {
     inboxView.selectedKey = thread.key;
     markThreadRead(thread);
-    // Warm the open while the reader looks at the timeline. Raw invoke: it
-    // returns (), which app.cmd would store as the snapshot.
-    invoke("prefetch_inbox_item", { id: thread.latest.id }).catch(() => {
+    // Warm the open while the reader looks at the timeline. Not app.cmd: the
+    // old command returns (), which app.cmd would store as the snapshot.
+    sendPrefetch("prefetch_inbox_item", { id: thread.latest.id }).catch(() => {
       // Background warmup; a failed one only means a cold open.
     });
   }
@@ -170,14 +170,14 @@
   function markAllRead() {
     const unread = visible.filter(isThreadUnread);
     if (unread.length === 0) return;
-    void app.cmd("mark_inbox_items_read", { ids: unread.flatMap((t) => t.unreadIds) });
+    void inboxResource.markItemsRead(unread.flatMap((t) => t.unreadIds));
     app.showToast("success", `Marked ${unread.length} read`);
   }
 
   function clearRead() {
     const n = visible.filter((t) => !isThreadUnread(t)).length;
     if (n === 0) return;
-    void app.cmd("clear_inbox_items", { ids: readThreadItemIds(visible) });
+    void inboxResource.clearItems(readThreadItemIds(visible));
     app.showToast("success", `Cleared ${n} read`);
   }
 
@@ -235,7 +235,7 @@
       <span class="flex-1"></span>
       <button
         type="button"
-        onclick={() => app.cmd("refresh_notifications")}
+        onclick={() => inboxResource.refresh()}
         title="Refresh notifications"
         aria-label="Refresh notifications"
         class="w-6 h-6 self-center rounded flex items-center justify-center text-muted hover:text-fg hover:bg-hover text-[12px]"
