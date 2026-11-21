@@ -11,5 +11,18 @@
       "Read(.er/*)",
       "Edit(.er/*)"
     ]
+  },
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command' | grep -Eq '^(gh (pr (merge|close)|issue create)|git checkout --) [^;&|`$<>]*$' && printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}' || true"
+          }
+        ]
+      }
+    ]
   }
 }
