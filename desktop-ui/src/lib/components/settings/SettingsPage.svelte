@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
+  import { inboxResource } from "$lib/stores/inboxResource.svelte";
   import { riskResource, settingsResource } from "$lib/stores/settingsResource.svelte";
   import type { ReviewSettingsChange } from "$lib/stores/projectsAdapter";
   import { projectsResource } from "$lib/stores/projectsResource.svelte";
@@ -150,10 +150,10 @@
   async function sendTestNotification() {
     testBusy = true;
     try {
-      await invoke("test_native_notification");
+      await inboxResource.testNotification();
       app.showToast("info", "Test notification sent");
     } catch (e) {
-      app.showToast("error", `test_native_notification: ${e}`);
+      app.showToast("error", `test_native_notification: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       testBusy = false;
     }

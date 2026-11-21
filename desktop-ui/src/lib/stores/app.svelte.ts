@@ -982,9 +982,11 @@ class AppStore {
    * Confirm a global op. The backend answers with a chrome-only snapshot
    * (no files/AI), so merge it onto the current view instead of replacing
    * the diff. When the painted tab or mode moved on, skip the merge: the
-   * write succeeded and the revision-bump poll carries the truth.
+   * write succeeded and the revision-bump poll carries the truth. Flag off
+   * only: with the flag on no global op paints, and the pushes confirm.
    */
   private mergeGlobalConfirm(returned: AppSnapshot): void {
+    if (v1ServiceRequested()) return;
     const current = this.raw;
     if (
       !current ||

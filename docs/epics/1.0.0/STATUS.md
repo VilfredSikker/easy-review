@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md), [ADDENDUM-04](./ADDENDUM-04-phase-3.md), [ADDENDUM-05](./ADDENDUM-05-phase-4.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-20 17:05 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-21 18:50 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,7 +9,7 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| Coordinator | workflow runs | Phase 5 ([#398](https://github.com/VilfredSikker/easy-review/issues/398)): P50–P54 and P55.1 merged, with the backend halves of P55.2 and P55.3; P55.2b and P56.1 building. Phase 5b: plan merged (#640), P63 building. The owner approved stacking, splitting the sidebar items, and running 5b as a third track | – |
+| Coordinator | workflow runs | Phase 5 ([#398](https://github.com/VilfredSikker/easy-review/issues/398)): P50–P55.3 merged; P56.1 is open as four stacked PRs in review ([#668](https://github.com/VilfredSikker/easy-review/pull/668), [#669](https://github.com/VilfredSikker/easy-review/pull/669), [#671](https://github.com/VilfredSikker/easy-review/pull/671), [#675](https://github.com/VilfredSikker/easy-review/pull/675)). Phase 5b ([#399](https://github.com/VilfredSikker/easy-review/issues/399)): P63 and P64 merged; P65 is open as [#676](https://github.com/VilfredSikker/easy-review/pull/676) (P65a) with P65b committed locally. The owner paused all work on 2026-11-21 15:30 UTC and resumed it later that day. The resuming session's Workflow and Agent tools are refused by its permission settings, so no runs are live until a session with those tools restarts them | – |
 | D1–D5, T1, T2 | – | stopped 2026-11-14; the coordinator runs the rest of phase 4 through workflow runs | – |
 
 **Phases 0–2 are complete, and the phase-3 gate passed on 2026-11-10.** [ADDENDUM-04](./ADDENDUM-04-phase-3.md) is the phase-3 plan, and its issues are #471–#489. **Phase 3 is complete, and the phase-4 gate passed on 2026-11-14.** [ADDENDUM-05](./ADDENDUM-05-phase-4.md) is the phase-4 plan, re-checked at `afd78bced`; its issues are #526–#538. **Phase 4 is complete (2026-11-17):** P38 through P47.2 are merged and #526–#538 are closed. P47.2 was re-sequenced into stacked layers (2a, 2b, a slim 2c); its decisions, the exit checklist and the list of what stays on the App with the flag on are on #538. The phase-5 gate questions (D9 codegen, sidebar resources) are answered. **The phase-5 gate passed on 2026-11-18:** the owner approved the plan, [ADDENDUM-06](./ADDENDUM-06-phase-5.md) (merged as #601), and its issues are #602–#622.
@@ -92,12 +92,12 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P51 | [#603](https://github.com/VilfredSikker/easy-review/issues/603) er::command_shape with a shrinking allow-list | C | opus | ✅ | [#626](https://github.com/VilfredSikker/easy-review/pull/626) | merged `cb62e2e19` |
 | P52.1 | [#604](https://github.com/VilfredSikker/easy-review/issues/604) The resource host, the three commands and the backend tick | D/S/P/U/C | opus | ✅ | [#627](https://github.com/VilfredSikker/easy-review/pull/627), [#628](https://github.com/VilfredSikker/easy-review/pull/628), [#629](https://github.com/VilfredSikker/easy-review/pull/629) | merged `b31ca1e98` |
 | P52.2 | [#605](https://github.com/VilfredSikker/easy-review/issues/605) The frontend resource client, the adapter pattern and the protocol ADR | U/P | opus | ✅ | [#631](https://github.com/VilfredSikker/easy-review/pull/631) | merged `5c22d5fe6` |
-| P53 | [#606](https://github.com/VilfredSikker/easy-review/issues/606) Settings, session chrome and panels | D/U/P | opus | 🔵 | ✅ | [#633](https://github.com/VilfredSikker/easy-review/pull/633), [#634](https://github.com/VilfredSikker/easy-review/pull/634), [#637](https://github.com/VilfredSikker/easy-review/pull/637), [#638](https://github.com/VilfredSikker/easy-review/pull/638) | merged 
-| P54 | [#607](https://github.com/VilfredSikker/easy-review/issues/607) Tabs and the tab lifecycle | S/D/U/P | opus | 🔵 | ✅ | [#642](https://github.com/VilfredSikker/easy-review/pull/642), [#644](https://github.com/VilfredSikker/easy-review/pull/644), [#645](https://github.com/VilfredSikker/easy-review/pull/645), [#646](https://github.com/VilfredSikker/easy-review/pull/646) | merged as four stacked PRs; A15 matches the PR number plus owner/repo 
+| P53 | [#606](https://github.com/VilfredSikker/easy-review/issues/606) Settings, session chrome and panels | D/U/P | opus | ✅ | [#633](https://github.com/VilfredSikker/easy-review/pull/633), [#634](https://github.com/VilfredSikker/easy-review/pull/634), [#637](https://github.com/VilfredSikker/easy-review/pull/637), [#638](https://github.com/VilfredSikker/easy-review/pull/638) | merged |
+| P54 | [#607](https://github.com/VilfredSikker/easy-review/issues/607) Tabs and the tab lifecycle | S/D/U/P | opus | ✅ | [#642](https://github.com/VilfredSikker/easy-review/pull/642), [#644](https://github.com/VilfredSikker/easy-review/pull/644), [#645](https://github.com/VilfredSikker/easy-review/pull/645), [#646](https://github.com/VilfredSikker/easy-review/pull/646) | merged as four stacked PRs; A15 matches the PR number plus owner/repo |
 | P55.1 | [#608](https://github.com/VilfredSikker/easy-review/issues/608) The sidebar owner, projects and branches(project) | DS/US/P/D | opus | ✅ | [#632](https://github.com/VilfredSikker/easy-review/pull/632), [#635](https://github.com/VilfredSikker/easy-review/pull/635) | merged |
-| P55.2 | [#609](https://github.com/VilfredSikker/easy-review/issues/609) prs(remote) keyed on content, head_oid included | DS/US/U/P/D | opus | 🔵 | 🟡 | [#641](https://github.com/VilfredSikker/easy-review/pull/641), [#643](https://github.com/VilfredSikker/easy-review/pull/643) | P55.2a merged; P55.2b (desktop-ui) building; the tab stale dot moved to P56.1 
-| P55.3 | [#610](https://github.com/VilfredSikker/easy-review/issues/610) inbox and the inbox optimistic ops | DS/US/U/P/D | opus | ⬜ | 🟡 | [#662](https://github.com/VilfredSikker/easy-review/pull/662) | P55.3a merged; P55.3b (desktop-ui plus the open and prefetch inbox commands) follows P55.2b 
-| P56.1 | [#611](https://github.com/VilfredSikker/easy-review/issues/611) diff(tab), loading on activation, the warmer and the watcher | S/D/U/P/C | opus | ⬜ | 🟡 |  | building 
+| P55.2 | [#609](https://github.com/VilfredSikker/easy-review/issues/609) prs(remote) keyed on content, head_oid included | DS/US/U/P/D | opus | ✅ | [#641](https://github.com/VilfredSikker/easy-review/pull/641), [#643](https://github.com/VilfredSikker/easy-review/pull/643), [#667](https://github.com/VilfredSikker/easy-review/pull/667) | merged; P55.2b fixed the click-to-paint finding; follow-up er-120 |
+| P55.3 | [#610](https://github.com/VilfredSikker/easy-review/issues/610) inbox and the inbox optimistic ops | DS/US/U/P/D | opus | ✅ | [#662](https://github.com/VilfredSikker/easy-review/pull/662), [#672](https://github.com/VilfredSikker/easy-review/pull/672) | merged; P55.3b added the open and prefetch inbox commands |
+| P56.1 | [#611](https://github.com/VilfredSikker/easy-review/issues/611) diff(tab), loading on activation, the warmer and the watcher | S/D/U/P/C | opus | 🔵 | [#668](https://github.com/VilfredSikker/easy-review/pull/668), [#669](https://github.com/VilfredSikker/easy-review/pull/669), [#671](https://github.com/VilfredSikker/easy-review/pull/671), [#675](https://github.com/VilfredSikker/easy-review/pull/675) | four stacked PRs; the fresh review round is queued. The stale dot reads diff(tab)'s built-from head oid; branch-view option A is decided on #611 |
 | P56.2 | [#612](https://github.com/VilfredSikker/easy-review/issues/612) Content-addressed hunks, previews and file reads | S/D/U/P | opus | ⬜ | | |
 | P56.3 | [#613](https://github.com/VilfredSikker/easy-review/issues/613) History, Conflicts and Hidden in the service | S/D/U/P | opus | ⬜ | | |
 | P57 | [#614](https://github.com/VilfredSikker/easy-review/issues/614) reviewed(tab) and frontend navigation | S/D/U/P | opus | ⬜ | | |
@@ -109,6 +109,21 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P61 | [#620](https://github.com/VilfredSikker/easy-review/issues/620) Window-mechanics commands typed and moved out of commands.rs | D/S/U/P/C | opus | ⬜ | | |
 | P62.1 | [#621](https://github.com/VilfredSikker/easy-review/issues/621) Delete the old store layer | U/P/C/D | opus | ⬜ | | |
 | P62.2 | [#622](https://github.com/VilfredSikker/easy-review/issues/622) Delete the old desktop path and the desktop flag | D/DS/C/P/U | opus | ⬜ | | |
+| P63 | [#647](https://github.com/VilfredSikker/easy-review/issues/647) The render seam | T | opus | ✅ | [#664](https://github.com/VilfredSikker/easy-review/pull/664), [#665](https://github.com/VilfredSikker/easy-review/pull/665), [#666](https://github.com/VilfredSikker/easy-review/pull/666) | merged as three stacked PRs |
+| P64 | [#648](https://github.com/VilfredSikker/easy-review/issues/648) The key seam | T | opus | ✅ | [#673](https://github.com/VilfredSikker/easy-review/pull/673), [#674](https://github.com/VilfredSikker/easy-review/pull/674) | merged as two stacked PRs |
+| P65 | [#649](https://github.com/VilfredSikker/easy-review/issues/649) The service host, the in-memory registry and the flag-on shell | T/S | opus | 🔵 | [#676](https://github.com/VilfredSikker/easy-review/pull/676) | P65a open with green CI, review queued; P65b has two commits and small uncommitted edits locally, not pushed |
+| P66 | [#650](https://github.com/VilfredSikker/easy-review/issues/650) Settings, the config hub and the AI picker | T | opus | ⬜ | | |
+| P67 | [#653](https://github.com/VilfredSikker/easy-review/issues/653) Questions, notes, threads and the composer | T | opus | ⬜ | | |
+| P68 | [#654](https://github.com/VilfredSikker/easy-review/issues/654) GitHub comments, sync, approval and review submission | T | opus | ⬜ | | |
+| P69 | [#651](https://github.com/VilfredSikker/easy-review/issues/651) Working-tree commands | T/S | opus | ⬜ | | |
+| P70 | [#652](https://github.com/VilfredSikker/easy-review/issues/652) Reviewed marks and the filter | T | opus | ⬜ | | |
+| P71 | [#655](https://github.com/VilfredSikker/easy-review/issues/655) Diff modes, the base, the watcher and compaction | T/S | opus | ⬜ | | |
+| P72 | [#656](https://github.com/VilfredSikker/easy-review/issues/656) Findings, checklist, tour and the clears | T/S | opus | ⬜ | | |
+| P73 | [#657](https://github.com/VilfredSikker/easy-review/issues/657) The PR panel and the stack | T | opus | ⬜ | | |
+| P74 | [#658](https://github.com/VilfredSikker/easy-review/issues/658) AI runs, review flows, the arena and the agent log | T | opus | ⬜ | | |
+| P75 | [#659](https://github.com/VilfredSikker/easy-review/issues/659) Export, copy and open actions | T | opus | ⬜ | | |
+| P76 | [#660](https://github.com/VilfredSikker/easy-review/issues/660) Switch the TUI and delete its old path and the flag | T/C | opus | ⬜ | | |
+| P77 | [#661](https://github.com/VilfredSikker/easy-review/issues/661) Delete the App and the `ui` feature | S/C | opus | ⬜ | | |
 
 ## Designs
 
@@ -132,7 +147,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | Phase 3: jobs and workflows | [#396](https://github.com/VilfredSikker/easy-review/issues/396) | ✅ passed 2026-11-10; [ADDENDUM-04](./ADDENDUM-04-phase-3.md), issues #471–#489 |
 | Phase 4: core and service | [#397](https://github.com/VilfredSikker/easy-review/issues/397) | ✅ passed 2026-11-14; [ADDENDUM-05](./ADDENDUM-05-phase-4.md), issues #526–#538 |
 | Phase 5: desktop protocol | [#398](https://github.com/VilfredSikker/easy-review/issues/398) | 🟡 gate passed 2026-11-18; building (ADDENDUM-06, #602–#622) |
-| Phase 5b: TUI | [#399](https://github.com/VilfredSikker/easy-review/issues/399) | 🟡 plan merged ([#640](https://github.com/VilfredSikker/easy-review/pull/640)), issues #647–#661; P63 building |
+| Phase 5b: TUI | [#399](https://github.com/VilfredSikker/easy-review/issues/399) | 🟡 plan merged ([#640](https://github.com/VilfredSikker/easy-review/pull/640)), issues #647–#661; P63 and P64 merged, P65 in progress |
 | Phase 6: consolidate | [#400](https://github.com/VilfredSikker/easy-review/issues/400) | ⬜ |
 
 ## Waiting on the owner
@@ -141,4 +156,8 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 
 **Actions.**
 
-None open. The real 409 and 422 `gh` captures are taken (in `~/er-gh-fixtures/`, recorded on #381); the 403 rate limit stays synthetic.
+- ER-45: go/no-go on the item that would run on the release branch, in `stage_job.rs`.
+- ER-120: the click-to-paint readings accepted at P55.2b ([#609](https://github.com/VilfredSikker/easy-review/issues/609)).
+- The main checkout's target dir.
+
+The real 409 and 422 `gh` captures are taken (in `~/er-gh-fixtures/`, recorded on #381); the 403 rate limit stays synthetic.
