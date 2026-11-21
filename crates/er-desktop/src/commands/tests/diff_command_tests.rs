@@ -21,7 +21,10 @@ fn with_tab(test: impl FnOnce(&AppState, (TabKey, TabDescriptor))) {
         let opened = content_routes::open(&state, tab.clone(), false);
         assert!(opened.is_ok(), "{opened:?}");
         let key = state.service.app_registry().tabs_view().active;
-        test(&state, (key.unwrap_or_else(|| panic!("no active tab")), tab));
+        test(
+            &state,
+            (key.unwrap_or_else(|| panic!("no active tab")), tab),
+        );
     });
 }
 
