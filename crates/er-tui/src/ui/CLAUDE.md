@@ -1,8 +1,11 @@
 # ui/ — rendering surface
 
-Read-only over `App`: renderers take `&App` and produce frames. Nothing here
-mutates state, runs an event loop, or is async. State a renderer needs must
-already exist on `App`/`TabState` — derive it in the engine rather than
+Read-only over the `Screen` read model (`../screen/`): renderers take
+`&Screen` and produce frames, so the App path and the service path can both
+fill it. Nothing here mutates state, calls a port, runs an event loop, or is
+async, and nothing here names `App` or `TabState`; a source scan in
+`mod.rs` fails the build's tests otherwise. State a renderer needs must already
+be on the `Screen` — add it to the read model and its builder rather than
 computing it mid-frame (`docs/adr/0006-engine-state-is-the-ui-contract.md`).
 
 Overlays render last and `Clear` their area first. A popup drawn before the

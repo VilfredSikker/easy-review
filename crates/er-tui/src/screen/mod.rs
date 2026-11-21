@@ -4,24 +4,23 @@
 
 mod from_app;
 pub mod view;
+pub mod watched;
 
 pub use from_app::{from_app, ViewCache};
 
 use er_engine::ai::{AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
-use er_engine::app::App;
 use er_engine::config::ErConfig;
-use er_engine::git::{CommitInfo, DiffFile, ProdDiffStats};
+use er_engine::git::{CommitInfo, DiffFile, ProdDiffStats, WatchedFile};
 use er_engine::github::PrOverviewData;
 use er_engine::tab_identity::DiffMode;
+use std::collections::HashMap;
 use tui_textarea::TextArea;
+use watched::SnapshotDiff;
 
 pub struct Screen<'a> {
     pub chrome: Chrome<'a>,
     pub tab: TabView<'a>,
     pub data: TabData<'a>,
-    /// Read by the diff view, the file tree and the panel, which do not draw
-    /// from the read model yet.
-    pub app: &'a App,
 }
 
 /// Everything around the active tab's content.
@@ -83,10 +82,42 @@ pub struct TabView<'a> {
     pub comment_textarea: &'a TextArea<'static>,
     pub filter_input: &'a str,
     pub commit_input: &'a str,
+    /// The files the tree lists, after the filter, the search and the
+    /// unreviewed toggle, with their index in the tab's files.
+    pub visible_files: Vec<(usize, &'a DiffFile)>,
+    /// The file the diff view shows; History mode's is the commit's.
+    pub selected_diff_file: Option<&'a DiffFile>,
+    /// Scroll and cursor of the diff view, History mode's when in History.
+    pub diff_scroll: u16,
+    pub current_hunk: usize,
+    pub current_line: Option<usize>,
+    pub h_scroll: u16,
+    pub h_scroll_old: u16,
+    pub h_scroll_new: u16,
+    pub split_focus: view::SplitSide,
+    pub context_overrides: &'a HashMap<String, usize>,
+    pub mtime_cache: &'a HashMap<String, std::time::SystemTime>,
+    pub panel_scroll: u16,
+    pub review_cursor: usize,
+    pub branch_diff_hash: &'a str,
+    pub repo_root: &'a str,
+    pub visible_watched: Vec<(usize, &'a WatchedFile)>,
+    pub selected_watched: Option<&'a WatchedFile>,
+    pub selected_watched_index: Option<usize>,
+    pub watched_not_ignored: &'a [String],
+    /// The selected watched file's snapshot diff; `None` in content mode.
+    pub watched_snapshot: Option<&'a SnapshotDiff>,
 }
 
 /// The active tab's content, one variant per path. A renderer that reads the
 /// AI state or the reviewed count matches on it.
+#[cfg_attr(
+    feature = "v1-service",
+    expect(
+        clippy::large_enum_variant,
+        reason = "one lives per frame, on the stack; a box would allocate every frame"
+    )
+)]
 pub enum TabData<'a> {
     App(AppData<'a>),
     #[cfg(feature = "v1-service")]
@@ -103,9 +134,15 @@ pub enum TabData<'a> {
 /// The App's content for the tab, borrowed as the App holds it.
 pub struct AppData<'a> {
     pub files: &'a [DiffFile],
+    pub reviewed: &'a HashMap<String, String>,
     pub ai: &'a AiState,
     pub pr_data: Option<&'a PrOverviewData>,
     pub history: Option<HistoryView<'a>>,
+    pub tour: Option<TourView<'a>>,
+    pub symbol_refs: Option<SymbolRefsView<'a>>,
+    pub agent_log: &'a [view::AgentLogEntry],
+    pub agent_log_auto_scroll: bool,
+    pub running_command_count: usize,
     pub reviewed_count: (usize, usize),
     pub filtered_reviewed_count: Option<(usize, usize)>,
     pub running_commands: Vec<&'a str>,
@@ -113,12 +150,39 @@ pub struct AppData<'a> {
 }
 
 /// History mode's commit list and the selected commit's diff.
-#[derive(Clone, Copy)]
 pub struct HistoryView<'a> {
     pub commits: &'a [CommitInfo],
+    /// The commits the search leaves, with their index in `commits`.
+    pub visible_commits: Vec<(usize, &'a CommitInfo)>,
     pub selected_commit: usize,
     pub commit_files: &'a [DiffFile],
     pub selected_file: usize,
+    pub current_hunk: usize,
+    pub current_line: Option<usize>,
+    pub diff_scroll: u16,
+    pub h_scroll: u16,
+}
+
+/// Tour mode's pillars and the diff regrouped by pillar.
+pub struct TourView<'a> {
+    pub pillars: &'a [view::TourPillar],
+    pub selected_pillar: usize,
+    pub files: &'a [DiffFile],
+    pub file_is_related: &'a [bool],
+    pub pillar_file_ranges: &'a [(usize, usize)],
+    pub selected_file: usize,
+    pub current_hunk: usize,
+    pub current_line: Option<usize>,
+    pub diff_scroll: u16,
+    pub h_scroll: u16,
+}
+
+/// The symbol references panel.
+pub struct SymbolRefsView<'a> {
+    pub symbol: &'a str,
+    pub in_diff: &'a [view::SymbolRef],
+    pub external: &'a [view::SymbolRef],
+    pub cursor: usize,
 }
 
 /// How much of the diff is parsed, for the `ER_DEBUG` status line.
@@ -135,6 +199,7 @@ pub struct MemoryBudget {
 #[cfg(feature = "v1-service")]
 pub struct SectionData<'a> {
     pub files: &'a [std::sync::Arc<DiffFile>],
+    pub reviewed: &'a HashMap<String, String>,
     pub pr: Option<&'a PrOverviewData>,
 }
 
@@ -215,9 +280,34 @@ impl<'a> TabData<'a> {
         }
     }
 
-    pub const fn history(&self) -> Option<HistoryView<'a>> {
+    pub const fn history(&self) -> Option<&HistoryView<'a>> {
         match self {
-            Self::App(data) => data.history,
+            Self::App(data) => data.history.as_ref(),
+            #[cfg(feature = "v1-service")]
+            Self::Sections(_) => None,
+        }
+    }
+
+    pub const fn tour(&self) -> Option<&TourView<'a>> {
+        match self {
+            Self::App(data) => data.tour.as_ref(),
+            #[cfg(feature = "v1-service")]
+            Self::Sections(_) => None,
+        }
+    }
+
+    pub const fn reviewed(&self) -> &'a HashMap<String, String> {
+        match self {
+            Self::App(data) => data.reviewed,
+            #[cfg(feature = "v1-service")]
+            Self::Sections(data) => data.reviewed,
+        }
+    }
+
+    /// The App's panel-only data, or `None` where the path does not carry it yet.
+    pub const fn app(&self) -> Option<&AppData<'a>> {
+        match self {
+            Self::App(data) => Some(data),
             #[cfg(feature = "v1-service")]
             Self::Sections(_) => None,
         }
@@ -243,8 +333,10 @@ mod tests {
             .collect();
         let mut cache = ViewCache::default();
         let mut screen = from_app(&app, &mut cache);
+        let reviewed = std::collections::HashMap::new();
         screen.data = TabData::Sections(SectionData {
             files: &files,
+            reviewed: &reviewed,
             pr: None,
         });
         let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
@@ -258,5 +350,45 @@ mod tests {
             .collect();
         assert!(top.contains(&format!("reviewed count {UNPORTED}")), "{top}");
         assert!(!top.contains("/2 reviewed"), "{top}");
+    }
+
+    /// The service path draws the AI panel as unported until a builder
+    /// projects the AI state.
+    #[test]
+    fn sections_draw_the_ai_panel_as_unported() {
+        let mut app = crate::golden::base_app();
+        app.tab_mut().ai.summary = Some("Reads the audience early.".into());
+        app.tab_mut().panel = Some(PanelContent::AiSummary);
+        let files: Vec<_> = app
+            .tab()
+            .files
+            .iter()
+            .cloned()
+            .map(std::sync::Arc::new)
+            .collect();
+        let reviewed = std::collections::HashMap::new();
+        let mut cache = ViewCache::default();
+        let mut screen = from_app(&app, &mut cache);
+        screen.data = TabData::Sections(SectionData {
+            files: &files,
+            reviewed: &reviewed,
+            pr: None,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
+        let mut hl = crate::ui::highlight::Highlighter::new();
+        terminal
+            .draw(|f| crate::ui::draw(f, &screen, &mut hl))
+            .unwrap();
+        let drawn: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        // The top bar draws its own unported reviewed count; look past it.
+        let outside_top_bar = drawn.replace(&format!("reviewed count {UNPORTED}"), "");
+        assert!(outside_top_bar.contains(UNPORTED), "{drawn}");
+        assert!(!drawn.contains("audience early"), "{drawn}");
     }
 }

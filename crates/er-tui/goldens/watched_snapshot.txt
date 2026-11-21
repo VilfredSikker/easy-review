@@ -1,0 +1,17 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                     0/2 reviewed
+ FILES (2) · 1 watched         │ .env.local
+ ~ src/auth.rs          +2 -1  │  ◉ .env.local  (watched · not tracked by git)
+ ~ README.md            +1 -0  │  Size: 42 B
+ ────────── watched ───────────│
+ ◉ .env.local          2d ago  │  diff vs snapshot
+                               │
+                               │  @@ -1,1 +1,2 @@
+                               │   1    1 │ KEY=1
+                               │        2 │+TOKEN=abc
+                               │
+                               │  Press s to update snapshot
+                               │
+ j/k nav n/N hunks +/- context ␣ review / search g git a ai o open v verify ? help ^q quit
+  [watched: 1]
+styles d53a27c1d2208fe9

@@ -1,0 +1,25 @@
+ feature · feature (vs main)  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                                       AI ON    AI Summary   0/2 reviewed
+ FILES (2) · 2 findings        │ src/auth.rs                                            Hunk 1/1    │ [File] [AI] [Log]
+ ~ auth.rs     ●● ◆1    +2 -1  │  ~ src/auth.rs  +2 -1  Risk HIGH                                   │──────────────────────────────────────
+ ~ README.md            +1 -0  │  ℹ Token check                                                     │ AI Review Summary
+                               │                                                                    │
+                               │ ▶ @@ -1,5 +1,6 @@                                                  │ Reads the audience before the token
+                               │   1    1 │ fn check(token: &str) -> bool {                         │ check.
+                               │   2      │-    token.len() > 0                                     │
+                               │        2 │+    let audience = audience_of(token);                  │ ─── File Risk Overview ───
+                               │  ●  Audience read early                                            │
+                               │    Read before validation.                                         │▸ HIGH src/auth.rs
+                               │        3 │+    !token.is_empty() && audience == "er"               │
+                               │  ╭─ ❓  R3  ─────────────────────────────────────────────────────── │ 2 total findings across all files
+                               │  │  You                                                            │
+                               │  │    Why compare to er?                                           │ ─── Review Checklist ───
+                               │  ╰──────────────────────────────────────────────────────────────── │
+                               │   3    4 │ }                                                       │ ✓ Empty tokens are rejected
+                               │   4    5 │                                                         │
+                               │   5    6 │ fn audience_of(token: &str) -> &str {                   │
+                               │  ●  Empty token                                                    │
+                               │                                                                    │
+                               │                                                                    │
+ j/k nav n/N hunks Tab focus panel p close panel g git a ai o open v verify ? help ^q quit
+styles 76a1f7ff5cea6517

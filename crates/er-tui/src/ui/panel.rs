@@ -9,8 +9,8 @@ use ratatui::{
 use super::file_tree::shorten_path;
 use super::styles;
 use super::utils::{horizontal_rule, word_wrap};
+use crate::screen::{AppData, Screen, UNPORTED};
 use er_engine::ai::{CommentRef, CommentType, Confidence, PanelContent, ReviewFocus, RiskLevel};
-use er_engine::app::App;
 
 // PR check conclusion display helpers
 fn check_icon(bucket: Option<&str>) -> (&'static str, ratatui::style::Color) {
@@ -33,23 +33,23 @@ fn review_state_style(state: &str) -> (&'static str, ratatui::style::Color) {
 }
 
 /// Render the context panel (right side, when tab.panel is Some)
-pub fn render(f: &mut Frame, area: Rect, app: &App) {
-    let tab = app.tab();
-    let panel_content = match &tab.panel {
+pub fn render(f: &mut Frame, area: Rect, screen: &Screen) {
+    let panel_content = match &screen.tab.panel {
         Some(c) => *c,
         None => return,
     };
 
-    render_panel(f, area, app, panel_content);
+    render_panel(f, area, screen, panel_content);
 }
 
-fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
-    let tab = app.tab();
+fn render_panel(f: &mut Frame, area: Rect, screen: &Screen, content: PanelContent) {
+    let tab = &screen.tab;
+    let ai = screen.data.ai_or_empty();
     let mut lines: Vec<Line> = Vec::new();
 
     // Title bar: [File] [AI] [PR] — AI and PR only shown when available
-    let has_ai = tab.ai.has_data();
-    let has_pr = tab.pr_data.is_some();
+    let has_ai = ai.has_data();
+    let has_pr = screen.data.pr_data().is_some();
 
     let file_style = if content == PanelContent::FileDetail {
         Style::default()
@@ -91,7 +91,11 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
         tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED())));
     }
 
-    if tab.symbol_refs.is_some() {
+    if screen
+        .data
+        .app()
+        .is_some_and(|data| data.symbol_refs.is_some())
+    {
         let refs_style = if content == PanelContent::SymbolRefs {
             Style::default()
                 .fg(styles::PURPLE())
@@ -123,11 +127,23 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
 
     // Content area
     match content {
-        PanelContent::FileDetail => render_file_detail(&mut lines, area, tab),
-        PanelContent::AiSummary => render_ai_summary(&mut lines, area, tab),
-        PanelContent::PrOverview => render_pr_overview(&mut lines, area, tab),
-        PanelContent::SymbolRefs => render_symbol_refs(&mut lines, area, tab),
-        PanelContent::AgentLog => render_agent_log(&mut lines, area, tab),
+        PanelContent::FileDetail => render_file_detail(&mut lines, area, screen),
+        PanelContent::PrOverview => render_pr_overview(&mut lines, area, screen),
+        PanelContent::AiSummary | PanelContent::SymbolRefs | PanelContent::AgentLog => {
+            match (screen.data.app(), content) {
+                (Some(data), PanelContent::AiSummary) => {
+                    render_ai_summary(&mut lines, area, screen, data.ai);
+                }
+                (Some(data), PanelContent::SymbolRefs) => {
+                    render_symbol_refs(&mut lines, area, screen, data);
+                }
+                (Some(data), _) => render_agent_log(&mut lines, area, data),
+                (None, _) => lines.push(Line::from(Span::styled(
+                    UNPORTED,
+                    Style::default().fg(styles::MUTED()),
+                ))),
+            }
+        }
     }
 
     let border_style = if tab.panel_focus {
@@ -146,7 +162,12 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
     // or more lines — so the stored offset under-shoots the bottom. Recompute here, where
     // the wrapped line count is known. Only borders LEFT + horizontal padding, so the inner
     // height is the full area height.
-    let scroll = if content == PanelContent::AgentLog && tab.agent_log_auto_scroll {
+    let scroll = if content == PanelContent::AgentLog
+        && screen
+            .data
+            .app()
+            .is_some_and(|data| data.agent_log_auto_scroll)
+    {
         lines
             .len()
             .saturating_sub(area.height as usize)
@@ -162,16 +183,14 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
 
 // ── FileDetail ──
 
-fn render_file_detail<'a>(
-    lines: &mut Vec<Line<'a>>,
-    area: Rect,
-    tab: &'a er_engine::app::TabState,
-) {
-    let ai_stale = tab.ai.is_stale;
+fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, screen: &'a Screen<'a>) {
+    let tab = &screen.tab;
+    let ai = screen.data.ai_or_empty();
+    let ai_stale = ai.is_stale;
 
-    let file = tab.selected_diff_file();
+    let file = tab.selected_diff_file;
     let file_path = file.map(|f| f.path.as_str());
-    let file_stale = file_path.map_or(ai_stale, |p| tab.ai.is_file_stale(p));
+    let file_stale = file_path.map_or(ai_stale, |p| ai.is_file_stale(p));
 
     let Some(path) = file_path else {
         lines.push(Line::from(""));
@@ -197,7 +216,7 @@ fn render_file_detail<'a>(
 
     // AI file risk (assessment metadata — distinct from line-anchored findings below)
     if tab.layers.show_ai_findings {
-        if let Some(fr) = tab.ai.file_review(path) {
+        if let Some(fr) = ai.file_review(path) {
             let risk_label = match fr.risk {
                 RiskLevel::High => "HIGH",
                 RiskLevel::Medium => "MED",
@@ -245,17 +264,17 @@ fn render_file_detail<'a>(
         }
     }
 
-    render_file_findings(lines, area, tab, path);
+    render_file_findings(lines, area, screen, path);
 
     // Comments section — collect all top-level comments for this file across all hunks
     // hunk_count comes from the current diff model, not the AI sidecar; a stale
     // sidecar may reference hunks beyond it, which the comment lookups tolerate.
-    let selected_file = tab.files.get(tab.selected_file);
+    let selected_file = screen.data.file(tab.selected_file);
     let hunk_count = selected_file.map(|f| f.hunks.len()).unwrap_or(0);
 
-    let mut file_comments: Vec<CommentRef> = tab.ai.comments_for_file_unanchored(path);
+    let mut file_comments: Vec<CommentRef> = ai.comments_for_file_unanchored(path);
     for hi in 0..hunk_count {
-        for cr in tab.ai.comments_for_hunk(path, hi) {
+        for cr in ai.comments_for_hunk(path, hi) {
             if cr.in_reply_to().is_none() {
                 file_comments.push(cr);
             }
@@ -355,7 +374,7 @@ fn render_file_detail<'a>(
         }
 
         // Reply indicator
-        let replies = tab.ai.replies_to(comment.id());
+        let replies = ai.replies_to(comment.id());
         if !replies.is_empty() {
             header_spans.push(Span::styled(
                 format!("  ↳ {}", replies.len()),
@@ -402,22 +421,19 @@ fn render_file_detail<'a>(
 }
 
 /// All findings for this file — sorted by severity, then location.
-fn render_file_findings(
-    lines: &mut Vec<Line<'_>>,
-    area: Rect,
-    tab: &er_engine::app::TabState,
-    path: &str,
-) {
+fn render_file_findings(lines: &mut Vec<Line<'_>>, area: Rect, screen: &Screen, path: &str) {
+    let tab = &screen.tab;
+    let ai = screen.data.ai_or_empty();
     if !tab.layers.show_ai_findings {
         return;
     }
-    let Some(fr) = tab.ai.file_review(path) else {
+    let Some(fr) = ai.file_review(path) else {
         return;
     };
     if fr.findings.is_empty() {
         return;
     }
-    let file_stale = tab.ai.is_file_stale(path);
+    let file_stale = ai.is_file_stale(path);
     let max_w = area.width.saturating_sub(5) as usize;
 
     let mut sorted_findings: Vec<&er_engine::ai::Finding> = fr.findings.iter().collect();
@@ -445,10 +461,9 @@ fn render_file_findings(
     let filtered: Vec<&er_engine::ai::Finding> = sorted_findings
         .iter()
         .copied()
-        .filter(|f| f.passes(&tab.layers))
+        .filter(|f| f.passes(tab.layers))
         .collect();
-    let visible =
-        project_file_findings(path, filtered.iter().copied(), &tab.ai.arbiter_graded_keys);
+    let visible = project_file_findings(path, filtered.iter().copied(), &ai.arbiter_graded_keys);
     let (security, ordinary) = security_first(&visible);
     let resolved_count = sorted_findings.iter().filter(|f| f.resolved).count();
     let dropped_count = sorted_findings
@@ -471,7 +486,7 @@ fn render_file_findings(
             .fg(styles::PURPLE())
             .add_modifier(Modifier::BOLD),
     )]));
-    push_arbiter_effect(lines, tab, &fr.findings);
+    push_arbiter_effect(lines, screen, &fr.findings);
     lines.push(Line::from(""));
     let has_security = !security.is_empty();
     if !security.is_empty() {
@@ -482,7 +497,7 @@ fn render_file_findings(
                 .add_modifier(Modifier::BOLD),
         )]));
         for finding in security {
-            push_finding(lines, tab, finding, file_stale, max_w);
+            push_finding(lines, screen, finding, file_stale, max_w);
         }
     }
     if !ordinary.is_empty() {
@@ -495,7 +510,7 @@ fn render_file_findings(
             )]));
         }
         for finding in ordinary {
-            push_finding(lines, tab, finding, file_stale, max_w);
+            push_finding(lines, screen, finding, file_stale, max_w);
         }
     }
 }
@@ -542,13 +557,15 @@ fn finding_display_tag(finding: &er_engine::ai::Finding) -> String {
 
 fn push_arbiter_effect(
     lines: &mut Vec<Line<'_>>,
-    tab: &er_engine::app::TabState,
+    screen: &Screen,
     findings: &[er_engine::ai::Finding],
 ) {
+    let tab = &screen.tab;
+    let ai = screen.data.ai_or_empty();
     // A filter that hides things without saying so is how people
     // stop trusting it, so the arbiter's rulings are counted here
     // rather than the list just being shorter.
-    let effect = tab.ai.arbiter_effect;
+    let effect = ai.arbiter_effect;
     let mut parts = Vec::new();
     if effect.dropped > 0 {
         parts.push(format!("{} dropped", effect.dropped));
@@ -604,12 +621,13 @@ fn push_arbiter_effect(
 
 fn push_finding(
     lines: &mut Vec<Line<'_>>,
-    tab: &er_engine::app::TabState,
+    screen: &Screen,
     finding: &er_engine::ai::Finding,
     file_stale: bool,
     max_w: usize,
 ) {
-    let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
+    let tab = &screen.tab;
+    let is_focused = tab.focused_finding_id == Some(finding.id.as_str());
     let bg = if is_focused {
         styles::FINDING_FOCUS_BG()
     } else {
@@ -682,7 +700,7 @@ fn push_finding(
     // Location line for inline findings (hunk/line-anchored)
     if finding.hunk_index.is_some() || finding.line_start.is_some() {
         // Validate that the referenced hunk/line actually exists in the parsed diff.
-        let diff_hunks = tab.files.get(tab.selected_file).map(|f| &f.hunks);
+        let diff_hunks = screen.data.file(tab.selected_file).map(|f| &f.hunks);
         let hunk_exists = finding
             .hunk_index
             .is_none_or(|h| diff_hunks.is_some_and(|hs| h < hs.len()));
@@ -735,8 +753,14 @@ fn push_finding(
 
 // ── AiSummary ──
 
-fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engine::app::TabState) {
-    let ai_stale = tab.ai.is_stale;
+fn render_ai_summary<'a>(
+    lines: &mut Vec<Line<'a>>,
+    area: Rect,
+    screen: &'a Screen<'a>,
+    ai: &'a er_engine::ai::AiState,
+) {
+    let tab = &screen.tab;
+    let ai_stale = ai.is_stale;
     let stale_tag = if ai_stale { " [stale]" } else { "" };
 
     // Overall summary
@@ -748,8 +772,8 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
     )]));
     lines.push(Line::from(""));
 
-    if let Some(ref triage) = tab.ai.triage {
-        let triage_stale = !er_engine::ai::triage_is_fresh(triage, &tab.branch_diff_hash);
+    if let Some(ref triage) = ai.triage {
+        let triage_stale = !er_engine::ai::triage_is_fresh(triage, tab.branch_diff_hash);
         let tag = if triage_stale { " [stale]" } else { "" };
         lines.push(Line::from(vec![Span::styled(
             format!(" Triage verdict{tag}"),
@@ -790,7 +814,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
         lines.push(Line::from(""));
     }
 
-    if let Some(ref summary) = tab.ai.summary {
+    if let Some(ref summary) = ai.summary {
         let max_w = area.width.saturating_sub(4) as usize;
         for line in summary.lines() {
             if line.is_empty() {
@@ -836,7 +860,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
     )]));
     lines.push(Line::from(""));
 
-    if let Some(ref review) = tab.ai.review {
+    if let Some(ref review) = ai.review {
         let mut file_entries: Vec<_> = review.files.iter().collect();
         file_entries.sort_by(|a, b| {
             let risk_ord = |r: &RiskLevel| match r {
@@ -853,7 +877,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
         let cursor = tab.review_cursor;
         for (idx, (path, fr)) in file_entries.iter().enumerate() {
             let is_selected = is_files_focused && idx == cursor;
-            let per_file_stale = tab.ai.is_file_stale(path);
+            let per_file_stale = ai.is_file_stale(path);
 
             let risk_style = if per_file_stale {
                 styles::stale_style()
@@ -905,7 +929,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
             ]));
         }
 
-        let total = tab.ai.total_findings();
+        let total = ai.total_findings();
         if total > 0 {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
@@ -939,7 +963,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
     )]));
     lines.push(Line::from(""));
 
-    if let Some(ref checklist) = tab.ai.checklist {
+    if let Some(ref checklist) = ai.checklist {
         let cursor = tab.review_cursor;
         for (idx, item) in checklist.items.iter().enumerate() {
             let is_selected = is_checklist_focused && idx == cursor;
@@ -1004,11 +1028,8 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
 
 // ── PrOverview ──
 
-fn render_pr_overview<'a>(
-    lines: &mut Vec<Line<'a>>,
-    area: Rect,
-    tab: &'a er_engine::app::TabState,
-) {
+fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, screen: &'a Screen<'a>) {
+    let ai = screen.data.ai_or_empty();
     lines.push(Line::from(vec![Span::styled(
         " PR Overview",
         Style::default()
@@ -1017,7 +1038,7 @@ fn render_pr_overview<'a>(
     )]));
     lines.push(Line::from(""));
 
-    let Some(pr) = tab.pr_data.as_ref() else {
+    let Some(pr) = screen.data.pr_data() else {
         lines.push(Line::from(vec![Span::styled(
             " No PR data loaded",
             Style::default().fg(styles::DIM()),
@@ -1205,8 +1226,7 @@ fn render_pr_overview<'a>(
     }
 
     // General PR comments (those with empty file field)
-    let general_comments: Vec<_> = tab
-        .ai
+    let general_comments: Vec<_> = ai
         .github_comments
         .as_ref()
         .map(|gc| {
@@ -1254,9 +1274,10 @@ fn render_pr_overview<'a>(
 fn render_symbol_refs<'a>(
     lines: &mut Vec<Line<'a>>,
     area: Rect,
-    tab: &'a er_engine::app::TabState,
+    screen: &'a Screen<'a>,
+    data: &'a AppData<'a>,
 ) {
-    let state = match tab.symbol_refs.as_ref() {
+    let state = match data.symbol_refs.as_ref() {
         Some(s) => s,
         None => {
             lines.push(Line::from(vec![Span::styled(
@@ -1271,7 +1292,7 @@ fn render_symbol_refs<'a>(
     lines.push(Line::from(vec![
         Span::styled(" Symbol: ", Style::default().fg(styles::DIM())),
         Span::styled(
-            &*state.symbol,
+            state.symbol,
             Style::default()
                 .fg(styles::BLUE())
                 .add_modifier(Modifier::BOLD),
@@ -1291,8 +1312,8 @@ fn render_symbol_refs<'a>(
                 .add_modifier(Modifier::BOLD),
         )]));
 
-        for entry in &state.in_diff {
-            let is_selected = entry_idx == state.cursor && tab.panel_focus;
+        for entry in state.in_diff {
+            let is_selected = entry_idx == state.cursor && screen.tab.panel_focus;
             let loc = format!(" {}:{}", entry.file, entry.line_num);
             let content = entry.line_content.trim();
             let truncated = if content.chars().count() > max_w {
@@ -1341,8 +1362,8 @@ fn render_symbol_refs<'a>(
                 .add_modifier(Modifier::BOLD),
         )]));
 
-        for entry in &state.external {
-            let is_selected = entry_idx == state.cursor && tab.panel_focus;
+        for entry in state.external {
+            let is_selected = entry_idx == state.cursor && screen.tab.panel_focus;
             let loc = format!(" {}:{}", entry.file, entry.line_num);
             let content = entry.line_content.trim();
             let truncated = if content.chars().count() > max_w {
@@ -1391,17 +1412,13 @@ fn render_symbol_refs<'a>(
 
 // ── AgentLog ──
 
-fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engine::app::TabState) {
-    use er_engine::app::{AgentLogSource, CommandStatus};
+fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, data: &'a AppData<'a>) {
+    use crate::screen::view::AgentLogSource;
 
     let max_w = area.width.saturating_sub(4) as usize; // panel padding + border
 
     // Header
-    let running_count = tab
-        .command_status
-        .values()
-        .filter(|s| matches!(s, CommandStatus::Running))
-        .count();
+    let running_count = data.running_command_count;
 
     let mut header_spans = vec![Span::styled(
         "Agent Log",
@@ -1419,7 +1436,7 @@ fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engin
     lines.push(Line::from(header_spans));
     lines.push(Line::from(""));
 
-    if tab.agent_log.is_empty() {
+    if data.agent_log.is_empty() {
         lines.push(Line::from(Span::styled(
             "No agent output yet",
             Style::default().fg(styles::MUTED()),
@@ -1438,9 +1455,9 @@ fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engin
     }
 
     // Calculate relative timestamps from first entry
-    let first_ts = tab.agent_log.front().map(|e| e.timestamp);
+    let first_ts = data.agent_log.first().map(|e| e.timestamp);
 
-    for entry in tab.agent_log.iter() {
+    for entry in data.agent_log {
         let elapsed = first_ts
             .map(|first| entry.timestamp.duration_since(first))
             .unwrap_or_default();
