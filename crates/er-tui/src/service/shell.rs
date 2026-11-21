@@ -236,12 +236,20 @@ impl Shell {
         Some((entry.key, workspace, content))
     }
 
-    /// Picks the key's action from this frame's screen and runs it.
+    /// Picks the key's action from this frame's screen and runs it. A tab
+    /// with no content has no screen, so there only the tab keys and Ctrl+Q
+    /// run, the same keys the table binds: a tab that is loading or failed
+    /// never traps the user.
     pub fn handle_key(&mut self, key: KeyEvent) {
         self.redraw = true;
         let Some((tab, workspace, Some(content))) = self.active() else {
-            if key.code == KeyCode::Char('q') && key.modifiers == KeyModifiers::CONTROL {
-                self.should_quit = true;
+            match key.code {
+                KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.should_quit = true;
+                }
+                KeyCode::Char(']') => self.step_tab(true),
+                KeyCode::Char('[') => self.step_tab(false),
+                _ => {}
             }
             return;
         };
@@ -447,7 +455,9 @@ impl Shell {
         };
         let Some(content) = content else {
             let status = match self.load_errors.get(&key) {
-                Some(error) => format!("This tab did not load: {error}. Ctrl+Q quits."),
+                Some(error) => {
+                    format!("This tab did not load: {error}. [ and ] switch tabs, Ctrl+Q quits.")
+                }
                 None => "Loading…".to_string(),
             };
             let mut lines = vec![status];

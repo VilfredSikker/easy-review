@@ -492,3 +492,64 @@ fn a_failed_first_load_shows_its_error_and_the_notices() {
         );
     });
 }
+
+/// Tabs after the first load when first shown, and the tab keys run on a
+/// frame with no content: a failed tab can be left, and shown again it loads
+/// again.
+#[test]
+fn tab_keys_load_later_tabs_and_leave_a_failed_one() {
+    let (first, second, broken) = (fixture(1), fixture(1), fixture(1));
+    let storage = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let args = Args {
+        paths: vec![path_of(&first), path_of(&second), path_of(&broken)],
+        ..Args::default()
+    };
+    let start = plan(&args);
+    std::fs::remove_dir_all(broken.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
+    er_engine::storage::with_process_test_storage_root(storage.path(), || {
+        let mut shell = shell_on(Ports::cli(), &start, storage.path());
+        let mut hl = Highlighter::new();
+        let mut text = |shell: &mut Shell| rows(&shell_frame(shell, &mut hl)).join("\n");
+        let tabs = shell.host().registry().tabs_view();
+        let keys: Vec<TabKey> = tabs.tabs.iter().map(|tab| tab.key).collect();
+        let active = |shell: &Shell| shell.host().registry().tabs_view().active;
+        settle(&mut shell, loaded);
+
+        shell.handle_key(key(KeyCode::Char(']')));
+        assert_eq!(active(&shell), Some(keys[1]));
+        assert!(
+            settle_within(&mut shell, WAIT, loaded),
+            "the second tab never loaded"
+        );
+
+        shell.handle_key(key(KeyCode::Char(']')));
+        let deadline = Instant::now() + WAIT;
+        while !text(&mut shell).contains("did not load") && Instant::now() < deadline {
+            shell.tick(Instant::now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let frame = text(&mut shell);
+        assert!(frame.contains("This tab did not load"), "{frame}");
+
+        shell.handle_key(key(KeyCode::Char('[')));
+        assert_eq!(active(&shell), Some(keys[1]), "'[' left the failed tab");
+        let frame = text(&mut shell);
+        assert!(frame.contains("src/f000.rs"), "{frame}");
+
+        // Shown again, the failed tab loads again: until that reply drains,
+        // it says it is loading.
+        shell.handle_key(key(KeyCode::Char(']')));
+        let frame = text(&mut shell);
+        assert!(frame.contains("Loading…"), "{frame}");
+        let deadline = Instant::now() + WAIT;
+        while !text(&mut shell).contains("did not load") && Instant::now() < deadline {
+            shell.tick(Instant::now());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let frame = text(&mut shell);
+        assert!(frame.contains("This tab did not load"), "{frame}");
+
+        shell.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        assert!(shell.should_quit, "Ctrl+Q did not quit a failed tab");
+    });
+}
