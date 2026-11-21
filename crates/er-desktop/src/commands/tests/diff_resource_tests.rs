@@ -207,6 +207,7 @@ fn an_unlisted_key_is_not_found() {
     });
 }
 
+#[cfg(test)]
 fn git(dir: &std::path::Path, args: &[&str]) {
     let status = std::process::Command::new("git")
         .args(["-c", "user.name=er", "-c", "user.email=er@example.com"])
