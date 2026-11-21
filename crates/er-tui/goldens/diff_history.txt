@@ -1,0 +1,17 @@
+ feature · feature (vs main) · aaaaaaa · 2 days ago  +3 -1 · code +2 -1
+  1  BRANCH   2  UNSTAGED   3  STAGED   4  HISTORY                                               0/2 reviewed
+ COMMITS (1)                   │ aaaaaaa · Validate the token audience                            File 1/2
+ ● Validate the token audience │ ▶ ~ src/auth.rs  +2 -1
+   octo                        │
+────────────────────────────── │ ▶ @@ -1,5 +1,6 @@
+                               │   1    1 │ fn check(token: &str) -> bool {
+                               │   2      │-    token.len() > 0
+                               │        2 │+    let audience = audience_of(token);
+                               │        3 │+    !token.is_empty() && audience == "er"
+                               │   3    4 │ }
+                               │   4    5 │
+                               │   5    6 │ fn audience_of(token: &str) -> &str {
+                               │
+                               │   ~ README.md  +1 -0
+ j/k commits n/N files ↑↓ lines / search g git a ai ? help ^q quit  auth.rs
+styles 8faa61c661242fed

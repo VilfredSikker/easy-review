@@ -454,6 +454,37 @@ fn apply_pr_probe(app: &mut App, probe: PrProbe) {
     }
 }
 
+/// Routes a key: an overlay takes it first, then the input mode's handler. A
+/// plain `s` in Normal mode may have updated the watched file's snapshot, so
+/// its diff is read again for the next frame.
+fn handle_key(
+    app: &mut App,
+    key: event::KeyEvent,
+    watch_tx: &mpsc::Sender<WatchEvent>,
+    watcher: &mut Option<FileWatcher>,
+    view_cache: &mut screen::ViewCache,
+) -> Result<()> {
+    if app.overlay.is_some() {
+        return handle_overlay_input(app, key);
+    }
+    match &app.input_mode {
+        InputMode::Search => handle_search_input(app, key),
+        InputMode::Comment => handle_comment_input(app, key)?,
+        InputMode::Confirm(_) => handle_confirm_input(app, key)?,
+        InputMode::Filter => handle_filter_input(app, key),
+        InputMode::Commit => handle_commit_input(app, key)?,
+        InputMode::RemoteUrl => handle_remote_url_input(app, key)?,
+        InputMode::BaseBranch => handle_base_branch_input(app, key)?,
+        InputMode::Normal => {
+            handle_normal_input(app, key, watch_tx, watcher)?;
+            if key.code == event::KeyCode::Char('s') && key.modifiers == event::KeyModifiers::NONE {
+                view_cache.watched.reload(app);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -523,23 +554,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         // Poll for events with a timeout (lets us process watch events too)
         if event::poll(POLL_INTERVAL)? {
             if let Event::Key(key) = event::read()? {
-                // Route keys: overlay takes priority, then search, then normal
-                if app.overlay.is_some() {
-                    handle_overlay_input(app, key)?;
-                } else {
-                    match &app.input_mode {
-                        InputMode::Search => handle_search_input(app, key),
-                        InputMode::Comment => handle_comment_input(app, key)?,
-                        InputMode::Confirm(_) => handle_confirm_input(app, key)?,
-                        InputMode::Filter => handle_filter_input(app, key),
-                        InputMode::Commit => handle_commit_input(app, key)?,
-                        InputMode::RemoteUrl => handle_remote_url_input(app, key)?,
-                        InputMode::BaseBranch => handle_base_branch_input(app, key)?,
-                        InputMode::Normal => {
-                            handle_normal_input(app, key, &watch_tx, &mut watcher)?;
-                        }
-                    }
-                }
+                handle_key(app, key, &watch_tx, &mut watcher, &mut view_cache)?;
             }
 
             // Mark session dirty after any key input
@@ -597,6 +612,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         // Rescan watched files (5 s)
         if !app.tab().is_remote() && app.ai_poll_counter.is_multiple_of(WATCHED_RESCAN_TICKS) {
             app.tab_mut().refresh_watched_files();
+            view_cache.watched.reload(app);
         }
 
         // Check for PR base hint from background thread (fires once)
@@ -1036,5 +1052,76 @@ mod tests {
         // Shift+d is not handled — state unchanged
         assert_eq!(app.input_mode, InputMode::Normal);
         assert_eq!(app.tab().diff_scroll, before_scroll);
+    }
+
+    // ── The watched snapshot diff, read outside the draw ──
+
+    fn watched_ports(path: &str, added: &str) -> er_engine::ports::Ports {
+        let raw = format!(
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,1 @@\n-OLD\n+{added}\n"
+        );
+        let git = er_git::FakeGit::default().with_diff_watched_file_snapshot(Ok(Some(raw)));
+        er_engine::ports::Ports::with_git(std::sync::Arc::new(git))
+    }
+
+    fn frame(app: &App, cache: &mut screen::ViewCache) -> String {
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 16)).unwrap();
+        let mut hl = ui::highlight::Highlighter::new();
+        terminal
+            .draw(|f| ui::draw(f, &screen::from_app(app, cache), &mut hl))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        buffer
+            .content
+            .chunks(usize::from(buffer.area.width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>() + "\n")
+            .collect()
+    }
+
+    /// Selecting another watched file, and updating its snapshot with `s`,
+    /// each show the new diff on the very next frame.
+    #[test]
+    fn the_next_frame_shows_the_selected_watched_files_snapshot_diff() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().to_str().unwrap().to_owned();
+        for (path, line) in [("a.env", "A=2"), ("b.env", "B=2")] {
+            std::fs::write(root.path().join(path), format!("{line}\n")).unwrap();
+        }
+        let mut app = App::new_for_test_with_ports(Vec::new(), watched_ports("a.env", "A=2"));
+        let tab = app.tab_mut();
+        tab.repo_root = root_path.clone();
+        tab.er_root = er_engine::ErRoot::managed(format!("{root_path}/.er"));
+        tab.watched_config.diff_mode = "snapshot".into();
+        tab.show_watched = true;
+        tab.watched_files = ["a.env", "b.env"]
+            .map(|path| er_engine::git::WatchedFile {
+                path: path.into(),
+                modified: std::time::SystemTime::now(),
+                size: 4,
+            })
+            .into();
+        tab.selected_watched = Some(0);
+        let mut cache = screen::ViewCache::default();
+        let drawn = frame(&app, &mut cache);
+        assert!(drawn.contains("+A=2"), "{drawn}");
+
+        app.tab_mut().ports = watched_ports("b.env", "B=2");
+        app.tab_mut().selected_watched = Some(1);
+        let drawn = frame(&app, &mut cache);
+        assert!(
+            drawn.contains("+B=2"),
+            "second file's diff not on the next frame:\n{drawn}"
+        );
+
+        app.tab_mut().ports = watched_ports("b.env", "B=3");
+        let (tx, _rx) = mpsc::channel::<watch::WatchEvent>();
+        let mut watcher: Option<watch::FileWatcher> = None;
+        let key = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
+        handle_key(&mut app, key, &tx, &mut watcher, &mut cache).unwrap();
+        let drawn = frame(&app, &mut cache);
+        assert!(
+            drawn.contains("+B=3"),
+            "updated snapshot's diff not on the next frame:\n{drawn}"
+        );
     }
 }
