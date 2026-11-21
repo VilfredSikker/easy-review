@@ -268,10 +268,14 @@ fn the_flag_on_watcher_never_reads_the_app_to_choose() {
     let body = &source[start..];
     let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
     let flag_on = body
-        .find("let desired = follower.next(")
-        .unwrap_or_else(|| panic!("the flag-on watcher does not take the follower's target"));
+        .find("#[cfg(feature = \"v1-service\")]\n        let desired =")
+        .unwrap_or_else(|| panic!("no flag-on target"));
     let choice = &body[flag_on..];
     let choice = &choice[..choice.find(';').unwrap_or(choice.len())];
+    assert!(
+        choice.contains(".next(&watcher_service"),
+        "the flag-on watcher does not take the follower's target"
+    );
     for app in ["lock(", "desired_local_branch_watch", "watcher_app"] {
         assert!(!choice.contains(app), "the flag-on target reads {app}");
     }
