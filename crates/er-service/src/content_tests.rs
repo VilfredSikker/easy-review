@@ -48,6 +48,7 @@ fn git(raw: &str) -> Arc<FakeGit> {
     Arc::new(
         FakeGit::default()
             .with_current_branch(Ok("feature".to_string()))
+            .with_diff_shortstat((0, 0, 0))
             .with_diff_raw(Ok(raw.to_string())),
     )
 }
@@ -374,6 +375,7 @@ fn a_mode_switch_seeds_the_detected_pr_only_onto_a_tab_without_one() -> anyhow::
         let git = Arc::new(
             FakeGit::default()
                 .with_current_branch(Ok("feature".to_string()))
+                .with_diff_shortstat((0, 0, 0))
                 .with_diff_raw(Ok(RAW.to_string()))
                 .with_fetch(Ok(())),
         );
@@ -562,6 +564,9 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
                 branch_diff_hash: String::new(),
                 preview_head_oid: None,
                 stamps: Default::default(),
+                scope_stats: Default::default(),
+                rules_key: String::new(),
+                risk_artifact: None,
             },
             expanded: Default::default(),
         },
@@ -776,4 +781,106 @@ fn the_closed_keys_stay_bounded_after_ten_thousand_closes() {
         state.apply_patch(late).is_err(),
         "the newest closed key loaded again"
     );
+}
+
+/// `diff(tab)` lists the newest file first when the view sorts by mtime, by
+/// the mtimes the load stamped, and keeps each file's index in the diff, which
+/// the file commands name.
+#[test]
+fn the_diff_resource_keeps_the_mtime_order() {
+    let file = |path: &str| er_engine::git::DiffFile {
+        path: path.to_string(),
+        status: er_engine::git::FileStatus::Modified,
+        hunks: Vec::new(),
+        adds: 1,
+        dels: 1,
+        compacted: false,
+        raw_hunk_count: 0,
+        similarity: None,
+    };
+    let at = |secs: u64| std::time::UNIX_EPOCH + Duration::from_secs(secs);
+    let mut loaded = loaded_tab("/repo");
+    loaded.diff.files = vec![file("a.rs"), file("b.rs"), file("c.rs")];
+    loaded.diff.meta.stamps.mtimes = HashMap::from([
+        ("a.rs".to_string(), at(100)),
+        ("b.rs".to_string(), at(300)),
+        ("c.rs".to_string(), at(200)),
+    ]);
+    let content = crate::content::TabContent::from_loaded(TabKey::next(), *loaded, 1);
+    let listed = |sort_by_mtime| {
+        let inputs = crate::DiffInputs {
+            sort_by_mtime,
+            ..crate::DiffInputs::default()
+        };
+        crate::diff_resource(&content, &inputs)
+            .files
+            .into_iter()
+            .map(|row| (row.path, row.source_index))
+            .collect::<Vec<_>>()
+    };
+    let by_mtime = [("b.rs", 1), ("c.rs", 2), ("a.rs", 0)];
+    let in_diff = [("a.rs", 0), ("b.rs", 1), ("c.rs", 2)];
+    let named = |rows: [(&str, u64); 3]| rows.map(|(p, i)| (p.to_string(), i)).to_vec();
+    assert_eq!(listed(true), named(by_mtime));
+    assert_eq!(listed(false), named(in_diff));
+}
+
+/// `diff(tab)` names the PR head its diff was built from on any PR tab, which
+/// the stale mark compares with the newest head, and the head on screen only
+/// while the view shows the PR's own head, which the merge pins to.
+#[test]
+fn the_diff_resource_names_both_pr_heads() {
+    let pr_tab = |mode: DiffMode, remote: bool| {
+        let mut loaded = loaded_tab("/repo");
+        loaded.tab.mode = mode;
+        loaded.tab.pr_number = Some(12);
+        if remote {
+            loaded.tab.remote_repo = Some("acme/widgets".to_string());
+        } else {
+            loaded.tab.local_branch_view = Some("feature".to_string());
+        }
+        loaded.diff.meta.preview_head_oid = Some("shown-head".to_string());
+        loaded.pr.head_oid = Some("built-head".to_string());
+        crate::content::TabContent::from_loaded(TabKey::next(), *loaded, 1)
+    };
+    let heads = |content: &crate::content::TabContent| {
+        let diff = crate::diff_resource(content, &crate::DiffInputs::default());
+        (diff.built_from_head_oid, diff.pr_diff_head_oid)
+    };
+    let both = (
+        Some("built-head".to_string()),
+        Some("shown-head".to_string()),
+    );
+    assert_eq!(heads(&pr_tab(DiffMode::PrDiff, false)), both, "PR Diff");
+    assert_eq!(heads(&pr_tab(DiffMode::Branch, true)), both, "a remote PR");
+    // The local branch view shows the working tree, which no PR head names.
+    let local = (Some("built-head".to_string()), None);
+    assert_eq!(heads(&pr_tab(DiffMode::Branch, false)), local, "local view");
+
+    // A tab with no PR has no PR head, whatever its section holds.
+    let mut plain = loaded_tab("/repo");
+    plain.pr.head_oid = Some("built-head".to_string());
+    let plain = crate::content::TabContent::from_loaded(TabKey::next(), *plain, 1);
+    assert_eq!(heads(&plain), (None, None), "a plain tab");
+}
+
+/// A write to any one section `diff(tab)` reads raises its version.
+#[test]
+fn each_section_the_diff_reads_raises_its_version() {
+    use crate::content::TabContent;
+    fn section<T>(arc: &mut Arc<T>) -> &mut T {
+        Arc::get_mut(arc).unwrap_or_else(|| panic!("a fresh section is shared"))
+    }
+    let fresh = || TabContent::from_loaded(TabKey::next(), *loaded_tab("/repo"), 1);
+    let base = crate::diff_version(&fresh());
+    for name in ["reviewed", "ai", "pr", "mode"] {
+        let mut content = fresh();
+        match name {
+            "reviewed" => section(&mut content.reviewed).revision += 5,
+            "ai" => section(&mut content.ai).revision += 5,
+            "pr" => section(&mut content.pr).revision += 5,
+            _ => content.mode_revision += 5,
+        }
+        assert!(crate::diff_version(&content) > base, "{name} left {base}");
+    }
 }

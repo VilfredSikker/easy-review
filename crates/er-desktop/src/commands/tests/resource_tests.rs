@@ -38,6 +38,7 @@ fn ports() -> er_engine::ports::Ports {
         er_git::FakeGit::default()
             .with_current_branch(Ok("feature".to_string()))
             .with_detect_base_branch(Ok("main".to_string()))
+            .with_diff_shortstat((0, 0, 0))
             .with_diff_raw(Ok(raw_diff()))
             .with_is_merge_in_progress(false)
             .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string())),
@@ -179,8 +180,18 @@ fn the_relay_hands_on_only_the_sections_that_moved() {
 
         let moved = bursts.recv_timeout(WAIT).expect("no burst after the write");
         let reviewed = content(&state, &tabs[1]).reviewed.revision;
-        assert_eq!(moved, vec![(Watched::Reviewed(active), reviewed)]);
-        assert!(relay::wire(&moved).is_empty(), "{moved:?}");
+        // The tab's diff lists each file's reviewed mark, so it moves too.
+        let diff = resources::diff::published_version(&state.desktop, active, &tabs[1].1);
+        assert_eq!(
+            moved,
+            vec![
+                (Watched::Reviewed(active), reviewed),
+                (Watched::TabDiff(active), diff)
+            ]
+        );
+        let wire: Vec<ResourceKey> = relay::wire(&moved).into_iter().map(|c| c.key).collect();
+        let tab = er_service::wire_tab_key(active);
+        assert_eq!(wire, [ResourceKey::Diff { tab }], "{moved:?}");
     });
 }
 

@@ -9,6 +9,8 @@
 
 pub mod commands;
 #[cfg(feature = "v1-service")]
+pub mod diff;
+#[cfg(feature = "v1-service")]
 mod host;
 #[cfg(feature = "v1-service")]
 pub mod notice;

@@ -18,6 +18,7 @@ mod annotations;
 mod app_registry;
 pub mod arena;
 mod content;
+mod diff_resource;
 mod effect;
 mod flows;
 mod github_comments;
@@ -41,8 +42,10 @@ pub use app_registry::{
     TabsView,
 };
 pub use content::{
-    AiSection, DiffMeta, DiffSection, PrSection, ReviewedSection, SidecarStamp, TabContent,
+    AiSection, DiffMeta, DiffSection, PrSection, ReviewedSection, ScopeStats, SidecarStamp,
+    TabContent,
 };
+pub use diff_resource::{diff_load_error, diff_resource, diff_version, DiffInputs};
 pub use flows::read_flow_run;
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use host::{ReplyReceiver, ServiceHost};
@@ -54,7 +57,7 @@ pub use protocol::{
 };
 pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
 pub use settings_wire::{risk_resource, settings_command, settings_resource};
-pub use workspace::{LiveArenaRun, LiveReviewFlow, WorkspaceTarget, WorkspaceView};
+pub use workspace::{LiveArenaRun, LiveReviewFlow, LoadError, WorkspaceTarget, WorkspaceView};
 
 #[cfg(test)]
 mod flow_tests;
