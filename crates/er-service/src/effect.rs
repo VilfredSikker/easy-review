@@ -229,6 +229,16 @@ pub(crate) fn load_tab(
             .current_branch(&tab.repo_root)
             .map_err(|error| failed("read the checkout's branch", error))?;
     }
+    // Resolved on every load by the desktop watcher's rule, so a branch
+    // checked out, or moved to another worktree, since the last load is read
+    // from where it is now.
+    let watched = er_engine::checkout::watched_branch(
+        tab.identity().is_remote(),
+        tab.local_branch_view.as_deref(),
+        &tab.current_branch,
+    );
+    tab.checkout_root = watched
+        .and_then(|branch| er_engine::checkout::resolve_head_checkout(git, &tab.repo_root, &branch));
     let mut pr_refs_fetched = input.pr_refs_fetched;
     let (mut fetched_commits, mut fetched_head) = (None, None);
     if input.fetch_pr_refs && !tab.identity().is_remote() {
