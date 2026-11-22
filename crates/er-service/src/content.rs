@@ -367,8 +367,15 @@ pub struct SidecarStamp {
     pub arbiter: Option<Vec<u8>>,
 }
 
-/// Files a bucket holds beside the sidecars `er_mtimes` lists.
-const STAMPED_BESIDE: [&str; 2] = ["arbiter.json", "finding-promotions.json"];
+/// Files a bucket holds beside the sidecars `er_mtimes` lists. An arena
+/// accept answers no patch, so the tick reads `accepted-findings.json` into
+/// the AI section; the arena's run files stay out, so a run's progress moves
+/// nothing.
+const STAMPED_BESIDE: [&str; 3] = [
+    "arbiter.json",
+    "finding-promotions.json",
+    "accepted-findings.json",
+];
 
 impl SidecarStamp {
     fn read(dirs: Vec<String>) -> Self {
