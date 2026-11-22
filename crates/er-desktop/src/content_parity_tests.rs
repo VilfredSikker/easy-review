@@ -180,6 +180,8 @@ fn ports(lazy: bool) -> Ports {
             .with_diff_shortstat((2, 5, 1))
             .with_commit_shortstats(HashMap::new())
             .with_diff_raw(Ok(raw.clone()))
+            // A local PR tab's branch view diffs its checkout against the base.
+            .with_diff_checkout_against_base(Ok(raw.clone()))
             .with_log_range(Ok(vec![logged("c2"), logged("c1")]))
             .with_unpushed_shas(["c2".to_string()].into_iter().collect())
             .with_diff_commit(Ok(COMMIT.to_string()))
@@ -267,8 +269,8 @@ struct Observed {
     /// names them: from the snapshot on the App's side, from the resource
     /// builders on the other.
     resource: Value,
-    /// The snapshot's `ai`, `tour` and `other_bucket` on the App's side,
-    /// `annotations(tab)` on the other.
+    /// The snapshot's `ai`, `tour` and `other_bucket` on the App's side, `annotations(tab)`
+    /// on the other.
     annotations: Value,
 }
 
@@ -439,9 +441,14 @@ fn observe(read: Read<'_>, er_dir: &str) -> anyhow::Result<Observed> {
 }
 
 /// A review against an older diff with a high-risk file, a tour, a painted
-/// question on a line the fixture moved, a note, and marks: one current, one
-/// changed, one orphaned.
-fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Result<String> {
+/// question on a moved line, a note, a note's reply ordered before the comment's own
+/// reply, and marks: one current, one changed, one orphaned. A local PR tab's other view
+/// gets its own bucket, by `write_other_bucket`. `current` is the hash of the diff on screen.
+fn write_fixture(
+    resolved: &ResolvedTab,
+    git: &dyn er_git::Git,
+    current: &str,
+) -> anyhow::Result<String> {
     let id = resolved.identity();
     let er_dir = id
         .managed_root(git)
@@ -489,11 +496,18 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
             "version": 1, "diff_hash": "older", "notes": [{
                 "id": "n-1", "file": "src/a.rs", "hunk_index": 0, "line_start": 2,
                 "line_content": "a-new", "text": "check", "resolved": false
+            }, {
+                "id": "n-reply", "file": "src/a.rs", "text": "Still off",
+                "in_reply_to": "c-1", "timestamp": "t4"
             }]
         }),
     );
+    // A local PR tab reads its GitHub comments from the PR bucket in every
+    // view, so they go there.
+    let comments_dir = id.pr_bucket_er_dir(git).unwrap_or_else(|| er_dir.clone());
+    std::fs::create_dir_all(&comments_dir)?;
     write_sidecar_json::<ErGithubComments>(
-        dir,
+        Path::new(&comments_dir),
         json!({ "version": 1, "diff_hash": "older", "comments": [{
             "id": "c-1", "file": "src/a.rs", "hunk_index": 0, "line_start": 2,
             "line_content": "a-new", "comment": "Looks off", "source": "github",
@@ -533,16 +547,10 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
     er_engine::ai::save_finding_promotions(&er_dir, &promoted)?;
     if let Some(tour_dir) = id.tour_bucket_er_dir(git) {
         std::fs::create_dir_all(&tour_dir)?;
-        write_sidecar_json::<ErTour>(
-            Path::new(&tour_dir),
-            json!({
-                "version": 1, "diff_hash": "older", "title": "Walk",
-                "pillars": [{ "id": "p1", "title": "P1", "files": [{
-                    "path": "src/a.rs", "reason": "core",
-                    "related": [{ "path": "src/b.rs", "kind": "test", "reason": "covers it" }]
-                }, { "path": "src/gone.rs", "reason": "left the diff" }] }]
-            }),
-        );
+        write_sidecar_json::<ErTour>(Path::new(&tour_dir), tour_fixture());
+    }
+    if let Some(other_dir) = id.cross_tour_bucket_er_dir(git) {
+        write_other_bucket(Path::new(&other_dir), id.tour_context_is_pr(), current)?;
     }
     let b_hash = er_engine::ai::compute_per_file_hash(HEAD, "src/b.rs").unwrap_or_default();
     let marks = [
@@ -557,9 +565,73 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
     Ok(er_dir)
 }
 
+/// The tour both a tab's own bucket and its other view's bucket hold, so the
+/// one on screen is the other bucket's file.
+fn tour_fixture() -> Value {
+    json!({
+        "version": 1, "diff_hash": "older", "title": "Walk", "created_at": "t5",
+        "pillars": [{ "id": "p1", "title": "P1", "files": [{
+            "path": "src/a.rs", "reason": "core",
+            "related": [{ "path": "src/b.rs", "kind": "test", "reason": "covers it" }]
+        }, { "path": "src/gone.rs", "reason": "left the diff" }] }]
+    })
+}
+
+/// The open findings the other view's bucket holds, two to the shown
+/// bucket's one, so reading the wrong bucket changes the count.
+const OTHER_FINDINGS: u64 = 2;
+
+/// A local PR tab's other view: a triage of the diff on screen, two open
+/// findings and the shared tour. The branch bucket, the PR diff's other view,
+/// has its findings from an expert and no `review.json`, so its generation
+/// hash comes from the newest sidecar; the PR bucket has a `review.json`.
+fn write_other_bucket(dir: &Path, other_is_branch: bool, current: &str) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    write_sidecar_json::<ErTour>(dir, tour_fixture());
+    write_sidecar_json::<er_engine::ai::TriageReview>(
+        dir,
+        json!({
+            "version": 1, "diff_hash": current, "created_at": "t6",
+            "first_impression": "Other", "diff_stats": {
+                "files_changed": 2, "approx_risk": "low", "domains": []
+            },
+            "verdict": { "primary": "general", "experts": [], "rationale": "r", "confidence": "high" },
+            "priority_files": []
+        }),
+    );
+    let finding = |id: &str, line: u32| {
+        json!({
+            "id": id, "severity": "medium", "category": "logic",
+            "title": format!("finding {id}"), "description": "d",
+            "hunk_index": 0, "line_start": line, "line_end": line
+        })
+    };
+    // A review's file names its risk; an expert's does not.
+    let files = json!({ "src/a.rs": {
+        "risk": "low", "findings": [finding("o-1", 2), finding("o-2", 3)]
+    } });
+    if other_is_branch {
+        er_engine::test_support::write_sidecar_json_slot::<er_engine::ai::ExpertReview>(
+            dir,
+            er_store::ExpertId::new("security")?,
+            json!({
+                "version": 1, "expert_id": "security", "diff_hash": current,
+                "created_at": "t7", "files": files
+            }),
+        );
+    } else {
+        write_sidecar_json::<ErReview>(
+            dir,
+            json!({
+                "version": 1, "diff_hash": current, "created_at": "t7", "files": files
+            }),
+        );
+    }
+    Ok(())
+}
+
 thread_local! {
-    /// The diff hash the fixture's review and triage name; the older diff's
-    /// unless a test sets the one on screen.
+    /// The diff hash the fixture's review and triage name, unless a test sets the on-screen one.
     static FRESH_REVIEW: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -581,6 +653,7 @@ fn shown_fixture(
     repo: &str,
     steps: &[DiffMode],
     ports: &Ports,
+    current: &str,
 ) -> anyhow::Result<Option<String>> {
     let Some(&last) = steps.last() else {
         return Ok(None);
@@ -590,7 +663,7 @@ fn shown_fixture(
     if shown.identity().review_bucket() == opened.identity().review_bucket() {
         return Ok(None);
     }
-    write_fixture(&shown, &*ports.git).map(Some)
+    write_fixture(&shown, &*ports.git, current).map(Some)
 }
 
 /// A temp dir holding the checkout both readers share, with the renamed
@@ -621,8 +694,9 @@ fn through_tab_state(
         let ports = ports(lazy);
         let (git, github) = (Arc::clone(&ports.git), Arc::clone(&ports.github));
         let resolved = resolved(kind, repo, mode, &ports)?;
-        let er_dir = write_fixture(&resolved, &*ports.git)?;
-        let shown_dir = shown_fixture((kind, mode), repo, steps, &ports)?;
+        let current = er_engine::ai::compute_diff_hash(&raw(lazy));
+        let er_dir = write_fixture(&resolved, &*ports.git, &current)?;
+        let shown_dir = shown_fixture((kind, mode), repo, steps, &ports, &current)?;
         let mut tab = TabState::from_resolved(resolved, ports)?;
         // The running App's watcher sets the checkout root before a refresh,
         // by the rule the workspace's load runs on every load.
@@ -709,8 +783,9 @@ fn through_the_workspace(
 ) -> anyhow::Result<Observed> {
     er_engine::storage::with_process_test_storage_root(root.join("service-storage"), || {
         let ports = ports(lazy);
-        let er_dir = write_fixture(&resolved(kind, repo, mode, &ports)?, &*ports.git)?;
-        let shown_dir = shown_fixture((kind, mode), repo, steps, &ports)?;
+        let current = er_engine::ai::compute_diff_hash(&raw(lazy));
+        let er_dir = write_fixture(&resolved(kind, repo, mode, &ports)?, &*ports.git, &current)?;
+        let shown_dir = shown_fixture((kind, mode), repo, steps, &ports, &current)?;
         let handle = er_service::spawn(WorkspaceDeps::new(ports));
         let key = TabKey::next();
         let reply = handle.send_and_wait_with(
@@ -873,8 +948,8 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
     }
 }
 
-/// `annotations(tab)` against the snapshot's `ai`, `tour` and
-/// `other_bucket`, naming the fields that differ.
+/// `annotations(tab)` against the snapshot's `ai`, `tour` and `other_bucket`, naming the
+/// fields that differ.
 fn assert_annotations(service: &Value, app: &Value, case: &str) {
     for part in ["tour", "other_bucket"] {
         assert_eq!(
@@ -902,7 +977,7 @@ fn assert_annotations(service: &Value, app: &Value, case: &str) {
 /// Every section the fixture fills must hold something on the App's side,
 /// or a section both readers dropped would pass. AI, staleness and stamps are
 /// checked in part: the review, the stale flag and the mtimes.
-fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
+fn assert_filled(app: &Observed, (kind, mode): (&TabKind, DiffMode), lazy: bool, case: &str) {
     let stubs = app.files.iter().filter(|f| f.3 == 0 && !f.4).count();
     if lazy {
         assert!(
@@ -942,6 +1017,19 @@ fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
         app.annotations["tour"]["available"] == true,
         "{case}: no tour"
     );
+    // The note's reply to c-1 is read before the comment's, at a later time.
+    let thread = ai["threads"]
+        .as_array()
+        .and_then(|threads| threads.iter().find(|t| t["id"] == "c-1"));
+    let replies: Vec<&Value> = thread
+        .and_then(|t| t["replies"].as_array())
+        .map(|rows| rows.iter().map(|r| &r["id"]).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        replies,
+        ["c-2", "n-reply"],
+        "{case}: c-1's replies, oldest first"
+    );
     assert!(app.tour != Value::Null, "{case}: the tour did not load");
     assert!(app.staleness.0, "{case}: the older review was not stale");
     let document = app
@@ -959,10 +1047,22 @@ fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
         // The parity drops nulls, so a head both sides lost would pass it.
         // `pr_diff_head_oid` stays null here: a restored local PR tab has no
         // remote slug to read a preview head with, on either side.
-        // The PR diff's other view is the branch, whose bucket the fixture
-        // leaves empty: the summary still names it.
-        let other = &app.annotations["other_bucket"];
-        assert_eq!(other["view"], "branch", "{case}: no other bucket");
+        // Every fact differs from its default, so a fact both sides dropped
+        // fails here, and the finding count tells the two buckets apart.
+        let view = if mode == DiffMode::PrDiff {
+            "branch"
+        } else {
+            "pr"
+        };
+        assert_eq!(
+            app.annotations["other_bucket"],
+            json!({
+                "view": view, "has_triage": true, "has_review": true,
+                "finding_count": OTHER_FINDINGS, "pillar_count": 1,
+                "tour_shared": true, "same_diff": true,
+            }),
+            "{case}: the other bucket's summary"
+        );
         let built_from = app.resource.get("built_from_head_oid");
         let built_from = built_from.and_then(Value::as_str);
         assert_eq!(built_from, Some(PR_HEAD), "{case}: no built-from head");
@@ -983,14 +1083,13 @@ fn assert_parity(kind: TabKind, mode: DiffMode) -> anyhow::Result<()> {
             let app = through_tab_state((&kind, mode), refreshes, lazy, checkout, &[])?;
             let service = through_the_workspace((&kind, mode), refreshes, lazy, checkout, &[])?;
             assert_sections(&service, &app, &case);
-            assert_filled(&app, &kind, lazy, &case);
+            assert_filled(&app, (&kind, mode), lazy, &case);
         }
     }
     Ok(())
 }
 
-/// A review of the diff on screen regrades triage's call from the projected
-/// findings, which both readers must agree on as well.
+/// A review of the diff on screen regrades triage's call; both readers must agree on it.
 #[test]
 fn a_review_of_the_diff_on_screen_regrades_triage_alike() -> anyhow::Result<()> {
     let hash = er_engine::ai::compute_diff_hash(&raw(false));
@@ -1032,12 +1131,21 @@ fn a_local_pr_tab_loads_the_same_pr_diff() -> anyhow::Result<()> {
     assert_parity(TabKind::LocalPr, DiffMode::PrDiff)
 }
 
+/// The branch view of a local PR tab, whose other view is the PR bucket.
+#[test]
+fn a_local_pr_tab_loads_the_same_branch_view() -> anyhow::Result<()> {
+    assert_parity(TabKind::LocalPr, DiffMode::Branch)
+}
+
 /// `observed` without what a view with its own diff does not share across
 /// the two readers. Neither reads the preview stamps there: the App keeps the
 /// ones the branch view took, the service takes the view's own. Conflicts
 /// and Hidden leave out the preview keys too: the App keys them on the diff
 /// the tab showed before, which it keeps in those views, and the service on
-/// the view's own diff.
+/// the view's own diff. They leave out `relocated_at_hash` on a note with no
+/// line anchor as well: these views skip relocation, so the App shows the
+/// stamp its branch load set in memory and never wrote back, and the service
+/// the bucket as stored. desktop-ui does not read the field.
 fn in_own_view(mut observed: Observed, keyed: bool) -> Observed {
     observed.stamps = Default::default();
     if !keyed {
@@ -1048,6 +1156,12 @@ fn in_own_view(mut observed: Observed, keyed: bool) -> Observed {
                 for row in rows.iter_mut().filter_map(Value::as_object_mut) {
                     row.remove("preview_key");
                 }
+            }
+        }
+        if let Some(Value::Array(notes)) = observed.ai[2].get_mut("notes") {
+            let unanchored = notes.iter_mut().filter(|n| n["line_start"].is_null());
+            for note in unanchored.filter_map(Value::as_object_mut) {
+                note.remove("relocated_at_hash");
             }
         }
     }
@@ -1148,7 +1262,7 @@ fn the_preview_keys_after_a_history_visit_match() -> anyhow::Result<()> {
     let (app, service) = switched(&[DiffMode::History, DiffMode::Branch])?;
     let case = "Branch after History";
     assert_sections(&service, &app, case);
-    assert_filled(&app, &TabKind::Working, false, case);
+    assert_filled(&app, (&TabKind::Working, DiffMode::Branch), false, case);
     assert_eq!(scroller(&app), (2, None), "{case}: the commit list");
     Ok(())
 }

@@ -1,7 +1,6 @@
-//! What `annotations(tab)` reads beside the AI state: the finding
-//! promotions, whether the review file exists, and what the other view's
-//! bucket holds. The load and reload effects read them under the AI
-//! section's stamp, so the section's revision covers them too.
+//! What `annotations(tab)` reads beside the AI state: the finding promotions, whether
+//! the review file exists, and what the other view's bucket holds. The load and reload
+//! effects read them under the AI section's stamp, so its revision covers them too.
 
 use std::collections::HashMap;
 
