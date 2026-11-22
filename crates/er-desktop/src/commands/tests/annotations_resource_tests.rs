@@ -262,8 +262,7 @@ fn annotations_version(state: &AppState, (key, _): &(TabKey, TabDescriptor)) -> 
     }
 }
 
-/// One service question moves `annotations(tab)` once: the tick after it
-/// reads the workspace's own write as nothing new.
+/// One service question moves `annotations(tab)` once; the next tick reads it as nothing new.
 #[test]
 fn a_service_question_moves_the_annotations_once_across_the_next_tick() {
     with_storage(|dir| {
@@ -303,8 +302,7 @@ fn a_service_question_moves_the_annotations_once_across_the_next_tick() {
     });
 }
 
-/// A question an outside writer leaves in the view's bucket moves
-/// `annotations(tab)` through the tick, with no frontend call.
+/// A question an outside writer leaves in the bucket moves `annotations(tab)` through the tick.
 #[test]
 fn an_outside_question_moves_the_annotations_through_the_tick() {
     with_storage(|dir| {
@@ -325,6 +323,66 @@ fn an_outside_question_moves_the_annotations_through_the_tick() {
         wait_until("the outside question", || {
             annotations_version(&state, &tab) > before
         });
+    });
+}
+
+fn annotations(
+    state: &AppState,
+    (key, _): &(TabKey, TabDescriptor),
+) -> (u64, er_protocol::AiAnnotations) {
+    let tab = er_service::wire_tab_key(*key);
+    match resources::fetch(&state.desktop, ResourceKey::Annotations { tab }) {
+        Ok(fetched) => match fetched.value {
+            Resource::Annotations(a) => (fetched.version.0, a.ai),
+            other => panic!("not annotations: {other:?}"),
+        },
+        Err(e) => panic!("{e:?}"),
+    }
+}
+
+/// An outside promotion reaches the finding through the tick's reload of `finding-promotions.json`.
+#[test]
+fn an_outside_promotion_reaches_the_finding_through_the_tick() {
+    with_storage(|dir| {
+        let (state, tab) = working(dir, raw_diff());
+        let er_dir = content(&state, &tab).context.er_dir.clone();
+        let bucket = Path::new(&er_dir);
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+            bucket,
+            serde_json::json!({ "version": 1, "diff_hash": "", "files": { "src/f0.rs": {
+                "risk": "high", "findings": [{ "id": "f-1", "severity": "high", "title": "claim" }]
+            } } }),
+        );
+        stamp_ahead(&bucket.join("review.json"));
+        tick::run(&state.desktop, &state.app);
+        wait_until("the review", || {
+            annotations(&state, &tab)
+                .1
+                .findings
+                .iter()
+                .any(|f| f.id == "f-1")
+        });
+        let (before, _) = annotations(&state, &tab);
+
+        let promoted = [("f-1".to_string(), "77".to_string())]
+            .into_iter()
+            .collect();
+        let saved = er_engine::ai::save_finding_promotions(&er_dir, &promoted);
+        assert!(saved.is_ok(), "{saved:?}");
+        stamp_ahead(&bucket.join("finding-promotions.json"));
+        tick::run(&state.desktop, &state.app);
+
+        wait_until("the annotations to move", || {
+            annotations(&state, &tab).0 > before
+        });
+        let (_, ai) = annotations(&state, &tab);
+        let finding = ai.findings.iter().find(|f| f.id == "f-1");
+        let promoted_to = finding.and_then(|f| f.promoted_to.as_deref());
+        assert_eq!(
+            promoted_to,
+            Some("77"),
+            "the reload kept the old promotions"
+        );
     });
 }
 

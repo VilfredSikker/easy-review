@@ -235,11 +235,14 @@ describe("resource source scans", () => {
     for (const kind of ["review_json", "review_revisions", "annotation_screenshot"]) {
       expect(reads).toContain(`kind: "${kind}"`);
     }
+    // The tab comes from the adapter, which reads no view: the App's mode goes stale with the flag on.
+    expect(reads.match(/annotationsResource\.fetchedTab\(\)/g)).toHaveLength(2);
+    expect(reads).not.toMatch(/\bapp\b|\.mode\b/);
   });
 
   it("DiffView joins its hunks with the threads of annotations(tab)", () => {
     const store = stripped(join("lib", "stores", "diffResource.svelte.ts"));
-    expect(store).toMatch(/threads: \(\) => \{[\s\S]*annotationsResource\.threads\(/);
+    expect(store).toMatch(/threads: \(\) => \{[\s\S]*annotationsResource\.threads\(\)/);
   });
 
   it("with the flag on the previews and the path list read the tab's content through er_fetch", () => {
