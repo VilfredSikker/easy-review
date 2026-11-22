@@ -68,6 +68,7 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::View { tab } => super::tabs::view(desktop, *tab)?,
         ResourceKey::Diff { tab } => super::diff::diff(desktop, *tab)?,
         ResourceKey::Hunks { tab, path, hash } => super::hunks::hunks(desktop, *tab, path, hash)?,
+        ResourceKey::Annotations { tab } => super::annotations::annotations(desktop, *tab)?,
         ResourceKey::UiAnnotations { tab } => super::annotations::ui_annotations(desktop, *tab)?,
         ResourceKey::Jobs => super::jobs::jobs(desktop),
         ResourceKey::ReviewJson { tab } => super::annotations::review_json(desktop, *tab)?,
@@ -121,6 +122,10 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::Panels => super::session::panels_version(desktop),
         ResourceKey::View { tab } => super::tabs::view_version(desktop, *tab)?,
         ResourceKey::Diff { tab } => super::diff::version(desktop, *tab)?,
+        ResourceKey::Annotations { tab } => {
+            let entry = super::diff::listed(desktop, *tab)?;
+            super::annotations::annotations_version(desktop, entry.key, &entry.descriptor)
+        }
         ResourceKey::UiAnnotations { tab } => {
             let entry = super::diff::listed(desktop, *tab)?;
             super::annotations::ui_annotations_version(desktop, entry.key, &entry.descriptor)
@@ -421,6 +426,8 @@ pub enum Watched {
     /// A listed tab's `diff(tab)`: every section its rows read, or its load
     /// failure.
     TabDiff(TabKey),
+    /// A loaded tab's `annotations(tab)`, built from its AI section.
+    Annotations(TabKey),
     /// A loaded tab's browser annotations.
     UiAnnotations(TabKey),
     Jobs,
@@ -440,6 +447,9 @@ impl Watched {
                 tab: er_service::wire_tab_key(*key),
             }),
             Self::TabDiff(key) => Some(ResourceKey::Diff {
+                tab: er_service::wire_tab_key(*key),
+            }),
+            Self::Annotations(key) => Some(ResourceKey::Annotations {
                 tab: er_service::wire_tab_key(*key),
             }),
             Self::UiAnnotations(key) => Some(ResourceKey::UiAnnotations {
@@ -491,11 +501,20 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
         let version = super::diff::published_version(desktop, entry.key, &entry.descriptor);
         (version > 0).then_some((Watched::TabDiff(entry.key), version))
     }));
-    versions.extend(tabs.tabs.iter().filter_map(|entry| {
-        let content = desktop.service.content(entry.key, &entry.descriptor)?;
-        let version = super::annotations::ui_version(desktop, &content);
-        Some((Watched::UiAnnotations(entry.key), version))
-    }));
+    versions.extend(
+        tabs.tabs
+            .iter()
+            .filter_map(|entry| {
+                let content = desktop.service.content(entry.key, &entry.descriptor)?;
+                let version = super::annotations::ui_version(desktop, &content);
+                let annotations = er_service::annotations_version(&content);
+                Some([
+                    (Watched::UiAnnotations(entry.key), version),
+                    (Watched::Annotations(entry.key), annotations),
+                ])
+            })
+            .flatten(),
+    );
     for view in desktop.service.published_views() {
         for (&key, content) in &view.tabs {
             versions.extend([

@@ -1,6 +1,7 @@
-//! What a tab's view bucket holds beside its AI section, on the flag path:
-//! the browser annotations, which only the desktop writes, and the review
-//! reads computed on each fetch. Each reads the bucket of the content the
+//! What a tab's buckets hold, on the flag path: `annotations(tab)`, built
+//! from the AI section its workspace published, the browser annotations,
+//! which only the desktop writes, and the review reads computed on each
+//! fetch. Each reads the bucket of the content the
 //! tab's workspace published, `context.er_dir`; the GitHub-comment bucket is
 //! never one of them.
 
@@ -15,6 +16,28 @@ use er_protocol::{
 use er_service::TabContent;
 
 use crate::state::DesktopState;
+
+/// `annotations(tab)` from the AI section the tab's workspace published. A
+/// listed tab nothing loaded posts `LoadTab` and answers empty at version 0.
+pub fn annotations(
+    desktop: &DesktopState,
+    wire: er_protocol::TabKey,
+) -> Result<(u64, Resource), ErError> {
+    let Some(content) = loaded(desktop, wire)? else {
+        return Ok((0, Resource::Annotations(Box::default())));
+    };
+    let annotations = er_service::annotations_resource(&content);
+    let version = er_service::annotations_version(&content);
+    Ok((version, Resource::Annotations(Box::new(annotations))))
+}
+
+/// `annotations(tab)`'s version, read without building it or loading anything.
+pub fn annotations_version(desktop: &DesktopState, key: TabKey, tab: &TabDescriptor) -> u64 {
+    desktop
+        .service
+        .content(key, tab)
+        .map_or(0, |content| er_service::annotations_version(&content))
+}
 
 /// `ui_annotations(tab)` from the annotations file in the tab's view bucket.
 /// A listed tab nothing loaded posts `LoadTab` and answers none at version 0.
