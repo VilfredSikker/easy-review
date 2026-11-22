@@ -667,16 +667,18 @@ fn handle_command(
         Command::ToggleChecklistItem { context, index } => {
             // The item is the one the AI section holds at the index, as the
             // App's toggle reads it; an index it no longer holds writes nothing.
-            let item = crate::sidecar_reload::readers(state, &context.er_dir)
+            // The new flag comes from the stored item, since this section
+            // lags a toggle still in flight.
+            let item_id = crate::sidecar_reload::readers(state, &context.er_dir)
                 .first()
                 .and_then(|content| {
                     let item = content.ai.state.checklist.as_ref()?.items.get(index)?;
-                    Some((item.id.clone(), !item.checked))
+                    Some(item.id.clone())
                 });
-            match item {
-                Some((item_id, checked)) => {
+            match item_id {
+                Some(item_id) => {
                     spawn_ai_write(deps, state, tx, reply, context, move |context| {
-                        crate::finding_writes::set_checklist_item(context, &item_id, checked)
+                        crate::finding_writes::toggle_checklist_item(context, &item_id)
                     });
                 }
                 None => {

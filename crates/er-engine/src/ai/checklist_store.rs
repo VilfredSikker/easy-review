@@ -84,6 +84,25 @@ pub fn set_checked(
     item_id: &str,
     checked: bool,
 ) -> Result<(ErChecklist, Option<bool>), UpdateError<ChecklistItemMissing>> {
+    update_item(store, scope, item_id, |_| checked)
+}
+
+/// Flip one item's `checked` flag from the stored value, under the scope
+/// lock, so two toggles sent before either lands still flip it twice.
+pub fn toggle_checked(
+    store: &ArtifactStore,
+    scope: &Scope,
+    item_id: &str,
+) -> Result<(ErChecklist, Option<bool>), UpdateError<ChecklistItemMissing>> {
+    update_item(store, scope, item_id, |checked| !checked)
+}
+
+fn update_item(
+    store: &ArtifactStore,
+    scope: &Scope,
+    item_id: &str,
+    checked: impl FnOnce(bool) -> bool,
+) -> Result<(ErChecklist, Option<bool>), UpdateError<ChecklistItemMissing>> {
     let key = key::<ErChecklist>(scope)?;
     let (checklist, _) = store.update(&key, DEFAULT_LOCK_TIMEOUT, |current| {
         let Some(mut checklist) = current else {
@@ -92,7 +111,7 @@ pub fn set_checked(
         let Some(item) = checklist.items.iter_mut().find(|item| item.id == item_id) else {
             return Err(ChecklistItemMissing);
         };
-        item.checked = checked;
+        item.checked = checked(item.checked);
         Ok(checklist)
     })?;
     let state = checklist
@@ -210,6 +229,17 @@ mod tests {
             assert_eq!(app.toggle_checklist_item_at(1).unwrap(), None);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), rewritten);
         });
+    }
+
+    #[test]
+    fn a_toggle_flips_the_stored_flag() {
+        let tmp = TempDir::new().unwrap();
+        let (store, scope) = store_and_scope(&tmp);
+        crate::test_support::write_sidecar(tmp.path(), &checklist());
+
+        assert_eq!(toggle_checked(&store, &scope, "c1").unwrap().1, Some(true));
+        assert_eq!(toggle_checked(&store, &scope, "c1").unwrap().1, Some(false));
+        assert!(!loaded(&store, &scope).items[0].checked);
     }
 
     #[test]

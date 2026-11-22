@@ -80,17 +80,15 @@ pub(crate) fn delete_finding_response(
         .map_err(|error| failed("Failed to delete the response", error))
 }
 
-/// Sets one checklist item's flag. An item the checklist no longer holds
-/// writes nothing: the generator rewrote it since the page read it.
-pub(crate) fn set_checklist_item(
-    ctx: &TabContext,
-    item_id: &str,
-    checked: bool,
-) -> Result<(), WorkspaceError> {
+/// Flips one checklist item's flag from the stored value, so the store's
+/// lock orders two toggles sent close together. An item the checklist no
+/// longer holds writes nothing: the generator rewrote it since the page
+/// read it.
+pub(crate) fn toggle_checklist_item(ctx: &TabContext, item_id: &str) -> Result<(), WorkspaceError> {
     let store = er_engine::store_registry::store();
     let scope =
         er_store::Scope::dir(&ctx.er_dir).map_err(|error| failed("open the bucket", error))?;
-    match ai::checklist_store::set_checked(&store, &scope, item_id, checked) {
+    match ai::checklist_store::toggle_checked(&store, &scope, item_id) {
         Ok(_) | Err(er_store::UpdateError::Apply(_)) => Ok(()),
         Err(er_store::UpdateError::Store(error)) => {
             Err(failed("Failed to toggle checklist item", error))
