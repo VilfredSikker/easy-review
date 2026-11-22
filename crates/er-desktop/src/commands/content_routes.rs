@@ -491,6 +491,30 @@ pub(crate) fn change_tab_base(state: &DesktopState, key: TabKey, base: &str) -> 
     Ok(())
 }
 
+/// Expands `path` in `key`'s diff in full, or compacts it again. Either
+/// choice is kept across the tab's later loads.
+pub(crate) fn set_file_compacted(
+    state: &DesktopState,
+    key: TabKey,
+    path: &str,
+    compacted: bool,
+) -> Result<(), String> {
+    let entry = listed(state, key)?;
+    content_of(state, &entry)?;
+    let paths = vec![path.to_string()];
+    let command = if compacted {
+        Command::CompactFiles { key, paths }
+    } else {
+        Command::ParseFiles {
+            key,
+            paths,
+            expand: true,
+        }
+    };
+    send(state, &entry.tab, command)?;
+    Ok(())
+}
+
 /// Selects the file at `idx` in the active tab's view state (D20) and parses
 /// it when it is a lazy stub.
 pub(super) fn select_file(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {

@@ -39,7 +39,7 @@ export type DiffSlice = Pick<
 export const RECORDED_MODES: ReadonlySet<string> = new Set(["history", "conflicts", "hidden"]);
 
 /** The commands those views leave to the App, whose base and filter they read. */
-const APP_IN_RECORDED: ReadonlySet<string> = new Set(["change_base", "set_filter", "clear_filter"]);
+const APP_IN_RECORDED: ReadonlySet<string> = new Set(["change_base", "set_filter", "clear_filter", "toggle_compacted"]);
 
 export function diffKey(tab: TabKey): ResourceKey {
   return { kind: "diff", tab };
@@ -216,6 +216,10 @@ export function wireDiffCommand(command: string, a: Args, tab: TabKey): Command 
       return { kind: "sync_pr", projectId: String(a.projectId), prNumber: Number(a.prNumber) };
     case "sync_branch":
       return { kind: "sync_branch", projectId: String(a.projectId), branch: String(a.branch) };
+    case "toggle_compacted":
+      // The App's toggle acts on its selected file; the wire names the file and the direction.
+      if (typeof a.path !== "string") return undefined;
+      return { kind: "set_file_compacted", tab, path: a.path, compacted: Boolean(a.compacted) };
     default:
       return undefined;
   }

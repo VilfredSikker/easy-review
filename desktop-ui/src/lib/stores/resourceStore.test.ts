@@ -143,6 +143,21 @@ describe("ResourceStore", () => {
     store.stop();
   });
 
+  it("asks a rechecked key's version and refetches it once it moved, with no push", async () => {
+    const backend = fakeBackend();
+    const store = new ResourceStore(backend.client, 60_000);
+    store.show(TABS);
+    await settle();
+    backend.calls.length = 0;
+
+    const next = backend.move([2]);
+    store.recheck([TABS]);
+    await settle();
+
+    expect(backend.calls).toEqual(["er_versions", "er_fetch"]);
+    expect(heldTabs(store)?.version).toBe(next);
+  });
+
   it("refetches what an Ack names before any push arrives", async () => {
     const backend = fakeBackend();
     const store = new ResourceStore(backend.client, 60_000);

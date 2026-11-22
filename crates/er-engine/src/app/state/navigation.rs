@@ -675,7 +675,7 @@ impl TabState {
 
     /// Load the diff for the currently selected commit
     pub fn history_load_selected_diff(&mut self) {
-        let (hash, repo_root) = {
+        let hash = {
             let history = match self.history.as_mut() {
                 Some(h) => h,
                 None => return,
@@ -695,42 +695,18 @@ impl TabState {
                 history.h_scroll = 0;
                 return;
             }
-            (commit_hash, self.repo_root.clone())
+            commit_hash
         };
 
-        let raw_diff = match self.ports.git.diff_commit(&hash, &repo_root) {
-            Ok(raw) => Ok(raw),
-            Err(first_err)
-                if self.pr_number.is_some()
-                    && (self.local_branch_view.is_some()
-                        || self.history_return_mode == DiffMode::PrDiff)
-                    && !self.is_remote() =>
-            {
-                // A PR commit missing from the object DB means the PR head was
-                // never fetched here. Fetching the head ref brings it in without
-                // touching the working tree (ADR 0020).
-                if let Some(pr_number) = self.pr_number {
-                    if let Ok(head_ref) =
-                        crate::github::fetch_pr_head(&*self.ports.git, pr_number, &self.repo_root)
-                    {
-                        self.pr_head_ref = Some(head_ref);
-                        self.pr_refs_fetched = true;
-                    }
-                }
-                self.ports
-                    .git
-                    .diff_commit(&hash, &repo_root)
-                    .map_err(|_| first_err)
-            }
-            Err(err) => Err(err),
-        };
-        let files = match raw_diff {
-            Ok(raw) => git::parse_diff(&raw),
-            Err(err) => {
-                eprintln!("Failed to load commit diff for {hash}: {err}");
-                Vec::new()
-            }
-        };
+        let diff = crate::history::commit_diff(&*self.ports.git, &self.history_source(), &hash);
+        if let Some(head_ref) = diff.fetched_head {
+            self.pr_head_ref = Some(head_ref);
+            self.pr_refs_fetched = true;
+        }
+        if let Some(err) = &diff.error {
+            eprintln!("Failed to load commit diff for {hash}: {err}");
+        }
+        let files = diff.files;
 
         let history = match self.history.as_mut() {
             Some(h) => h,
@@ -946,12 +922,8 @@ impl TabState {
 
         // Runs synchronously on the event loop thread — a slow `git log` blocks the UI
         // for its full duration.
-        let (head_ref, log_root) = self.history_log_source();
-        let new_commits = self
-            .ports
-            .git
-            .log_range(&self.base_branch, &head_ref, &log_root, 50, skip)
-            .unwrap_or_default();
+        let new_commits =
+            crate::history::more_commits(&*self.ports.git, &self.history_source(), skip);
 
         let history = match self.history.as_mut() {
             Some(h) => h,
