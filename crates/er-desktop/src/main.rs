@@ -1217,7 +1217,7 @@ fn main() {
     );
     #[cfg(feature = "v1-service")]
     if let Ok(app) = app_arc.lock() {
-        er_desktop::arena_service::attach(&app, Arc::clone(&service));
+        er_desktop::arena_commands::attach_live_runs(&app, Arc::clone(&service));
         er_desktop::flow_service::reconcile_on_load(&app, &service);
     }
     let desktop = er_desktop::state::DesktopState {
