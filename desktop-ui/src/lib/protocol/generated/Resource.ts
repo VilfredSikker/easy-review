@@ -14,6 +14,7 @@ import type { Risk } from "./Risk";
 import type { Session } from "./Session";
 import type { Settings } from "./Settings";
 import type { TabDiff } from "./TabDiff";
+import type { TabReviewed } from "./TabReviewed";
 import type { TabView } from "./TabView";
 import type { Tabs } from "./Tabs";
 import type { Worktrees } from "./Worktrees";
@@ -21,4 +22,4 @@ import type { Worktrees } from "./Worktrees";
 /**
  * One resource's content, tagged with the kind of key it answers.
  */
-export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "available_branches" } & AvailableBranches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk | { "kind": "prs" } & Prs | { "kind": "available_prs" } & AvailablePrs | { "kind": "worktrees" } & Worktrees | { "kind": "inbox" } & Inbox | { "kind": "session" } & Session | { "kind": "panels" } & Panels | { "kind": "view" } & TabView | { "kind": "diff" } & TabDiff | { "kind": "hunks" } & FileHunks | { "kind": "file_preview" } & FilePreview | { "kind": "image_preview" } & ImagePreview | { "kind": "diff_paths" } & DiffPaths;
+export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "available_branches" } & AvailableBranches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk | { "kind": "prs" } & Prs | { "kind": "available_prs" } & AvailablePrs | { "kind": "worktrees" } & Worktrees | { "kind": "inbox" } & Inbox | { "kind": "session" } & Session | { "kind": "panels" } & Panels | { "kind": "view" } & TabView | { "kind": "diff" } & TabDiff | { "kind": "hunks" } & FileHunks | { "kind": "reviewed" } & TabReviewed | { "kind": "file_preview" } & FilePreview | { "kind": "image_preview" } & ImagePreview | { "kind": "diff_paths" } & DiffPaths;

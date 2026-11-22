@@ -3,7 +3,8 @@ use ts_rs::TS;
 
 use crate::{
     AvailableBranches, AvailablePrs, Branches, DiffPaths, FileHunks, FilePreview, ImagePreview,
-    Inbox, Panels, Projects, Prs, Risk, Session, Settings, TabDiff, TabRow, TabView, Worktrees,
+    Inbox, Panels, Projects, Prs, Risk, Session, Settings, TabDiff, TabReviewed, TabRow, TabView,
+    Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -71,6 +72,8 @@ pub enum ResourceKey {
         path: String,
         hash: String,
     },
+    /// One open tab's reviewed marks and counts, by its key.
+    Reviewed { tab: TabKey },
     /// A document's text in a tab's view, read on each fetch. `context` is
     /// the preview context key the page holds; a view that moved since
     /// answers `Stale`.
@@ -108,6 +111,7 @@ pub enum Resource {
     View(TabView),
     Diff(Box<TabDiff>),
     Hunks(FileHunks),
+    Reviewed(TabReviewed),
     FilePreview(FilePreview),
     ImagePreview(ImagePreview),
     DiffPaths(DiffPaths),

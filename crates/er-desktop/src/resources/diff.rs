@@ -27,7 +27,7 @@ use crate::state::DesktopState;
 use crate::view_state::TabFilter;
 
 /// What a tab's workspace has published for it.
-enum Published {
+pub(super) enum Published {
     Content(Arc<TabContent>),
     Failed { revision: u64, message: String },
     Nothing,
@@ -93,7 +93,7 @@ pub(super) fn listed(
         })
 }
 
-fn published(desktop: &DesktopState, entry: &TabEntry) -> Published {
+pub(super) fn published(desktop: &DesktopState, entry: &TabEntry) -> Published {
     let Some(view) = desktop
         .service
         .published_view(&actor_key(&entry.descriptor))
