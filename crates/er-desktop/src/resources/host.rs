@@ -261,6 +261,8 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::ChangeBase { .. }
         | Command::SetFilter { .. }
         | Command::RefreshDiff { .. }
+        | Command::SelectCommit { .. }
+        | Command::ExitHistory { .. }
         | Command::SyncPr { .. }
         | Command::SyncBranch { .. }) => {
             return Err(ErError {

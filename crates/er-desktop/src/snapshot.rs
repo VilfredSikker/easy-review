@@ -3320,14 +3320,10 @@ fn log_snapshot_build(
     );
 }
 
-/// Whether the snapshot carries the App's hunks in `mode`. With the flag on
-/// the page fetches them by hash, except in the views the App still loads.
-fn app_shows_hunks(mode: DiffMode) -> bool {
+/// Whether the snapshot carries the App's hunks. With the flag on the page
+/// fetches them by hash in every view.
+const fn app_shows_hunks() -> bool {
     !cfg!(feature = "v1-service")
-        || matches!(
-            mode,
-            DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden
-        )
 }
 
 /// The active tab's rows, read from the engine tab. See
@@ -3407,13 +3403,13 @@ fn app_tab_content(app: &App, sources: &SnapshotSources<'_>, chrome_only: bool) 
                 let line_count = f.hunks.iter().map(|h| h.lines.len()).sum::<usize>();
                 let is_large = f.adds + f.dels > tab.compaction_config.max_lines_before_compact;
                 let include_hunks = !f.compacted
-                    && app_shows_hunks(tab.mode)
+                    && app_shows_hunks()
                     && (!is_large || source_index == active_selected || diff_line_budget > 0);
                 if include_hunks && is_large {
                     diff_line_budget = diff_line_budget.saturating_sub(line_count);
                 }
                 let mut snap = build_file_snapshot(source_index, f, tab, pending_ai, include_hunks);
-                if !app_shows_hunks(tab.mode) {
+                if !app_shows_hunks() {
                     // Left out for the page to fetch by hash, not for the line
                     // budget: the row keeps the stub flag the App's parse gives.
                     snap.is_lazy_stub =

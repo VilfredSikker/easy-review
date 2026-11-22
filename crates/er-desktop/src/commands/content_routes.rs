@@ -356,67 +356,18 @@ pub(crate) fn sync_tab(state: &DesktopState, key: TabKey) -> Result<Synced, Stri
     })
 }
 
-/// Whether the active tab's content records History, whose files the App
-/// still shows.
-pub(super) fn shows_history(state: &AppState) -> bool {
-    let Ok(active) = active(state) else {
-        return false;
-    };
-    let content = state.service.content(active.key, &active.tab);
-    content.is_some_and(|content| content.tab.mode == DiffMode::History)
-}
-
-/// The modes the workspace loads. The others stay on the App until the
-/// snapshot reads the content.
+/// The views the workspace loads, by the names the page sends.
 pub(crate) fn routed_mode(mode: &str) -> Option<DiffMode> {
     match mode {
         "branch" => Some(DiffMode::Branch),
         "unstaged" => Some(DiffMode::Unstaged),
         "staged" => Some(DiffMode::Staged),
-        "pr" | "pr_diff" => Some(DiffMode::PrDiff),
-        "tour" => Some(DiffMode::Tour),
-        _ => None,
-    }
-}
-
-/// The views the App still shows, which the workspace records on the
-/// active tab's content without loading anything.
-pub(super) fn recorded_mode(mode: &str) -> Option<DiffMode> {
-    match mode {
         "history" => Some(DiffMode::History),
         "conflicts" => Some(DiffMode::Conflicts),
         "hidden" => Some(DiffMode::Hidden),
+        "pr" | "pr_diff" => Some(DiffMode::PrDiff),
+        "tour" => Some(DiffMode::Tour),
         _ => None,
-    }
-}
-
-/// Records `mode` on the active tab's content, when it is loaded, under the
-/// same feature gate and painted-tab check as a routed switch. The App path
-/// runs after it either way, so a failure here is only logged.
-pub(super) fn record_mode(state: &AppState, name: &str, mode: DiffMode, tab_idx: Option<usize>) {
-    let features = state.service.settings().view().config.features.clone();
-    if !super::feature_allows_mode_str(&features, name) {
-        return;
-    }
-    let view = state.service.app_registry().tabs_view();
-    if tab_idx.is_some_and(|idx| view.key_at(idx) != view.active) {
-        return;
-    }
-    let Ok(active) = active(state) else {
-        return;
-    };
-    let loaded = state.service.content(active.key, &active.tab);
-    if loaded.is_none_or(|content| content.tab.mode == mode) {
-        return;
-    }
-    let key = active.key;
-    let command = Command::SetDiffMode {
-        key,
-        mode,
-        pr_number: None,
-    };
-    if let Err(error) = send(state, &active.tab, command) {
-        log::warn!("er-desktop: recording the {mode:?} view failed: {error}");
     }
 }
 
@@ -473,6 +424,44 @@ pub(crate) fn set_tab_mode(
         )?;
     }
     Ok(())
+}
+
+/// Shows commit `sha` of `key`'s History, under History's feature gate.
+pub(crate) fn select_tab_commit(
+    state: &DesktopState,
+    key: TabKey,
+    sha: &str,
+) -> Result<(), String> {
+    let features = state.service.settings().view().config.features.clone();
+    if !super::feature_allows_mode_str(&features, "history") {
+        return Err("'history' view is disabled in settings".to_string());
+    }
+    let entry = listed(state, key)?;
+    content_of(state, &entry)?;
+    let sha = sha.to_string();
+    send(state, &entry.tab, Command::SelectCommit { key, sha })?;
+    Ok(())
+}
+
+/// Shows `key` in the view its History was entered from.
+pub(crate) fn exit_tab_history(state: &DesktopState, key: TabKey) -> Result<(), String> {
+    let entry = listed(state, key)?;
+    content_of(state, &entry)?;
+    send(state, &entry.tab, Command::ExitHistory { key })?;
+    Ok(())
+}
+
+/// The active tab's History, for the old commands with the flag on.
+pub(super) fn select_commit(state: &AppState, sha: &str) -> Result<AppSnapshot, String> {
+    let active = active(state)?;
+    select_tab_commit(state, active.key, sha)?;
+    Ok(AppSnapshot::default())
+}
+
+pub(super) fn exit_history(state: &AppState) -> Result<AppSnapshot, String> {
+    let active = active(state)?;
+    exit_tab_history(state, active.key)?;
+    Ok(AppSnapshot::default())
 }
 
 /// Diffs `key` against `base` and keeps it as the tab's saved base, as the

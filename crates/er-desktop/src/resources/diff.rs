@@ -168,7 +168,7 @@ pub fn apply(desktop: &DesktopState, command: Command, effects: &Effects<'_>) ->
             pr_number,
         } => resolve(desktop, tab).and_then(|key| {
             let Some(diff_mode) = content_routes::routed_mode(&mode) else {
-                return Err(refused(format!("the {mode} view keeps its own command")));
+                return Err(refused(format!("no {mode} view")));
             };
             content_routes::set_tab_mode(desktop, key, &mode, diff_mode, pr_number)
                 .map_err(refused)?;
@@ -187,6 +187,14 @@ pub fn apply(desktop: &DesktopState, command: Command, effects: &Effects<'_>) ->
         }),
         Command::RefreshDiff { tab, sync } => resolve(desktop, tab).and_then(|key| {
             refresh(desktop, key, sync, effects)?;
+            Ok(moved(desktop, &[key]))
+        }),
+        Command::SelectCommit { tab, sha } => resolve(desktop, tab).and_then(|key| {
+            content_routes::select_tab_commit(desktop, key, &sha).map_err(refused)?;
+            Ok(moved(desktop, &[key]))
+        }),
+        Command::ExitHistory { tab } => resolve(desktop, tab).and_then(|key| {
+            content_routes::exit_tab_history(desktop, key).map_err(refused)?;
             Ok(moved(desktop, &[key]))
         }),
         Command::SyncPr {

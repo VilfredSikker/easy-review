@@ -1031,7 +1031,7 @@ pub async fn request_file_content(
 pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
-    return run_blocking(move || select_file_routed(&state, idx)).await;
+    return run_blocking(move || content_routes::select_file(&state, idx)).await;
     #[cfg(not(feature = "v1-service"))]
     return run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -1052,18 +1052,6 @@ pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSn
         Ok(snap_from(&app, &state))
     })
     .await;
-}
-
-/// History still shows the App's commit files, so a click there reaches the
-/// App's History selection; any other view takes the content route.
-#[cfg(feature = "v1-service")]
-fn select_file_routed(state: &AppState, idx: usize) -> Result<AppSnapshot, String> {
-    if content_routes::shows_history(state) {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.tab_mut().history_select_file(idx);
-        return Ok(snap_from(&app, state));
-    }
-    content_routes::select_file(state, idx)
 }
 
 #[derive(serde::Serialize)]
@@ -1290,16 +1278,10 @@ fn set_mode_impl(
     pr_number: Option<u64>,
     tab_idx: Option<usize>,
 ) -> Result<AppSnapshot, String> {
-    // The modes the workspace loads go to the active tab's actor; History,
-    // Conflicts and Hidden are recorded there and stay on the App until
-    // the snapshot reads the content.
+    // Every view the workspace loads goes to the active tab's actor.
     #[cfg(feature = "v1-service")]
     if let Some(diff_mode) = content_routes::routed_mode(mode) {
         return content_routes::set_mode(state, mode, diff_mode, pr_number, tab_idx);
-    }
-    #[cfg(feature = "v1-service")]
-    if let Some(diff_mode) = content_routes::recorded_mode(mode) {
-        content_routes::record_mode(state, mode, diff_mode, tab_idx);
     }
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     if !feature_allows_mode_str(&app.config.features, mode) {
@@ -10713,9 +10695,12 @@ pub fn open_commit_composer(state: State<AppState>) -> Result<AppSnapshot, Strin
 #[tauri::command]
 pub async fn select_commit(sha: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || content_routes::select_commit(&state, &sha)).await;
     // A commit row is a primary click target, and loading it runs git log and
     // git diff under the App lock — on the main thread that freezes the window.
-    run_blocking(move || {
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         {
             let tab = app.tab_mut();
@@ -10737,7 +10722,7 @@ pub async fn select_commit(sha: String, state: State<'_, AppState>) -> Result<Ap
         }
         Ok(snap_from(&app, &state))
     })
-    .await
+    .await;
 }
 
 /// "All changes" from the single-commit view. The engine recorded which view
@@ -10746,13 +10731,16 @@ pub async fn select_commit(sha: String, state: State<'_, AppState>) -> Result<Ap
 #[tauri::command]
 pub async fn exit_history(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || content_routes::exit_history(&state)).await;
     // Leaving History re-runs the view's git diff under the App lock.
-    run_blocking(move || {
+    #[cfg(not(feature = "v1-service"))]
+    return run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.tab_mut().exit_history();
         Ok(snap_from(&app, &state))
     })
-    .await
+    .await;
 }
 
 // ── Tab management ──────────────────────────────────────────────────────────
@@ -16615,9 +16603,9 @@ mod route_tests {
             "refresh(&state, false)",
             "sync(&state)",
             "set_mode(",
-            "record_mode(state, mode, diff_mode, tab_idx)",
             "select_file(",
-            "shows_history(state)",
+            "select_commit(&state, &sha)",
+            "exit_history(&state)",
             "request_file_content(",
         ] {
             let route = call(route);

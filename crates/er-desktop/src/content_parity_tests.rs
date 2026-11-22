@@ -1,6 +1,7 @@
 //! Parity between the two readers of a tab: the Workspace's content load and
-//! a `TabState` refresh read one fixture into the same sections, in each mode
-//! the service loads. A section is everything the snapshot reads from
+//! a `TabState` refresh read one fixture into the same sections, in each mode.
+//! History, Conflicts and Hidden load on a switch from the branch view, on
+//! both sides, as the page reaches them. A section is everything the snapshot reads from
 //! `TabState` for it: the files and their lazy stubs, the filter-visible
 //! lists, the reviewed marks, the AI state, the tour, the staleness, the PR
 //! and the preview keys with their stamps.
@@ -117,6 +118,59 @@ fn commit(hash: &str) -> er_engine::git::CommitInfo {
     }
 }
 
+/// A commit on the branch, with the diffstat its log line carries.
+fn logged(hash: &str) -> er_engine::git::CommitInfo {
+    er_engine::git::CommitInfo {
+        subject: format!("subject {hash}"),
+        author: "you".to_string(),
+        date: "2026-11-01T00:00:00Z".to_string(),
+        adds: 4,
+        dels: 2,
+        diffstat_known: true,
+        ..commit(hash)
+    }
+}
+
+/// The newest commit's diff, which History shows first.
+const COMMIT: &str = "\
+diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,2 +1,2 @@
+ a-one
+-a-old
++a-new
+diff --git a/docs/new.md b/docs/new.md
+--- a/docs/new.md
++++ b/docs/new.md
+@@ -1 +1 @@
+-old
++moved
+";
+
+/// A merge changeset: `src/a.rs` is staged and still conflicted in the
+/// working tree.
+const CONFLICTS: &str = "\
+diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1 +1 @@
+-a-old
++a-staged
+diff --git a/src/b.rs b/src/b.rs
+--- a/src/b.rs
++++ b/src/b.rs
+@@ -1 +1 @@
+-b-old
++b-new
+diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1 +1 @@
+-a-old
++<<<<<<< ours
+";
+
 fn ports(lazy: bool) -> Ports {
     let raw = raw(lazy);
     let git: Arc<dyn er_git::Git> = Arc::new(
@@ -126,7 +180,12 @@ fn ports(lazy: bool) -> Ports {
             .with_diff_shortstat((2, 5, 1))
             .with_commit_shortstats(HashMap::new())
             .with_diff_raw(Ok(raw.clone()))
-            .with_is_merge_in_progress(false)
+            .with_log_range(Ok(vec![logged("c2"), logged("c1")]))
+            .with_unpushed_shas(["c2".to_string()].into_iter().collect())
+            .with_diff_commit(Ok(COMMIT.to_string()))
+            .with_diff_conflicts(Ok(CONFLICTS.to_string()))
+            .with_unmerged_files(Ok(vec!["src/a.rs".to_string()]))
+            .with_is_merge_in_progress(true)
             .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string()))
             .with_rev_parse_verify(Ok(Some(PR_HEAD.to_string())))
             .with_blob_oid(Ok("b".repeat(40))),
@@ -190,7 +249,7 @@ type Marks = BTreeMap<String, String>;
 type FileRow = (String, usize, usize, usize, bool);
 
 /// What both readers must agree on, with every storage path left out.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Observed {
     files: Vec<FileRow>,
     lazy: bool,
@@ -212,7 +271,7 @@ struct Observed {
 /// The fields of a snapshot, or of a `diff(tab)`, that both must agree on.
 /// The review bucket is a storage path, which each side roots apart.
 fn resource_fields(value: &Value) -> Value {
-    const FIELDS: [&str; 14] = [
+    const FIELDS: [&str; 16] = [
         "mode",
         "branch",
         "base",
@@ -227,6 +286,8 @@ fn resource_fields(value: &Value) -> Value {
         "staged_stat",
         "pr_diff_head_oid",
         "built_from_head_oid",
+        "commits",
+        "selected_commit_sha",
     ];
     const ROW: [&str; 19] = [
         "path",
@@ -451,6 +512,25 @@ fn resolved(
     Ok(resolved)
 }
 
+/// The fixture in the bucket of the view `steps` end on, when they end on
+/// another bucket than the one the tab opened on.
+fn shown_fixture(
+    (kind, mode): (&TabKind, DiffMode),
+    repo: &str,
+    steps: &[DiffMode],
+    ports: &Ports,
+) -> anyhow::Result<Option<String>> {
+    let Some(&last) = steps.last() else {
+        return Ok(None);
+    };
+    let shown = resolved(kind, repo, last, ports)?;
+    let opened = resolved(kind, repo, mode, ports)?;
+    if shown.identity().review_bucket() == opened.identity().review_bucket() {
+        return Ok(None);
+    }
+    write_fixture(&shown, &*ports.git).map(Some)
+}
+
 /// A temp dir holding the checkout both readers share, with the renamed
 /// document in it; the caller keeps the dir alive. The preview keys read the
 /// root and the document's mtime, so the two sides must see one checkout.
@@ -464,21 +544,23 @@ fn temp_repo() -> anyhow::Result<(tempfile::TempDir, String)> {
 }
 
 /// The App's side: a restored tab shown in `mode`, refreshed `refreshes`
-/// times. The first refresh sees no AI state yet, as on a restore. A PR tab
-/// then reads what the App's other paths fill: the overview the comment sync
-/// reads, the commits a PR open reads, and the head a restore seeds from the
-/// fetched ref.
+/// times, then switched through `steps`. The first refresh sees no AI state
+/// yet, as on a restore. A PR tab then reads what the App's other paths fill:
+/// the overview the comment sync reads, the commits a PR open reads, and the
+/// head a restore seeds from the fetched ref.
 fn through_tab_state(
     (kind, mode): (&TabKind, DiffMode),
     refreshes: usize,
     lazy: bool,
     (root, repo): (&Path, &str),
+    steps: &[DiffMode],
 ) -> anyhow::Result<Observed> {
     er_engine::storage::with_process_test_storage_root(root.join("app-storage"), || {
         let ports = ports(lazy);
         let (git, github) = (Arc::clone(&ports.git), Arc::clone(&ports.github));
         let resolved = resolved(kind, repo, mode, &ports)?;
         let er_dir = write_fixture(&resolved, &*ports.git)?;
+        let shown_dir = shown_fixture((kind, mode), repo, steps, &ports)?;
         let mut tab = TabState::from_resolved(resolved, ports)?;
         // The running App's watcher sets the checkout root before a refresh,
         // by the rule the workspace's load runs on every load.
@@ -501,6 +583,10 @@ fn through_tab_state(
             tab.pr_commits = github.pr_commits(&tab.repo_root, number, limit)?;
             tab.seed_last_diff_head_oid_from_local_ref();
         }
+        for step in steps {
+            tab.set_mode(*step);
+        }
+        let er_dir = shown_dir.unwrap_or(er_dir);
         let mut app = er_engine::app::App::new_for_test(Vec::new());
         app.tabs = vec![tab];
         app.active_tab = 0;
@@ -519,7 +605,7 @@ fn through_tab_state(
                 .filter(|_| tab.pr_number.is_some());
             map.insert("built_from_head_oid".into(), json!(built_from));
         }
-        let files: Vec<&DiffFile> = tab.files.iter().collect();
+        let files: Vec<&DiffFile> = tab.active_diff_files().iter().collect();
         let preview_keys = preview_keys(&files, tab.preview_context_key(), |path| {
             tab.file_preview_key(path)
         });
@@ -544,16 +630,19 @@ fn through_tab_state(
     })
 }
 
-/// The Workspace's side: the same tab loaded under a key, then refreshed.
+/// The Workspace's side: the same tab loaded under a key, refreshed, then
+/// switched through `steps`.
 fn through_the_workspace(
     (kind, mode): (&TabKind, DiffMode),
     refreshes: usize,
     lazy: bool,
     (root, repo): (&Path, &str),
+    steps: &[DiffMode],
 ) -> anyhow::Result<Observed> {
     er_engine::storage::with_process_test_storage_root(root.join("service-storage"), || {
         let ports = ports(lazy);
         let er_dir = write_fixture(&resolved(kind, repo, mode, &ports)?, &*ports.git)?;
+        let shown_dir = shown_fixture((kind, mode), repo, steps, &ports)?;
         let handle = er_service::spawn(WorkspaceDeps::new(ports));
         let key = TabKey::next();
         let reply = handle.send_and_wait_with(
@@ -592,6 +681,15 @@ fn through_the_workspace(
             };
             handle.send_and_wait_with(parse, WAIT)?;
         }
+        for step in steps {
+            let switch = Command::SetDiffMode {
+                key,
+                mode: *step,
+                pr_number: None,
+            };
+            handle.send_and_wait_with(switch, WAIT)?;
+        }
+        let er_dir = shown_dir.unwrap_or(er_dir);
         let view = handle.view();
         let content: &TabContent = view
             .tab(key)
@@ -769,8 +867,8 @@ fn assert_parity(kind: TabKind, mode: DiffMode) -> anyhow::Result<()> {
             let case = format!("{kind:?} in {mode:?}, {size}, after {refreshes} refresh(es)");
             let (root, repo) = temp_repo()?;
             let checkout = (root.path(), repo.as_str());
-            let app = through_tab_state((&kind, mode), refreshes, lazy, checkout)?;
-            let service = through_the_workspace((&kind, mode), refreshes, lazy, checkout)?;
+            let app = through_tab_state((&kind, mode), refreshes, lazy, checkout, &[])?;
+            let service = through_the_workspace((&kind, mode), refreshes, lazy, checkout, &[])?;
             assert_sections(&service, &app, &case);
             assert_filled(&app, &kind, lazy, &case);
         }
@@ -801,4 +899,125 @@ fn a_plain_tab_loads_the_same_tour() -> anyhow::Result<()> {
 #[test]
 fn a_local_pr_tab_loads_the_same_pr_diff() -> anyhow::Result<()> {
     assert_parity(TabKind::LocalPr, DiffMode::PrDiff)
+}
+
+/// `observed` without what a view with its own diff does not share across
+/// the two readers. Neither reads the preview stamps there: the App keeps the
+/// ones the branch view took, the service takes the view's own. Conflicts
+/// and Hidden leave out the preview keys too: the App keys them on the diff
+/// the tab showed before, which it keeps in those views, and the service on
+/// the view's own diff.
+fn in_own_view(mut observed: Observed, keyed: bool) -> Observed {
+    observed.stamps = Default::default();
+    if !keyed {
+        observed.preview_keys.clear();
+        if let Some(map) = observed.resource.as_object_mut() {
+            map.remove("preview_context_key");
+            if let Some(Value::Array(rows)) = map.get_mut("files") {
+                for row in rows.iter_mut().filter_map(Value::as_object_mut) {
+                    row.remove("preview_key");
+                }
+            }
+        }
+    }
+    observed
+}
+
+/// A plain tab loaded on the branch view, then switched through `steps`, on
+/// both sides.
+fn switched(steps: &[DiffMode]) -> anyhow::Result<(Observed, Observed)> {
+    let (root, repo) = temp_repo()?;
+    let checkout = (root.path(), repo.as_str());
+    let opened = (&TabKind::Working, DiffMode::Branch);
+    let app = through_tab_state(opened, 1, false, checkout, steps)?;
+    let service = through_the_workspace(opened, 1, false, checkout, steps)?;
+    Ok((app, service))
+}
+
+fn listed(observed: &Observed) -> Vec<&str> {
+    observed.files.iter().map(|f| f.0.as_str()).collect()
+}
+
+fn scroller(observed: &Observed) -> (usize, Option<&str>) {
+    let commits = observed.resource.get("commits").and_then(Value::as_array);
+    let selected = observed.resource.get("selected_commit_sha");
+    (
+        commits.map_or(0, Vec::len),
+        selected.and_then(Value::as_str),
+    )
+}
+
+#[test]
+fn a_plain_tab_loads_the_same_history() -> anyhow::Result<()> {
+    let (app, service) = switched(&[DiffMode::History])?;
+    assert_sections(
+        &in_own_view(service, true),
+        &in_own_view(app.clone(), true),
+        "History",
+    );
+    assert_eq!(
+        listed(&app),
+        ["src/a.rs", "docs/new.md"],
+        "History: the commit's files"
+    );
+    assert_eq!(scroller(&app), (2, Some("c2")), "History: the commit list");
+    assert!(
+        !app.reviewed.is_empty(),
+        "History: the History bucket's marks"
+    );
+    assert!(
+        app.ai[0] != Value::Null,
+        "History: the History bucket's review"
+    );
+    let document = app
+        .preview_keys
+        .iter()
+        .find(|(path, _)| path == "docs/new.md");
+    assert!(
+        document.is_some_and(|(_, key)| !key.is_empty()),
+        "History: no preview key"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_plain_tab_loads_the_same_conflicts() -> anyhow::Result<()> {
+    let (app, service) = switched(&[DiffMode::Conflicts])?;
+    assert_sections(
+        &in_own_view(service, false),
+        &in_own_view(app.clone(), false),
+        "Conflicts",
+    );
+    assert_eq!(
+        listed(&app),
+        ["src/a.rs", "src/b.rs"],
+        "Conflicts: the merge's files"
+    );
+    assert_eq!(scroller(&app), (2, None), "Conflicts: the commit list");
+    Ok(())
+}
+
+#[test]
+fn a_plain_tab_loads_the_same_hidden_view() -> anyhow::Result<()> {
+    let (app, service) = switched(&[DiffMode::Hidden])?;
+    assert_sections(
+        &in_own_view(service, false),
+        &in_own_view(app.clone(), false),
+        "Hidden",
+    );
+    assert!(app.files.is_empty(), "Hidden lists no diff file");
+    assert_eq!(scroller(&app), (2, None), "Hidden: the commit list");
+    Ok(())
+}
+
+/// Back on the branch view after History, the two readers key previews the
+/// same: History's selection names no commit outside History.
+#[test]
+fn the_preview_keys_after_a_history_visit_match() -> anyhow::Result<()> {
+    let (app, service) = switched(&[DiffMode::History, DiffMode::Branch])?;
+    let case = "Branch after History";
+    assert_sections(&service, &app, case);
+    assert_filled(&app, &TabKind::Working, false, case);
+    assert_eq!(scroller(&app), (2, None), "{case}: the commit list");
+    Ok(())
 }
