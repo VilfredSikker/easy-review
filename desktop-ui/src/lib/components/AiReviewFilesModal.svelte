@@ -18,8 +18,8 @@
 
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
+  import { readDiffPaths } from "$lib/stores/diffResource.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -122,7 +122,7 @@
     loading = true;
     loadError = null;
     try {
-      const paths = await invoke<string[]>("list_diff_paths");
+      const paths = await readDiffPaths();
       pickerFiles = pathsToFileSnapshots(paths);
       const preselect =
         initialSelected && initialSelected.length > 0

@@ -24,30 +24,42 @@ pub fn hunks(
     hash: &str,
 ) -> Result<(u64, Resource), ErError> {
     let entry = super::diff::listed(desktop, wire)?;
-    // A parse refused because another landed first is sent once more.
+    let read = || Ok(read_hunks(&*content(desktop, &entry)?, path, hash));
+    let parse_stub = || parse(desktop, &entry, vec![path.to_string()]);
+    answer(read, parse_stub, path, hash).map(|hunks| (0, Resource::Hunks(hunks)))
+}
+
+/// Reads `path`'s hunks, parsing the stub first when it is unparsed. A parse
+/// refused because another landed first is sent once more. A stub still
+/// unparsed after a refused parse answers `Stale`, so the page asks again;
+/// only a stub that an accepted parse left empty answers no hunks, which
+/// keeps the page from asking again.
+pub(crate) fn answer(
+    read: impl Fn() -> Result<HunkRead, ErError>,
+    mut parse: impl FnMut() -> Result<bool, ErError>,
+    path: &str,
+    hash: &str,
+) -> Result<FileHunks, ErError> {
+    let mut refused = false;
     for _ in 0..2 {
-        match read_hunks(&*content(desktop, &entry)?, path, hash) {
-            HunkRead::Hunks(hunks) => return Ok((0, Resource::Hunks(hunks))),
+        match read()? {
+            HunkRead::Hunks(hunks) => return Ok(hunks),
             HunkRead::Stale => return Err(stale(path)),
             HunkRead::Unparsed => {
-                if parse(desktop, &entry, vec![path.to_string()])? {
+                refused = !parse()?;
+                if !refused {
                     break;
                 }
             }
         }
     }
-    match read_hunks(&*content(desktop, &entry)?, path, hash) {
-        HunkRead::Hunks(hunks) => Ok((0, Resource::Hunks(hunks))),
-        HunkRead::Stale => Err(stale(path)),
-        // A stub its parse could not fill has no hunks; answering it empty
-        // keeps the page from asking again.
-        HunkRead::Unparsed => Ok((
-            0,
-            Resource::Hunks(FileHunks {
-                hash: hash.to_string(),
-                hunks: Vec::new(),
-            }),
-        )),
+    match read()? {
+        HunkRead::Hunks(hunks) => Ok(hunks),
+        HunkRead::Unparsed if !refused => Ok(FileHunks {
+            hash: hash.to_string(),
+            hunks: Vec::new(),
+        }),
+        HunkRead::Unparsed | HunkRead::Stale => Err(stale(path)),
     }
 }
 

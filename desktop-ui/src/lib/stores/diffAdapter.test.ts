@@ -313,4 +313,15 @@ describe("the hunks by hash", () => {
     expect(diff.overlay(raw)).toBe(raw);
     expect(diff.hashed()).toBe(false);
   });
+
+  it("sends the compaction toggle with its file and direction, and leaves it to the App where the App loads the view", async () => {
+    const { sent, store } = backend([{ version: 1, value: { kind: "diff", ...tabDiff() } }]);
+    await adapter(store).route("toggle_compacted", { path: "Cargo.lock", compacted: false });
+    expect(sent).toEqual([{ kind: "set_file_compacted", tab: KEY, path: "Cargo.lock", compacted: false }]);
+    expect(wireDiffCommand("toggle_compacted", {}, KEY)).toBeUndefined();
+    const recorded = backend([{ version: 2, value: { kind: "diff", ...tabDiff({ mode: "hidden" }) } }]);
+    recorded.store.show(diffKey(KEY));
+    await settle();
+    expect(adapter(recorded.store).route("toggle_compacted", { path: "Cargo.lock", compacted: false })).toBeNull();
+  });
 });

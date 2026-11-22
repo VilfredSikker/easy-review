@@ -45,14 +45,26 @@ pub fn ui_annotations(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
 ) -> Result<(u64, Resource), ErError> {
+    ui_annotations_read(desktop, wire, er_engine::ai::load_ui_annotations)
+}
+
+/// `ui_annotations(tab)` with the rows read by `read`. The version is read
+/// first, so a write landing during the read is pushed again under a newer
+/// version. Read after, it would pair the old rows with the new version, the
+/// relay would announce that version, and the page would never refetch.
+pub(crate) fn ui_annotations_read(
+    desktop: &DesktopState,
+    wire: er_protocol::TabKey,
+    read: impl FnOnce(&str) -> Vec<er_engine::ai::UiAnnotation>,
+) -> Result<(u64, Resource), ErError> {
     let Some(content) = loaded(desktop, wire)? else {
         return Ok((0, Resource::UiAnnotations(UiAnnotations::default())));
     };
-    let rows = er_engine::ai::load_ui_annotations(&content.context.er_dir)
+    let version = ui_version(desktop, &content);
+    let rows = read(&content.context.er_dir)
         .into_iter()
         .map(ui_row)
         .collect();
-    let version = ui_version(desktop, &content);
     Ok((version, Resource::UiAnnotations(UiAnnotations { rows })))
 }
 
@@ -70,14 +82,18 @@ pub fn ui_annotations_version(desktop: &DesktopState, key: TabKey, tab: &TabDesc
         .map_or(0, |content| ui_version(desktop, &content))
 }
 
-/// The tab's review, projected as the reviewer sees it.
+/// The tab's review, projected as the reviewer sees it. A listed tab nothing
+/// loaded posts `LoadTab` and answers none at version 0, as does a bucket
+/// with no review, so neither fails a batched fetch.
 pub fn review_json(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
 ) -> Result<(u64, Resource), ErError> {
-    let content = loaded(desktop, wire)?.ok_or_else(|| not_found("No review.json found"))?;
+    let Some(content) = loaded(desktop, wire)? else {
+        return Ok((0, Resource::ReviewJson(ReviewJson::default())));
+    };
     let scope = content.tab.identity().storage_branch_scope();
-    let json = crate::commands::projected_review_json(
+    let json = crate::commands::review_projection(
         &content.context.er_dir,
         &content.context.branch_diff_hash,
         scope,

@@ -349,7 +349,8 @@ pub struct UiAnnotation {
 /// The tab's review projected as the reviewer sees it, as pretty JSON.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ReviewJson {
-    pub json: String,
+    /// None while the tab is unloaded or when its bucket holds no review.
+    pub json: Option<String>,
 }
 
 /// The review revisions a tab's bucket holds: at most the current one.

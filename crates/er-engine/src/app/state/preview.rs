@@ -1,43 +1,14 @@
 //! Complete document reads own their inputs so callers can release the app lock.
 use super::{DiffMode, TabState};
 use crate::git::FileStatus;
+use crate::preview_read::{self, PreviewSource};
 use anyhow::{bail, Context, Result};
-use std::io::Read;
-use std::path::{Component, Path};
 
 use crate::preview_key::PreviewKeyInputs;
 pub use crate::preview_key::{image_mime, supports_preview};
-
-pub const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
-/// Screenshots and diagrams routinely pass the 1 MiB text cap.
-pub const MAX_IMAGE_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
-
-#[derive(Debug, Clone)]
-enum Source {
-    Diff(String, bool),
-    Blob(String, String),
-    Checkout(String, Option<std::time::SystemTime>),
-    Remote(String, String, bool, Option<String>),
-}
-
-#[derive(Clone)]
-pub struct FilePreviewRequest {
-    pub path: String,
-    pub preview_context_key: String,
-    pub preview_key: String,
-    source: Source,
-    github: std::sync::Arc<dyn er_github::GitHub>,
-}
-
-impl std::fmt::Debug for FilePreviewRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FilePreviewRequest")
-            .field("path", &self.path)
-            .field("preview_context_key", &self.preview_context_key)
-            .field("preview_key", &self.preview_key)
-            .finish_non_exhaustive()
-    }
-}
+pub use crate::preview_read::{
+    FilePreviewRequest, ImagePreviewRequest, MAX_IMAGE_PREVIEW_BYTES, MAX_PREVIEW_BYTES,
+};
 
 impl TabState {
     pub(super) fn load_diff_with_preview_head(
@@ -111,7 +82,8 @@ impl TabState {
         if !supports_preview(path) {
             bail!("This file does not support document preview");
         }
-        self.capture_preview(path).map(|(request, _)| request)
+        let status = self.capture_status(path)?;
+        preview_read::capture_file_preview(&self.preview_source(), path, status)
     }
 
     /// Both sides of an image change. A modified image's earlier side is read
@@ -120,398 +92,47 @@ impl TabState {
         if image_mime(path).is_none() {
             bail!("This file is not an image");
         }
-        let (request, status) = self.capture_preview(path)?;
-        if status == FileStatus::Deleted {
-            return Ok(ImagePreviewRequest {
-                before: Some(request),
-                after: None,
-            });
+        let status = self.capture_status(path)?;
+        preview_read::capture_image_preview(&self.preview_source(), path, status)
+    }
+
+    fn preview_source(&self) -> PreviewSource<'_> {
+        PreviewSource {
+            keys: self.preview_key_inputs(),
+            is_remote: self.is_remote(),
+            pr_number: self.pr_number,
+            branch_view: self.local_branch_view.is_some(),
+            tour_is_pr: self.tour_is_pr,
+            github: self.ports.github.clone(),
         }
-        let before = if status == FileStatus::Added || self.is_remote() {
-            None
-        } else if self.mode == DiffMode::History {
-            let h = self.history.as_ref().context("History is unavailable")?;
-            let commit = &h
-                .commits
-                .get(h.selected_commit)
-                .context("Commit is unavailable")?
-                .hash;
-            let old_path = match &status {
-                FileStatus::Renamed(old) => old.as_str(),
-                _ => path,
-            };
-            Some(format!("{commit}^1:{old_path}"))
-        } else {
-            self.preview_section(path)
-                .and_then(|section| index_oids(section).map(|(old, _)| old.to_string()))
-                .filter(|oid| valid_oid(oid))
+    }
+
+    /// The file's status in this view, after the checks a capture makes of
+    /// the tab itself, in the order the reads made them.
+    fn capture_status(&self, path: &str) -> Result<Option<FileStatus>> {
+        let status = self.preview_file_status(path)?;
+        if self.mode == DiffMode::History {
+            self.history.as_ref().context("History is unavailable")?;
         }
-        .map(|spec| FilePreviewRequest {
-            source: Source::Blob(self.repo_root.clone(), spec),
-            ..request.clone()
-        });
-        Ok(ImagePreviewRequest {
-            before,
-            after: Some(request),
-        })
+        Ok(Some(status))
     }
 
     fn preview_file_status(&self, path: &str) -> Result<FileStatus> {
-        validate_path(path)?;
+        preview_read::validate_path(path)?;
         self.visible_files()
             .into_iter()
             .find(|(_, f)| f.path == path)
             .map(|(_, f)| f.status.clone())
             .context("File is no longer in this review")
     }
-
-    fn capture_preview(&self, path: &str) -> Result<(FilePreviewRequest, FileStatus)> {
-        let status = self.preview_file_status(path)?;
-        let deleted = status == FileStatus::Deleted;
-        let source = if self.mode == DiffMode::History {
-            let h = self.history.as_ref().context("History is unavailable")?;
-            let commit = &h
-                .commits
-                .get(h.selected_commit)
-                .context("Commit is unavailable")?
-                .hash;
-            if let Some(repo) = self.remote_repo.as_ref().filter(|_| self.is_remote()) {
-                Source::Remote(repo.clone(), commit.clone(), deleted, None)
-            } else {
-                Source::Blob(
-                    self.repo_root.clone(),
-                    format!(
-                        "{}:{}",
-                        if deleted {
-                            format!("{commit}^1")
-                        } else {
-                            commit.clone()
-                        },
-                        path
-                    ),
-                )
-            }
-        } else {
-            let section = self
-                .preview_section(path)
-                .context("Document source is unavailable")?;
-            let blob = index_oids(section)
-                .map(|(old, new)| if deleted { old } else { new })
-                .filter(|oid| valid_oid(oid));
-            // A binary image section carries no lines to rebuild the file from.
-            if matches!(status, FileStatus::Added | FileStatus::Deleted)
-                && (image_mime(path).is_none() || !is_binary(section))
-            {
-                Source::Diff(section.to_string(), deleted)
-            } else if let (true, false, Some(oid)) = (deleted, self.is_remote(), blob) {
-                // The PR head's parent need not hold a file the PR deleted.
-                Source::Blob(self.repo_root.clone(), oid.to_string())
-            } else if let Some(repo) = self.remote_repo.as_ref().filter(|_| {
-                self.is_remote()
-                    || self.mode == DiffMode::PrDiff
-                    || (self.mode == DiffMode::Tour && self.tour_is_pr)
-                    || (self.pr_number.is_some()
-                        && self.local_branch_view.is_some()
-                        && self.local_branch_checkout_root.is_none())
-            }) {
-                Source::Remote(
-                    repo.clone(),
-                    self.preview_head_oid
-                        .clone()
-                        .context("PR commit is unavailable")?,
-                    deleted,
-                    blob.map(str::to_string),
-                )
-            } else if !deleted
-                && (self.mode == DiffMode::Unstaged
-                    || (self.local_branch_checkout_root.is_some()
-                        && (self.mode == DiffMode::Branch
-                            || (self.mode == DiffMode::Tour && !self.tour_is_pr))))
-            {
-                Source::Checkout(
-                    self.local_branch_checkout_root
-                        .clone()
-                        .unwrap_or_else(|| self.repo_root.clone()),
-                    self.mtime_cache.get(path).copied(),
-                )
-            } else {
-                match blob {
-                    Some(oid) => Source::Blob(self.repo_root.clone(), oid.to_string()),
-                    None if self.preview_blob_ids.contains_key(path) => {
-                        Source::Blob(self.repo_root.clone(), self.preview_blob_ids[path].clone())
-                    }
-                    None => Source::Checkout(
-                        self.local_branch_checkout_root
-                            .clone()
-                            .unwrap_or_else(|| self.repo_root.clone()),
-                        self.mtime_cache.get(path).copied(),
-                    ),
-                }
-            }
-        };
-        let request = FilePreviewRequest {
-            path: path.to_string(),
-            preview_context_key: self.preview_context_key(),
-            preview_key: self.file_preview_key(path),
-            source,
-            github: self.ports.github.clone(),
-        };
-        Ok((request, status))
-    }
-}
-
-fn validate_path(path: &str) -> Result<()> {
-    if path.is_empty()
-        || Path::new(path)
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
-    {
-        bail!("Document path must stay inside the reviewed checkout");
-    }
-    Ok(())
-}
-
-/// The old and new blob ids from a diff section's `index` line.
-fn index_oids(section: &str) -> Option<(&str, &str)> {
-    section
-        .lines()
-        .find_map(|line| line.strip_prefix("index "))
-        .and_then(|line| line.split_whitespace().next())
-        .and_then(|line| line.split_once(".."))
-}
-
-/// False for the all-zero id git writes on the missing side of an add or delete.
-fn valid_oid(oid: &str) -> bool {
-    !oid.is_empty() && oid.bytes().all(|b| b.is_ascii_hexdigit()) && !oid.bytes().all(|b| b == b'0')
-}
-
-fn is_binary(section: &str) -> bool {
-    section
-        .lines()
-        .any(|line| line.starts_with("Binary files ") || line == "GIT binary patch")
-}
-
-fn too_large(limit: usize) -> anyhow::Error {
-    anyhow::anyhow!(
-        "File exceeds the {} MiB preview limit",
-        limit / (1024 * 1024)
-    )
-}
-
-#[cfg(unix)]
-fn open_checkout_file(root: &str, path: &str) -> Result<std::fs::File> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    use std::os::unix::ffi::OsStrExt;
-    validate_path(path)?;
-    let mut directory = std::fs::File::open(Path::new(root).canonicalize()?)?;
-    let components: Vec<_> = Path::new(path).components().collect();
-    for (i, component) in components.iter().enumerate() {
-        let name = std::ffi::CString::new(component.as_os_str().as_bytes())?;
-        let flags = libc::O_RDONLY
-            | libc::O_CLOEXEC
-            | libc::O_NOFOLLOW
-            | libc::O_NONBLOCK
-            | if i + 1 < components.len() {
-                libc::O_DIRECTORY
-            } else {
-                0
-            };
-        // SAFETY: directory owns a live descriptor and name is a valid CString.
-        // openat returns a new descriptor. O_NOFOLLOW prevents symlink escapes.
-        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        // SAFETY: fd is a new successful openat descriptor with no other owner.
-        directory = unsafe { std::fs::File::from_raw_fd(fd) };
-    }
-    Ok(directory)
-}
-
-#[cfg(not(unix))]
-fn open_checkout_file(root: &str, path: &str) -> Result<std::fs::File> {
-    validate_path(path)?;
-    let root = Path::new(root).canonicalize()?;
-    let path = root.join(path).canonicalize()?;
-    if !path.starts_with(root) {
-        bail!("Document path escapes the reviewed checkout");
-    }
-    Ok(std::fs::File::open(path)?)
-}
-
-fn bounded_read(reader: impl Read, limit: usize) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    reader.take((limit + 1) as u64).read_to_end(&mut bytes)?;
-    if bytes.len() > limit {
-        return Err(too_large(limit));
-    }
-    Ok(bytes)
-}
-
-fn gh_read_error(error: crate::github::GhError, limit: usize) -> anyhow::Error {
-    match error {
-        crate::github::GhError::TooLarge { .. } => too_large(limit),
-        error => anyhow::anyhow!("Document source could not be read: {error}"),
-    }
-}
-
-fn reconstruct(section: &str, deleted: bool, limit: usize) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    let prefix = if deleted { b'-' } else { b'+' };
-    let mut in_hunk = false;
-    for line in section.split_inclusive('\n') {
-        if line.starts_with("@@ ") {
-            in_hunk = true;
-            continue;
-        }
-        if !in_hunk {
-            continue;
-        }
-        if line.starts_with("\\ No newline at end of file") {
-            if bytes.last() == Some(&b'\n') {
-                bytes.pop();
-            }
-        } else if line.as_bytes().first() == Some(&prefix) {
-            bytes.extend_from_slice(&line.as_bytes()[1..]);
-            if bytes.len() > limit {
-                return Err(too_large(limit));
-            }
-        }
-    }
-    if is_binary(section) {
-        bail!("Binary document cannot be previewed");
-    }
-    let expected = index_oids(section)
-        .map(|(old, new)| if deleted { old } else { new })
-        .filter(|oid| valid_oid(oid));
-    if let Some(expected) = expected {
-        verify_blob(&bytes, expected)?;
-    } else if section.contains('\u{fffd}') {
-        bail!("Document text encoding is unavailable");
-    }
-    Ok(bytes)
-}
-
-fn verify_blob(bytes: &[u8], expected: &str) -> Result<()> {
-    use sha1::{Digest, Sha1};
-    let header = format!("blob {}\0", bytes.len());
-    // Raw diff index IDs are abbreviated even in SHA-256 repositories.
-    // Short prefixes do not identify the hash algorithm, so check both.
-    let sha1_matches = if expected.len() <= 40 {
-        let mut hasher = Sha1::new();
-        hasher.update(&header);
-        hasher.update(bytes);
-        format!("{:x}", hasher.finalize()).starts_with(expected)
-    } else {
-        false
-    };
-    let sha256_matches = if expected.len() <= 64 {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(&header);
-        hasher.update(bytes);
-        format!("{:x}", hasher.finalize()).starts_with(expected)
-    } else {
-        false
-    };
-    if expected.is_empty()
-        || !expected.bytes().all(|b| b.is_ascii_hexdigit())
-        || !(sha1_matches || sha256_matches)
-    {
-        bail!("Document does not match the retained diff. Refresh the review");
-    }
-    Ok(())
-}
-
-impl FilePreviewRequest {
-    pub fn read(&self, git: &dyn er_git::Git) -> Result<String> {
-        let bytes = self.read_bytes(git, MAX_PREVIEW_BYTES)?;
-        if bytes.contains(&0) {
-            bail!("Binary document cannot be previewed");
-        }
-        String::from_utf8(bytes).context("Document is not UTF-8 text")
-    }
-
-    pub fn read_bytes(&self, git: &dyn er_git::Git, limit: usize) -> Result<Vec<u8>> {
-        Ok(match &self.source {
-            Source::Diff(section, deleted) => reconstruct(section, *deleted, limit)?,
-            Source::Blob(root, oid) => git.read_blob(root, oid, limit)?,
-            Source::Checkout(root, expected_mtime) => {
-                let file = open_checkout_file(root, &self.path)?;
-                let before = file.metadata()?;
-                if !before.is_file() {
-                    bail!("Document is not a regular file");
-                }
-                if before.len() > limit as u64 {
-                    return Err(too_large(limit));
-                }
-                if expected_mtime.is_some_and(|m| before.modified().ok() != Some(m)) {
-                    bail!("Document changed. Refresh the diff before previewing");
-                }
-                let bytes = bounded_read(&file, limit)?;
-                let after = file.metadata()?;
-                if before.modified().ok() != after.modified().ok() || before.len() != after.len() {
-                    bail!("Document changed while reading");
-                }
-                bytes
-            }
-            Source::Remote(repo, commit, deleted, expected_blob) => {
-                if !commit.bytes().all(|b| b.is_ascii_hexdigit()) || commit.len() != 40 {
-                    bail!("PR commit is unavailable");
-                }
-                let parent;
-                let commit = if *deleted {
-                    let bytes = self
-                        .github
-                        .api_get_bounded(
-                            &format!("repos/{repo}/git/commits/{commit}"),
-                            MAX_PREVIEW_BYTES,
-                        )
-                        .map_err(|error| gh_read_error(error, MAX_PREVIEW_BYTES))?;
-                    let metadata: serde_json::Value = serde_json::from_slice(&bytes)?;
-                    parent = metadata["parents"][0]["sha"]
-                        .as_str()
-                        .context("Commit parent is unavailable")?
-                        .to_string();
-                    &parent
-                } else {
-                    commit
-                };
-                let path = self
-                    .path
-                    .bytes()
-                    .map(|b| {
-                        if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.') {
-                            (b as char).to_string()
-                        } else {
-                            format!("%{b:02X}")
-                        }
-                    })
-                    .collect::<String>();
-                let bytes = self
-                    .github
-                    .api_get_bounded(&format!("repos/{repo}/contents/{path}?ref={commit}"), limit)
-                    .map_err(|error| gh_read_error(error, limit))?;
-                if let Some(expected) = expected_blob {
-                    verify_blob(&bytes, expected)?;
-                }
-                bytes
-            }
-        })
-    }
-}
-
-/// Both sides of an image change. Each is `None` when that side does not exist
-/// or cannot be read locally.
-#[derive(Debug, Clone)]
-pub struct ImagePreviewRequest {
-    pub before: Option<FilePreviewRequest>,
-    pub after: Option<FilePreviewRequest>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::git;
+    use crate::preview_read::{gh_read_error, reconstruct, validate_path, verify_blob, Source};
+    use std::path::Path;
 
     #[test]
     fn a_too_large_github_read_reports_the_preview_limit() {
