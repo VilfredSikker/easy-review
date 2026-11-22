@@ -30,15 +30,6 @@ pub(crate) struct PrLoad<'a> {
     pub adopt_head_oid: Option<String>,
 }
 
-/// The PR section of a load of `tab`. The stack the tab held is kept while
-/// the tab still reads it from the same place.
-pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>) -> LoadedPr {
-    let held = load.prev.and_then(|prev| prev.stack.clone());
-    let mut loaded = load_pr_fields(deps, tab, load);
-    loaded.stack = held.filter(|read| still_reads(tab, loaded.overview.as_ref(), read));
-    loaded
-}
-
 /// Whether `read` still describes `tab`: the tab reads its stack from the
 /// same place, for the same branch.
 pub(crate) fn still_reads(
@@ -93,7 +84,8 @@ pub(crate) fn read_stack(
     er_engine::gh_stack::load_from_with(&*deps.ports().github, source)
 }
 
-fn load_pr_fields(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>) -> LoadedPr {
+/// The PR section of a load of `tab`.
+pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>) -> LoadedPr {
     let Some(number) = tab.pr_number else {
         return LoadedPr::default();
     };

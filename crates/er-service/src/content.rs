@@ -27,6 +27,7 @@ use er_engine::TabKey;
 use crate::ai_extras::AiExtras;
 use crate::freshness::Freshness;
 use crate::protocol::TabContext;
+use crate::tab_pr::still_reads;
 
 /// One open tab's content.
 #[derive(Clone)]
@@ -62,12 +63,12 @@ impl TabContent {
     /// The latest revision of any section. A load is applied only over the
     /// content it started from, so a write that landed meanwhile survives. A
     /// sidecar reload is no write: the load reads the sidecars too.
+    /// A stack lookup is no write either: the load keeps the newer stack.
     pub fn generation(&self) -> u64 {
         self.diff
             .revision
             .max(self.reviewed.revision)
             .max(self.ai.written)
-            .max(self.pr.revision)
             .max(self.mode_revision)
     }
 
@@ -681,6 +682,10 @@ pub(crate) fn apply(
     match patch {
         ContentPatch::Loaded { key, loaded, .. } => {
             let cleared = loaded.cleared;
+            let mut loaded = loaded;
+            let held = tabs.get(&key).and_then(|content| content.pr.stack.clone());
+            loaded.pr.stack =
+                held.filter(|read| still_reads(&loaded.tab, loaded.pr.overview.as_ref(), read));
             tabs.insert(
                 key,
                 Arc::new(TabContent::from_loaded(key, *loaded, revision)),
@@ -749,7 +754,7 @@ pub(crate) fn apply(
             if let Some(content) = tabs.get_mut(&key) {
                 // A load that moved the tab elsewhere since reads its stack
                 // from another place, so this lookup no longer describes it.
-                if crate::tab_pr::still_reads(&content.tab, content.pr.overview.as_ref(), &stack) {
+                if still_reads(&content.tab, content.pr.overview.as_ref(), &stack) {
                     let mut next = TabContent::clone(content);
                     next.pr = Arc::new(next.pr.with_stack(*stack, revision));
                     *content = Arc::new(next);
