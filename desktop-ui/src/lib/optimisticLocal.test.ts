@@ -899,6 +899,17 @@ const INBOX_WRITES: string[] = [
 /** P57 takes these off the flag path; `reviewedAdapter.test.ts` holds that. */
 const BULK_REVIEWS: string[] = ["bulk_review_pillar", "unbulk_review_pillar"];
 
+/** The thread writes leave it too; `annotationWrites.test.ts` holds what they paint. */
+const THREAD_WRITES: string[] = [
+  "add_question",
+  "add_note",
+  "reply_to_thread",
+  "resolve_thread",
+  "delete_thread",
+  "update_thread_message",
+  "promote_to_note",
+];
+
 describe("the PR pins and Ignore with the flag on", () => {
   const PR_WRITES = ["save_pr", "unsave_pr", "dismiss_remote_pr", "undismiss_remote_pr"];
 
@@ -907,7 +918,7 @@ describe("the PR pins and Ignore with the flag on", () => {
       expect({ command, flagOn: isOptimisticCommand(command, true) }).toEqual({ command, flagOn: false });
       expect({ command, flagOff: isOptimisticCommand(command, false) }).toEqual({ command, flagOff: true });
     }
-    const off = [...PR_WRITES, ...INBOX_WRITES, ...BULK_REVIEWS];
+    const off = [...PR_WRITES, ...INBOX_WRITES, ...BULK_REVIEWS, ...THREAD_WRITES];
     const others = OPTIMISTIC_COMMANDS.filter((c) => !off.includes(c));
     expect(others.filter((c) => !isOptimisticCommand(c, true))).toEqual([]);
   });

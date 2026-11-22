@@ -16,6 +16,7 @@ import type {
   TourSnapshot,
   UiAnnotation,
 } from "$lib/types";
+import { withPending, type PendingPaint } from "./annotationWrites";
 import type { ResourceStore } from "./resourceStore";
 
 export const JOBS: ResourceKey = { kind: "jobs" };
@@ -82,6 +83,8 @@ interface AnnotationsAdapterDeps {
   store: Pick<ResourceStore, "get">;
   /** The registry's active tab, whose annotations the page shows. */
   activeKey: () => TabKey | null;
+  /** The writes the server has not acknowledged yet, drawn over the threads. */
+  paints?: () => readonly PendingPaint[];
 }
 
 /**
@@ -105,10 +108,15 @@ export class AnnotationsAdapter {
     return held?.kind === "jobs" ? held : null;
   }
 
+  /** `held`'s AI slice with the in-flight replies and the pending writes on it. */
+  private ai(held: Annotations): AiSnapshot {
+    return withPending(joinJobs(held.ai, this.jobs()), this.deps.paints?.() ?? []);
+  }
+
   /** The joined threads DiffView draws on its hunks; null while the snapshot serves them. */
   threads(): ThreadSnapshot[] | null {
     const held = this.held();
-    return held ? joinJobs(held.ai, this.jobs()).threads : null;
+    return held ? this.ai(held).threads : null;
   }
 
   /** `raw` with the resources' fields in place of the App's, when the page holds them. */
@@ -119,7 +127,7 @@ export class AnnotationsAdapter {
     const ui = key === null ? undefined : this.deps.store.get(uiAnnotationsKey(key))?.value;
     return {
       ...raw,
-      ai: joinJobs(held.ai, this.jobs()),
+      ai: this.ai(held),
       tour: held.tour as TourSnapshot,
       other_bucket: held.other_bucket as OtherBucketSnapshot | null,
       ...(ui?.kind === "ui_annotations" ? { ui_annotations: uiRows(ui.rows) } : {}),

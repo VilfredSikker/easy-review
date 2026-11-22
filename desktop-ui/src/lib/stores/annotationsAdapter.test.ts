@@ -68,7 +68,7 @@ const inFlight: Resource = {
     { target: "finding:f-1", ai_action: null, started_at_ms: 1 },
   ],
 };
-const annotations: Resource = { kind: "annotations", ai: ai(), tour: { available: false, fresh: false, scope: "branch", title: "", overviewMarkdown: "", pillars: [], createdAt: "", diffHash: "" }, other_bucket: null };
+const annotations: Resource = { kind: "annotations", ai: ai(), tour: { available: false, fresh: false, scope: "branch", title: "", overviewMarkdown: "", pillars: [], createdAt: "", diffHash: "" }, other_bucket: null, view: { repo_root: "/repo", pr_number: null, branch: "", mode: "branch" } };
 
 function adapter(flagOn: boolean, values: [ResourceKey, Resource][]): AnnotationsAdapter {
   return new AnnotationsAdapter({ flagOn, store: holding(values), activeKey: () => TAB });

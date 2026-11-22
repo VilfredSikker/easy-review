@@ -1,16 +1,26 @@
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import { AnnotationsAdapter, JOBS, annotationsKey, uiAnnotationsKey } from "./annotationsAdapter";
+import { AnnotationWrites } from "./annotationWrites";
 import { app } from "./app.svelte";
 import { resources } from "./resourceStore";
 import { tabsResource } from "./tabsResource.svelte";
 
 const flagOn = v1ServiceRequested();
 
+/** The annotation writes, through `er_send` with the flag on. */
+export const annotationWrites = new AnnotationWrites({
+  flagOn,
+  store: resources,
+  activeKey: () => tabsResource.activeKey,
+  shownAi: () => app.snapshot?.ai ?? null,
+});
+
 /** The active tab's annotations, from the snapshot or `annotations(tab)`, `ui_annotations(tab)` and `jobs` by build. */
 export const annotationsResource = new AnnotationsAdapter({
   flagOn,
   store: resources,
   activeKey: () => tabsResource.activeKey,
+  paints: () => annotationWrites.paints(),
 });
 
 // With the flag on the page reads the AI fields from the resources: the
@@ -18,6 +28,7 @@ export const annotationsResource = new AnnotationsAdapter({
 // `jobs`, whose in-flight replies join the threads and findings.
 if (flagOn) {
   app.overlaySnapshot((raw) => annotationsResource.overlay(raw));
+  app.routeCmds((command, args) => annotationWrites.route(command, args));
   $effect.root(() => {
     $effect(() => resources.show(JOBS));
     $effect(() => {
