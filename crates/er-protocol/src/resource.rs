@@ -91,8 +91,7 @@ pub enum ResourceKey {
     },
     /// Every path a tab's diff holds, read on each fetch.
     DiffPaths { tab: TabKey },
-    /// One open tab's findings, threads, tour, checklist, triage and
-    /// diagrams, by its key.
+    /// One open tab's findings, threads, tour, checklist, triage and diagrams, by its key.
     Annotations { tab: TabKey },
     /// One open tab's browser annotations, from its view's bucket.
     UiAnnotations { tab: TabKey },
