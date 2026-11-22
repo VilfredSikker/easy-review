@@ -262,7 +262,8 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::SetFilter { .. }
         | Command::RefreshDiff { .. }
         | Command::SyncPr { .. }
-        | Command::SyncBranch { .. }) => {
+        | Command::SyncBranch { .. }
+        | Command::SetFileCompacted { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),

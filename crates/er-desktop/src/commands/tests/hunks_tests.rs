@@ -1,7 +1,8 @@
 //! `hunks(tab, path, hash)` on the flag path: a comment moves the tab's
 //! annotations and never a file's hash, an unparsed file is parsed by its
-//! actor, a hash the diff no longer holds answers `Stale`, and nothing
-//! records which hunks the page holds.
+//! actor, a hash the diff no longer holds answers `Stale`, compaction runs
+//! both ways on the service and holds across a load, and nothing records
+//! which hunks the page holds.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -236,6 +237,88 @@ fn a_rewritten_file_answers_stale_and_never_new_hunks_under_its_old_hash() {
             .map(|l| l.text.as_str())
             .collect();
         assert!(text.contains(&"second"), "{text:?}");
+    });
+}
+
+fn raw_with_lockfile() -> String {
+    format!("{}{LOCK_SECTION}", super::diff_resource_tests::raw_diff())
+}
+
+const LOCK_SECTION: &str =
+    "diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n\
+     @@ -1,2 +1,2 @@\n-old = 1\n+new = 2\n ctx\n";
+
+fn set_compacted(state: &AppState, key: TabKey, compacted: bool) {
+    let command = er_protocol::Command::SetFileCompacted {
+        tab: wire(key),
+        path: "Cargo.lock".into(),
+        compacted,
+    };
+    let ack = super::while_the_app_is_locked(state, "set_file_compacted", move |state| {
+        let effects = Effects {
+            notify: &|_, _| {},
+            follow_selection: &|_| {},
+            check_update: || panic!("no update check in this test"),
+            webviews: &crate::browser_webview::NoWebviews,
+            pick_folder: &|| None,
+        };
+        apply(&state.desktop, command, &effects).map(|applied| applied.ack)
+    });
+    let ack = ack.unwrap_or_else(|e| panic!("{e:?}"));
+    let named = ack
+        .changed
+        .iter()
+        .any(|c| c.key == ResourceKey::Diff { tab: wire(key) });
+    assert!(named, "the Ack named no diff: {ack:?}");
+}
+
+fn lock_row(state: &AppState, key: TabKey) -> er_protocol::FileRow {
+    let diff = diff(state, key);
+    let row = diff.files.into_iter().find(|row| row.path == "Cargo.lock");
+    row.unwrap_or_else(|| panic!("Cargo.lock is not listed"))
+}
+
+/// A compacted file expanded through the service shows in full, and stays
+/// expanded across a reload; compacted again, it shows compacted, leaves the
+/// tab's expanded set, and a reload keeps it compacted.
+#[test]
+fn compaction_runs_both_ways_on_the_service_and_holds_across_a_load() {
+    with_storage(|dir| {
+        let git = fake_git().with_diff_raw(Ok(raw_with_lockfile()));
+        let state = state_over(dir, ports(git.with_diff_raw_file(Ok(LOCK_SECTION.into()))));
+        let (key, tab) = listed(&state, dir, "repo");
+        load(&state, key, &tab, DiffMode::Branch);
+        assert!(
+            lock_row(&state, key).compacted,
+            "the lockfile did not load compacted"
+        );
+
+        set_compacted(&state, key, false);
+        let row = lock_row(&state, key);
+        assert!(!row.compacted, "the expand did not show the file in full");
+        let full = hunks(&state, key, "Cargo.lock", &row.cache_key);
+        assert_eq!(full.map(|h| h.hunks.len()), Ok(1));
+        assert!(content_routes::refresh_tab(&state, key, false).is_ok());
+        assert!(
+            !lock_row(&state, key).compacted,
+            "a reload compacted the expanded file"
+        );
+
+        set_compacted(&state, key, true);
+        assert!(
+            lock_row(&state, key).compacted,
+            "the file did not compact again"
+        );
+        let held = content(&state, key, &tab);
+        assert!(
+            !held.diff.expanded.contains("Cargo.lock"),
+            "the file stayed expanded"
+        );
+        assert!(content_routes::refresh_tab(&state, key, false).is_ok());
+        assert!(
+            lock_row(&state, key).compacted,
+            "a reload expanded the compacted file"
+        );
     });
 }
 

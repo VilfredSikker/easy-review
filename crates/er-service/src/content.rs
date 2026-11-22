@@ -224,6 +224,34 @@ impl TabContent {
             ..self.clone()
         }
     }
+
+    /// This content with the named files compacted again and no longer
+    /// expanded, so a later load parses them compacted. Answers how many it
+    /// compacted.
+    fn with_compacted(&self, paths: &[String], revision: u64) -> (Self, usize) {
+        let mut files = self.diff.files.clone();
+        let mut compacted = 0;
+        for slot in files.iter_mut().filter(|file| paths.contains(&file.path)) {
+            let mut file = DiffFile::clone(slot);
+            file.compacted = true;
+            file.raw_hunk_count = file.hunks.len();
+            file.hunks = Vec::new();
+            *slot = Arc::new(file);
+            compacted += 1;
+        }
+        let mut kept = self.diff.expanded.clone();
+        kept.retain(|path| !paths.contains(path));
+        let next = Self {
+            diff: Arc::new(DiffSection {
+                revision,
+                files,
+                meta: Arc::clone(&self.diff.meta),
+                expanded: kept,
+            }),
+            ..self.clone()
+        };
+        (next, compacted)
+    }
 }
 
 impl fmt::Debug for TabContent {
@@ -396,6 +424,13 @@ pub(crate) enum ContentPatch {
         files: Vec<(usize, DiffFile)>,
         expanded: Vec<String>,
     },
+    /// Parsed or expanded files compacted again, over the diff section at
+    /// revision `since`.
+    Compacted {
+        key: TabKey,
+        since: u64,
+        paths: Vec<String>,
+    },
     /// A view recorded without a load, over the generation `since`.
     Mode {
         key: TabKey,
@@ -463,6 +498,7 @@ pub(crate) fn lifecycle_keys(
             }
         }
         ContentPatch::Parsed { .. }
+        | ContentPatch::Compacted { .. }
         | ContentPatch::Mode { .. }
         | ContentPatch::Ai { .. }
         | ContentPatch::Freshness { .. }
@@ -484,10 +520,12 @@ pub(crate) fn check(
                 Err(PatchRefused::Moved)
             }
         }
-        ContentPatch::Parsed { key, since, .. } => match tabs.get(key) {
-            Some(content) if content.diff.revision == *since => Ok(()),
-            _ => Err(PatchRefused::Moved),
-        },
+        ContentPatch::Parsed { key, since, .. } | ContentPatch::Compacted { key, since, .. } => {
+            match tabs.get(key) {
+                Some(content) if content.diff.revision == *since => Ok(()),
+                _ => Err(PatchRefused::Moved),
+            }
+        }
         ContentPatch::Mode { key, since, .. } => match tabs.get(key) {
             Some(content) if content.generation() == *since => Ok(()),
             _ => Err(PatchRefused::Moved),
@@ -526,6 +564,12 @@ pub(crate) fn apply(
         } => {
             if let Some(content) = tabs.get_mut(&key) {
                 *content = Arc::new(content.with_parsed(files, &expanded, revision));
+            }
+            0
+        }
+        ContentPatch::Compacted { key, paths, .. } => {
+            if let Some(content) = tabs.get_mut(&key) {
+                *content = Arc::new(content.with_compacted(&paths, revision).0);
             }
             0
         }
