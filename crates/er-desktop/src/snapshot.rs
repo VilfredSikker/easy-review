@@ -10,6 +10,7 @@ use er_engine::file_rows::{
     active_finding_count, file_lines_key, finding_is_escalated, severity_str, status_str,
 };
 use er_engine::git::{DiffFile, FileStatus, LineType};
+use er_engine::history::CommitMeta;
 use serde::{Deserialize, Serialize};
 
 pub(crate) use er_engine::file_rows::mode_str;
@@ -3799,91 +3800,42 @@ fn diagram_preset_snapshots() -> Vec<DiagramPresetSnapshot> {
 /// scroller. PR tabs use cached GitHub PR commits so the list matches
 /// GitHub's PR Commits tab and snapshot rendering never shells out to `gh`.
 fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
-    const LIMIT: usize = 10;
+    use er_engine::history;
 
-    let log_root = tab.commit_log_root();
-
-    // The same rule `TabState::set_mode` uses to seed History from
-    // `pr_commits`: on a PR review tab the list is GitHub's in either mode, and
-    // a commit GitHub lists is pushed by definition.
-    let listed_by_github =
-        tab.pr_number.is_some() && (tab.history.is_none() || tab.local_branch_view.is_some());
-
-    let raw: Vec<er_engine::git::CommitInfo> = if let Some(history) = tab.history.as_ref() {
-        history.commits.iter().take(LIMIT).cloned().collect()
-    } else if tab.pr_number.is_some() {
-        tab.pr_commits.iter().take(LIMIT).cloned().collect()
-    } else {
-        // Log the VIEWED branch's commits (base..branch), not base..HEAD — when
-        // the branch isn't the checked-out HEAD of log_root, base..HEAD logs the
-        // wrong branch (e.g. main). The branch ref resolves in the main clone too.
-        // Matches the source History mode uses so clicking a commit resolves it.
-        let head_ref = tab.commit_head_ref();
-        let ranged = tab
-            .ports
-            .git
-            .log_range(&tab.base_branch, head_ref, log_root, LIMIT, 0)
-            .unwrap_or_default();
-        if ranged.is_empty() {
-            // On the base branch itself `base..HEAD` is empty — fall back to
-            // recent HEAD history so the commit scroller still shows something.
-            tab.ports.git.log_head(log_root, LIMIT).unwrap_or_default()
-        } else {
-            ranged
-        }
-    };
+    let source = tab.history_source();
+    let listed_by_github = history::listed_by_github(&source, tab.history.is_some());
+    let raw = history::scroller_commits(
+        &*tab.ports.git,
+        &source,
+        tab.history.as_ref().map(|h| h.commits.as_slice()),
+        &tab.pr_commits,
+    );
 
     let meta = if raw.is_empty() || tab.is_remote() {
         CommitMeta::default()
     } else {
         let key = CommitMetaKey {
-            log_root: log_root.to_string(),
-            head_ref: tab.commit_head_ref().to_string(),
+            log_root: source.commit_log_root().to_string(),
+            head_ref: source.commit_head_ref().to_string(),
             pr_head_ref: tab.pr_head_ref.clone(),
             listed_by_github,
             shas: raw.iter().map(|c| c.hash.clone()).collect(),
         };
         commit_meta_cached(key, || {
-            // A local PR tab's GitHub listing has no diffstat; read it from the
-            // object DB when the head was fetched, and leave it unknown otherwise.
-            let missing: Vec<&str> = raw
-                .iter()
-                .filter(|c| !c.diffstat_known)
-                .map(|c| c.hash.as_str())
-                .collect();
-            let stats = tab.ports.git.commit_shortstats(log_root, &missing);
-            let unpushed = if listed_by_github {
-                std::collections::HashSet::new()
-            } else {
-                // A local PR tab's fetched head counts as pushed even when it
-                // lives outside refs/remotes (a fork's PR).
-                let pushed_refs: Vec<&str> = tab.pr_head_ref.as_deref().into_iter().collect();
-                tab.ports
-                    .git
-                    .unpushed_shas(log_root, tab.commit_head_ref(), &pushed_refs, LIMIT)
-            };
-            CommitMeta { stats, unpushed }
+            history::commit_meta(&*tab.ports.git, &source, listed_by_github, &raw)
         })
     };
 
-    raw.into_iter()
-        .map(|c| {
-            let (additions, deletions) = if c.diffstat_known {
-                (Some(c.adds), Some(c.dels))
-            } else {
-                meta.stats
-                    .get(&c.hash)
-                    .map_or((None, None), |s| (Some(s.1), Some(s.2)))
-            };
-            CommitSummary {
-                unpushed: meta.unpushed.contains(&c.hash),
-                sha: c.hash,
-                title: c.subject,
-                author: c.author,
-                committed_at: c.date,
-                additions,
-                deletions,
-            }
+    history::scroller_rows(raw, &meta)
+        .into_iter()
+        .map(|c| CommitSummary {
+            sha: c.sha,
+            title: c.title,
+            author: c.author,
+            committed_at: c.committed_at,
+            additions: c.additions,
+            deletions: c.deletions,
+            unpushed: c.unpushed,
         })
         .collect()
 }
@@ -3898,14 +3850,6 @@ struct CommitMetaKey {
     pr_head_ref: Option<String>,
     listed_by_github: bool,
     shas: Vec<String>,
-}
-
-/// Object-DB diffstats for commits whose listing carried none, and the
-/// commits no remote holds.
-#[derive(Clone, Default)]
-struct CommitMeta {
-    stats: HashMap<String, (usize, usize, usize)>,
-    unpushed: std::collections::HashSet<String>,
 }
 
 /// The snapshot rebuilds on every revision event, and these two `git`
