@@ -75,23 +75,6 @@ pub fn active_status_key(desktop: &DesktopState) -> Option<(String, String, u64)
     status_key(desktop, active)
 }
 
-/// The status loop's next fetch: the active tab's PR, unless its status was
-/// stored in the last 90 seconds.
-pub fn status_loop_target(desktop: &DesktopState) -> Option<(String, String, u64)> {
-    let key = active_status_key(desktop)?;
-    let last_updated = desktop
-        .gh_status_cache
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(&key).and_then(|snap| snap.last_updated.clone()));
-    let fresh = crate::gh_status_cache::status_is_fresh(
-        last_updated.as_deref(),
-        crate::gh_status_cache::now_epoch_secs(),
-        90,
-    );
-    (!fresh).then_some(key)
-}
-
 fn kick_status(desktop: &DesktopState, owner: String, repo: String, number: u64) {
     commands::kick_github_status_refresh(
         desktop.gh_status_cache.clone(),
