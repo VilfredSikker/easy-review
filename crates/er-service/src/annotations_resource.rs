@@ -39,6 +39,7 @@ pub fn annotations_resource(content: &TabContent) -> wire::Annotations {
             ];
             other_bucket(facts, shown_tour, &hashes)
         }),
+        view: crate::reviewed_resource::content_view(content),
     }
 }
 
