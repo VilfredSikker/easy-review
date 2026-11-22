@@ -5,9 +5,7 @@
 use std::time::SystemTime;
 
 use er_engine::config::{FileKindRepoConfig, RiskRuleSource, RiskRules};
-use er_engine::file_rows::{
-    active_finding_count, file_lines_key, mode_str, severity_str, status_str,
-};
+use er_engine::file_rows::{active_finding_count, mode_str, severity_str, status_str};
 use er_engine::filter::{parse_filter_expr, FILTER_PRESETS};
 use er_engine::git::{DiffFile, FileKind, FileStatus, ProdDiffStats};
 use er_engine::preview_key;
@@ -186,14 +184,9 @@ fn file_row(
         finding_count: count(active_finding_count(ai, Some(&file.path))),
         comment_count: count(ai.file_github_comment_count(&file.path)),
         question_count: count(ai.file_question_count(&file.path)),
-        // A file with no +/- lines (a pure rename, a mode change) never parses
-        // into hunks, so it is never a stub.
-        is_lazy_stub: content.diff.meta.lazy
-            && file.hunks.is_empty()
-            && !file.compacted
-            && file.adds + file.dels > 0,
+        is_lazy_stub: crate::hunks::is_stub(content, file),
         source_index: count(index),
-        cache_key: format!("{:016x}", file_lines_key(file)),
+        cache_key: crate::hunks::row_hash(content, file),
         preview_key: preview_key::file_preview_key(keys, &file.path),
     }
 }

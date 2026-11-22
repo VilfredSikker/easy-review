@@ -67,6 +67,7 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         }
         ResourceKey::View { tab } => super::tabs::view(desktop, *tab)?,
         ResourceKey::Diff { tab } => super::diff::diff(desktop, *tab)?,
+        ResourceKey::Hunks { tab, path, hash } => super::hunks::hunks(desktop, *tab, path, hash)?,
     };
     Ok(Versioned {
         key,
@@ -75,14 +76,27 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
     })
 }
 
+/// Each key's content, in the order asked. The unparsed files the keys ask
+/// for are parsed first, one parse per tab.
+pub fn fetch_all(
+    desktop: &DesktopState,
+    keys: Vec<ResourceKey>,
+) -> Result<Vec<Versioned<Resource>>, ErError> {
+    super::hunks::parse_asked(desktop, &keys);
+    keys.into_iter().map(|key| fetch(desktop, key)).collect()
+}
+
 /// `key`'s version, read without building its content.
 pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersion, ErError> {
     let version = match &key {
         ResourceKey::Tabs => desktop.service.app_registry().tabs_view().revision,
         ResourceKey::Projects => sidebar(desktop).projects().0,
         ResourceKey::Branches { project } => sidebar(desktop).branches(project).0,
-        // Computed on each read, so they never have a newer version to announce.
-        ResourceKey::AvailableBranches { .. } | ResourceKey::AvailablePrs { .. } => 0,
+        // Computed on each read, or immutable under their key, so they never
+        // have a newer version to announce.
+        ResourceKey::AvailableBranches { .. }
+        | ResourceKey::AvailablePrs { .. }
+        | ResourceKey::Hunks { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Inbox => sidebar(desktop).inbox().0,

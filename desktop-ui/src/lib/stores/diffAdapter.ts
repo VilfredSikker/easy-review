@@ -5,7 +5,9 @@ import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabDiff } from "$lib/protocol/generated/TabDiff";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { BaseBehind } from "$lib/protocol/generated/BaseBehind";
-import type { AppSnapshot, DiffStaleSnapshot, FileSnapshot } from "$lib/types";
+import type { Hunk } from "$lib/protocol/generated/Hunk";
+import type { AppSnapshot, DiffStaleSnapshot, FileSnapshot, ThreadSnapshot } from "$lib/types";
+import { joinedHunks, threadsOn } from "$lib/threadJoin";
 import type { ResourceStore } from "./resourceStore";
 
 /** The snapshot fields `diff(tab)` replaces with the flag on. */
@@ -67,23 +69,31 @@ export function sliceFromSnapshot(snapshot: DiffSlice | null): DiffSlice {
   return snapshot ?? EMPTY;
 }
 
-/** A file row as the list shows it. Its hunks stay on the snapshot until they are served by hash. */
+/** A file row as the list shows it, before its hunks are fetched by hash. */
 export function fileFromRow(row: FileRow): FileSnapshot {
-  return { ...row, status: row.status as FileSnapshot["status"], hunks: [], delta_key: "", hunks_omitted: false } as FileSnapshot;
+  return { ...row, status: row.status as FileSnapshot["status"], hunks: [] } as FileSnapshot;
+}
+
+/** Where a file's hunks and threads come from with the flag on. */
+export interface HunkSource {
+  /** The hunks the page holds under a hash. */
+  get: (hash: string) => Hunk[] | undefined;
+  /** The tab's threads, which the hunks are joined with by path and line. */
+  threads: () => readonly ThreadSnapshot[];
 }
 
 /**
- * The App's snapshot with `slice` in place of its fields. A file the App
- * lists too keeps the App's hunks, their keys and its stub flag, since the
- * hunks the page draws are still the App's until they are served by hash.
+ * The App's snapshot with `slice` in place of its fields. Each file draws
+ * the hunks its hash names, with the threads that sit on them; a file whose
+ * hunks the page does not hold yet is a stub, which the view fetches.
  */
-export function overlaySnapshot(raw: AppSnapshot, slice: DiffSlice): AppSnapshot {
-  const held = new Map(raw.files.map((f) => [f.path, f]));
+export function overlaySnapshot(raw: AppSnapshot, slice: DiffSlice, hunks?: HunkSource): AppSnapshot {
+  const threads = hunks?.threads() ?? [];
   const files = slice.files.map((row) => {
-    const app = held.get(row.path);
-    if (!app) return row;
-    const { hunks, delta_key, hunks_omitted, is_lazy_stub, cache_key, preview_key } = app;
-    return { ...row, hunks, delta_key, hunks_omitted, is_lazy_stub, cache_key, preview_key };
+    if (row.compacted) return row;
+    const held = hunks?.get(row.cache_key);
+    if (!held) return { ...row, is_lazy_stub: row.additions + row.deletions > 0 };
+    return { ...row, is_lazy_stub: false, hunks: joinedHunks(held, threadsOn(threads, row.path)) };
   });
   return { ...raw, ...slice, files };
 }
@@ -222,6 +232,8 @@ interface DiffAdapterDeps {
   keyAt: (idx: number) => TabKey | null;
   /** The PR list's row for the active tab's PR. */
   prHead: () => PrHead | null;
+  /** The hunks by hash and the threads they are joined with. */
+  hunks?: HunkSource;
 }
 
 /**
@@ -240,9 +252,11 @@ export class DiffAdapter {
     return sliceFromResource(held, this.deps.prHead());
   }
 
-  /** `raw` with this adapter's fields in place of the App's. */
+  /** `raw` with this adapter's fields in place of the App's; the views the App loads keep its snapshot. */
   overlay(raw: AppSnapshot): AppSnapshot {
-    return overlaySnapshot(raw, this.read());
+    const held = this.held();
+    if (!held || RECORDED_MODES.has(held.mode)) return raw;
+    return overlaySnapshot(raw, sliceFromResource(held, this.deps.prHead()), this.deps.hunks);
   }
 
   /** The active tab's diff as the resource holds it; null with the flag off or before the first fetch. */
@@ -252,6 +266,12 @@ export class DiffAdapter {
     if (key === null) return null;
     const value = this.deps.store.get(diffKey(key))?.value;
     return value?.kind === "diff" ? value : null;
+  }
+
+  /** Whether the page draws the active tab's hunks by hash: the flag is on and the view is one the workspace loads. */
+  hashed(): boolean {
+    const held = this.held();
+    return held !== null && !RECORDED_MODES.has(held.mode);
   }
 
   /** Why the active tab's last load failed; null while it loaded or loads. */

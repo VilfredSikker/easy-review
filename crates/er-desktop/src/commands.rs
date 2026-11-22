@@ -273,7 +273,9 @@ fn snapshot_sources(state: &AppState) -> crate::snapshot::SnapshotSources<'_> {
         loading: Some(&state.loading),
         watch_status: Some(&state.watch_status),
         inbox: Some(&state.inbox),
-        sent_files: Some(&state.sent_files),
+        // With the flag on the page fetches hunks by hash, so nothing records
+        // which hunks it holds.
+        sent_files: (!cfg!(feature = "v1-service")).then_some(&state.sent_files),
         branch_base_remote_oid: Some(&state.branch_base_remote_oid),
         view: Some(&state.view),
     }
@@ -12711,6 +12713,8 @@ mod tests {
     mod diff_command_tests;
     #[cfg(feature = "v1-service")]
     mod diff_resource_tests;
+    #[cfg(feature = "v1-service")]
+    mod hunks_tests;
     #[cfg(not(feature = "v1-service"))]
     mod latency_tests;
     #[cfg(feature = "v1-service")]

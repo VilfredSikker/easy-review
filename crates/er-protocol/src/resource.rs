@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    AvailableBranches, AvailablePrs, Branches, Inbox, Panels, Projects, Prs, Risk, Session,
-    Settings, TabDiff, TabRow, TabView, Worktrees,
+    AvailableBranches, AvailablePrs, Branches, FileHunks, Inbox, Panels, Projects, Prs, Risk,
+    Session, Settings, TabDiff, TabRow, TabView, Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -63,6 +63,14 @@ pub enum ResourceKey {
     View { tab: TabKey },
     /// One open tab's file list and diff summary, by its key.
     Diff { tab: TabKey },
+    /// One file's hunks by the hash `diff(tab)` names for it. The tab and
+    /// the path find the workspace that holds them. Never pushed: what a
+    /// hash names does not change.
+    Hunks {
+        tab: TabKey,
+        path: String,
+        hash: String,
+    },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -83,6 +91,7 @@ pub enum Resource {
     Panels(Panels),
     View(TabView),
     Diff(Box<TabDiff>),
+    Hunks(FileHunks),
 }
 
 /// The open tabs in strip order, and the active one.

@@ -77,7 +77,10 @@ pub fn published_version(
     }
 }
 
-fn listed(desktop: &DesktopState, wire: er_protocol::TabKey) -> Result<TabEntry, ErError> {
+pub(super) fn listed(
+    desktop: &DesktopState,
+    wire: er_protocol::TabKey,
+) -> Result<TabEntry, ErError> {
     let tabs = desktop.service.app_registry().tabs_view();
     let key = resolve_tab_key(&tabs, wire)?;
     tabs.tabs

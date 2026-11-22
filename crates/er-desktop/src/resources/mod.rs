@@ -13,6 +13,8 @@ pub mod diff;
 #[cfg(feature = "v1-service")]
 mod host;
 #[cfg(feature = "v1-service")]
+pub mod hunks;
+#[cfg(feature = "v1-service")]
 pub mod notice;
 #[cfg(feature = "v1-service")]
 pub mod relay;
@@ -26,4 +28,4 @@ pub mod tabs;
 pub mod tick;
 
 #[cfg(feature = "v1-service")]
-pub use host::{fetch, send, version, watched, Watched};
+pub use host::{fetch, fetch_all, send, version, watched, Watched};

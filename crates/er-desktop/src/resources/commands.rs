@@ -58,12 +58,7 @@ pub async fn er_fetch(
     state: State<'_, DesktopState>,
 ) -> Result<Vec<Versioned<Resource>>, ErError> {
     let desktop = state.inner().clone();
-    blocking(move || {
-        keys.into_iter()
-            .map(|key| super::fetch(&desktop, key))
-            .collect()
-    })
-    .await
+    blocking(move || super::fetch_all(&desktop, keys)).await
 }
 
 /// Each key's published version, so a listener that attached late learns

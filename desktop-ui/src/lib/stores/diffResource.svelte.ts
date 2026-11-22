@@ -1,7 +1,9 @@
 import type { TabKey } from "$lib/protocol/generated/TabKey";
+import type { FileSnapshot } from "$lib/types";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import { app } from "./app.svelte";
 import { DiffAdapter, diffKey, prListRow, type PrHead } from "./diffAdapter";
+import { hunksResource } from "./hunksResource.svelte";
 import { resources } from "./resourceStore";
 import { tabsResource } from "./tabsResource.svelte";
 
@@ -21,7 +23,20 @@ export const diffResource = new DiffAdapter({
   activeKey: () => tabsResource.activeKey,
   keyAt: (idx) => tabsResource.keyAt(idx),
   prHead: activePrHead,
+  // The threads come from the App's snapshot until `annotations(tab)` serves them.
+  hunks: { get: (hash) => hunksResource.get(hash), threads: () => app.appSnapshot?.ai?.threads ?? [] },
 });
+
+/**
+ * Fetches the active tab's hunks for `files` by the hashes their rows name,
+ * when the page draws them that way; false when the App's snapshot carries them.
+ */
+export async function loadHashedHunks(files: readonly FileSnapshot[]): Promise<boolean> {
+  const tab = tabsResource.activeKey;
+  if (!diffResource.hashed() || tab === null) return false;
+  await hunksResource.load(tab, files.map((f) => ({ path: f.path, hash: f.cache_key })));
+  return true;
+}
 
 /** Shows `key` while the effect that called this runs. */
 function showDiff(key: TabKey | null): (() => void) | undefined {

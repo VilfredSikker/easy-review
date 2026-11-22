@@ -124,6 +124,11 @@ export class ResourceStore {
     return ack;
   }
 
+  /** Asks for `keys`' versions now and refetches those that moved, as the safety net does. */
+  recheck(keys: readonly ResourceKey[]): void {
+    void this.checkVersions(keys);
+  }
+
   /** Refetches each shown key whose announced version is above the one held. */
   applyChanges(changed: readonly ResourceChanged[]): void {
     const due: ResourceKey[] = [];
@@ -170,11 +175,12 @@ export class ResourceStore {
     }, this.safetyNetMs);
   }
 
-  private async checkVersions(): Promise<void> {
-    const keys = [...this.shown.values()].map((entry) => entry.key);
+  private async checkVersions(
+    keys: readonly ResourceKey[] = [...this.shown.values()].map((entry) => entry.key),
+  ): Promise<void> {
     if (keys.length === 0) return;
     try {
-      const versions = await this.client.versions(keys);
+      const versions = await this.client.versions([...keys]);
       this.applyChanges(keys.map((key, i) => ({ key, version: versions[i] })));
     } catch (e) {
       this.report(e as ErError);

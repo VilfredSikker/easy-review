@@ -8,6 +8,14 @@ use crate::ai::{AiState, ArbiterRuling, ErFileReview, Finding, RiskLevel};
 use crate::git::{DiffFile, FileStatus, LineType};
 use crate::tab_identity::DiffMode;
 
+/// The key of a file listed but not parsed yet. It has no lines to hash, so
+/// it is keyed by its section of the raw diff, which a rewrite moves.
+pub fn stub_key(path: &str, section: Option<&str>) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    ("stub", path, section).hash(&mut h);
+    h.finish()
+}
+
 /// Stable content hash over exactly what the hunk payload serializes for a
 /// file (headers, line kinds/numbers, text). Per-file, so editing one file
 /// does not re-key the others and highlight caches survive watch refreshes.

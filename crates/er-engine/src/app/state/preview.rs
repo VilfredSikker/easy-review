@@ -98,6 +98,11 @@ impl TabState {
         self.preview_key_inputs().section(path)
     }
 
+    /// The key of a file this tab lists but has not parsed.
+    pub fn stub_key(&self, path: &str) -> u64 {
+        crate::file_rows::stub_key(path, self.preview_section(path))
+    }
+
     pub fn file_preview_key(&self, path: &str) -> String {
         crate::preview_key::file_preview_key(&self.preview_key_inputs(), path)
     }

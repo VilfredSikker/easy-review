@@ -28,7 +28,7 @@ import {
   snapshotViewIdentity,
   snapshotViewParts,
 } from "../snapshotChrome";
-import { resolveOmittedHunks } from "../snapshotDelta";
+import { resolveOmittedHunks, type ResolveOmittedStats } from "../snapshotDelta";
 import { shouldShowNotification } from "../snapshotNotification";
 import { DEFAULT_SYNTAX_THEME_ID } from "../syntaxThemes";
 import {
@@ -327,7 +327,13 @@ class AppStore {
   private snapshotGeneration = 0;
   /** Local sidecar writes shown before IPC returns. */
   private pendingOps: OptimisticOp[] = [];
-  private tabCache = new TabSnapshotCache();
+  /** Flag-off only: with the flag on a revisited tab paints from its resources and the hunk cache. */
+  private tabCache: TabSnapshotCache | null = v1ServiceRequested() ? null : new TabSnapshotCache();
+
+  /** Splices the hunks a differential snapshot left out; with the flag on the backend leaves none out. */
+  private spliceOmitted(prev: AppSnapshot | null, next: AppSnapshot): ResolveOmittedStats {
+    return v1ServiceRequested() ? { reused: 0, refetch: 0 } : resolveOmittedHunks(prev, next);
+  }
   /** Last snapshot the backend confirmed. Cache paints are not confirmed. */
   private lastConfirmedSnapshot: AppSnapshot | null = null;
   /** Serialize tab-change invokes so a later click cannot apply before an earlier one. */
@@ -498,7 +504,7 @@ class AppStore {
     this.loading = true;
     try {
       const snap = await invoke<AppSnapshot>("get_snapshot");
-      resolveOmittedHunks(this.raw, snap);
+      this.spliceOmitted(this.raw, snap);
       this.raw = snap;
       this.keepOptimisticOps();
       this.rememberSnapshot(snap);
@@ -580,8 +586,8 @@ class AppStore {
       const hunkPrev =
         prev !== null && snapshotsShareTabCacheKey(prev, snapshot)
           ? prev
-          : this.tabCache.peek(tabSnapshotCacheKey(snapshot));
-      const delta = resolveOmittedHunks(hunkPrev, snapshot);
+          : (this.tabCache?.peek(tabSnapshotCacheKey(snapshot)) ?? null);
+      const delta = this.spliceOmitted(hunkPrev, snapshot);
       this.raw = snapshot;
       profileLog("snapshot_replace", {
         invoke_ms: invokeMs,
@@ -750,8 +756,8 @@ class AppStore {
     diffPreview.sync(snapshot);
     annotationDrafts.sync(snapshot);
     if (!snapshot) return;
-    this.tabCache.put(snapshot);
-    this.tabCache.retain(openTabCacheKeys(snapshot));
+    this.tabCache?.put(snapshot);
+    this.tabCache?.retain(openTabCacheKeys(snapshot));
   }
 
   private cachedSnapshotForTabIdx(idx: number): AppSnapshot | null {
@@ -759,7 +765,7 @@ class AppStore {
     if (!current) return null;
     const tab = current.tabs.find((t) => t.idx === idx) ?? current.tabs[idx];
     if (!tab) return null;
-    return this.tabCache.get(tabSnapshotCacheKeyFromTab(tab), tab.change_token);
+    return this.tabCache?.get(tabSnapshotCacheKeyFromTab(tab), tab.change_token) ?? null;
   }
 
   private spliceAndConfirmSnapshot(snapshot: AppSnapshot): void {
@@ -767,8 +773,8 @@ class AppStore {
     const hunkPrev =
       this.raw !== null && tabSnapshotCacheKey(this.raw) === incomingKey
         ? this.raw
-        : this.tabCache.peek(incomingKey);
-    resolveOmittedHunks(hunkPrev, snapshot);
+        : (this.tabCache?.peek(incomingKey) ?? null);
+    this.spliceOmitted(hunkPrev, snapshot);
     this.lastConfirmedSnapshot = snapshot;
   }
 

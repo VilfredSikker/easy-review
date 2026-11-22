@@ -83,6 +83,12 @@ impl SentFilesState {
         self.order.clear();
     }
 
+    /// Whether no view records a path.
+    #[cfg(all(test, feature = "v1-service"))]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.views.values().all(HashMap::is_empty)
+    }
+
     /// Touch `token` as most-recent, creating an empty map if needed. Drops the
     /// oldest view when the cap is exceeded.
     fn activate(&mut self, token: u64) -> &mut HashMap<String, u64> {
@@ -144,6 +150,8 @@ pub fn optimistic_view_matches(app: &App, expected: &OptimisticView) -> bool {
 
 /// Record that the frontend now holds full hunks for `snap` (viewport-driven
 /// lazy loads bypass `build_snapshot`, so `request_file_content` calls this).
+/// Flag-off only: with the flag on the page fetches hunks by hash.
+#[cfg(not(feature = "v1-service"))]
 pub fn record_sent_file(
     app: &App,
     tab: &TabState,
@@ -1426,6 +1434,12 @@ pub struct ThreadSnapshot {
     /// GitHub's numeric id when this comment is on the PR. A reply to a
     /// comment with one posts; a reply to a local-only comment stays local.
     pub github_id: Option<u64>,
+    /// What places the thread on a hunk fetched without it: the hunk a
+    /// thread with no line names, and a LEFT thread's old-side line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hunk_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2182,6 +2196,8 @@ fn comment_ref_to_thread(
             CommentRef::GithubComment(_) => None,
         },
         github_id,
+        hunk_index: c.hunk_index(),
+        old_line: c.old_line_start(),
     }
 }
 
@@ -3311,6 +3327,16 @@ fn log_snapshot_build(
     );
 }
 
+/// Whether the snapshot carries the App's hunks in `mode`. With the flag on
+/// the page fetches them by hash, except in the views the App still loads.
+fn app_shows_hunks(mode: DiffMode) -> bool {
+    !cfg!(feature = "v1-service")
+        || matches!(
+            mode,
+            DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden
+        )
+}
+
 /// The active tab's rows, read from the engine tab. See
 /// [`SnapshotRead::tab_content`].
 fn app_tab_content(app: &App, sources: &SnapshotSources<'_>, chrome_only: bool) -> AppSnapshot {
@@ -3388,11 +3414,21 @@ fn app_tab_content(app: &App, sources: &SnapshotSources<'_>, chrome_only: bool) 
                 let line_count = f.hunks.iter().map(|h| h.lines.len()).sum::<usize>();
                 let is_large = f.adds + f.dels > tab.compaction_config.max_lines_before_compact;
                 let include_hunks = !f.compacted
+                    && app_shows_hunks(tab.mode)
                     && (!is_large || source_index == active_selected || diff_line_budget > 0);
                 if include_hunks && is_large {
                     diff_line_budget = diff_line_budget.saturating_sub(line_count);
                 }
-                let snap = build_file_snapshot(source_index, f, tab, pending_ai, include_hunks);
+                let mut snap = build_file_snapshot(source_index, f, tab, pending_ai, include_hunks);
+                if !app_shows_hunks(tab.mode) {
+                    // Left out for the page to fetch by hash, not for the line
+                    // budget: the row keeps the stub flag the App's parse gives.
+                    snap.is_lazy_stub =
+                        tab.lazy_mode && f.hunks.is_empty() && !f.compacted && f.adds + f.dels > 0;
+                    if snap.is_lazy_stub {
+                        snap.cache_key = format!("{:016x}", tab.stub_key(&f.path));
+                    }
+                }
                 if let Some(guard) = sent_guard.as_mut() {
                     let token = snapshot_view_token(app, tab, mode);
                     let keys = guard.activate(token);
@@ -5013,6 +5049,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         },
                         replies: build_replies(&qref, tab, pending),
                         promoted_to: q.promoted_to.clone(),
+                        hunk_index: qref.hunk_index(),
+                        old_line: qref.old_line_start(),
                     });
                 }
             }
@@ -5046,6 +5084,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         },
                         replies: build_replies(&nref, tab, pending),
                         promoted_to: n.promoted_to.clone(),
+                        hunk_index: nref.hunk_index(),
+                        old_line: nref.old_line_start(),
                     });
                 }
             }
@@ -5084,6 +5124,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         },
                         replies: build_replies(&cref, tab, pending),
                         promoted_to: None,
+                        hunk_index: cref.hunk_index(),
+                        old_line: cref.old_line_start(),
                     });
                 }
             }
@@ -6990,6 +7032,7 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
         );
     }
 
+    #[cfg(not(feature = "v1-service"))]
     fn delta_snap(app: &App, sent: &SentFilesHandle) -> AppSnapshot {
         build_snapshot_with_delta(
             app,
@@ -7001,7 +7044,35 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
     }
 
     const DELTA_FIXTURE_DIFF: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..1111111 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,3 @@\n fn foo() {}\n+fn bar() {}\n fn baz() {}\n";
+    #[cfg(not(feature = "v1-service"))]
     const DELTA_FIXTURE_DIFF_V2: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..2222222 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,4 @@\n fn foo() {}\n+fn bar() {}\n+fn qux() {}\n fn baz() {}\n";
+
+    /// `hunks(hash)` carries the fields of the snapshot's hunks it replaces,
+    /// a fold line included; only the threads are left to the page's join.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_hash_keyed_hunks_match_the_snapshot_hunks() {
+        let mut files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+        let fold = er_engine::git::DiffLine {
+            line_type: LineType::Fold(4),
+            content: String::new(),
+            old_num: None,
+            new_num: None,
+        };
+        files[0].hunks[0].lines.insert(1, fold);
+        let app = er_engine::app::App::new_for_test(files);
+        let tab = app.tab();
+        let json = |v: serde_json::Result<serde_json::Value>| v.unwrap_or_else(|e| panic!("{e}"));
+        let mut snapshot = json(serde_json::to_value(build_hunks(&tab.files[0], tab, None)));
+        for hunk in snapshot.as_array_mut().into_iter().flatten() {
+            if let Some(hunk) = hunk.as_object_mut() {
+                hunk.remove("threads");
+            }
+        }
+        let hashed = json(serde_json::to_value(er_service::file_hunks(&tab.files[0])));
+        assert!(hashed.to_string().contains("··· 4 unchanged lines ···"));
+        assert_eq!(hashed, snapshot);
+    }
 
     #[test]
     fn precomputed_keys_produce_identical_snapshot() {
@@ -7037,6 +7108,9 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
         assert_eq!(fresh.is_lazy_stub, precomputed.is_lazy_stub);
     }
 
+    // The differential snapshot is the flag-off path: with the flag on the
+    // page fetches hunks by hash and nothing records what it holds.
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn differential_snapshot_omits_unchanged_hunks() {
         let storage = tempfile::tempdir().unwrap();
@@ -7064,6 +7138,9 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
         });
     }
 
+    // The differential snapshot is the flag-off path: with the flag on the
+    // page fetches hunks by hash and nothing records what it holds.
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn differential_snapshot_resends_on_content_change() {
         let storage = tempfile::tempdir().unwrap();
@@ -7091,6 +7168,9 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
         });
     }
 
+    // The differential snapshot is the flag-off path: with the flag on the
+    // page fetches hunks by hash and nothing records what it holds.
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn differential_snapshot_resends_when_threads_change() {
         let storage = tempfile::tempdir().unwrap();
@@ -7129,6 +7209,9 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
         });
     }
 
+    // The differential snapshot is the flag-off path: with the flag on the
+    // page fetches hunks by hash and nothing records what it holds.
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn differential_snapshot_clears_on_view_change_and_reset() {
         let storage = tempfile::tempdir().unwrap();
