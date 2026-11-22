@@ -374,15 +374,16 @@ fn the_flag_on_snapshot_records_no_sent_hunks() {
     });
 }
 
-/// The views the App still loads keep the snapshot's hunks with the flag on.
+/// Conflicts and Hidden load on the service too, so with the flag on their
+/// snapshot carries no hunks: the page fetches them by hash.
 #[test]
-fn the_flag_on_snapshot_keeps_the_hunks_of_the_views_the_app_loads() {
+fn the_flag_on_snapshot_carries_no_hunks_in_conflicts_or_hidden() {
     with_storage(|dir| {
         let state = state_over(dir, super::diff_resource_tests::fake_ports());
         for mode in [DiffMode::Conflicts, DiffMode::Hidden] {
             let files = snap_from(&app_in(mode), &state).files;
             assert!(!files.is_empty(), "{mode:?} listed no file");
-            assert!(files.iter().all(|f| !f.hunks.is_empty()), "{mode:?}");
+            assert!(files.iter().all(|f| f.hunks.is_empty()), "{mode:?}");
         }
     });
 }

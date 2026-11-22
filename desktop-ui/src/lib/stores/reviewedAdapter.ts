@@ -4,7 +4,6 @@ import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TabReviewed } from "$lib/protocol/generated/TabReviewed";
 import type { AppSnapshot } from "$lib/types";
-import { RECORDED_MODES } from "./diffAdapter";
 import type { ResourceStore } from "./resourceStore";
 
 export function reviewedKey(tab: TabKey): ResourceKey {
@@ -36,8 +35,7 @@ function pendingId(tab: TabKey, path: string): string {
  * `reviewed(tab)` and `diff(tab)`: the two are fetched on their own, and until
  * both are held the rows the page draws can be the tab the registry left, so a
  * click there would send the new tab's key with the old tab's path, and `r`
- * could read the wrong direction from the old tab's mark. In the views the App
- * loads (History, Conflicts, Hidden) the count stays the snapshot's.
+ * could read the wrong direction from the old tab's mark.
  */
 export class ReviewedAdapter {
   /** The checkmarks painted and not yet acknowledged; `click` tells one click's paint from a later one's. */
@@ -59,7 +57,7 @@ export class ReviewedAdapter {
     const tab = this.deps.activeKey();
     const held = this.held();
     if (tab === null || (!held && this.pending.size === 0)) return snap;
-    const marked = held && !RECORDED_MODES.has(held.view.mode) ? new Set(held.paths) : null;
+    const marked = held ? new Set(held.paths) : null;
     const files = snap.files.map((file) => {
       const reviewed = this.pending.get(pendingId(tab, file.path))?.reviewed ?? marked?.has(file.path) ?? file.reviewed;
       return reviewed === file.reviewed ? file : { ...file, reviewed };

@@ -8,6 +8,7 @@ use er_engine::config::{FileKindRepoConfig, RiskRuleSource, RiskRules};
 use er_engine::file_rows::{active_finding_count, mode_str, severity_str, status_str};
 use er_engine::filter::{parse_filter_expr, FILTER_PRESETS};
 use er_engine::git::{DiffFile, FileKind, FileStatus, ProdDiffStats};
+use er_engine::history::ScrollerCommit;
 use er_engine::preview_key;
 use er_engine::tab_identity::DiffMode;
 use er_engine::visible_files::{visible_files, FileListView};
@@ -134,6 +135,24 @@ pub fn diff_resource(content: &TabContent, inputs: &DiffInputs<'_>) -> wire::Tab
                 unstaged_files: count(d.unstaged_files),
             }),
         load_error: None,
+        commits: meta.commits.iter().map(commit_row).collect(),
+        selected_commit_sha: content
+            .history
+            .as_ref()
+            .filter(|_| tab.mode == DiffMode::History)
+            .and_then(|history| history.selected.clone()),
+    }
+}
+
+fn commit_row(commit: &ScrollerCommit) -> wire::CommitRow {
+    wire::CommitRow {
+        sha: commit.sha.clone(),
+        title: commit.title.clone(),
+        author: commit.author.clone(),
+        committed_at: commit.committed_at.clone(),
+        additions: commit.additions.map(count),
+        deletions: commit.deletions.map(count),
+        unpushed: commit.unpushed,
     }
 }
 

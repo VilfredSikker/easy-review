@@ -9,7 +9,7 @@ interface SelectionAdapterDeps {
   /** Whether the backend serves resources (the `v1-service` build). */
   flagOn: boolean;
   activeKey: () => TabKey | null;
-  /** Whether the page draws the active tab from `diff(tab)`; the views the App loads keep its selection. */
+  /** Whether the page draws the active tab from `diff(tab)`; until it does the App's selection stays. */
   drawsFromDiff: () => boolean;
   /** The snapshot the page shows, with the diff and the marks laid over it. */
   shown: () => AppSnapshot | null;
@@ -23,7 +23,7 @@ const MOVES = new Set(["select_file", "next_file", "prev_file", "next_hunk", "pr
  * them (A10, ADR 0068): a selection or a move is a function over `diff(tab)`
  * and `reviewed(tab)` and makes no IPC call, and the overlay hands the page
  * the selection as the snapshot named it, a position in the shown list. With
- * the flag off, and in the views the App loads, the App's stays.
+ * the flag off, and until `diff(tab)` is held, the App's stays.
  */
 export class SelectionAdapter {
   /** Each tab's selection by path, so a list that reorders or filters keeps it. */
@@ -45,7 +45,7 @@ export class SelectionAdapter {
     return { ...snap, selected_file: Math.max(0, pos), current_hunk: pos === -1 ? 0 : (picked?.hunk ?? 0) };
   }
 
-  /** A selection or a move, run in the page; null with the flag off, in a view the App loads, or for any other command. */
+  /** A selection or a move, run in the page; null with the flag off, before `diff(tab)` is held, or for any other command. */
   route(command: string, args: Args = {}): Promise<void> | null {
     const tab = this.owns();
     const snap = this.deps.shown();

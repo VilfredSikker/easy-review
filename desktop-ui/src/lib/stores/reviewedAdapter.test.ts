@@ -97,7 +97,7 @@ describe("ReviewedAdapter", () => {
     expect(sent).toEqual([]);
   });
 
-  it("takes the marks and the count from reviewed(tab), and the App's count in a view the App loads", async () => {
+  it("takes the marks and the count from reviewed(tab), in History too", async () => {
     const { store, held } = backend({ version: 3, value: marks(["src/b.rs"], 1) });
     await settle();
     const shown = adapter(store).overlay(snapshot());
@@ -107,7 +107,7 @@ describe("ReviewedAdapter", () => {
     Object.assign(held, { version: 4, value: marks([], 0, "history") });
     store.applyChanges([{ key: reviewedKey(KEY), version: 4 }]);
     await settle();
-    expect(adapter(store).overlay(snapshot()).reviewed_count).toBe(5);
+    expect(adapter(store).overlay(snapshot()).reviewed_count).toBe(0);
   });
 
   it("shows the checkmark until the Ack's versions are held, then reads the marks", async () => {

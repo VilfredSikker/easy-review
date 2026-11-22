@@ -42,32 +42,21 @@ pub fn image_preview(
     image(desktop, &entry, path, context).map(|preview| (0, Resource::ImagePreview(preview)))
 }
 
-/// Every path `wire`'s diff holds. The views the App loads have no list here.
+/// Every path `wire`'s diff holds, in whichever view it shows.
 pub fn diff_paths(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
 ) -> Result<(u64, Resource), ErError> {
     let entry = super::diff::listed(desktop, wire)?;
     let content = loaded(desktop, &entry)?;
-    if !er_service::loads(content.tab.mode) {
-        return Err(refused(format!(
-            "File list not available in {} view",
-            content.tab.mode.git_mode()
-        )));
-    }
     let paths = content.diff.files.iter().map(|f| f.path.clone()).collect();
     Ok((0, Resource::DiffPaths(DiffPaths { paths })))
 }
 
 /// The registry's active tab, for the old preview commands' flag-on bodies.
-/// None while it shows a view the App loads, whose preview the App reads.
 pub fn active(desktop: &DesktopState) -> Option<TabEntry> {
     let tabs = desktop.service.app_registry().tabs_view();
-    let entry = tabs.active_entry()?.clone();
-    let content = desktop.service.content(entry.key, &entry.descriptor);
-    content
-        .is_none_or(|content| er_service::loads(content.tab.mode))
-        .then_some(entry)
+    tabs.active_entry().cloned()
 }
 
 pub fn document(
