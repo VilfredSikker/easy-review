@@ -19,6 +19,7 @@ pub mod promotions;
 pub mod prompts;
 mod relocate;
 mod review;
+pub mod review_cleanup;
 pub mod review_flow;
 pub mod review_md;
 pub mod scoped_overlay;
