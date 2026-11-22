@@ -16,7 +16,7 @@ use er_engine::ports::Ports;
 use er_engine::tab_identity::DiffMode;
 use er_engine::TabKey;
 
-use crate::content::{self, ContentPatch, TabContent};
+use crate::content::{ContentPatch, TabContent};
 use crate::effect::{resolve_target, LoadInput};
 use crate::flows::{FlowRunner, FlowsUpdate};
 use crate::github_sync::{Applied, Fetched};
@@ -326,7 +326,37 @@ fn reload_input(content: &TabContent, mode: DiffMode) -> LoadInput {
         refresh_pr: false,
         adopt_head_oid: None,
         tips: content.freshness.value.tips.clone(),
+        history: crate::history::HistoryInput::carried(content.history.clone()),
+        prev_meta: Some(Arc::clone(&content.diff.meta)),
     }
+}
+
+/// The input that shows loaded content in another view. Its reviewed marks
+/// are kept: the views show different diffs, so a mark whose hash differs in
+/// the new view still holds.
+fn mode_input(content: &TabContent, mode: DiffMode, pr_number: Option<u64>) -> LoadInput {
+    let mut input = reload_input(content, mode);
+    input.tab.pr_number = input.tab.pr_number.or(pr_number);
+    let is_remote = content.tab.identity().is_remote();
+    // A tour entered from the PR diff stays on the PR.
+    if mode == DiffMode::Tour {
+        let from_pr = content.tab.mode == DiffMode::PrDiff;
+        input.tab.tour_is_pr = from_pr || is_remote;
+    }
+    // History returns to the view it was entered from; entered from the
+    // other source, it lists its commits again.
+    if mode == DiffMode::History && content.tab.mode != DiffMode::History {
+        let from = content.tab.mode;
+        input.history.return_mode =
+            er_engine::history::return_mode(from, content.tab.tour_is_pr, is_remote);
+    }
+    input.auto_unmark = false;
+    input.recheck_branch = false;
+    // The first entry into a local PR's diff fetches its refs.
+    input.fetch_pr_refs = mode == DiffMode::PrDiff
+        && content.tab.mode != DiffMode::PrDiff
+        && !content.pr_refs_fetched;
+    input
 }
 
 /// Whether an annotation command's tab belongs to the workspace the actor is
@@ -732,17 +762,8 @@ fn handle_command(
             force,
             adopt_head_oid,
         } => {
-            let Some(mode) = state.view().tabs.get(&key).map(|c| c.tab.mode) else {
+            if !state.view().tabs.contains_key(&key) {
                 return refuse_unknown_tab(reply);
-            };
-            // A view the workspace only records has nothing to refresh.
-            if !content::loads(mode) {
-                let reviewed_cleared = 0;
-                let _ = reply.send(Ok(Reply::ContentLoaded {
-                    key,
-                    reviewed_cleared,
-                }));
-                return;
             }
             spawn_load(deps, state, tx, reply, key, move |_, content| {
                 let content = content
@@ -779,34 +800,59 @@ fn handle_command(
             mode,
             pr_number,
         } => {
-            let Some(since) = state.view().tabs.get(&key).map(|c| c.generation()) else {
+            if !state.view().tabs.contains_key(&key) {
                 return refuse_unknown_tab(reply);
-            };
-            if !content::loads(mode) {
-                let patch = ContentPatch::Mode { key, since, mode };
-                return spawn_effect(tx, reply, move || {
-                    Ok(Effected::patched(Reply::ModeRecorded { key }, patch))
-                });
             }
             spawn_load(deps, state, tx, reply, key, move |_, content| {
                 let content = content
                     .ok_or_else(|| WorkspaceError::Failed("no loaded tab has that key".into()))?;
-                let mut input = reload_input(content, mode);
-                input.tab.pr_number = input.tab.pr_number.or(pr_number);
-                // A tour entered from the PR diff stays on the PR.
-                if mode == DiffMode::Tour {
-                    let from_pr = content.tab.mode == DiffMode::PrDiff;
-                    input.tab.tour_is_pr = from_pr || content.tab.identity().is_remote();
-                }
-                // The views show different diffs, so a mark whose hash differs
-                // in the new view still holds.
-                input.auto_unmark = false;
-                input.recheck_branch = false;
-                // The first entry into a local PR's diff fetches its refs.
-                input.fetch_pr_refs = mode == DiffMode::PrDiff
-                    && content.tab.mode != DiffMode::PrDiff
-                    && !content.pr_refs_fetched;
+                Ok(mode_input(content, mode, pr_number))
+            });
+        }
+        Command::SelectCommit { key, sha } => {
+            let Some(remote) = state
+                .view()
+                .tabs
+                .get(&key)
+                .map(|c| c.tab.identity().is_remote())
+            else {
+                return refuse_unknown_tab(reply);
+            };
+            if remote {
+                let _ = reply.send(Err(WorkspaceError::Failed(
+                    "Commits on a remote PR are display-only: there is no local clone to diff them in"
+                        .into(),
+                )));
+                return;
+            }
+            spawn_load(deps, state, tx, reply, key, move |_, content| {
+                let content = content
+                    .ok_or_else(|| WorkspaceError::Failed("no loaded tab has that key".into()))?;
+                let mut input = mode_input(content, DiffMode::History, None);
+                input.history.select = Some(sha);
                 Ok(input)
+            });
+        }
+        Command::ExitHistory { key } => {
+            let Some(content) = state.view().tabs.get(&key).cloned() else {
+                return refuse_unknown_tab(reply);
+            };
+            if content.tab.mode != DiffMode::History {
+                let reviewed_cleared = 0;
+                let _ = reply.send(Ok(Reply::ContentLoaded {
+                    key,
+                    reviewed_cleared,
+                }));
+                return;
+            }
+            let back = content
+                .history
+                .as_ref()
+                .map_or(DiffMode::Branch, |history| history.return_mode);
+            spawn_load(deps, state, tx, reply, key, move |_, content| {
+                let content = content
+                    .ok_or_else(|| WorkspaceError::Failed("no loaded tab has that key".into()))?;
+                Ok(mode_input(content, back, None))
             });
         }
         Command::ChangeBase { key, base } => {

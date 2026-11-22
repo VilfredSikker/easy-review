@@ -17,6 +17,7 @@ use er_engine::ai::{self, AiState};
 use er_engine::annotations::WrittenPayload;
 use er_engine::git::{CommitInfo, DiffFile, DiffFileHeader};
 use er_engine::github::PrOverviewData;
+use er_engine::history::ScrollerCommit;
 use er_engine::preview_key::{PreviewKeyInputs, PreviewStamps};
 use er_engine::tab_identity::{DiffMode, ResolvedTab};
 use er_engine::TabKey;
@@ -35,14 +36,16 @@ pub struct TabContent {
     /// Whether this tab fetched its PR head and base refs, which entering the
     /// PR diff does once.
     pub pr_refs_fetched: bool,
-    /// The revision that last changed `tab.mode` without a load: a view the
-    /// workspace records but does not load.
+    /// The revision of the load that set `tab.mode`.
     pub mode_revision: u64,
     pub diff: Arc<DiffSection>,
     pub reviewed: Arc<ReviewedSection>,
     pub ai: Arc<AiSection>,
     pub pr: Arc<PrSection>,
     pub freshness: Arc<FreshnessSection>,
+    /// History's commits once the tab has shown History, carried across
+    /// loads in the other views as the App keeps them.
+    pub history: Option<Arc<HistorySection>>,
 }
 
 /// How far origin has moved past what the tab shows. A probe's post moves
@@ -50,15 +53,6 @@ pub struct TabContent {
 pub struct FreshnessSection {
     pub revision: u64,
     pub value: Freshness,
-}
-
-/// Whether the workspace loads a diff for `mode`. History, Conflicts and
-/// Hidden show what the App reads for them, so the content only records them.
-pub fn loads(mode: DiffMode) -> bool {
-    !matches!(
-        mode,
-        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden
-    )
 }
 
 impl TabContent {
@@ -74,16 +68,21 @@ impl TabContent {
             .max(self.mode_revision)
     }
 
-    /// The inputs this content's preview keys read. The workspace shows no
-    /// History commit, so a History view keys on its mode alone.
+    /// The inputs this content's preview keys read. Only History names its
+    /// commit, so the other views key the same before and after a visit to it.
     pub fn preview_key_inputs(&self) -> PreviewKeyInputs<'_> {
+        let history_commit = self
+            .history
+            .as_ref()
+            .filter(|_| self.tab.mode == DiffMode::History)
+            .and_then(|history| history.selected.as_deref());
         PreviewKeyInputs {
             repo_root: &self.tab.repo_root,
             remote_repo: self.tab.remote_repo.as_deref(),
             mode: self.tab.mode,
             checkout_root: self.tab.checkout_root.as_deref(),
             preview_head_oid: self.diff.meta.preview_head_oid.as_deref(),
-            history_commit: None,
+            history_commit,
             raw: Some(&self.diff.meta.raw),
             diff_hash: &self.diff.meta.diff_hash,
             headers: &self.diff.meta.headers,
@@ -128,15 +127,8 @@ impl TabContent {
                 revision,
                 value: loaded.freshness,
             }),
+            history: loaded.history,
         }
-    }
-
-    /// This content shown in `mode`, which the workspace does not load.
-    fn with_mode(&self, mode: DiffMode, revision: u64) -> Self {
-        let mut next = self.clone();
-        next.tab.mode = mode;
-        next.mode_revision = revision;
-        next
     }
 
     /// This content with its AI state read again from the sidecars.
@@ -273,6 +265,22 @@ pub struct DiffMeta {
     /// committed risk table, read when the diff loaded.
     pub rules_key: String,
     pub risk_artifact: Option<er_engine::config::RiskRuleTable>,
+    /// The commit scroller's rows, read with the diff in every view.
+    pub commits: Vec<ScrollerCommit>,
+}
+
+/// The commits History lists and the one it shows.
+#[derive(Debug)]
+pub struct HistorySection {
+    /// Newest first.
+    pub commits: Vec<CommitInfo>,
+    /// Whether a later page would add nothing.
+    pub all_loaded: bool,
+    /// The commit whose diff the diff section holds while the tab shows
+    /// History; the first listed until one is picked.
+    pub selected: Option<String>,
+    /// The view History was entered from, which leaving it returns to.
+    pub return_mode: DiffMode,
 }
 
 /// Files, added and deleted lines in the working tree and in the index.
@@ -355,6 +363,7 @@ pub(crate) struct LoadedTab {
     pub ai_stamp: SidecarStamp,
     pub pr: LoadedPr,
     pub freshness: Freshness,
+    pub history: Option<Arc<HistorySection>>,
     /// How many reviewed marks the load cleared.
     pub cleared: usize,
 }
@@ -395,12 +404,6 @@ pub(crate) enum ContentPatch {
         since: u64,
         files: Vec<(usize, DiffFile)>,
         expanded: Vec<String>,
-    },
-    /// A view recorded without a load, over the generation `since`.
-    Mode {
-        key: TabKey,
-        since: u64,
-        mode: DiffMode,
     },
     /// The tab's AI state read again from its sidecars, over the AI section
     /// at revision `since`. A section that moved meanwhile keeps the newer
@@ -463,7 +466,6 @@ pub(crate) fn lifecycle_keys(
             }
         }
         ContentPatch::Parsed { .. }
-        | ContentPatch::Mode { .. }
         | ContentPatch::Ai { .. }
         | ContentPatch::Freshness { .. }
         | ContentPatch::Sidecar { .. }
@@ -486,10 +488,6 @@ pub(crate) fn check(
         }
         ContentPatch::Parsed { key, since, .. } => match tabs.get(key) {
             Some(content) if content.diff.revision == *since => Ok(()),
-            _ => Err(PatchRefused::Moved),
-        },
-        ContentPatch::Mode { key, since, .. } => match tabs.get(key) {
-            Some(content) if content.generation() == *since => Ok(()),
             _ => Err(PatchRefused::Moved),
         },
         ContentPatch::Several(patches) => patches.iter().try_for_each(|patch| check(tabs, patch)),
@@ -526,12 +524,6 @@ pub(crate) fn apply(
         } => {
             if let Some(content) = tabs.get_mut(&key) {
                 *content = Arc::new(content.with_parsed(files, &expanded, revision));
-            }
-            0
-        }
-        ContentPatch::Mode { key, mode, .. } => {
-            if let Some(content) = tabs.get_mut(&key) {
-                *content = Arc::new(content.with_mode(mode, revision));
             }
             0
         }

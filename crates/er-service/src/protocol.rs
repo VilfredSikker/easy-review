@@ -243,13 +243,19 @@ pub enum Command {
     SetRemoteTips { key: TabKey, tips: RemoteTips },
     /// Show a loaded tab in another mode. Its reviewed marks are kept.
     /// `pr_number` seeds a PR the front end detected onto a tab that has
-    /// none, so entering the PR diff can fetch its refs. History, Conflicts
-    /// and Hidden are recorded without a load.
+    /// none, so entering the PR diff can fetch its refs.
     SetDiffMode {
         key: TabKey,
         mode: DiffMode,
         pr_number: Option<u64>,
     },
+    /// Show one commit of a loaded tab's History, entering History from the
+    /// view the tab shows. A sha History does not list keeps the commit it
+    /// shows. Refused for a remote PR, which has no clone to diff a commit in.
+    SelectCommit { key: TabKey, sha: String },
+    /// Show a loaded tab in the view its History was entered from. A tab not
+    /// in History answers at once.
+    ExitHistory { key: TabKey },
     /// Diff a loaded tab against `base`, resolved to a local ref as the App's
     /// base change resolves it, and reload. A PR with no clone has no base to
     /// change: its diff comes from GitHub.
@@ -675,10 +681,6 @@ pub enum Reply {
     },
     /// A closed tab's content left the view.
     ContentDropped {
-        key: TabKey,
-    },
-    /// A view the workspace does not load was recorded on the tab.
-    ModeRecorded {
         key: TabKey,
     },
     /// Whether a sidecar reload read anything new.
