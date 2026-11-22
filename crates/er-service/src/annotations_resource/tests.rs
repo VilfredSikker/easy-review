@@ -1,5 +1,4 @@
-//! Triage's review regrade on the `annotations(tab)` path, against the cases
-//! the flag-off function in er-desktop's `triage_update.rs` is held to.
+//! Triage's review regrade on the `annotations(tab)` path, against the cases `triage_update.rs` in er-desktop meets.
 
 use er_protocol as wire;
 use serde_json::json;
