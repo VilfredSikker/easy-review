@@ -27,13 +27,17 @@ function snapshot(): AppSnapshot {
 
 /**
  * A backend whose `er_fetch` answers `reviewed(tab)` at the version and
- * marks it holds, and whose `er_send` waits until the test answers it.
+ * marks it holds, at once or, after `holdFetches`, when the test releases
+ * it; and whose `er_send` waits until the test answers it.
  */
-function backend(held: { version: number; value: TabReviewed }) {
+function backend(held: { version: number; value: TabReviewed }, { shown = true } = {}) {
   const sent: unknown[] = [];
   let answer: { ack?: Ack; error?: unknown; resolve?: (ack: Ack) => void; reject?: (e: unknown) => void } = {};
+  let gate: Promise<void> | null = null;
+  let open = () => {};
   const run: Invoke = async <T,>(command: string, args: Record<string, unknown>): Promise<T> => {
     if (command === "er_fetch") {
+      if (gate) await gate;
       const keys = (args.keys ?? []) as ResourceKey[];
       return keys.map((key) => ({ key, version: held.version, value: { kind: "reviewed", ...held.value } })) as T;
     }
@@ -46,11 +50,25 @@ function backend(held: { version: number; value: TabReviewed }) {
     throw Object.assign(new Error(`unexpected ${command}`), { kind: "unsupported" });
   };
   const store = new ResourceStore(resourceClient(run, async () => () => {}), 60_000);
-  store.show(reviewedKey(KEY));
+  if (shown) store.show(reviewedKey(KEY));
   return {
     sent,
     store,
     held,
+    /** Holds every `er_fetch` from here until `releaseFetches`. */
+    holdFetches() {
+      gate = new Promise((resolve) => {
+        open = resolve;
+      });
+    },
+    releaseFetches() {
+      gate = null;
+      open();
+    },
+    /** Shows `reviewed(KEY)`, which fetches it, as the page does on a tab switch. */
+    show() {
+      store.show(reviewedKey(KEY));
+    },
     /** Lands the write: the backend holds `value` at `version` and the `Ack` names it. */
     ack(version: number, value: TabReviewed) {
       Object.assign(held, { version, value });
@@ -103,7 +121,19 @@ describe("ReviewedAdapter", () => {
     expect(flags(reviewed.overlay(snapshot()))[0]).toEqual(["src/a.rs", true]);
     expect(reviewed.overlay(snapshot()).reviewed_count).toBe(0);
 
+    // The Ack lands before the fetch of the version it names: the checkmark stays.
+    backendState.holdFetches();
+    let done = false;
+    void write?.then(() => {
+      done = true;
+    });
     backendState.ack(4, marks(["src/a.rs"], 1));
+    await settle();
+    expect(done).toBe(false);
+    expect(flags(reviewed.overlay(snapshot()))[0]).toEqual(["src/a.rs", true]);
+    expect(reviewed.overlay(snapshot()).reviewed_count).toBe(0);
+
+    backendState.releaseFetches();
     await write;
     expect(reviewed.overlay(snapshot()).reviewed_count).toBe(1);
     // The paint is gone: a later read without the mark shows none.
@@ -111,6 +141,33 @@ describe("ReviewedAdapter", () => {
     store.applyChanges([{ key: reviewedKey(KEY), version: 5 }]);
     await settle();
     expect(flags(reviewed.overlay(snapshot()))[0]).toEqual(["src/a.rs", false]);
+  });
+
+  it("sends no single-file write before reviewed(tab) is held, so a click lands only on the tab the page paints", async () => {
+    // Right after a tab switch: the page shows the new key, and its fetch has not answered.
+    const backendState = backend({ version: 3, value: marks([], 0) }, { shown: false });
+    backendState.holdFetches();
+    backendState.show();
+    await settle();
+    const reviewed = adapter(backendState.store);
+    expect(reviewed.held()).toBeNull();
+
+    const writes = (["mark_reviewed", "unmark_reviewed", "toggle_reviewed"] as const).map((command) =>
+      reviewed.route(command, { path: "src/a.rs" }),
+    );
+    expect(backendState.sent).toEqual([]);
+    for (const write of writes) {
+      expect(write).not.toBeNull();
+      await expect(write ?? Promise.resolve()).rejects.toThrow("not loaded yet");
+    }
+    expect(flags(reviewed.overlay(snapshot()))[0]).toEqual(["src/a.rs", false]);
+
+    backendState.releaseFetches();
+    await settle();
+    const write = reviewed.route("mark_reviewed", { path: "src/a.rs" });
+    expect(backendState.sent).toEqual([{ kind: "mark_reviewed", tab: KEY, path: "src/a.rs", reviewed: true }]);
+    backendState.ack(4, marks(["src/a.rs"], 1));
+    await write;
   });
 
   it("takes the checkmark back when the write is refused", async () => {
