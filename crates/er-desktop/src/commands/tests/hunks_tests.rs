@@ -10,11 +10,11 @@ use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::TabDescriptor;
 use er_engine::TabKey;
 use er_protocol::{ErErrorKind, FileHunks, Resource, ResourceKey, TabDiff};
-use er_service::{AnnotationTarget, Command, TabContent};
+use er_service::{AnnotationTarget, Command, HunkRead, TabContent};
 
 use super::diff_resource_tests::{fake_git, listed, state_over, with_storage};
 use super::watcher_tests::{canonical, git};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, snap_from, AppState};
 use crate::resources;
 use crate::resources::send::{apply, Effects};
 use crate::service::actor_key;
@@ -187,6 +187,29 @@ fn unparsed_files_are_parsed_through_their_actor_once_per_batch() {
     });
 }
 
+/// A stub whose parse is refused twice answers `Stale` once the parse was
+/// sent again; only a stub an accepted parse left empty answers no hunks. The
+/// refusal is injected, since no test can force the race that refuses a real
+/// parse; the accepted parse runs through the actor above.
+#[test]
+fn a_parse_refused_twice_answers_stale_and_an_empty_parse_answers_empty() {
+    let unparsed = || Ok(HunkRead::Unparsed);
+    let mut sent = 0;
+    let refuse = || {
+        sent += 1;
+        Ok(false)
+    };
+    let twice = resources::hunks::answer(unparsed, refuse, "a.rs", "h");
+    assert_eq!(twice.map_err(|e| e.kind), Err(ErErrorKind::Stale));
+    assert_eq!(sent, 2, "the refused parse was not sent once more");
+    let empty = resources::hunks::answer(unparsed, || Ok(true), "a.rs", "h");
+    let none = FileHunks {
+        hash: "h".into(),
+        hunks: Vec::new(),
+    };
+    assert_eq!(empty.map_err(|e| e.kind), Ok(none));
+}
+
 /// A repo whose `a.txt` has an unstaged edit.
 fn edited_repo(dir: &super::ReviewFlowTestDir) -> std::path::PathBuf {
     let root = dir.path().join("repo");
@@ -239,8 +262,18 @@ fn a_rewritten_file_answers_stale_and_never_new_hunks_under_its_old_hash() {
     });
 }
 
+fn app_in(mode: DiffMode) -> er_engine::app::App {
+    let files = er_engine::git::parse_diff(&super::diff_resource_tests::raw_diff());
+    let mut app =
+        er_engine::app::App::new_for_test_with_ports(files, er_engine::ports::Ports::cli());
+    app.tab_mut().mode = mode;
+    app
+}
+
 /// With the flag on nothing records which hunks the page holds: the
 /// snapshot reads no sent-files map, so its differential path never runs.
+/// Two builds of a view the workspace loads omit no file's hunks and leave
+/// the map empty.
 #[test]
 fn the_flag_on_snapshot_records_no_sent_hunks() {
     with_storage(|dir| {
@@ -248,6 +281,26 @@ fn the_flag_on_snapshot_records_no_sent_hunks() {
         assert!(crate::commands::snapshot_sources(&state)
             .sent_files
             .is_none());
+        let app = app_in(DiffMode::Branch);
+        for _ in 0..2 {
+            let files = snap_from(&app, &state).files;
+            assert!(!files.is_empty(), "the snapshot listed no file");
+            assert!(files.iter().all(|f| !f.hunks_omitted && f.hunks.is_empty()));
+        }
+        assert!(state.sent_files.lock().is_ok_and(|sent| sent.is_empty()));
+    });
+}
+
+/// The views the App still loads keep the snapshot's hunks with the flag on.
+#[test]
+fn the_flag_on_snapshot_keeps_the_hunks_of_the_views_the_app_loads() {
+    with_storage(|dir| {
+        let state = state_over(dir, super::diff_resource_tests::fake_ports());
+        for mode in [DiffMode::Conflicts, DiffMode::Hidden] {
+            let files = snap_from(&app_in(mode), &state).files;
+            assert!(!files.is_empty(), "{mode:?} listed no file");
+            assert!(files.iter().all(|f| !f.hunks.is_empty()), "{mode:?}");
+        }
     });
 }
 
