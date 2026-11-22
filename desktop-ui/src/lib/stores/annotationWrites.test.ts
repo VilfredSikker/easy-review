@@ -145,6 +145,36 @@ describe("the annotation writes with the flag on", () => {
     expect(writes.paints()).toEqual([]);
   });
 
+  it("hide a promoted question and show its note until acknowledged", async () => {
+    const shown = ai([thread("q-1")]);
+    const { sent, writes, settle } = harness(shown);
+    const done = writes.route("promote_to_note", { id: "q-1" });
+
+    expect(sent.map((c) => c.kind)).toEqual(["promote_to_note"]);
+    const drawn = withPending(shown, writes.paints()).threads;
+    expect(drawn.map((t) => [t.kind, t.root.body_markdown])).toEqual([["note", "why?"]]);
+    expect(drawn[0].id.startsWith("n-")).toBe(true);
+    await settle();
+    await done;
+    expect(writes.paints()).toEqual([]);
+  });
+
+  it("append a reply to a finding's thread under the id the server takes", async () => {
+    const shown = ai([thread("c-1", "comment")], [finding("c-1")]);
+    const { sent, writes, settle } = harness(shown);
+    const done = writes.route("reply_to_finding", { findingId: "f-1", body: "agreed", aiAssist: false });
+
+    const command = sent[0] as Extract<Command, { kind: "reply_to_finding" }>;
+    expect(writes.paints().flatMap((paint) => paint.threads)).toEqual([]);
+    const replies = writes.paints().flatMap((paint) => paint.replies);
+    expect(replies.map(({ parentId, reply }) => [parentId, reply.id])).toEqual([["c-1", command.clientId]]);
+    const drawn = withPending(shown, writes.paints()).threads;
+    expect(drawn.map((t) => [t.id, t.replies.map((r) => r.body_markdown)])).toEqual([["c-1", ["agreed"]]]);
+    await settle();
+    await done;
+    expect(writes.paints()).toEqual([]);
+  });
+
   it("leave an AI-assisted finding reply on its old route", () => {
     const { writes } = harness(ai([], [finding(null)]));
     expect(writes.route("reply_to_finding", { findingId: "f-1", body: "why?", aiAssist: true })).toBeNull();
