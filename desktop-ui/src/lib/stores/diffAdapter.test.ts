@@ -45,6 +45,8 @@ function tabDiff(overrides: Partial<TabDiff> = {}): TabDiff {
     base_behind: null,
     local_branch_divergence: null,
     load_error: null,
+    commits: [],
+    selected_commit_sha: null,
     ...overrides,
   };
 }
@@ -53,7 +55,7 @@ function file(path: string): FileSnapshot {
   return { ...fileRow(path), hunks: [], delta_key: "", hunks_omitted: false } as unknown as FileSnapshot;
 }
 
-/** The App's slice: a History view's selected commit, which only the snapshot carries. */
+/** The App's slice: a History view's selected commit. */
 function snapshot(overrides: Partial<DiffSlice> = {}): DiffSlice {
   const files = [file("history/commit.rs")];
   return { ...tabDiff({ total_count: 1 }), files, mode: "history", ...overrides } as unknown as DiffSlice;
@@ -118,21 +120,25 @@ describe("DiffAdapter", () => {
     expect(view.review_bucket_er_dir).toBe("/er/bucket");
   });
 
-  it("shows the App's slice in a view the workspace only records", async () => {
-    // The tab switched to History: the content records it, and the App loads
-    // the selected commit's files, which only the snapshot carries.
-    const { sent, store } = backend([{ version: 5, value: { kind: "diff", ...tabDiff({ mode: "history" }) } }]);
+  it("reads History's commit files, commits and selection from diff(tab), and sends its commands", async () => {
+    const commits = [{ sha: "c2", title: "t", author: "a", committed_at: "", additions: 1, deletions: null, unpushed: true }];
+    const history = tabDiff({ mode: "history", files: [fileRow("src/c.rs")], commits, selected_commit_sha: "c2" });
+    const { sent, store } = backend([{ version: 5, value: { kind: "diff", ...history } }]);
     store.show(diffKey(KEY));
     await settle();
     const diff = adapter(store, { snap: snapshot() });
     const view = diff.read();
     expect(view.mode).toBe("history");
-    expect(view.files.map((f) => f.path)).toEqual(["history/commit.rs"]);
-    // The App reads its own base and filter there, so those keep its command.
-    const kept = [["change_base", { branch: "dev" }], ["set_filter", { query: "*.rs" }], ["clear_filter", {}]] as const;
-    for (const [command, args] of kept) expect(diff.route(command, args)).toBeNull();
-    await diff.route("set_mode", { mode: "branch" });
-    expect(sent).toEqual([{ kind: "set_diff_mode", tab: KEY, mode: "branch", prNumber: null }]);
+    expect(view.files.map((f) => f.path)).toEqual(["src/c.rs"]);
+    expect([view.commits, view.selected_commit_sha]).toEqual([commits, "c2"]);
+    await diff.route("select_commit", { sha: "c1" });
+    await diff.route("change_base", { branch: "dev" });
+    await diff.route("exit_history");
+    expect(sent).toEqual([
+      { kind: "select_commit", tab: KEY, sha: "c1" },
+      { kind: "change_base", tab: KEY, base: "dev" },
+      { kind: "exit_history", tab: KEY },
+    ]);
   });
 
   it("refetches the version-0 empty diff when the first push for it arrives", async () => {
@@ -198,10 +204,10 @@ describe("DiffAdapter", () => {
     expect(diff.files).toEqual([]);
   });
 
-  it("sends the diff commands on the active tab, and leaves the views the App loads to their command", async () => {
+  it("sends the diff commands on the active tab, every view included", async () => {
     const { sent, store } = backend([{ version: 1, value: { kind: "diff", ...tabDiff() } }]);
     const diff = adapter(store);
-    expect(diff.route("set_mode", { mode: "history" })).toBeNull();
+    await diff.route("set_mode", { mode: "history" });
     expect(diff.route("next_file", {})).toBeNull();
     await diff.route("set_mode", { mode: "pr_diff", prNumber: 4 });
     await diff.route("set_filter", { query: "*.rs" });
@@ -210,6 +216,7 @@ describe("DiffAdapter", () => {
     // A click painted on another tab does nothing.
     await diff.route("set_mode", { mode: "staged", tabIdx: 1 });
     expect(sent).toEqual([
+      { kind: "set_diff_mode", tab: KEY, mode: "history", prNumber: null },
       { kind: "set_diff_mode", tab: KEY, mode: "pr_diff", prNumber: 4 },
       { kind: "set_filter", tab: KEY, query: "*.rs" },
       { kind: "set_filter", tab: KEY, query: "" },
@@ -218,7 +225,7 @@ describe("DiffAdapter", () => {
     expect(adapter(store, { flagOn: false }).route("refresh_diff")).toBeNull();
   });
 
-  it("maps each of the eight commands", () => {
+  it("maps each of the ten commands", () => {
     const cases: [string, Record<string, unknown>, string][] = [
       ["set_mode", { mode: "staged" }, "set_diff_mode"],
       ["change_base", { branch: "dev" }, "change_base"],
@@ -228,6 +235,8 @@ describe("DiffAdapter", () => {
       ["force_refresh_diff", {}, "refresh_diff"],
       ["sync_pr", { projectId: "p", prNumber: 3 }, "sync_pr"],
       ["sync_branch", { projectId: "p", branch: "b" }, "sync_branch"],
+      ["select_commit", { sha: "c1" }, "select_commit"],
+      ["exit_history", {}, "exit_history"],
     ];
     for (const [command, args, kind] of cases) expect(wireDiffCommand(command, args, KEY)?.kind).toBe(kind);
   });
@@ -305,12 +314,13 @@ describe("the hunks by hash", () => {
     expect([b.path, b.is_lazy_stub, b.hunks]).toEqual(["src/b.rs", true, []]);
   });
 
-  it("keeps the App's snapshot, hunks and all, in a view the workspace only records", async () => {
+  it("draws a History commit's hunks by hash too", async () => {
     const { store } = backend([{ version: 4, value: { kind: "diff", ...tabDiff({ mode: "history", files: rows }) } }]);
     store.show(diffKey(KEY));
     await settle();
     const diff = adapter(store, { hunks: source({ ha: HUNKS }) });
-    expect(diff.overlay(raw)).toBe(raw);
-    expect(diff.hashed()).toBe(false);
+    const [a] = diff.overlay(raw).files;
+    expect([a.path, a.hunks.map((h) => h.header)]).toEqual(["src/a.rs", ["@@ -1,2 +1,2 @@"]]);
+    expect(diff.hashed()).toBe(true);
   });
 });

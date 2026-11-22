@@ -30,16 +30,9 @@ export type DiffSlice = Pick<
   | "diff_stale"
   | "pr_diff_head_oid"
   | "local_branch_divergence"
+  | "commits"
+  | "selected_commit_sha"
 >;
-
-/**
- * The views the workspace records but does not load. The App still shows
- * them, so the adapter reads their slice from the snapshot.
- */
-export const RECORDED_MODES: ReadonlySet<string> = new Set(["history", "conflicts", "hidden"]);
-
-/** The commands those views leave to the App, whose base and filter they read. */
-const APP_IN_RECORDED: ReadonlySet<string> = new Set(["change_base", "set_filter", "clear_filter"]);
 
 export function diffKey(tab: TabKey): ResourceKey {
   return { kind: "diff", tab };
@@ -63,6 +56,8 @@ const EMPTY: DiffSlice = {
   diff_stale: undefined,
   pr_diff_head_oid: null,
   local_branch_divergence: undefined,
+  commits: [],
+  selected_commit_sha: null,
 };
 
 export function sliceFromSnapshot(snapshot: DiffSlice | null): DiffSlice {
@@ -184,6 +179,8 @@ export function sliceFromResource(diff: TabDiff, pr: PrHead | null): DiffSlice {
       ...(divergence.ahead === null ? {} : { ahead: divergence.ahead }),
       unstaged_files: divergence.unstaged_files,
     },
+    commits: diff.commits,
+    selected_commit_sha: diff.selected_commit_sha,
   };
 }
 
@@ -191,17 +188,18 @@ type Args = Record<string, unknown>;
 
 /**
  * The wire command for one of the diff commands `app.cmd` was asked for, on
- * `tab`; undefined for any other command and for a switch to a view the App
- * still loads, which keeps its old route.
+ * `tab`; undefined for any other command.
  */
 export function wireDiffCommand(command: string, a: Args, tab: TabKey): Command | undefined {
   switch (command) {
     case "set_mode": {
-      const mode = String(a.mode);
-      if (RECORDED_MODES.has(mode)) return undefined;
       const prNumber = typeof a.prNumber === "number" ? a.prNumber : null;
-      return { kind: "set_diff_mode", tab, mode, prNumber };
+      return { kind: "set_diff_mode", tab, mode: String(a.mode), prNumber };
     }
+    case "select_commit":
+      return { kind: "select_commit", tab, sha: String(a.sha) };
+    case "exit_history":
+      return { kind: "exit_history", tab };
     case "change_base":
       return { kind: "change_base", tab, base: String(a.branch) };
     case "set_filter":
@@ -237,25 +235,22 @@ interface DiffAdapterDeps {
 }
 
 /**
- * The active tab's file list, mode, base and staleness: from `app.snapshot`
- * with the flag off, and from `diff(tab)` with it on. In the views the
- * workspace only records (History, Conflicts, Hidden) the flag-on read takes
- * the snapshot's slice too, since the App is what loads them.
+ * The active tab's file list, mode, base, staleness and commits: from
+ * `app.snapshot` with the flag off, and from `diff(tab)` with it on.
  */
 export class DiffAdapter {
   constructor(private readonly deps: DiffAdapterDeps) {}
 
   read(): DiffSlice {
-    const snapshot = this.deps.snapshot();
     const held = this.held();
-    if (!held || RECORDED_MODES.has(held.mode)) return sliceFromSnapshot(snapshot);
+    if (!held) return sliceFromSnapshot(this.deps.snapshot());
     return sliceFromResource(held, this.deps.prHead());
   }
 
-  /** `raw` with this adapter's fields in place of the App's; the views the App loads keep its snapshot. */
+  /** `raw` with this adapter's fields in place of the App's. */
   overlay(raw: AppSnapshot): AppSnapshot {
     const held = this.held();
-    if (!held || RECORDED_MODES.has(held.mode)) return raw;
+    if (!held) return raw;
     return overlaySnapshot(raw, sliceFromResource(held, this.deps.prHead()), this.deps.hunks);
   }
 
@@ -268,10 +263,9 @@ export class DiffAdapter {
     return value?.kind === "diff" ? value : null;
   }
 
-  /** Whether the page draws the active tab's hunks by hash: the flag is on and the view is one the workspace loads. */
+  /** Whether the page draws the active tab's hunks by hash: the flag is on and its diff is held. */
   hashed(): boolean {
-    const held = this.held();
-    return held !== null && !RECORDED_MODES.has(held.mode);
+    return this.held() !== null;
   }
 
   /** Why the active tab's last load failed; null while it loaded or loads. */
@@ -297,8 +291,7 @@ export class DiffAdapter {
   /**
    * With the flag on, a diff command goes through `er_send` on the active
    * tab and resolves once every key its `Ack` names is held; null for any
-   * other command, for a switch to a view the App loads or a base or filter
-   * change while one shows, and for every command with the flag off. A click painted on a tab that is no longer active does nothing.
+   * other command and for every command with the flag off. A click painted on a tab that is no longer active does nothing.
    */
   route(command: string, args: Args = {}): Promise<void> | null {
     if (!this.deps.flagOn) return null;
@@ -306,7 +299,6 @@ export class DiffAdapter {
     if (active === null) return null;
     const wire = wireDiffCommand(command, args, active);
     if (wire === undefined) return null;
-    if (APP_IN_RECORDED.has(command) && RECORDED_MODES.has(this.held()?.mode ?? "")) return null;
     if (typeof args.tabIdx === "number" && this.deps.keyAt(args.tabIdx) !== active) return Promise.resolve();
     return this.send(wire);
   }
