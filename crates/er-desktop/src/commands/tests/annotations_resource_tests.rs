@@ -328,6 +328,67 @@ fn an_outside_question_moves_the_annotations_through_the_tick() {
     });
 }
 
+fn annotations(
+    state: &AppState,
+    (key, _): &(TabKey, TabDescriptor),
+) -> (u64, er_protocol::AiAnnotations) {
+    let tab = er_service::wire_tab_key(*key);
+    match resources::fetch(&state.desktop, ResourceKey::Annotations { tab }) {
+        Ok(fetched) => match fetched.value {
+            Resource::Annotations(a) => (fetched.version.0, a.ai),
+            other => panic!("not annotations: {other:?}"),
+        },
+        Err(e) => panic!("{e:?}"),
+    }
+}
+
+/// A promotion an outside writer records reaches the finding through the
+/// tick: the reload reads `finding-promotions.json` again with the AI state.
+#[test]
+fn an_outside_promotion_reaches_the_finding_through_the_tick() {
+    with_storage(|dir| {
+        let (state, tab) = working(dir, raw_diff());
+        let er_dir = content(&state, &tab).context.er_dir.clone();
+        let bucket = Path::new(&er_dir);
+        er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
+            bucket,
+            serde_json::json!({ "version": 1, "diff_hash": "", "files": { "src/f0.rs": {
+                "risk": "high", "findings": [{ "id": "f-1", "severity": "high", "title": "claim" }]
+            } } }),
+        );
+        stamp_ahead(&bucket.join("review.json"));
+        tick::run(&state.desktop, &state.app);
+        wait_until("the review", || {
+            annotations(&state, &tab)
+                .1
+                .findings
+                .iter()
+                .any(|f| f.id == "f-1")
+        });
+        let (before, _) = annotations(&state, &tab);
+
+        let promoted = [("f-1".to_string(), "77".to_string())]
+            .into_iter()
+            .collect();
+        let saved = er_engine::ai::save_finding_promotions(&er_dir, &promoted);
+        assert!(saved.is_ok(), "{saved:?}");
+        stamp_ahead(&bucket.join("finding-promotions.json"));
+        tick::run(&state.desktop, &state.app);
+
+        wait_until("the annotations to move", || {
+            annotations(&state, &tab).0 > before
+        });
+        let (_, ai) = annotations(&state, &tab);
+        let finding = ai.findings.iter().find(|f| f.id == "f-1");
+        let promoted_to = finding.and_then(|f| f.promoted_to.as_deref());
+        assert_eq!(
+            promoted_to,
+            Some("77"),
+            "the reload kept the old promotions"
+        );
+    });
+}
+
 /// A parse publishes the tab's diff and moves no `annotations(tab)`.
 #[test]
 fn a_lazy_parse_moves_no_annotations_version() {

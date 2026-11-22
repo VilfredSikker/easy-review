@@ -204,8 +204,9 @@ struct Observed {
     pr: (Option<String>, Vec<String>, Option<String>),
     preview_keys: Vec<(String, String)>,
     stamps: (BTreeMap<String, SystemTime>, BTreeMap<String, String>),
-    /// The fields `diff(tab)` carries, as the snapshot names them: from the
-    /// snapshot on the App's side, from the resource builder on the other.
+    /// The fields `diff(tab)` and `reviewed(tab)` carry, as the snapshot
+    /// names them: from the snapshot on the App's side, from the resource
+    /// builders on the other.
     resource: Value,
     /// The snapshot's `ai`, `tour` and `other_bucket` on the App's side,
     /// `annotations(tab)` on the other.
@@ -215,7 +216,7 @@ struct Observed {
 /// The fields of a snapshot, or of a `diff(tab)`, that both must agree on.
 /// The review bucket is a storage path, which each side roots apart.
 fn resource_fields(value: &Value) -> Value {
-    const FIELDS: [&str; 14] = [
+    const FIELDS: [&str; 15] = [
         "mode",
         "branch",
         "base",
@@ -230,6 +231,8 @@ fn resource_fields(value: &Value) -> Value {
         "staged_stat",
         "pr_diff_head_oid",
         "built_from_head_oid",
+        // From `reviewed(tab)` on the service's side.
+        "reviewed_count",
     ];
     const ROW: [&str; 19] = [
         "path",
@@ -375,8 +378,9 @@ fn observe(read: Read<'_>, er_dir: &str) -> anyhow::Result<Observed> {
 }
 
 /// A review against an older diff with a high-risk file, a tour, a painted
-/// question on a line the fixture moved, a note, and marks: one current, one
-/// changed, one orphaned.
+/// question on a line the fixture moved, a note, a note's reply to a comment
+/// that comes before the comment's own reply in time order, and marks: one
+/// current, one changed, one orphaned.
 fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Result<String> {
     let id = resolved.identity();
     let er_dir = id
@@ -425,6 +429,9 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
             "version": 1, "diff_hash": "older", "notes": [{
                 "id": "n-1", "file": "src/a.rs", "hunk_index": 0, "line_start": 2,
                 "line_content": "a-new", "text": "check", "resolved": false
+            }, {
+                "id": "n-reply", "file": "src/a.rs", "text": "Still off",
+                "in_reply_to": "c-1", "timestamp": "t4"
             }]
         }),
     );
@@ -670,10 +677,11 @@ fn through_the_workspace(
             preview_key::file_preview_key(&inputs, path)
         });
         let stamps = &content.diff.meta.stamps;
-        let resource = serde_json::to_value(er_service::diff_resource(
+        let mut resource = serde_json::to_value(er_service::diff_resource(
             content,
             &er_service::DiffInputs::default(),
         ))?;
+        resource["reviewed_count"] = json!(er_service::reviewed_resource(content).reviewed_count);
         anyhow::ensure!(
             resource.get("built_from_head_oid") == Some(&json!(pr.head_oid)),
             "diff(tab) was not built from the content's PR head: {:?} against {:?}",
@@ -839,6 +847,19 @@ fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
     assert!(
         app.annotations["tour"]["available"] == true,
         "{case}: no tour"
+    );
+    // The note's reply to c-1 is read before the comment's, at a later time.
+    let thread = ai["threads"]
+        .as_array()
+        .and_then(|threads| threads.iter().find(|t| t["id"] == "c-1"));
+    let replies: Vec<&Value> = thread
+        .and_then(|t| t["replies"].as_array())
+        .map(|rows| rows.iter().map(|r| &r["id"]).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        replies,
+        ["c-2", "n-reply"],
+        "{case}: c-1's replies, oldest first"
     );
     assert!(app.tour != Value::Null, "{case}: the tour did not load");
     assert!(app.staleness.0, "{case}: the older review was not stale");

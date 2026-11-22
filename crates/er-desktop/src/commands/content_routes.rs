@@ -585,6 +585,27 @@ pub(super) fn write_reviewed(
     Ok(AppSnapshot::default())
 }
 
+/// Sends a reviewed write the page painted on `key` with the context of
+/// that tab's content. Refused when `key` is not the registry's active tab
+/// (decision A), and, for a write that names the view it was painted on,
+/// when the content shows another one.
+pub(crate) fn write_keyed(
+    state: &DesktopState,
+    key: TabKey,
+    view: Option<&er_protocol::PaintedView>,
+    build: impl FnOnce(TabContext) -> Command,
+) -> Result<(), String> {
+    let (active, content) = active_content(state)?;
+    if active.key != key {
+        return Err(MOVED.to_string());
+    }
+    if view.is_some_and(|view| !er_service::painted_view_matches(&content, view)) {
+        return Err(MOVED.to_string());
+    }
+    send(state, &active.tab, build(content.context.clone()))?;
+    Ok(())
+}
+
 /// Sends an annotation command built from the active tab's published
 /// context, loading the content first when it never loaded. Answers the key
 /// it acted on.
