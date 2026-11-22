@@ -1,0 +1,56 @@
+import { invoke } from "@tauri-apps/api/core";
+import { resourceClient } from "$lib/protocol/client";
+import type { ErError } from "$lib/protocol/generated/ErError";
+import type { Resource } from "$lib/protocol/generated/Resource";
+import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
+import type { ReviewRevision } from "$lib/protocol/generated/ReviewRevision";
+import type { TabKey } from "$lib/protocol/generated/TabKey";
+import { v1ServiceRequested } from "$lib/v1ServiceFlag";
+import { app } from "./app.svelte";
+import { RECORDED_MODES } from "./diffAdapter";
+import { tabsResource } from "./tabsResource.svelte";
+
+const flagOn = v1ServiceRequested();
+const client = resourceClient();
+
+/**
+ * The active tab's key for a read `er_fetch` answers: none with the flag off
+ * and in the views the App loads, where the old command answers.
+ */
+function fetchedTab(): TabKey | null {
+  if (!flagOn || RECORDED_MODES.has(app.appSnapshot?.mode ?? "")) return null;
+  return tabsResource.activeKey;
+}
+
+/** One key read on fetch; a refusal rejects with its text, as the old commands do. */
+async function fetchOne(key: ResourceKey): Promise<Resource> {
+  try {
+    const [entry] = await client.fetch([key]);
+    return entry.value;
+  } catch (e) {
+    throw (e as ErError).message;
+  }
+}
+
+/** The active tab's review as the reviewer sees it, as JSON. */
+export async function readReviewJson(): Promise<string> {
+  const tab = fetchedTab();
+  if (tab === null) return invoke<string>("read_review_json", { revisionId: null });
+  const value = await fetchOne({ kind: "review_json", tab });
+  return value.kind === "review_json" ? value.json : "";
+}
+
+/** The active tab's review revisions: at most the current one. */
+export async function listReviewRevisions(): Promise<ReviewRevision[]> {
+  const tab = fetchedTab();
+  if (tab === null) return invoke<ReviewRevision[]>("list_review_revisions");
+  const value = await fetchOne({ kind: "review_revisions", tab });
+  return value.kind === "review_revisions" ? value.revisions : [];
+}
+
+/** A saved annotation screenshot as a `data:` URL. */
+export async function readAnnotationScreenshot(path: string): Promise<string> {
+  if (!flagOn) return invoke<string>("read_annotation_screenshot", { path });
+  const value = await fetchOne({ kind: "annotation_screenshot", path });
+  return value.kind === "annotation_screenshot" ? value.data_url : "";
+}

@@ -227,6 +227,21 @@ describe("resource source scans", () => {
     expect(code.replace(/\blocalStorage\.(getItem|setItem)\(/g, "")).not.toMatch(/\b(localStorage|sessionStorage)\b/);
   });
 
+  it("the review and screenshot reads go through the annotation reads, which fetch them with the flag on", () => {
+    const old = /invoke(?:<[^>]*>)?\(\s*"(read_review_json|list_review_revisions|read_annotation_screenshot)"/;
+    const callers = sources().filter((f) => old.test(stripped(f)));
+    expect(callers).toEqual([join("lib", "stores", "annotationReads.ts")]);
+    const reads = stripped(join("lib", "stores", "annotationReads.ts"));
+    for (const kind of ["review_json", "review_revisions", "annotation_screenshot"]) {
+      expect(reads).toContain(`kind: "${kind}"`);
+    }
+  });
+
+  it("DiffView joins its hunks with the threads of annotations(tab)", () => {
+    const store = stripped(join("lib", "stores", "diffResource.svelte.ts"));
+    expect(store).toMatch(/threads: \(\) => \{[\s\S]*annotationsResource\.threads\(/);
+  });
+
   it("a jump to a thread or a finding fetches the target file's hunks before it scrolls", () => {
     const dom = read("lib/dom.ts");
     for (const [from, scroll] of [["navigateToThread", "scrollToThread"], ["navigateToFinding", "scrollToFinding"]]) {
