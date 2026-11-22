@@ -263,15 +263,16 @@ struct Observed {
     pr: (Option<String>, Vec<String>, Option<String>),
     preview_keys: Vec<(String, String)>,
     stamps: (BTreeMap<String, SystemTime>, BTreeMap<String, String>),
-    /// The fields `diff(tab)` carries, as the snapshot names them: from the
-    /// snapshot on the App's side, from the resource builder on the other.
+    /// The fields `diff(tab)` and `reviewed(tab)` carry, as the snapshot
+    /// names them: from the snapshot on the App's side, from the resource
+    /// builders on the other.
     resource: Value,
 }
 
 /// The fields of a snapshot, or of a `diff(tab)`, that both must agree on.
 /// The review bucket is a storage path, which each side roots apart.
 fn resource_fields(value: &Value) -> Value {
-    const FIELDS: [&str; 16] = [
+    const FIELDS: [&str; 17] = [
         "mode",
         "branch",
         "base",
@@ -288,6 +289,8 @@ fn resource_fields(value: &Value) -> Value {
         "built_from_head_oid",
         "commits",
         "selected_commit_sha",
+        // From `reviewed(tab)` on the service's side.
+        "reviewed_count",
     ];
     const ROW: [&str; 19] = [
         "path",
@@ -703,10 +706,11 @@ fn through_the_workspace(
             preview_key::file_preview_key(&inputs, path)
         });
         let stamps = &content.diff.meta.stamps;
-        let resource = serde_json::to_value(er_service::diff_resource(
+        let mut resource = serde_json::to_value(er_service::diff_resource(
             content,
             &er_service::DiffInputs::default(),
         ))?;
+        resource["reviewed_count"] = json!(er_service::reviewed_resource(content).reviewed_count);
         anyhow::ensure!(
             resource.get("built_from_head_oid") == Some(&json!(pr.head_oid)),
             "diff(tab) was not built from the content's PR head: {:?} against {:?}",

@@ -12757,6 +12757,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod resource_tests;
     #[cfg(feature = "v1-service")]
+    mod reviewed_resource_tests;
+    #[cfg(feature = "v1-service")]
     mod session_resource_tests;
     #[cfg(feature = "v1-service")]
     mod settings_resource_tests;

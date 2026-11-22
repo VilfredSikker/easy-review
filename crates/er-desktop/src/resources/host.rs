@@ -68,6 +68,7 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::View { tab } => super::tabs::view(desktop, *tab)?,
         ResourceKey::Diff { tab } => super::diff::diff(desktop, *tab)?,
         ResourceKey::Hunks { tab, path, hash } => super::hunks::hunks(desktop, *tab, path, hash)?,
+        ResourceKey::Reviewed { tab } => super::reviewed::reviewed(desktop, *tab)?,
         ResourceKey::FilePreview { tab, path, context } => {
             super::preview::file_preview(desktop, *tab, path, context)?
         }
@@ -121,6 +122,9 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::Panels => super::session::panels_version(desktop),
         ResourceKey::View { tab } => super::tabs::view_version(desktop, *tab)?,
         ResourceKey::Diff { tab } => super::diff::version(desktop, *tab)?,
+        ResourceKey::Reviewed { tab } => {
+            super::reviewed::published_version(desktop, &super::diff::listed(desktop, *tab)?)
+        }
     };
     Ok(ResourceVersion(version))
 }
@@ -275,6 +279,9 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::ExitHistory { .. }
         | Command::SyncPr { .. }
         | Command::SyncBranch { .. }
+        | Command::ToggleReviewed { .. }
+        | Command::MarkReviewed { .. }
+        | Command::BulkReviewPillar { .. }
         | Command::SetFileCompacted { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
@@ -419,6 +426,9 @@ pub enum Watched {
     /// A listed tab's `diff(tab)`: every section its rows read, or its load
     /// failure.
     TabDiff(TabKey),
+    /// A listed tab's `reviewed(tab)`: its marks, the file list they are
+    /// counted over and the view, or its load failure.
+    TabReviewed(TabKey),
 }
 
 impl Watched {
@@ -435,6 +445,9 @@ impl Watched {
                 tab: er_service::wire_tab_key(*key),
             }),
             Self::TabDiff(key) => Some(ResourceKey::Diff {
+                tab: er_service::wire_tab_key(*key),
+            }),
+            Self::TabReviewed(key) => Some(ResourceKey::Reviewed {
                 tab: er_service::wire_tab_key(*key),
             }),
             Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Pr(_) | Self::Mode(_) => None,
@@ -480,6 +493,10 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
     versions.extend(tabs.tabs.iter().filter_map(|entry| {
         let version = super::diff::published_version(desktop, entry.key, &entry.descriptor);
         (version > 0).then_some((Watched::TabDiff(entry.key), version))
+    }));
+    versions.extend(tabs.tabs.iter().filter_map(|entry| {
+        let version = super::reviewed::published_version(desktop, entry);
+        (version > 0).then_some((Watched::TabReviewed(entry.key), version))
     }));
     for view in desktop.service.published_views() {
         for (&key, content) in &view.tabs {
