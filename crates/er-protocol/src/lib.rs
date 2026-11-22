@@ -28,9 +28,10 @@ mod tabs;
 
 pub use annotations::{
     AiAnnotations, AnnotationScreenshot, Annotations, Checklist, ChecklistItem, Diagram,
-    DiagramPreset, FileRisk, Finding, FindingResponse, ReviewJson, ReviewRevision, ReviewRevisions,
-    Thread, ThreadMessage, Triage, TriageGuard, TriagePriorityFile, TriageReviewUpdate,
-    TriageSensitiveReason, UiAnnotation, UiAnnotations,
+    DiagramPreset, FileRisk, Finding, FindingResponse, OtherBucket, ReviewJson, ReviewRevision,
+    ReviewRevisions, Thread, ThreadMessage, Tour, TourFile, TourPillar, TourRelatedFile, Triage,
+    TriageGuard, TriagePriorityFile, TriageReviewUpdate, TriageSensitiveReason, UiAnnotation,
+    UiAnnotations,
 };
 pub use command::{Ack, Command, ProjectReviewSettingsPatch};
 pub use diff::{

@@ -43,7 +43,7 @@ mod tab_pr;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
-pub use ai_extras::AiExtras;
+pub use ai_extras::{AiExtras, OtherBucketFacts};
 pub use annotations_resource::{annotations_resource, annotations_version};
 pub use app_registry::{
     resolve_tab_key, tabs_resource, wire_tab_key, AppCommand, AppRegistry, CachedPr, TabEntry,

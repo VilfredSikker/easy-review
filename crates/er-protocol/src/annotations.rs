@@ -4,11 +4,14 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// One tab's annotations, built on the server from its AI section: the AI
-/// review card and the threads. Field names follow the snapshot's `ai`, so
+/// review card, the threads, the tour and what the other view's bucket holds.
+/// Field names follow the snapshot's `ai`, `tour` and `other_bucket`, so
 /// both reads have one shape. The in-flight ask-AI replies are in `jobs`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 pub struct Annotations {
     pub ai: AiAnnotations,
+    pub tour: Tour,
+    pub other_bucket: Option<OtherBucket>,
 }
 
 /// The AI section as the cards read it, counts and thread order included.
@@ -250,6 +253,70 @@ pub struct DiagramPreset {
     pub kind: String,
     pub label: String,
     pub description: String,
+}
+
+/// The guided tour for the view the tab shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Tour {
+    pub available: bool,
+    pub fresh: bool,
+    /// `pr` or `branch`, set even with no tour.
+    pub scope: String,
+    pub title: String,
+    pub overview_markdown: String,
+    pub pillars: Vec<TourPillar>,
+    pub created_at: String,
+    pub diff_hash: String,
+}
+
+/// One pillar with its review progress, which counts the reviewed marks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TourPillar {
+    pub id: String,
+    pub title: String,
+    pub description_markdown: String,
+    pub summary_markdown: String,
+    pub importance: u32,
+    pub foundation: bool,
+    pub files: Vec<TourFile>,
+    #[ts(type = "number")]
+    pub reviewed_count: u64,
+    #[ts(type = "number")]
+    pub total_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TourFile {
+    pub path: String,
+    pub reason: String,
+    pub finding_ids: Vec<String>,
+    pub related: Vec<TourRelatedFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TourRelatedFile {
+    pub path: String,
+    pub kind: String,
+    pub reason: String,
+}
+
+/// What the other view of a local PR tab holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct OtherBucket {
+    /// `pr` or `branch`.
+    pub view: String,
+    pub has_triage: bool,
+    pub has_review: bool,
+    #[ts(type = "number")]
+    pub finding_count: u64,
+    #[ts(type = "number")]
+    pub pillar_count: u64,
+    pub tour_shared: bool,
+    pub same_diff: bool,
 }
 
 /// The browser annotations of a tab's view bucket.

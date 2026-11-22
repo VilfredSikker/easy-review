@@ -180,8 +180,10 @@ fn the_relay_hands_on_only_the_sections_that_moved() {
 
         let moved = bursts.recv_timeout(WAIT).expect("no burst after the write");
         let reviewed = content(&state, &tabs[1]).reviewed.revision;
-        // The tab's diff lists each file's reviewed mark, so it moves too.
+        // The tab's diff lists each file's reviewed mark, and its tour counts
+        // the reviewed files of each pillar, so both move too.
         let diff = resources::diff::published_version(&state.desktop, active, &tabs[1].1);
+        let annotations = er_service::annotations_version(&content(&state, &tabs[1]));
         let entry = er_service::TabEntry {
             key: active,
             descriptor: tabs[1].1.clone(),
@@ -192,12 +194,17 @@ fn the_relay_hands_on_only_the_sections_that_moved() {
             vec![
                 (Watched::Reviewed(active), reviewed),
                 (Watched::TabDiff(active), diff),
+                (Watched::Annotations(active), annotations),
                 (Watched::TabReviewed(active), marks)
             ]
         );
         let wire: Vec<ResourceKey> = relay::wire(&moved).into_iter().map(|c| c.key).collect();
         let tab = er_service::wire_tab_key(active);
-        let expected = [ResourceKey::Diff { tab }, ResourceKey::Reviewed { tab }];
+        let expected = [
+            ResourceKey::Diff { tab },
+            ResourceKey::Annotations { tab },
+            ResourceKey::Reviewed { tab },
+        ];
         assert_eq!(wire, expected, "{moved:?}");
     });
 }
