@@ -22,7 +22,7 @@ use crate::service::{actor_key, ServiceState};
 const BOUND: Duration = Duration::from_secs(2);
 const WAIT: Duration = Duration::from_secs(10);
 
-fn raw_diff() -> String {
+pub(super) fn raw_diff() -> String {
     use std::fmt::Write as _;
 
     let mut raw = String::new();
@@ -36,17 +36,20 @@ fn raw_diff() -> String {
     raw
 }
 
+/// A git on branch `feature` whose diff touches three files.
+pub(super) fn fake_git() -> er_git::FakeGit {
+    er_git::FakeGit::default()
+        .with_current_branch(Ok("feature".to_string()))
+        .with_detect_base_branch(Ok("main".to_string()))
+        .with_diff_raw(Ok(raw_diff()))
+        .with_diff_shortstat((3, 3, 3))
+        .with_rev_parse_verify(Ok(Some("b".repeat(40))))
+        .with_is_merge_in_progress(false)
+        .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string()))
+}
+
 pub(super) fn fake_ports() -> er_engine::ports::Ports {
-    let git: Arc<dyn er_git::Git> = Arc::new(
-        er_git::FakeGit::default()
-            .with_current_branch(Ok("feature".to_string()))
-            .with_detect_base_branch(Ok("main".to_string()))
-            .with_diff_raw(Ok(raw_diff()))
-            .with_diff_shortstat((3, 3, 3))
-            .with_rev_parse_verify(Ok(Some("b".repeat(40))))
-            .with_is_merge_in_progress(false)
-            .with_remote_url(Ok("https://github.com/acme/widgets.git".to_string())),
-    );
+    let git: Arc<dyn er_git::Git> = Arc::new(fake_git());
     let github: Arc<dyn er_engine::github::GitHub> =
         Arc::new(er_engine::github::FakeGitHub::default());
     er_engine::ports::Ports { git, github }
@@ -66,7 +69,11 @@ pub(super) fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
 }
 
 /// A working tab on `repo` in the registry, which nothing has loaded.
-fn listed(state: &AppState, dir: &ReviewFlowTestDir, repo: &str) -> (TabKey, TabDescriptor) {
+pub(super) fn listed(
+    state: &AppState,
+    dir: &ReviewFlowTestDir,
+    repo: &str,
+) -> (TabKey, TabDescriptor) {
     let root = dir.path().join(repo);
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
     let tab = content_routes::working_tab(root.to_string_lossy().into_owned());

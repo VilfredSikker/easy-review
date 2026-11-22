@@ -14,7 +14,11 @@ use crate::view_state::{BrowserLayout, DesktopViewState, TabBrowserState, ViewSt
 #[cfg(feature = "v1-service")]
 mod follow;
 #[cfg(feature = "v1-service")]
+mod load;
+#[cfg(feature = "v1-service")]
 pub use follow::{follow, follow_registry, follow_service, prune, restore};
+#[cfg(feature = "v1-service")]
+pub use load::{load_active, spawn_warmer, warm, warm_targets};
 
 /// Serialize the live tab list and active index to disk. Each tab's browser URL
 /// and layout come from the desktop view state.
