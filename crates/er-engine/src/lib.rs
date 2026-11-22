@@ -47,6 +47,7 @@ pub mod pr_open_entry;
 pub mod pr_resolve;
 pub mod pr_review_feedback;
 pub mod preview_key;
+pub mod preview_read;
 pub mod projects_pins;
 pub mod release_install;
 pub mod release_update;

@@ -3,10 +3,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { DocumentPreviewCache, type DocumentViewMode, type PreviewResponse } from '$lib/documentPreviewCache';
 import type { AppSnapshot, FileSnapshot } from '$lib/types';
 let revision = $state(0);
-const cache = new DocumentPreviewCache((path, context) => invoke<PreviewResponse>('request_file_preview', {
+/** Reads from the tab's content when it answers; null leaves the read to the old command. */
+let routed: (path: string, context: string) => Promise<PreviewResponse> | null = () => null;
+const cache = new DocumentPreviewCache((path, context) => routed(path, context) ?? invoke<PreviewResponse>('request_file_preview', {
   path, expectedPreviewContextKey: context,
 }), () => { revision++; });
 export const diffPreview = {
+  route: (read: typeof routed) => { routed = read; },
   get revision() { return revision; },
   requestKey: (snap: AppSnapshot, file: FileSnapshot) => cache.requestKey(snap, file),
   sync: (snap: AppSnapshot | null) => untrack(() => cache.sync(snap)),

@@ -214,7 +214,8 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::SetFilter { .. }
         | wire::Command::RefreshDiff { .. }
         | wire::Command::SyncPr { .. }
-        | wire::Command::SyncBranch { .. }) => return Err(Box::new(other)),
+        | wire::Command::SyncBranch { .. }
+        | wire::Command::SetFileCompacted { .. }) => return Err(Box::new(other)),
     })
 }
 

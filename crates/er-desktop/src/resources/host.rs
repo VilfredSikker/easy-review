@@ -68,6 +68,13 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::View { tab } => super::tabs::view(desktop, *tab)?,
         ResourceKey::Diff { tab } => super::diff::diff(desktop, *tab)?,
         ResourceKey::Hunks { tab, path, hash } => super::hunks::hunks(desktop, *tab, path, hash)?,
+        ResourceKey::FilePreview { tab, path, context } => {
+            super::preview::file_preview(desktop, *tab, path, context)?
+        }
+        ResourceKey::ImagePreview { tab, path, context } => {
+            super::preview::image_preview(desktop, *tab, path, context)?
+        }
+        ResourceKey::DiffPaths { tab } => super::preview::diff_paths(desktop, *tab)?,
     };
     Ok(Versioned {
         key,
@@ -96,7 +103,10 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         // have a newer version to announce.
         ResourceKey::AvailableBranches { .. }
         | ResourceKey::AvailablePrs { .. }
-        | ResourceKey::Hunks { .. } => 0,
+        | ResourceKey::Hunks { .. }
+        | ResourceKey::FilePreview { .. }
+        | ResourceKey::ImagePreview { .. }
+        | ResourceKey::DiffPaths { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Inbox => sidebar(desktop).inbox().0,
@@ -262,7 +272,8 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::SetFilter { .. }
         | Command::RefreshDiff { .. }
         | Command::SyncPr { .. }
-        | Command::SyncBranch { .. }) => {
+        | Command::SyncBranch { .. }
+        | Command::SetFileCompacted { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),
