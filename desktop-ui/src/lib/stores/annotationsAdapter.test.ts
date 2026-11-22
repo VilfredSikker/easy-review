@@ -96,17 +96,19 @@ describe("the annotations adapter", () => {
     const running = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations]]);
     const shown = running.overlay(appSnapshot());
     expect(shown.ai.threads[0].replies.at(-1)?.ai_action).toBe("ask");
-    expect(running.threads("branch")?.[0].replies.map((r) => r.body_markdown)).toEqual([THINKING]);
+    expect(running.threads()?.[0].replies.map((r) => r.body_markdown)).toEqual([THINKING]);
 
     const answered = adapter(true, [[JOBS, { kind: "jobs", ai_replies: [] }], [annotationsKey(TAB), annotations]]);
     expect(thinking(answered.overlay(appSnapshot()))).toEqual([0, 0]);
   });
 
-  it("keeps the App's snapshot in the views the App loads", () => {
+  it("reads History, Conflicts and Hidden from annotations(tab) too, since the workspace loads them", () => {
     const held = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations]]);
-    const raw = appSnapshot("history");
-    expect(held.overlay(raw)).toBe(raw);
-    expect(held.threads("history")).toBeNull();
+    for (const mode of ["history", "conflicts", "hidden"]) {
+      const shown = held.overlay(appSnapshot(mode));
+      expect(shown.ai.threads[0].replies.at(-1)?.ai_action, mode).toBe("ask");
+      expect(held.threads()?.[0].id, mode).toBe("q-1");
+    }
   });
 
   it("reads the browser annotations with their DOM context parsed back", () => {

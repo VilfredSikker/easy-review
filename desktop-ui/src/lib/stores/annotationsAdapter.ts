@@ -16,7 +16,6 @@ import type {
   TourSnapshot,
   UiAnnotation,
 } from "$lib/types";
-import { RECORDED_MODES } from "./diffAdapter";
 import type { ResourceStore } from "./resourceStore";
 
 export const JOBS: ResourceKey = { kind: "jobs" };
@@ -88,15 +87,15 @@ interface AnnotationsAdapterDeps {
 /**
  * The active tab's annotations: `app.snapshot`'s `ai`, `tour`,
  * `other_bucket` and `ui_annotations` with the flag off, and with it on
- * `annotations(tab)` joined with `jobs` and `ui_annotations(tab)`. The views
- * the workspace only records keep the snapshot, which the App fills.
+ * `annotations(tab)` joined with `jobs` and `ui_annotations(tab)`, in every
+ * view: the workspace loads History, Conflicts and Hidden too.
  */
 export class AnnotationsAdapter {
   constructor(private readonly deps: AnnotationsAdapterDeps) {}
 
-  private held(mode: string | undefined): Annotations | null {
+  private held(): Annotations | null {
     const key = this.deps.flagOn ? this.deps.activeKey() : null;
-    if (key === null || RECORDED_MODES.has(mode ?? "")) return null;
+    if (key === null) return null;
     const held = this.deps.store.get(annotationsKey(key))?.value;
     return held?.kind === "annotations" ? held : null;
   }
@@ -107,14 +106,14 @@ export class AnnotationsAdapter {
   }
 
   /** The joined threads DiffView draws on its hunks; null while the snapshot serves them. */
-  threads(mode: string | undefined): ThreadSnapshot[] | null {
-    const held = this.held(mode);
+  threads(): ThreadSnapshot[] | null {
+    const held = this.held();
     return held ? joinJobs(held.ai, this.jobs()).threads : null;
   }
 
   /** `raw` with the resources' fields in place of the App's, when the page holds them. */
   overlay(raw: AppSnapshot): AppSnapshot {
-    const held = this.held(raw.mode);
+    const held = this.held();
     if (!held) return raw;
     const key = this.deps.activeKey();
     const ui = key === null ? undefined : this.deps.store.get(uiAnnotationsKey(key))?.value;

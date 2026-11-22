@@ -4,8 +4,8 @@ use ts_rs::TS;
 use crate::{
     AnnotationScreenshot, Annotations, AvailableBranches, AvailablePrs, Branches, DiffPaths,
     FileHunks, FilePreview, ImagePreview, Inbox, Jobs, Panels, Projects, Prs, ReviewJson,
-    ReviewRevisions, Risk, Session, Settings, TabDiff, TabReviewed, TabRow, TabView,
-    UiAnnotations, Worktrees,
+    ReviewRevisions, Risk, Session, Settings, TabDiff, TabReviewed, TabRow, TabView, UiAnnotations,
+    Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so

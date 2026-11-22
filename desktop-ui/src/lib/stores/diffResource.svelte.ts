@@ -35,8 +35,7 @@ export const diffResource = new DiffAdapter({
   hunks: {
     get: (hash) => hunksResource.get(hash),
     threads: () => {
-      const raw = app.appSnapshot;
-      return annotationsResource.threads(raw?.mode) ?? raw?.ai?.threads ?? [];
+      return annotationsResource.threads() ?? app.appSnapshot?.ai?.threads ?? [];
     },
   },
 });

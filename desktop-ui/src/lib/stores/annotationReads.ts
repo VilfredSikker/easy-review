@@ -6,19 +6,17 @@ import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { ReviewRevision } from "$lib/protocol/generated/ReviewRevision";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
-import { app } from "./app.svelte";
-import { RECORDED_MODES } from "./diffAdapter";
 import { tabsResource } from "./tabsResource.svelte";
 
 const flagOn = v1ServiceRequested();
 const client = resourceClient();
 
 /**
- * The active tab's key for a read `er_fetch` answers: none with the flag off
- * and in the views the App loads, where the old command answers.
+ * The active tab's key for a read `er_fetch` answers: none with the flag off,
+ * where the old command answers.
  */
 function fetchedTab(): TabKey | null {
-  if (!flagOn || RECORDED_MODES.has(app.appSnapshot?.mode ?? "")) return null;
+  if (!flagOn) return null;
   return tabsResource.activeKey;
 }
 
