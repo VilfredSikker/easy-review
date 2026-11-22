@@ -6,7 +6,7 @@
 </script>
 
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { readAnnotationScreenshot } from "$lib/stores/annotationReads";
   import { app } from "$lib/stores/app.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { annotationMatchesPage, pageKey, urlPath } from "$lib/stores/browserUrl";
@@ -38,7 +38,7 @@
     }
     if (requestedScreenshots.has(path)) return;
     requestedScreenshots.add(path);
-    invoke<string>("read_annotation_screenshot", { path })
+    readAnnotationScreenshot(path)
       .then((dataUrl) => {
         if (dataUrl) {
           thumbnailCache.set(path, dataUrl);

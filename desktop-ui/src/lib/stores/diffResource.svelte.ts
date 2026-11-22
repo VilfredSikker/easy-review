@@ -7,6 +7,7 @@ import type { FileSnapshot } from "$lib/types";
 import { diffPreview } from "./diffPreview.svelte";
 import { imagePreview } from "./imagePreview.svelte";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
+import { annotationsResource } from "./annotationsResource.svelte";
 import { app } from "./app.svelte";
 import { DiffAdapter, diffKey, prListRow, type PrHead } from "./diffAdapter";
 import { hunksResource } from "./hunksResource.svelte";
@@ -29,8 +30,14 @@ export const diffResource = new DiffAdapter({
   activeKey: () => tabsResource.activeKey,
   keyAt: (idx) => tabsResource.keyAt(idx),
   prHead: activePrHead,
-  // The threads come from the App's snapshot until `annotations(tab)` serves them.
-  hunks: { get: (hash) => hunksResource.get(hash), threads: () => app.appSnapshot?.ai?.threads ?? [] },
+  // The threads come from `annotations(tab)` joined with `jobs` in every view,
+  // and from the App's snapshot with the flag off or before they load.
+  hunks: {
+    get: (hash) => hunksResource.get(hash),
+    threads: () => {
+      return annotationsResource.threads() ?? app.appSnapshot?.ai?.threads ?? [];
+    },
+  },
 });
 
 /**

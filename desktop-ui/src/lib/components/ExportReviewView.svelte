@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { readReviewJson } from "$lib/stores/annotationReads";
   import { copyToClipboard } from "$lib/clipboard";
   import {
     EXPORT_CATEGORIES,
@@ -67,7 +68,7 @@
 
   async function copyReviewJson() {
     try {
-      const body = await invoke<string>("read_review_json", { revisionId: null });
+      const body = await readReviewJson();
       await copyToClipboard(body);
       app.showToast("success", `Copied findings JSON (${body.length} bytes)`);
     } catch {

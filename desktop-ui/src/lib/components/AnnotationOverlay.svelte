@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { readAnnotationScreenshot } from "$lib/stores/annotationReads";
   import type { ComponentProps } from "svelte";
   import { app } from "$lib/stores/app.svelte";
   import { browser } from "$lib/stores/browser.svelte";
@@ -179,7 +179,7 @@
   function ensurePinThumb(path: string | null | undefined) {
     if (!path || pinThumbs[path] || pinRequested.has(path)) return;
     pinRequested.add(path);
-    invoke<string>("read_annotation_screenshot", { path })
+    readAnnotationScreenshot(path)
       .then((d) => {
         if (d) pinThumbs[path] = d;
       })

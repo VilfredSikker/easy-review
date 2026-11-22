@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { listReviewRevisions, readReviewJson } from "$lib/stores/annotationReads";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { copyToClipboard } from "$lib/clipboard";
@@ -21,14 +21,14 @@
   const log = $derived(app.snapshot?.agent_log ?? []);
 
   async function loadRevisions() {
-    revisions = await invoke<RevisionSummary[]>("list_review_revisions");
+    revisions = await listReviewRevisions();
     const preferred = revisions.find((r) => r.active) ?? revisions[0];
     selectedRevisionId = preferred?.revision_id ?? "";
   }
 
   async function copyReviewJson() {
     try {
-      const content = await invoke<string>("read_review_json", { revisionId: selectedRevisionId || null });
+      const content = await readReviewJson();
       await copyToClipboard(content);
       app.showToast("success", `Copied findings JSON (${content.length} bytes)`);
     } catch {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { readReviewJson } from "$lib/stores/annotationReads";
   import type { AiSnapshot, Confidence, FlatFinding } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
@@ -131,7 +132,7 @@
 
   async function copyFindingsJson() {
     try {
-      const raw = await invoke<string>("read_review_json", { revisionId: null });
+      const raw = await readReviewJson();
       const review = JSON.parse(raw) as {
         diff_hash?: string;
         diff_scope?: string;
