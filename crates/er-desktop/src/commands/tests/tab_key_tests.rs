@@ -49,14 +49,14 @@ fn ports() -> er_engine::ports::Ports {
     er_engine::ports::Ports { git, github }
 }
 
-fn state(dir: &ReviewFlowTestDir) -> AppState {
+pub(super) fn state(dir: &ReviewFlowTestDir) -> AppState {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_settings_path(ports(), settings));
     state
 }
 
-fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
+pub(super) fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
     let dir = ReviewFlowTestDir::new();
     let storage = dir.path().join("storage");
     er_engine::storage::with_process_test_storage_root(storage, || test(&dir));
@@ -126,7 +126,7 @@ fn assert_one_key(state: &AppState, step: &str) -> TabKey {
     active
 }
 
-fn kinds(dir: &ReviewFlowTestDir) -> Vec<(&'static str, TabDescriptor)> {
+pub(super) fn kinds(dir: &ReviewFlowTestDir) -> Vec<(&'static str, TabDescriptor)> {
     let root = dir_in(dir, "repo");
     let mut branch = content_routes::working_tab(root.clone());
     branch.kind = TabKind::LocalBranch;
