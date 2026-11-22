@@ -35,9 +35,25 @@ pub(crate) struct PrLoad<'a> {
 pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>) -> LoadedPr {
     let held = load.prev.and_then(|prev| prev.stack.clone());
     let mut loaded = load_pr_fields(deps, tab, load);
-    let source = stack_source(tab, loaded.overview.as_ref());
-    loaded.stack = held.filter(|read| source.as_ref() == Some(&read.source));
+    loaded.stack = held.filter(|read| still_reads(tab, loaded.overview.as_ref(), read));
     loaded
+}
+
+/// Whether `read` still describes `tab`: the tab reads its stack from the
+/// same place, for the same branch.
+pub(crate) fn still_reads(
+    tab: &ResolvedTab,
+    overview: Option<&PrOverviewData>,
+    read: &crate::content::StackRead,
+) -> bool {
+    stack_source(tab, overview).as_ref() == Some(&read.source) && read.branch == viewed_branch(tab)
+}
+
+/// The branch the tab views.
+pub(crate) fn viewed_branch(tab: &ResolvedTab) -> String {
+    tab.local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone())
 }
 
 /// Where `tab`'s stack is read from, as `TabState::stack_source` finds it:
@@ -172,4 +188,42 @@ fn local_head(deps: &WorkspaceDeps, tab: &ResolvedTab, number: u64) -> Option<St
     }
     let ref_name = format!("refs/er/pr/{number}/head");
     er_engine::github::rev_parse_oid(&*deps.ports().git, &tab.repo_root, &ref_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use er_engine::gh_stack::{StackInfo, StackSource};
+    use er_engine::tab_identity::{DiffMode, ResolvedTab};
+
+    use super::still_reads;
+    use crate::content::StackRead;
+
+    /// `gh stack view` reads the checked-out branch, so a lookup taken on one
+    /// branch no longer describes the checkout once another is checked out.
+    #[test]
+    fn a_stack_read_on_one_branch_does_not_describe_another() {
+        let tab = ResolvedTab {
+            repo_root: "/repo".into(),
+            current_branch: "feature".into(),
+            base_branch: "main".into(),
+            mode: DiffMode::Branch,
+            tour_is_pr: false,
+            remote_repo: None,
+            pr_number: None,
+            local_branch_view: None,
+            pr_head_ref: None,
+            checkout_root: None,
+        };
+        let read = StackRead {
+            source: StackSource::Checkout("/repo".into()),
+            branch: "feature".into(),
+            info: StackInfo::Unavailable(String::new()),
+        };
+        assert!(still_reads(&tab, None, &read));
+        let moved = ResolvedTab {
+            current_branch: "other".into(),
+            ..tab
+        };
+        assert!(!still_reads(&moved, None, &read));
+    }
 }

@@ -916,7 +916,12 @@ fn handle_command(
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
                 let info = crate::tab_pr::read_stack(&deps, &source);
-                let stack = Box::new(crate::content::StackRead { source, info });
+                let branch = crate::tab_pr::viewed_branch(&content.tab);
+                let stack = Box::new(crate::content::StackRead {
+                    source,
+                    branch,
+                    info,
+                });
                 Ok(Effected::patched(
                     Reply::StackRead { key },
                     ContentPatch::Stack { key, stack },
