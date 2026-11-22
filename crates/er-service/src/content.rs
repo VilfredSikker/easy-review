@@ -373,10 +373,13 @@ pub struct PrSection {
     pub stack: Option<StackRead>,
 }
 
-/// One stack lookup: where it read, and what it found.
+/// One stack lookup: where it read, for which branch, and what it found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StackRead {
     pub source: StackSource,
+    /// The viewed branch. `gh stack view` reads the checkout's branch, so a
+    /// lookup describes the branch it ran on, never one checked out after.
+    pub branch: String,
     pub info: StackInfo,
 }
 
@@ -746,9 +749,7 @@ pub(crate) fn apply(
             if let Some(content) = tabs.get_mut(&key) {
                 // A load that moved the tab elsewhere since reads its stack
                 // from another place, so this lookup no longer describes it.
-                let source =
-                    crate::tab_pr::stack_source(&content.tab, content.pr.overview.as_ref());
-                if source.as_ref() == Some(&stack.source) {
+                if crate::tab_pr::still_reads(&content.tab, content.pr.overview.as_ref(), &stack) {
                     let mut next = TabContent::clone(content);
                     next.pr = Arc::new(next.pr.with_stack(*stack, revision));
                     *content = Arc::new(next);
