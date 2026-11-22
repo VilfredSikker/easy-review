@@ -60,7 +60,7 @@ export const OPTIMISTIC_COMMANDS = [
 export type OptimisticCommand = (typeof OPTIMISTIC_COMMANDS)[number];
 
 /**
- * The global ops' commands, the bulk reviews and the thread writes. With the
+ * The global ops' commands, the bulk reviews and the annotation writes. With the
  * flag on the server applies the pin cap, the dismissed filter and each inbox
  * read or clear, counts the unread items and the reviewed files, and orders
  * the threads; the `prs`, `inbox`, `reviewed(tab)` and `annotations(tab)`
@@ -76,6 +76,13 @@ const SNAPSHOT_PATH_ONLY: ReadonlySet<string> = new Set([
   "delete_thread",
   "update_thread_message",
   "promote_to_note",
+  "dismiss_finding",
+  "resolve_finding",
+  "unresolve_finding",
+  "toggle_checklist_item",
+  "remove_finding_thread",
+  "delete_finding_response",
+  "update_finding_response",
   "save_pr",
   "unsave_pr",
   "dismiss_remote_pr",

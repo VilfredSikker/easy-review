@@ -97,6 +97,41 @@ describe("the annotation writes with the flag on", () => {
     expect(sent.map((c) => c.kind)).toEqual(["resolve_thread", "delete_thread", "update_thread_message"]);
   });
 
+  it("paint nothing for the finding, checklist, triage and diagram writes, each sent as its command", async () => {
+    const { sent, writes, settle } = harness(ai([], [finding(null)]));
+    const finding_ = { findingId: "f-1" };
+    const response = { findingId: "f-1", responseId: "r-1" };
+    for (const [command, args] of [
+      ["dismiss_finding", finding_],
+      ["resolve_finding", finding_],
+      ["unresolve_finding", finding_],
+      ["remove_finding_thread", finding_],
+      ["update_finding_response", { ...response, body: "edited" }],
+      ["delete_finding_response", response],
+      ["toggle_checklist_item", { index: 0 }],
+      ["delete_review_artifact", { kind: "triage" }],
+      ["delete_diagram", { id: "flows" }],
+    ] as const) {
+      expect(isOptimisticCommand(command, true), command).toBe(false);
+      const done = writes.route(command, args);
+      expect(writes.paints(), command).toEqual([]);
+      await settle();
+      await done;
+    }
+    expect(sent.map((c) => c.kind)).toEqual([
+      "dismiss_finding",
+      "set_finding_resolved",
+      "set_finding_resolved",
+      "remove_finding_thread",
+      "update_finding_response",
+      "delete_finding_response",
+      "toggle_checklist_item",
+      "delete_review_artifact",
+      "delete_diagram",
+    ]);
+    expect(sent.map((c) => ("resolved" in c ? c.resolved : null)).filter((r) => r !== null)).toEqual([true, false]);
+  });
+
   it("show a reply to a finding with no thread as a new thread, under the id the server takes", async () => {
     const { sent, writes, settle } = harness(ai([], [finding(null)]));
     const done = writes.route("reply_to_finding", { findingId: "f-1", body: "agreed", aiAssist: false });
