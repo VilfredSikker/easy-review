@@ -261,6 +261,10 @@ pub enum Command {
         paths: Vec<String>,
         expand: bool,
     },
+    /// Compact the named files of a loaded tab's diff again, as the App's
+    /// toggle does: their hunks leave the section, and the next loads parse
+    /// them compacted.
+    CompactFiles { key: TabKey, paths: Vec<String> },
     /// Read a loaded tab's sidecars again when a writer outside the workspace
     /// moved them. A reload already running for the key answers at once.
     ReloadSidecars { key: TabKey },
@@ -672,6 +676,11 @@ pub enum Reply {
     FilesParsed {
         key: TabKey,
         parsed: usize,
+    },
+    /// How many of the named files were compacted again.
+    FilesCompacted {
+        key: TabKey,
+        compacted: usize,
     },
     /// A closed tab's content left the view.
     ContentDropped {

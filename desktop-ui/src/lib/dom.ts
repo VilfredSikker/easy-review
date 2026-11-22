@@ -53,7 +53,7 @@ export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
     const latest = app.snapshot;
     const fileSnap = latest?.files.find((f) => f.path === thread.file);
     if (fileSnap?.compacted) {
-      await app.cmd("toggle_compacted");
+      await app.cmd("toggle_compacted", { path: fileSnap.path, compacted: false });
       await tick();
     }
     await loadStub(fileSnap);
@@ -94,7 +94,7 @@ export async function navigateToFinding(finding: FlatFinding): Promise<void> {
     const latest = app.snapshot;
     const fileSnap = latest?.files.find((f) => f.path === finding.file);
     if (fileSnap?.compacted) {
-      await app.cmd("toggle_compacted");
+      await app.cmd("toggle_compacted", { path: fileSnap.path, compacted: false });
       await tick();
     }
     await loadStub(fileSnap);

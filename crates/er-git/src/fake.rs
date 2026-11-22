@@ -8,7 +8,7 @@ use crate::cli::Git;
 use crate::error::GitError;
 use crate::status::{CommitInfo, Worktree};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[derive(Debug, Default)]
 pub struct FakeGit {
@@ -45,6 +45,7 @@ struct FakeState {
     list_worktrees: Option<Result<Vec<Worktree>, GitError>>,
     blob_oid: Option<Result<String, GitError>>,
     read_blob: Option<Result<Vec<u8>, GitError>>,
+    read_blob_hook: Hook,
     paths_present_at: Option<Result<Vec<String>, GitError>>,
     gitignored_paths: Option<HashSet<String>>,
     diff_watched_file_snapshot: Option<Result<Option<String>, GitError>>,
@@ -64,6 +65,21 @@ struct FakeState {
     config_get_regexp: Option<Result<String, GitError>>,
     rev_list_count: Option<Result<String, GitError>>,
     branch_merged: Option<Result<String, GitError>>,
+}
+
+/// Runs inside a call before it answers, so a test can change the world
+/// while a reader is between its reads.
+#[derive(Default, Clone)]
+struct Hook(Option<Arc<dyn Fn() + Send + Sync>>);
+
+impl std::fmt::Debug for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Hook(set)"
+        } else {
+            "Hook(none)"
+        })
+    }
 }
 
 fn unscripted(method: &str) -> GitError {
@@ -248,6 +264,13 @@ impl FakeGit {
     #[must_use]
     pub fn with_read_blob(self, value: Result<Vec<u8>, GitError>) -> Self {
         self.lock().read_blob = Some(value);
+        self
+    }
+
+    /// `hook` runs on every `read_blob` before it answers, with no lock held.
+    #[must_use]
+    pub fn with_read_blob_hook(self, hook: impl Fn() + Send + Sync + 'static) -> Self {
+        self.lock().read_blob_hook = Hook(Some(Arc::new(hook)));
         self
     }
 
@@ -612,12 +635,16 @@ impl Git for FakeGit {
     }
 
     fn read_blob(&self, root: &str, spec: &str, max_bytes: usize) -> Result<Vec<u8>, GitError> {
-        self.record(format!(
-            "read_blob(root={root:?}, spec={spec:?}, max_bytes={max_bytes:?})"
-        ))
-        .read_blob
-        .clone()
-        .unwrap_or_else(|| Err(unscripted("read_blob")))
+        let (answer, hook) = {
+            let state = self.record(format!(
+                "read_blob(root={root:?}, spec={spec:?}, max_bytes={max_bytes:?})"
+            ));
+            (state.read_blob.clone(), state.read_blob_hook.clone())
+        };
+        if let Some(hook) = hook.0 {
+            hook();
+        }
+        answer.unwrap_or_else(|| Err(unscripted("read_blob")))
     }
 
     fn paths_present_at(

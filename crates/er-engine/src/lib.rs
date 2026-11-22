@@ -32,6 +32,7 @@ pub mod github_post;
 pub mod github_post_session;
 #[cfg(feature = "highlight")]
 pub mod highlight;
+pub mod history;
 pub mod job_commit;
 mod job_merge;
 pub mod job_staging;
@@ -47,6 +48,7 @@ pub mod pr_open_entry;
 pub mod pr_resolve;
 pub mod pr_review_feedback;
 pub mod preview_key;
+pub mod preview_read;
 pub mod projects_pins;
 pub mod release_install;
 pub mod release_update;

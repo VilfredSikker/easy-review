@@ -3,4 +3,8 @@
 /**
  * The tab's review projected as the reviewer sees it, as pretty JSON.
  */
-export type ReviewJson = { json: string, };
+export type ReviewJson = { 
+/**
+ * None while the tab is unloaded or when its bucket holds no review.
+ */
+json: string | null, };
