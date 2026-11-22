@@ -12,8 +12,7 @@ use crate::state::DesktopState;
 /// is pushed again under a newer version.
 pub fn jobs(desktop: &DesktopState) -> (u64, Resource) {
     let arena_runs = super::arena::live_runs(desktop);
-    let version =
-        desktop.pending_ai_replies.clock.revision() + desktop.live_jobs.observe(&arena_runs);
+    let version = counted(desktop, &arena_runs);
     let mut ai_replies: Vec<AiReplyJob> = desktop
         .pending_ai_replies
         .replies()
@@ -40,6 +39,12 @@ pub fn jobs(desktop: &DesktopState) -> (u64, Resource) {
 /// The version `jobs` answers at now. A live part that moved since the last
 /// read moves it, so a progress tick is pushed and a diff publish is not.
 pub fn version(desktop: &DesktopState) -> u64 {
-    let arena_runs: Vec<ArenaRunJob> = super::arena::live_runs(desktop);
-    desktop.pending_ai_replies.clock.revision() + desktop.live_jobs.observe(&arena_runs)
+    counted(desktop, &super::arena::live_runs(desktop))
+}
+
+/// The replies' writes plus the times the live runs differed from the last
+/// ones seen. Every read of the version counts here, so a fetch and the
+/// relay never disagree.
+fn counted(desktop: &DesktopState, arena_runs: &[ArenaRunJob]) -> u64 {
+    desktop.pending_ai_replies.clock.revision() + desktop.live_jobs.observe(arena_runs)
 }
