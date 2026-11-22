@@ -570,6 +570,7 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
                 scope_stats: Default::default(),
                 rules_key: String::new(),
                 risk_artifact: None,
+                commits: Vec::new(),
             },
             expanded: Default::default(),
         },
@@ -580,6 +581,7 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
         ai_extras: Default::default(),
         pr: Default::default(),
         freshness: Default::default(),
+        history: None,
         cleared: 0,
     })
 }
@@ -624,14 +626,6 @@ fn a_patch_from_before_the_tab_moved_is_refused_with_nothing_moved() -> anyhow::
                 since: started_at,
                 files: Vec::new(),
                 expanded: Vec::new(),
-            },
-        ),
-        (
-            "a recorded mode",
-            ContentPatch::Mode {
-                key,
-                since: started_at,
-                mode: DiffMode::History,
             },
         ),
     ] {

@@ -48,9 +48,12 @@ impl TabState {
             mode: self.mode,
             checkout_root: self.local_branch_checkout_root.as_deref(),
             preview_head_oid: self.preview_head_oid.as_deref(),
+            // History keeps its selection after the tab leaves it; only the
+            // History view itself is keyed on the commit.
             history_commit: self
                 .history
                 .as_ref()
+                .filter(|_| self.mode == DiffMode::History)
                 .and_then(|h| h.commits.get(h.selected_commit))
                 .map(|c| c.hash.as_str()),
             raw: self.raw_diff.as_deref(),

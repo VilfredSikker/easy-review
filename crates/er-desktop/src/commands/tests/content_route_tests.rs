@@ -253,82 +253,104 @@ fn the_backend_tick_brings_an_outside_write_into_the_active_content() {
     });
 }
 
-/// The views the App still shows are recorded on the active content; Tour
-/// loads there.
+/// Every view loads on the active content, History, Conflicts and Hidden
+/// included, while the App lock is held.
 #[test]
 fn every_mode_reaches_the_active_content() {
     with_storage(|dir| {
         let Fixture { state, active, .. } = fixture(dir);
-        for name in ["branch", "unstaged", "staged", "pr", "tour"] {
-            assert!(content_routes::routed_mode(name).is_some(), "{name}");
-            assert_eq!(content_routes::recorded_mode(name), None, "{name}");
+        let views = [
+            ("branch", DiffMode::Branch),
+            ("unstaged", DiffMode::Unstaged),
+            ("staged", DiffMode::Staged),
+            ("history", DiffMode::History),
+            ("conflicts", DiffMode::Conflicts),
+            ("hidden", DiffMode::Hidden),
+            ("pr", DiffMode::PrDiff),
+            ("tour", DiffMode::Tour),
+        ];
+        for (name, mode) in views {
+            assert_eq!(content_routes::routed_mode(name), Some(mode), "{name}");
         }
-        for name in ["history", "conflicts", "hidden"] {
-            assert_eq!(content_routes::routed_mode(name), None, "{name}");
-            assert!(content_routes::recorded_mode(name).is_some(), "{name}");
-        }
-
-        for (name, mode) in [("hidden", DiffMode::Hidden), ("history", DiffMode::History)] {
-            let route =
-                move |state: &AppState| content_routes::record_mode(state, name, mode, None);
-            while_the_app_is_locked(&state, name, route);
+        for (name, mode) in [
+            ("hidden", DiffMode::Hidden),
+            ("conflicts", DiffMode::Conflicts),
+            ("history", DiffMode::History),
+            ("tour", DiffMode::Tour),
+        ] {
+            let switched = while_the_app_is_locked(&state, name, move |state| {
+                content_routes::set_mode(state, name, mode, None, None).map(drop)
+            });
+            assert!(switched.is_ok(), "{name}: {switched:?}");
             assert_eq!(content(&state, &active).tab.mode, mode);
         }
-        let tour = while_the_app_is_locked(&state, "tour", |state| {
-            content_routes::set_mode(state, "tour", DiffMode::Tour, None, None).map(drop)
-        });
-
-        assert!(tour.is_ok(), "{tour:?}");
         let toured = content(&state, &active);
-        assert_eq!(toured.tab.mode, DiffMode::Tour);
         assert!(!toured.diff.files.is_empty(), "the tour loaded no diff");
     });
 }
 
-/// The `set_mode` command records a view the App still shows on the content,
-/// then switches the App to it.
+/// The `set_mode` command shows History on the content and leaves the App's
+/// tab where it was.
 #[test]
-fn a_recorded_mode_still_reaches_the_app() {
+fn a_history_switch_leaves_the_app_alone() {
     with_storage(|dir| {
         let Fixture { state, active, .. } = fixture(dir);
+        let before = state.app.lock().map(|app| app.tab().mode).ok();
 
         let switched = crate::commands::set_mode_impl(&state, "history", None, None);
 
         assert!(switched.is_ok(), "{:?}", switched.err());
         assert_eq!(content(&state, &active).tab.mode, DiffMode::History);
-        let app_mode = state.app.lock().map(|app| app.tab().mode);
-        assert_eq!(app_mode.ok(), Some(DiffMode::History));
+        let after = state.app.lock().map(|app| app.tab().mode).ok();
+        assert_eq!(after, before, "the switch reached the App");
     });
 }
 
-/// A file click while the active tab shows History reaches the App's History
-/// selection, which the App still shows.
+/// No flag-on code reaches the App's History file selection: each call of
+/// `history_select_file` in er-desktop compiles only without the flag.
 #[test]
-fn a_history_file_click_reaches_the_app() {
-    with_storage(|dir| {
-        let Fixture { state, active, .. } = fixture(dir);
-        let switched = crate::commands::set_mode_impl(&state, "history", None, None);
-        assert!(switched.is_ok(), "{:?}", switched.err());
-        assert!(content_routes::shows_history(&state));
-        let files: Vec<er_engine::git::DiffFile> = content(&state, &active).diff.files[..3]
-            .iter()
-            .map(|file| file.as_ref().clone())
-            .collect();
-        if let Ok(mut app) = state.app.lock() {
-            if let Some(history) = app.tab_mut().history.as_mut() {
-                history.commit_files = files;
+fn no_flag_on_code_selects_a_history_file_on_the_app() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut uses = Vec::new();
+    nearest_cfgs(&src, "history_select_file(", &mut uses);
+    assert!(!uses.is_empty(), "the scan found no use to check");
+    for (file, cfg) in &uses {
+        assert_eq!(
+            cfg, "#[cfg(not(feature = \"v1-service\"))]",
+            "{file} selects a History file on the App with the flag on"
+        );
+    }
+}
+
+/// Each use of `needle` in the production sources under `dir`, with the
+/// nearest `cfg` above it, which is the one that compiles it.
+fn nearest_cfgs(dir: &std::path::Path, needle: &str, uses: &mut Vec<(String, String)>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    for path in entries.flatten().map(|entry| entry.path()) {
+        let name = path.to_string_lossy().into_owned();
+        if path.is_dir() {
+            if !name.ends_with("/tests") {
+                nearest_cfgs(&path, needle, uses);
             }
+            continue;
         }
-
-        let clicked = crate::commands::select_file_routed(&state, 2);
-
-        assert!(clicked.is_ok(), "{:?}", clicked.err());
-        let selected = state.app.lock().ok().and_then(|app| {
-            let history = app.tab().history.as_ref()?;
-            Some(history.selected_file)
-        });
-        assert_eq!(selected, Some(2), "the click did not reach History");
-    });
+        if !name.ends_with(".rs") || name.contains("_tests") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let code = text.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
+        for (at, _) in code.match_indices(needle) {
+            let mut lines = code.get(..at).unwrap_or("").rsplit('\n');
+            if lines
+                .next()
+                .is_some_and(|l| l.trim_start().starts_with("//"))
+            {
+                continue;
+            }
+            let cfg = lines.find(|l| l.trim_start().starts_with("#[cfg("));
+            uses.push((name.clone(), cfg.unwrap_or("").trim().to_string()));
+        }
+    }
 }
 
 /// A plain tab's git, which answers every ref and accepts every fetch.

@@ -28,6 +28,7 @@ mod github_comments;
 mod github_sync;
 mod guard;
 mod handle;
+mod history;
 mod host;
 mod hunks;
 mod jobs;
@@ -49,7 +50,7 @@ pub use app_registry::{
     TabsView,
 };
 pub use content::{
-    loads, AiSection, DiffMeta, DiffSection, FreshnessSection, PrSection, ReviewedSection,
+    AiSection, DiffMeta, DiffSection, FreshnessSection, HistorySection, PrSection, ReviewedSection,
     ScopeStats, SidecarStamp, TabContent,
 };
 pub use diff_resource::{diff_load_error, diff_resource, diff_version, DiffInputs};
