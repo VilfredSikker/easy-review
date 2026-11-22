@@ -68,6 +68,13 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::View { tab } => super::tabs::view(desktop, *tab)?,
         ResourceKey::Diff { tab } => super::diff::diff(desktop, *tab)?,
         ResourceKey::Hunks { tab, path, hash } => super::hunks::hunks(desktop, *tab, path, hash)?,
+        ResourceKey::UiAnnotations { tab } => super::annotations::ui_annotations(desktop, *tab)?,
+        ResourceKey::Jobs => super::jobs::jobs(desktop),
+        ResourceKey::ReviewJson { tab } => super::annotations::review_json(desktop, *tab)?,
+        ResourceKey::ReviewRevisions { tab } => {
+            super::annotations::review_revisions(desktop, *tab)?
+        }
+        ResourceKey::AnnotationScreenshot { path } => super::annotations::screenshot(path)?,
     };
     Ok(Versioned {
         key,
@@ -96,7 +103,10 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         // have a newer version to announce.
         ResourceKey::AvailableBranches { .. }
         | ResourceKey::AvailablePrs { .. }
-        | ResourceKey::Hunks { .. } => 0,
+        | ResourceKey::Hunks { .. }
+        | ResourceKey::ReviewJson { .. }
+        | ResourceKey::ReviewRevisions { .. }
+        | ResourceKey::AnnotationScreenshot { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Inbox => sidebar(desktop).inbox().0,
@@ -111,6 +121,11 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::Panels => super::session::panels_version(desktop),
         ResourceKey::View { tab } => super::tabs::view_version(desktop, *tab)?,
         ResourceKey::Diff { tab } => super::diff::version(desktop, *tab)?,
+        ResourceKey::UiAnnotations { tab } => {
+            let entry = super::diff::listed(desktop, *tab)?;
+            super::annotations::ui_annotations_version(desktop, entry.key, &entry.descriptor)
+        }
+        ResourceKey::Jobs => super::jobs::version(desktop),
     };
     Ok(ResourceVersion(version))
 }
@@ -406,6 +421,9 @@ pub enum Watched {
     /// A listed tab's `diff(tab)`: every section its rows read, or its load
     /// failure.
     TabDiff(TabKey),
+    /// A loaded tab's browser annotations.
+    UiAnnotations(TabKey),
+    Jobs,
 }
 
 impl Watched {
@@ -424,6 +442,10 @@ impl Watched {
             Self::TabDiff(key) => Some(ResourceKey::Diff {
                 tab: er_service::wire_tab_key(*key),
             }),
+            Self::UiAnnotations(key) => Some(ResourceKey::UiAnnotations {
+                tab: er_service::wire_tab_key(*key),
+            }),
+            Self::Jobs => Some(ResourceKey::Jobs),
             Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Pr(_) | Self::Mode(_) => None,
         }
     }
@@ -441,6 +463,7 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
             super::session::session_version(desktop, settings.as_deref()),
         ),
         (Watched::Panels, super::session::panels_version(desktop)),
+        (Watched::Jobs, super::jobs::version(desktop)),
     ]);
     let sidebar = sidebar(desktop).versions();
     versions.extend(
@@ -467,6 +490,11 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
     versions.extend(tabs.tabs.iter().filter_map(|entry| {
         let version = super::diff::published_version(desktop, entry.key, &entry.descriptor);
         (version > 0).then_some((Watched::TabDiff(entry.key), version))
+    }));
+    versions.extend(tabs.tabs.iter().filter_map(|entry| {
+        let content = desktop.service.content(entry.key, &entry.descriptor)?;
+        let version = super::annotations::ui_version(desktop, &content);
+        Some((Watched::UiAnnotations(entry.key), version))
     }));
     for view in desktop.service.published_views() {
         for (&key, content) in &view.tabs {

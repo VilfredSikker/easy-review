@@ -268,7 +268,7 @@ fn snapshot_sources(state: &AppState) -> crate::snapshot::SnapshotSources<'_> {
         pr_cache_fetched_at: Some(&state.pr_cache_fetched_at),
         meta_cache: Some(&state.meta_cache),
         gh_user: Some(&state.gh_user),
-        pending_ai: Some(&state.pending_ai_replies),
+        pending_ai: Some(state.pending_ai_replies.replies()),
         gh_status_cache: Some(&state.gh_status_cache),
         loading: Some(&state.loading),
         watch_status: Some(&state.watch_status),
@@ -1008,7 +1008,7 @@ pub async fn request_file_content(
             }
         }
         let tab = app.tab();
-        let pending_ai = Some(&state.pending_ai_replies);
+        let pending_ai = Some(state.pending_ai_replies.replies());
         let out: Vec<FileSnapshot> = source_indices
             .iter()
             .filter_map(|&source_index| {
@@ -2422,21 +2422,30 @@ pub fn list_review_revisions(state: State<AppState>) -> Result<Vec<ReviewRevisio
     // (ExportModal, AgentOutputView) works without a revision picker.
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab = app.tab();
-    if tab.repo_root.is_empty() {
-        return Ok(Vec::new());
+    Ok(review_revisions(
+        &tab.repo_root,
+        &tab.er_dir(),
+        &tab.branch_diff_hash,
+    ))
+}
+
+/// The one revision a bucket with a review holds; none without one.
+pub(crate) fn review_revisions(
+    repo_root: &str,
+    er_dir: &str,
+    branch_diff_hash: &str,
+) -> Vec<ReviewRevisionSummary> {
+    if repo_root.is_empty() || !er_engine::ai::review_file_exists(er_dir) {
+        return Vec::new();
     }
-    let er_dir = tab.er_dir();
-    if !er_engine::ai::review_file_exists(&er_dir) {
-        return Ok(Vec::new());
-    }
-    Ok(vec![ReviewRevisionSummary {
+    vec![ReviewRevisionSummary {
         revision_id: "current".to_string(),
         created_at: String::new(),
         scope: String::new(),
-        diff_hash: tab.branch_diff_hash.clone(),
+        diff_hash: branch_diff_hash.to_string(),
         active: true,
         agents: vec!["claude".to_string()],
-    }])
+    }]
 }
 
 #[tauri::command]
@@ -2446,7 +2455,12 @@ pub fn read_review_json(
 ) -> Result<String, String> {
     let _ = revision_id; // single-revision model — ignored
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    projected_review_json(&app)
+    let tab = app.tab();
+    projected_review_json(
+        &tab.er_dir(),
+        &tab.branch_diff_hash,
+        tab.storage_branch_scope(),
+    )
 }
 
 // ── Filter / search ───────────────────────────────────────────────────────────
@@ -3017,9 +3031,7 @@ pub async fn delete_thread(
             return early;
         }
         app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-        if let Ok(mut p) = state.pending_ai_replies.lock() {
-            p.remove(&id);
-        }
+        state.pending_ai_replies.remove([id.as_str()]);
         state
             .desktop_revision
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3077,15 +3089,9 @@ pub async fn remove_finding_thread(
         )
         .map_err(|e| format!("Failed to remove finding thread: {e}"))?;
 
-        if let Ok(mut p) = state.pending_ai_replies.lock() {
-            for id in pending_ids {
-                p.remove(&id);
-            }
-            if let Some(root) = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id)
-            {
-                p.remove(&root);
-            }
-        }
+        let root = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id);
+        let pending = pending_ids.iter().chain(&root).map(String::as_str);
+        state.pending_ai_replies.remove(pending);
 
         app.tab_mut().reload_ai_state();
         crate::profile_log::bump_desktop_revision(&state.desktop_revision, "remove_finding_thread");
@@ -5885,15 +5891,13 @@ fn ask_ai_impl(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    if let Ok(mut p) = state.pending_ai_replies.lock() {
-        p.insert(
-            thread_id.clone(),
-            crate::snapshot::PendingAiReply {
-                started_at_ms: started_at,
-                ai_action,
-            },
-        );
-    }
+    state.pending_ai_replies.insert(
+        thread_id.clone(),
+        crate::snapshot::PendingAiReply {
+            started_at_ms: started_at,
+            ai_action,
+        },
+    );
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
     let user_prompt = if prompt.trim().is_empty() {
@@ -5902,7 +5906,7 @@ fn ask_ai_impl(
         prompt
     };
     let app_arc = Arc::clone(&state.app);
-    let pending_arc = Arc::clone(&state.pending_ai_replies);
+    let pending = state.pending_ai_replies.clone();
     let app_owner = Arc::clone(&state.app_owner);
     let desktop_revision = Arc::clone(&state.desktop_revision);
     let ports = state.ports.clone();
@@ -5951,9 +5955,7 @@ fn ask_ai_impl(
                 ai_action,
             );
         }
-        if let Ok(mut p) = pending_arc.lock() {
-            p.remove(&thread_id_for_thread);
-        }
+        pending.remove([thread_id_for_thread.as_str()]);
         app_owner.refresh_meta(&*ports.git, &repo_root_for_thread);
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     });
@@ -6128,15 +6130,13 @@ fn ask_ai_for_finding(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    if let Ok(mut p) = state.pending_ai_replies.lock() {
-        p.insert(
-            pending_key,
-            crate::snapshot::PendingAiReply {
-                started_at_ms: started_at,
-                ai_action: None,
-            },
-        );
-    }
+    state.pending_ai_replies.insert(
+        pending_key,
+        crate::snapshot::PendingAiReply {
+            started_at_ms: started_at,
+            ai_action: None,
+        },
+    );
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
     let user_prompt = if prompt.trim().is_empty() {
@@ -6145,7 +6145,7 @@ fn ask_ai_for_finding(
         prompt
     };
     let app_arc = Arc::clone(&state.app);
-    let pending_arc = Arc::clone(&state.pending_ai_replies);
+    let pending = state.pending_ai_replies.clone();
     let app_owner = Arc::clone(&state.app_owner);
     let desktop_revision = Arc::clone(&state.desktop_revision);
     let ports = state.ports.clone();
@@ -6181,9 +6181,7 @@ fn ask_ai_for_finding(
                 app.tab_mut().reload_ai_state();
             }
         }
-        if let Ok(mut p) = pending_arc.lock() {
-            p.remove(&format!("finding:{finding_id_for_thread}"));
-        }
+        pending.remove([format!("finding:{finding_id_for_thread}").as_str()]);
         app_owner.refresh_meta(&*ports.git, &repo_root_for_thread);
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     });
@@ -11779,6 +11777,7 @@ pub async fn add_ui_annotation(
             dom_context: domContext,
         });
         er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+        state.ui_annotations.bump();
         state.desktop_revision.fetch_add(1, Ordering::Relaxed);
         Ok(snap_from(&app, &state))
     })
@@ -11861,6 +11860,7 @@ pub fn save_annotation_screenshot(
     if let Some(a) = anns.iter_mut().find(|a| a.id == id) {
         a.screenshot_path = Some(path.clone());
         er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+        state.ui_annotations.bump();
         state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     }
     Ok(path)
@@ -11915,6 +11915,7 @@ pub async fn delete_ui_annotation(
         let mut anns = er_engine::ai::load_ui_annotations(&dir);
         anns.retain(|a| a.id != id);
         er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+        state.ui_annotations.bump();
         state.desktop_revision.fetch_add(1, Ordering::Relaxed);
         Ok(snap_from(&app, &state))
     })
@@ -11939,6 +11940,7 @@ pub fn clear_ui_annotations_for_page(
     }
     let kept: Vec<_> = anns.into_iter().filter(|a| a.url != page_url).collect();
     er_engine::ai::save_ui_annotations(&dir, &kept).map_err(|e| e.to_string())?;
+    state.ui_annotations.bump();
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &state))
 }
@@ -11952,6 +11954,7 @@ pub fn clear_ui_annotations(state: State<AppState>) -> Result<AppSnapshot, Strin
         let _ = std::fs::remove_file(path);
     }
     er_engine::ai::save_ui_annotations(&dir, &[]).map_err(|e| e.to_string())?;
+    state.ui_annotations.bump();
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &state))
 }
@@ -11990,6 +11993,7 @@ pub fn update_ui_annotation_anchors(
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let dir = app.tab().comments_dir();
     apply_anchor_updates(&dir, &updates).map_err(|e| e.to_string())?;
+    state.ui_annotations.bump();
     Ok(snap_from(&app, &state))
 }
 
@@ -12708,6 +12712,8 @@ mod tests {
     use er_engine::ai::{load_ui_annotations, save_ui_annotations, UiAnnotation};
 
     #[cfg(feature = "v1-service")]
+    mod annotations_resource_tests;
+    #[cfg(feature = "v1-service")]
     mod content_route_tests;
     #[cfg(feature = "v1-service")]
     mod diff_command_tests;
@@ -13055,7 +13061,8 @@ mod tests {
             meta_cache,
             gh_user,
             terminals: Arc::new(Mutex::new(HashMap::new())),
-            pending_ai_replies: Arc::new(Mutex::new(HashMap::new())),
+            pending_ai_replies: Default::default(),
+            ui_annotations: Default::default(),
             gh_status_cache,
             loading,
             gh_status_in_flight: Arc::new(Mutex::new(HashSet::new())),
@@ -16423,14 +16430,16 @@ mod tests {
 /// The active tab's review as the projection sees it — scoped overlays replace
 /// their paths and the validate pass's outcomes are applied — never the raw
 /// `review.json`.
-fn projected_review_json(app: &er_engine::app::App) -> Result<String, String> {
-    let er_dir = app.tab().er_dir();
-    let branch_scope = app.tab().storage_branch_scope().map(str::to_string);
-    let overlay = er_engine::ai::arbiter_overlay_stamp(&er_dir);
+pub(crate) fn projected_review_json(
+    er_dir: &str,
+    branch_diff_hash: &str,
+    branch_scope: Option<&str>,
+) -> Result<String, String> {
+    let overlay = er_engine::ai::arbiter_overlay_stamp(er_dir);
     let ai = er_engine::ai::load_ai_state_with_arbiter(
-        &er_dir,
-        &app.tab().branch_diff_hash,
-        branch_scope.as_deref(),
+        er_dir,
+        branch_diff_hash,
+        branch_scope,
         overlay.as_deref(),
     );
     let Some(review) = ai.review else {
@@ -16514,7 +16523,9 @@ mod projected_review_tests {
                 er_engine::ErRoot::managed(bucket.to_string_lossy().to_string());
             app.tab_mut().branch_diff_hash = "hash".to_string();
 
-            let json = projected_review_json(&app).unwrap();
+            let tab = app.tab();
+            let scope = tab.storage_branch_scope();
+            let json = projected_review_json(&tab.er_dir(), &tab.branch_diff_hash, scope).unwrap();
             let review: er_engine::ai::ErReview = serde_json::from_str(&json).unwrap();
             let a_titles: Vec<&str> = review.files["src/a.rs"]
                 .findings

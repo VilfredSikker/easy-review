@@ -16,8 +16,8 @@ use crate::inbox::InboxHandle;
 use crate::line_commits_cache::LineCommitsCache;
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::snapshot::{
-    GhStatusCache, GhUser, LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusSnapshot,
-    WatchStatusState,
+    GhStatusCache, GhUser, LoadingState, MetaCache, PendingAiReplies, PendingAiReply, PrInfo,
+    WatchStatusSnapshot, WatchStatusState,
 };
 
 #[derive(Clone)]
@@ -45,7 +45,9 @@ pub struct DesktopState {
     pub terminals: Arc<Mutex<HashMap<String, crate::terminal::PtySession>>>,
     /// Threads with an in-flight `ask_ai` subprocess. Snapshot reads this
     /// to render a synthetic "…thinking" reply until the real reply lands.
-    pub pending_ai_replies: PendingAiReplies,
+    pub pending_ai_replies: AiReplyJobs,
+    /// The desktop's writes to the tabs' browser annotations.
+    pub ui_annotations: WriteClock,
     /// Per-PR GitHub status (review decision, mergeable, checks, etc).
     /// Populated by a background thread on a 60s cadence and on explicit refresh.
     pub gh_status_cache: GhStatusCache,
@@ -127,6 +129,15 @@ impl SessionClock {
         let _ = self.wake.set(wake);
     }
 
+    /// A count of another desktop writer's writes, waking the relay this
+    /// clock wakes.
+    pub fn clock(&self) -> WriteClock {
+        WriteClock {
+            revision: Arc::default(),
+            wake: Arc::clone(&self.wake),
+        }
+    }
+
     /// Writes the watcher's status and moves `session` when it changed.
     pub fn set_watch_status(&self, status: &WatchStatusState, next: WatchStatusSnapshot) {
         let changed = match status.lock() {
@@ -139,6 +150,69 @@ impl SessionClock {
         };
         if changed {
             self.bump();
+        }
+    }
+}
+
+/// One desktop writer's count of its writes. Each write moves it and wakes
+/// the resource relay, so the push follows the write.
+#[derive(Clone, Default)]
+pub struct WriteClock {
+    revision: Arc<AtomicU64>,
+    wake: Arc<OnceLock<Sender<()>>>,
+}
+
+impl WriteClock {
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
+    pub fn bump(&self) {
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        if let Some(wake) = self.wake.get() {
+            let _ = wake.send(());
+        }
+    }
+}
+
+/// The in-flight ask-AI replies, by thread id or `finding:<id>`: what
+/// `jobs` serves. Every insert and removal goes through here and moves the
+/// clock, so no writer leaves the page on a stale "…thinking" reply.
+#[derive(Clone, Default)]
+pub struct AiReplyJobs {
+    replies: PendingAiReplies,
+    pub clock: WriteClock,
+}
+
+impl AiReplyJobs {
+    pub fn new(clock: WriteClock) -> Self {
+        Self {
+            replies: Arc::default(),
+            clock,
+        }
+    }
+
+    /// The map the snapshot joins into its threads and findings.
+    pub fn replies(&self) -> &PendingAiReplies {
+        &self.replies
+    }
+
+    pub fn insert(&self, key: String, reply: PendingAiReply) {
+        if let Ok(mut replies) = self.replies.lock() {
+            replies.insert(key, reply);
+        }
+        self.clock.bump();
+    }
+
+    /// Removes each key that is pending; moves the clock when one was.
+    pub fn remove<'a>(&self, keys: impl IntoIterator<Item = &'a str>) {
+        let removed = self.replies.lock().is_ok_and(|mut replies| {
+            keys.into_iter().fold(false, |removed, key| {
+                replies.remove(key).is_some() || removed
+            })
+        });
+        if removed {
+            self.clock.bump();
         }
     }
 }
