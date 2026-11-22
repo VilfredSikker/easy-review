@@ -11767,54 +11767,18 @@ pub async fn add_ui_annotation(
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
             return early;
         }
-        let dir = app.tab().comments_dir();
-        let mut anns = er_engine::ai::load_ui_annotations(&dir);
-        let id = id.filter(|s| !s.is_empty()).unwrap_or_else(|| {
-            format!(
-                "ui-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0)
-            )
-        });
-        if !id.starts_with("ui-")
-            || id.contains(['/', '\\'])
-            || id.contains("..")
-            || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
-            return Err("invalid annotation id".to_string());
-        }
-
-        // If a screenshot data URL was provided, decode and persist it under
-        // `<comments_dir>/screenshots/<id>.png`. Failure to decode is non-fatal:
-        // the annotation is still saved without a screenshot path.
-        let screenshot_path = match screenshotDataUrl.as_deref() {
-            Some(data_url) => decode_data_url_png(data_url)
-                .and_then(|bytes| save_screenshot_bytes(&dir, &id, &bytes).ok()),
-            None => None,
-        };
-
-        let ts = chrono_like_timestamp();
-        anns.push(er_engine::ai::UiAnnotation {
-            id,
+        let new = NewUiAnnotation {
             url,
             selector,
-            box_x: bbox[0],
-            box_y: bbox[1],
-            box_w: bbox[2],
-            box_h: bbox[3],
-            viewport_w: viewport[0],
-            viewport_h: viewport[1],
+            bbox,
+            viewport,
             text,
-            timestamp: ts,
-            author: "You".to_string(),
-            screenshot_path,
-            stale: false,
+            screenshot_data_url: screenshotDataUrl,
             element_context: elementContext,
             dom_context: domContext,
-        });
-        er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+            id,
+        };
+        write_ui_annotation(&app.tab().comments_dir(), new)?;
         state.ui_annotations.bump();
         state.desktop_revision.fetch_add(1, Ordering::Relaxed);
         Ok(snap_from(&app, &state))
@@ -11822,10 +11786,123 @@ pub async fn add_ui_annotation(
     .await
 }
 
+/// A browser annotation as the page submits it.
+pub(crate) struct NewUiAnnotation {
+    pub url: String,
+    pub selector: Option<String>,
+    pub bbox: [f64; 4],
+    pub viewport: [u32; 2],
+    pub text: String,
+    pub screenshot_data_url: Option<String>,
+    pub element_context: Option<String>,
+    pub dom_context: Option<serde_json::Value>,
+    pub id: Option<String>,
+}
+
+/// Adds `new` to the annotations file in `dir`, its screenshot beside it.
+/// Answers the row's id.
+pub(crate) fn write_ui_annotation(dir: &str, new: NewUiAnnotation) -> Result<String, String> {
+    let NewUiAnnotation {
+        url,
+        selector,
+        bbox,
+        viewport,
+        text,
+        screenshot_data_url,
+        element_context,
+        dom_context,
+        id,
+    } = new;
+    let mut anns = er_engine::ai::load_ui_annotations(dir);
+    let id = id.filter(|s| !s.is_empty()).unwrap_or_else(|| {
+        format!(
+            "ui-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        )
+    });
+    if !id.starts_with("ui-")
+        || id.contains(['/', '\\'])
+        || id.contains("..")
+        || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("invalid annotation id".to_string());
+    }
+
+    // If a screenshot data URL was provided, decode and persist it under
+    // `<dir>/screenshots/<id>.png`. Failure to decode is non-fatal:
+    // the annotation is still saved without a screenshot path.
+    let screenshot_path = match screenshot_data_url.as_deref() {
+        Some(data_url) => decode_data_url_png(data_url)
+            .and_then(|bytes| save_screenshot_bytes(dir, &id, &bytes).ok()),
+        None => None,
+    };
+
+    let ts = chrono_like_timestamp();
+    anns.push(er_engine::ai::UiAnnotation {
+        id: id.clone(),
+        url,
+        selector,
+        box_x: bbox[0],
+        box_y: bbox[1],
+        box_w: bbox[2],
+        box_h: bbox[3],
+        viewport_w: viewport[0],
+        viewport_h: viewport[1],
+        text,
+        timestamp: ts,
+        author: "You".to_string(),
+        screenshot_path,
+        stale: false,
+        element_context,
+        dom_context,
+    });
+    er_engine::ai::save_ui_annotations(dir, &anns).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+pub(crate) fn delete_ui_annotation_in(dir: &str, id: &str) -> Result<(), String> {
+    let mut anns = er_engine::ai::load_ui_annotations(dir);
+    anns.retain(|a| a.id != id);
+    er_engine::ai::save_ui_annotations(dir, &anns).map_err(|e| e.to_string())
+}
+
+/// Removes the annotations on `page_url`, or every one with none, and their
+/// screenshots.
+pub(crate) fn clear_ui_annotations_in(dir: &str, page_url: Option<&str>) -> Result<(), String> {
+    let anns = er_engine::ai::load_ui_annotations(dir);
+    let (removed, kept): (Vec<_>, Vec<_>) = anns
+        .into_iter()
+        .partition(|a| page_url.is_none_or(|url| a.url == url));
+    for path in removed.iter().filter_map(|a| a.screenshot_path.as_deref()) {
+        let _ = std::fs::remove_file(path);
+    }
+    er_engine::ai::save_ui_annotations(dir, &kept).map_err(|e| e.to_string())
+}
+
+/// Saves `bytes` as `id`'s screenshot in `dir` and points its row at it.
+/// Answers the path, and whether a row took it.
+pub(crate) fn save_annotation_screenshot_in(
+    dir: &str,
+    id: &str,
+    bytes: &[u8],
+) -> Result<(String, bool), String> {
+    let path = save_screenshot_bytes(dir, id, bytes).map_err(|e| e.to_string())?;
+    let mut anns = er_engine::ai::load_ui_annotations(dir);
+    let Some(a) = anns.iter_mut().find(|a| a.id == id) else {
+        return Ok((path, false));
+    };
+    a.screenshot_path = Some(path.clone());
+    er_engine::ai::save_ui_annotations(dir, &anns).map_err(|e| e.to_string())?;
+    Ok((path, true))
+}
+
 /// Decode a `data:image/png;base64,<payload>` URL into raw PNG bytes. Returns
 /// `None` if the prefix is missing or base64 is malformed. We accept any
 /// `data:image/*;base64,` MIME — the caller is trusted to produce PNG.
-fn decode_data_url_png(data_url: &str) -> Option<Vec<u8>> {
+pub(crate) fn decode_data_url_png(data_url: &str) -> Option<Vec<u8>> {
     let (header, payload) = data_url.split_once(',')?;
     if !header.starts_with("data:image/") || !header.ends_with(";base64") {
         return None;
@@ -11890,14 +11967,10 @@ pub fn save_annotation_screenshot(
     state: State<AppState>,
 ) -> Result<String, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let dir = app.tab().comments_dir();
-    let path = save_screenshot_bytes(&dir, &id, &png_bytes).map_err(|e| e.to_string())?;
-
-    // Patch the annotation row's `screenshot_path` so the UI picks it up.
-    let mut anns = er_engine::ai::load_ui_annotations(&dir);
-    if let Some(a) = anns.iter_mut().find(|a| a.id == id) {
-        a.screenshot_path = Some(path.clone());
-        er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+    let (path, patched) =
+        save_annotation_screenshot_in(&app.tab().comments_dir(), &id, &png_bytes)?;
+    // The row's `screenshot_path` now names it, so the UI picks it up.
+    if patched {
         state.ui_annotations.bump();
         state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     }
@@ -11949,10 +12022,7 @@ pub async fn delete_ui_annotation(
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
             return early;
         }
-        let dir = app.tab().comments_dir();
-        let mut anns = er_engine::ai::load_ui_annotations(&dir);
-        anns.retain(|a| a.id != id);
-        er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+        delete_ui_annotation_in(&app.tab().comments_dir(), &id)?;
         state.ui_annotations.bump();
         state.desktop_revision.fetch_add(1, Ordering::Relaxed);
         Ok(snap_from(&app, &state))
@@ -11966,18 +12036,7 @@ pub fn clear_ui_annotations_for_page(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let dir = app.tab().comments_dir();
-    let anns = er_engine::ai::load_ui_annotations(&dir);
-    let removed: Vec<_> = anns
-        .iter()
-        .filter(|a| a.url == page_url)
-        .filter_map(|a| a.screenshot_path.as_deref())
-        .collect();
-    for path in removed {
-        let _ = std::fs::remove_file(path);
-    }
-    let kept: Vec<_> = anns.into_iter().filter(|a| a.url != page_url).collect();
-    er_engine::ai::save_ui_annotations(&dir, &kept).map_err(|e| e.to_string())?;
+    clear_ui_annotations_in(&app.tab().comments_dir(), Some(&page_url))?;
     state.ui_annotations.bump();
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &state))
@@ -11986,12 +12045,7 @@ pub fn clear_ui_annotations_for_page(
 #[tauri::command]
 pub fn clear_ui_annotations(state: State<AppState>) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let dir = app.tab().comments_dir();
-    let anns = er_engine::ai::load_ui_annotations(&dir);
-    for path in anns.iter().filter_map(|a| a.screenshot_path.as_deref()) {
-        let _ = std::fs::remove_file(path);
-    }
-    er_engine::ai::save_ui_annotations(&dir, &[]).map_err(|e| e.to_string())?;
+    clear_ui_annotations_in(&app.tab().comments_dir(), None)?;
     state.ui_annotations.bump();
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &state))
@@ -12789,6 +12843,8 @@ mod tests {
     mod tab_load_tests;
     #[cfg(feature = "v1-service")]
     mod tab_resource_tests;
+    #[cfg(feature = "v1-service")]
+    mod ui_annotation_write_tests;
     #[cfg(feature = "v1-service")]
     mod watcher_tests;
     #[cfg(feature = "v1-service")]

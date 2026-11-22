@@ -36,6 +36,8 @@ pub mod session;
 pub mod tabs;
 #[cfg(feature = "v1-service")]
 pub mod tick;
+#[cfg(feature = "v1-service")]
+pub mod ui_annotation_writes;
 
 #[cfg(feature = "v1-service")]
 pub use host::{fetch, fetch_all, send, version, watched, Watched};
