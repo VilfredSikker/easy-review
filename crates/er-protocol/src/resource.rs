@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    AnnotationScreenshot, AvailableBranches, AvailablePrs, Branches, FileHunks, Inbox, Jobs,
-    Panels, Projects, Prs, ReviewJson, ReviewRevisions, Risk, Session, Settings, TabDiff, TabRow,
-    TabView, UiAnnotations, Worktrees,
+    AnnotationScreenshot, Annotations, AvailableBranches, AvailablePrs, Branches, FileHunks, Inbox,
+    Jobs, Panels, Projects, Prs, ReviewJson, ReviewRevisions, Risk, Session, Settings, TabDiff,
+    TabRow, TabView, UiAnnotations, Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -72,6 +72,9 @@ pub enum ResourceKey {
         path: String,
         hash: String,
     },
+    /// One open tab's findings, threads, tour, checklist, triage and
+    /// diagrams, by its key.
+    Annotations { tab: TabKey },
     /// One open tab's browser annotations, from its view's bucket.
     UiAnnotations { tab: TabKey },
     /// The app-wide work in flight.
@@ -104,6 +107,7 @@ pub enum Resource {
     View(TabView),
     Diff(Box<TabDiff>),
     Hunks(FileHunks),
+    Annotations(Box<Annotations>),
     UiAnnotations(UiAnnotations),
     Jobs(Jobs),
     ReviewJson(ReviewJson),
