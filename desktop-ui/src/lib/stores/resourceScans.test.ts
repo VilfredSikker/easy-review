@@ -226,4 +226,12 @@ describe("resource source scans", () => {
     expect(new Set(keys)).toEqual(new Set(["RIGHT_PANEL_STORAGE_KEY", "DRAWER_STORAGE_KEY"]));
     expect(code.replace(/\blocalStorage\.(getItem|setItem)\(/g, "")).not.toMatch(/\b(localStorage|sessionStorage)\b/);
   });
+
+  it("with the flag on the previews and the path list read the tab's content through er_fetch", () => {
+    const wiring = read("lib/stores/diffResource.svelte.ts");
+    expect(wiring).toMatch(/diffPreview\.route\([\s\S]*?kind: "file_preview"/);
+    expect(wiring).toMatch(/imagePreview\.route\([\s\S]*?kind: "image_preview"/);
+    expect(wiring).toMatch(/kind: "diff_paths"/);
+    expect(read("lib/components/AiReviewFilesModal.svelte")).not.toContain('"list_diff_paths"');
+  });
 });

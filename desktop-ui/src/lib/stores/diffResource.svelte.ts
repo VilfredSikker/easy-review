@@ -1,5 +1,11 @@
+import { invoke } from "@tauri-apps/api/core";
+import { asErError, resourceClient } from "$lib/protocol/client";
+import type { Resource } from "$lib/protocol/generated/Resource";
+import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { FileSnapshot } from "$lib/types";
+import { diffPreview } from "./diffPreview.svelte";
+import { imagePreview } from "./imagePreview.svelte";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import { app } from "./app.svelte";
 import { DiffAdapter, diffKey, prListRow, type PrHead } from "./diffAdapter";
@@ -38,6 +44,37 @@ export async function loadHashedHunks(files: readonly FileSnapshot[]): Promise<b
   return true;
 }
 
+/** A refused read, shown by its message alone, as the old commands' errors were. */
+class ReadRefused extends Error {
+  override toString(): string {
+    return this.message;
+  }
+}
+
+/** One `er_fetch` of a key read on each fetch and never pushed. */
+async function readOnce<K extends Resource["kind"]>(key: ResourceKey, kind: K): Promise<Extract<Resource, { kind: K }>> {
+  let value: Resource | undefined;
+  try {
+    value = (await resourceClient().fetch([key]))[0]?.value;
+  } catch (e) {
+    throw new ReadRefused(asErError(e).message);
+  }
+  if (value?.kind !== kind) throw new ReadRefused(`expected ${kind}`);
+  return value as Extract<Resource, { kind: K }>;
+}
+
+/** The tab whose previews and paths come from its content: the active one, while the page draws it by hash. */
+function contentTab(): TabKey | null {
+  return diffResource.hashed() ? tabsResource.activeKey : null;
+}
+
+/** Every path the active diff holds, from the content or the App by view. */
+export async function readDiffPaths(): Promise<string[]> {
+  const tab = contentTab();
+  if (tab === null) return invoke<string[]>("list_diff_paths");
+  return (await readOnce({ kind: "diff_paths", tab }, "diff_paths")).paths;
+}
+
 /** Shows `key` while the effect that called this runs. */
 function showDiff(key: TabKey | null): (() => void) | undefined {
   return key === null ? undefined : resources.show(diffKey(key));
@@ -50,6 +87,14 @@ function showDiff(key: TabKey | null): (() => void) | undefined {
 if (flagOn) {
   app.overlaySnapshot((raw) => diffResource.overlay(raw));
   app.routeCmds((command, args) => diffResource.route(command, args));
+  diffPreview.route((path, context) => {
+    const tab = contentTab();
+    return tab === null ? null : readOnce({ kind: "file_preview", tab, path, context }, "file_preview");
+  });
+  imagePreview.route((path, context) => {
+    const tab = contentTab();
+    return tab === null ? null : readOnce({ kind: "image_preview", tab, path, context }, "image_preview");
+  });
   $effect.root(() => {
     $effect(() => showDiff(tabsResource.activeKey));
     $effect(() => {
