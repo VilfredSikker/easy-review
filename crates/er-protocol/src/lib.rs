@@ -11,6 +11,7 @@
 //! move when an internal type does.
 
 mod annotations;
+mod arena;
 mod command;
 mod diff;
 mod error;
@@ -32,6 +33,10 @@ pub use annotations::{
     ReviewRevisions, Thread, ThreadMessage, Tour, TourFile, TourPillar, TourRelatedFile, Triage,
     TriageGuard, TriagePriorityFile, TriageReviewUpdate, TriageSensitiveReason, UiAnnotation,
     UiAnnotations,
+};
+pub use arena::{
+    ArenaAgentGroup, ArenaEstimate, ArenaPlan, ArenaReviewer, ArenaRun, ArenaRunJob,
+    ArenaRunProgress, ArenaRunRow, ArenaRunStatus, ArenaRuns,
 };
 pub use command::{
     Ack, AnchorUpdate, Command, LineTarget, NewUiAnnotation, ProjectReviewSettingsPatch,
