@@ -8,6 +8,7 @@ import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { Versioned } from "$lib/protocol/generated/Versioned";
 import type { AiSnapshot, AppSnapshot, ThreadMessage } from "$lib/types";
 import { AnnotationsAdapter, JOBS, annotationsKey, uiAnnotationsKey } from "./annotationsAdapter";
+import { diffKey } from "./diffAdapter";
 import { resourceKeyId } from "./resourceStore";
 
 const TAB = 3;
@@ -70,6 +71,9 @@ const inFlight: Resource = {
 };
 const annotations: Resource = { kind: "annotations", ai: ai(), tour: { available: false, fresh: false, scope: "branch", title: "", overviewMarkdown: "", pillars: [], createdAt: "", diffHash: "" }, other_bucket: null };
 
+/** `diff(tab)` showing `mode`; the adapter reads nothing else of it. */
+const diffIn = (mode: string): Resource => ({ kind: "diff", mode }) as unknown as Resource;
+
 function adapter(flagOn: boolean, values: [ResourceKey, Resource][]): AnnotationsAdapter {
   return new AnnotationsAdapter({ flagOn, store: holding(values), activeKey: () => TAB });
 }
@@ -96,17 +100,32 @@ describe("the annotations adapter", () => {
     const running = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations]]);
     const shown = running.overlay(appSnapshot());
     expect(shown.ai.threads[0].replies.at(-1)?.ai_action).toBe("ask");
-    expect(running.threads("branch")?.[0].replies.map((r) => r.body_markdown)).toEqual([THINKING]);
+    expect(running.threads()?.[0].replies.map((r) => r.body_markdown)).toEqual([THINKING]);
 
     const answered = adapter(true, [[JOBS, { kind: "jobs", ai_replies: [] }], [annotationsKey(TAB), annotations]]);
     expect(thinking(answered.overlay(appSnapshot()))).toEqual([0, 0]);
   });
 
-  it("keeps the App's snapshot in the views the App loads", () => {
-    const held = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations]]);
+  // With the flag on a switch to a view the workspace loads never reaches the
+  // App, so its mode can say History while diff(tab) shows Branch.
+  it("reads annotations(tab) while diff(tab) shows a view the workspace loads, whatever the App's mode", () => {
+    const held = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations], [diffKey(TAB), diffIn("branch")]]);
     const raw = appSnapshot("history");
-    expect(held.overlay(raw)).toBe(raw);
-    expect(held.threads("history")).toBeNull();
+    const shown = held.overlay(raw);
+    expect(shown).not.toBe(raw);
+    expect(shown.ai.threads[0].replies.at(-1)?.ai_action).toBe("ask");
+    expect(held.threads()?.[0].replies.map((r) => r.body_markdown)).toEqual([THINKING]);
+    expect(held.fetchedTab()).toBe(TAB);
+  });
+
+  it("keeps the App's snapshot while diff(tab) shows a view the App loads, whatever the App's mode", () => {
+    for (const mode of ["history", "conflicts", "hidden"]) {
+      const held = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations], [diffKey(TAB), diffIn(mode)]]);
+      const raw = appSnapshot("branch");
+      expect(held.overlay(raw), mode).toBe(raw);
+      expect(held.threads(), mode).toBeNull();
+      expect(held.fetchedTab(), mode).toBeNull();
+    }
   });
 
   it("reads the browser annotations with their DOM context parsed back", () => {

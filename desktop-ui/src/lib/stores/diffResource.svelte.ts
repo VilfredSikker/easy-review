@@ -31,12 +31,11 @@ export const diffResource = new DiffAdapter({
   keyAt: (idx) => tabsResource.keyAt(idx),
   prHead: activePrHead,
   // The threads come from `annotations(tab)` joined with `jobs`, and from the
-  // App's snapshot in the views the App loads.
+  // App's snapshot in the views the App loads, as `diff(tab)` names the view.
   hunks: {
     get: (hash) => hunksResource.get(hash),
     threads: () => {
-      const raw = app.appSnapshot;
-      return annotationsResource.threads(raw?.mode) ?? raw?.ai?.threads ?? [];
+      return annotationsResource.threads() ?? app.appSnapshot?.ai?.threads ?? [];
     },
   },
 });
