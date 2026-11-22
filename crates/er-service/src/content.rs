@@ -22,6 +22,7 @@ use er_engine::preview_key::{PreviewKeyInputs, PreviewStamps};
 use er_engine::tab_identity::{DiffMode, ResolvedTab};
 use er_engine::TabKey;
 
+use crate::ai_extras::AiExtras;
 use crate::freshness::Freshness;
 use crate::protocol::TabContext;
 
@@ -117,6 +118,7 @@ impl TabContent {
                 written: revision,
                 state: loaded.ai,
                 stamp: loaded.ai_stamp,
+                extras: loaded.ai_extras,
             }),
             pr: Arc::new(PrSection {
                 revision,
@@ -148,6 +150,7 @@ impl TabContent {
                 written: self.ai.written,
                 state: ai.state,
                 stamp: ai.stamp,
+                extras: ai.extras,
             }),
             ..self.clone()
         }
@@ -183,6 +186,7 @@ impl TabContent {
                 written: revision,
                 state,
                 stamp,
+                extras: self.ai.extras.clone(),
             }),
             ..self.clone()
         })
@@ -310,6 +314,8 @@ pub struct AiSection {
     pub state: AiState,
     /// The sidecars as they stood when `state` was read.
     pub stamp: SidecarStamp,
+    /// What the annotations read beside `state`, read under the same stamp.
+    pub extras: AiExtras,
 }
 
 /// The PR a tab reviews: what GitHub says about it, and the head its diff
@@ -418,6 +424,7 @@ pub(crate) struct LoadedTab {
     pub file_hashes: HashMap<String, String>,
     pub ai: AiState,
     pub ai_stamp: SidecarStamp,
+    pub ai_extras: AiExtras,
     pub pr: LoadedPr,
     pub freshness: Freshness,
     /// How many reviewed marks the load cleared.
@@ -441,6 +448,7 @@ pub(crate) struct LoadedPr {
 pub(crate) struct ReloadedAi {
     pub state: AiState,
     pub stamp: SidecarStamp,
+    pub extras: AiExtras,
 }
 
 /// What an effect changed in the tabs' content. The actor applies it after

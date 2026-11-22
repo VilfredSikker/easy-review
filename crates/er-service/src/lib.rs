@@ -14,7 +14,9 @@
 //! See ADR 0067 for the crate graph and the actor's position in it.
 
 mod actor;
+mod ai_extras;
 mod annotations;
+mod annotations_resource;
 mod app_registry;
 pub mod arena;
 mod content;
@@ -39,6 +41,8 @@ mod tab_pr;
 mod workspace;
 
 pub use actor::{spawn, WorkspaceDeps};
+pub use ai_extras::AiExtras;
+pub use annotations_resource::{annotations_resource, annotations_version};
 pub use app_registry::{
     resolve_tab_key, tabs_resource, wire_tab_key, AppCommand, AppRegistry, CachedPr, TabEntry,
     TabsView,

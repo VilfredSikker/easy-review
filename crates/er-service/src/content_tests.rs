@@ -576,6 +576,7 @@ fn loaded_tab(repo: &str) -> Box<LoadedTab> {
         file_hashes: HashMap::new(),
         ai: AiState::default(),
         ai_stamp: Default::default(),
+        ai_extras: Default::default(),
         pr: Default::default(),
         freshness: Default::default(),
         cleared: 0,
