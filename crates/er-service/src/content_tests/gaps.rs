@@ -369,8 +369,8 @@ fn a_switch_into_history_reads_the_history_bucket() -> anyhow::Result<()> {
     })
 }
 
-/// A tick's sidecar reload that lands while a load runs lets the load apply;
-/// a sidecar the workspace wrote meanwhile still refuses it.
+/// A sidecar reload or a stack lookup that lands while a load runs lets it
+/// apply, keeping the newer stack; a sidecar the workspace wrote still refuses it.
 #[test]
 fn a_load_applies_over_a_reload_but_not_over_a_write() -> Result<(), PatchRefused> {
     let mut state = WorkspaceState::new();
@@ -387,7 +387,14 @@ fn a_load_applies_over_a_reload_but_not_over_a_write() -> Result<(), PatchRefuse
         extras: Default::default(),
     });
     state.apply_patch(ContentPatch::Ai { key, since, ai })?;
+    let stack = Box::new(crate::content::StackRead {
+        source: er_engine::gh_stack::StackSource::Checkout("/repo".into()),
+        branch: "feature".into(),
+        info: er_engine::gh_stack::StackInfo::Unavailable(String::new()),
+    });
+    state.apply_patch(ContentPatch::Stack { key, stack })?;
     let (since, _) = state.apply_patch(loaded(Some(since)))?;
+    assert!(state.view().tabs[&key].pr.stack.is_some());
 
     let payload = WrittenPayload::Questions(er_engine::ai::ErQuestions {
         version: 1,
