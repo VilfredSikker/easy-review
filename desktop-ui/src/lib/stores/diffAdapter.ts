@@ -4,6 +4,7 @@ import type { PrRow } from "$lib/protocol/generated/PrRow";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabDiff } from "$lib/protocol/generated/TabDiff";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
+import type { BaseBehind } from "$lib/protocol/generated/BaseBehind";
 import type { AppSnapshot, DiffStaleSnapshot, FileSnapshot } from "$lib/types";
 import type { ResourceStore } from "./resourceStore";
 
@@ -98,6 +99,19 @@ export function prStale(builtFrom: string | null, latest: string | null): DiffSt
   };
 }
 
+/** A branch view's stale mark: origin's tip of its base moved past the commit the diff was built from. */
+export function baseStale(base: string, behind: BaseBehind | null): DiffStaleSnapshot | undefined {
+  if (!behind) return undefined;
+  const name = base.replace(/^origin\//, "");
+  return {
+    kind: "base",
+    message: `${name} has new commits on origin — Sync to refresh`,
+    built_from_oid: behind.built_from_oid,
+    latest_oid: behind.latest_oid,
+    ...(behind.commits_behind === null ? {} : { commits_behind: behind.commits_behind }),
+  };
+}
+
 /** The PR list's row for a PR, from the `prs(remote)` resource the page holds. */
 export function prListRow(
   store: Pick<ResourceStore, "get">,
@@ -113,17 +127,16 @@ export function prListRow(
 /**
  * Whether a tab's diff is behind. A PR diff compares the head it was built
  * from with its `prs(remote)` row. A branch view's base mark is the active
- * tab's only, and until P56.1c it is the App's (`appStale`).
+ * tab's only, from its `diff(tab)`'s `base_behind`.
  */
 export function tabIsStale(
   store: Pick<ResourceStore, "get">,
   tab: { key: TabKey; pr_number: number | null; remote: string | null },
   isActive: boolean,
-  appStale?: DiffStaleSnapshot | null,
 ): boolean {
   const diff = store.get(diffKey(tab.key))?.value;
   const builtFrom = diff?.kind === "diff" ? diff.built_from_head_oid : null;
-  if (!builtFrom) return isActive && appStale?.kind === "base";
+  if (!builtFrom) return isActive && diff?.kind === "diff" && baseStale(diff.base, diff.base_behind) !== undefined;
   const latest = prListRow(store, tab.remote, tab.pr_number)?.headOid || null;
   return prStale(builtFrom, latest) !== undefined;
 }
@@ -135,14 +148,10 @@ export interface PrHead {
   base_ref: string;
 }
 
-/**
- * `diff(tab)` as the slice the page reads. The two values no resource carries
- * yet come from the snapshot: a branch view's base staleness and the local
- * branch's divergence from its PR.
- */
-export function sliceFromResource(diff: TabDiff, snapshot: DiffSlice | null, pr: PrHead | null): DiffSlice {
+/** `diff(tab)` as the slice the page reads. */
+export function sliceFromResource(diff: TabDiff, pr: PrHead | null): DiffSlice {
   const prStaleness = prStale(diff.built_from_head_oid, pr?.head_oid || null);
-  const baseStaleness = snapshot?.diff_stale?.kind === "base" ? snapshot.diff_stale : undefined;
+  const divergence = diff.local_branch_divergence;
   return {
     files: diff.files.map(fileFromRow),
     mode: diff.mode as DiffSlice["mode"],
@@ -158,9 +167,13 @@ export function sliceFromResource(diff: TabDiff, snapshot: DiffSlice | null, pr:
     local_branch_checked_out: diff.local_branch_checked_out,
     unstaged_stat: diff.unstaged_stat,
     staged_stat: diff.staged_stat,
-    diff_stale: diff.built_from_head_oid ? prStaleness : baseStaleness,
+    diff_stale: diff.built_from_head_oid ? prStaleness : baseStale(diff.base, diff.base_behind),
     pr_diff_head_oid: diff.pr_diff_head_oid,
-    local_branch_divergence: snapshot?.local_branch_divergence,
+    local_branch_divergence: divergence && {
+      pr_head_oid: divergence.pr_head_oid,
+      ...(divergence.ahead === null ? {} : { ahead: divergence.ahead }),
+      unstaged_files: divergence.unstaged_files,
+    },
   };
 }
 
@@ -224,7 +237,7 @@ export class DiffAdapter {
     const snapshot = this.deps.snapshot();
     const held = this.held();
     if (!held || RECORDED_MODES.has(held.mode)) return sliceFromSnapshot(snapshot);
-    return sliceFromResource(held, snapshot, this.deps.prHead());
+    return sliceFromResource(held, this.deps.prHead());
   }
 
   /** `raw` with this adapter's fields in place of the App's. */

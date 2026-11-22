@@ -20,6 +20,7 @@ use er_engine::tabs_record::TabDescriptor;
 use er_engine::task_target::BackgroundTaskTarget;
 use er_engine::TabKey;
 
+use crate::freshness::RemoteTips;
 use crate::workspace::WorkspaceTarget;
 
 /// A command sent to the workspace actor.
@@ -236,6 +237,10 @@ pub enum Command {
         force: bool,
         adopt_head_oid: Option<String>,
     },
+    /// What the desktop's probes read from origin for a loaded tab: its
+    /// base's tip and its PR's head. Measured against the tab off the actor;
+    /// tips it already holds change nothing.
+    SetRemoteTips { key: TabKey, tips: RemoteTips },
     /// Show a loaded tab in another mode. Its reviewed marks are kept.
     /// `pr_number` seeds a PR the front end detected onto a tab that has
     /// none, so entering the PR diff can fetch its refs. History, Conflicts

@@ -21,6 +21,7 @@ mod content;
 mod diff_resource;
 mod effect;
 mod flows;
+mod freshness;
 mod github_comments;
 mod github_sync;
 mod guard;
@@ -42,11 +43,12 @@ pub use app_registry::{
     TabsView,
 };
 pub use content::{
-    AiSection, DiffMeta, DiffSection, PrSection, ReviewedSection, ScopeStats, SidecarStamp,
-    TabContent,
+    AiSection, DiffMeta, DiffSection, FreshnessSection, PrSection, ReviewedSection, ScopeStats,
+    SidecarStamp, TabContent,
 };
 pub use diff_resource::{diff_load_error, diff_resource, diff_version, DiffInputs};
 pub use flows::read_flow_run;
+pub use freshness::{BaseBehind, Divergence, Freshness, RemoteTips};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use host::{ReplyReceiver, ServiceHost};
 pub use pending_review::OWN_PR_APPROVAL_REFUSED;

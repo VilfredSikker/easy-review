@@ -42,6 +42,7 @@ pub fn diff_version(content: &TabContent) -> u64 {
         .max(content.ai.revision)
         .max(content.pr.revision)
         .max(content.mode_revision)
+        .max(content.freshness.revision)
 }
 
 /// `content` as `diff(tab)` carries it.
@@ -93,6 +94,7 @@ pub fn diff_resource(content: &TabContent, inputs: &DiffInputs<'_>) -> wire::Tab
     };
     let base = first_non_empty([tab_base, overview.map_or("", |o| o.base_branch.as_str())]);
     let shows_pr_head = tab.mode == DiffMode::PrDiff || tab.identity().is_remote();
+    let freshness = &content.freshness.value;
     wire::TabDiff {
         mode: mode_str(tab.mode).to_string(),
         branch,
@@ -120,6 +122,19 @@ pub fn diff_resource(content: &TabContent, inputs: &DiffInputs<'_>) -> wire::Tab
             .preview_head_oid
             .clone()
             .filter(|oid| shows_pr_head && !oid.is_empty()),
+        base_behind: freshness.base.as_ref().map(|base| wire::BaseBehind {
+            built_from_oid: base.built_from_oid.clone(),
+            latest_oid: base.latest_oid.clone(),
+            commits_behind: base.commits_behind.map(count),
+        }),
+        local_branch_divergence: freshness
+            .divergence
+            .as_ref()
+            .map(|d| wire::BranchDivergence {
+                pr_head_oid: d.pr_head_oid.clone(),
+                ahead: d.ahead.map(count),
+                unstaged_files: count(d.unstaged_files),
+            }),
         load_error: None,
     }
 }
