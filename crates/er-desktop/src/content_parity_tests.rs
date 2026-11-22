@@ -1033,7 +1033,10 @@ fn a_local_pr_tab_loads_the_same_pr_diff() -> anyhow::Result<()> {
 /// ones the branch view took, the service takes the view's own. Conflicts
 /// and Hidden leave out the preview keys too: the App keys them on the diff
 /// the tab showed before, which it keeps in those views, and the service on
-/// the view's own diff.
+/// the view's own diff. They leave out `relocated_at_hash` on a note with no
+/// line anchor as well: these views skip relocation, so the App shows the
+/// stamp its branch load set in memory and never wrote back, and the service
+/// the bucket as stored. desktop-ui does not read the field.
 fn in_own_view(mut observed: Observed, keyed: bool) -> Observed {
     observed.stamps = Default::default();
     if !keyed {
@@ -1044,6 +1047,12 @@ fn in_own_view(mut observed: Observed, keyed: bool) -> Observed {
                 for row in rows.iter_mut().filter_map(Value::as_object_mut) {
                     row.remove("preview_key");
                 }
+            }
+        }
+        if let Some(Value::Array(notes)) = observed.ai[2].get_mut("notes") {
+            let unanchored = notes.iter_mut().filter(|n| n["line_start"].is_null());
+            for note in unanchored.filter_map(Value::as_object_mut) {
+                note.remove("relocated_at_hash");
             }
         }
     }
