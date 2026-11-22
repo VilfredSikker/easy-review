@@ -16,6 +16,7 @@ use serde_json::json;
 use super::annotation_write_tests::{annotations, view};
 use super::diff_command_tests::{send, with_tab};
 use crate::commands::AppState;
+use crate::resources::send::{apply, Effects};
 use crate::service::actor_key;
 use crate::snapshot::PendingAiReply;
 
@@ -370,5 +371,70 @@ fn removing_a_finding_thread_drops_its_pending_ai_reply_from_jobs() {
             .iter()
             .any(|c| c.key == ResourceKey::Jobs && c.version == jobs.version);
         assert!(named, "{ack:?}");
+    });
+}
+
+/// The stored checklist item's flag at index 0 of `er_dir`.
+fn stored_first_item_checked(er_dir: &str) -> bool {
+    let store = er_engine::store_registry::store();
+    let scope = er_store::Scope::dir(er_dir).unwrap_or_else(|e| panic!("{e}"));
+    match er_engine::ai::checklist_store::load_checklist(&store, &scope) {
+        Ok(er_store::Loaded::Found(stored)) => stored.value.items[0].checked,
+        other => panic!("no stored checklist: {other:?}"),
+    }
+}
+
+/// Two toggles of one checklist item, sent together before either lands,
+/// flip it twice: each round leaves the item as it found it.
+#[test]
+fn two_checklist_toggles_sent_together_flip_the_item_twice() {
+    with_tab(|state, (key, tab)| {
+        let er_dir = seed(state, key, &tab);
+        let toggle = || Command::ToggleChecklistItem {
+            tab: er_service::wire_tab_key(key),
+            view: view(state, key),
+            index: 0,
+        };
+        let send_now = |command: Command| {
+            let effects = Effects {
+                notify: &|_, _| {},
+                follow_selection: &|_| {},
+                check_update: || panic!("no update check in this test"),
+                webviews: &crate::browser_webview::NoWebviews,
+                pick_folder: &|| None,
+            };
+            apply(&state.desktop, command, &effects).map(|applied| applied.ack)
+        };
+        let rounds = 20;
+        let mut flipped_once = 0;
+        for _ in 0..rounds {
+            let before = stored_first_item_checked(&er_dir);
+            let (first, second) = (toggle(), toggle());
+            let barrier = std::sync::Barrier::new(2);
+            let acks = std::thread::scope(|scope| {
+                let sent = [first, second].map(|command| {
+                    let (barrier, send_now) = (&barrier, &send_now);
+                    scope.spawn(move || {
+                        barrier.wait();
+                        send_now(command)
+                    })
+                });
+                sent.map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| panic!("a toggle panicked"))
+                })
+            });
+            for ack in acks {
+                assert!(ack.is_ok(), "{ack:?}");
+            }
+            if stored_first_item_checked(&er_dir) != before {
+                flipped_once += 1;
+            }
+        }
+        assert_eq!(
+            flipped_once, 0,
+            "{flipped_once} of {rounds} rounds of two toggles sent together flipped the item once"
+        );
     });
 }
