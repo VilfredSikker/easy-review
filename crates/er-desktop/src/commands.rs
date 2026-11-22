@@ -921,7 +921,7 @@ fn kick_active_gh_status(app: &App, state: &AppState) {
 /// Kick off an async meta-cache refresh so the *next* poll reflects the
 /// mutation that just happened. The refresh runs on a background thread and
 /// does NOT touch the App mutex.
-fn kick_meta_refresh(state: &AppState, root: String) {
+pub(crate) fn kick_meta_refresh(state: &DesktopState, root: String) {
     let owner = Arc::clone(&state.app_owner);
     let desktop_revision = Arc::clone(&state.desktop_revision);
     let ports = state.ports.clone();
@@ -3345,7 +3345,7 @@ fn refresh_stack_impl(state: &AppState) -> Result<AppSnapshot, String> {
 /// Latest known PR `head_oid` for `pr_number` from the PR-list cache. This is
 /// the exact source the stale-pill compares against (see `build_snapshot`), so
 /// callers can align a tab's `last_diff_head_oid` with it to clear the pill.
-fn pr_cache_head_oid_for_pr(state: &AppState, pr_number: u64) -> Option<String> {
+fn pr_cache_head_oid_for_pr(state: &DesktopState, pr_number: u64) -> Option<String> {
     state.pr_cache.lock().ok().and_then(|cache| {
         cache
             .values()
@@ -3359,7 +3359,7 @@ fn pr_cache_head_oid_for_pr(state: &AppState, pr_number: u64) -> Option<String> 
 /// The branch pill compares the ls-remote probe cache with the local
 /// `origin/<base>` oid. A sync has just fetched `origin/<base>`, so its oid
 /// becomes the probed value and the two agree.
-fn align_branch_base_probe(state: &AppState, repo_root: &str, base_branch: &str) {
+fn align_branch_base_probe(state: &DesktopState, repo_root: &str, base_branch: &str) {
     let base_short = base_branch.trim_start_matches("origin/");
     if let Some(oid) = er_engine::github::rev_parse_oid(&*state.ports.git, repo_root, base_branch) {
         let key = format!("{repo_root}\u{0}{base_short}");
@@ -3458,7 +3458,7 @@ fn refresh_active_status_after_sync(state: &AppState) {
     refresh_status_after_sync(state, key);
 }
 
-fn refresh_status_after_sync(state: &AppState, key: Option<(String, String, u64)>) {
+pub(crate) fn refresh_status_after_sync(state: &DesktopState, key: Option<(String, String, u64)>) {
     if let Some((owner, repo, number)) = key {
         kick_github_status_refresh(
             state.gh_status_cache.clone(),
@@ -6698,8 +6698,8 @@ fn fetch_single_pr_for_remote(
     })
 }
 
-fn cache_single_pr_for_remote(
-    state: &AppState,
+pub(crate) fn cache_single_pr_for_remote(
+    state: &DesktopState,
     remote: &str,
     pr_number: u64,
 ) -> Result<PrInfo, String> {
@@ -12731,6 +12731,8 @@ mod tests {
 
     #[cfg(feature = "v1-service")]
     mod content_route_tests;
+    #[cfg(feature = "v1-service")]
+    mod diff_command_tests;
     #[cfg(feature = "v1-service")]
     mod diff_resource_tests;
     #[cfg(not(feature = "v1-service"))]

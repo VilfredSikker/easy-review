@@ -184,9 +184,29 @@ describe("resource source scans", () => {
     const store = stripped(APP_STORE);
     const start = store.indexOf("  async cmd(");
     const body = store.slice(start, store.indexOf("this.beginCmd(", start));
-    expect(body).toMatch(/const routed = this\.cmdRoute\?\.\(command, args\) \?\? null;\s*if \(routed\) return this\.cmdRouted\(command, routed, options\);/);
+    expect(body).toMatch(/const routed = this\.routed\(command, args\);\s*if \(routed\) return this\.cmdRouted\(command, routed, options\);/);
     const wiring = stripped(join("lib", "stores", "tabsResource.svelte.ts"));
     expect(wiring).toMatch(/if \(flagOn\) \{\s*app\.routeCmds\(\(command, args\) => tabsResource\.route\(command, args\)\);\s*routePrefetches\(/);
+  });
+
+  // With the flag on `app.snapshot` runs the diff overlay, which reads the
+  // active tab and its PR head through these adapters, so a read of
+  // `app.snapshot` in either recurses until the stack overflows.
+  it("the adapters the diff overlay reads take the App's snapshot", () => {
+    const block = (f: string, ctor: string) => {
+      const code = stripped(join("lib", "stores", f));
+      const start = code.indexOf(`new ${ctor}({`);
+      return code.slice(start, code.indexOf("});", start));
+    };
+    for (const [f, ctor] of [
+      ["tabsResource.svelte.ts", "TabsAdapter"],
+      ["diffResource.svelte.ts", "DiffAdapter"],
+    ]) {
+      expect(block(f, ctor)).toMatch(/snapshot: \(\) => app\.appSnapshot,/);
+    }
+    // The active branch view's dot is the App's base mark until P56.1c.
+    const stale = /tabIsStale\(resources, row, isActive, app\.appSnapshot\?\.diff_stale\)/;
+    expect(block("tabsResource.svelte.ts", "TabsAdapter")).toMatch(stale);
   });
 
   // The key handler's modes are the frontend's own; the App keeps input_mode

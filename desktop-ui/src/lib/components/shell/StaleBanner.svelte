@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { app } from "$lib/stores/app.svelte";
+  import { diffResource } from "$lib/stores/diffResource.svelte";
   import { oidSegments, staleBannerCopy } from "$lib/shellBanners";
   import { diffSync } from "./diffSync.svelte";
 
   /** Under the view bar while the open diff is behind origin (`diff_stale`). */
-  const stale = $derived(app.snapshot?.diff_stale ?? null);
-  const copy = $derived(stale ? staleBannerCopy(stale, app.snapshot?.base ?? null) : null);
+  const diff = $derived(diffResource.read());
+  const stale = $derived(diff.diff_stale ?? null);
+  const copy = $derived(stale ? staleBannerCopy(stale, diff.base || null) : null);
 </script>
 
 {#if copy}

@@ -788,6 +788,35 @@ fn handle_command(
                 Ok(input)
             });
         }
+        Command::ChangeBase { key, base } => {
+            let Some(current) = state
+                .view()
+                .tabs
+                .get(&key)
+                .map(|c| c.tab.base_branch.clone())
+            else {
+                return refuse_unknown_tab(reply);
+            };
+            if base.trim() == current {
+                let reviewed_cleared = 0;
+                let _ = reply.send(Ok(Reply::ContentLoaded {
+                    key,
+                    reviewed_cleared,
+                }));
+                return;
+            }
+            spawn_load(deps, state, tx, reply, key, move |deps, content| {
+                let content = content
+                    .ok_or_else(|| WorkspaceError::Failed("no loaded tab has that key".into()))?;
+                let mut input = reload_input(content, content.tab.mode);
+                input.tab.base_branch = crate::effect::resolve_base(deps, &content.tab, &base)?;
+                // The diff's scope moved, so a mark whose hash differs still
+                // holds; a local PR fetches its refs against the new base later.
+                input.auto_unmark = false;
+                input.pr_refs_fetched = false;
+                Ok(input)
+            });
+        }
         Command::ParseFiles { key, paths, expand } => {
             let Some(content) = state.view().tabs.get(&key).cloned() else {
                 return refuse_unknown_tab(reply);

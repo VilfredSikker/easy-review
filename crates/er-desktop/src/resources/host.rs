@@ -242,7 +242,13 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::PrefetchPrOpen { .. }
         | Command::PrefetchRemotePrOpen { .. }
         | Command::UpdateTabBrowser { .. }
-        | Command::CycleTabBrowserLayout) => {
+        | Command::CycleTabBrowserLayout
+        | Command::SetDiffMode { .. }
+        | Command::ChangeBase { .. }
+        | Command::SetFilter { .. }
+        | Command::RefreshDiff { .. }
+        | Command::SyncPr { .. }
+        | Command::SyncBranch { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),

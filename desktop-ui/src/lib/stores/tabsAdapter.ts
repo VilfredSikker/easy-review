@@ -39,16 +39,23 @@ function sameTab(row: TabRow, seen: TabSummary): boolean {
   return seen.repo_root === row.repo_root;
 }
 
+/** Whether a tab's diff is behind its PR or, on the active branch view, its base. */
+export type TabStaleness = (row: TabRow, isActive: boolean) => boolean;
+
 /**
  * The resource's rows, with what the registry does not hold yet taken from
  * the snapshot row at the same position: a Working tab's live branch label, a
- * local PR's head branch label, the diff's change token, a local PR's
- * `owner/repo` and the staleness, which stays the snapshot's until P56.1
- * derives it from `diff(tab)` and `prs(remote)`. The snapshot row counts only while both lists
- * have the same length and the row is the same tab, since one side may not
- * have caught up with a change.
+ * local PR's head branch label, the diff's change token and a local PR's
+ * `owner/repo`. The snapshot row counts only while both lists have the same
+ * length and the row is the same tab, since one side may not have caught up
+ * with a change. The staleness comes from `stale`, which compares the tab's
+ * `diff(tab)` with its PR list, found by that `owner/repo`.
  */
-export function tabsFromResource(wire: Tabs, snapshotRows: readonly TabSummary[]): TabsView {
+export function tabsFromResource(
+  wire: Tabs,
+  snapshotRows: readonly TabSummary[],
+  stale: TabStaleness = () => false,
+): TabsView {
   const at = wire.active === null ? -1 : wire.tabs.findIndex((row) => row.key === wire.active);
   const active = Math.max(at, 0);
   const agrees = wire.tabs.length === snapshotRows.length;
@@ -58,17 +65,18 @@ export function tabsFromResource(wire: Tabs, snapshotRows: readonly TabSummary[]
     // No descriptor holds a Working tab's live branch or a local PR's head
     // branch, so the registry names the folder for those.
     const branchless = row.kind === "working" || (row.kind === "local_pr" && row.branch === null);
+    const remote = row.remote ?? seen?.remote ?? null;
     return {
       idx,
       label: branchless && seen ? seen.label : row.label,
       kind: summaryKind(row.kind),
       branch: row.branch,
       pr_number: row.pr_number,
-      remote: row.remote ?? seen?.remote ?? null,
+      remote,
       repo_root: row.repo_root,
       is_active: idx === active,
       change_token: seen?.change_token ?? "",
-      stale: seen?.stale ?? false,
+      stale: stale({ ...row, remote }, idx === active),
     };
   });
   return { tabs, active: tabs[active]?.idx ?? 0 };
@@ -174,6 +182,8 @@ interface TabsAdapterDeps {
   flagOn: boolean;
   store: Pick<ResourceStore, "get" | "show" | "send" | "whenAt">;
   snapshot: () => TabsSlice | null;
+  /** A tab's staleness with the flag on. */
+  stale?: TabStaleness;
 }
 
 /**
@@ -191,7 +201,14 @@ export class TabsAdapter {
     const held = this.deps.store.get(TABS_KEY)?.value;
     // Until the first fetch answers there are no rows to show.
     if (held?.kind !== "tabs") return tabsFromSnapshot(snapshot);
-    return tabsFromResource(held, snapshot?.tabs ?? []);
+    return tabsFromResource(held, snapshot?.tabs ?? [], this.deps.stale);
+  }
+
+  /** The PR tabs in the strip and their `owner/repo`, whose stale mark reads their diff and PR list. */
+  prRows(): { key: TabKey; remote: string }[] {
+    return (this.held()?.tabs ?? []).flatMap((row) =>
+      row.pr_number !== null && row.remote ? [{ key: row.key, remote: row.remote }] : [],
+    );
   }
 
   get tabs(): TabSummary[] {

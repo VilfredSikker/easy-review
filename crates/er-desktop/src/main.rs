@@ -686,6 +686,7 @@ fn run_active_branch_watcher(
     watcher_status: WatchStatusState,
     watcher_session: er_desktop::state::SessionClock,
     watcher_desktop_rev: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(feature = "v1-service")] watcher_service: Arc<er_desktop::service::ServiceState>,
 ) {
     use er_engine::watch::{FileWatcher, WatchEvent};
     use std::path::Path;
@@ -756,6 +757,8 @@ fn run_active_branch_watcher(
         let Some((watched_branch, _root_path)) = current_key.clone() else {
             continue;
         };
+        #[cfg(feature = "v1-service")]
+        post_active_refresh(&watcher_service);
         let app = Arc::clone(&watcher_app);
         let rev = Arc::clone(&watcher_desktop_rev);
         std::thread::spawn(move || {
@@ -786,6 +789,26 @@ fn run_active_branch_watcher(
             }
         });
     }
+}
+
+/// With the flag on the page lists the active tab's files from its content,
+/// which the App's refresh does not move, so a file change refreshes the
+/// content too. Without waiting: the push brings the new diff.
+#[cfg(feature = "v1-service")]
+fn post_active_refresh(service: &er_desktop::service::ServiceState) {
+    let view = service.app_registry().tabs_view();
+    let Some(entry) = view.active_entry() else {
+        return;
+    };
+    if service.content(entry.key, &entry.descriptor).is_none() {
+        return;
+    }
+    let refresh = er_service::Command::RefreshDiff {
+        key: entry.key,
+        force: false,
+        adopt_head_oid: None,
+    };
+    service.post_if_started(&er_desktop::service::actor_key(&entry.descriptor), refresh);
 }
 
 /// The flag path's 45s comment tick. The same head-OID throttle decides
@@ -1593,12 +1616,16 @@ fn main() {
         let watcher_status = Arc::clone(&watch_status);
         let watcher_session = session.clone();
         let watcher_desktop_rev = Arc::clone(&desktop_revision);
+        #[cfg(feature = "v1-service")]
+        let watcher_service = Arc::clone(&service);
         move || {
             run_active_branch_watcher(
                 watcher_app,
                 watcher_status,
                 watcher_session,
                 watcher_desktop_rev,
+                #[cfg(feature = "v1-service")]
+                watcher_service,
             );
         }
     });
