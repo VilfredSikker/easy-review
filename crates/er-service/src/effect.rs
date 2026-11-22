@@ -421,7 +421,7 @@ pub(crate) fn load_tab(
     let dirs = stamped_dirs(&er_dir, &comments_dir, &id, git);
     let (ai_stamp, (mut state, ai_extras)) = read_stamped(dirs, |stamp| {
         let state = reload(stamp, &diff_hash, &branch_diff_hash);
-        (state, read_extras(&er_dir))
+        (state, read_extras(&tab, git, &er_dir, &comments_dir))
     });
     // A branch view's refresh follows neither comments nor findings.
     if !branch_view {
@@ -550,7 +550,9 @@ pub(crate) fn reload_ai(
         };
         let prev = &content.ai.state;
         assemble_tab_ai(&mut state, &load, prev.tour_stale, prev.stale_files.clone());
-        Some((state, read_extras(er_dir)))
+        let comments_dir = &content.context.comments_dir;
+        let extras = read_extras(&content.tab, load.git, er_dir, comments_dir);
+        Some((state, extras))
     });
     let (state, extras) = state?;
     Some(ReloadedAi {

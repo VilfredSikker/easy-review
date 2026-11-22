@@ -1,25 +1,44 @@
-//! `annotations(tab)`: one tab's findings, threads, checklist, triage and
-//! diagrams, built from the AI section the workspace published for it.
+//! `annotations(tab)`: one tab's findings, threads, tour, checklist, triage
+//! and diagrams, built from the AI section the workspace published for it.
 //! Thread order and every count are decided here, so no front end sorts or
 //! counts them again. The in-flight ask-AI replies are not part of it: the
 //! page joins them from `jobs`.
 
-use er_engine::ai::{self, AiState, CommentRef, Finding, RiskLevel};
+use std::collections::HashSet;
+
+use er_engine::ai::{self, AiState, CommentRef, ErTour, Finding, RiskLevel};
 use er_engine::file_rows::{finding_is_escalated, severity_str};
+use er_engine::tab_identity::DiffMode;
 use er_protocol as wire;
 
+use crate::ai_extras::OtherBucketFacts;
 use crate::content::TabContent;
 
-/// The version `annotations(tab)` answers at: the AI section's revision,
-/// which a lazy parse or a mark does not move.
+/// The version `annotations(tab)` answers at: the newest revision of the
+/// sections it reads. The pillar progress reads the reviewed marks and the
+/// tour's scope reads the mode; a lazy parse moves neither.
 pub fn annotations_version(content: &TabContent) -> u64 {
-    content.ai.revision
+    content
+        .ai
+        .revision
+        .max(content.reviewed.revision)
+        .max(content.mode_revision)
 }
 
 /// `content` as `annotations(tab)` carries it.
 pub fn annotations_resource(content: &TabContent) -> wire::Annotations {
+    let ai = &content.ai.state;
+    let shown_tour = ai.tour.as_ref();
     wire::Annotations {
         ai: ai_annotations(content),
+        tour: tour(content),
+        other_bucket: content.ai.extras.other_bucket.as_ref().map(|facts| {
+            let hashes = [
+                content.context.branch_diff_hash.as_str(),
+                content.context.diff_hash.as_str(),
+            ];
+            other_bucket(facts, shown_tour, &hashes)
+        }),
     }
 }
 
@@ -613,4 +632,147 @@ fn triage_review_update(
         priority_files,
         created_at: created_at.to_string(),
     })
+}
+
+/// The tour for the view the tab shows. In the branch, tour and PR views
+/// each file shows once, under the first pillar that names it, with only
+/// the related files the diff holds, and the files no pillar names close it
+/// as "Other changes"; the working-tree views show the pillars as written.
+fn tour(content: &TabContent) -> wire::Tour {
+    let ai = &content.ai.state;
+    let scope = if content.tab.identity().tour_context_is_pr() {
+        "pr"
+    } else {
+        "branch"
+    };
+    let Some(tour) = ai.tour.as_ref().filter(|t| !t.pillars.is_empty()) else {
+        return wire::Tour {
+            scope: scope.to_string(),
+            ..wire::Tour::default()
+        };
+    };
+    let marks = &content.reviewed.marks;
+    let pillar =
+        |id: &str, title: &str, description: &str, summary: &str, files: Vec<wire::TourFile>| {
+            let paths = files
+                .iter()
+                .flat_map(|f| std::iter::once(&f.path).chain(f.related.iter().map(|r| &r.path)));
+            let (reviewed, total) = paths.fold((0, 0), |(r, t), p| {
+                (r + usize::from(marks.contains_key(p)), t + 1)
+            });
+            wire::TourPillar {
+                id: id.to_string(),
+                title: title.to_string(),
+                description_markdown: description.to_string(),
+                summary_markdown: summary.to_string(),
+                importance: 0,
+                foundation: false,
+                files,
+                reviewed_count: count(reviewed),
+                total_count: count(total),
+            }
+        };
+    let file = |f: &ai::TourFile, related: Vec<wire::TourRelatedFile>| wire::TourFile {
+        path: f.path.clone(),
+        reason: f.reason.clone(),
+        finding_ids: f.finding_ids.clone(),
+        related,
+    };
+    let mut pillars = Vec::new();
+    let branch_scope = matches!(
+        content.tab.mode,
+        DiffMode::Branch | DiffMode::Tour | DiffMode::PrDiff
+    );
+    let in_diff: HashSet<&str> = content.diff.files.iter().map(|f| f.path.as_str()).collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    for p in tour.ordered_pillars() {
+        let mut files = Vec::new();
+        for f in &p.files {
+            if !branch_scope {
+                files.push(file(f, Vec::new()));
+                continue;
+            }
+            if !in_diff.contains(f.path.as_str()) || !seen.insert(f.path.clone()) {
+                continue;
+            }
+            let mut related = Vec::new();
+            for r in &f.related {
+                if in_diff.contains(r.path.as_str()) && seen.insert(r.path.clone()) {
+                    related.push(wire::TourRelatedFile {
+                        path: r.path.clone(),
+                        kind: r.kind.clone(),
+                        reason: r.reason.clone(),
+                    });
+                }
+            }
+            files.push(file(f, related));
+        }
+        if branch_scope && files.is_empty() {
+            continue;
+        }
+        pillars.push(wire::TourPillar {
+            importance: p.importance,
+            foundation: p.foundation,
+            ..pillar(&p.id, &p.title, &p.description, &p.summary, files)
+        });
+    }
+    if branch_scope {
+        let other: Vec<wire::TourFile> = content
+            .diff
+            .files
+            .iter()
+            .filter(|f| !seen.contains(&f.path))
+            .map(|f| wire::TourFile {
+                path: f.path.clone(),
+                reason: String::new(),
+                finding_ids: Vec::new(),
+                related: Vec::new(),
+            })
+            .collect();
+        if !other.is_empty() {
+            let text = "Files not assigned to a tour pillar.";
+            pillars.push(pillar("__other__", "Other changes", text, text, other));
+        }
+    }
+    wire::Tour {
+        available: true,
+        fresh: !ai.tour_stale,
+        scope: scope.to_string(),
+        title: tour.title.clone(),
+        overview_markdown: tour.overview.clone(),
+        pillars,
+        created_at: tour.created_at.clone(),
+        diff_hash: tour.diff_hash.clone(),
+    }
+}
+
+/// What the other view's bucket holds, against the diff on screen.
+fn other_bucket(
+    other: &OtherBucketFacts,
+    shown_tour: Option<&ErTour>,
+    active_hashes: &[&str],
+) -> wire::OtherBucket {
+    let matches = |hash: &str| !hash.is_empty() && active_hashes.contains(&hash);
+    // The tour on screen is that bucket's when it is the same file: the hash
+    // alone could match a tour generated separately in each bucket.
+    let tour_shared = match (&other.tour, shown_tour) {
+        (Some((hash, created, _)), Some(shown)) => {
+            *hash == shown.diff_hash && *created == shown.created_at
+        }
+        _ => false,
+    };
+    let same_diff = [&other.triage_hash, &other.review_hash]
+        .into_iter()
+        .flatten()
+        .chain(other.tour.as_ref().map(|(hash, _, _)| hash))
+        .any(|hash| matches(hash));
+    wire::OtherBucket {
+        view: other.view.to_string(),
+        has_triage: other.triage_hash.is_some(),
+        has_review: other.review_hash.is_some(),
+        finding_count: count(other.finding_count),
+        pillar_count: count(other.tour.as_ref().map_or(0, |(_, _, n)| *n)),
+        tour_shared,
+        same_diff,
+    }
 }
