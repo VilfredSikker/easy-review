@@ -262,8 +262,7 @@ fn annotations_version(state: &AppState, (key, _): &(TabKey, TabDescriptor)) -> 
     }
 }
 
-/// One service question moves `annotations(tab)` once: the tick after it
-/// reads the workspace's own write as nothing new.
+/// One service question moves `annotations(tab)` once; the next tick reads it as nothing new.
 #[test]
 fn a_service_question_moves_the_annotations_once_across_the_next_tick() {
     with_storage(|dir| {
@@ -303,8 +302,7 @@ fn a_service_question_moves_the_annotations_once_across_the_next_tick() {
     });
 }
 
-/// A question an outside writer leaves in the view's bucket moves
-/// `annotations(tab)` through the tick, with no frontend call.
+/// A question an outside writer leaves in the bucket moves `annotations(tab)` through the tick.
 #[test]
 fn an_outside_question_moves_the_annotations_through_the_tick() {
     with_storage(|dir| {
@@ -342,8 +340,7 @@ fn annotations(
     }
 }
 
-/// A promotion an outside writer records reaches the finding through the
-/// tick: the reload reads `finding-promotions.json` again with the AI state.
+/// An outside promotion reaches the finding through the tick's reload of `finding-promotions.json`.
 #[test]
 fn an_outside_promotion_reaches_the_finding_through_the_tick() {
     with_storage(|dir| {

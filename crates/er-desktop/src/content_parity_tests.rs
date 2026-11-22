@@ -269,8 +269,8 @@ struct Observed {
     /// names them: from the snapshot on the App's side, from the resource
     /// builders on the other.
     resource: Value,
-    /// The snapshot's `ai`, `tour` and `other_bucket` on the App's side,
-    /// `annotations(tab)` on the other.
+    /// The snapshot's `ai`, `tour` and `other_bucket` on the App's side, `annotations(tab)`
+    /// on the other.
     annotations: Value,
 }
 
@@ -441,11 +441,9 @@ fn observe(read: Read<'_>, er_dir: &str) -> anyhow::Result<Observed> {
 }
 
 /// A review against an older diff with a high-risk file, a tour, a painted
-/// question on a line the fixture moved, a note, a note's reply to a comment
-/// that comes before the comment's own reply in time order, and marks: one
-/// current, one changed, one orphaned. A local PR tab's other view gets a
-/// bucket of its own, by `write_other_bucket`. `current` is the hash of the
-/// diff on screen.
+/// question on a moved line, a note, a note's reply ordered before the comment's own
+/// reply, and marks: one current, one changed, one orphaned. A local PR tab's other view
+/// gets its own bucket, by `write_other_bucket`. `current` is the hash of the diff on screen.
 fn write_fixture(
     resolved: &ResolvedTab,
     git: &dyn er_git::Git,
@@ -633,8 +631,7 @@ fn write_other_bucket(dir: &Path, other_is_branch: bool, current: &str) -> anyho
 }
 
 thread_local! {
-    /// The diff hash the fixture's review and triage name; the older diff's
-    /// unless a test sets the one on screen.
+    /// The diff hash the fixture's review and triage name, unless a test sets the on-screen one.
     static FRESH_REVIEW: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -951,8 +948,8 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
     }
 }
 
-/// `annotations(tab)` against the snapshot's `ai`, `tour` and
-/// `other_bucket`, naming the fields that differ.
+/// `annotations(tab)` against the snapshot's `ai`, `tour` and `other_bucket`, naming the
+/// fields that differ.
 fn assert_annotations(service: &Value, app: &Value, case: &str) {
     for part in ["tour", "other_bucket"] {
         assert_eq!(
@@ -1092,8 +1089,7 @@ fn assert_parity(kind: TabKind, mode: DiffMode) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A review of the diff on screen regrades triage's call from the projected
-/// findings, which both readers must agree on as well.
+/// A review of the diff on screen regrades triage's call; both readers must agree on it.
 #[test]
 fn a_review_of_the_diff_on_screen_regrades_triage_alike() -> anyhow::Result<()> {
     let hash = er_engine::ai::compute_diff_hash(&raw(false));
