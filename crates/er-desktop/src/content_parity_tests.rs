@@ -378,8 +378,9 @@ fn observe(read: Read<'_>, er_dir: &str) -> anyhow::Result<Observed> {
 }
 
 /// A review against an older diff with a high-risk file, a tour, a painted
-/// question on a line the fixture moved, a note, and marks: one current, one
-/// changed, one orphaned.
+/// question on a line the fixture moved, a note, a note's reply to a comment
+/// that comes before the comment's own reply in time order, and marks: one
+/// current, one changed, one orphaned.
 fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Result<String> {
     let id = resolved.identity();
     let er_dir = id
@@ -428,6 +429,9 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
             "version": 1, "diff_hash": "older", "notes": [{
                 "id": "n-1", "file": "src/a.rs", "hunk_index": 0, "line_start": 2,
                 "line_content": "a-new", "text": "check", "resolved": false
+            }, {
+                "id": "n-reply", "file": "src/a.rs", "text": "Still off",
+                "in_reply_to": "c-1", "timestamp": "t4"
             }]
         }),
     );
@@ -827,6 +831,19 @@ fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
         let listed = ai[part].as_array().is_some_and(|rows| !rows.is_empty());
         assert!(listed, "{case}: no {part} in the annotations");
     }
+    // The note's reply to c-1 is read before the comment's, at a later time.
+    let thread = ai["threads"]
+        .as_array()
+        .and_then(|threads| threads.iter().find(|t| t["id"] == "c-1"));
+    let replies: Vec<&Value> = thread
+        .and_then(|t| t["replies"].as_array())
+        .map(|rows| rows.iter().map(|r| &r["id"]).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        replies,
+        ["c-2", "n-reply"],
+        "{case}: c-1's replies, oldest first"
+    );
     assert!(app.tour != Value::Null, "{case}: the tour did not load");
     assert!(app.staleness.0, "{case}: the older review was not stale");
     let document = app
