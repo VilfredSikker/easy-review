@@ -60,10 +60,11 @@ export const OPTIMISTIC_COMMANDS = [
 export type OptimisticCommand = (typeof OPTIMISTIC_COMMANDS)[number];
 
 /**
- * The global ops' commands. With the flag on the server applies the pin cap,
- * the dismissed filter and each inbox read or clear, and counts the unread
- * items; the `prs` and `inbox` pushes show the result, so these leave the
- * optimistic path and paint nothing (A8).
+ * The global ops' commands and the bulk reviews. With the flag on the server
+ * applies the pin cap, the dismissed filter and each inbox read or clear,
+ * counts the unread items and the reviewed files; the `prs`, `inbox` and
+ * `reviewed(tab)` pushes show the result, so these leave the optimistic path
+ * and paint nothing (A8).
  */
 const SNAPSHOT_PATH_ONLY: ReadonlySet<string> = new Set([
   "save_pr",
@@ -75,6 +76,8 @@ const SNAPSHOT_PATH_ONLY: ReadonlySet<string> = new Set([
   "mark_all_inbox_read",
   "clear_read_inbox_items",
   "clear_inbox_items",
+  "bulk_review_pillar",
+  "unbulk_review_pillar",
 ]);
 
 export function isOptimisticCommand(

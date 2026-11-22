@@ -49,14 +49,14 @@ fn ports() -> er_engine::ports::Ports {
     er_engine::ports::Ports { git, github }
 }
 
-fn state(dir: &ReviewFlowTestDir) -> AppState {
+pub(super) fn state(dir: &ReviewFlowTestDir) -> AppState {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_settings_path(ports(), settings));
     state
 }
 
-fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
+pub(super) fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
     let dir = ReviewFlowTestDir::new();
     let storage = dir.path().join("storage");
     er_engine::storage::with_process_test_storage_root(storage, || test(&dir));
@@ -126,7 +126,7 @@ fn assert_one_key(state: &AppState, step: &str) -> TabKey {
     active
 }
 
-fn kinds(dir: &ReviewFlowTestDir) -> Vec<(&'static str, TabDescriptor)> {
+pub(super) fn kinds(dir: &ReviewFlowTestDir) -> Vec<(&'static str, TabDescriptor)> {
     let root = dir_in(dir, "repo");
     let mut branch = content_routes::working_tab(root.clone());
     branch.kind = TabKind::LocalBranch;
@@ -655,8 +655,9 @@ fn a_paint_is_refused_while_the_app_lags_the_registry() {
 /// `route_annotation` checks the App's tab against the registry's, so while
 /// the App still shows the tab the registry left, a write sent through it is
 /// refused, and the registry's new tab keeps its mark. `reply_to_github_thread`
-/// sends through it. The reviewed writes do not: they send without the
-/// painted tab's key, so the unmark here is only a write whose effect the
+/// sends through it. The reviewed writes do not: on `er_send` they carry the
+/// painted tab's key (`reviewed_resource_tests`), and the old commands stay
+/// unkeyed until P62.2, so the unmark here is only a write whose effect the
 /// marks show.
 #[test]
 fn route_annotation_refuses_a_write_while_the_app_lags_the_registry() {

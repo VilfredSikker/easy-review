@@ -26,6 +26,7 @@ use crate::content::{
 };
 use crate::freshness::RemoteTips;
 use crate::handle::WorkspaceError;
+use crate::history::{own_diff, HistoryInput};
 use crate::protocol::{OpenTarget, TabContext};
 use crate::tab_pr::{load_pr, PrLoad};
 use crate::workspace::WorkspaceTarget;
@@ -119,6 +120,16 @@ pub(crate) fn first_load(
 ) -> Result<LoadInput, WorkspaceError> {
     let mut resolved = resolve_descriptor(&*deps.ports().git, tab)
         .map_err(|error| failed("resolve the tab", error))?;
+    // A tab opened straight into History returns to the view it opens on.
+    let history = HistoryInput {
+        prev: None,
+        return_mode: er_engine::history::return_mode(
+            resolved.mode,
+            resolved.tour_is_pr,
+            resolved.identity().is_remote(),
+        ),
+        select: None,
+    };
     if let Some(mode) = mode {
         resolved.mode = mode;
     }
@@ -135,6 +146,8 @@ pub(crate) fn first_load(
         refresh_pr: false,
         adopt_head_oid: None,
         tips: RemoteTips::default(),
+        history,
+        prev_meta: None,
     })
 }
 
@@ -166,6 +179,10 @@ pub(crate) struct LoadInput {
     /// What the desktop's probes last posted, measured again against the
     /// loaded diff.
     pub tips: RemoteTips,
+    pub history: HistoryInput,
+    /// The diff the tab held. History, Conflicts and Hidden keep its hashes
+    /// and PR head, as the App keeps them in those views.
+    pub prev_meta: Option<Arc<DiffMeta>>,
 }
 
 /// Fetches a branch view's `origin/<base>` again, so a sync compares against
@@ -224,7 +241,7 @@ pub(crate) fn resolve_base(
 /// reviewed marks that no longer hold.
 pub(crate) fn load_tab(
     deps: &WorkspaceDeps,
-    input: LoadInput,
+    mut input: LoadInput,
 ) -> Result<LoadedTab, WorkspaceError> {
     let ports = deps.ports();
     let git = &*ports.git;
@@ -267,14 +284,32 @@ pub(crate) fn load_tab(
             fetch_branch_base(git, &mut tab);
         }
     }
-    if matches!(
-        tab.mode,
-        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden
-    ) {
-        return Err(WorkspaceError::Failed(format!(
-            "the workspace does not load the {:?} view",
-            tab.mode
-        )));
+    // History, Conflicts and Hidden diff no scope: each loads its own files,
+    // and History's list reads the PR section, so that loads first.
+    let mut own = None;
+    if own_diff(tab.mode) {
+        let preview = input
+            .prev_meta
+            .as_ref()
+            .and_then(|meta| meta.preview_head_oid.clone());
+        let pr = load_pr(
+            deps,
+            &tab,
+            PrLoad {
+                prev: input.prev_pr.as_deref(),
+                force: input.refresh_pr,
+                fetched_commits: fetched_commits.take(),
+                fetched_head: fetched_head.take(),
+                preview_head_oid: preview.as_deref(),
+                adopt_head_oid: input.adopt_head_oid.take(),
+            },
+        );
+        let mut view = crate::history::load(git, &tab, &input.history, &pr.commits);
+        if let Some(head) = view.fetched_head.take() {
+            tab.pr_head_ref = Some(head);
+            pr_refs_fetched = true;
+        }
+        own = Some((view, pr, preview));
     }
     if tab.mode == DiffMode::PrDiff && tab.pr_number.is_none() {
         return Err(WorkspaceError::Failed(
@@ -344,21 +379,29 @@ pub(crate) fn load_tab(
     } else {
         tab.mode.fetch_scope()
     };
-    let (raw, preview_head_oid) = fetch(diff_scope)?;
     let expanded = input.expanded;
-    let mut parsed = diff_load::parse_raw(&raw, &CompactionConfig::default(), |path| {
-        expanded.contains(path)
-    });
-    // An eager parse compacts by pattern alone; the files the user expanded
-    // are parsed in full again, as the App's refresh does.
-    if !parsed.lazy {
-        for file in &mut parsed.files {
-            if file.compacted && expanded.contains(&file.path) {
-                expand_file(deps, &tab, &raw, &parsed.headers, file)
-                    .map_err(|error| failed("expand a file", error))?;
+    let (raw, preview_head_oid, parsed, history, own_pr) = match own {
+        Some((view, pr, preview)) => (view.raw, preview, view.parsed, view.history, Some(pr)),
+        None => {
+            let (raw, preview_head_oid) = fetch(diff_scope)?;
+            let mut parsed = diff_load::parse_raw(&raw, &CompactionConfig::default(), |path| {
+                expanded.contains(path)
+            });
+            // An eager parse compacts by pattern alone; the files the user
+            // expanded are parsed in full again, as the App's refresh does.
+            if !parsed.lazy {
+                for file in &mut parsed.files {
+                    if file.compacted && expanded.contains(&file.path) {
+                        expand_file(deps, &tab, &raw, &parsed.headers, file)
+                            .map_err(|error| failed("expand a file", error))?;
+                    }
+                }
             }
+            let history = input.history.prev.clone();
+            (raw, preview_head_oid, parsed, history, None)
         }
-    }
+    };
+    let own_view = own_pr.is_some();
     let stamps = capture_stamps(
         git,
         &parsed.files,
@@ -384,14 +427,24 @@ pub(crate) fn load_tab(
     } else {
         ScopeStats::default()
     };
-    let diff_hash = ai::compute_diff_hash(&raw);
+    // The views with their own diff keep the hashes the AI state was read
+    // against, as the App does.
+    let diff_hash = if own_view {
+        input
+            .prev_meta
+            .as_ref()
+            .map(|meta| meta.diff_hash.clone())
+            .unwrap_or_default()
+    } else {
+        ai::compute_diff_hash(&raw)
+    };
     // A tour entered from the branch view walks the branch diff itself.
     let raw_is_branch_diff = is_remote_pr
         || tab.mode == DiffMode::Branch
         || (tab.mode == DiffMode::Tour && !tab.tour_is_pr);
     // A plain tab's other views need a second git call for the branch diff,
     // which only AI data, questions or a tour consume.
-    let fetched_branch = if !branch_view && !raw_is_branch_diff && held_ai {
+    let fetched_branch = if !own_view && !branch_view && !raw_is_branch_diff && held_ai {
         Some(
             git.diff_raw(
                 "branch",
@@ -404,7 +457,7 @@ pub(crate) fn load_tab(
     } else {
         None
     };
-    let branch_raw = if branch_view {
+    let branch_raw = if branch_view || own_view {
         None
     } else if raw_is_branch_diff {
         Some(raw.as_str())
@@ -420,8 +473,9 @@ pub(crate) fn load_tab(
     let dirs = stamped_dirs(&er_dir, &comments_dir, &id, git);
     let (ai_stamp, mut state) =
         read_stamped(dirs, |stamp| reload(stamp, &diff_hash, &branch_diff_hash));
-    // A branch view's refresh follows neither comments nor findings.
-    if !branch_view {
+    // A branch view's refresh follows neither comments nor findings, and
+    // neither does a view with its own diff.
+    if !branch_view && !own_view {
         tab_refresh::relocate_all_comments(
             &mut state,
             &parsed.files,
@@ -439,7 +493,7 @@ pub(crate) fn load_tab(
     }
 
     let file_hashes = diff_load::reviewed_file_hashes(&raw, &marks);
-    let cleared = if input.auto_unmark {
+    let cleared = if input.auto_unmark && !own_view {
         clear_moved_marks(
             &mut marks,
             &file_hashes,
@@ -452,18 +506,22 @@ pub(crate) fn load_tab(
         0
     };
 
-    let pr = load_pr(
-        deps,
-        &tab,
-        PrLoad {
-            prev: input.prev_pr.as_deref(),
-            force: input.refresh_pr,
-            fetched_commits,
-            fetched_head,
-            preview_head_oid: preview_head_oid.as_deref(),
-            adopt_head_oid: input.adopt_head_oid,
-        },
-    );
+    let pr = match own_pr {
+        Some(pr) => pr,
+        None => load_pr(
+            deps,
+            &tab,
+            PrLoad {
+                prev: input.prev_pr.as_deref(),
+                force: input.refresh_pr,
+                fetched_commits,
+                fetched_head,
+                preview_head_oid: preview_head_oid.as_deref(),
+                adopt_head_oid: input.adopt_head_oid,
+            },
+        ),
+    };
+    let commits = crate::history::scroller(git, &tab, history.as_deref(), &pr.commits);
     let freshness = crate::freshness::measure(git, &tab, input.tips, scope_stats.unstaged.0);
     let context = TabContext {
         er_dir,
@@ -502,6 +560,7 @@ pub(crate) fn load_tab(
                 scope_stats,
                 rules_key,
                 risk_artifact,
+                commits,
             },
             expanded,
         },
@@ -511,6 +570,7 @@ pub(crate) fn load_tab(
         ai_stamp,
         pr,
         freshness,
+        history,
         cleared,
     })
 }
