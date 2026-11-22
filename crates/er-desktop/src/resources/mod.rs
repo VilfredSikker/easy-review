@@ -17,6 +17,8 @@ pub mod hunks;
 #[cfg(feature = "v1-service")]
 pub mod notice;
 #[cfg(feature = "v1-service")]
+pub mod preview;
+#[cfg(feature = "v1-service")]
 pub mod relay;
 #[cfg(feature = "v1-service")]
 pub mod reviewed;
