@@ -1,5 +1,5 @@
 // The diff overlay lays the file rows down first; the marks go over them.
-import "./diffResource.svelte";
+import { diffResource } from "./diffResource.svelte";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import { app } from "./app.svelte";
@@ -14,6 +14,7 @@ export const reviewedResource = new ReviewedAdapter({
   flagOn,
   store: resources,
   activeKey: () => tabsResource.activeKey,
+  rowsHeld: () => diffResource.held() !== null,
 });
 
 function showReviewed(key: TabKey | null): (() => void) | undefined {

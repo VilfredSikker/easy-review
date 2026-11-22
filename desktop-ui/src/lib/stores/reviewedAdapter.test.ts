@@ -80,8 +80,8 @@ function backend(held: { version: number; value: TabReviewed }, { shown = true }
   };
 }
 
-function adapter(store: ResourceStore, flagOn = true) {
-  return new ReviewedAdapter({ flagOn, store, activeKey: () => KEY });
+function adapter(store: ResourceStore, flagOn = true, rowsHeld: () => boolean = () => true) {
+  return new ReviewedAdapter({ flagOn, store, activeKey: () => KEY, rowsHeld });
 }
 
 const flags = (snap: AppSnapshot) => snap.files.map((f) => [f.path, f.reviewed]);
@@ -166,6 +166,32 @@ describe("ReviewedAdapter", () => {
     await settle();
     const write = reviewed.route("mark_reviewed", { path: "src/a.rs" });
     expect(backendState.sent).toEqual([{ kind: "mark_reviewed", tab: KEY, path: "src/a.rs", reviewed: true }]);
+    backendState.ack(4, marks(["src/a.rs"], 1));
+    await write;
+  });
+
+  it("sends no single-file write while reviewed(tab) is held and diff(tab) is not, so a click never names the old tab's row", async () => {
+    // Right after a tab switch, reviewed(tab) has answered and diff(tab) has not:
+    // the rows the page draws can still be the tab the registry left.
+    const backendState = backend({ version: 3, value: marks([], 0) });
+    await settle();
+    let rows = false;
+    const reviewed = adapter(backendState.store, true, () => rows);
+    expect(reviewed.held()).not.toBeNull();
+
+    const writes = (["mark_reviewed", "unmark_reviewed", "toggle_reviewed"] as const).map((command) =>
+      reviewed.route(command, { path: "src/a.rs" }),
+    );
+    expect(backendState.sent).toEqual([]);
+    for (const write of writes) {
+      expect(write).not.toBeNull();
+      await expect(write ?? Promise.resolve()).rejects.toThrow("not loaded yet");
+    }
+    expect(flags(reviewed.overlay(snapshot()))[0]).toEqual(["src/a.rs", false]);
+
+    rows = true;
+    const write = reviewed.route("toggle_reviewed", { path: "src/a.rs" });
+    expect(backendState.sent).toEqual([{ kind: "toggle_reviewed", tab: KEY, path: "src/a.rs" }]);
     backendState.ack(4, marks(["src/a.rs"], 1));
     await write;
   });

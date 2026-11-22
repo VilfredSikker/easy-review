@@ -19,6 +19,8 @@ interface ReviewedAdapterDeps {
   store: Pick<ResourceStore, "get" | "send" | "whenAt">;
   /** The registry's active tab, the one the page paints. */
   activeKey: () => TabKey | null;
+  /** Whether `diff(tab)` is held for the active key, so the rows the page draws are that tab's, in every mode. */
+  rowsHeld: () => boolean;
 }
 
 /** A tab key is a number, so the first `|` ends it. */
@@ -30,10 +32,12 @@ function pendingId(tab: TabKey, path: string): string {
  * The active tab's reviewed marks and counts: the snapshot's with the flag
  * off, `reviewed(tab)`'s with it on. The server counts (A8); a click's
  * checkmark shows at once and stays pending until its `Ack`'s versions are
- * held, and a refused write takes it back. A write waits for `reviewed(tab)`:
- * until the page paints the active tab's marks, the rows it shows can be the
- * tab the registry left, so a click there would land on the wrong tab. In the views the App loads
- * (History, Conflicts, Hidden) the count stays the snapshot's.
+ * held, and a refused write takes it back. A single-file write waits for both
+ * `reviewed(tab)` and `diff(tab)`: the two are fetched on their own, and until
+ * both are held the rows the page draws can be the tab the registry left, so a
+ * click there would send the new tab's key with the old tab's path, and `r`
+ * could read the wrong direction from the old tab's mark. In the views the App
+ * loads (History, Conflicts, Hidden) the count stays the snapshot's.
  */
 export class ReviewedAdapter {
   /** The checkmarks painted and not yet acknowledged; `click` tells one click's paint from a later one's. */
@@ -97,6 +101,7 @@ export class ReviewedAdapter {
   private async mark(tab: TabKey, path: string, wanted: boolean | null): Promise<void> {
     if (!path) return;
     if (!this.held()) throw new Error("The reviewed marks have not loaded yet");
+    if (!this.deps.rowsHeld()) throw new Error("The active tab's files have not loaded yet");
     const reviewed = wanted ?? !this.shows(tab, path);
     if (wanted !== null && this.shows(tab, path) === wanted) return;
     const id = pendingId(tab, path);
