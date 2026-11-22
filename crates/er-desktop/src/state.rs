@@ -206,11 +206,12 @@ impl AiReplyJobs {
 
     /// Removes each key that is pending; moves the clock when one was.
     pub fn remove<'a>(&self, keys: impl IntoIterator<Item = &'a str>) {
-        let removed = self.replies.lock().is_ok_and(|mut replies| {
-            keys.into_iter().fold(false, |removed, key| {
-                replies.remove(key).is_some() || removed
-            })
-        });
+        let mut removed = false;
+        if let Ok(mut replies) = self.replies.lock() {
+            for key in keys {
+                removed |= replies.remove(key).is_some();
+            }
+        }
         if removed {
             self.clock.bump();
         }
