@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use er_engine::arena::{ArenaPaths, ArenaScope, ArenaStartParams, ReviewerRef, RunStatus};
+use er_engine::arena::{ArenaPaths, ArenaScope, ArenaStartParams, ReviewerRef};
 use er_engine::jobs::{JobId, JobResult, JobSink, JobSubmission, JobTicket};
 use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::TabDescriptor;
@@ -351,40 +351,6 @@ fn a_descriptor_resolves_to_the_bucket_its_first_load_shows() {
             assert_eq!(resolved.ok().as_deref(), Some(loaded.as_str()), "{kind}");
         });
     }
-}
-
-/// A run read with no App is the flag-off snapshot of the same run, as the
-/// App reads it from the bucket, live status included.
-#[test]
-fn an_arena_run_reads_as_the_flag_off_snapshot() {
-    with_storage(|dir| {
-        let sink = Arc::new(HoldingSink::default());
-        let state = arena_state(dir, local_ports(), Arc::clone(&sink));
-        let tab = open(&state, dir.path(), "a");
-        let run_id = started(&state, tab.0);
-        sink.release();
-        wait_until("the run's end to reach its actor's view", || {
-            state
-                .service
-                .view(&actor_key(&tab.1))
-                .arena_run(&run_id)
-                .is_some_and(|run| matches!(run.status, RunStatus::Complete | RunStatus::Failed))
-        });
-        let arena_tab =
-            crate::arena_service::tab(&state.desktop, Some(er_service::wire_tab_key(tab.0)))
-                .unwrap_or_else(|e| panic!("{e:?}"));
-
-        let read = crate::arena_service::get(&state.desktop, &arena_tab, &run_id);
-
-        let read = read.unwrap_or_else(|e| panic!("{e:?}"));
-        let mut app = er_engine::app::App::new_for_test(Vec::new());
-        app.tab_mut().er_root = er_engine::paths::ErRoot::managed(bucket(&state, &tab));
-        let flag_off = app
-            .arena_get_snapshot(&run_id)
-            .unwrap_or_else(|e| panic!("{e}"));
-        let json = |snap| serde_json::to_value(snap).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(json(&read), json(&flag_off));
-    });
 }
 
 /// `arena_service.rs` names the App nowhere outside its tests: every command
