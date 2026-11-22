@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    AvailableBranches, AvailablePrs, Branches, FileHunks, Inbox, Panels, Projects, Prs, Risk,
-    Session, Settings, TabDiff, TabReviewed, TabRow, TabView, Worktrees,
+    AvailableBranches, AvailablePrs, Branches, DiffPaths, FileHunks, FilePreview, ImagePreview,
+    Inbox, Panels, Projects, Prs, Risk, Session, Settings, TabDiff, TabReviewed, TabRow, TabView,
+    Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -73,6 +74,22 @@ pub enum ResourceKey {
     },
     /// One open tab's reviewed marks and counts, by its key.
     Reviewed { tab: TabKey },
+    /// A document's text in a tab's view, read on each fetch. `context` is
+    /// the preview context key the page holds; a view that moved since
+    /// answers `Stale`.
+    FilePreview {
+        tab: TabKey,
+        path: String,
+        context: String,
+    },
+    /// Both sides of an image change in a tab's view, as `FilePreview`.
+    ImagePreview {
+        tab: TabKey,
+        path: String,
+        context: String,
+    },
+    /// Every path a tab's diff holds, read on each fetch.
+    DiffPaths { tab: TabKey },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -95,6 +112,9 @@ pub enum Resource {
     Diff(Box<TabDiff>),
     Hunks(FileHunks),
     Reviewed(TabReviewed),
+    FilePreview(FilePreview),
+    ImagePreview(ImagePreview),
+    DiffPaths(DiffPaths),
 }
 
 /// The open tabs in strip order, and the active one.

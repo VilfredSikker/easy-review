@@ -217,7 +217,8 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::SyncBranch { .. }
         | wire::Command::ToggleReviewed { .. }
         | wire::Command::MarkReviewed { .. }
-        | wire::Command::BulkReviewPillar { .. }) => return Err(Box::new(other)),
+        | wire::Command::BulkReviewPillar { .. }
+        | wire::Command::SetFileCompacted { .. }) => return Err(Box::new(other)),
     })
 }
 

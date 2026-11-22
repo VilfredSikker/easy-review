@@ -227,6 +227,14 @@ describe("resource source scans", () => {
     expect(code.replace(/\blocalStorage\.(getItem|setItem)\(/g, "")).not.toMatch(/\b(localStorage|sessionStorage)\b/);
   });
 
+  it("with the flag on the previews and the path list read the tab's content through er_fetch", () => {
+    const wiring = read("lib/stores/diffResource.svelte.ts");
+    expect(wiring).toMatch(/diffPreview\.route\([\s\S]*?kind: "file_preview"/);
+    expect(wiring).toMatch(/imagePreview\.route\([\s\S]*?kind: "image_preview"/);
+    expect(wiring).toMatch(/kind: "diff_paths"/);
+    expect(read("lib/components/AiReviewFilesModal.svelte")).not.toContain('"list_diff_paths"');
+  });
+
   it("a jump to a thread or a finding fetches the target file's hunks before it scrolls", () => {
     const dom = read("lib/dom.ts");
     for (const [from, scroll] of [["navigateToThread", "scrollToThread"], ["navigateToFinding", "scrollToFinding"]]) {
