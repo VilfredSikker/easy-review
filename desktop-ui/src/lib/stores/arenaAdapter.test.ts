@@ -26,6 +26,7 @@ const RUNNING: Resource = {
 
 /** An adapter over a backend that records what it was asked and answers `created`. */
 function adapter(flagOn: boolean, created: string | null = null) {
+  const moved: string[] = [];
   const sent: Command[] = [];
   const fetched: ResourceKey[] = [];
   const invoked: [string, Record<string, unknown>][] = [];
@@ -37,6 +38,7 @@ function adapter(flagOn: boolean, created: string | null = null) {
     flagOn,
     activeKey: () => TAB,
     invoke,
+    runsMoved: () => moved.push(sent.at(-1)?.kind ?? ""),
     store: {
       get: (key: ResourceKey) => (key.kind === JOBS.kind ? { key, version: 3, value: RUNNING } : undefined) as never,
       send: async (command: Command) => {
@@ -52,10 +54,19 @@ function adapter(flagOn: boolean, created: string | null = null) {
       },
     },
   });
-  return { run, sent, fetched, invoked };
+  return { run, sent, fetched, invoked, moved };
 }
 
 describe("ArenaAdapter", () => {
+  it("has the run list read again after a start, an import and a delete, which nothing pushes", async () => {
+    const { run, moved } = adapter(true, "run-1");
+    await run.start({ scope: "branch", reviewers: [FAKE] });
+    await run.acceptFindings("run-1");
+    await run.delete("run-1");
+    await run.cancel("run-1");
+    expect(moved).toEqual(["arena_start", "arena_accept_findings", "arena_delete"]);
+  });
+
   it("calls the Tauri commands with the flag off", async () => {
     const { run, sent, invoked } = adapter(false);
     expect(await run.start({ scope: "branch", reviewers: [FAKE] })).toEqual(["run-old"]);

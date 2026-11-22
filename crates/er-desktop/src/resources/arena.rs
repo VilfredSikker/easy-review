@@ -66,9 +66,13 @@ pub fn estimate(
     Ok((0, Resource::ArenaEstimate(estimate)))
 }
 
-/// The runs in `wire`'s bucket on its branch, newest first.
+/// The runs in `wire`'s bucket on its branch, newest first. A listed tab
+/// nothing has loaded answers none and is sent a load (A3); the page reads
+/// again once its content publishes.
 pub fn runs(desktop: &DesktopState, wire: er_protocol::TabKey) -> Result<(u64, Resource), ErError> {
-    let tab = arena_service::tab(desktop, Some(wire))?;
+    let Some(tab) = arena_service::loaded(desktop, Some(wire))? else {
+        return Ok((0, Resource::ArenaRuns(ArenaRuns::default())));
+    };
     let runs = arena_service::list(desktop, &tab)?
         .iter()
         .map(row)

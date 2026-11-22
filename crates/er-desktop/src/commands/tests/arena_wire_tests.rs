@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use er_engine::TabKey;
 use er_protocol::{
-    ArenaPlan, ArenaReviewer, ArenaRunJob, ArenaRunStatus, Command, Resource, ResourceKey,
+    ArenaPlan, ArenaReviewer, ArenaRunJob, ArenaRunStatus, ArenaRuns, Command, Resource,
+    ResourceKey,
 };
 
 use super::arena_resource_tests::{
@@ -210,6 +211,83 @@ fn an_arena_run_reads_as_its_snapshot_text() {
         let read = read.unwrap_or_else(|e| panic!("{e:?}"));
         let text = serde_json::to_string(&read).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(run.json, text);
+    });
+}
+
+/// A listed tab nothing has loaded answers an empty run list at version 0
+/// and is sent a load, so the page reads again once the content publishes.
+#[test]
+fn an_unloaded_tab_answers_no_runs_and_loads() {
+    with_storage(|dir| {
+        let sink = Arc::new(HoldingSink::default());
+        let state = arena_state(dir, local_ports(), sink);
+        let (key, tab) = super::diff_resource_tests::listed(&state, dir, "a");
+        assert!(
+            state.service.content(key, &tab).is_none(),
+            "the fixture loaded the tab"
+        );
+        let wire = er_service::wire_tab_key(key);
+
+        let fetched = crate::resources::fetch(&state.desktop, ResourceKey::ArenaRuns { tab: wire });
+
+        let fetched = fetched.unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(fetched.version.0, 0);
+        assert_eq!(fetched.value, Resource::ArenaRuns(ArenaRuns::default()));
+        wait_until("the load the read posted", || {
+            state.service.content(key, &tab).is_some()
+        });
+    });
+}
+
+/// `arena_runs` lists what the flag-off App lists for the same bucket and
+/// branch, newest first.
+#[test]
+fn the_run_list_matches_the_flag_off_list() {
+    with_storage(|dir| {
+        let sink = Arc::new(HoldingSink::default());
+        let state = arena_state(dir, local_ports(), Arc::clone(&sink));
+        sink.release();
+        let tab = open(&state, dir.path(), "a");
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let run_id = started(&state, tab.0);
+            wait_until("the run to end and leave its bucket", || {
+                jobs(&state)
+                    .1
+                    .iter()
+                    .any(|run| run.run_id == run_id && ended(run))
+                    && er_engine::arena::check_bucket_admission(&bucket(&state, &tab)).is_ok()
+            });
+            ids.push(run_id);
+        }
+        let wire = er_service::wire_tab_key(tab.0);
+
+        let fetched = crate::resources::fetch(&state.desktop, ResourceKey::ArenaRuns { tab: wire });
+
+        let Ok(Resource::ArenaRuns(listed)) = fetched.map(|f| f.value) else {
+            panic!("not a run list");
+        };
+        let mut app = er_engine::app::App::new_for_test(Vec::new());
+        app.tab_mut().er_root = er_engine::paths::ErRoot::managed(bucket(&state, &tab));
+        let flag_off = app.arena_list_summaries(Some("feature"));
+        let flag_off = flag_off.unwrap_or_else(|e| panic!("{e}"));
+        let rows = |runs: Vec<(String, String, u32)>| runs;
+        assert_eq!(flag_off.len(), 2, "the fixture lists {flag_off:?}");
+        assert_eq!(
+            rows(
+                listed
+                    .runs
+                    .iter()
+                    .map(|r| (r.id.clone(), r.created_at.clone(), r.reviewer_count))
+                    .collect()
+            ),
+            rows(
+                flag_off
+                    .iter()
+                    .map(|s| (s.id.clone(), s.created_at.clone(), s.reviewer_count as u32))
+                    .collect()
+            ),
+        );
     });
 }
 

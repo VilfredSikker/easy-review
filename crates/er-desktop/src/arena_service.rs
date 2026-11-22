@@ -39,6 +39,15 @@ impl ArenaTab {
 /// its published content. A key the registry does not list is `NotFound`; a
 /// listed tab nothing has loaded is sent a load and refused for now.
 pub fn tab(desktop: &DesktopState, wire: Option<er_protocol::TabKey>) -> Result<ArenaTab, ErError> {
+    loaded(desktop, wire)?.ok_or_else(|| error(ErErrorKind::Refused, "The tab has not loaded yet"))
+}
+
+/// Like [`tab`], with none for a listed tab nothing has loaded yet, which is
+/// sent a load, as a read of it answers before the push brings the content.
+pub fn loaded(
+    desktop: &DesktopState,
+    wire: Option<er_protocol::TabKey>,
+) -> Result<Option<ArenaTab>, ErError> {
     let tabs = desktop.service.app_registry().tabs_view();
     let key = match wire {
         Some(wire) => er_service::resolve_tab_key(&tabs, wire)?,
@@ -54,9 +63,9 @@ pub fn tab(desktop: &DesktopState, wire: Option<er_protocol::TabKey>) -> Result<
         .ok_or_else(|| error(ErErrorKind::NotFound, "no open tab has that key"))?;
     let Some(content) = desktop.service.content(entry.key, &entry.descriptor) else {
         desktop.service.request_load(entry.key, &entry.descriptor);
-        return Err(error(ErErrorKind::Refused, "The tab has not loaded yet"));
+        return Ok(None);
     };
-    Ok(ArenaTab { entry, content })
+    Ok(Some(ArenaTab { entry, content }))
 }
 
 /// A listed tab's bucket: its content's when it is loaded, since a loaded tab
@@ -96,6 +105,20 @@ pub fn resolve_effort(config: &ErConfig, requested: Option<&str>) -> Option<Stri
         .resolve_default_selection(&config.agent)
         .effort;
     er_engine::config::resolve_effort(&config.ai_hub, &config.agent, saved.as_deref(), requested)
+}
+
+/// `context` with the tab's own bucket alone, for a read that looks no run
+/// up across tabs. It resolves no unloaded tab's bucket, which costs git
+/// calls a list refetched on every progress tick would repeat.
+fn own_context(tab: &ArenaTab, config: Arc<ErConfig>) -> ArenaContext {
+    let content = &tab.content;
+    ArenaContext {
+        tab: content.context.clone(),
+        branch_ref: content.tab.identity().branch_ref().to_string(),
+        config,
+        buckets: vec![content.context.er_dir.clone()],
+        review_hash: String::new(),
+    }
 }
 
 /// What an arena effect reads from `tab`, from its content and the
@@ -183,7 +206,7 @@ pub fn estimate(
     tab: &ArenaTab,
     plan: &Plan,
 ) -> Result<ArenaDiffPreview, ErError> {
-    let arena = context(desktop, tab, config(desktop));
+    let arena = own_context(tab, config(desktop));
     let plan = er_service::arena::Estimate {
         scope: plan.scope,
         files: plan.files.as_deref(),
@@ -199,7 +222,7 @@ pub fn estimate_batch(
     tab: &ArenaTab,
     params: &ArenaBatchStartParams,
 ) -> Result<ArenaDiffPreview, ErError> {
-    let arena = context(desktop, tab, config(desktop));
+    let arena = own_context(tab, config(desktop));
     er_service::arena::estimate_batch(&desktop.ports, &arena, params).map_err(failed)
 }
 
@@ -287,7 +310,7 @@ pub fn get(
 }
 
 pub fn list(desktop: &DesktopState, tab: &ArenaTab) -> Result<Vec<ArenaRunSummary>, ErError> {
-    let arena = context(desktop, tab, config(desktop));
+    let arena = own_context(tab, config(desktop));
     er_service::arena::read_runs(&arena).map_err(failed)
 }
 

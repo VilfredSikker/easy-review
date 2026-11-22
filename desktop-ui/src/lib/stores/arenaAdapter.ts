@@ -43,6 +43,8 @@ interface ArenaAdapterDeps {
   /** The registry's active tab, the one the page paints. */
   activeKey: () => TabKey | null;
   invoke: Invoke;
+  /** Called after a write that changes the active tab's run list, which nothing pushes. */
+  runsMoved?: () => void;
 }
 
 function reviewer(ref: ReviewerRef): ArenaReviewer {
@@ -117,6 +119,13 @@ export class ArenaAdapter {
     return (await this.deps.store.send(command)).created;
   }
 
+  /** Sends a write that adds or removes a run, then has the run list read again. */
+  private async sendMoving(command: Command): Promise<string | null> {
+    const created = await this.send(command);
+    this.deps.runsMoved?.();
+    return created;
+  }
+
   /** The live runs `jobs` holds; empty with the flag off. */
   liveRuns(): ArenaRunJob[] {
     const held = this.deps.flagOn ? this.deps.store.get(JOBS)?.value : undefined;
@@ -154,7 +163,7 @@ export class ArenaAdapter {
       if (req.groups?.length) return this.deps.invoke<string[]>("arena_start_batch", { req });
       return [await this.deps.invoke<string>("arena_start", { req })];
     }
-    const created = await this.send({
+    const created = await this.sendMoving({
       kind: "arena_start",
       tab: this.tab(),
       plan: plan(req),
@@ -178,7 +187,7 @@ export class ArenaAdapter {
         req: { run_id: runId, finding_ids: findingIds },
       });
     }
-    const created = await this.send({
+    const created = await this.sendMoving({
       kind: "arena_accept_findings",
       tab: this.tab(),
       runId,
@@ -220,7 +229,7 @@ export class ArenaAdapter {
       await this.deps.invoke("arena_delete", { runId });
       return;
     }
-    await this.send({ kind: "arena_delete", tab: this.tab(), runId });
+    await this.sendMoving({ kind: "arena_delete", tab: this.tab(), runId });
   }
 
   /** Records the reviewer's verdict, then reads the run back. */
