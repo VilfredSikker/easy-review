@@ -3,7 +3,8 @@ import { app } from "$lib/stores/app.svelte";
 import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { diffPreview } from "$lib/stores/diffPreview.svelte";
-import type { FlatFinding, ThreadSnapshot } from "$lib/types";
+import { loadHashedHunks } from "$lib/stores/diffResource.svelte";
+import type { FileSnapshot, FlatFinding, ThreadSnapshot } from "$lib/types";
 
 /**
  * Scroll an element into view and pulse its outline.
@@ -55,6 +56,7 @@ export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
       await app.cmd("toggle_compacted");
       await tick();
     }
+    await loadStub(fileSnap);
   }
   const didScroll = await diffNav.scrollToThread(thread.id);
   if (didScroll) return;
@@ -63,6 +65,12 @@ export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
   if (owningFinding) {
     await diffNav.scrollToFinding(owningFinding.id, { flashId: `finding-${owningFinding.id}` });
   }
+}
+
+/** Fetches a target file's hunks when the page draws it by hash and has not yet, so its rows exist to scroll to. */
+async function loadStub(file: FileSnapshot | undefined): Promise<void> {
+  if (!file?.is_lazy_stub) return;
+  if (await loadHashedHunks([file])) await tick();
 }
 
 /**
@@ -89,6 +97,7 @@ export async function navigateToFinding(finding: FlatFinding): Promise<void> {
       await app.cmd("toggle_compacted");
       await tick();
     }
+    await loadStub(fileSnap);
   }
   await diffNav.scrollToFinding(finding.id, { flashId: `finding-${finding.id}` });
 }

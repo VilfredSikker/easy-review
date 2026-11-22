@@ -226,4 +226,13 @@ describe("resource source scans", () => {
     expect(new Set(keys)).toEqual(new Set(["RIGHT_PANEL_STORAGE_KEY", "DRAWER_STORAGE_KEY"]));
     expect(code.replace(/\blocalStorage\.(getItem|setItem)\(/g, "")).not.toMatch(/\b(localStorage|sessionStorage)\b/);
   });
+
+  it("a jump to a thread or a finding fetches the target file's hunks before it scrolls", () => {
+    const dom = read("lib/dom.ts");
+    for (const [from, scroll] of [["navigateToThread", "scrollToThread"], ["navigateToFinding", "scrollToFinding"]]) {
+      const start = dom.indexOf(`export async function ${from}(`);
+      const body = dom.slice(start, dom.indexOf("\n}\n", start));
+      expect(body).toMatch(new RegExp(`await loadStub\\(fileSnap\\);[\\s\\S]*diffNav\\.${scroll}\\(`));
+    }
+  });
 });

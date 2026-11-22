@@ -18,6 +18,7 @@ const loader = new HunkLoader({
   changed: () => {
     revision += 1;
   },
+  report: (e) => console.warn(`[hunks] ${e.kind}: ${e.message}`),
 });
 
 /** The hunks the page holds by hash, and the fetch of the ones it shows and lacks. Flag-on only. */
