@@ -24,8 +24,8 @@ use crate::{spawn, WorkspaceHandle};
 
 mod gaps;
 mod hunks;
-mod stamps;
 mod reviewed;
+mod stamps;
 
 const RAW: &str = "\
 diff --git a/src/a.rs b/src/a.rs
