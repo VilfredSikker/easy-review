@@ -34,6 +34,7 @@ mod jobs;
 mod pending_review;
 mod pr_posts;
 mod protocol;
+mod reviewed_resource;
 mod settings;
 mod settings_wire;
 mod sidecar_reload;
@@ -62,6 +63,9 @@ pub use protocol::{
     AcceptanceDiff, AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event,
     FlowCommand, FlowContext, JobOutcome, OpenTarget, PrRef, Reply, ReviewEvent, ReviewLineTarget,
     SyncSource, TabContext,
+};
+pub use reviewed_resource::{
+    content_view, painted_view_matches, reviewed_resource, reviewed_version,
 };
 pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
 pub use settings_wire::{risk_resource, settings_command, settings_resource};

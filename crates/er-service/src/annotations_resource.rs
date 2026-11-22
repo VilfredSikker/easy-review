@@ -776,3 +776,6 @@ fn other_bucket(
         same_diff,
     }
 }
+
+#[cfg(test)]
+mod tests;

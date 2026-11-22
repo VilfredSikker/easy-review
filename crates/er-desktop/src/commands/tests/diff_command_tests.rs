@@ -12,7 +12,7 @@ use super::while_the_app_is_locked;
 use crate::commands::{content_routes, AppState};
 use crate::resources::send::{apply, Effects};
 
-fn with_tab(test: impl FnOnce(&AppState, (TabKey, TabDescriptor))) {
+pub(super) fn with_tab(test: impl FnOnce(&AppState, (TabKey, TabDescriptor))) {
     with_storage(|dir| {
         let state = state_over(dir, fake_ports());
         let root = dir.path().join("repo");
@@ -28,7 +28,7 @@ fn with_tab(test: impl FnOnce(&AppState, (TabKey, TabDescriptor))) {
     });
 }
 
-fn send(state: &AppState, name: &'static str, command: Command) -> Result<Ack, ErError> {
+pub(super) fn send(state: &AppState, name: &'static str, command: Command) -> Result<Ack, ErError> {
     while_the_app_is_locked(state, name, move |state| {
         let effects = Effects {
             notify: &|_, _| {},
@@ -41,7 +41,7 @@ fn send(state: &AppState, name: &'static str, command: Command) -> Result<Ack, E
     })
 }
 
-fn diff(state: &AppState, key: TabKey) -> (u64, TabDiff) {
+pub(super) fn diff(state: &AppState, key: TabKey) -> (u64, TabDiff) {
     let key = ResourceKey::Diff {
         tab: er_service::wire_tab_key(key),
     };

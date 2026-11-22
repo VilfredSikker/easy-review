@@ -47,3 +47,12 @@ Split ratio, annotate mode, tooltips and panels stay in memory, as before.
   before a snapshot build takes it again.
 - Source-scan tests keep the six fields out of the engine and the service, and
   keep the view-state module from writing to disk.
+- Selection and navigation live in desktop-ui on the `v1-service` path (P57,
+  ADDENDUM-06's A10). The selected file and hunk are page state, and
+  `select_file`, `next_file`, `prev_file`, `next_hunk`, `prev_hunk` and
+  `jump_to_unreviewed` run as functions over `diff(tab)` and `reviewed(tab)`
+  (`desktop-ui/src/lib/navigation.ts`), so a key press makes no IPC call. This
+  moves the desktop's copy ahead of D20's phase 5b, because the App leaves
+  er-desktop in phase 5. The engine's `navigation` functions stay for the TUI,
+  and one fixture (`crates/er-engine/tests/fixtures/navigation_cases.json`)
+  holds both to the same answers, so the two cannot drift.

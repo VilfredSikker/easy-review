@@ -24,6 +24,7 @@ use crate::{spawn, WorkspaceHandle};
 
 mod gaps;
 mod hunks;
+mod reviewed;
 mod stamps;
 
 const RAW: &str = "\
