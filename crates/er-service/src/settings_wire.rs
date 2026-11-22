@@ -232,7 +232,15 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::PromoteToNote { .. }
         | wire::Command::PromoteToComment { .. }
         | wire::Command::PromoteFindingToComment { .. }
-        | wire::Command::ReplyToFinding { .. }) => return Err(Box::new(other)),
+        | wire::Command::ReplyToFinding { .. }
+        | wire::Command::DismissFinding { .. }
+        | wire::Command::SetFindingResolved { .. }
+        | wire::Command::RemoveFindingThread { .. }
+        | wire::Command::UpdateFindingResponse { .. }
+        | wire::Command::DeleteFindingResponse { .. }
+        | wire::Command::ToggleChecklistItem { .. }
+        | wire::Command::DeleteReviewArtifact { .. }
+        | wire::Command::DeleteDiagram { .. }) => return Err(Box::new(other)),
     })
 }
 
