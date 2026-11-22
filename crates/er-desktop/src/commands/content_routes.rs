@@ -595,6 +595,28 @@ pub(crate) fn write_keyed(
     Ok(())
 }
 
+/// Sends an annotation write the page painted on `key` to that tab's own
+/// workspace, with the context of its content, whichever tab the registry
+/// has active: a tab the page still shows is written, the one it left is
+/// not. Refused when the content shows another view than `view`, since
+/// what the write names (a line, a thread) belongs to the painted view.
+/// `build` reads the content it is handed, never the App. Answers the
+/// workspace's reply and the tab the write went to.
+pub(crate) fn write_on_key(
+    state: &DesktopState,
+    key: TabKey,
+    view: Option<&er_protocol::PaintedView>,
+    build: impl FnOnce(&TabContent) -> Result<Command, String>,
+) -> Result<(Reply, TabDescriptor), String> {
+    let entry = listed(state, key)?;
+    let content = content_of(state, &entry)?;
+    if view.is_some_and(|view| !er_service::painted_view_matches(&content, view)) {
+        return Err(MOVED.to_string());
+    }
+    let reply = send(state, &entry.tab, build(&content)?)?;
+    Ok((reply, entry.tab))
+}
+
 /// Sends an annotation command built from the active tab's published
 /// context, loading the content first when it never loaded. Answers the key
 /// it acted on.
