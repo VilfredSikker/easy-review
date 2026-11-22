@@ -4,8 +4,8 @@
 //! all of `commands.rs`. The `#[tauri::command]` functions stay in
 //! `commands.rs`.
 
-use er_engine::app::NewGitHubComment;
 use er_engine::github::{NewLineComment, ReviewBatchEntry};
+use er_engine::github_post_session::NewGitHubComment;
 
 /// The intent for a new line comment, posted through the post-and-record flow.
 pub fn line_intent(

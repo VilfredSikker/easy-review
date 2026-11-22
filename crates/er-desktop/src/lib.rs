@@ -8,6 +8,7 @@ pub mod auto_triage;
 pub mod browser_proxy;
 pub mod browser_webview;
 pub mod commands;
+pub mod comment_tick;
 pub mod config_commands;
 pub mod dev_log;
 pub mod export;
