@@ -220,68 +220,153 @@ fn a_pr_section_comes_from_the_open_cache_when_a_prefetch_warmed_it() -> anyhow:
     })
 }
 
-/// History, Conflicts and Hidden are recorded on the content with nothing
-/// loaded, and a refresh of such a view runs no git.
+const COMMIT_DIFF: &str = "\
+diff --git a/src/c.rs b/src/c.rs
+--- a/src/c.rs
++++ b/src/c.rs
+@@ -1 +1 @@
+-c
++c2
+";
+
+/// A merge changeset: `z.rs` is staged and still conflicted in the working
+/// tree, so it appears twice.
+const CONFLICTS: &str = "\
+diff --git a/z.rs b/z.rs
+--- a/z.rs
++++ b/z.rs
+@@ -1 +1 @@
+-z
++staged
+diff --git a/z.rs b/z.rs
+--- a/z.rs
++++ b/z.rs
+@@ -1 +1 @@
+-z
++<<<<<<< ours
+diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -1 +1 @@
+-a
++a2
+";
+
+/// A checkout with two commits on the branch, a merge in progress and a
+/// commit whose diff git answers.
+fn views_git() -> Arc<FakeGit> {
+    Arc::new(
+        FakeGit::default()
+            .with_current_branch(Ok("feature".to_string()))
+            .with_diff_shortstat((0, 0, 0))
+            .with_diff_raw(Ok(RAW.to_string()))
+            .with_log_range(Ok(vec![commit("c2"), commit("c1")]))
+            .with_commit_shortstats(HashMap::new())
+            .with_unpushed_shas(["c2".to_string()].into_iter().collect())
+            .with_diff_commit(Ok(COMMIT_DIFF.to_string()))
+            .with_is_merge_in_progress(true)
+            .with_diff_conflicts(Ok(CONFLICTS.to_string()))
+            .with_unmerged_files(Ok(vec!["z.rs".to_string()])),
+    )
+}
+
+fn paths(content: &crate::TabContent) -> Vec<&str> {
+    content.diff.files.iter().map(|f| f.path.as_str()).collect()
+}
+
+/// A tab opened straight into History, Conflicts or Hidden loads that view:
+/// History the newest commit's files, Conflicts each file of the merge once,
+/// Hidden no files. Every view carries the commit scroller's rows.
 #[test]
-fn a_recorded_mode_loads_nothing() -> anyhow::Result<()> {
+fn each_view_with_its_own_diff_loads_on_a_load_tab() -> anyhow::Result<()> {
     with_root(|repo| {
-        let git = git(RAW);
-        let handle = actor_over(Arc::clone(&git));
-        let key = TabKey::next();
-        load(&handle, key, repo)?;
-        let before = content_of(&handle.view(), key)?;
-        let calls = git.calls().len();
-
-        for mode in [DiffMode::Conflicts, DiffMode::Hidden, DiffMode::History] {
-            let reply = send(&handle, set_mode(key, mode))?;
-            assert_eq!(reply, Reply::ModeRecorded { key });
-            assert_eq!(content_of(&handle.view(), key)?.tab.mode, mode);
-        }
-        let reply = send(&handle, refresh(key))?;
-        assert_eq!(
-            reply,
-            Reply::ContentLoaded {
+        let handle = actor_over(views_git());
+        let cases: [(DiffMode, &[&str]); 3] = [
+            (DiffMode::History, &["src/c.rs"]),
+            (DiffMode::Conflicts, &["z.rs", "a.rs"]),
+            (DiffMode::Hidden, &[]),
+        ];
+        for (mode, files) in cases {
+            let key = TabKey::next();
+            let command = Command::LoadTab {
                 key,
-                reviewed_cleared: 0
-            }
-        );
-
-        let after = content_of(&handle.view(), key)?;
-        assert!(Arc::ptr_eq(&before.diff, &after.diff), "a record loaded");
-        assert!(Arc::ptr_eq(&before.ai, &after.ai));
-        assert_eq!(git.calls().len(), calls, "a recorded view ran git");
-        send(&handle, set_mode(key, DiffMode::Branch))?;
-        let back = content_of(&handle.view(), key)?;
-        assert_eq!(back.tab.mode, DiffMode::Branch);
+                tab: working_tab(repo),
+                mode: Some(mode),
+            };
+            let reviewed_cleared = 0;
+            let loaded = Reply::ContentLoaded {
+                key,
+                reviewed_cleared,
+            };
+            assert_eq!(send(&handle, command)?, loaded, "{mode:?}");
+            let content = content_of(&handle.view(), key)?;
+            assert_eq!(content.tab.mode, mode);
+            assert_eq!(paths(&content), files, "{mode:?}");
+            let rows: Vec<(&str, bool)> = content
+                .diff
+                .meta
+                .commits
+                .iter()
+                .map(|c| (c.sha.as_str(), c.unpushed))
+                .collect();
+            assert_eq!(rows, [("c2", true), ("c1", false)], "{mode:?}");
+            let resource = crate::diff_resource(&content, &crate::DiffInputs::default());
+            let selected = (mode == DiffMode::History).then(|| "c2".to_string());
+            assert_eq!(resource.selected_commit_sha, selected, "{mode:?}");
+            assert_eq!(resource.commits.len(), 2);
+        }
         Ok(())
     })
 }
 
-/// A load that started before a view was recorded must not put the old view
-/// back.
+/// Entering History reads the History bucket's context and AI, a commit
+/// picked there keeps them, and leaving returns to the view it was entered
+/// from with that view's bucket.
 #[test]
-fn a_load_from_before_a_recorded_mode_is_refused() -> anyhow::Result<()> {
-    let mut state = WorkspaceState::new();
-    let key = TabKey::next();
-    let loaded = |since| ContentPatch::Loaded {
-        key,
-        since,
-        loaded: loaded_tab("/repo"),
-    };
-    let refused = |error| anyhow::anyhow!("{error}");
-    let (started_at, _) = state.apply_patch(loaded(None)).map_err(refused)?;
-    let record = ContentPatch::Mode {
-        key,
-        since: started_at,
-        mode: DiffMode::History,
-    };
-    state.apply_patch(record).map_err(refused)?;
+fn a_switch_into_history_reads_the_history_bucket() -> anyhow::Result<()> {
+    with_root(|repo| {
+        let git = views_git();
+        let handle = actor_over(Arc::clone(&git));
+        let key = TabKey::next();
+        load(&handle, key, repo)?;
+        let branch = content_of(&handle.view(), key)?;
+        let mut shown = branch.tab.clone();
+        shown.mode = DiffMode::History;
+        let history_dir = shown
+            .identity()
+            .managed_root(&*git)
+            .unwrap_or_else(|| er_engine::paths::ErRoot::unresolved(repo, &*git))
+            .er_dir();
+        assert_ne!(history_dir, branch.context.er_dir);
+        write_review(&history_dir, &branch.context.branch_diff_hash);
 
-    let stale = state.apply_patch(loaded(Some(started_at)));
+        send(&handle, set_mode(key, DiffMode::History))?;
+        let history = content_of(&handle.view(), key)?;
+        assert_eq!(
+            history.context.er_dir, history_dir,
+            "the old bucket's context"
+        );
+        assert_eq!(history.ai.state.total_findings(), 1, "the old bucket's AI");
+        assert_eq!(paths(&history), ["src/c.rs"]);
 
-    assert_eq!(stale.err(), Some(PatchRefused::Moved));
-    assert_eq!(content_of(state.view(), key)?.tab.mode, DiffMode::History);
-    Ok(())
+        let pick = Command::SelectCommit {
+            key,
+            sha: "c1".to_string(),
+        };
+        send(&handle, pick)?;
+        let picked = content_of(&handle.view(), key)?;
+        let selected = picked.history.as_ref().and_then(|h| h.selected.as_deref());
+        assert_eq!(selected, Some("c1"));
+        assert_eq!(picked.context.er_dir, history_dir);
+
+        send(&handle, Command::ExitHistory { key })?;
+        let back = content_of(&handle.view(), key)?;
+        assert_eq!(back.tab.mode, DiffMode::Branch);
+        assert_eq!(back.context.er_dir, branch.context.er_dir);
+        assert_eq!(back.ai.state.total_findings(), 0);
+        assert_eq!(paths(&back), ["src/a.rs", "src/b.rs"]);
+        Ok(())
+    })
 }
 
 /// A tick's sidecar reload that lands while a load runs lets the load apply;
