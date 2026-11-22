@@ -26,7 +26,8 @@ mod tabs;
 
 pub use command::{Ack, Command, ProjectReviewSettingsPatch};
 pub use diff::{
-    BaseBehind, BranchDivergence, DiffLineStats, FileRow, FilterSuggestion, ScopeStat, TabDiff,
+    BaseBehind, BranchDivergence, CommitRow, DiffLineStats, FileRow, FilterSuggestion, ScopeStat,
+    TabDiff,
 };
 pub use error::{ErError, ErErrorKind};
 pub use hunks::{FileHunks, Hunk, HunkLine};
