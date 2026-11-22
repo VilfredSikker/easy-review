@@ -125,7 +125,7 @@ function addThread(command: string, a: Args, tab: TabKey, view: PaintedView): Wr
   return { command: wire, paint: { ...NO_PAINT, threads: [paintedThread(kind, parsed, id)] } };
 }
 
-function reply(a: Args, tab: TabKey, view: PaintedView, ai: AiSnapshot | null): Write | null {
+function replyToThread(a: Args, tab: TabKey, view: PaintedView, ai: AiSnapshot | null): Write | null {
   const parentId = text(pick(a, "parentId", "parent_id"));
   const body = text(a.text)?.trim() ?? "";
   if (!parentId || !body) return null;
@@ -178,6 +178,26 @@ function replyToFinding(a: Args, tab: TabKey, view: PaintedView, ai: AiSnapshot 
   return { command, paint: { ...NO_PAINT, threads: [paintedThread("comment", parsed, id)] } };
 }
 
+/** A GitHub comment on a diff line; it paints nothing until the push brings it. */
+function addComment(a: Args, tab: TabKey, view: PaintedView): Write | null {
+  // A comment takes a question's line arguments.
+  const parsed = parseAddThreadArgs("add_question", a);
+  if (!parsed) return null;
+  const target = lineTarget(parsed);
+  return { command: { kind: "add_comment", tab, view, target, body: parsed.text, side: text(a.side), clientId: text(a.id) } };
+}
+
+/** A thread on a previewed document line, checked against the preview key it was picked in. */
+function addDocumentThread(a: Args, tab: TabKey): Write | null {
+  const line = num(pick(a, "lineNum", "line_num"));
+  if (line === null) return null;
+  const lineEnd = num(pick(a, "lineNumEnd", "line_num_end"));
+  const path = text(a.file) ?? "";
+  const previewKey = text(pick(a, "previewKey", "preview_key")) ?? "";
+  const threadKind = text(a.kind) ?? "";
+  return { command: { kind: "add_document_thread", tab, path, threadKind, line, lineEnd, body: text(a.text) ?? "", previewKey } };
+}
+
 /** The wire command for an annotation write on `tab`, painted in `view`, and what it paints until acknowledged. */
 export function annotationWrite(
   command: string,
@@ -192,26 +212,12 @@ export function annotationWrite(
     case "add_question":
     case "add_note":
       return addThread(command, a, tab, view);
-    case "add_comment": {
-      // A comment takes a question's line arguments.
-      const parsed = parseAddThreadArgs("add_question", a);
-      if (!parsed) return null;
-      const clientId = text(a.id);
-      return {
-        command: { kind: "add_comment", tab, view, target: lineTarget(parsed), body: parsed.text, side: text(a.side), clientId },
-      };
-    }
-    case "add_document_thread": {
-      const line = num(pick(a, "lineNum", "line_num"));
-      if (line === null) return null;
-      const lineEnd = num(pick(a, "lineNumEnd", "line_num_end"));
-      const path = text(a.file) ?? "";
-      const previewKey = text(pick(a, "previewKey", "preview_key")) ?? "";
-      const threadKind = text(a.kind) ?? "";
-      return { command: { kind: "add_document_thread", tab, path, threadKind, line, lineEnd, body: text(a.text) ?? "", previewKey } };
-    }
+    case "add_comment":
+      return addComment(a, tab, view);
+    case "add_document_thread":
+      return addDocumentThread(a, tab);
     case "reply_to_thread":
-      return reply(a, tab, view, ai);
+      return replyToThread(a, tab, view, ai);
     case "update_thread_message":
       return { command: { kind: "update_thread_message", tab, view, id, body: body ?? "" } };
     case "delete_thread":
