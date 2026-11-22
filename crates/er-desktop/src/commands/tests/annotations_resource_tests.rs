@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::{TabDescriptor, TabKind};
 use er_engine::TabKey;
-use er_protocol::{Resource, ResourceKey};
+use er_protocol::{Resource, ResourceKey, ReviewJson};
 use er_service::TabContent;
 
-use super::diff_resource_tests::{fake_git, raw_diff, state_over, with_storage};
+use super::diff_resource_tests::{fake_git, listed, raw_diff, state_over, with_storage};
 use super::ReviewFlowTestDir;
 use crate::commands::{content_routes, AppState};
 use crate::resources::{self, relay, tick, Watched};
@@ -120,6 +120,39 @@ fn an_outside_comment_in_the_pr_bucket_reaches_a_branch_view_through_the_tick() 
     });
 }
 
+/// An arena accept writes `accepted-findings.json` and the run's `run.json`
+/// and answers no patch, so the tick alone brings the accepted rows to the
+/// AI section.
+#[test]
+fn an_arena_accept_reaches_the_ai_section_through_the_tick() {
+    with_storage(|dir| {
+        let (state, tab) = branch_view_of_a_pr(dir);
+        let loaded = content(&state, &tab);
+        let bucket = Path::new(&loaded.context.er_dir);
+        er_engine::test_support::write_sidecar_json::<
+            er_engine::ai::accepted_findings::AcceptedFindings,
+        >(
+            bucket,
+            serde_json::json!({ "version": 1, "findings": [{
+                "file": "src/f0.rs", "run_finding_id": "kept", "run_id": "run-1",
+                "run_diff_hash": "", "accepted_at": "t0", "providers": [],
+                "finding": { "id": "arena-run-1-kept", "severity": "medium", "title": "Accepted" }
+            }] }),
+        );
+        stamp_ahead(&bucket.join("accepted-findings.json"));
+        let run = bucket.join("arena").join("run-1");
+        let wrote =
+            std::fs::create_dir_all(&run).and_then(|()| std::fs::write(run.join("run.json"), "{}"));
+        assert!(wrote.is_ok(), "run.json: {wrote:?}");
+
+        tick::run(&state.desktop, &state.app);
+
+        wait_until("the accept to reload the AI section", || {
+            content(&state, &tab).ai.revision > loaded.ai.revision
+        });
+    });
+}
+
 fn ui_annotation(id: &str) -> er_engine::ai::UiAnnotation {
     serde_json::from_value(serde_json::json!({
         "id": id, "url": "/", "box_x": 0.0, "box_y": 0.0, "box_w": 1.0, "box_h": 1.0,
@@ -199,5 +232,70 @@ fn every_pending_reply_write_moves_jobs_and_nothing_else() {
         assert!(jobs().is_empty(), "the answered reply is still in flight");
         desktop.pending_ai_replies.remove(["q-1"]);
         assert!(moved().is_empty(), "removing nothing moved a version");
+    });
+}
+
+/// A desktop annotation write that lands while `ui_annotations(tab)` reads
+/// its rows leaves the answer under the older version, so the relay pushes
+/// the tab again and the next fetch brings the write.
+#[test]
+fn a_ui_annotation_write_during_the_read_is_pushed_again() {
+    with_storage(|dir| {
+        let (state, tab) = branch_view_of_a_pr(dir);
+        let desktop = &state.desktop;
+        let wire = er_service::wire_tab_key(tab.0);
+
+        let read = resources::annotations::ui_annotations_read(desktop, wire, |er_dir| {
+            let rows = er_engine::ai::load_ui_annotations(er_dir);
+            let saved = er_engine::ai::save_ui_annotations(er_dir, &[ui_annotation("ui-during")]);
+            assert!(saved.is_ok(), "{saved:?}");
+            desktop.ui_annotations.bump();
+            rows
+        });
+        let (answered, _) = read.unwrap_or_else(|e| panic!("{e:?}"));
+        let now = resources::annotations::ui_annotations_version(desktop, tab.0, &tab.1);
+        assert!(
+            answered < now,
+            "the read answered version {answered} and the write left {now}"
+        );
+
+        let fetched = resources::fetch(desktop, ResourceKey::UiAnnotations { tab: wire });
+        let fetched = fetched.unwrap_or_else(|e| panic!("{e:?}"));
+        let ids: Vec<String> = match fetched.value {
+            Resource::UiAnnotations(rows) => rows.rows.into_iter().map(|row| row.id).collect(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            (fetched.version.0, ids),
+            (now, vec!["ui-during".to_string()])
+        );
+    });
+}
+
+/// `review_json` answers none for a listed tab nothing loaded and for a
+/// bucket with no review, so a batched fetch that holds it still answers.
+#[test]
+fn review_json_answers_none_for_a_tab_nothing_loaded_and_a_bucket_with_no_review() {
+    with_storage(|dir| {
+        let none = Resource::ReviewJson(ReviewJson::default());
+
+        let unloaded = state_over(dir, ports());
+        let (key, _) = listed(&unloaded, dir, "fresh");
+        let wire = er_service::wire_tab_key(key);
+        let fetched = resources::fetch(&unloaded.desktop, ResourceKey::ReviewJson { tab: wire });
+        let fetched = fetched.unwrap_or_else(|e| panic!("an unloaded tab: {e:?}"));
+        assert_eq!((fetched.version.0, &fetched.value), (0, &none));
+
+        let (state, tab) = branch_view_of_a_pr(dir);
+        let wire = er_service::wire_tab_key(tab.0);
+        let batch = resources::fetch_all(
+            &state.desktop,
+            vec![
+                ResourceKey::ReviewJson { tab: wire },
+                ResourceKey::UiAnnotations { tab: wire },
+            ],
+        );
+        let batch = batch.unwrap_or_else(|e| panic!("a bucket with no review: {e:?}"));
+        assert_eq!(batch[0].value, none);
     });
 }

@@ -16484,6 +16484,16 @@ pub(crate) fn projected_review_json(
     branch_diff_hash: &str,
     branch_scope: Option<&str>,
 ) -> Result<String, String> {
+    review_projection(er_dir, branch_diff_hash, branch_scope)?
+        .ok_or_else(|| "No review.json found".to_string())
+}
+
+/// [`projected_review_json`], with none for a bucket that holds no review.
+pub(crate) fn review_projection(
+    er_dir: &str,
+    branch_diff_hash: &str,
+    branch_scope: Option<&str>,
+) -> Result<Option<String>, String> {
     let overlay = er_engine::ai::arbiter_overlay_stamp(er_dir);
     let ai = er_engine::ai::load_ai_state_with_arbiter(
         er_dir,
@@ -16492,7 +16502,7 @@ pub(crate) fn projected_review_json(
         overlay.as_deref(),
     );
     let Some(review) = ai.review else {
-        return Err("No review.json found".to_string());
+        return Ok(None);
     };
     // Collapse the duplicate rows the display hides, so the copy matches what
     // the reviewer sees; active, resolved and dropped rows all stay.
@@ -16519,7 +16529,9 @@ pub(crate) fn projected_review_json(
             )
         })
         .collect();
-    serde_json::to_string_pretty(&visible).map_err(|e| e.to_string())
+    serde_json::to_string_pretty(&visible)
+        .map(Some)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
