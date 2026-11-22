@@ -84,6 +84,8 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
             super::annotations::review_revisions(desktop, *tab)?
         }
         ResourceKey::AnnotationScreenshot { path } => super::annotations::screenshot(path)?,
+        ResourceKey::Pr { tab } => super::pr::pr(desktop, *tab)?,
+        ResourceKey::PrStatus { remote, number } => super::pr::pr_status(desktop, remote, *number),
     };
     Ok(Versioned {
         key,
@@ -145,6 +147,10 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::Reviewed { tab } => {
             super::reviewed::published_version(desktop, &super::diff::listed(desktop, *tab)?)
         }
+        ResourceKey::Pr { tab } => {
+            super::pr::published_version(desktop, &super::diff::listed(desktop, *tab)?)
+        }
+        ResourceKey::PrStatus { remote, number } => sidebar(desktop).pr_status(remote, *number).0,
     };
     Ok(ResourceVersion(version))
 }
@@ -328,7 +334,9 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::DeleteUiAnnotation { .. }
         | Command::ClearUiAnnotationsForPage { .. }
         | Command::ClearUiAnnotations { .. }
-        | Command::UpdateUiAnnotationAnchors { .. }) => {
+        | Command::UpdateUiAnnotationAnchors { .. }
+        | Command::RefreshStack { .. }
+        | Command::RefreshGithubStatus { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),
@@ -509,7 +517,11 @@ impl Watched {
             Self::TabReviewed(key) => Some(ResourceKey::Reviewed {
                 tab: er_service::wire_tab_key(*key),
             }),
-            Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Pr(_) | Self::Mode(_) => None,
+            // `pr(tab)`'s version is its PR section's revision.
+            Self::Pr(key) => Some(ResourceKey::Pr {
+                tab: er_service::wire_tab_key(*key),
+            }),
+            Self::Diff(_) | Self::Reviewed(_) | Self::Ai(_) | Self::Mode(_) => None,
         }
     }
 }

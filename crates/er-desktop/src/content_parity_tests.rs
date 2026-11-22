@@ -270,6 +270,9 @@ struct Observed {
     /// The snapshot's `ai`, `tour` and `other_bucket` on the App's side,
     /// `annotations(tab)` on the other.
     annotations: Value,
+    /// The snapshot's `pr` and `stack` on the App's side, `pr(tab)` on the
+    /// other.
+    card: Value,
 }
 
 /// The fields of a snapshot, or of a `diff(tab)`, that both must agree on.
@@ -371,6 +374,7 @@ struct Read<'a> {
     stamps: (&'a HashMap<String, SystemTime>, &'a HashMap<String, String>),
     resource: Value,
     annotations: Value,
+    card: Value,
 }
 
 /// The keys the snapshot reads, given the key functions of one reader.
@@ -404,6 +408,7 @@ fn observe(read: Read<'_>, er_dir: &str) -> anyhow::Result<Observed> {
     Ok(Observed {
         resource: resource_fields(&read.resource),
         annotations: read.annotations,
+        card: read.card,
         files: read
             .files
             .iter()
@@ -662,6 +667,12 @@ fn through_tab_state(
             "tour": resource["tour"],
             "other_bucket": resource["other_bucket"],
         });
+        // `likely_stacked` reads the PR cache, which the page joins itself.
+        let mut stack = resource["stack"].clone();
+        if let Some(map) = stack.as_object_mut() {
+            map.remove("likely_stacked");
+        }
+        let card = json!({ "pr": resource["pr"], "stack": stack });
         let tab = app.tab();
         // The snapshot names no built-from head: the stale pill compares the
         // tab's `last_diff_head_oid` with the PR head, so that stands in.
@@ -692,6 +703,7 @@ fn through_tab_state(
                 stamps: (&tab.mtime_cache, &tab.preview_blob_ids),
                 resource,
                 annotations,
+                card,
             },
             &er_dir,
         )
@@ -797,6 +809,7 @@ fn through_the_workspace(
                 stamps: (&stamps.mtimes, &stamps.blob_ids),
                 resource,
                 annotations: serde_json::to_value(er_service::annotations_resource(content))?,
+                card: serde_json::to_value(er_service::pr_resource(content))?,
             },
             &er_dir,
         )
@@ -841,6 +854,7 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
         "{case}: the staleness differs"
     );
     assert_eq!(service.pr, app.pr, "{case}: the PR section differs");
+    assert_eq!(service.card, app.card, "{case}: pr(tab) differs");
     // The keys read the stamps, so the stamps go first.
     let same_stamps = service.stamps == app.stamps;
     assert!(same_stamps, "{case}: the preview stamps differ");

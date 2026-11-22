@@ -9,6 +9,7 @@ use er_desktop::frame_script::FRAME_SCRIPT;
 use er_desktop::snapshot::{
     LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState,
 };
+use er_desktop::status_loop::active_pr_identity;
 use er_desktop::{
     arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
     gh_pr_actions, gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache,
@@ -650,34 +651,6 @@ fn probe_recently_done(
     last_probe.is_some_and(|last_at| now.saturating_duration_since(*last_at) < ttl)
 }
 
-/// The active tab's PR as `(owner, repo, number)`. A remote PR tab names it
-/// directly; a working-tree or local-branch tab is looked up in the PR cache by
-/// head ref, preferring an open PR.
-fn active_pr_identity(
-    tab: &er_engine::app::TabState,
-    pr_cache: &pr_cache::PrCacheMap,
-) -> Option<(String, String, u64)> {
-    if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
-        return slug
-            .split_once('/')
-            .map(|(o, r)| (o.to_string(), r.to_string(), n));
-    }
-    let branch = tab
-        .local_branch_view
-        .as_deref()
-        .unwrap_or(&tab.current_branch);
-    let cache = pr_cache.lock().ok()?;
-    cache.iter().find_map(|(slug, prs)| {
-        prs.iter()
-            .filter(|p| p.head_ref == branch)
-            .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-            .and_then(|p| {
-                slug.split_once('/')
-                    .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-            })
-    })
-}
-
 /// The desktop active-branch watcher thread. Follows the currently active tab's
 /// local-branch checkout (project root or linked worktree) and refreshes the
 /// diff when tracked files in that checkout change.
@@ -1134,6 +1107,8 @@ fn main() {
         Arc::clone(&gh_user),
         Arc::clone(&inbox),
     ));
+    #[cfg(feature = "v1-service")]
+    app_owner.read_status_from(Arc::clone(&gh_status_cache));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
     let tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
@@ -1505,72 +1480,7 @@ fn main() {
         });
     }
 
-    // Spawn background GitHub-status refresh: every 30s, identify the active
-    // tab's PR identity (briefly locking app), then shell out to gh and update
-    // the cache. NEVER holds the app mutex while running gh.
-    // Shares gh_status_in_flight with kick_github_status_refresh to avoid
-    // duplicate concurrent fetches when a branch switch fires during this loop.
-    {
-        let gh_status_bg = Arc::clone(&gh_status_cache);
-        let app_bg = Arc::clone(&app_arc);
-        let pr_cache_bg = Arc::clone(&pr_cache);
-        let gh_status_loading = Arc::clone(&loading);
-        let gh_status_in_flight_bg = Arc::clone(&gh_status_in_flight);
-        let gh_status_desktop_rev = Arc::clone(&desktop_revision);
-        std::thread::spawn(move || loop {
-            // Sleep FIRST: kills the startup burst — a sleep at the bottom
-            // lets the loop fire immediately on launch.
-            std::thread::sleep(std::time::Duration::from_secs(30));
-
-            // Snapshot identity in a short critical section.
-            let key: Option<(String, String, u64)> = app_bg
-                .lock()
-                .ok()
-                .and_then(|g| active_pr_identity(g.tab(), &pr_cache_bg));
-            // Lock released. Skip the fetch entirely when the cached snapshot
-            // for this key is still fresh (<90s old) — most ticks on an idle
-            // PR now do nothing at all.
-            let key = key.filter(|(owner, repo, number)| {
-                let last_updated = gh_status_bg.lock().ok().and_then(|cache| {
-                    cache
-                        .get(&(owner.clone(), repo.clone(), *number))
-                        .and_then(|snap| snap.last_updated.clone())
-                });
-                !gh_status_cache::status_is_fresh(
-                    last_updated.as_deref(),
-                    gh_status_cache::now_epoch_secs(),
-                    90,
-                )
-            });
-            // Register in-flight and shell out — skip if already fetching.
-            let Some((owner, repo, number)) = key else {
-                continue;
-            };
-            let registered = gh_status_in_flight_bg
-                .lock()
-                .map(|mut s| s.insert((owner.clone(), repo.clone(), number)))
-                .unwrap_or(false);
-            if !registered {
-                continue;
-            }
-            if let Ok(mut f) = gh_status_loading.lock() {
-                f.gh_status = true;
-            }
-            commands::fetch_and_store_github_status(
-                &gh_status_bg,
-                &gh_status_desktop_rev,
-                &owner,
-                &repo,
-                number,
-            );
-            if let Ok(mut f) = gh_status_loading.lock() {
-                f.gh_status = false;
-            }
-            let _ = gh_status_in_flight_bg
-                .lock()
-                .map(|mut s| s.remove(&(owner, repo, number)));
-        });
-    }
+    er_desktop::status_loop::spawn(state.clone());
 
     #[cfg(feature = "v1-service")]
     spawn_service_comment_sync(
