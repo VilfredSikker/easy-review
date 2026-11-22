@@ -63,8 +63,12 @@ fn row<'a>(rows: &'a [UiAnnotation], id: &str) -> &'a UiAnnotation {
         .unwrap_or_else(|| panic!("no row {id}"))
 }
 
-fn boxed(row: &UiAnnotation) -> [f64; 4] {
-    [row.box_x, row.box_y, row.box_w, row.box_h]
+#[expect(
+    clippy::float_cmp,
+    reason = "the box is stored and read back as sent, so the same box is the same bits"
+)]
+fn assert_box(row: &UiAnnotation, want: [f64; 4], what: &str) {
+    assert_eq!([row.box_x, row.box_y, row.box_w, row.box_h], want, "{what}");
 }
 
 fn ids_in(dir: &str) -> Vec<String> {
@@ -163,7 +167,7 @@ fn each_browser_annotation_write_moves_ui_annotations_with_the_app_locked() {
                 Box::new(|rows, _| {
                     let added = row(rows, "ui-2");
                     assert!(!added.stale, "a new row is stale");
-                    assert_eq!(boxed(added), [1.0, 2.0, 30.0, 10.0]);
+                    assert_box(added, [1.0, 2.0, 30.0, 10.0], "a new row's box");
                 }),
             ),
             (
@@ -186,7 +190,7 @@ fn each_browser_annotation_write_moves_ui_annotations_with_the_app_locked() {
                 Box::new(|rows, _| {
                     let anchored = row(rows, "ui-2");
                     assert!(anchored.stale, "the anchor update left ui-2 fresh");
-                    assert_eq!(boxed(anchored), moved, "the anchor update moved no box");
+                    assert_box(anchored, moved, "the anchor update moved no box");
                 }),
             ),
             (
@@ -222,7 +226,7 @@ fn each_browser_annotation_write_moves_ui_annotations_with_the_app_locked() {
                     assert!(
                         !shot_of("ui-1").exists(),
                         "the cleared row's screenshot stayed"
-                    )
+                    );
                 }),
             ),
             (
