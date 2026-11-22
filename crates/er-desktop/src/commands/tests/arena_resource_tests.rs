@@ -89,7 +89,7 @@ pub(super) fn arena_state(
 }
 
 /// A git with no remote, so each repo's buckets are its own.
-fn local_ports() -> er_engine::ports::Ports {
+pub(super) fn local_ports() -> er_engine::ports::Ports {
     let git: Arc<dyn er_git::Git> = Arc::new(
         er_git::FakeGit::default()
             .with_current_branch(Ok("feature".to_string()))
@@ -103,7 +103,7 @@ fn local_ports() -> er_engine::ports::Ports {
 }
 
 /// Opens a Working tab on a directory of its own; it becomes the active tab.
-fn open(state: &AppState, dir: &Path, name: &str) -> (TabKey, TabDescriptor) {
+pub(super) fn open(state: &AppState, dir: &Path, name: &str) -> (TabKey, TabDescriptor) {
     let root = dir.join(name);
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("{name}: {e}"));
     let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
@@ -125,7 +125,7 @@ pub(super) fn bucket(state: &AppState, (key, tab): &(TabKey, TabDescriptor)) -> 
         .unwrap_or_else(|| panic!("no content under {key:?}"))
 }
 
-fn fake() -> ReviewerRef {
+pub(super) fn fake() -> ReviewerRef {
     ReviewerRef {
         provider_id: "fake".into(),
         model_id: "fake-1".into(),
@@ -155,7 +155,7 @@ pub(super) fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-fn record(bucket: &str, run_id: &str) -> Option<er_engine::arena::ArenaRun> {
+pub(super) fn record(bucket: &str, run_id: &str) -> Option<er_engine::arena::ArenaRun> {
     er_engine::arena::load_run(&ArenaPaths::for_run(Path::new(bucket), run_id)).ok()
 }
 

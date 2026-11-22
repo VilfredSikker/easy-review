@@ -84,6 +84,9 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
             super::annotations::review_revisions(desktop, *tab)?
         }
         ResourceKey::AnnotationScreenshot { path } => super::annotations::screenshot(path)?,
+        ResourceKey::ArenaEstimate { tab, plan } => super::arena::estimate(desktop, *tab, plan)?,
+        ResourceKey::ArenaRuns { tab } => super::arena::runs(desktop, *tab)?,
+        ResourceKey::ArenaRun { tab, run_id } => super::arena::run(desktop, *tab, run_id)?,
     };
     Ok(Versioned {
         key,
@@ -118,7 +121,10 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         | ResourceKey::DiffPaths { .. }
         | ResourceKey::ReviewJson { .. }
         | ResourceKey::ReviewRevisions { .. }
-        | ResourceKey::AnnotationScreenshot { .. } => 0,
+        | ResourceKey::AnnotationScreenshot { .. }
+        | ResourceKey::ArenaEstimate { .. }
+        | ResourceKey::ArenaRuns { .. }
+        | ResourceKey::ArenaRun { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Inbox => sidebar(desktop).inbox().0,
@@ -328,7 +334,13 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::DeleteUiAnnotation { .. }
         | Command::ClearUiAnnotationsForPage { .. }
         | Command::ClearUiAnnotations { .. }
-        | Command::UpdateUiAnnotationAnchors { .. }) => {
+        | Command::UpdateUiAnnotationAnchors { .. }
+        | Command::ArenaStart { .. }
+        | Command::ArenaValidateFindings { .. }
+        | Command::ArenaAcceptFindings { .. }
+        | Command::ArenaDelete { .. }
+        | Command::ArenaCancel { .. }
+        | Command::ArenaOverride { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),

@@ -12810,6 +12810,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod arena_resource_tests;
     #[cfg(feature = "v1-service")]
+    mod arena_wire_tests;
+    #[cfg(feature = "v1-service")]
     mod content_route_tests;
     #[cfg(feature = "v1-service")]
     mod diff_command_tests;
@@ -13183,6 +13185,7 @@ mod tests {
             auto_triage_in_flight: Arc::new(Mutex::new(HashSet::new())),
             line_commits_cache: Arc::default(),
             session: Default::default(),
+            live_jobs: Default::default(),
         };
         #[cfg(feature = "v1-service")]
         crate::app_owner::startup::read_inbox_prefs_from_settings(&desktop);

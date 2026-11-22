@@ -93,6 +93,33 @@ pub struct DesktopState {
     pub line_commits_cache: LineCommitsCache,
     /// The desktop's writes to `session` and `panels`.
     pub session: SessionClock,
+    /// How many times the live runs `jobs` lists have moved.
+    pub live_jobs: LiveJobs,
+}
+
+/// A count of the changes seen in the live runs `jobs` lists. The actors
+/// publish them in their views, which move for every diff or annotation
+/// write too, so the count moves only when the runs themselves differ from
+/// the last ones seen.
+#[derive(Clone, Default)]
+pub struct LiveJobs {
+    seen: Arc<Mutex<Vec<er_protocol::ArenaRunJob>>>,
+    revision: Arc<AtomicU64>,
+}
+
+impl LiveJobs {
+    /// The count after comparing `now` with the runs seen last.
+    pub fn observe(&self, now: &[er_protocol::ArenaRunJob]) -> u64 {
+        let mut seen = match self.seen.lock() {
+            Ok(seen) => seen,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if seen.as_slice() != now {
+            *seen = now.to_vec();
+            self.revision.fetch_add(1, Ordering::AcqRel);
+        }
+        self.revision.load(Ordering::Acquire)
+    }
 }
 
 /// The desktop's own writes to `session` and `panels`: the watcher's status,
