@@ -12,6 +12,8 @@ import { overlay } from "./overlay.svelte";
 import { commandPalette } from "./commandPalette.svelte";
 import { buildTree, flattenForNav } from "$lib/treeFromPaths";
 import { nextFile, prevFile } from "$lib/navigation";
+import { v1ServiceRequested } from "$lib/v1ServiceFlag";
+import type { AppSnapshot, FileSnapshot } from "$lib/types";
 import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { rightRail } from "$lib/stores/rightRail.svelte";
@@ -110,13 +112,42 @@ function togglePanelForKey(e: KeyboardEvent): boolean {
   return false;
 }
 
+type FileStepSnapshot = Pick<AppSnapshot, "files" | "selected_file">;
+
+/**
+ * The file `j`/`k` select from `order` (paths). With the flag on the move is
+ * the engine's (`navigation.ts`): a selection the order does not hold snaps to
+ * its first file, and a path the snapshot lacks is skipped. With the flag off
+ * the old step stays: such a selection counts as the order's first file, and
+ * a path the snapshot lacks stops the move.
+ */
+export function fileStep(
+  snap: FileStepSnapshot,
+  order: readonly string[],
+  direction: 1 | -1,
+  flagOn: boolean,
+): FileSnapshot | undefined {
+  if (!flagOn) {
+    if (order.length === 0) return undefined;
+    const cur = snap.files[snap.selected_file]?.path;
+    let i = cur ? order.indexOf(cur) : -1;
+    if (i === -1) i = 0;
+    const nextPath = order[(i + direction + order.length) % order.length];
+    return snap.files.find((f) => f.path === nextPath);
+  }
+  const byPath = new Map(snap.files.map((f) => [f.path, f]));
+  const visible = order.flatMap((path) => byPath.get(path)?.source_index ?? []);
+  const cur = snap.files[snap.selected_file]?.source_index ?? -1;
+  const move = (direction === 1 ? nextFile : prevFile)(cur, null, visible, []);
+  if (move.kind !== "file" && move.kind !== "snap") return undefined;
+  return snap.files.find((f) => f.source_index === move.idx);
+}
+
 /**
  * Move file selection in visual tree order (not flat `files` order, which is
  * path-sorted from `git diff`). The snapshot's `files` already reflects any
  * active filter, so we build the tree directly from it. The Tour hides the
  * tree and reads in pillar order, so there `j`/`k` follow the column instead.
- * The move is the engine's (`navigation.ts`) over that order; a selection the
- * order does not hold snaps to its first file.
  */
 function moveFile(direction: 1 | -1) {
   const snap = app.snapshot;
@@ -124,12 +155,7 @@ function moveFile(direction: 1 | -1) {
   const tourOrder = reviewPage.current === "tour" ? diffNav.drawnFilePaths() : [];
   const order =
     tourOrder.length > 0 ? tourOrder : flattenForNav(buildTree(snap.files), fileTreeCollapse.collapsed);
-  const byPath = new Map(snap.files.map((f) => [f.path, f]));
-  const visible = order.flatMap((path) => byPath.get(path)?.source_index ?? []);
-  const cur = snap.files[snap.selected_file]?.source_index ?? -1;
-  const move = (direction === 1 ? nextFile : prevFile)(cur, null, visible, []);
-  if (move.kind !== "file" && move.kind !== "snap") return;
-  const next = snap.files.find((f) => f.source_index === move.idx);
+  const next = fileStep(snap, order, direction, v1ServiceRequested());
   if (!next) return;
   void app.cmd("select_file", { idx: next.source_index }).then(() => {
     void diffNav.scrollToFile(next.path);
