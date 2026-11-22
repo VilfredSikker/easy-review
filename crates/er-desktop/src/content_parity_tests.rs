@@ -267,8 +267,7 @@ struct Observed {
     /// names them: from the snapshot on the App's side, from the resource
     /// builders on the other.
     resource: Value,
-    /// The snapshot's `ai` on the App's side, `annotations(tab)` on the
-    /// other.
+    /// The snapshot's `ai` on the App's side, `annotations(tab)` on the other.
     annotations: Value,
 }
 
@@ -439,9 +438,8 @@ fn observe(read: Read<'_>, er_dir: &str) -> anyhow::Result<Observed> {
 }
 
 /// A review against an older diff with a high-risk file, a tour, a painted
-/// question on a line the fixture moved, a note, a note's reply to a comment
-/// that comes before the comment's own reply in time order, and marks: one
-/// current, one changed, one orphaned.
+/// question on a moved line, a note, a note's reply ordered before the comment's own
+/// reply, and marks: one current, one changed, one orphaned.
 fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Result<String> {
     let id = resolved.identity();
     let er_dir = id
@@ -559,8 +557,7 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
 }
 
 thread_local! {
-    /// The diff hash the fixture's review and triage name; the older diff's
-    /// unless a test sets the one on screen.
+    /// The diff hash the fixture's review and triage name, unless a test sets the on-screen one.
     static FRESH_REVIEW: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -870,8 +867,7 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
     }
 }
 
-/// `annotations(tab)` against the snapshot's `ai`, naming the fields that
-/// differ.
+/// `annotations(tab)` against the snapshot's `ai`, naming the fields that differ.
 fn assert_annotations(service: &Value, app: &Value, case: &str) {
     let (s, a) = (&service["ai"], &app["ai"]);
     let fields = a
@@ -985,8 +981,7 @@ fn assert_parity(kind: TabKind, mode: DiffMode) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A review of the diff on screen regrades triage's call from the projected
-/// findings, which both readers must agree on as well.
+/// A review of the diff on screen regrades triage's call; both readers must agree on it.
 #[test]
 fn a_review_of_the_diff_on_screen_regrades_triage_alike() -> anyhow::Result<()> {
     let hash = er_engine::ai::compute_diff_hash(&raw(false));

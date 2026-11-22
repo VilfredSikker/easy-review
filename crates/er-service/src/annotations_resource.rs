@@ -1,8 +1,7 @@
-//! `annotations(tab)`: one tab's findings, threads, checklist, triage and
-//! diagrams, built from the AI section the workspace published for it.
-//! Thread order and every count are decided here, so no front end sorts or
-//! counts them again. The in-flight ask-AI replies are not part of it: the
-//! page joins them from `jobs`.
+//! `annotations(tab)`: one tab's findings, threads, checklist, triage and diagrams, built
+//! from the AI section its workspace published. Thread order and every count are decided
+//! here, so no front end re-sorts or recounts. The page joins the in-flight ask-AI replies
+//! from `jobs`.
 
 use er_engine::ai::{self, AiState, CommentRef, Finding, RiskLevel};
 use er_engine::file_rows::{finding_is_escalated, severity_str};
@@ -10,8 +9,7 @@ use er_protocol as wire;
 
 use crate::content::TabContent;
 
-/// The version `annotations(tab)` answers at: the AI section's revision,
-/// which a lazy parse or a mark does not move.
+/// The version `annotations(tab)` answers at: the AI section's revision, which a lazy parse or mark does not move.
 pub fn annotations_version(content: &TabContent) -> u64 {
     content.ai.revision
 }
@@ -165,8 +163,7 @@ fn stale_reason(ai: &AiState, branch_diff_hash: &str) -> Option<String> {
 
 type Rows<'a> = Vec<(&'a str, &'a Finding)>;
 
-/// The findings to draw, the ones the reader resolved and the ones the
-/// arbiter ruled out, each with the display's duplicates collapsed.
+/// The findings to draw, the resolved and the arbiter-ruled-out, with duplicates collapsed.
 fn projected_findings(ai: &AiState) -> (Rows<'_>, Rows<'_>, Rows<'_>) {
     let (mut active, mut resolved, mut dropped) = (Vec::new(), Vec::new(), Vec::new());
     if let Some(review) = &ai.review {
@@ -300,8 +297,7 @@ fn file_risks(review: &ai::ErReview) -> Vec<wire::FileRisk> {
         .collect()
 }
 
-/// The root threads: open questions, open notes, then every comment, each in
-/// file order, with their replies oldest first.
+/// The root threads: open questions, open notes, then every comment, in file order, replies oldest first.
 fn threads(ai: &AiState) -> Vec<wire::Thread> {
     let questions = ai.questions.iter().flat_map(|q| &q.questions);
     let notes = ai.notes.iter().flat_map(|n| &n.notes);
@@ -532,9 +528,8 @@ fn rank(risk: &str) -> u8 {
     }
 }
 
-/// What a review of the same diff says about triage's call: its open
-/// findings and file risks regrade triage's files and add the ones it
-/// missed. None unless the review graded the diff triage is shown with.
+/// What a review of the same diff says about triage's call: its open findings and file
+/// risks regrade triage's files and add missed ones. None unless it graded the same diff.
 fn triage_review_update(
     review_fresh: bool,
     created_at: &str,
