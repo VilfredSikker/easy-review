@@ -84,7 +84,7 @@ impl SentFilesState {
     }
 
     /// Whether no view records a path.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "v1-service"))]
     pub(crate) fn is_empty(&self) -> bool {
         self.views.values().all(HashMap::is_empty)
     }
