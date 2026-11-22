@@ -9,7 +9,7 @@
 
   function expand() {
     app.cmd("select_file", { idx: row.sourceIndex });
-    app.cmd("toggle_compacted");
+    app.cmd("toggle_compacted", { path: row.filePath, compacted: false });
   }
 </script>
 

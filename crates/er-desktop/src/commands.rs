@@ -1081,7 +1081,33 @@ pub async fn request_file_preview(
     state: State<'_, AppState>,
 ) -> Result<FilePreviewResponse, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
+    run_blocking(move || file_preview(&state, path, expected_preview_context_key)).await
+}
+
+/// A document's text in the active view. With the flag on, a view the
+/// workspace loads is read from its content, never the App's tab.
+fn file_preview(
+    state: &AppState,
+    path: String,
+    expected_preview_context_key: String,
+) -> Result<FilePreviewResponse, String> {
+    #[cfg(feature = "v1-service")]
+    if let Some(entry) = crate::resources::preview::active(state) {
+        let preview = crate::resources::preview::document(
+            state,
+            &entry,
+            &path,
+            &expected_preview_context_key,
+        )
+        .map_err(|e| e.message)?;
+        return Ok(FilePreviewResponse {
+            path: preview.path,
+            text: preview.text,
+            preview_context_key: preview.preview_context_key,
+            preview_key: preview.preview_key,
+        });
+    }
+    {
         let (active_tab, request) = {
             let app = state.app.lock().map_err(|e| e.to_string())?;
             if app.tab().preview_context_key() != expected_preview_context_key {
@@ -1110,8 +1136,7 @@ pub async fn request_file_preview(
             preview_context_key: request.preview_context_key,
             preview_key: request.preview_key,
         })
-    })
-    .await
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1124,7 +1149,7 @@ pub struct ImagePreviewResponse {
     preview_key: String,
 }
 
-fn image_data_url(mime: &str, bytes: &[u8]) -> String {
+pub(crate) fn image_data_url(mime: &str, bytes: &[u8]) -> String {
     use base64::Engine as _;
     format!(
         "data:{mime};base64,{}",
@@ -1139,7 +1164,30 @@ pub async fn request_image_preview(
     state: State<'_, AppState>,
 ) -> Result<ImagePreviewResponse, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
+    run_blocking(move || image_preview(&state, path, expected_preview_context_key)).await
+}
+
+/// Both sides of an image change in the active view, read as
+/// `file_preview` reads a document.
+fn image_preview(
+    state: &AppState,
+    path: String,
+    expected_preview_context_key: String,
+) -> Result<ImagePreviewResponse, String> {
+    #[cfg(feature = "v1-service")]
+    if let Some(entry) = crate::resources::preview::active(state) {
+        let preview =
+            crate::resources::preview::image(state, &entry, &path, &expected_preview_context_key)
+                .map_err(|e| e.message)?;
+        return Ok(ImagePreviewResponse {
+            path: preview.path,
+            before: preview.before,
+            after: preview.after,
+            preview_context_key: preview.preview_context_key,
+            preview_key: preview.preview_key,
+        });
+    }
+    {
         let mime = er_engine::app::image_mime(&path).ok_or("This file is not an image")?;
         let (active_tab, request) = {
             let app = state.app.lock().map_err(|e| e.to_string())?;
@@ -1191,8 +1239,7 @@ pub async fn request_image_preview(
             preview_context_key,
             preview_key,
         })
-    })
-    .await
+    }
 }
 
 #[tauri::command]
@@ -12723,6 +12770,8 @@ mod tests {
     mod hunks_tests;
     #[cfg(not(feature = "v1-service"))]
     mod latency_tests;
+    #[cfg(feature = "v1-service")]
+    mod preview_tests;
     #[cfg(feature = "v1-service")]
     mod resource_tests;
     #[cfg(feature = "v1-service")]
