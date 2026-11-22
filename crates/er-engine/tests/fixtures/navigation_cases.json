@@ -1,0 +1,33 @@
+{
+  "about": "Selection moves over a tab's files and hunks. The engine's navigation functions (crates/er-engine/src/navigation.rs) and desktop-ui's port (desktop-ui/src/lib/navigation.ts) both answer every case, so the two cannot drift. A move is [kind] or [kind, index]; kind is stay, leave_watched, file, watched or snap.",
+  "file_moves": [
+    {"name":"start","file":0,"watched_sel":null,"visible":[0,2,4],"watched":[0,1],"next":["file",2],"prev":["watched",1]},
+    {"name":"middle","file":2,"watched_sel":null,"visible":[0,2,4],"watched":[0,1],"next":["file",4],"prev":["file",0]},
+    {"name":"end","file":4,"watched_sel":null,"visible":[0,2,4],"watched":[0,1],"next":["watched",0],"prev":["file",2]},
+    {"name":"wrap without watched","file":4,"watched_sel":null,"visible":[0,2,4],"watched":[],"next":["file",0],"prev":["file",2]},
+    {"name":"start without watched","file":0,"watched_sel":null,"visible":[0,2,4],"watched":[],"next":["file",2],"prev":["file",4]},
+    {"name":"filtered out","file":3,"watched_sel":null,"visible":[0,2,4],"watched":[0,1],"next":["snap",0],"prev":["snap",0]},
+    {"name":"first watched","file":4,"watched_sel":0,"visible":[0,2,4],"watched":[0,1],"next":["watched",1],"prev":["file",4]},
+    {"name":"last watched","file":4,"watched_sel":1,"visible":[0,2,4],"watched":[0,1],"next":["file",0],"prev":["watched",0]},
+    {"name":"watched with no diff","file":0,"watched_sel":1,"visible":[],"watched":[0,1],"next":["leave_watched"],"prev":["watched",0]},
+    {"name":"empty visible","file":0,"watched_sel":null,"visible":[],"watched":[0,1],"next":["watched",0],"prev":["stay"]},
+    {"name":"nothing at all","file":0,"watched_sel":null,"visible":[],"watched":[],"next":["stay"],"prev":["stay"]},
+    {"name":"a watched selection that is filtered out","file":0,"watched_sel":7,"visible":[0,2,4],"watched":[0,1],"next":["stay"],"prev":["stay"]},
+    {"name":"one file","file":5,"watched_sel":null,"visible":[5],"watched":[],"next":["file",5],"prev":["file",5]}
+  ],
+  "hunk_moves": [
+    {"current":0,"count":3,"next":1,"prev":null},
+    {"current":1,"count":3,"next":2,"prev":0},
+    {"current":2,"count":3,"next":null,"prev":1},
+    {"current":0,"count":0,"next":null,"prev":null}
+  ],
+  "unreviewed": [
+    {"name":"skips reviewed","file":0,"visible":[[0,false],[2,true],[4,false],[6,true]],"next":4},
+    {"name":"wraps","file":4,"visible":[[0,false],[2,true],[4,false],[6,true]],"next":0},
+    {"name":"a filtered-out selection counts as the first file","file":5,"visible":[[0,false],[2,true],[4,false],[6,true]],"next":4},
+    {"name":"the selected file comes last","file":0,"visible":[[0,false],[2,true]],"next":0},
+    {"name":"only the last file is unreviewed","file":0,"visible":[[0,true],[2,true],[4,false]],"next":4},
+    {"name":"every file reviewed","file":0,"visible":[[0,true],[2,true]],"next":null},
+    {"name":"no files","file":0,"visible":[],"next":null}
+  ]
+}

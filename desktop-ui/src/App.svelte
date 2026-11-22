@@ -5,6 +5,7 @@
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import "$lib/stores/diffResource.svelte";
   import "$lib/stores/reviewedResource.svelte";
+  import "$lib/stores/selectionResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { startNotices, stopNotices } from "$lib/stores/noticeFeed.svelte";
   import { initKeyboard } from "$lib/stores/keyboard";
