@@ -16,6 +16,7 @@ mod error;
 mod hunks;
 mod notice;
 mod resource;
+mod reviewed;
 mod risk;
 mod session;
 mod settings;
@@ -32,6 +33,7 @@ pub use notice::{Notice, NoticeLevel};
 pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
 };
+pub use reviewed::{PaintedView, TabReviewed};
 pub use risk::{MatchedRiskRule, Risk, RiskFile, RiskRule, RiskRuleSource, RiskTier};
 pub use session::{AppUpdate, Panel, Panels, Reviewer, Session, WatchStatus};
 pub use settings::{
