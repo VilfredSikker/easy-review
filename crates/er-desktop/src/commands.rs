@@ -14063,6 +14063,25 @@ mod tests {
         });
     }
 
+    /// Opens acme/widgets#7 as the registry's active tab, which the flag-on
+    /// GitHub routes read their tab from.
+    #[cfg(feature = "v1-service")]
+    fn open_remote_pr(state: &AppState) {
+        let tab = er_engine::tabs_record::TabDescriptor {
+            kind: er_engine::tabs_record::TabKind::RemotePr,
+            repo_root: String::new(),
+            branch: None,
+            pr_owner: Some("acme".into()),
+            pr_repo: Some("widgets".into()),
+            pr_number: Some(7),
+            pr_head_ref: None,
+            base_ref: None,
+            extra: Default::default(),
+        };
+        let opened = content_routes::open(state, tab, false);
+        assert!(opened.is_ok(), "{opened:?}");
+    }
+
     /// With the feature on, each sync and pending-review route sends its
     /// command for the active tab's PR to the service, whose scripted port
     /// answers. The flag-off bodies are not compiled in this build, so a
@@ -14101,12 +14120,7 @@ mod tests {
             state.service = Arc::new(crate::service::ServiceState::new(
                 er_engine::ports::Ports::with_github(github_port),
             ));
-            {
-                let mut app = state.app.lock().unwrap();
-                let tab = app.tab_mut();
-                tab.remote_repo = Some("acme/widgets".to_string());
-                tab.pr_number = Some(7);
-            }
+            open_remote_pr(&state);
 
             let synced = service_pull_github_comments(&state, false);
             assert!(synced.is_ok(), "sync: {synced:?}");
@@ -14177,12 +14191,7 @@ mod tests {
             state.service = Arc::new(crate::service::ServiceState::new(
                 er_engine::ports::Ports::with_github(github_port),
             ));
-            {
-                let mut app = state.app.lock().unwrap();
-                let tab = app.tab_mut();
-                tab.remote_repo = Some("acme/widgets".to_string());
-                tab.pr_number = Some(7);
-            }
+            open_remote_pr(&state);
 
             assert!(service_post_github_pr_comment(&state, "ship it").is_err());
             let target = ReviewLineTarget {

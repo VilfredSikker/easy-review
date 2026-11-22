@@ -179,13 +179,14 @@ fn a_pr_action_for_another_pr_is_refused_with_the_app_locked() {
 #[test]
 fn the_comment_tick_syncs_the_active_pr_with_the_app_locked() {
     with_pr_tab(|state, _, github| {
+        let before = github.calls().len();
         let ticked = while_the_app_is_locked(state, "the comment tick", |state| {
             crate::comment_tick::tick(state, &mut Default::default())
         });
         let (pr, _) = ticked.unwrap_or_else(|| panic!("the tick skipped"));
         assert_eq!(pr, ("acme".into(), "widgets".into(), 7));
         assert!(
-            !github.calls().is_empty(),
+            github.calls().len() > before,
             "the sync never reached the workspace's GitHub"
         );
     });

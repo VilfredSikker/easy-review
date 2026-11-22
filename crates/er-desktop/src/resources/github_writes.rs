@@ -55,8 +55,12 @@ pub fn pending_review(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
 ) -> Result<(u64, Resource), ErError> {
-    let key = resolve_tab_key(&desktop.service.app_registry().tabs_view(), wire)?;
-    let (content, _) = content_routes::keyed_content(desktop, key, None).map_err(refused)?;
+    // A read never loads: a tab with no content yet has no PR to ask about.
+    let entry = super::diff::listed(desktop, wire)?;
+    let content = desktop
+        .service
+        .content(entry.key, &entry.descriptor)
+        .ok_or_else(|| refused("The tab has not loaded yet".into()))?;
     let (pr, review) = er_service::read_pending_review(desktop.service.deps(), &content.context)
         .map_err(ErError::from)?;
     let review = PendingReview {

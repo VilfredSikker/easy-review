@@ -10,6 +10,13 @@ use std::time::Instant;
 /// Each PR's head OID at its last sync, and when.
 pub type Synced = HashMap<(String, String, u64), (String, Instant)>;
 
+/// The PR a tick sent a sync for, and the workspace's reply.
+#[cfg(feature = "v1-service")]
+pub type Ticked = (
+    (String, String, u64),
+    Result<er_service::Reply, er_service::WorkspaceError>,
+);
+
 /// Starts the tick on its own thread.
 #[cfg(feature = "v1-service")]
 pub fn spawn(state: crate::commands::AppState) {
@@ -28,13 +35,7 @@ pub fn spawn(state: crate::commands::AppState) {
 /// against the same head in the last 90 seconds. Answers the PR it sent the
 /// sync for and the workspace's reply; none when it sent nothing.
 #[cfg(feature = "v1-service")]
-pub fn tick(
-    state: &crate::commands::AppState,
-    synced: &mut Synced,
-) -> Option<(
-    (String, String, u64),
-    Result<er_service::Reply, er_service::WorkspaceError>,
-)> {
+pub fn tick(state: &crate::commands::AppState, synced: &mut Synced) -> Option<Ticked> {
     let desktop = &state.desktop;
     let tabs = desktop.service.app_registry().tabs_view();
     let entry = tabs.active_entry()?;
