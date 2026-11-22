@@ -322,7 +322,13 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::DeleteFindingResponse { .. }
         | Command::ToggleChecklistItem { .. }
         | Command::DeleteReviewArtifact { .. }
-        | Command::DeleteDiagram { .. }) => {
+        | Command::DeleteDiagram { .. }
+        | Command::AddUiAnnotation { .. }
+        | Command::SaveAnnotationScreenshot { .. }
+        | Command::DeleteUiAnnotation { .. }
+        | Command::ClearUiAnnotationsForPage { .. }
+        | Command::ClearUiAnnotations { .. }
+        | Command::UpdateUiAnnotationAnchors { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),
