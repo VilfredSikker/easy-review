@@ -44,8 +44,8 @@ pub use app_registry::{
     TabsView,
 };
 pub use content::{
-    AiSection, DiffMeta, DiffSection, FreshnessSection, PrSection, ReviewedSection, ScopeStats,
-    SidecarStamp, TabContent,
+    loads, AiSection, DiffMeta, DiffSection, FreshnessSection, PrSection, ReviewedSection,
+    ScopeStats, SidecarStamp, TabContent,
 };
 pub use diff_resource::{diff_load_error, diff_resource, diff_version, DiffInputs};
 pub use flows::read_flow_run;
