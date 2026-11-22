@@ -16,6 +16,7 @@ import { captureHistoryFlowOrigin, openArenaHistory } from "$lib/arenaHistory";
 import { refreshOverlayIfCurrent } from "$lib/arenaOverlayRefresh";
 import { importableFindings, runDigest } from "$lib/arena/arenaView";
 import { diffNav } from "$lib/stores/diffNav.svelte";
+import { arenaAdapter } from "$lib/stores/arenaResource.svelte";
 import type {
   ArenaProgressState,
   ArenaRunDigest,
@@ -187,20 +188,18 @@ class ArenaStore {
     try {
       const groups = config.agent_groups;
       if (config.mode === "agents" && groups?.length) {
-        const runIds = await invoke<string[]>("arena_start_batch", {
-          req: {
-            scope: config.scope,
-            files: config.files,
-            rounds: config.rounds != null ? Number(config.rounds) : undefined,
-            arbiter: config.arbiter,
-            confirm: config.confirm ?? false,
-            effort: config.effort,
-            groups: groups.map((g) => ({
-              agent_kind: g.agent_kind,
-              models: g.models,
-              title: g.title,
-            })),
-          },
+        const runIds = await arenaAdapter.start({
+          scope: config.scope,
+          files: config.files,
+          rounds: config.rounds != null ? Number(config.rounds) : undefined,
+          arbiter: config.arbiter,
+          confirm: config.confirm ?? false,
+          effort: config.effort,
+          groups: groups.map((g) => ({
+            agent_kind: g.agent_kind,
+            models: g.models,
+            title: g.title,
+          })),
         });
         this.liveRuns = runIds.map((runId, i) => ({
           runId,
@@ -210,19 +209,18 @@ class ArenaStore {
         this.liveRunId = runIds[0] ?? null;
       } else {
         const reviewers = config.reviewers ?? [];
-        const runId = await invoke<string>("arena_start", {
-          req: {
-            title: config.title,
-            reviewers,
-            scope: config.scope,
-            files: config.files,
-            rounds: config.rounds != null ? Number(config.rounds) : undefined,
-            arbiter: config.arbiter,
-            confirm: config.confirm ?? false,
-            agent_kind: config.agent_kind,
-            effort: config.effort,
-          },
+        const [runId] = await arenaAdapter.start({
+          title: config.title,
+          reviewers,
+          scope: config.scope,
+          files: config.files,
+          rounds: config.rounds != null ? Number(config.rounds) : undefined,
+          arbiter: config.arbiter,
+          confirm: config.confirm ?? false,
+          agent_kind: config.agent_kind,
+          effort: config.effort,
         });
+        if (!runId) throw new Error("The arena start named no run");
         this.liveRuns = [{ runId, title: config.title }];
         this.liveRunId = runId;
       }
@@ -252,7 +250,7 @@ class ArenaStore {
    */
   async validateFindings(): Promise<string | null> {
     try {
-      const runId = await invoke<string | null>("arena_validate_findings");
+      const runId = await arenaAdapter.validateFindings();
       if (runId) {
         app.showToast("success", "Validating findings — one arbiter pass");
       } else {
@@ -298,7 +296,7 @@ class ArenaStore {
           ),
         );
       } else {
-        n = await invoke<number>("arena_accept_findings", { req: route.request });
+        n = await arenaAdapter.acceptFindings(route.request.run_id, route.request.finding_ids);
       }
       app.showToast("success", `Accepted ${n} finding(s) into Review`);
       if (this.overlayRunId === runId) {
@@ -320,9 +318,7 @@ class ArenaStore {
     const label = agentLabelFromSnapshot(snap);
     try {
       const result = await performUnlessSeeded(snap, () =>
-        invoke<number>("arena_accept_findings", {
-          req: { run_id: runId, finding_ids: undefined },
-        }),
+        arenaAdapter.acceptFindings(runId),
       );
       if (result.kind === "readOnlyVerification") {
         app.showToast("info", seededVerificationNotice(snap));
@@ -380,10 +376,7 @@ class ArenaStore {
     }
     arenaLog("store: refreshLiveRun", { runId: id });
     try {
-      const [snap, prog] = await Promise.all([
-        invoke<ArenaRunSnapshot>("arena_get", { runId: id }),
-        invoke<ArenaProgressState>("arena_progress", { runId: id }),
-      ]);
+      const [snap, prog] = await Promise.all([arenaAdapter.get(id), arenaAdapter.progress(id)]);
       this.liveSnapshot = normalizeArenaSnapshot(snap);
       this.progress = prog;
       this.liveRunStates = { [id]: { snapshot: this.liveSnapshot, progress: prog } };
@@ -477,8 +470,8 @@ class ArenaStore {
       this.liveRuns.map(async (entry) => {
         try {
           const [snap, prog] = await Promise.all([
-            invoke<ArenaRunSnapshot>("arena_get", { runId: entry.runId }),
-            invoke<ArenaProgressState>("arena_progress", { runId: entry.runId }),
+            arenaAdapter.get(entry.runId),
+            arenaAdapter.progress(entry.runId),
           ]);
           next[entry.runId] = {
             snapshot: normalizeArenaSnapshot(snap),
@@ -557,7 +550,7 @@ class ArenaStore {
     if (ids.length === 0) return;
     arenaLog("store: cancelRun", { runIds: ids });
     try {
-      await Promise.all(ids.map((runId) => invoke("arena_cancel", { runId })));
+      await Promise.all(ids.map((runId) => arenaAdapter.cancel(runId)));
       this.runningOpen = false;
       this.runningMinimized = false;
       this.runStartedAt = null;
@@ -580,7 +573,7 @@ class ArenaStore {
     // Confirmation is handled inline by the caller (two-step button); native
     // confirm() is a no-op in the Tauri webview.
     try {
-      await invoke("arena_delete", { runId });
+      await arenaAdapter.delete(runId);
       if (this.overlayRunId === runId) {
         this.overlayOpen = false;
         this.overlayRunId = null;
@@ -616,9 +609,7 @@ class ArenaStore {
     }
     try {
       const opened = await openArenaHistory(id, currentFlow, {
-        loadArena: async (historyRunId) => normalizeArenaSnapshot(
-          await invoke<ArenaRunSnapshot>("arena_get", { runId: historyRunId }),
-        ),
+        loadArena: async (historyRunId) => normalizeArenaSnapshot(await arenaAdapter.get(historyRunId)),
         loadFlow: async (origin) => normalizeArenaSnapshot(
           await invoke<ArenaRunSnapshot>("flow_get_run", { erDir: origin.erDir, runId: origin.runId }),
         ),
@@ -668,14 +659,7 @@ class ArenaStore {
     }
     try {
       const snap = normalizeArenaSnapshot(
-        await invoke<ArenaRunSnapshot>("arena_override", {
-          req: {
-            run_id: runId,
-            finding_id: findingId,
-            verdict: "kept",
-            note: "Kept by the reviewer despite the arbiter",
-          },
-        }),
+        await arenaAdapter.override(runId, findingId, "kept", "Kept by the reviewer despite the arbiter"),
       );
       if (this.overlayRunId === runId) {
         this.overlaySnapshot = snap;
@@ -707,7 +691,7 @@ class ArenaStore {
     const known = this.digests[runId];
     if (known) return known;
     try {
-      const snap = normalizeArenaSnapshot(await invoke<ArenaRunSnapshot>("arena_get", { runId }));
+      const snap = normalizeArenaSnapshot(await arenaAdapter.get(runId));
       this.rememberDigest(snap);
       return this.digests[runId] ?? null;
     } catch (e) {
@@ -767,7 +751,7 @@ class ArenaStore {
         async () => {
           const snap = requested.flowOrigin
             ? await invoke<ArenaRunSnapshot>("flow_get_run", { erDir: requested.flowOrigin.erDir, runId: id })
-            : await invoke<ArenaRunSnapshot>("arena_get", { runId: id });
+            : await arenaAdapter.get(id);
           const normalized = normalizeArenaSnapshot(snap);
           if (normalized.run.id !== id) throw new Error("Arena refresh returned a different run");
           return normalized;

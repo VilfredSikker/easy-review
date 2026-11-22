@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import { openDiffFilePicker } from "$lib/components/AiReviewFilesModal.svelte";
   import { arena, type ArenaStartConfig } from "$lib/stores/arena.svelte";
+  import { arenaAdapter } from "$lib/stores/arenaResource.svelte";
   import { app } from "$lib/stores/app.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { triageRecommendedPaths } from "$lib/triageSuggestions";
@@ -243,14 +243,12 @@
     estimateError = null;
     const { scope: gitScope, files } = startScopePayload();
     try {
-      const result = await invoke<ArenaEstimate>("arena_estimate", {
-        req: {
-          reviewers,
-          scope: gitScope,
-          files: scope === "selected" ? files : undefined,
-          rounds: effectiveRounds,
-          arbiter: arbiterOn ? arbiterRef ?? undefined : undefined,
-        },
+      const result = await arenaAdapter.estimate({
+        reviewers,
+        scope: gitScope,
+        files: scope === "selected" ? files : undefined,
+        rounds: effectiveRounds,
+        arbiter: arbiterOn ? arbiterRef ?? undefined : undefined,
       });
       if (seq !== estimateSeq) return;
       estimate = result;
