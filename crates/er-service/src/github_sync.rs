@@ -72,10 +72,10 @@ pub(crate) fn apply(fetched: Fetched) -> Result<Applied, WorkspaceError> {
             } = *sync;
             let result = apply_comment_sync(&store, &sync, fetched)
                 .map_err(|error| failed("write the pulled comments", error))?;
-            let patch = ContentPatch::Sidecar {
-                dir: context.comments_dir.clone(),
-                payload: WrittenPayload::Comments(result.gc),
-            };
+            let patch = ContentPatch::stored_sidecar(
+                &context.comments_dir,
+                WrittenPayload::Comments(result.gc),
+            );
             Ok(Applied {
                 reply: Reply::CommentsSynced {
                     github_count: result.github_count,

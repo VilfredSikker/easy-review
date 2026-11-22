@@ -30,13 +30,36 @@ pub(crate) struct Reloaded {
     reply: ReplySender,
 }
 
+/// Starts a reload's read off the actor thread.
+pub(crate) type Spawn = fn(Box<dyn FnOnce() + Send>) -> std::io::Result<()>;
+
+/// Unnamed, like every effect thread (see `actor::spawn_effect`).
+fn spawn_thread(read: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+    thread::Builder::new().spawn(read).map(drop)
+}
+
 /// The tabs whose reload is running. Lives on the actor thread.
-#[derive(Default)]
 pub(crate) struct SidecarReloads {
     running: HashSet<TabKey>,
+    spawn: Spawn,
+}
+
+impl Default for SidecarReloads {
+    fn default() -> Self {
+        Self::with_spawn(spawn_thread)
+    }
 }
 
 impl SidecarReloads {
+    pub(crate) fn with_spawn(spawn: Spawn) -> Self {
+        Self {
+            running: HashSet::new(),
+            spawn,
+        }
+    }
+
+    /// Starts a read of `key`'s sidecars. A read that cannot start leaves
+    /// no key behind, so the next reload runs.
     pub(crate) fn start(
         &mut self,
         deps: &WorkspaceDeps,
@@ -58,9 +81,8 @@ impl SidecarReloads {
             }));
             return;
         }
-        let (deps, tx) = (deps.clone(), tx.clone());
-        // Unnamed, like every effect thread (see `actor::spawn_effect`).
-        let _ = thread::Builder::new().spawn(move || {
+        let (deps, tx, failed) = (deps.clone(), tx.clone(), reply.clone());
+        let read = Box::new(move || {
             let ai = crate::effect::reload_ai(&deps, &content, false);
             let since = content.ai.revision;
             let _ = tx.send(ActorMsg::Reloaded(Box::new(Reloaded {
@@ -70,6 +92,11 @@ impl SidecarReloads {
                 reply,
             })));
         });
+        if let Err(error) = (self.spawn)(read) {
+            self.running.remove(&key);
+            let message = format!("start the sidecar read: {error}");
+            let _ = failed.send(Err(WorkspaceError::Failed(message)));
+        }
     }
 
     /// Applies a finished read. A read that found nothing new, or whose AI

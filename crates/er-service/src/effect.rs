@@ -21,8 +21,8 @@ use er_engine::tabs_record::TabDescriptor;
 use crate::actor::WorkspaceDeps;
 use crate::annotations::failed;
 use crate::content::{
-    AiSection, DiffMeta, DiffSection, LoadedDiff, LoadedTab, PrSection, ReloadedAi, ScopeStats,
-    SidecarStamp, TabContent,
+    read_stamped, AiSection, DiffMeta, DiffSection, LoadedDiff, LoadedTab, PrSection, ReloadedAi,
+    ScopeStats, SidecarStamp, TabContent,
 };
 use crate::freshness::RemoteTips;
 use crate::handle::WorkspaceError;
@@ -306,13 +306,12 @@ pub(crate) fn load_tab(
         .prev_ai
         .as_ref()
         .is_some_and(|ai| ai.state.has_data() || ai.state.has_questions() || ai.state.has_tour());
-    let reload = |diff_hash: &str, branch_diff_hash: &str| {
-        let stamp = ai::arbiter_overlay_stamp(&er_dir);
+    let reload = |stamp: &SidecarStamp, diff_hash: &str, branch_diff_hash: &str| {
         let mut state = ai::load_ai_state_with_arbiter(
             &er_dir,
             branch_diff_hash,
             id.storage_branch_scope(),
-            stamp.as_deref(),
+            stamp.arbiter.as_deref(),
         );
         let load = TabAiLoad {
             identity: id,
@@ -418,7 +417,9 @@ pub(crate) fn load_tab(
         (false, Some(_)) => diff_hash.clone(),
         (false, None) => input.prev_branch_diff_hash,
     };
-    let mut state = reload(&diff_hash, &branch_diff_hash);
+    let dirs = stamped_dirs(&er_dir, &comments_dir, &id, git);
+    let (ai_stamp, mut state) =
+        read_stamped(dirs, |stamp| reload(stamp, &diff_hash, &branch_diff_hash));
     // A branch view's refresh follows neither comments nor findings.
     if !branch_view {
         tab_refresh::relocate_all_comments(
@@ -451,9 +452,6 @@ pub(crate) fn load_tab(
         0
     };
 
-    // Read after the load's own writes (moved comments, cleared marks), so
-    // only a later writer moves it.
-    let ai_stamp = SidecarStamp::read(&er_dir);
     let pr = load_pr(
         deps,
         &tab,
@@ -527,27 +525,55 @@ pub(crate) fn reload_ai(
     always: bool,
 ) -> Option<ReloadedAi> {
     let er_dir = content.context.er_dir.as_str();
-    let stamp = SidecarStamp::read(er_dir);
-    if !always && !content.ai.stamp.moved_to(&stamp) {
-        return None;
+    let dirs = content.ai.stamp.dirs.clone();
+    let (stamp, state) = read_stamped(dirs, |stamp| {
+        if !always && !content.ai.stamp.moved_to(stamp) {
+            return None;
+        }
+        let id = content.tab.identity();
+        let mut state = ai::load_ai_state_with_arbiter(
+            er_dir,
+            &content.context.branch_diff_hash,
+            id.storage_branch_scope(),
+            stamp.arbiter.as_deref(),
+        );
+        let load = TabAiLoad {
+            identity: id,
+            git: &*deps.ports().git,
+            er_dir,
+            diff_hash: &content.context.diff_hash,
+            branch_diff_hash: &content.context.branch_diff_hash,
+        };
+        let prev = &content.ai.state;
+        assemble_tab_ai(&mut state, &load, prev.tour_stale, prev.stale_files.clone());
+        Some(state)
+    });
+    Some(ReloadedAi {
+        state: state?,
+        stamp,
+    })
+}
+
+/// The buckets a tab's AI state reads, the view's own first: the
+/// GitHub-comment bucket, then both tour buckets, each once.
+fn stamped_dirs(
+    er_dir: &str,
+    comments_dir: &str,
+    id: &er_engine::tab_identity::TabIdentity<'_>,
+    git: &dyn er_git::Git,
+) -> Vec<String> {
+    let tours = [id.tour_bucket_er_dir(git), id.cross_tour_bucket_er_dir(git)];
+    let mut dirs = vec![er_dir.to_string()];
+    for dir in [Some(comments_dir.to_string())]
+        .into_iter()
+        .chain(tours)
+        .flatten()
+    {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
     }
-    let id = content.tab.identity();
-    let mut state = ai::load_ai_state_with_arbiter(
-        er_dir,
-        &content.context.branch_diff_hash,
-        id.storage_branch_scope(),
-        stamp.arbiter.as_deref(),
-    );
-    let load = TabAiLoad {
-        identity: id,
-        git: &*deps.ports().git,
-        er_dir,
-        diff_hash: &content.context.diff_hash,
-        branch_diff_hash: &content.context.branch_diff_hash,
-    };
-    let prev = &content.ai.state;
-    assemble_tab_ai(&mut state, &load, prev.tour_stale, prev.stale_files.clone());
-    Some(ReloadedAi { state, stamp })
+    dirs
 }
 
 /// Drops the marks whose file left the diff or changed since it was marked,

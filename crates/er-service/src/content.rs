@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -153,8 +154,16 @@ impl TabContent {
     }
 
     /// This content with one stored sidecar adopted, when it reads that
-    /// sidecar's bucket.
-    fn with_sidecar(&self, dir: &str, payload: &WrittenPayload, revision: u64) -> Option<Self> {
+    /// sidecar's bucket. The stamp takes the file's mtime as the write left
+    /// it, so the next reload does not read this write back; every other
+    /// file keeps the mtime it was read at, so an outside write still shows.
+    fn with_sidecar(
+        &self,
+        dir: &str,
+        payload: &WrittenPayload,
+        written: Option<SystemTime>,
+        revision: u64,
+    ) -> Option<Self> {
         let reads = match payload {
             WrittenPayload::Questions(_) | WrittenPayload::Notes(_) => self.context.er_dir == dir,
             WrittenPayload::Comments(_) => self.context.comments_dir == dir,
@@ -164,8 +173,10 @@ impl TabContent {
         }
         let mut state = self.ai.state.clone();
         payload.clone().adopt(&mut state);
-        // The stamp stays: the next reload reads this write back once.
-        let stamp = self.ai.stamp.clone();
+        let stamp = self
+            .ai
+            .stamp
+            .with_written(&sidecar_path(dir, payload), written);
         Some(Self {
             ai: Arc::new(AiSection {
                 revision,
@@ -315,32 +326,86 @@ pub struct PrSection {
     pub head_oid: Option<String>,
 }
 
-/// When a bucket's sidecars last changed, as an external writer leaves them.
+/// The sidecars a tab's AI state was read from, file by file, as an
+/// external writer leaves them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SidecarStamp {
-    pub latest: Option<SystemTime>,
+    /// The buckets read, the view's own first: the GitHub-comment bucket and
+    /// the tour buckets follow, each once.
+    pub dirs: Vec<String>,
+    /// Each sidecar in those buckets that exists, with its mtime.
+    pub files: BTreeMap<PathBuf, SystemTime>,
+    /// The view's arbiter overlay, which the AI state was read under.
     pub arbiter: Option<Vec<u8>>,
 }
 
+/// Files a bucket holds beside the sidecars `er_mtimes` lists.
+const STAMPED_BESIDE: [&str; 2] = ["arbiter.json", "finding-promotions.json"];
+
 impl SidecarStamp {
-    pub(crate) fn read(er_dir: &str) -> Self {
+    fn read(dirs: Vec<String>) -> Self {
+        let mut files = BTreeMap::new();
+        for dir in &dirs {
+            files.extend(ai::er_mtimes(dir));
+            files.extend(STAMPED_BESIDE.iter().filter_map(|name| {
+                let path = Path::new(dir).join(name);
+                let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
+                Some((path, mtime))
+            }));
+        }
+        let arbiter = dirs.first().and_then(|dir| ai::arbiter_overlay_stamp(dir));
         Self {
-            latest: ai::latest_er_mtime(er_dir),
-            arbiter: ai::arbiter_overlay_stamp(er_dir),
+            dirs,
+            files,
+            arbiter,
         }
     }
 
-    /// Whether the sidecars moved between `self` and `now`: one is newer,
-    /// the first appeared, the last was deleted, or the arbiter changed.
+    /// Whether any sidecar moved between `self` and `now`: one changed,
+    /// appeared or went, or the arbiter changed.
     pub(crate) fn moved_to(&self, now: &Self) -> bool {
-        if self.arbiter != now.arbiter {
-            return true;
-        }
-        match now.latest {
-            Some(latest) => self.latest.is_none_or(|last| latest > last),
-            None => self.latest.is_some(),
-        }
+        self != now
     }
+
+    /// This stamp with `path` as a write left it, when a stamped bucket holds
+    /// it.
+    fn with_written(&self, path: &Path, written: Option<SystemTime>) -> Self {
+        let mut next = self.clone();
+        if self
+            .dirs
+            .iter()
+            .any(|dir| path.parent() == Some(Path::new(dir)))
+        {
+            match written {
+                Some(mtime) => next.files.insert(path.to_path_buf(), mtime),
+                None => next.files.remove(path),
+            };
+        }
+        next
+    }
+}
+
+/// Reads the stamp of `dirs`, then runs `read` under it. The stamp comes
+/// first, so a write landing during the read leaves the stamp behind the
+/// files and the next reload reads it; never the other way round, where the
+/// stamp would take a write the read missed.
+pub(crate) fn read_stamped<T>(
+    dirs: Vec<String>,
+    read: impl FnOnce(&SidecarStamp) -> T,
+) -> (SidecarStamp, T) {
+    let stamp = SidecarStamp::read(dirs);
+    let read = read(&stamp);
+    (stamp, read)
+}
+
+/// The file a sidecar write stores in `dir`.
+pub(crate) fn sidecar_path(dir: &str, payload: &WrittenPayload) -> PathBuf {
+    let name = match payload {
+        WrittenPayload::Questions(_) => "questions.json",
+        WrittenPayload::Notes(_) => "notes.json",
+        WrittenPayload::Comments(_) => "github-comments.json",
+    };
+    Path::new(dir).join(name)
 }
 
 /// What a load effect read, before the actor puts it behind `Arc`s.
@@ -411,10 +476,12 @@ pub(crate) enum ContentPatch {
         since: u64,
         ai: Box<ReloadedAi>,
     },
-    /// A sidecar a write stored in `dir`.
+    /// A sidecar a write stored in `dir`, with the file's mtime after the
+    /// write; none when the file is gone.
     Sidecar {
         dir: String,
         payload: WrittenPayload,
+        written: Option<SystemTime>,
     },
     /// The reviewed marks a write saved in `er_dir`.
     Reviewed {
@@ -431,6 +498,21 @@ pub(crate) enum ContentPatch {
         key: TabKey,
     },
     Several(Vec<ContentPatch>),
+}
+
+impl ContentPatch {
+    /// The patch for a sidecar just stored in `dir`, with the file's mtime
+    /// as the store left it. Built on the effect thread that wrote it.
+    pub(crate) fn stored_sidecar(dir: &str, payload: WrittenPayload) -> Self {
+        let written = std::fs::metadata(sidecar_path(dir, &payload))
+            .and_then(|meta| meta.modified())
+            .ok();
+        Self::Sidecar {
+            dir: dir.to_string(),
+            payload,
+            written,
+        }
+    }
 }
 
 /// Why a patch was not applied.
@@ -541,9 +623,13 @@ pub(crate) fn apply(
             }
             0
         }
-        ContentPatch::Sidecar { dir, payload } => {
+        ContentPatch::Sidecar {
+            dir,
+            payload,
+            written,
+        } => {
             for content in tabs.values_mut() {
-                if let Some(next) = content.with_sidecar(&dir, &payload, revision) {
+                if let Some(next) = content.with_sidecar(&dir, &payload, written, revision) {
                     *content = Arc::new(next);
                 }
             }
