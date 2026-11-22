@@ -3070,7 +3070,10 @@ pub async fn delete_thread(
 }
 
 /// Remove all question/github threads linked to a finding (`finding_ref`), keeping the finding.
-fn finding_linked_thread_ids(ai: &er_engine::ai::AiState, finding_id: &str) -> Vec<String> {
+pub(crate) fn finding_linked_thread_ids(
+    ai: &er_engine::ai::AiState,
+    finding_id: &str,
+) -> Vec<String> {
     let mut ids = Vec::new();
     if let Some(qs) = ai.questions.as_ref() {
         for q in &qs.questions {
@@ -12756,6 +12759,8 @@ mod tests {
     mod diff_command_tests;
     #[cfg(feature = "v1-service")]
     mod diff_resource_tests;
+    #[cfg(feature = "v1-service")]
+    mod finding_write_tests;
     #[cfg(feature = "v1-service")]
     mod hunks_tests;
     #[cfg(not(feature = "v1-service"))]

@@ -11,7 +11,7 @@ use er_protocol::{
     Ack, Command, ErError, ErErrorKind, LineTarget, PaintedView, ResourceChanged, ResourceKey,
     ResourceVersion,
 };
-use er_service::{AnnotationKind, AnnotationTarget, Reply, TabContent};
+use er_service::{AnnotationKind, AnnotationTarget, Reply, ReviewArtifact, TabContent};
 
 use super::tabs::Routed;
 use crate::commands::content_routes;
@@ -202,6 +202,117 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
                 }
             })),
         ),
+        Command::DismissFinding {
+            tab,
+            view,
+            finding_id,
+        } => (
+            tab,
+            view,
+            service(Box::new(move |context| {
+                er_service::Command::DismissFinding {
+                    context,
+                    finding_id,
+                }
+            })),
+        ),
+        Command::SetFindingResolved {
+            tab,
+            view,
+            finding_id,
+            resolved,
+        } => (
+            tab,
+            view,
+            service(Box::new(move |context| {
+                er_service::Command::SetFindingResolved {
+                    context,
+                    finding_id,
+                    resolved,
+                }
+            })),
+        ),
+        Command::RemoveFindingThread {
+            tab,
+            view,
+            finding_id,
+        } => return Routed::Applied(remove_finding_thread(desktop, tab, &view, finding_id)),
+        Command::UpdateFindingResponse {
+            tab,
+            view,
+            finding_id,
+            response_id,
+            body,
+        } => (
+            tab,
+            view,
+            service(Box::new(move |context| {
+                er_service::Command::UpdateFindingResponse {
+                    context,
+                    finding_id,
+                    response_id,
+                    body,
+                }
+            })),
+        ),
+        Command::DeleteFindingResponse {
+            tab,
+            view,
+            finding_id,
+            response_id,
+        } => (
+            tab,
+            view,
+            service(Box::new(move |context| {
+                er_service::Command::DeleteFindingResponse {
+                    context,
+                    finding_id,
+                    response_id,
+                }
+            })),
+        ),
+        Command::ToggleChecklistItem {
+            tab,
+            view,
+            index: at,
+        } => (
+            tab,
+            view,
+            service(Box::new(move |context| {
+                er_service::Command::ToggleChecklistItem {
+                    context,
+                    index: index(at),
+                }
+            })),
+        ),
+        Command::DeleteReviewArtifact {
+            tab,
+            view,
+            artifact,
+        } => {
+            let artifact = match artifact.as_str() {
+                "triage" => ReviewArtifact::Triage,
+                "review" => ReviewArtifact::Review,
+                other => {
+                    let unknown = format!("Unknown review artifact kind: {other}");
+                    return Routed::Applied(Err(refused(unknown)));
+                }
+            };
+            (
+                tab,
+                view,
+                service(Box::new(move |context| {
+                    er_service::Command::DeleteReviewArtifact { context, artifact }
+                })),
+            )
+        }
+        Command::DeleteDiagram { tab, view, id } => (
+            tab,
+            view,
+            service(Box::new(move |context| {
+                er_service::Command::DeleteDiagram { context, id }
+            })),
+        ),
         other => return Routed::Other(other),
     };
     Routed::Applied(write(desktop, tab, Some(&view), build).map(|(ack, _)| ack))
@@ -258,8 +369,39 @@ fn delete_thread(
             id: thread,
         })
     })?;
+    drop_pending_replies(desktop, &mut ack, &[id]);
+    Ok(ack)
+}
+
+/// Deletes the threads linked to a finding, then the ask-AI replies still
+/// being written for them, read from the content the write was sent with.
+fn remove_finding_thread(
+    desktop: &DesktopState,
+    wire: er_protocol::TabKey,
+    view: &PaintedView,
+    finding_id: String,
+) -> Result<Ack, ErError> {
+    let mut pending = Vec::new();
+    let (mut ack, _) = write(desktop, wire, Some(view), |content| {
+        let ai = &content.ai.state;
+        pending = crate::commands::finding_linked_thread_ids(ai, &finding_id);
+        pending.extend(er_engine::ai::find_finding_thread_root(ai, &finding_id));
+        Ok(er_service::Command::RemoveFindingThread {
+            context: content.context.clone(),
+            finding_id,
+        })
+    })?;
+    drop_pending_replies(desktop, &mut ack, &pending);
+    Ok(ack)
+}
+
+/// Drops the in-flight ask-AI replies keyed by `ids`, and names `jobs` in
+/// `ack` when that moved it.
+fn drop_pending_replies(desktop: &DesktopState, ack: &mut Ack, ids: &[String]) {
     let before = super::jobs::version(desktop);
-    desktop.pending_ai_replies.remove([id.as_str()]);
+    desktop
+        .pending_ai_replies
+        .remove(ids.iter().map(String::as_str));
     let after = super::jobs::version(desktop);
     if after != before {
         ack.changed.push(ResourceChanged {
@@ -267,7 +409,6 @@ fn delete_thread(
             version: ResourceVersion(after),
         });
     }
-    Ok(ack)
 }
 
 struct DocumentThread {

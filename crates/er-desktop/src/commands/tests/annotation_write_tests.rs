@@ -20,7 +20,7 @@ use crate::commands::{content_routes, AppState};
 use crate::service::actor_key;
 use crate::snapshot::PendingAiReply;
 
-fn annotations(state: &AppState, key: TabKey) -> (u64, Annotations) {
+pub(super) fn annotations(state: &AppState, key: TabKey) -> (u64, Annotations) {
     let tab = er_service::wire_tab_key(key);
     let fetched = crate::resources::fetch(&state.desktop, ResourceKey::Annotations { tab })
         .unwrap_or_else(|e| panic!("{e:?}"));
@@ -30,7 +30,7 @@ fn annotations(state: &AppState, key: TabKey) -> (u64, Annotations) {
     }
 }
 
-fn view(state: &AppState, key: TabKey) -> PaintedView {
+pub(super) fn view(state: &AppState, key: TabKey) -> PaintedView {
     annotations(state, key).1.view
 }
 
