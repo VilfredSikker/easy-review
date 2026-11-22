@@ -61,7 +61,7 @@ pub use freshness::{BaseBehind, Divergence, Freshness, RemoteTips};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use host::{ReplyReceiver, ServiceHost};
 pub use hunks::{file_hunks, read_hunks, HunkRead};
-pub use pending_review::OWN_PR_APPROVAL_REFUSED;
+pub use pending_review::{read_pending_review, OWN_PR_APPROVAL_REFUSED};
 pub use pr_resource::{pr_resource, pr_version};
 pub use protocol::{
     AcceptanceDiff, AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event,

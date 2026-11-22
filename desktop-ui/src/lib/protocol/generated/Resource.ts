@@ -11,6 +11,7 @@ import type { ImagePreview } from "./ImagePreview";
 import type { Inbox } from "./Inbox";
 import type { Jobs } from "./Jobs";
 import type { Panels } from "./Panels";
+import type { PendingReview } from "./PendingReview";
 import type { PrStatus } from "./PrStatus";
 import type { Projects } from "./Projects";
 import type { Prs } from "./Prs";
@@ -30,4 +31,4 @@ import type { Worktrees } from "./Worktrees";
 /**
  * One resource's content, tagged with the kind of key it answers.
  */
-export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "available_branches" } & AvailableBranches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk | { "kind": "prs" } & Prs | { "kind": "available_prs" } & AvailablePrs | { "kind": "worktrees" } & Worktrees | { "kind": "inbox" } & Inbox | { "kind": "session" } & Session | { "kind": "panels" } & Panels | { "kind": "view" } & TabView | { "kind": "diff" } & TabDiff | { "kind": "hunks" } & FileHunks | { "kind": "reviewed" } & TabReviewed | { "kind": "file_preview" } & FilePreview | { "kind": "image_preview" } & ImagePreview | { "kind": "diff_paths" } & DiffPaths | { "kind": "annotations" } & Annotations | { "kind": "ui_annotations" } & UiAnnotations | { "kind": "jobs" } & Jobs | { "kind": "review_json" } & ReviewJson | { "kind": "review_revisions" } & ReviewRevisions | { "kind": "annotation_screenshot" } & AnnotationScreenshot | { "kind": "pr" } & TabPr | { "kind": "pr_status" } & PrStatus;
+export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "available_branches" } & AvailableBranches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk | { "kind": "prs" } & Prs | { "kind": "available_prs" } & AvailablePrs | { "kind": "worktrees" } & Worktrees | { "kind": "inbox" } & Inbox | { "kind": "session" } & Session | { "kind": "panels" } & Panels | { "kind": "view" } & TabView | { "kind": "diff" } & TabDiff | { "kind": "hunks" } & FileHunks | { "kind": "reviewed" } & TabReviewed | { "kind": "file_preview" } & FilePreview | { "kind": "image_preview" } & ImagePreview | { "kind": "diff_paths" } & DiffPaths | { "kind": "annotations" } & Annotations | { "kind": "ui_annotations" } & UiAnnotations | { "kind": "jobs" } & Jobs | { "kind": "review_json" } & ReviewJson | { "kind": "review_revisions" } & ReviewRevisions | { "kind": "annotation_screenshot" } & AnnotationScreenshot | { "kind": "pr" } & TabPr | { "kind": "pr_status" } & PrStatus | { "kind": "pending_review" } & PendingReview;

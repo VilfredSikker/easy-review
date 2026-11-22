@@ -46,7 +46,8 @@ pub use hunks::{FileHunks, Hunk, HunkLine};
 pub use jobs::{AiReplyJob, Jobs};
 pub use notice::{Notice, NoticeLevel};
 pub use pr::{
-    CheckRun, GithubStatus, PrCard, PrStatus, RepoMerge, Stack, StackLayer, StatusComment,
+    CheckRun, GithubStatus, MergeMethod, PendingReview, PendingReviewComment, PrAction, PrCard,
+    PrStatus, PrTarget, RepoMerge, ReviewLine, ReviewRequest, Stack, StackLayer, StatusComment,
     StatusReview, StatusReviewer, TabPr,
 };
 pub use preview::{DiffPaths, FilePreview, ImagePreview};

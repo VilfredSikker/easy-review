@@ -34,6 +34,20 @@ pub(crate) fn get(deps: &WorkspaceDeps, context: TabContext) -> Result<Fetched, 
     read_back(deps, context, pr, false)
 }
 
+/// The viewer's pending review on the tab's PR, read on the caller's thread.
+/// It writes nothing, so a reader needs no actor.
+pub fn read_pending_review(
+    deps: &WorkspaceDeps,
+    context: &TabContext,
+) -> Result<(PrRef, er_github::PendingReview), WorkspaceError> {
+    let pr = pr_target(deps, context)?;
+    let review = deps
+        .ports()
+        .github
+        .pending_review(&pr.owner, &pr.repo, pr.number)?;
+    Ok((pr, review))
+}
+
 pub(crate) fn add_comment(
     deps: &WorkspaceDeps,
     context: TabContext,
