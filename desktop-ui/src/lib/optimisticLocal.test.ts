@@ -899,7 +899,7 @@ const INBOX_WRITES: string[] = [
 /** P57 takes these off the flag path; `reviewedAdapter.test.ts` holds that. */
 const BULK_REVIEWS: string[] = ["bulk_review_pillar", "unbulk_review_pillar"];
 
-/** The thread and finding writes leave it too; `annotationWrites.test.ts` holds what they paint. */
+/** The annotation writes leave it too; `annotationWrites.test.ts` holds what they paint. */
 const THREAD_WRITES: string[] = [
   "add_question",
   "add_note",
@@ -915,6 +915,8 @@ const THREAD_WRITES: string[] = [
   "remove_finding_thread",
   "delete_finding_response",
   "update_finding_response",
+  "add_ui_annotation",
+  "delete_ui_annotation",
 ];
 
 describe("the PR pins and Ignore with the flag on", () => {

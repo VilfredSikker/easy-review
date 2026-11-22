@@ -132,6 +132,37 @@ describe("the annotation writes with the flag on", () => {
     expect(sent.map((c) => ("resolved" in c ? c.resolved : null)).filter((r) => r !== null)).toEqual([true, false]);
   });
 
+  it("paint nothing for the browser annotation writes, each sent as its command keyed to the painted view", async () => {
+    const { sent, writes, settle } = harness(ai([]));
+    const added = { url: "/a", selector: "#save", bbox: [1, 2, 3, 4], viewport: [800, 600], text: "moved", domContext: { tag: "button" } };
+    for (const [command, args] of [
+      ["add_ui_annotation", added],
+      ["delete_ui_annotation", { id: "ui-1" }],
+      ["clear_ui_annotations_for_page", { pageUrl: "/a" }],
+      ["clear_ui_annotations", {}],
+      ["update_ui_annotation_anchors", { updates: [{ id: "ui-1", fresh: false, new_box: [5, 6, 7, 8] }] }],
+    ] as const) {
+      expect(isOptimisticCommand(command, true), command).toBe(false);
+      const done = writes.route(command, args);
+      expect(writes.paints(), command).toEqual([]);
+      await settle();
+      await done;
+    }
+    expect(sent.map((c) => c.kind)).toEqual([
+      "add_ui_annotation",
+      "delete_ui_annotation",
+      "clear_ui_annotations_for_page",
+      "clear_ui_annotations",
+      "update_ui_annotation_anchors",
+    ]);
+    const add = sent[0] as Extract<Command, { kind: "add_ui_annotation" }>;
+    expect(add.view).toEqual(VIEW);
+    expect(add.annotation.domContextJson).toBe('{"tag":"button"}');
+    expect(add.annotation.clientId?.startsWith("ui-")).toBe(true);
+    const anchors = sent[4] as Extract<Command, { kind: "update_ui_annotation_anchors" }>;
+    expect(anchors.updates).toEqual([{ id: "ui-1", fresh: false, newBox: [5, 6, 7, 8] }]);
+  });
+
   it("show a reply to a finding with no thread as a new thread, under the id the server takes", async () => {
     const { sent, writes, settle } = harness(ai([], [finding(null)]));
     const done = writes.route("reply_to_finding", { findingId: "f-1", body: "agreed", aiAssist: false });
