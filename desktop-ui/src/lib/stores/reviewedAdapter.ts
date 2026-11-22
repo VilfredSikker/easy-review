@@ -30,7 +30,9 @@ function pendingId(tab: TabKey, path: string): string {
  * The active tab's reviewed marks and counts: the snapshot's with the flag
  * off, `reviewed(tab)`'s with it on. The server counts (A8); a click's
  * checkmark shows at once and stays pending until its `Ack`'s versions are
- * held, and a refused write takes it back. In the views the App loads
+ * held, and a refused write takes it back. A write waits for `reviewed(tab)`:
+ * until the page paints the active tab's marks, the rows it shows can be the
+ * tab the registry left, so a click there would land on the wrong tab. In the views the App loads
  * (History, Conflicts, Hidden) the count stays the snapshot's.
  */
 export class ReviewedAdapter {
@@ -91,9 +93,10 @@ export class ReviewedAdapter {
     return this.held()?.paths.includes(path) ?? false;
   }
 
-  /** Paints the checkmark, sends the write, and drops the paint once the `Ack` lands or the write is refused. */
+  /** Paints the checkmark, sends the write, and drops the paint once the `Ack`'s versions are held or the write is refused. */
   private async mark(tab: TabKey, path: string, wanted: boolean | null): Promise<void> {
     if (!path) return;
+    if (!this.held()) throw new Error("The reviewed marks have not loaded yet");
     const reviewed = wanted ?? !this.shows(tab, path);
     if (wanted !== null && this.shows(tab, path) === wanted) return;
     const id = pendingId(tab, path);
