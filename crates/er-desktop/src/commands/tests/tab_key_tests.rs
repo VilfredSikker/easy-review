@@ -655,8 +655,9 @@ fn a_paint_is_refused_while_the_app_lags_the_registry() {
 /// `route_annotation` checks the App's tab against the registry's, so while
 /// the App still shows the tab the registry left, a write sent through it is
 /// refused, and the registry's new tab keeps its mark. `reply_to_github_thread`
-/// sends through it. The reviewed writes do not: they send without the
-/// painted tab's key, so the unmark here is only a write whose effect the
+/// sends through it. The reviewed writes do not: on `er_send` they carry the
+/// painted tab's key (`reviewed_resource_tests`), and the old commands stay
+/// unkeyed until P62.2, so the unmark here is only a write whose effect the
 /// marks show.
 #[test]
 fn route_annotation_refuses_a_write_while_the_app_lags_the_registry() {
