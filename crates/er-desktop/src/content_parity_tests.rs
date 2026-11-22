@@ -207,8 +207,8 @@ struct Observed {
     /// The fields `diff(tab)` carries, as the snapshot names them: from the
     /// snapshot on the App's side, from the resource builder on the other.
     resource: Value,
-    /// The snapshot's `ai` on the App's side, `annotations(tab)` on the
-    /// other.
+    /// The snapshot's `ai`, `tour` and `other_bucket` on the App's side,
+    /// `annotations(tab)` on the other.
     annotations: Value,
 }
 
@@ -565,7 +565,11 @@ fn through_tab_state(
             &crate::snapshot::SnapshotSources::default(),
         );
         let mut resource = serde_json::to_value(&snapshot)?;
-        let annotations = json!({ "ai": resource["ai"] });
+        let annotations = json!({
+            "ai": resource["ai"],
+            "tour": resource["tour"],
+            "other_bucket": resource["other_bucket"],
+        });
         let tab = app.tab();
         // The snapshot names no built-from head: the stale pill compares the
         // tab's `last_diff_head_oid` with the PR head, so that stands in.
@@ -764,9 +768,15 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
     }
 }
 
-/// `annotations(tab)` against the snapshot's `ai`, naming the fields that
-/// differ.
+/// `annotations(tab)` against the snapshot's `ai`, `tour` and
+/// `other_bucket`, naming the fields that differ.
 fn assert_annotations(service: &Value, app: &Value, case: &str) {
+    for part in ["tour", "other_bucket"] {
+        assert_eq!(
+            service[part], app[part],
+            "{case}: annotations' {part} differs"
+        );
+    }
     let (s, a) = (&service["ai"], &app["ai"]);
     let fields = a
         .as_object()
@@ -823,6 +833,10 @@ fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
         let listed = ai[part].as_array().is_some_and(|rows| !rows.is_empty());
         assert!(listed, "{case}: no {part} in the annotations");
     }
+    assert!(
+        app.annotations["tour"]["available"] == true,
+        "{case}: no tour"
+    );
     assert!(app.tour != Value::Null, "{case}: the tour did not load");
     assert!(app.staleness.0, "{case}: the older review was not stale");
     let document = app
@@ -840,6 +854,10 @@ fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
         // The parity drops nulls, so a head both sides lost would pass it.
         // `pr_diff_head_oid` stays null here: a restored local PR tab has no
         // remote slug to read a preview head with, on either side.
+        // The PR diff's other view is the branch, whose bucket the fixture
+        // leaves empty: the summary still names it.
+        let other = &app.annotations["other_bucket"];
+        assert_eq!(other["view"], "branch", "{case}: no other bucket");
         let built_from = app.resource.get("built_from_head_oid");
         let built_from = built_from.and_then(Value::as_str);
         assert_eq!(built_from, Some(PR_HEAD), "{case}: no built-from head");

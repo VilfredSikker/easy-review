@@ -426,7 +426,8 @@ pub enum Watched {
     /// A listed tab's `diff(tab)`: every section its rows read, or its load
     /// failure.
     TabDiff(TabKey),
-    /// A loaded tab's `annotations(tab)`, built from its AI section.
+    /// A loaded tab's `annotations(tab)`: its AI section, reviewed marks
+    /// and mode.
     Annotations(TabKey),
     /// A loaded tab's browser annotations.
     UiAnnotations(TabKey),
