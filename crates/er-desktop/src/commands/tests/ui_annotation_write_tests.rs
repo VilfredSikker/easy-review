@@ -3,10 +3,12 @@
 //! tab's view bucket with the App locked, and moves `ui_annotations(tab)`.
 
 use std::path::Path;
+use std::sync::Barrier;
 
 use er_engine::TabKey;
 use er_protocol::{
-    AnchorUpdate, Command, ErErrorKind, NewUiAnnotation, PaintedView, Resource, ResourceKey,
+    Ack, AnchorUpdate, Command, ErErrorKind, NewUiAnnotation, PaintedView, Resource, ResourceKey,
+    UiAnnotation,
 };
 
 use super::annotation_write_tests::view;
@@ -14,6 +16,8 @@ use super::annotations_resource_tests::branch_view_of_a_pr;
 use super::diff_command_tests::{send, with_tab};
 use super::diff_resource_tests::with_storage;
 use crate::commands::AppState;
+use crate::resources::tabs::Routed;
+use crate::resources::ui_annotation_writes;
 
 /// A one-pixel PNG's bytes do not matter here; the data URL's shape does.
 const SHOT: &str = "data:image/png;base64,iVBORw0KGgo=";
@@ -40,17 +44,27 @@ fn add(key: TabKey, view: PaintedView, id: &str, url: &str) -> Command {
     }
 }
 
-fn rows(state: &AppState, key: TabKey) -> (u64, Vec<String>) {
+/// A write's own effect, read from the rows the fetch answers and its `Ack`.
+type Check<'a> = Box<dyn Fn(&[UiAnnotation], &Ack) + 'a>;
+
+fn fetched(state: &AppState, key: TabKey) -> (u64, Vec<UiAnnotation>) {
     let tab = er_service::wire_tab_key(key);
     let fetched = crate::resources::fetch(&state.desktop, ResourceKey::UiAnnotations { tab })
         .unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
-        Resource::UiAnnotations(ui) => (
-            fetched.version.0,
-            ui.rows.into_iter().map(|r| r.id).collect(),
-        ),
+        Resource::UiAnnotations(ui) => (fetched.version.0, ui.rows),
         other => panic!("not the browser annotations: {other:?}"),
     }
+}
+
+fn row<'a>(rows: &'a [UiAnnotation], id: &str) -> &'a UiAnnotation {
+    rows.iter()
+        .find(|r| r.id == id)
+        .unwrap_or_else(|| panic!("no row {id}"))
+}
+
+fn boxed(row: &UiAnnotation) -> [f64; 4] {
+    [row.box_x, row.box_y, row.box_w, row.box_h]
 }
 
 fn ids_in(dir: &str) -> Vec<String> {
@@ -107,78 +121,140 @@ fn the_browser_annotation_writes_land_in_the_view_bucket_never_the_pr_bucket() {
 }
 
 /// With the App locked, each write answers, moves `ui_annotations(tab)` to
-/// the version its `Ack` names, and leaves the rows it should.
+/// the version its `Ack` names, and leaves the rows and files it should, as
+/// the `ui_annotations(tab)` fetch and the view bucket show them.
 #[test]
 fn each_browser_annotation_write_moves_ui_annotations_with_the_app_locked() {
-    with_tab(|state, (key, _)| {
+    with_tab(|state, (key, tab)| {
         let painted = view(state, key);
-        let tab = er_service::wire_tab_key(key);
+        let wire = er_service::wire_tab_key(key);
+        let content = state.service.content(key, &tab).expect("the tab's content");
+        let er_dir = content.context.er_dir.clone();
+        let shot_of = |id: &str| {
+            Path::new(&er_dir)
+                .join("screenshots")
+                .join(format!("{id}.png"))
+        };
+        let moved = [5.0, 6.0, 70.0, 20.0];
         let anchors = vec![AnchorUpdate {
             id: "ui-2".into(),
             fresh: false,
-            new_box: None,
+            new_box: Some(moved),
         }];
-        let writes: [(&str, Command, &[&str]); 7] = [
-            ("add", add(key, painted.clone(), "ui-1", "/a"), &["ui-1"]),
+        let unshot = Command::AddUiAnnotation {
+            tab: wire,
+            view: painted.clone(),
+            annotation: Box::new(NewUiAnnotation {
+                screenshot_data_url: None,
+                ..annotation("ui-3", "/b")
+            }),
+        };
+        let writes: Vec<(&str, Command, &[&str], Check<'_>)> = vec![
+            (
+                "add",
+                add(key, painted.clone(), "ui-1", "/a"),
+                &["ui-1"],
+                Box::new(|_, _| assert!(shot_of("ui-1").exists(), "add saved no screenshot")),
+            ),
             (
                 "add another",
                 add(key, painted.clone(), "ui-2", "/b"),
                 &["ui-1", "ui-2"],
+                Box::new(|rows, _| {
+                    let added = row(rows, "ui-2");
+                    assert!(!added.stale, "a new row is stale");
+                    assert_eq!(boxed(added), [1.0, 2.0, 30.0, 10.0]);
+                }),
+            ),
+            (
+                "add one with no screenshot",
+                unshot,
+                &["ui-1", "ui-2", "ui-3"],
+                Box::new(|rows, _| {
+                    assert_eq!(row(rows, "ui-3").screenshot_path, None);
+                    assert!(!shot_of("ui-3").exists(), "a screenshot nobody sent");
+                }),
             ),
             (
                 "anchors",
                 Command::UpdateUiAnnotationAnchors {
-                    tab,
+                    tab: wire,
                     view: painted.clone(),
                     updates: anchors,
                 },
-                &["ui-1", "ui-2"],
+                &["ui-1", "ui-2", "ui-3"],
+                Box::new(|rows, _| {
+                    let anchored = row(rows, "ui-2");
+                    assert!(anchored.stale, "the anchor update left ui-2 fresh");
+                    assert_eq!(boxed(anchored), moved, "the anchor update moved no box");
+                }),
             ),
             (
                 "screenshot",
                 Command::SaveAnnotationScreenshot {
-                    tab,
+                    tab: wire,
                     view: painted.clone(),
-                    id: "ui-1".into(),
+                    id: "ui-3".into(),
                     data_url: SHOT.into(),
                 },
-                &["ui-1", "ui-2"],
-            ),
-            (
-                "delete",
-                Command::DeleteUiAnnotation {
-                    tab,
-                    view: painted.clone(),
-                    id: "ui-1".into(),
-                },
-                &["ui-2"],
+                &["ui-1", "ui-2", "ui-3"],
+                Box::new(|rows, ack| {
+                    let saved = std::fs::canonicalize(shot_of("ui-3"))
+                        .unwrap_or_else(|e| panic!("no screenshot in the view bucket: {e}"));
+                    let created = ack.created.as_deref().map(Path::new);
+                    assert_eq!(created, Some(saved.as_path()), "the Ack names another file");
+                    assert_eq!(
+                        row(rows, "ui-3").screenshot_path,
+                        ack.created,
+                        "the row does not point at its screenshot"
+                    );
+                }),
             ),
             (
                 "clear page",
                 Command::ClearUiAnnotationsForPage {
-                    tab,
+                    tab: wire,
                     view: painted.clone(),
                     page_url: "/a".into(),
                 },
+                &["ui-2", "ui-3"],
+                Box::new(|_, _| {
+                    assert!(
+                        !shot_of("ui-1").exists(),
+                        "the cleared row's screenshot stayed"
+                    )
+                }),
+            ),
+            (
+                "delete",
+                Command::DeleteUiAnnotation {
+                    tab: wire,
+                    view: painted.clone(),
+                    id: "ui-3".into(),
+                },
                 &["ui-2"],
+                Box::new(|_, _| {}),
             ),
             (
                 "clear all",
                 Command::ClearUiAnnotations {
-                    tab,
+                    tab: wire,
                     view: painted.clone(),
                 },
                 &[],
+                Box::new(|_, _| {}),
             ),
         ];
-        for (name, command, left) in writes {
-            let (before, _) = rows(state, key);
+        for (name, command, left, check) in writes {
+            let (before, _) = fetched(state, key);
 
             let ack = send(state, name, command).unwrap_or_else(|e| panic!("{name}: {e:?}"));
 
-            let (after, ids) = rows(state, key);
+            let (after, rows) = fetched(state, key);
             assert!(after > before, "{name} moved no version");
+            let ids: Vec<_> = rows.iter().map(|r| r.id.as_str()).collect();
             assert_eq!(ids, left, "{name}");
+            check(&rows, &ack);
             let named: Vec<_> = ack
                 .changed
                 .iter()
@@ -186,10 +262,57 @@ fn each_browser_annotation_write_moves_ui_annotations_with_the_app_locked() {
                 .collect();
             assert_eq!(
                 named,
-                [(ResourceKey::UiAnnotations { tab }, after)],
+                [(ResourceKey::UiAnnotations { tab: wire }, after)],
                 "{name}"
             );
         }
+    });
+}
+
+/// Writes sent together each land: 24 adds started at once leave 24 rows.
+/// The threads call the route itself, since `send` holds the App lock and
+/// would line them up on its own.
+#[test]
+fn browser_annotation_writes_sent_together_each_land() {
+    with_tab(|state, (key, _)| {
+        let painted = view(state, key);
+        let wire = er_service::wire_tab_key(key);
+        let mut ids: Vec<String> = (0..24).map(|n| format!("ui-{n}")).collect();
+        let start = Barrier::new(ids.len());
+
+        std::thread::scope(|scope| {
+            for id in &ids {
+                let (start, painted) = (&start, painted.clone());
+                scope.spawn(move || {
+                    let command = Command::AddUiAnnotation {
+                        tab: wire,
+                        view: painted,
+                        annotation: Box::new(NewUiAnnotation {
+                            screenshot_data_url: None,
+                            ..annotation(id, "/a")
+                        }),
+                    };
+                    start.wait();
+                    match ui_annotation_writes::apply(&state.desktop, command) {
+                        Routed::Applied(Ok(_)) => {}
+                        Routed::Applied(Err(e)) => panic!("{id}: {e:?}"),
+                        Routed::Other(_) => panic!("{id} was not a browser annotation write"),
+                    }
+                });
+            }
+        });
+
+        let (_, rows) = fetched(state, key);
+        let mut landed: Vec<String> = rows.into_iter().map(|r| r.id).collect();
+        landed.sort();
+        ids.sort();
+        assert_eq!(
+            landed,
+            ids,
+            "lost updates: {} of {} rows survived",
+            landed.len(),
+            ids.len()
+        );
     });
 }
 

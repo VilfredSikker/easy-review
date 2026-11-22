@@ -72,12 +72,18 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
 
 /// Writes in the view bucket of `wire`'s content, when it still shows
 /// `view`, then moves `ui_annotations` and answers it at its new version.
+/// The whole of it runs under `ui_annotations_io`, so two writes sent
+/// together land one after the other.
 fn written(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
     view: &PaintedView,
     write: BucketWrite<'_>,
 ) -> Result<Ack, ErError> {
+    let _writing = desktop
+        .ui_annotations_io
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = er_service::resolve_tab_key(&desktop.service.app_registry().tabs_view(), wire)?;
     let (content, _) = content_routes::keyed_content(desktop, key, Some(view)).map_err(refused)?;
     let created = write(&content.context.er_dir).map_err(refused)?;

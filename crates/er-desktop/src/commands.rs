@@ -13165,6 +13165,7 @@ mod tests {
             terminals: Arc::new(Mutex::new(HashMap::new())),
             pending_ai_replies: Default::default(),
             ui_annotations: Default::default(),
+            ui_annotations_io: Arc::default(),
             gh_status_cache,
             loading,
             gh_status_in_flight: Arc::new(Mutex::new(HashSet::new())),
