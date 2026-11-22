@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use er_engine::ai::{ErGithubComments, ErNotes, ErQuestions, ErReview, ErTour};
+use er_engine::ai::{ErChecklist, ErGithubComments, ErNotes, ErQuestions, ErReview, ErTour};
 use er_engine::app::{DiffMode, TabState};
 use er_engine::config::{FileKindRepoConfig, RiskRules};
 use er_engine::filter::parse_filter_expr;
@@ -267,6 +267,8 @@ struct Observed {
     /// names them: from the snapshot on the App's side, from the resource
     /// builders on the other.
     resource: Value,
+    /// The snapshot's `ai` on the App's side, `annotations(tab)` on the other.
+    annotations: Value,
 }
 
 /// The fields of a snapshot, or of a `diff(tab)`, that both must agree on.
@@ -367,6 +369,7 @@ struct Read<'a> {
     /// The mtimes and blob ids the keys read.
     stamps: (&'a HashMap<String, SystemTime>, &'a HashMap<String, String>),
     resource: Value,
+    annotations: Value,
 }
 
 /// The keys the snapshot reads, given the key functions of one reader.
@@ -399,6 +402,7 @@ fn observe(read: Read<'_>, er_dir: &str) -> anyhow::Result<Observed> {
     let (overview, commits, head) = read.pr;
     Ok(Observed {
         resource: resource_fields(&read.resource),
+        annotations: read.annotations,
         files: read
             .files
             .iter()
@@ -434,8 +438,8 @@ fn observe(read: Read<'_>, er_dir: &str) -> anyhow::Result<Observed> {
 }
 
 /// A review against an older diff with a high-risk file, a tour, a painted
-/// question on a line the fixture moved, a note, and marks: one current, one
-/// changed, one orphaned.
+/// question on a moved line, a note, a note's reply ordered before the comment's own
+/// reply, and marks: one current, one changed, one orphaned.
 fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Result<String> {
     let id = resolved.identity();
     let er_dir = id
@@ -444,16 +448,22 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
         .er_dir();
     let dir = Path::new(&er_dir);
     std::fs::create_dir_all(dir)?;
+    let reviewed = FRESH_REVIEW.with(|fresh| fresh.borrow().clone());
+    let reviewed = reviewed.as_deref().unwrap_or("older");
     write_sidecar_json::<ErReview>(
         dir,
         json!({
-            "version": 1, "diff_hash": "older",
+            "version": 1, "diff_hash": reviewed, "created_at": "t0",
             "files": {
                 "src/a.rs": { "risk": "high", "findings": [{
                     "id": "f-1", "severity": "high", "title": "claim",
-                    "hunk_index": 0, "line_start": 2
+                    "hunk_index": 0, "line_start": 2,
+                    "responses": [{ "id": "r-1", "timestamp": "t1", "text": "Checked" }]
                 }] },
-                "src/b.rs": { "risk": "low", "findings": [] }
+                "src/b.rs": { "risk": "low", "findings": [{
+                    "id": "f-2", "severity": "medium", "title": "fixed",
+                    "hunk_index": 0, "line_start": 9, "resolved": true
+                }] }
             },
             "file_hashes": { "src/a.rs": "older", "src/b.rs": "older" }
         }),
@@ -465,6 +475,10 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
                 "id": "q-painted", "file": "src/b.rs", "hunk_index": 0, "line_start": 9,
                 "line_content": "b-new", "text": "why?", "resolved": false,
                 "relocated_at_hash": "older"
+            }, {
+                "id": "q-reply", "file": "src/b.rs", "hunk_index": 0, "line_start": 9,
+                "line_content": "b-new", "text": "because", "in_reply_to": "q-painted",
+                "author": "ai", "timestamp": "t2", "ai_action": "ask"
             }]
         }),
     );
@@ -474,13 +488,51 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
             "version": 1, "diff_hash": "older", "notes": [{
                 "id": "n-1", "file": "src/a.rs", "hunk_index": 0, "line_start": 2,
                 "line_content": "a-new", "text": "check", "resolved": false
+            }, {
+                "id": "n-reply", "file": "src/a.rs", "text": "Still off",
+                "in_reply_to": "c-1", "timestamp": "t4"
             }]
         }),
     );
     write_sidecar_json::<ErGithubComments>(
         dir,
-        json!({ "version": 1, "diff_hash": "older", "comments": [] }),
+        json!({ "version": 1, "diff_hash": "older", "comments": [{
+            "id": "c-1", "file": "src/a.rs", "hunk_index": 0, "line_start": 2,
+            "line_content": "a-new", "comment": "Looks off", "source": "github",
+            "author": "octo", "github_id": 7, "finding_ref": "f-1"
+        }, {
+            "id": "c-2", "file": "src/a.rs", "comment": "Agreed", "source": "local",
+            "in_reply_to": "c-1", "timestamp": "t3"
+        }] }),
     );
+    write_sidecar_json::<ErChecklist>(
+        dir,
+        json!({ "version": 1, "diff_hash": "older", "items": [{
+            "id": "k-1", "text": "Check the auth path", "category": "auth",
+            "related_files": ["src/a.rs"], "related_findings": ["f-1"]
+        }] }),
+    );
+    write_sidecar_json::<er_engine::ai::TriageReview>(
+        dir,
+        json!({
+            "version": 1, "diff_hash": reviewed, "created_at": "t0",
+            "first_impression": "Small", "diff_stats": {
+                "files_changed": 2, "approx_risk": "medium", "domains": ["api"]
+            },
+            "verdict": { "primary": "general", "experts": [], "rationale": "r", "confidence": "high" },
+            "priority_files": [{ "path": "src/b.rs", "reason": "entry", "risk": "low" }]
+        }),
+    );
+    er_engine::test_support::write_sidecar_json_slot::<er_engine::ai::ErDiagram>(
+        dir,
+        er_store::DiagramId::new("flows")?,
+        json!({ "version": 1, "diff_hash": "older", "kind": "flows", "title": "Flow",
+                "mermaid": "graph TD; a-->b" }),
+    );
+    let promoted = [("f-1".to_string(), "77".to_string())]
+        .into_iter()
+        .collect();
+    er_engine::ai::save_finding_promotions(&er_dir, &promoted)?;
     if let Some(tour_dir) = id.tour_bucket_er_dir(git) {
         std::fs::create_dir_all(&tour_dir)?;
         write_sidecar_json::<ErTour>(
@@ -502,6 +554,11 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
     let store = er_engine::store_registry::store();
     er_engine::session_store::save_reviewed(&store, &er_store::Scope::dir(&er_dir)?, &marks)?;
     Ok(er_dir)
+}
+
+thread_local! {
+    /// The diff hash the fixture's review and triage name, unless a test sets the on-screen one.
+    static FRESH_REVIEW: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 fn resolved(
@@ -598,6 +655,7 @@ fn through_tab_state(
             &crate::snapshot::SnapshotSources::default(),
         );
         let mut resource = serde_json::to_value(&snapshot)?;
+        let annotations = json!({ "ai": resource["ai"] });
         let tab = app.tab();
         // The snapshot names no built-from head: the stale pill compares the
         // tab's `last_diff_head_oid` with the PR head, so that stands in.
@@ -627,6 +685,7 @@ fn through_tab_state(
                 preview_keys,
                 stamps: (&tab.mtime_cache, &tab.preview_blob_ids),
                 resource,
+                annotations,
             },
             &er_dir,
         )
@@ -731,6 +790,7 @@ fn through_the_workspace(
                 preview_keys,
                 stamps: (&stamps.mtimes, &stamps.blob_ids),
                 resource,
+                annotations: serde_json::to_value(er_service::annotations_resource(content))?,
             },
             &er_dir,
         )
@@ -769,6 +829,7 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
     );
     assert_eq!(service.ai, app.ai, "{case}: the AI state differs");
     assert_eq!(service.tour, app.tour, "{case}: the tour differs");
+    assert_annotations(&service.annotations, &app.annotations, case);
     assert_eq!(
         service.staleness, app.staleness,
         "{case}: the staleness differs"
@@ -806,6 +867,25 @@ fn assert_sections(service: &Observed, app: &Observed, case: &str) {
     }
 }
 
+/// `annotations(tab)` against the snapshot's `ai`, naming the fields that differ.
+fn assert_annotations(service: &Value, app: &Value, case: &str) {
+    let (s, a) = (&service["ai"], &app["ai"]);
+    let fields = a
+        .as_object()
+        .map(|map| map.keys().cloned().collect::<Vec<_>>());
+    let differing: Vec<String> = fields
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|k| s[k.as_str()] != a[k.as_str()])
+        .collect();
+    assert!(
+        differing.is_empty() && s == a,
+        "{case}: annotations' ai differs in {differing:?}:\n{}\nagainst\n{}",
+        json!(differing.iter().map(|k| &s[k.as_str()]).collect::<Vec<_>>()),
+        json!(differing.iter().map(|k| &a[k.as_str()]).collect::<Vec<_>>()),
+    );
+}
+
 /// Every section the fixture fills must hold something on the App's side,
 /// or a section both readers dropped would pass. AI, staleness and stamps are
 /// checked in part: the review, the stale flag and the mtimes.
@@ -837,6 +917,27 @@ fn assert_filled(app: &Observed, kind: &TabKind, lazy: bool, case: &str) {
         "{case}: the pruned marks were not saved"
     );
     assert!(app.ai[0] != Value::Null, "{case}: the review did not load");
+    let ai = &app.annotations["ai"];
+    for part in ["checklist", "triage"] {
+        assert!(ai[part].is_object(), "{case}: no {part} in the annotations");
+    }
+    for part in ["threads", "findings", "resolved_findings", "diagrams"] {
+        let listed = ai[part].as_array().is_some_and(|rows| !rows.is_empty());
+        assert!(listed, "{case}: no {part} in the annotations");
+    }
+    // The note's reply to c-1 is read before the comment's, at a later time.
+    let thread = ai["threads"]
+        .as_array()
+        .and_then(|threads| threads.iter().find(|t| t["id"] == "c-1"));
+    let replies: Vec<&Value> = thread
+        .and_then(|t| t["replies"].as_array())
+        .map(|rows| rows.iter().map(|r| &r["id"]).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        replies,
+        ["c-2", "n-reply"],
+        "{case}: c-1's replies, oldest first"
+    );
     assert!(app.tour != Value::Null, "{case}: the tour did not load");
     assert!(app.staleness.0, "{case}: the older review was not stale");
     let document = app
@@ -880,6 +981,23 @@ fn assert_parity(kind: TabKind, mode: DiffMode) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A review of the diff on screen regrades triage's call; both readers must agree on it.
+#[test]
+fn a_review_of_the_diff_on_screen_regrades_triage_alike() -> anyhow::Result<()> {
+    let hash = er_engine::ai::compute_diff_hash(&raw(false));
+    FRESH_REVIEW.with(|fresh| *fresh.borrow_mut() = Some(hash));
+    let (root, repo) = temp_repo()?;
+    let view = (&TabKind::Working, DiffMode::Branch);
+    let app = through_tab_state(view, 1, false, (root.path(), &repo), &[]);
+    let service = through_the_workspace(view, 1, false, (root.path(), &repo), &[]);
+    FRESH_REVIEW.with(|fresh| fresh.borrow_mut().take());
+    let (app, service) = (app?, service?);
+    assert_annotations(&service.annotations, &app.annotations, "a fresh review");
+    let update = &app.annotations["ai"]["triage"]["review_update"];
+    assert!(update.is_object(), "the review did not regrade triage");
+    Ok(())
+}
+
 #[test]
 fn a_plain_tab_loads_the_same_branch_view() -> anyhow::Result<()> {
     assert_parity(TabKind::Working, DiffMode::Branch)
@@ -910,7 +1028,10 @@ fn a_local_pr_tab_loads_the_same_pr_diff() -> anyhow::Result<()> {
 /// ones the branch view took, the service takes the view's own. Conflicts
 /// and Hidden leave out the preview keys too: the App keys them on the diff
 /// the tab showed before, which it keeps in those views, and the service on
-/// the view's own diff.
+/// the view's own diff. They leave out `relocated_at_hash` on a note with no
+/// line anchor as well: these views skip relocation, so the App shows the
+/// stamp its branch load set in memory and never wrote back, and the service
+/// the bucket as stored. desktop-ui does not read the field.
 fn in_own_view(mut observed: Observed, keyed: bool) -> Observed {
     observed.stamps = Default::default();
     if !keyed {
@@ -921,6 +1042,12 @@ fn in_own_view(mut observed: Observed, keyed: bool) -> Observed {
                 for row in rows.iter_mut().filter_map(Value::as_object_mut) {
                     row.remove("preview_key");
                 }
+            }
+        }
+        if let Some(Value::Array(notes)) = observed.ai[2].get_mut("notes") {
+            let unanchored = notes.iter_mut().filter(|n| n["line_start"].is_null());
+            for note in unanchored.filter_map(Value::as_object_mut) {
+                note.remove("relocated_at_hash");
             }
         }
     }

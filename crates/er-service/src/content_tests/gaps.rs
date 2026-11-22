@@ -384,6 +384,7 @@ fn a_load_applies_over_a_reload_but_not_over_a_write() -> Result<(), PatchRefuse
     let ai = Box::new(ReloadedAi {
         state: AiState::default(),
         stamp: SidecarStamp::default(),
+        extras: Default::default(),
     });
     state.apply_patch(ContentPatch::Ai { key, since, ai })?;
     let (since, _) = state.apply_patch(loaded(Some(since)))?;

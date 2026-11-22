@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    AnnotationScreenshot, AvailableBranches, AvailablePrs, Branches, DiffPaths, FileHunks,
-    FilePreview, ImagePreview, Inbox, Jobs, Panels, Projects, Prs, ReviewJson, ReviewRevisions,
-    Risk, Session, Settings, TabDiff, TabReviewed, TabRow, TabView, UiAnnotations, Worktrees,
+    AnnotationScreenshot, Annotations, AvailableBranches, AvailablePrs, Branches, DiffPaths,
+    FileHunks, FilePreview, ImagePreview, Inbox, Jobs, Panels, Projects, Prs, ReviewJson,
+    ReviewRevisions, Risk, Session, Settings, TabDiff, TabReviewed, TabRow, TabView, UiAnnotations,
+    Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -90,6 +91,8 @@ pub enum ResourceKey {
     },
     /// Every path a tab's diff holds, read on each fetch.
     DiffPaths { tab: TabKey },
+    /// One open tab's findings, threads, tour, checklist, triage and diagrams, by its key.
+    Annotations { tab: TabKey },
     /// One open tab's browser annotations, from its view's bucket.
     UiAnnotations { tab: TabKey },
     /// The app-wide work in flight.
@@ -126,6 +129,7 @@ pub enum Resource {
     FilePreview(FilePreview),
     ImagePreview(ImagePreview),
     DiffPaths(DiffPaths),
+    Annotations(Box<Annotations>),
     UiAnnotations(UiAnnotations),
     Jobs(Jobs),
     ReviewJson(ReviewJson),

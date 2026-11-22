@@ -19,6 +19,7 @@ use er_engine::tab_identity::{resolve_descriptor, DiffMode, ResolvedTab};
 use er_engine::tabs_record::TabDescriptor;
 
 use crate::actor::WorkspaceDeps;
+use crate::ai_extras::read_extras;
 use crate::annotations::failed;
 use crate::content::{
     read_stamped, AiSection, DiffMeta, DiffSection, LoadedDiff, LoadedTab, PrSection, ReloadedAi,
@@ -471,8 +472,10 @@ pub(crate) fn load_tab(
         (false, None) => input.prev_branch_diff_hash,
     };
     let dirs = stamped_dirs(&er_dir, &comments_dir, &id, git);
-    let (ai_stamp, mut state) =
-        read_stamped(dirs, |stamp| reload(stamp, &diff_hash, &branch_diff_hash));
+    let (ai_stamp, (mut state, ai_extras)) = read_stamped(dirs, |stamp| {
+        let state = reload(stamp, &diff_hash, &branch_diff_hash);
+        (state, read_extras(&er_dir))
+    });
     // A branch view's refresh follows neither comments nor findings, and
     // neither does a view with its own diff.
     if !branch_view && !own_view {
@@ -568,6 +571,7 @@ pub(crate) fn load_tab(
         file_hashes,
         ai: state,
         ai_stamp,
+        ai_extras,
         pr,
         freshness,
         history,
@@ -606,11 +610,13 @@ pub(crate) fn reload_ai(
         };
         let prev = &content.ai.state;
         assemble_tab_ai(&mut state, &load, prev.tour_stale, prev.stale_files.clone());
-        Some(state)
+        Some((state, read_extras(er_dir)))
     });
+    let (state, extras) = state?;
     Some(ReloadedAi {
-        state: state?,
+        state,
         stamp,
+        extras,
     })
 }
 

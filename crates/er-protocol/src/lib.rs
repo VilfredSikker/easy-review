@@ -27,7 +27,10 @@ mod sidebar;
 mod tabs;
 
 pub use annotations::{
-    AnnotationScreenshot, ReviewJson, ReviewRevision, ReviewRevisions, UiAnnotation, UiAnnotations,
+    AiAnnotations, AnnotationScreenshot, Annotations, Checklist, ChecklistItem, Diagram,
+    DiagramPreset, FileRisk, Finding, FindingResponse, ReviewJson, ReviewRevision, ReviewRevisions,
+    Thread, ThreadMessage, Triage, TriageGuard, TriagePriorityFile, TriageReviewUpdate,
+    TriageSensitiveReason, UiAnnotation, UiAnnotations,
 };
 pub use command::{Ack, Command, ProjectReviewSettingsPatch};
 pub use diff::{
