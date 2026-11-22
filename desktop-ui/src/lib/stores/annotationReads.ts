@@ -32,12 +32,16 @@ async function fetchOne(key: ResourceKey): Promise<Resource> {
   }
 }
 
-/** The active tab's review as the reviewer sees it, as JSON. */
+/**
+ * The active tab's review as the reviewer sees it, as JSON. The fetch answers
+ * none for a tab with no review; that rejects, as the old command does.
+ */
 export async function readReviewJson(): Promise<string> {
   const tab = fetchedTab();
   if (tab === null) return invoke<string>("read_review_json", { revisionId: null });
   const value = await fetchOne({ kind: "review_json", tab });
-  return value.kind === "review_json" ? value.json : "";
+  if (value.kind === "review_json" && value.json !== null) return value.json;
+  throw new Error("No review.json found");
 }
 
 /** The active tab's review revisions: at most the current one. */
