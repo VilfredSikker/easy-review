@@ -280,11 +280,14 @@ fn review_json_answers_none_for_a_tab_nothing_loaded_and_a_bucket_with_no_review
         let none = Resource::ReviewJson(ReviewJson::default());
 
         let unloaded = state_over(dir, ports());
-        let (key, _) = listed(&unloaded, dir, "fresh");
+        let (key, fresh) = listed(&unloaded, dir, "fresh");
         let wire = er_service::wire_tab_key(key);
         let fetched = resources::fetch(&unloaded.desktop, ResourceKey::ReviewJson { tab: wire });
         let fetched = fetched.unwrap_or_else(|e| panic!("an unloaded tab: {e:?}"));
         assert_eq!((fetched.version.0, &fetched.value), (0, &none));
+        wait_until("the load the fetch posted", || {
+            unloaded.service.content(key, &fresh).is_some()
+        });
 
         let (state, tab) = branch_view_of_a_pr(dir);
         let wire = er_service::wire_tab_key(tab.0);
