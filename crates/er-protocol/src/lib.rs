@@ -19,6 +19,7 @@ mod jobs;
 mod notice;
 mod preview;
 mod resource;
+mod reviewed;
 mod risk;
 mod session;
 mod settings;
@@ -43,6 +44,7 @@ pub use preview::{DiffPaths, FilePreview, ImagePreview};
 pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
 };
+pub use reviewed::{PaintedView, TabReviewed};
 pub use risk::{MatchedRiskRule, Risk, RiskFile, RiskRule, RiskRuleSource, RiskTier};
 pub use session::{AppUpdate, Panel, Panels, Reviewer, Session, WatchStatus};
 pub use settings::{
