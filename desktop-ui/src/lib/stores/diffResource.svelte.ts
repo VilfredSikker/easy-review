@@ -30,8 +30,8 @@ export const diffResource = new DiffAdapter({
   activeKey: () => tabsResource.activeKey,
   keyAt: (idx) => tabsResource.keyAt(idx),
   prHead: activePrHead,
-  // The threads come from `annotations(tab)` joined with `jobs`, and from the
-  // App's snapshot in the views the App loads, as `diff(tab)` names the view.
+  // The threads come from `annotations(tab)` joined with `jobs` in every view,
+  // and from the App's snapshot with the flag off or before they load.
   hunks: {
     get: (hash) => hunksResource.get(hash),
     threads: () => {

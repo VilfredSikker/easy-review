@@ -118,13 +118,25 @@ describe("the annotations adapter", () => {
     expect(held.fetchedTab()).toBe(TAB);
   });
 
-  it("keeps the App's snapshot while diff(tab) shows a view the App loads, whatever the App's mode", () => {
-    for (const mode of ["history", "conflicts", "hidden"]) {
-      const held = adapter(true, [[JOBS, inFlight], [annotationsKey(TAB), annotations], [diffKey(TAB), diffIn(mode)]]);
-      const raw = appSnapshot("branch");
-      expect(held.overlay(raw), mode).toBe(raw);
-      expect(held.threads(), mode).toBeNull();
-      expect(held.fetchedTab(), mode).toBeNull();
+  // The workspace loads every view, History included, so a visit to History
+  // and back reads annotations(tab) throughout. The App's mode stays at
+  // History, as a switch with the flag on never reaches it.
+  it("reads the AI cards, tour and threads from annotations(tab) in History, then Branch", () => {
+    const values = new Map<string, Versioned<Resource>>();
+    const put = (key: ResourceKey, value: Resource) => values.set(resourceKeyId(key), { key, version: 1, value });
+    const shown = new AnnotationsAdapter({ flagOn: true, store: { get: (key) => values.get(resourceKeyId(key)) }, activeKey: () => TAB });
+    const fetched = ai();
+    fetched.summary_markdown = "fetched";
+    const tour = (annotations as { tour: unknown }).tour;
+    put(JOBS, inFlight);
+    put(annotationsKey(TAB), { ...annotations, ai: fetched } as Resource);
+    for (const view of ["history", "branch"]) {
+      put(diffKey(TAB), diffIn(view));
+      const card = shown.overlay(appSnapshot("history"));
+      expect(card.ai.summary_markdown, view).toBe("fetched");
+      expect(card.tour, view).toEqual(tour as never);
+      expect(shown.threads()?.[0].replies.map((r) => r.body_markdown), view).toEqual([THINKING]);
+      expect(shown.fetchedTab(), view).toBe(TAB);
     }
   });
 

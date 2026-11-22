@@ -235,7 +235,7 @@ describe("resource source scans", () => {
     for (const kind of ["review_json", "review_revisions", "annotation_screenshot"]) {
       expect(reads).toContain(`kind: "${kind}"`);
     }
-    // The view comes from diff(tab), as the adapter reads it: the App's mode goes stale with the flag on.
+    // The tab comes from the adapter, which reads no view: the App's mode goes stale with the flag on.
     expect(reads.match(/annotationsResource\.fetchedTab\(\)/g)).toHaveLength(2);
     expect(reads).not.toMatch(/\bapp\b|\.mode\b/);
   });
