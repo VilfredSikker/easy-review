@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
+  import { loadHashedHunks } from "$lib/stores/diffResource.svelte";
   import { layoutPanels } from "$lib/stores/layoutPanels.svelte";
   import { tabSnapshotCacheKey } from "$lib/tabSnapshotCache";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
@@ -989,6 +990,11 @@
     for (const i of fresh) _requestingFiles.add(i);
     const reqView = lazyRequestView(app.snapshot);
     try {
+      // With the flag on, a file's hunks are fetched by the hash its row names.
+      if (await loadHashedHunks((app.snapshot?.files ?? []).filter((f) => fresh.includes(f.source_index)))) {
+        scheduleHighlightDrain();
+        return;
+      }
       const loaded = await invoke<FileSnapshot[]>("request_file_content", {
         sourceIndices: fresh,
       });

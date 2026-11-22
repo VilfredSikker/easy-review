@@ -64,6 +64,10 @@ export interface ThreadSnapshot {
   promoted_to: string | null;
   /** GitHub's numeric id when the comment is on the PR. */
   github_id?: number | null;
+  /** The hunk a thread with no line sits on. */
+  hunk_index?: number | null;
+  /** A LEFT thread's old-side line. */
+  old_line?: number | null;
 }
 
 export interface HunkSnapshot {

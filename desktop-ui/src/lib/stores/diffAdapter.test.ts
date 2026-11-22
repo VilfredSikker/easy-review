@@ -7,8 +7,9 @@ import type { FileRow } from "$lib/protocol/generated/FileRow";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabDiff } from "$lib/protocol/generated/TabDiff";
-import type { FileSnapshot } from "$lib/types";
-import { DiffAdapter, diffKey, prStale, tabIsStale, wireDiffCommand, type DiffSlice } from "./diffAdapter";
+import type { Hunk } from "$lib/protocol/generated/Hunk";
+import type { AppSnapshot, FileSnapshot, ThreadSnapshot } from "$lib/types";
+import { DiffAdapter, diffKey, prStale, tabIsStale, wireDiffCommand, type DiffSlice, type HunkSource } from "./diffAdapter";
 import { ResourceStore } from "./resourceStore";
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
@@ -80,8 +81,12 @@ function backend(answers: { version: number; value: Resource }[]) {
 
 const KEY = 7;
 
-function adapter(store: ResourceStore, opts: { flagOn?: boolean; snap?: DiffSlice | null; head?: string } = {}) {
+function adapter(
+  store: ResourceStore,
+  opts: { flagOn?: boolean; snap?: DiffSlice | null; head?: string; hunks?: HunkSource } = {},
+) {
   return new DiffAdapter({
+    hunks: opts.hunks,
     flagOn: opts.flagOn ?? true,
     store,
     snapshot: () => opts.snap ?? null,
@@ -275,5 +280,37 @@ describe("tabIsStale", () => {
     expect(tabIsStale(store, tab, true)).toBe(true);
     expect(tabIsStale(store, tab, false)).toBe(false);
     expect(tabIsStale(fresh, tab, true)).toBe(false);
+  });
+});
+
+describe("the hunks by hash", () => {
+  const HUNKS: Hunk[] = [{ header: "@@ -1,2 +1,2 @@", old_start: 1, old_count: 2, new_start: 1, new_count: 2, lines: [] }];
+  const root = { id: "q1", author: "You", kind: "you" as const, timestamp: "", body_markdown: "why?" };
+  const question: ThreadSnapshot = {
+    id: "q1", kind: "question", file: "src/a.rs", line: 1, side: "RIGHT", source: "local",
+    stale: false, resolved: false, root, replies: [], promoted_to: null,
+  };
+  /** The App's snapshot: its own hunks for a.rs, which the page no longer draws. */
+  const raw = { files: [{ ...file("src/a.rs"), hunks: [{ ...HUNKS[0], header: "@@ app @@", threads: [] }] }], ai: { threads: [question] } } as unknown as AppSnapshot;
+  const rows = [{ ...fileRow("src/a.rs"), cache_key: "ha" }, { ...fileRow("src/b.rs", 1), cache_key: "hb" }];
+  const source = (held: Record<string, Hunk[]>): HunkSource => ({ get: (hash) => held[hash], threads: () => [question] });
+
+  it("draws each file's hunks by the hash its row names, with the threads joined on, and lists a missing one as a stub", async () => {
+    const { store } = backend([{ version: 4, value: { kind: "diff", ...tabDiff({ files: rows }) } }]);
+    store.show(diffKey(KEY));
+    await settle();
+    const shown = adapter(store, { hunks: source({ ha: HUNKS }) }).overlay(raw);
+    const [a, b] = shown.files;
+    expect([a.path, a.is_lazy_stub, a.hunks.map((h) => h.header), a.hunks[0].threads.map((t) => t.id)]).toEqual(["src/a.rs", false, ["@@ -1,2 +1,2 @@"], ["q1"]]);
+    expect([b.path, b.is_lazy_stub, b.hunks]).toEqual(["src/b.rs", true, []]);
+  });
+
+  it("keeps the App's snapshot, hunks and all, in a view the workspace only records", async () => {
+    const { store } = backend([{ version: 4, value: { kind: "diff", ...tabDiff({ mode: "history", files: rows }) } }]);
+    store.show(diffKey(KEY));
+    await settle();
+    const diff = adapter(store, { hunks: source({ ha: HUNKS }) });
+    expect(diff.overlay(raw)).toBe(raw);
+    expect(diff.hashed()).toBe(false);
   });
 });
