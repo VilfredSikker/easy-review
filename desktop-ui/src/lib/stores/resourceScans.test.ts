@@ -234,4 +234,13 @@ describe("resource source scans", () => {
     expect(wiring).toMatch(/kind: "diff_paths"/);
     expect(read("lib/components/AiReviewFilesModal.svelte")).not.toContain('"list_diff_paths"');
   });
+
+  it("a jump to a thread or a finding fetches the target file's hunks before it scrolls", () => {
+    const dom = read("lib/dom.ts");
+    for (const [from, scroll] of [["navigateToThread", "scrollToThread"], ["navigateToFinding", "scrollToFinding"]]) {
+      const start = dom.indexOf(`export async function ${from}(`);
+      const body = dom.slice(start, dom.indexOf("\n}\n", start));
+      expect(body).toMatch(new RegExp(`await loadStub\\(fileSnap\\);[\\s\\S]*diffNav\\.${scroll}\\(`));
+    }
+  });
 });
