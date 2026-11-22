@@ -69,6 +69,11 @@ pub(crate) fn stack_source(
     Some(StackSource::PrChain { repo, head })
 }
 
+/// One stack lookup from `source`, through the GitHub port. Blocking.
+pub(crate) fn read_stack(deps: &WorkspaceDeps, source: &StackSource) -> er_engine::gh_stack::StackInfo {
+    er_engine::gh_stack::load_from_with(&*deps.ports().github, source)
+}
+
 fn load_pr_fields(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>) -> LoadedPr {
     let Some(number) = tab.pr_number else {
         return LoadedPr::default();

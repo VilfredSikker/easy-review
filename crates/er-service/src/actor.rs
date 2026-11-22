@@ -915,7 +915,7 @@ fn handle_command(
             };
             let deps = deps.clone();
             spawn_effect(tx, reply, move || {
-                let info = er_engine::gh_stack::load_from_with(&*deps.ports().github, &source);
+                let info = crate::tab_pr::read_stack(&deps, &source);
                 let stack = Box::new(crate::content::StackRead { source, info });
                 Ok(Effected::patched(
                     Reply::StackRead { key },
