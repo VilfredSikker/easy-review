@@ -70,7 +70,10 @@ pub(crate) fn stack_source(
 }
 
 /// One stack lookup from `source`, through the GitHub port. Blocking.
-pub(crate) fn read_stack(deps: &WorkspaceDeps, source: &StackSource) -> er_engine::gh_stack::StackInfo {
+pub(crate) fn read_stack(
+    deps: &WorkspaceDeps,
+    source: &StackSource,
+) -> er_engine::gh_stack::StackInfo {
     er_engine::gh_stack::load_from_with(&*deps.ports().github, source)
 }
 
