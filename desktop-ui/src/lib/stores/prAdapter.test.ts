@@ -12,23 +12,8 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 const KEY = 3;
 
 function row(number: number, headRef: string, baseRef = "main", state = "OPEN"): PrRow {
-  return {
-    number,
-    title: `#${number}`,
-    headRef,
-    baseRef,
-    headOid: "",
-    state,
-    isDraft: false,
-    author: "",
-    assignees: [],
-    reviewers: [],
-    checksState: null,
-    reviewDecision: null,
-    mergedAt: null,
-    updatedAt: "",
-    approvedByMe: false,
-  } as PrRow;
+  const rest = { headOid: "", isDraft: false, author: "", assignees: [], reviewers: [], updatedAt: "", approvedByMe: false };
+  return { number, title: `#${number}`, headRef, baseRef, state, checksState: null, reviewDecision: null, mergedAt: null, ...rest };
 }
 
 function list(remote: string, rows: PrRow[]): HeldPrs {
