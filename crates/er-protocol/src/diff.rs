@@ -12,8 +12,7 @@ use crate::MatchedRiskRule;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 pub struct TabDiff {
     /// `branch`, `unstaged`, `staged`, `history`, `conflicts`, `hidden`,
-    /// `pr` or `tour`. The three views the workspace only records carry no
-    /// files: the page reads those from the App until they load in the service.
+    /// `pr` or `tour`. In `history` the files are the selected commit's.
     pub mode: String,
     pub branch: String,
     pub base: String,
@@ -45,6 +44,28 @@ pub struct TabDiff {
     /// Why the tab's last load failed. Set only while nothing loaded; a
     /// refresh loads again.
     pub load_error: Option<String>,
+    /// The commit scroller's rows, newest first, in every view.
+    pub commits: Vec<CommitRow>,
+    /// The commit History shows; none in every other view.
+    pub selected_commit_sha: Option<String>,
+}
+
+/// One commit in the commit scroller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct CommitRow {
+    pub sha: String,
+    pub title: String,
+    pub author: String,
+    /// ISO 8601; the page shows it as a relative time.
+    pub committed_at: String,
+    /// None while the diffstat is unknown: a PR commit outside the local
+    /// object DB.
+    #[ts(type = "number | null")]
+    pub additions: Option<u64>,
+    #[ts(type = "number | null")]
+    pub deletions: Option<u64>,
+    /// On no remote yet.
+    pub unpushed: bool,
 }
 
 /// A branch view's base, built from one commit while origin's tip is another.

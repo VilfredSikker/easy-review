@@ -257,9 +257,8 @@ pub enum Command {
         id: String,
     },
     /// Shows a tab's diff in another view: `branch`, `unstaged`, `staged`,
-    /// `pr` (or `pr_diff`) or `tour`. History, Conflicts and Hidden keep
-    /// their old command, since the App loads them. `pr_number` is a PR the
-    /// header detected for a tab that has none.
+    /// `history`, `conflicts`, `hidden`, `pr` (or `pr_diff`) or `tour`.
+    /// `pr_number` is a PR the header detected for a tab that has none.
     SetDiffMode {
         tab: TabKey,
         mode: String,
@@ -281,6 +280,16 @@ pub enum Command {
     RefreshDiff {
         tab: TabKey,
         sync: bool,
+    },
+    /// Shows one commit of a tab's History, entering History when the tab
+    /// shows another view. A remote PR's commits are display-only.
+    SelectCommit {
+        tab: TabKey,
+        sha: String,
+    },
+    /// Leaves History for the view it was entered from.
+    ExitHistory {
+        tab: TabKey,
     },
     /// Syncs every open tab of a project's PR, after reading the PR again.
     SyncPr {
