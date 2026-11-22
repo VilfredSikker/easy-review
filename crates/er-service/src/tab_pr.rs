@@ -5,6 +5,7 @@
 //! loads; a sync (`force`) reads it again. Every read is best effort: a PR
 //! GitHub cannot describe still shows its diff.
 
+use er_engine::gh_stack::StackSource;
 use er_engine::git::CommitInfo;
 use er_engine::github::PrOverviewData;
 use er_engine::pr_open_entry::PR_COMMIT_CACHE_LIMIT;
@@ -29,8 +30,46 @@ pub(crate) struct PrLoad<'a> {
     pub adopt_head_oid: Option<String>,
 }
 
-/// The PR section of a load of `tab`.
+/// The PR section of a load of `tab`. The stack the tab held is kept while
+/// the tab still reads it from the same place.
 pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>) -> LoadedPr {
+    let held = load.prev.and_then(|prev| prev.stack.clone());
+    let mut loaded = load_pr_fields(deps, tab, load);
+    let source = stack_source(tab, loaded.overview.as_ref());
+    loaded.stack = held.filter(|read| source.as_ref() == Some(&read.source));
+    loaded
+}
+
+/// Where `tab`'s stack is read from, as `TabState::stack_source` finds it:
+/// `gh stack view` in the checkout that holds the viewed branch, else the
+/// PR chain of a PR's head; none when the tab has neither.
+pub(crate) fn stack_source(
+    tab: &ResolvedTab,
+    overview: Option<&PrOverviewData>,
+) -> Option<StackSource> {
+    if !tab.identity().is_remote() {
+        let checkout = match tab.local_branch_view {
+            Some(_) => tab.checkout_root.as_deref(),
+            None => Some(tab.repo_root.as_str()),
+        };
+        if let Some(root) = checkout {
+            return Some(StackSource::Checkout(root.to_string()));
+        }
+    }
+    tab.pr_number?;
+    let repo = tab.remote_repo.clone().filter(|r| !r.is_empty())?;
+    let head = overview
+        .map(|pr| pr.head_branch.clone())
+        .filter(|head| !head.is_empty())
+        .or_else(|| {
+            tab.local_branch_view
+                .clone()
+                .filter(|b| !er_engine::storage::is_pr_placeholder_branch(b))
+        })?;
+    Some(StackSource::PrChain { repo, head })
+}
+
+fn load_pr_fields(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>) -> LoadedPr {
     let Some(number) = tab.pr_number else {
         return LoadedPr::default();
     };
@@ -77,6 +116,7 @@ pub(crate) fn load_pr(deps: &WorkspaceDeps, tab: &ResolvedTab, load: PrLoad<'_>)
         overview,
         commits,
         head_oid,
+        stack: None,
     }
 }
 

@@ -17,6 +17,7 @@ mod error;
 mod hunks;
 mod jobs;
 mod notice;
+mod pr;
 mod preview;
 mod resource;
 mod reviewed;
@@ -44,6 +45,10 @@ pub use error::{ErError, ErErrorKind};
 pub use hunks::{FileHunks, Hunk, HunkLine};
 pub use jobs::{AiReplyJob, Jobs};
 pub use notice::{Notice, NoticeLevel};
+pub use pr::{
+    CheckRun, GithubStatus, PrCard, PrStatus, RepoMerge, Stack, StackLayer, StatusComment,
+    StatusReview, StatusReviewer, TabPr,
+};
 pub use preview::{DiffPaths, FilePreview, ImagePreview};
 pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,

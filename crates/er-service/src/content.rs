@@ -16,6 +16,7 @@ use std::time::SystemTime;
 
 use er_engine::ai::{self, AiState};
 use er_engine::annotations::WrittenPayload;
+use er_engine::gh_stack::{StackInfo, StackSource};
 use er_engine::git::{CommitInfo, DiffFile, DiffFileHeader};
 use er_engine::github::PrOverviewData;
 use er_engine::history::ScrollerCommit;
@@ -125,6 +126,7 @@ impl TabContent {
                 overview: loaded.pr.overview,
                 commits: loaded.pr.commits,
                 head_oid: loaded.pr.head_oid,
+                stack: loaded.pr.stack,
             }),
             freshness: Arc::new(FreshnessSection {
                 revision,
@@ -366,6 +368,29 @@ pub struct PrSection {
     /// The PR head the diff was taken at, which the stale pill compares with
     /// the newest head.
     pub head_oid: Option<String>,
+    /// The tab's `gh stack` as the last lookup read it; none until one ran.
+    /// A load keeps it while the tab reads its stack from the same place.
+    pub stack: Option<StackRead>,
+}
+
+/// One stack lookup: where it read, and what it found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StackRead {
+    pub source: StackSource,
+    pub info: StackInfo,
+}
+
+impl PrSection {
+    fn with_stack(&self, stack: StackRead, revision: u64) -> Self {
+        Self {
+            revision,
+            pr_number: self.pr_number,
+            overview: self.overview.clone(),
+            commits: self.commits.clone(),
+            head_oid: self.head_oid.clone(),
+            stack: Some(stack),
+        }
+    }
 }
 
 /// The sidecars a tab's AI state was read from, file by file, as an
@@ -486,6 +511,7 @@ pub(crate) struct LoadedPr {
     pub overview: Option<PrOverviewData>,
     pub commits: Vec<CommitInfo>,
     pub head_oid: Option<String>,
+    pub stack: Option<StackRead>,
 }
 
 /// An AI state read again from the sidecars, with their stamp.
@@ -546,6 +572,11 @@ pub(crate) enum ContentPatch {
         key: TabKey,
         freshness: Box<Freshness>,
     },
+    /// A stack lookup for one tab, read off the actor.
+    Stack {
+        key: TabKey,
+        stack: Box<StackRead>,
+    },
     /// The tab closed: its content leaves the view.
     Dropped {
         key: TabKey,
@@ -601,6 +632,7 @@ pub(crate) fn lifecycle_keys(
         | ContentPatch::Compacted { .. }
         | ContentPatch::Ai { .. }
         | ContentPatch::Freshness { .. }
+        | ContentPatch::Stack { .. }
         | ContentPatch::Sidecar { .. }
         | ContentPatch::Reviewed { .. } => {}
     }
@@ -628,6 +660,7 @@ pub(crate) fn check(
         ContentPatch::Several(patches) => patches.iter().try_for_each(|patch| check(tabs, patch)),
         ContentPatch::Ai { .. }
         | ContentPatch::Freshness { .. }
+        | ContentPatch::Stack { .. }
         | ContentPatch::Sidecar { .. }
         | ContentPatch::Reviewed { .. }
         | ContentPatch::Dropped { .. } => Ok(()),
@@ -704,6 +737,20 @@ pub(crate) fn apply(
                         revision,
                         value: *freshness,
                     });
+                    *content = Arc::new(next);
+                }
+            }
+            0
+        }
+        ContentPatch::Stack { key, stack } => {
+            if let Some(content) = tabs.get_mut(&key) {
+                // A load that moved the tab elsewhere since reads its stack
+                // from another place, so this lookup no longer describes it.
+                let source =
+                    crate::tab_pr::stack_source(&content.tab, content.pr.overview.as_ref());
+                if source.as_ref() == Some(&stack.source) {
+                    let mut next = TabContent::clone(content);
+                    next.pr = Arc::new(next.pr.with_stack(*stack, revision));
                     *content = Arc::new(next);
                 }
             }
