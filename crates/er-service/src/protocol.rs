@@ -51,7 +51,10 @@ pub enum Command {
 
     // ── Annotation commands (P41.1) ──
     /// Flip one path's reviewed mark against the stored map.
-    ToggleReviewed { context: TabContext, path: String },
+    ToggleReviewed {
+        context: TabContext,
+        path: String,
+    },
     /// Set one path's reviewed mark to an explicit state.
     MarkReviewed {
         context: TabContext,
@@ -109,9 +112,15 @@ pub enum Command {
         body: String,
     },
     /// Delete one thread and its replies from its sidecar.
-    DeleteThread { context: TabContext, id: String },
+    DeleteThread {
+        context: TabContext,
+        id: String,
+    },
     /// Mark one thread resolved.
-    ResolveThread { context: TabContext, id: String },
+    ResolveThread {
+        context: TabContext,
+        id: String,
+    },
     /// Promote a question to a private note.
     PromoteToNote {
         context: TabContext,
@@ -126,6 +135,50 @@ pub enum Command {
         ai_assist: bool,
         client_id: Option<String>,
     },
+    /// Remove a finding from the review, with the threads linked to it and
+    /// its promotion entry.
+    DismissFinding {
+        context: TabContext,
+        finding_id: String,
+    },
+    /// Mark a finding resolved, or reopen it.
+    SetFindingResolved {
+        context: TabContext,
+        finding_id: String,
+        resolved: bool,
+    },
+    /// Delete the threads linked to a finding; the finding stays.
+    RemoveFindingThread {
+        context: TabContext,
+        finding_id: String,
+    },
+    UpdateFindingResponse {
+        context: TabContext,
+        finding_id: String,
+        response_id: String,
+        body: String,
+    },
+    DeleteFindingResponse {
+        context: TabContext,
+        finding_id: String,
+        response_id: String,
+    },
+    /// Flip the checklist item the tab's AI section holds at `index`. An
+    /// index it no longer holds writes nothing.
+    ToggleChecklistItem {
+        context: TabContext,
+        index: usize,
+    },
+    /// Delete the triage or the reviews from the bucket. Refused while a
+    /// review flow holds it.
+    DeleteReviewArtifact {
+        context: TabContext,
+        artifact: ReviewArtifact,
+    },
+    DeleteDiagram {
+        context: TabContext,
+        id: String,
+    },
 
     // ── Job and arena commands ──
     /// Run one agent job on an effect thread. The actor keeps its stop handle
@@ -137,10 +190,14 @@ pub enum Command {
         result: Sender<JobResult>,
     },
     /// Stop a running job by killing the stop handle its runner watches.
-    CancelJob { job: JobId },
+    CancelJob {
+        job: JobId,
+    },
     /// Load-time recovery of the named buckets: stale arena runs and a dead
     /// owner's running workflow stages are marked. Nothing is started.
-    Reconcile { buckets: Vec<String> },
+    Reconcile {
+        buckets: Vec<String>,
+    },
     /// An arena action on the actor's live runs.
     Arena(ArenaCommand),
     /// A review-flow action on the actor's flows.
@@ -183,7 +240,9 @@ pub enum Command {
         source: SyncSource,
     },
     /// Read the viewer's pending review on the tab's PR.
-    GetPendingReview { context: TabContext },
+    GetPendingReview {
+        context: TabContext,
+    },
     /// Add one line comment to the viewer's pending review.
     AddPendingReviewComment {
         context: TabContext,
@@ -204,7 +263,10 @@ pub enum Command {
 
     // ── PR-level posts ──
     /// Post a PR-wide comment.
-    PostGithubPrComment { context: TabContext, body: String },
+    PostGithubPrComment {
+        context: TabContext,
+        body: String,
+    },
     /// Post one line comment outside any review. Refused while the viewer
     /// has a pending review, which GitHub would attach it to.
     PostGithubLineComment {
@@ -240,7 +302,10 @@ pub enum Command {
     /// What the desktop's probes read from origin for a loaded tab: its
     /// base's tip and its PR's head. Measured against the tab off the actor;
     /// tips it already holds change nothing.
-    SetRemoteTips { key: TabKey, tips: RemoteTips },
+    SetRemoteTips {
+        key: TabKey,
+        tips: RemoteTips,
+    },
     /// Show a loaded tab in another mode. Its reviewed marks are kept.
     /// `pr_number` seeds a PR the front end detected onto a tab that has
     /// none, so entering the PR diff can fetch its refs.
@@ -252,14 +317,22 @@ pub enum Command {
     /// Show one commit of a loaded tab's History, entering History from the
     /// view the tab shows. A sha History does not list keeps the commit it
     /// shows. Refused for a remote PR, which has no clone to diff a commit in.
-    SelectCommit { key: TabKey, sha: String },
+    SelectCommit {
+        key: TabKey,
+        sha: String,
+    },
     /// Show a loaded tab in the view its History was entered from. A tab not
     /// in History answers at once.
-    ExitHistory { key: TabKey },
+    ExitHistory {
+        key: TabKey,
+    },
     /// Diff a loaded tab against `base`, resolved to a local ref as the App's
     /// base change resolves it, and reload. A PR with no clone has no base to
     /// change: its diff comes from GitHub.
-    ChangeBase { key: TabKey, base: String },
+    ChangeBase {
+        key: TabKey,
+        base: String,
+    },
     /// Parse the named lazy files of a loaded tab's diff. `expand` also
     /// parses a compacted file in full, and keeps it expanded across loads.
     ParseFiles {
@@ -270,13 +343,20 @@ pub enum Command {
     /// Compact the named files of a loaded tab's diff again, as the App's
     /// toggle does: their hunks leave the section, and the next loads parse
     /// them compacted.
-    CompactFiles { key: TabKey, paths: Vec<String> },
+    CompactFiles {
+        key: TabKey,
+        paths: Vec<String>,
+    },
     /// Read a loaded tab's sidecars again when a writer outside the workspace
     /// moved them. A reload already running for the key answers at once.
-    ReloadSidecars { key: TabKey },
+    ReloadSidecars {
+        key: TabKey,
+    },
     /// Forget a closed tab's content. A key the actor never loaded answers
     /// at once and publishes nothing.
-    DropTab { key: TabKey },
+    DropTab {
+        key: TabKey,
+    },
 }
 
 /// What started a comment sync, which decides how fresh the read must be.
@@ -547,6 +627,14 @@ pub struct AnnotationTarget {
     pub line_num_end: Option<usize>,
 }
 
+/// What `DeleteReviewArtifact` deletes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewArtifact {
+    Triage,
+    /// Every review, with the checklist, order and summary; triage stays.
+    Review,
+}
+
 /// Which private annotation a document anchor creates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnnotationKind {
@@ -617,6 +705,9 @@ pub enum Reply {
         root_id: String,
         reply_id: String,
     },
+    /// A finding, checklist or review write landed, and the tabs that read
+    /// the bucket hold its AI state.
+    AiWritten,
     JobStarted {
         job: JobId,
     },

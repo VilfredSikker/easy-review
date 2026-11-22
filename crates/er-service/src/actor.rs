@@ -373,6 +373,41 @@ fn context_matches(state: &WorkspaceState, context: &TabContext) -> bool {
     target.workspace_key() == context.workspace_key()
 }
 
+/// Runs a finding, checklist or review write on an effect thread, then reads
+/// the AI state of every tab that reads a bucket it writes, so each holds the
+/// write under its own stamp and the next tick reads nothing back.
+fn spawn_ai_write(
+    deps: &WorkspaceDeps,
+    state: &WorkspaceState,
+    tx: &Sender<ActorMsg>,
+    reply: ReplySender,
+    context: TabContext,
+    write: impl FnOnce(&TabContext) -> Result<(), WorkspaceError> + Send + 'static,
+) {
+    if !context_matches(state, &context) {
+        return refuse_stale(reply);
+    }
+    let deps = deps.clone();
+    let readers: Vec<Arc<TabContent>> = state
+        .view()
+        .tabs
+        .values()
+        .filter(|content| {
+            let read = &content.context;
+            read.er_dir == context.er_dir
+                || read.comments_dir == context.comments_dir
+                || read.er_dir == context.comments_dir
+        })
+        .cloned()
+        .collect();
+    spawn_effect(tx, reply, move || {
+        write(&context)?;
+        let written = ContentPatch::Several(Vec::new());
+        let patch = crate::sidecar_reload::with_reloaded_ai(&deps, &readers, written);
+        Ok(Effected::patched(Reply::AiWritten, patch))
+    });
+}
+
 /// Answers a command whose view has moved on, without running its effect.
 fn refuse_stale(reply: ReplySender) {
     let _ = reply.send(Err(WorkspaceError::Failed(
@@ -588,6 +623,75 @@ fn handle_command(
                 .map(|((root_id, reply_id), patch)| {
                     Effected::patched(Reply::FindingReplied { root_id, reply_id }, patch)
                 })
+            });
+        }
+        Command::DismissFinding {
+            context,
+            finding_id,
+        } => spawn_ai_write(deps, state, tx, reply, context, move |context| {
+            crate::finding_writes::dismiss_finding(context, &finding_id)
+        }),
+        Command::SetFindingResolved {
+            context,
+            finding_id,
+            resolved,
+        } => spawn_ai_write(deps, state, tx, reply, context, move |context| {
+            crate::finding_writes::set_finding_resolved(context, &finding_id, resolved)
+        }),
+        Command::RemoveFindingThread {
+            context,
+            finding_id,
+        } => spawn_ai_write(deps, state, tx, reply, context, move |context| {
+            crate::finding_writes::remove_finding_thread(context, &finding_id)
+        }),
+        Command::UpdateFindingResponse {
+            context,
+            finding_id,
+            response_id,
+            body,
+        } => spawn_ai_write(deps, state, tx, reply, context, move |context| {
+            crate::finding_writes::update_finding_response(
+                context,
+                &finding_id,
+                &response_id,
+                &body,
+            )
+        }),
+        Command::DeleteFindingResponse {
+            context,
+            finding_id,
+            response_id,
+        } => spawn_ai_write(deps, state, tx, reply, context, move |context| {
+            crate::finding_writes::delete_finding_response(context, &finding_id, &response_id)
+        }),
+        Command::ToggleChecklistItem { context, index } => {
+            // The item is the one the AI section holds at the index, as the
+            // App's toggle reads it; an index it no longer holds writes nothing.
+            let item = crate::sidecar_reload::readers(state, &context.er_dir)
+                .first()
+                .and_then(|content| {
+                    let item = content.ai.state.checklist.as_ref()?.items.get(index)?;
+                    Some((item.id.clone(), !item.checked))
+                });
+            match item {
+                Some((item_id, checked)) => {
+                    spawn_ai_write(deps, state, tx, reply, context, move |context| {
+                        crate::finding_writes::set_checklist_item(context, &item_id, checked)
+                    });
+                }
+                None => {
+                    let _ = reply.send(Ok(Reply::AiWritten));
+                }
+            }
+        }
+        Command::DeleteReviewArtifact { context, artifact } => {
+            spawn_ai_write(deps, state, tx, reply, context, move |context| {
+                crate::finding_writes::delete_review_artifact(context, artifact)
+            });
+        }
+        Command::DeleteDiagram { context, id } => {
+            spawn_ai_write(deps, state, tx, reply, context, move |context| {
+                crate::finding_writes::delete_diagram(context, &id)
             });
         }
         Command::StartJob {
