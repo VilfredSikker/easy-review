@@ -36,7 +36,7 @@ fn add(key: TabKey, view: PaintedView, id: &str, url: &str) -> Command {
     Command::AddUiAnnotation {
         tab: er_service::wire_tab_key(key),
         view,
-        annotation: annotation(id, url),
+        annotation: Box::new(annotation(id, url)),
     }
 }
 

@@ -487,7 +487,7 @@ pub enum Command {
     AddUiAnnotation {
         tab: TabKey,
         view: PaintedView,
-        annotation: NewUiAnnotation,
+        annotation: Box<NewUiAnnotation>,
     },
     /// Saves a PNG data URL as an annotation's screenshot. The `Ack`'s
     /// `created` is the file's path.

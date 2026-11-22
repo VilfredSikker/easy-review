@@ -14,13 +14,12 @@ use super::tabs::Routed;
 use crate::commands::{self, content_routes};
 use crate::state::DesktopState;
 
+/// A write in a view bucket, answering the id or path it created.
+type BucketWrite<'a> = Box<dyn FnOnce(&str) -> Result<Option<String>, String> + 'a>;
+
 /// Applies `command` when it is a browser annotation write.
 pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
-    let (tab, view, write): (
-        _,
-        _,
-        Box<dyn FnOnce(&str) -> Result<Option<String>, String>>,
-    ) = match command {
+    let (tab, view, write): (_, _, BucketWrite<'_>) = match command {
         Command::AddUiAnnotation {
             tab,
             view,
@@ -28,7 +27,7 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
         } => (
             tab,
             view,
-            Box::new(move |dir| add(dir, annotation).map(Some)),
+            Box::new(move |dir| add(dir, *annotation).map(Some)),
         ),
         Command::SaveAnnotationScreenshot {
             tab,
@@ -77,7 +76,7 @@ fn written(
     desktop: &DesktopState,
     wire: er_protocol::TabKey,
     view: &PaintedView,
-    write: Box<dyn FnOnce(&str) -> Result<Option<String>, String> + '_>,
+    write: BucketWrite<'_>,
 ) -> Result<Ack, ErError> {
     let key = er_service::resolve_tab_key(&desktop.service.app_registry().tabs_view(), wire)?;
     let (content, _) = content_routes::keyed_content(desktop, key, Some(view)).map_err(refused)?;
