@@ -2,49 +2,28 @@
 //! the flag-off function in er-desktop's `triage_update.rs` is held to.
 
 use er_protocol as wire;
+use serde_json::json;
 
 use super::triage_review_update;
 
 fn finding(file: &str, severity: &str, agent: &str) -> wire::Finding {
-    wire::Finding {
-        id: format!("{file}-{severity}"),
-        file: file.to_string(),
-        line: None,
-        hunk_index: None,
-        severity: severity.to_string(),
-        confidence: String::new(),
-        arbiter_verdict: None,
-        arbiter_rationale: None,
-        lens_category: String::new(),
-        resolved: false,
-        expert_label: None,
-        agent_label: agent.to_string(),
-        raised_by: Vec::new(),
-        providers: Vec::new(),
-        security_stage: false,
-        title: format!("{severity} in {file}"),
-        message_markdown: String::new(),
-        promoted_to: None,
-        thread_id: None,
-        responses: Vec::new(),
-    }
+    let row = json!({
+        "id": format!("{file}-{severity}"), "file": file, "severity": severity,
+        "confidence": "", "lens_category": "", "resolved": false, "agent_label": agent,
+        "raised_by": [], "providers": [], "security_stage": false,
+        "title": format!("{severity} in {file}"), "message_markdown": "", "responses": []
+    });
+    serde_json::from_value(row).unwrap()
 }
 
 fn risk(path: &str, risk: &str) -> wire::FileRisk {
-    wire::FileRisk {
-        path: path.to_string(),
-        risk: risk.to_string(),
-        risk_reason: String::new(),
-        summary: String::new(),
-    }
+    let row = json!({ "path": path, "risk": risk, "risk_reason": "", "summary": "" });
+    serde_json::from_value(row).unwrap()
 }
 
 fn pf(path: &str, risk: &str) -> wire::TriagePriorityFile {
-    wire::TriagePriorityFile {
-        path: path.to_string(),
-        reason: "triage said so".to_string(),
-        risk: risk.to_string(),
-    }
+    let row = json!({ "path": path, "reason": "triage said so", "risk": risk });
+    serde_json::from_value(row).unwrap()
 }
 
 #[test]
