@@ -152,16 +152,14 @@ describe("ReviewedAdapter", () => {
     const reviewed = adapter(backendState.store);
     expect(reviewed.held()).toBeNull();
 
-    for (const [command, args] of [
-      ["mark_reviewed", { path: "src/a.rs" }],
-      ["unmark_reviewed", { path: "src/a.rs" }],
-      ["toggle_reviewed", { path: "src/a.rs" }],
-    ] as const) {
-      const write = reviewed.route(command, args);
+    const writes = (["mark_reviewed", "unmark_reviewed", "toggle_reviewed"] as const).map((command) =>
+      reviewed.route(command, { path: "src/a.rs" }),
+    );
+    expect(backendState.sent).toEqual([]);
+    for (const write of writes) {
       expect(write).not.toBeNull();
       await expect(write ?? Promise.resolve()).rejects.toThrow("not loaded yet");
     }
-    expect(backendState.sent).toEqual([]);
     expect(flags(reviewed.overlay(snapshot()))[0]).toEqual(["src/a.rs", false]);
 
     backendState.releaseFetches();
