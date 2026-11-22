@@ -90,14 +90,20 @@ interface AnnotationsAdapterDeps {
 /**
  * The active tab's annotations: `app.snapshot`'s `ai`, `tour`,
  * `other_bucket` and `ui_annotations` with the flag off, and with it on
- * `annotations(tab)` joined with `jobs` and `ui_annotations(tab)`, in every
- * view: the workspace loads History, Conflicts and Hidden too.
+ * `annotations(tab)` joined with `jobs` and `ui_annotations(tab)` in every
+ * view, since the workspace loads them all. The App's mode is not read: with
+ * the flag on a view switch never reaches the App, so its mode goes stale.
  */
 export class AnnotationsAdapter {
   constructor(private readonly deps: AnnotationsAdapterDeps) {}
 
+  /** The active tab's key while the page reads its annotations from the resources; null with the flag off. */
+  fetchedTab(): TabKey | null {
+    return this.deps.flagOn ? this.deps.activeKey() : null;
+  }
+
   private held(): Annotations | null {
-    const key = this.deps.flagOn ? this.deps.activeKey() : null;
+    const key = this.fetchedTab();
     if (key === null) return null;
     const held = this.deps.store.get(annotationsKey(key))?.value;
     return held?.kind === "annotations" ? held : null;
