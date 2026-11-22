@@ -13,6 +13,7 @@
 mod command;
 mod diff;
 mod error;
+mod hunks;
 mod notice;
 mod resource;
 mod risk;
@@ -26,6 +27,7 @@ pub use diff::{
     BaseBehind, BranchDivergence, DiffLineStats, FileRow, FilterSuggestion, ScopeStat, TabDiff,
 };
 pub use error::{ErError, ErErrorKind};
+pub use hunks::{FileHunks, Hunk, HunkLine};
 pub use notice::{Notice, NoticeLevel};
 pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
