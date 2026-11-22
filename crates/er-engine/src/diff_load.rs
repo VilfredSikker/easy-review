@@ -26,6 +26,60 @@ pub struct ParsedDiff {
     pub lazy: bool,
 }
 
+/// A merge's conflicts, as the Conflicts view lists them.
+pub struct ConflictFiles {
+    /// The combined changeset the files were parsed from.
+    pub raw: String,
+    /// Unresolved files first, then the rest, each by path.
+    pub files: Vec<DiffFile>,
+    /// How many files still have conflict markers.
+    pub unresolved: usize,
+    pub merge_active: bool,
+}
+
+/// Parses the merge changeset (staged plus unmerged working-tree diffs). A
+/// conflicted file appears in both, and the working-tree diff, which comes
+/// last, wins. Files that still have conflict markers are marked
+/// `FileStatus::Unmerged`.
+pub fn conflict_files(git: &dyn git::Git, repo_root: &str) -> ConflictFiles {
+    let merge_active = git.is_merge_in_progress(repo_root);
+    let raw = git.diff_conflicts(repo_root).unwrap_or_default();
+    let parsed = git::parse_diff(&raw);
+    let unmerged_paths: HashSet<String> = git
+        .unmerged_files(repo_root)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let mut seen: HashMap<String, DiffFile> = HashMap::new();
+    for file in parsed {
+        seen.insert(file.path.clone(), file);
+    }
+    let mut files: Vec<DiffFile> = seen
+        .into_values()
+        .map(|mut file| {
+            if unmerged_paths.contains(&file.path) {
+                file.status = git::FileStatus::Unmerged;
+            }
+            file
+        })
+        .collect();
+    files.sort_by(|a, b| {
+        let a_unmerged = a.status == git::FileStatus::Unmerged;
+        let b_unmerged = b.status == git::FileStatus::Unmerged;
+        match (a_unmerged, b_unmerged) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.path.cmp(&b.path),
+        }
+    });
+    ConflictFiles {
+        raw,
+        files,
+        unresolved: unmerged_paths.len(),
+        merge_active,
+    }
+}
+
 /// Parse `raw`, lazily when it is large. Low-value files are compacted;
 /// `is_expanded` names the files the user opened, which a lazy parse keeps
 /// whole.
@@ -409,4 +463,58 @@ pub fn fetch_pr_refresh_with(
         last_diff_head_oid,
         commits,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A conflicted file is listed once, from the working-tree diff that
+    /// comes last, marked unmerged and placed first; the rest follow by path.
+    #[test]
+    fn conflicts_list_each_file_once_with_the_unresolved_first() {
+        let raw = "\
+diff --git a/z.rs b/z.rs
+--- a/z.rs
++++ b/z.rs
+@@ -1 +1 @@
+-z
++staged
+diff --git a/b.rs b/b.rs
+--- a/b.rs
++++ b/b.rs
+@@ -1 +1 @@
+-b
++b2
+diff --git a/z.rs b/z.rs
+--- a/z.rs
++++ b/z.rs
+@@ -1,2 +1,2 @@
+-z
++<<<<<<< ours
+ tail
+diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -1 +1 @@
+-a
++a2
+";
+        let git = er_git::FakeGit::default()
+            .with_is_merge_in_progress(true)
+            .with_diff_conflicts(Ok(raw.to_string()))
+            .with_unmerged_files(Ok(vec!["z.rs".to_string()]));
+        let conflicts = conflict_files(&git, "/repo");
+        let listed: Vec<(&str, bool)> = conflicts
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.status == git::FileStatus::Unmerged))
+            .collect();
+        assert_eq!(listed, [("z.rs", true), ("a.rs", false), ("b.rs", false)]);
+        let z = &conflicts.files[0];
+        assert_eq!(z.hunks[0].lines.len(), 3, "the working-tree diff won");
+        assert_eq!(conflicts.unresolved, 1);
+        assert!(conflicts.merge_active);
+        assert_eq!(conflicts.raw, raw);
+    }
 }

@@ -2716,64 +2716,14 @@ impl TabState {
         }
     }
 
-    /// Refresh conflict files for Conflicts mode.
-    ///
-    /// Parses the combined merge changeset (staged + unmerged working-tree diffs),
-    /// deduplicates by filename (keeping the last/unmerged occurrence for conflict
-    /// files), marks unresolved files as `FileStatus::Unmerged`, and sorts with
-    /// unresolved files first then alphabetically.
+    /// Refresh conflict files for Conflicts mode, by
+    /// [`crate::diff_load::conflict_files`].
     pub fn refresh_conflicts(&mut self) {
         self.loaded_diff_source = None;
-        self.merge_active = self.ports.git.is_merge_in_progress(&self.repo_root);
-
-        let raw = self
-            .ports
-            .git
-            .diff_conflicts(&self.repo_root)
-            .unwrap_or_default();
-        let parsed = git::parse_diff(&raw);
-
-        // Get the set of paths that still have conflict markers
-        let unmerged_paths: std::collections::HashSet<String> = self
-            .ports
-            .git
-            .unmerged_files(&self.repo_root)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-
-        // Deduplicate by path — keep the last occurrence so that the unmerged
-        // working-tree diff wins over the staged diff for conflict files.
-        let mut seen: std::collections::HashMap<String, git::DiffFile> =
-            std::collections::HashMap::new();
-        for file in parsed {
-            seen.insert(file.path.clone(), file);
-        }
-
-        // Apply status: unmerged paths get FileStatus::Unmerged; others keep parsed status
-        let mut files: Vec<git::DiffFile> = seen
-            .into_values()
-            .map(|mut file| {
-                if unmerged_paths.contains(&file.path) {
-                    file.status = git::FileStatus::Unmerged;
-                }
-                file
-            })
-            .collect();
-
-        // Sort: unresolved (Unmerged) first, then alphabetically by path
-        files.sort_by(|a, b| {
-            let a_unmerged = a.status == git::FileStatus::Unmerged;
-            let b_unmerged = b.status == git::FileStatus::Unmerged;
-            match (a_unmerged, b_unmerged) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.path.cmp(&b.path),
-            }
-        });
-
-        self.unresolved_count = unmerged_paths.len();
-        self.files = files;
+        let conflicts = crate::diff_load::conflict_files(&*self.ports.git, &self.repo_root);
+        self.merge_active = conflicts.merge_active;
+        self.unresolved_count = conflicts.unresolved;
+        self.files = conflicts.files;
         self.selected_file = 0;
         self.current_hunk = 0;
         self.current_line = None;
@@ -3879,18 +3829,14 @@ impl TabState {
     /// Root to run commit-log/diff git commands in: the branch's own worktree
     /// when this tab views a checked-out local branch, else the tab's repo root.
     pub fn commit_log_root(&self) -> &str {
-        self.local_branch_checkout_root
-            .as_deref()
-            .unwrap_or(self.repo_root.as_str())
+        self.history_source().commit_log_root()
     }
 
     /// Ref to log the branch's commits against base (`base..head`). Uses the
     /// viewed branch ref so the commit list matches the diff even when that
     /// branch is not the checked-out HEAD of `commit_log_root`.
     pub fn commit_head_ref(&self) -> &str {
-        self.local_branch_view
-            .as_deref()
-            .unwrap_or(self.current_branch.as_str())
+        self.history_source().commit_head_ref()
     }
 
     /// (Re)build `TourState` from the loaded tour (`ai.tour`) and the current
@@ -4005,40 +3951,24 @@ impl TabState {
         });
     }
 
-    /// The commits History lists, and whether that list is already complete.
-    ///
-    /// Entered from the PR diff, the list is the PR's own commits: the local
-    /// branch log would list whatever HEAD is checked out, which on a local PR
-    /// tab is usually not the PR. Without a fetched commit list it logs the
-    /// fetched PR head ref — never a checkout (ADR 0020).
-    fn history_commits(&self) -> (Vec<CommitInfo>, bool) {
-        let is_pr_review_tab = self.pr_number.is_some() && self.local_branch_view.is_some();
-        let from_pr = self.history_return_mode == DiffMode::PrDiff;
-        if is_pr_review_tab || (from_pr && (self.is_remote() || !self.pr_commits.is_empty())) {
-            return (self.pr_commits.clone(), true);
+    /// What History reads from this tab.
+    pub fn history_source(&self) -> crate::history::HistorySource<'_> {
+        crate::history::HistorySource {
+            repo_root: &self.repo_root,
+            current_branch: &self.current_branch,
+            base_branch: &self.base_branch,
+            pr_number: self.pr_number,
+            local_branch_view: self.local_branch_view.as_deref(),
+            pr_head_ref: self.pr_head_ref.as_deref(),
+            checkout_root: self.local_branch_checkout_root.as_deref(),
+            is_remote: self.is_remote(),
+            return_mode: self.history_return_mode,
         }
-        let (head_ref, log_root) = self.history_log_source();
-        let commits = self
-            .ports
-            .git
-            .log_range(&self.base_branch, &head_ref, &log_root, 50, 0)
-            .unwrap_or_default();
-        (commits, false)
     }
 
-    /// The `(head ref, root)` History logs `base..head` in. The first page and
-    /// every later page must share it, or paging past the PR's last commit
-    /// appends the checked-out branch's commits to the PR's list.
-    pub(crate) fn history_log_source(&self) -> (String, String) {
-        match self.pr_head_ref.as_deref() {
-            Some(pr_head) if self.history_return_mode == DiffMode::PrDiff => {
-                (pr_head.to_string(), self.repo_root.clone())
-            }
-            _ => (
-                self.commit_head_ref().to_string(),
-                self.commit_log_root().to_string(),
-            ),
-        }
+    /// The commits History lists, and whether that list is already complete.
+    fn history_commits(&self) -> (Vec<CommitInfo>, bool) {
+        crate::history::history_commits(&*self.ports.git, &self.history_source(), &self.pr_commits)
     }
 
     /// Leave the single-commit view for the view it was entered from.
@@ -4079,14 +4009,8 @@ impl TabState {
                 self.tour_is_pr = prev_mode == DiffMode::PrDiff || self.is_remote();
             }
             if mode == DiffMode::History {
-                let from_pr = prev_mode == DiffMode::PrDiff
-                    || (prev_mode == DiffMode::Tour && self.tour_is_pr)
-                    || self.is_remote();
-                let return_mode = if from_pr {
-                    DiffMode::PrDiff
-                } else {
-                    DiffMode::Branch
-                };
+                let return_mode =
+                    crate::history::return_mode(prev_mode, self.tour_is_pr, self.is_remote());
                 // The cached commit list was built for the other source; a
                 // sha from this view's list would miss in it.
                 if return_mode != self.history_return_mode {
