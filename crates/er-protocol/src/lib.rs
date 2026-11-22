@@ -10,10 +10,12 @@
 //! desktop state into these types live beside that state, so the wire does not
 //! move when an internal type does.
 
+mod annotations;
 mod command;
 mod diff;
 mod error;
 mod hunks;
+mod jobs;
 mod notice;
 mod resource;
 mod risk;
@@ -22,12 +24,16 @@ mod settings;
 mod sidebar;
 mod tabs;
 
+pub use annotations::{
+    AnnotationScreenshot, ReviewJson, ReviewRevision, ReviewRevisions, UiAnnotation, UiAnnotations,
+};
 pub use command::{Ack, Command, ProjectReviewSettingsPatch};
 pub use diff::{
     BaseBehind, BranchDivergence, DiffLineStats, FileRow, FilterSuggestion, ScopeStat, TabDiff,
 };
 pub use error::{ErError, ErErrorKind};
 pub use hunks::{FileHunks, Hunk, HunkLine};
+pub use jobs::{AiReplyJob, Jobs};
 pub use notice::{Notice, NoticeLevel};
 pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
