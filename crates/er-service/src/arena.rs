@@ -11,9 +11,11 @@ use std::sync::Arc;
 use er_engine::ai::workflow_record::ArenaWorkflow;
 use er_engine::ai::WorkflowHolder;
 use er_engine::arena::{
-    self, ArenaProgressState, ArenaRunControls, ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot,
-    ArenaRunSummary, ArenaScope, RunStatus, SeededStartParams,
+    self, ArenaBatchStartParams, ArenaDiffPreview, ArenaProgressState, ArenaRunControls,
+    ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaRunSummary, ArenaScope, ReviewerRef,
+    RunStatus, SeededStartParams,
 };
+use er_engine::ports::Ports;
 use er_store::Scope;
 
 use crate::actor::WorkspaceDeps;
@@ -27,14 +29,14 @@ fn failed(context: &str, error: impl std::fmt::Display) -> WorkspaceError {
 
 /// The arena's diff: the tab's diff in the run's scope, narrowed to `files`.
 fn raw_diff(
-    deps: &WorkspaceDeps,
+    ports: &Ports,
     arena: &ArenaContext,
     scope: ArenaScope,
     files: Option<&[String]>,
 ) -> Result<String, WorkspaceError> {
     let mut tab = arena.tab.clone();
     tab.scope = arena::scope_git_mode(scope).to_string();
-    let raw = crate::annotations::fetch_raw(deps, &tab)?;
+    let raw = crate::annotations::fetch_raw_with(ports, &tab)?;
     Ok(match files {
         Some(paths) if !paths.is_empty() => er_engine::git::filter_raw_diff_by_paths(&raw, paths),
         _ => raw,
@@ -82,6 +84,58 @@ fn bucket_for(
     run_id: &str,
 ) -> std::path::PathBuf {
     arena::bucket_for_run(controls, &arena.buckets, &arena.tab.er_dir, run_id)
+}
+
+/// One run's plan, as [`estimate`] prices it.
+pub struct Estimate<'a> {
+    pub scope: ArenaScope,
+    pub files: Option<&'a [String]>,
+    pub reviewers: &'a [ReviewerRef],
+    pub rounds: Option<u8>,
+    pub arbiter: Option<&'a ReviewerRef>,
+}
+
+/// What one run would cost on the tab's diff. The diff is read through the
+/// ports on the caller's thread, so a reader prices a run without waiting on
+/// an actor's queue (ADR 0067).
+pub fn estimate(
+    ports: &Ports,
+    arena: &ArenaContext,
+    plan: &Estimate<'_>,
+) -> Result<ArenaDiffPreview, WorkspaceError> {
+    let raw = raw_diff(ports, arena, plan.scope, plan.files)?;
+    arena::build_arena_diff_preview(
+        &arena.config,
+        &raw,
+        plan.reviewers,
+        plan.rounds,
+        plan.arbiter,
+    )
+    .map_err(|error| failed("estimate the run", error))
+}
+
+/// What a batch would cost, one run per agent group, as [`estimate`] reads
+/// the diff.
+pub fn estimate_batch(
+    ports: &Ports,
+    arena: &ArenaContext,
+    params: &ArenaBatchStartParams,
+) -> Result<ArenaDiffPreview, WorkspaceError> {
+    let raw = raw_diff(ports, arena, params.scope, params.files.as_deref())?;
+    let hub = &arena.config.ai_hub;
+    let models: Vec<_> = params
+        .groups
+        .iter()
+        .flat_map(|group| group.models.iter())
+        .cloned()
+        .collect();
+    Ok(ArenaDiffPreview {
+        diff_bytes: raw.len(),
+        cost_usd: arena::estimate_batch_cost_usd(raw.len(), params, hub),
+        latency_sec: arena::estimate_latency_sec(&models, params.rounds, hub),
+        cost_limit_usd: arena::DEFAULT_COST_LIMIT_USD,
+        max_rounds: arena::ARENA_ROUNDS_V1,
+    })
 }
 
 /// A run is flow-owned when its record says so, whichever host started it.
@@ -137,39 +191,25 @@ pub(crate) fn run(
             reviewers,
             rounds,
             arbiter,
-        } => {
-            let raw = raw_diff(deps, &arena, scope, files.as_deref())?;
-            arena::build_arena_diff_preview(
-                &arena.config,
-                &raw,
-                &reviewers,
+        } => estimate(
+            deps.ports(),
+            &arena,
+            &Estimate {
+                scope,
+                files: files.as_deref(),
+                reviewers: &reviewers,
                 rounds,
-                arbiter.as_ref(),
-            )
-            .map(Reply::ArenaEstimate)
-            .map_err(|error| failed("estimate the run", error))
-        }
+                arbiter: arbiter.as_ref(),
+            },
+        )
+        .map(Reply::ArenaEstimate),
         ArenaCommand::EstimateBatch { arena, params } => {
-            let raw = raw_diff(deps, &arena, params.scope, params.files.as_deref())?;
-            let hub = &arena.config.ai_hub;
-            let models: Vec<_> = params
-                .groups
-                .iter()
-                .flat_map(|group| group.models.iter())
-                .cloned()
-                .collect();
-            Ok(Reply::ArenaEstimate(arena::ArenaDiffPreview {
-                diff_bytes: raw.len(),
-                cost_usd: arena::estimate_batch_cost_usd(raw.len(), &params, hub),
-                latency_sec: arena::estimate_latency_sec(&models, params.rounds, hub),
-                cost_limit_usd: arena::DEFAULT_COST_LIMIT_USD,
-                max_rounds: arena::ARENA_ROUNDS_V1,
-            }))
+            estimate_batch(deps.ports(), &arena, &params).map(Reply::ArenaEstimate)
         }
         ArenaCommand::StartRun { arena, params } => {
             arena::check_bucket_admission(&arena.tab.er_dir)
                 .map_err(|error| failed("admit the run", error))?;
-            let raw = raw_diff(deps, &arena, params.scope, params.files.as_deref())?;
+            let raw = raw_diff(deps.ports(), &arena, params.scope, params.files.as_deref())?;
             let workflow = standalone_workflow(&arena.tab.er_dir, &raw)?;
             let config = (*arena.config).clone();
             let run_id = arena::start_arena_run(
@@ -187,7 +227,7 @@ pub(crate) fn run(
         ArenaCommand::StartBatch { arena, params } => {
             arena::check_bucket_admission(&arena.tab.er_dir)
                 .map_err(|error| failed("admit the runs", error))?;
-            let raw = raw_diff(deps, &arena, params.scope, params.files.as_deref())?;
+            let raw = raw_diff(deps.ports(), &arena, params.scope, params.files.as_deref())?;
             let workflow = standalone_workflow(&arena.tab.er_dir, &raw)?;
             let config = (*arena.config).clone();
             let run_ids = arena::start_arena_batch(
@@ -266,7 +306,7 @@ fn validate_findings(
 ) -> Result<Reply, WorkspaceError> {
     let er_dir = arena.tab.er_dir.clone();
     arena::check_bucket_admission(&er_dir).map_err(|error| failed("admit the run", error))?;
-    let raw = raw_diff(deps, arena, ArenaScope::Branch, None)?;
+    let raw = raw_diff(deps.ports(), arena, ArenaScope::Branch, None)?;
     // The hash the review's sidecars carry, which a verdict must match; see
     // the App's validation for why it is read rather than recomputed.
     let diff_hash = er_engine::ai::prepared_diff::diff_tmp_hash(&er_dir)

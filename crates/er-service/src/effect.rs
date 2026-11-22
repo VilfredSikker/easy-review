@@ -112,6 +112,27 @@ fn label(parts: &PrParts) -> String {
     }
 }
 
+/// The bucket `tab`'s private sidecars live in, in the mode it shows: its
+/// managed root, else the unresolved root of its repo. A load stores it as
+/// `TabContext::er_dir`.
+pub fn tab_bucket(git: &dyn er_git::Git, tab: &ResolvedTab) -> String {
+    tab.identity()
+        .managed_root(git)
+        .unwrap_or_else(|| ErRoot::unresolved(&tab.repo_root, git))
+        .er_dir()
+}
+
+/// The bucket a saved tab's first load would use, with no load: its
+/// descriptor resolved as a restore does, in the mode it opens on.
+pub fn descriptor_bucket(
+    git: &dyn er_git::Git,
+    tab: &TabDescriptor,
+) -> Result<String, WorkspaceError> {
+    let resolved =
+        resolve_descriptor(git, tab).map_err(|error| failed("resolve the tab", error))?;
+    Ok(tab_bucket(git, &resolved))
+}
+
 /// The input of a tab's first load: its descriptor resolved as a restore
 /// does, shown in `mode` when one is given.
 pub(crate) fn first_load(
@@ -319,10 +340,7 @@ pub(crate) fn load_tab(
     }
 
     let id = tab.identity();
-    let er_dir = id
-        .managed_root(git)
-        .unwrap_or_else(|| ErRoot::unresolved(&tab.repo_root, git))
-        .er_dir();
+    let er_dir = tab_bucket(git, &tab);
     let comments_dir = id.pr_bucket_er_dir(git).unwrap_or_else(|| er_dir.clone());
     let remote_only = id
         .is_remote()

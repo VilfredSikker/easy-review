@@ -55,6 +55,7 @@ pub use content::{
     ScopeStats, SidecarStamp, TabContent,
 };
 pub use diff_resource::{diff_load_error, diff_resource, diff_version, DiffInputs};
+pub use effect::{descriptor_bucket, tab_bucket};
 pub use flows::read_flow_run;
 pub use freshness::{BaseBehind, Divergence, Freshness, RemoteTips};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
