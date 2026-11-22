@@ -1,6 +1,7 @@
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { FileSnapshot } from "$lib/types";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
+import { annotationsResource } from "./annotationsResource.svelte";
 import { app } from "./app.svelte";
 import { DiffAdapter, diffKey, prListRow, type PrHead } from "./diffAdapter";
 import { hunksResource } from "./hunksResource.svelte";
@@ -23,8 +24,15 @@ export const diffResource = new DiffAdapter({
   activeKey: () => tabsResource.activeKey,
   keyAt: (idx) => tabsResource.keyAt(idx),
   prHead: activePrHead,
-  // The threads come from the App's snapshot until `annotations(tab)` serves them.
-  hunks: { get: (hash) => hunksResource.get(hash), threads: () => app.appSnapshot?.ai?.threads ?? [] },
+  // The threads come from `annotations(tab)` joined with `jobs`, and from the
+  // App's snapshot in the views the App loads.
+  hunks: {
+    get: (hash) => hunksResource.get(hash),
+    threads: () => {
+      const raw = app.appSnapshot;
+      return annotationsResource.threads(raw?.mode) ?? raw?.ai?.threads ?? [];
+    },
+  },
 });
 
 /**
