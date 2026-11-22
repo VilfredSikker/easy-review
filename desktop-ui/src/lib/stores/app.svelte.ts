@@ -232,11 +232,9 @@ function nextAnimationFrame(): Promise<void> {
 class AppStore {
   /** The snapshot as the App built it. */
   private raw = $state<AppSnapshot | null>(null);
-  /** Rewrite what readers see of the snapshot, in order; with the flag on, each adapter's fields replace the App's. */
+  /** Rewrite what readers see of the snapshot, each over the one before; with the flag on, the adapters' fields replace the App's. */
   private overlays = $state<((raw: AppSnapshot) => AppSnapshot)[]>([]);
-  private readonly shown = $derived(
-    this.raw ? this.overlays.reduce((snapshot, overlay) => overlay(snapshot), this.raw) : this.raw,
-  );
+  private readonly shown = $derived(this.raw && this.overlays.reduce((snap, overlay) => overlay(snap), this.raw));
 
   /** The snapshot the page reads. */
   get snapshot(): AppSnapshot | null {
@@ -252,7 +250,7 @@ class AppStore {
     return this.raw;
   }
 
-  /** Adds an overlay over the App's snapshot to the page's snapshot reads, after those added before. */
+  /** Hands the page's snapshot reads an overlay over the App's snapshot, after those handed before it. */
   overlaySnapshot(overlay: (raw: AppSnapshot) => AppSnapshot): void {
     this.overlays = [...this.overlays, overlay];
   }

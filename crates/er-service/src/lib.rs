@@ -28,12 +28,14 @@ mod github_comments;
 mod github_sync;
 mod guard;
 mod handle;
+mod history;
 mod host;
 mod hunks;
 mod jobs;
 mod pending_review;
 mod pr_posts;
 mod protocol;
+mod reviewed_resource;
 mod settings;
 mod settings_wire;
 mod sidecar_reload;
@@ -48,7 +50,7 @@ pub use app_registry::{
     TabsView,
 };
 pub use content::{
-    loads, AiSection, DiffMeta, DiffSection, FreshnessSection, PrSection, ReviewedSection,
+    AiSection, DiffMeta, DiffSection, FreshnessSection, HistorySection, PrSection, ReviewedSection,
     ScopeStats, SidecarStamp, TabContent,
 };
 pub use diff_resource::{diff_load_error, diff_resource, diff_version, DiffInputs};
@@ -62,6 +64,9 @@ pub use protocol::{
     AcceptanceDiff, AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event,
     FlowCommand, FlowContext, JobOutcome, OpenTarget, PrRef, Reply, ReviewEvent, ReviewLineTarget,
     SyncSource, TabContext,
+};
+pub use reviewed_resource::{
+    content_view, painted_view_matches, reviewed_resource, reviewed_version,
 };
 pub use settings::{spawn_settings, SettingsCommand, SettingsHandle, SettingsReply, SettingsView};
 pub use settings_wire::{risk_resource, settings_command, settings_resource};

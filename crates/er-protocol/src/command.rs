@@ -4,7 +4,7 @@ use ts_rs::TS;
 use crate::settings::{
     ConfigFieldValue, ModelUpsert, ProviderUpsert, ReviewModelGroups, UninstallOptions,
 };
-use crate::{Panel, PrOpenHint, ResourceChanged, TabKey};
+use crate::{PaintedView, Panel, PrOpenHint, ResourceChanged, TabKey};
 
 /// A command the frontend sends to the backend.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -257,9 +257,8 @@ pub enum Command {
         id: String,
     },
     /// Shows a tab's diff in another view: `branch`, `unstaged`, `staged`,
-    /// `pr` (or `pr_diff`) or `tour`. History, Conflicts and Hidden keep
-    /// their old command, since the App loads them. `pr_number` is a PR the
-    /// header detected for a tab that has none.
+    /// `history`, `conflicts`, `hidden`, `pr` (or `pr_diff`) or `tour`.
+    /// `pr_number` is a PR the header detected for a tab that has none.
     SetDiffMode {
         tab: TabKey,
         mode: String,
@@ -282,6 +281,16 @@ pub enum Command {
         tab: TabKey,
         sync: bool,
     },
+    /// Shows one commit of a tab's History, entering History when the tab
+    /// shows another view. A remote PR's commits are display-only.
+    SelectCommit {
+        tab: TabKey,
+        sha: String,
+    },
+    /// Leaves History for the view it was entered from.
+    ExitHistory {
+        tab: TabKey,
+    },
     /// Syncs every open tab of a project's PR, after reading the PR again.
     SyncPr {
         project_id: String,
@@ -292,6 +301,28 @@ pub enum Command {
     SyncBranch {
         project_id: String,
         branch: String,
+    },
+    /// Flips one file's reviewed mark on the tab the page painted. Refused
+    /// when `tab` is no longer the active tab.
+    ToggleReviewed {
+        tab: TabKey,
+        path: String,
+    },
+    /// Marks one file reviewed, or clears its mark, on the tab the page
+    /// painted. Refused when `tab` is no longer the active tab.
+    MarkReviewed {
+        tab: TabKey,
+        path: String,
+        reviewed: bool,
+    },
+    /// Marks every file of a tour pillar reviewed, or clears them. Refused
+    /// when `tab` is no longer the active tab, or when it shows another view
+    /// than `view`, the one `reviewed(tab)` named when the page painted.
+    BulkReviewPillar {
+        tab: TabKey,
+        view: PaintedView,
+        pillar_id: String,
+        reviewed: bool,
     },
     /// Expands a compacted file in full, or compacts it again. The tab keeps
     /// the choice across reloads.
