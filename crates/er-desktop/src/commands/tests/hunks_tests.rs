@@ -1,7 +1,8 @@
 //! `hunks(tab, path, hash)` on the flag path: a comment moves the tab's
 //! annotations and never a file's hash, an unparsed file is parsed by its
-//! actor, a hash the diff no longer holds answers `Stale`, and nothing
-//! records which hunks the page holds.
+//! actor, a hash the diff no longer holds answers `Stale`, compaction runs
+//! both ways on the service and holds across a load, and nothing records
+//! which hunks the page holds.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -10,11 +11,11 @@ use er_engine::tab_identity::DiffMode;
 use er_engine::tabs_record::TabDescriptor;
 use er_engine::TabKey;
 use er_protocol::{ErErrorKind, FileHunks, Resource, ResourceKey, TabDiff};
-use er_service::{AnnotationTarget, Command, TabContent};
+use er_service::{AnnotationTarget, Command, HunkRead, TabContent};
 
 use super::diff_resource_tests::{fake_git, listed, state_over, with_storage};
 use super::watcher_tests::{canonical, git};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, snap_from, AppState};
 use crate::resources;
 use crate::resources::send::{apply, Effects};
 use crate::service::actor_key;
@@ -187,6 +188,29 @@ fn unparsed_files_are_parsed_through_their_actor_once_per_batch() {
     });
 }
 
+/// A stub whose parse is refused twice answers `Stale` once the parse was
+/// sent again; only a stub an accepted parse left empty answers no hunks. The
+/// refusal is injected, since no test can force the race that refuses a real
+/// parse; the accepted parse runs through the actor above.
+#[test]
+fn a_parse_refused_twice_answers_stale_and_an_empty_parse_answers_empty() {
+    let unparsed = || Ok(HunkRead::Unparsed);
+    let mut sent = 0;
+    let refuse = || {
+        sent += 1;
+        Ok(false)
+    };
+    let twice = resources::hunks::answer(unparsed, refuse, "a.rs", "h");
+    assert_eq!(twice.map_err(|e| e.kind), Err(ErErrorKind::Stale));
+    assert_eq!(sent, 2, "the refused parse was not sent once more");
+    let empty = resources::hunks::answer(unparsed, || Ok(true), "a.rs", "h");
+    let none = FileHunks {
+        hash: "h".into(),
+        hunks: Vec::new(),
+    };
+    assert_eq!(empty.map_err(|e| e.kind), Ok(none));
+}
+
 /// A repo whose `a.txt` has an unstaged edit.
 fn edited_repo(dir: &super::ReviewFlowTestDir) -> std::path::PathBuf {
     let root = dir.path().join("repo");
@@ -239,8 +263,100 @@ fn a_rewritten_file_answers_stale_and_never_new_hunks_under_its_old_hash() {
     });
 }
 
+fn raw_with_lockfile() -> String {
+    format!("{}{LOCK_SECTION}", super::diff_resource_tests::raw_diff())
+}
+
+const LOCK_SECTION: &str =
+    "diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n\
+     @@ -1,2 +1,2 @@\n-old = 1\n+new = 2\n ctx\n";
+
+fn set_compacted(state: &AppState, key: TabKey, compacted: bool) {
+    let command = er_protocol::Command::SetFileCompacted {
+        tab: wire(key),
+        path: "Cargo.lock".into(),
+        compacted,
+    };
+    let ack = super::while_the_app_is_locked(state, "set_file_compacted", move |state| {
+        let effects = Effects {
+            notify: &|_, _| {},
+            follow_selection: &|_| {},
+            check_update: || panic!("no update check in this test"),
+            webviews: &crate::browser_webview::NoWebviews,
+            pick_folder: &|| None,
+        };
+        apply(&state.desktop, command, &effects).map(|applied| applied.ack)
+    });
+    let ack = ack.unwrap_or_else(|e| panic!("{e:?}"));
+    let named = ack
+        .changed
+        .iter()
+        .any(|c| c.key == ResourceKey::Diff { tab: wire(key) });
+    assert!(named, "the Ack named no diff: {ack:?}");
+}
+
+fn lock_row(state: &AppState, key: TabKey) -> er_protocol::FileRow {
+    let diff = diff(state, key);
+    let row = diff.files.into_iter().find(|row| row.path == "Cargo.lock");
+    row.unwrap_or_else(|| panic!("Cargo.lock is not listed"))
+}
+
+/// A compacted file expanded through the service shows in full, and stays
+/// expanded across a reload; compacted again, it shows compacted, leaves the
+/// tab's expanded set, and a reload keeps it compacted.
+#[test]
+fn compaction_runs_both_ways_on_the_service_and_holds_across_a_load() {
+    with_storage(|dir| {
+        let git = fake_git().with_diff_raw(Ok(raw_with_lockfile()));
+        let state = state_over(dir, ports(git.with_diff_raw_file(Ok(LOCK_SECTION.into()))));
+        let (key, tab) = listed(&state, dir, "repo");
+        load(&state, key, &tab, DiffMode::Branch);
+        assert!(
+            lock_row(&state, key).compacted,
+            "the lockfile did not load compacted"
+        );
+
+        set_compacted(&state, key, false);
+        let row = lock_row(&state, key);
+        assert!(!row.compacted, "the expand did not show the file in full");
+        let full = hunks(&state, key, "Cargo.lock", &row.cache_key);
+        assert_eq!(full.map(|h| h.hunks.len()), Ok(1));
+        assert!(content_routes::refresh_tab(&state, key, false).is_ok());
+        assert!(
+            !lock_row(&state, key).compacted,
+            "a reload compacted the expanded file"
+        );
+
+        set_compacted(&state, key, true);
+        assert!(
+            lock_row(&state, key).compacted,
+            "the file did not compact again"
+        );
+        let held = content(&state, key, &tab);
+        assert!(
+            !held.diff.expanded.contains("Cargo.lock"),
+            "the file stayed expanded"
+        );
+        assert!(content_routes::refresh_tab(&state, key, false).is_ok());
+        assert!(
+            lock_row(&state, key).compacted,
+            "a reload expanded the compacted file"
+        );
+    });
+}
+
+fn app_in(mode: DiffMode) -> er_engine::app::App {
+    let files = er_engine::git::parse_diff(&super::diff_resource_tests::raw_diff());
+    let mut app =
+        er_engine::app::App::new_for_test_with_ports(files, er_engine::ports::Ports::cli());
+    app.tab_mut().mode = mode;
+    app
+}
+
 /// With the flag on nothing records which hunks the page holds: the
 /// snapshot reads no sent-files map, so its differential path never runs.
+/// Two builds of a view the workspace loads omit no file's hunks and leave
+/// the map empty.
 #[test]
 fn the_flag_on_snapshot_records_no_sent_hunks() {
     with_storage(|dir| {
@@ -248,6 +364,27 @@ fn the_flag_on_snapshot_records_no_sent_hunks() {
         assert!(crate::commands::snapshot_sources(&state)
             .sent_files
             .is_none());
+        let app = app_in(DiffMode::Branch);
+        for _ in 0..2 {
+            let files = snap_from(&app, &state).files;
+            assert!(!files.is_empty(), "the snapshot listed no file");
+            assert!(files.iter().all(|f| !f.hunks_omitted && f.hunks.is_empty()));
+        }
+        assert!(state.sent_files.lock().is_ok_and(|sent| sent.is_empty()));
+    });
+}
+
+/// Conflicts and Hidden load on the service too, so with the flag on their
+/// snapshot carries no hunks: the page fetches them by hash.
+#[test]
+fn the_flag_on_snapshot_carries_no_hunks_in_conflicts_or_hidden() {
+    with_storage(|dir| {
+        let state = state_over(dir, super::diff_resource_tests::fake_ports());
+        for mode in [DiffMode::Conflicts, DiffMode::Hidden] {
+            let files = snap_from(&app_in(mode), &state).files;
+            assert!(!files.is_empty(), "{mode:?} listed no file");
+            assert!(files.iter().all(|f| f.hunks.is_empty()), "{mode:?}");
+        }
     });
 }
 

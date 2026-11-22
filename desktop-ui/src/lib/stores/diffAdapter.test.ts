@@ -323,4 +323,16 @@ describe("the hunks by hash", () => {
     expect([a.path, a.hunks.map((h) => h.header)]).toEqual(["src/a.rs", ["@@ -1,2 +1,2 @@"]]);
     expect(diff.hashed()).toBe(true);
   });
+
+  it("sends the compaction toggle with its file and direction, in every view", async () => {
+    const { sent, store } = backend([{ version: 1, value: { kind: "diff", ...tabDiff() } }]);
+    await adapter(store).route("toggle_compacted", { path: "Cargo.lock", compacted: false });
+    expect(sent).toEqual([{ kind: "set_file_compacted", tab: KEY, path: "Cargo.lock", compacted: false }]);
+    expect(wireDiffCommand("toggle_compacted", {}, KEY)).toBeUndefined();
+    const hidden = backend([{ version: 2, value: { kind: "diff", ...tabDiff({ mode: "hidden" }) } }]);
+    hidden.store.show(diffKey(KEY));
+    await settle();
+    await adapter(hidden.store).route("toggle_compacted", { path: "Cargo.lock", compacted: true });
+    expect(hidden.sent).toEqual([{ kind: "set_file_compacted", tab: KEY, path: "Cargo.lock", compacted: true }]);
+  });
 });

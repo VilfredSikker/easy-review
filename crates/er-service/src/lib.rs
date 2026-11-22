@@ -53,7 +53,7 @@ pub use flows::read_flow_run;
 pub use freshness::{BaseBehind, Divergence, Freshness, RemoteTips};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};
 pub use host::{ReplyReceiver, ServiceHost};
-pub use hunks::{read_hunks, HunkRead};
+pub use hunks::{file_hunks, read_hunks, HunkRead};
 pub use pending_review::OWN_PR_APPROVAL_REFUSED;
 pub use protocol::{
     AcceptanceDiff, AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event,

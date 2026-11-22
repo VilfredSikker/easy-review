@@ -15,6 +15,7 @@ mod diff;
 mod error;
 mod hunks;
 mod notice;
+mod preview;
 mod resource;
 mod risk;
 mod session;
@@ -30,6 +31,7 @@ pub use diff::{
 pub use error::{ErError, ErErrorKind};
 pub use hunks::{FileHunks, Hunk, HunkLine};
 pub use notice::{Notice, NoticeLevel};
+pub use preview::{DiffPaths, FilePreview, ImagePreview};
 pub use resource::{
     Resource, ResourceChanged, ResourceKey, ResourceVersion, TabKey, Tabs, Versioned,
 };

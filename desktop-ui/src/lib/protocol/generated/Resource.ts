@@ -2,7 +2,10 @@
 import type { AvailableBranches } from "./AvailableBranches";
 import type { AvailablePrs } from "./AvailablePrs";
 import type { Branches } from "./Branches";
+import type { DiffPaths } from "./DiffPaths";
 import type { FileHunks } from "./FileHunks";
+import type { FilePreview } from "./FilePreview";
+import type { ImagePreview } from "./ImagePreview";
 import type { Inbox } from "./Inbox";
 import type { Panels } from "./Panels";
 import type { Projects } from "./Projects";
@@ -18,4 +21,4 @@ import type { Worktrees } from "./Worktrees";
 /**
  * One resource's content, tagged with the kind of key it answers.
  */
-export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "available_branches" } & AvailableBranches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk | { "kind": "prs" } & Prs | { "kind": "available_prs" } & AvailablePrs | { "kind": "worktrees" } & Worktrees | { "kind": "inbox" } & Inbox | { "kind": "session" } & Session | { "kind": "panels" } & Panels | { "kind": "view" } & TabView | { "kind": "diff" } & TabDiff | { "kind": "hunks" } & FileHunks;
+export type Resource = { "kind": "tabs" } & Tabs | { "kind": "projects" } & Projects | { "kind": "branches" } & Branches | { "kind": "available_branches" } & AvailableBranches | { "kind": "settings" } & Settings | { "kind": "risk" } & Risk | { "kind": "prs" } & Prs | { "kind": "available_prs" } & AvailablePrs | { "kind": "worktrees" } & Worktrees | { "kind": "inbox" } & Inbox | { "kind": "session" } & Session | { "kind": "panels" } & Panels | { "kind": "view" } & TabView | { "kind": "diff" } & TabDiff | { "kind": "hunks" } & FileHunks | { "kind": "file_preview" } & FilePreview | { "kind": "image_preview" } & ImagePreview | { "kind": "diff_paths" } & DiffPaths;

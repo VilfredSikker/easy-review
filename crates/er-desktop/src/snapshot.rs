@@ -84,6 +84,12 @@ impl SentFilesState {
         self.order.clear();
     }
 
+    /// Whether no view records a path.
+    #[cfg(all(test, feature = "v1-service"))]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.views.values().all(HashMap::is_empty)
+    }
+
     /// Touch `token` as most-recent, creating an empty map if needed. Drops the
     /// oldest view when the cap is exceeded.
     fn activate(&mut self, token: u64) -> &mut HashMap<String, u64> {
@@ -145,6 +151,8 @@ pub fn optimistic_view_matches(app: &App, expected: &OptimisticView) -> bool {
 
 /// Record that the frontend now holds full hunks for `snap` (viewport-driven
 /// lazy loads bypass `build_snapshot`, so `request_file_content` calls this).
+/// Flag-off only: with the flag on the page fetches hunks by hash.
+#[cfg(not(feature = "v1-service"))]
 pub fn record_sent_file(
     app: &App,
     tab: &TabState,
@@ -6978,6 +6986,33 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
     const DELTA_FIXTURE_DIFF: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..1111111 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,3 @@\n fn foo() {}\n+fn bar() {}\n fn baz() {}\n";
     #[cfg(not(feature = "v1-service"))]
     const DELTA_FIXTURE_DIFF_V2: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..2222222 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,4 @@\n fn foo() {}\n+fn bar() {}\n+fn qux() {}\n fn baz() {}\n";
+
+    /// `hunks(hash)` carries the fields of the snapshot's hunks it replaces,
+    /// a fold line included; only the threads are left to the page's join.
+    #[cfg(feature = "v1-service")]
+    #[test]
+    fn the_hash_keyed_hunks_match_the_snapshot_hunks() {
+        let mut files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+        let fold = er_engine::git::DiffLine {
+            line_type: LineType::Fold(4),
+            content: String::new(),
+            old_num: None,
+            new_num: None,
+        };
+        files[0].hunks[0].lines.insert(1, fold);
+        let app = er_engine::app::App::new_for_test(files);
+        let tab = app.tab();
+        let json = |v: serde_json::Result<serde_json::Value>| v.unwrap_or_else(|e| panic!("{e}"));
+        let mut snapshot = json(serde_json::to_value(build_hunks(&tab.files[0], tab, None)));
+        for hunk in snapshot.as_array_mut().into_iter().flatten() {
+            if let Some(hunk) = hunk.as_object_mut() {
+                hunk.remove("threads");
+            }
+        }
+        let hashed = json(serde_json::to_value(er_service::file_hunks(&tab.files[0])));
+        assert!(hashed.to_string().contains("··· 4 unchanged lines ···"));
+        assert_eq!(hashed, snapshot);
+    }
 
     #[test]
     fn precomputed_keys_produce_identical_snapshot() {

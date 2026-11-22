@@ -904,6 +904,27 @@ fn handle_command(
                 ))
             });
         }
+        Command::CompactFiles { key, paths } => {
+            let Some(content) = state.view().tabs.get(&key).cloned() else {
+                return refuse_unknown_tab(reply);
+            };
+            spawn_effect(tx, reply, move || {
+                let compacted = content
+                    .diff
+                    .files
+                    .iter()
+                    .filter(|file| paths.contains(&file.path))
+                    .count();
+                Ok(Effected::patched(
+                    Reply::FilesCompacted { key, compacted },
+                    ContentPatch::Compacted {
+                        key,
+                        since: content.diff.revision,
+                        paths,
+                    },
+                ))
+            });
+        }
         // The loop hands reloads to their gate before dispatch.
         Command::ReloadSidecars { key } => {
             let reloaded = false;

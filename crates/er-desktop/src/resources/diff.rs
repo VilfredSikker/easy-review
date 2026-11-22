@@ -204,6 +204,14 @@ pub fn apply(desktop: &DesktopState, command: Command, effects: &Effects<'_>) ->
         Command::SyncBranch { project_id, branch } => {
             sync_branch(desktop, &project_id, &branch, effects)
         }
+        Command::SetFileCompacted {
+            tab,
+            path,
+            compacted,
+        } => resolve(desktop, tab).and_then(|key| {
+            content_routes::set_file_compacted(desktop, key, &path, compacted).map_err(refused)?;
+            Ok(moved(desktop, &[key]))
+        }),
         other => return Routed::Other(other),
     };
     Routed::Applied(applied)

@@ -302,6 +302,13 @@ pub enum Command {
         project_id: String,
         branch: String,
     },
+    /// Expands a compacted file in full, or compacts it again. The tab keeps
+    /// the choice across reloads.
+    SetFileCompacted {
+        tab: TabKey,
+        path: String,
+        compacted: bool,
+    },
 }
 
 /// The review settings a patch changes; a field left empty stays as it is.
