@@ -24,7 +24,7 @@ const WAIT: Duration = Duration::from_secs(20);
 /// The fixture's own git, run as a test process; the code under test reads
 /// the repo through the `Git` port.
 #[cfg(test)]
-fn git(dir: &Path, args: &[&str]) -> String {
+pub(super) fn git(dir: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .args([
             "-c",
@@ -63,7 +63,7 @@ fn repo(dir: &ReviewFlowTestDir) -> std::path::PathBuf {
     canonical(&root)
 }
 
-fn canonical(path: &Path) -> std::path::PathBuf {
+pub(super) fn canonical(path: &Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
