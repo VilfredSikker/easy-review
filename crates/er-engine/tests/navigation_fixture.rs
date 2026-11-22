@@ -2,22 +2,31 @@
 //! `fixtures/navigation_cases.json` holds for the engine's functions, as it
 //! does for desktop-ui's port (`desktop-ui/src/lib/navigation.test.ts`).
 
-use er_engine::navigation::{next_file, next_hunk, next_unreviewed_file, prev_file, prev_hunk, FileMove};
+use er_engine::navigation::{
+    next_file, next_hunk, next_unreviewed_file, prev_file, prev_hunk, FileMove,
+};
 use serde_json::Value;
 
 fn cases() -> Value {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/navigation_cases.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/navigation_cases.json"
+    );
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
 fn list(value: &Value, case: &Value) -> Vec<usize> {
-    let items = value.as_array().unwrap_or_else(|| panic!("not a list in {case}"));
+    let items = value
+        .as_array()
+        .unwrap_or_else(|| panic!("not a list in {case}"));
     items.iter().map(|item| index(item, case)).collect()
 }
 
 fn index(value: &Value, case: &Value) -> usize {
-    let n = value.as_u64().unwrap_or_else(|| panic!("not an index in {case}"));
+    let n = value
+        .as_u64()
+        .unwrap_or_else(|| panic!("not an index in {case}"));
     usize::try_from(n).unwrap_or_else(|e| panic!("{e} in {case}"))
 }
 
@@ -58,8 +67,16 @@ fn every_hunk_move_in_the_fixture_holds() {
     for case in cases["hunk_moves"].as_array().into_iter().flatten() {
         let current = index(&case["current"], case);
         let count = index(&case["count"], case);
-        assert_eq!(next_hunk(current, count), optional(&case["next"], case), "next_hunk: {case}");
-        assert_eq!(prev_hunk(current), optional(&case["prev"], case), "prev_hunk: {case}");
+        assert_eq!(
+            next_hunk(current, count),
+            optional(&case["next"], case),
+            "next_hunk: {case}"
+        );
+        assert_eq!(
+            prev_hunk(current),
+            optional(&case["prev"], case),
+            "prev_hunk: {case}"
+        );
     }
 }
 
@@ -73,6 +90,11 @@ fn every_unreviewed_jump_in_the_fixture_holds() {
             .map(|pair| (index(&pair[0], case), pair[1].as_bool() == Some(true)))
             .collect();
         let expected = optional(&case["next"], case);
-        assert_eq!(next_unreviewed_file(file, &visible), expected, "{}", case["name"]);
+        assert_eq!(
+            next_unreviewed_file(file, &visible),
+            expected,
+            "{}",
+            case["name"]
+        );
     }
 }

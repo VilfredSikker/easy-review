@@ -1,7 +1,7 @@
 import { SvelteMap } from "svelte/reactivity";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { AppSnapshot, FileSnapshot } from "$lib/types";
-import { jumpToUnreviewed, nextFile, nextHunk, prevFile, prevHunk } from "$lib/navigation";
+import { jumpToUnreviewed, nextFile, nextHunk, prevFile, prevHunk, type FileMove } from "$lib/navigation";
 
 type Args = Record<string, unknown>;
 
@@ -27,7 +27,7 @@ const MOVES = new Set(["select_file", "next_file", "prev_file", "next_hunk", "pr
  */
 export class SelectionAdapter {
   /** Each tab's selection by path, so a list that reorders or filters keeps it. */
-  private readonly picked = new SvelteMap<TabKey, { path: string; hunk: number }>();
+  private readonly picked = new SvelteMap<TabKey, Picked>();
 
   constructor(private readonly deps: SelectionAdapterDeps) {}
 
@@ -50,39 +50,39 @@ export class SelectionAdapter {
     const tab = this.owns();
     const snap = this.deps.shown();
     if (tab === null || !snap || !MOVES.has(command)) return null;
-    const files = snap.files;
-    const selected = files[snap.selected_file];
-    const at = (sourceIndex: number) => files.find((f) => f.source_index === sourceIndex);
-    const pick = (file: FileSnapshot | undefined, hunk = 0) => {
-      if (file) this.picked.set(tab, { path: file.path, hunk });
-    };
-    const visible = files.map((f) => f.source_index);
-    const current = selected?.source_index ?? -1;
-    const hunk = snap.current_hunk ?? 0;
-    switch (command) {
-      case "select_file":
-        pick(at(Number(args.idx)));
-        break;
-      case "next_file":
-      case "prev_file": {
-        const move = (command === "next_file" ? nextFile : prevFile)(current, null, visible, []);
-        if (move.kind === "file" || move.kind === "snap") pick(at(move.idx));
-        break;
-      }
-      case "next_hunk":
-      case "prev_hunk": {
-        const to = command === "next_hunk" ? nextHunk(hunk, selected?.hunks.length ?? 0) : prevHunk(hunk);
-        if (to !== null) pick(selected, to);
-        break;
-      }
-      default: {
-        const to = jumpToUnreviewed(
-          current,
-          files.map((f) => [f.source_index, f.reviewed] as const),
-        );
-        if (to !== null) pick(at(to));
-      }
-    }
+    const to = target(command, args, snap);
+    if (to) this.picked.set(tab, to);
     return Promise.resolve();
+  }
+}
+
+type Picked = { path: string; hunk: number };
+
+/** Where a selection or a move lands on `snap`, by the engine's rules; null when it stays. */
+function target(command: string, args: Args, snap: AppSnapshot): Picked | null {
+  const files = snap.files;
+  const selected: FileSnapshot | undefined = files[snap.selected_file];
+  const fileAt = (sourceIndex: number | null): Picked | null => {
+    const file = files.find((f) => f.source_index === sourceIndex);
+    return file ? { path: file.path, hunk: 0 } : null;
+  };
+  const landed = (move: FileMove) => (move.kind === "file" || move.kind === "snap" ? fileAt(move.idx) : null);
+  const inSelected = (hunk: number | null) => (selected && hunk !== null ? { path: selected.path, hunk } : null);
+  const current = selected?.source_index ?? -1;
+  const hunk = snap.current_hunk ?? 0;
+  const visible = files.map((f) => f.source_index);
+  switch (command) {
+    case "select_file":
+      return fileAt(Number(args.idx));
+    case "next_file":
+      return landed(nextFile(current, null, visible, []));
+    case "prev_file":
+      return landed(prevFile(current, null, visible, []));
+    case "next_hunk":
+      return inSelected(nextHunk(hunk, selected?.hunks.length ?? 0));
+    case "prev_hunk":
+      return inSelected(prevHunk(hunk));
+    default:
+      return fileAt(jumpToUnreviewed(current, files.map((f) => [f.source_index, f.reviewed] as const)));
   }
 }
