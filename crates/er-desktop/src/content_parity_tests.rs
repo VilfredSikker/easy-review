@@ -473,7 +473,10 @@ fn write_fixture(resolved: &ResolvedTab, git: &dyn er_git::Git) -> anyhow::Resul
             Path::new(&tour_dir),
             json!({
                 "version": 1, "diff_hash": "older", "title": "Walk",
-                "pillars": [{ "id": "p1", "title": "P1" }]
+                "pillars": [{ "id": "p1", "title": "P1", "files": [{
+                    "path": "src/a.rs", "reason": "core",
+                    "related": [{ "path": "src/b.rs", "kind": "test", "reason": "covers it" }]
+                }, { "path": "src/gone.rs", "reason": "left the diff" }] }]
             }),
         );
     }
