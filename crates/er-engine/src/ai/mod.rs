@@ -40,7 +40,7 @@ pub use finding_cleanup::*;
 pub use finding_responses::*;
 pub use identity::*;
 pub use loader::*;
-pub use mtime::{latest_er_mtime, latest_er_mtime_skipping};
+pub use mtime::{er_mtimes, latest_er_mtime, latest_er_mtime_skipping};
 pub use panel_run::PanelRun;
 pub use professor::*;
 pub use projection::*;

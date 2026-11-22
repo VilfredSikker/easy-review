@@ -7,6 +7,8 @@
 //! (ADR 0067). Every module here takes `DesktopState`, so no resource can
 //! read the App; the tick is the one exception, and it is handed the App.
 
+#[cfg(feature = "v1-service")]
+pub mod annotations;
 pub mod commands;
 #[cfg(feature = "v1-service")]
 pub mod diff;
@@ -14,6 +16,8 @@ pub mod diff;
 mod host;
 #[cfg(feature = "v1-service")]
 pub mod hunks;
+#[cfg(feature = "v1-service")]
+pub mod jobs;
 #[cfg(feature = "v1-service")]
 pub mod notice;
 #[cfg(feature = "v1-service")]

@@ -76,6 +76,13 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
             super::preview::image_preview(desktop, *tab, path, context)?
         }
         ResourceKey::DiffPaths { tab } => super::preview::diff_paths(desktop, *tab)?,
+        ResourceKey::UiAnnotations { tab } => super::annotations::ui_annotations(desktop, *tab)?,
+        ResourceKey::Jobs => super::jobs::jobs(desktop),
+        ResourceKey::ReviewJson { tab } => super::annotations::review_json(desktop, *tab)?,
+        ResourceKey::ReviewRevisions { tab } => {
+            super::annotations::review_revisions(desktop, *tab)?
+        }
+        ResourceKey::AnnotationScreenshot { path } => super::annotations::screenshot(path)?,
     };
     Ok(Versioned {
         key,
@@ -107,7 +114,10 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         | ResourceKey::Hunks { .. }
         | ResourceKey::FilePreview { .. }
         | ResourceKey::ImagePreview { .. }
-        | ResourceKey::DiffPaths { .. } => 0,
+        | ResourceKey::DiffPaths { .. }
+        | ResourceKey::ReviewJson { .. }
+        | ResourceKey::ReviewRevisions { .. }
+        | ResourceKey::AnnotationScreenshot { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Inbox => sidebar(desktop).inbox().0,
@@ -122,6 +132,11 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::Panels => super::session::panels_version(desktop),
         ResourceKey::View { tab } => super::tabs::view_version(desktop, *tab)?,
         ResourceKey::Diff { tab } => super::diff::version(desktop, *tab)?,
+        ResourceKey::UiAnnotations { tab } => {
+            let entry = super::diff::listed(desktop, *tab)?;
+            super::annotations::ui_annotations_version(desktop, entry.key, &entry.descriptor)
+        }
+        ResourceKey::Jobs => super::jobs::version(desktop),
         ResourceKey::Reviewed { tab } => {
             super::reviewed::published_version(desktop, &super::diff::listed(desktop, *tab)?)
         }
@@ -426,6 +441,9 @@ pub enum Watched {
     /// A listed tab's `diff(tab)`: every section its rows read, or its load
     /// failure.
     TabDiff(TabKey),
+    /// A loaded tab's browser annotations.
+    UiAnnotations(TabKey),
+    Jobs,
     /// A listed tab's `reviewed(tab)`: its marks, the file list they are
     /// counted over and the view, or its load failure.
     TabReviewed(TabKey),
@@ -447,6 +465,10 @@ impl Watched {
             Self::TabDiff(key) => Some(ResourceKey::Diff {
                 tab: er_service::wire_tab_key(*key),
             }),
+            Self::UiAnnotations(key) => Some(ResourceKey::UiAnnotations {
+                tab: er_service::wire_tab_key(*key),
+            }),
+            Self::Jobs => Some(ResourceKey::Jobs),
             Self::TabReviewed(key) => Some(ResourceKey::Reviewed {
                 tab: er_service::wire_tab_key(*key),
             }),
@@ -467,6 +489,7 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
             super::session::session_version(desktop, settings.as_deref()),
         ),
         (Watched::Panels, super::session::panels_version(desktop)),
+        (Watched::Jobs, super::jobs::version(desktop)),
     ]);
     let sidebar = sidebar(desktop).versions();
     versions.extend(
@@ -493,6 +516,11 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
     versions.extend(tabs.tabs.iter().filter_map(|entry| {
         let version = super::diff::published_version(desktop, entry.key, &entry.descriptor);
         (version > 0).then_some((Watched::TabDiff(entry.key), version))
+    }));
+    versions.extend(tabs.tabs.iter().filter_map(|entry| {
+        let content = desktop.service.content(entry.key, &entry.descriptor)?;
+        let version = super::annotations::ui_version(desktop, &content);
+        Some((Watched::UiAnnotations(entry.key), version))
     }));
     versions.extend(tabs.tabs.iter().filter_map(|entry| {
         let version = super::reviewed::published_version(desktop, entry);

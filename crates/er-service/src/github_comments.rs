@@ -44,10 +44,7 @@ fn comments_payload(ctx: &TabContext) -> Option<ai::ErGithubComments> {
 /// The comments sidecar as a post left it, for the tabs that read it.
 fn stored_comments(ctx: &TabContext) -> ContentPatch {
     comments_payload(ctx).map_or(ContentPatch::Several(Vec::new()), |comments| {
-        ContentPatch::Sidecar {
-            dir: ctx.comments_dir.clone(),
-            payload: WrittenPayload::Comments(comments),
-        }
+        ContentPatch::stored_sidecar(&ctx.comments_dir, WrittenPayload::Comments(comments))
     })
 }
 
@@ -58,16 +55,16 @@ fn stored_threads(ctx: &TabContext) -> ContentPatch {
     let mut patches = vec![stored_comments(ctx)];
     if let Ok(scope) = Scope::dir(&ctx.er_dir) {
         if let Ok(Loaded::Found(stored)) = ai::annotation_store::load_questions(&store, &scope) {
-            patches.push(ContentPatch::Sidecar {
-                dir: ctx.er_dir.clone(),
-                payload: WrittenPayload::Questions(stored.value),
-            });
+            patches.push(ContentPatch::stored_sidecar(
+                &ctx.er_dir,
+                WrittenPayload::Questions(stored.value),
+            ));
         }
         if let Ok(Loaded::Found(stored)) = ai::annotation_store::load_notes(&store, &scope) {
-            patches.push(ContentPatch::Sidecar {
-                dir: ctx.er_dir.clone(),
-                payload: WrittenPayload::Notes(stored.value),
-            });
+            patches.push(ContentPatch::stored_sidecar(
+                &ctx.er_dir,
+                WrittenPayload::Notes(stored.value),
+            ));
         }
     }
     ContentPatch::Several(patches)

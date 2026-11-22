@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    AvailableBranches, AvailablePrs, Branches, DiffPaths, FileHunks, FilePreview, ImagePreview,
-    Inbox, Panels, Projects, Prs, Risk, Session, Settings, TabDiff, TabReviewed, TabRow, TabView,
-    Worktrees,
+    AnnotationScreenshot, AvailableBranches, AvailablePrs, Branches, DiffPaths, FileHunks,
+    FilePreview, ImagePreview, Inbox, Jobs, Panels, Projects, Prs, ReviewJson, ReviewRevisions,
+    Risk, Session, Settings, TabDiff, TabReviewed, TabRow, TabView, UiAnnotations, Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -90,6 +90,17 @@ pub enum ResourceKey {
     },
     /// Every path a tab's diff holds, read on each fetch.
     DiffPaths { tab: TabKey },
+    /// One open tab's browser annotations, from its view's bucket.
+    UiAnnotations { tab: TabKey },
+    /// The app-wide work in flight.
+    Jobs,
+    /// One open tab's review as JSON, read on each fetch and never pushed.
+    ReviewJson { tab: TabKey },
+    /// One open tab's review revisions, read on each fetch and never pushed.
+    ReviewRevisions { tab: TabKey },
+    /// A saved annotation screenshot by its path, read on each fetch and
+    /// never pushed.
+    AnnotationScreenshot { path: String },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -115,6 +126,11 @@ pub enum Resource {
     FilePreview(FilePreview),
     ImagePreview(ImagePreview),
     DiffPaths(DiffPaths),
+    UiAnnotations(UiAnnotations),
+    Jobs(Jobs),
+    ReviewJson(ReviewJson),
+    ReviewRevisions(ReviewRevisions),
+    AnnotationScreenshot(AnnotationScreenshot),
 }
 
 /// The open tabs in strip order, and the active one.

@@ -394,7 +394,11 @@ fn a_load_applies_over_a_reload_but_not_over_a_write() -> Result<(), PatchRefuse
         questions: Vec::new(),
     });
     let dir = String::new();
-    state.apply_patch(ContentPatch::Sidecar { dir, payload })?;
+    state.apply_patch(ContentPatch::Sidecar {
+        dir,
+        payload,
+        written: None,
+    })?;
     let stale = state.apply_patch(loaded(Some(since)));
     assert_eq!(stale.err(), Some(PatchRefused::Moved));
     Ok(())
@@ -564,8 +568,12 @@ fn a_reload_sent_while_one_runs_is_answered_at_once() -> anyhow::Result<()> {
 #[test]
 fn sidecars_move_when_newer_created_deleted_or_rearbitrated() {
     let at = |secs| Some(std::time::UNIX_EPOCH + Duration::from_secs(secs));
-    let stamp = |latest, arbiter: Option<&[u8]>| SidecarStamp {
-        latest,
+    let stamp = |latest: Option<std::time::SystemTime>, arbiter: Option<&[u8]>| SidecarStamp {
+        dirs: vec!["/bucket".to_string()],
+        files: latest
+            .map(|mtime| (std::path::PathBuf::from("/bucket/review.json"), mtime))
+            .into_iter()
+            .collect(),
         arbiter: arbiter.map(<[u8]>::to_vec),
     };
     let loaded = stamp(at(10), None);

@@ -25,10 +25,7 @@ use crate::protocol::{AnnotationKind, AnnotationTarget, TabContext};
 pub(crate) type Written<T> = Result<(T, ContentPatch), WorkspaceError>;
 
 fn sidecar(dir: &str, payload: WrittenPayload) -> ContentPatch {
-    ContentPatch::Sidecar {
-        dir: dir.to_string(),
-        payload,
-    }
+    ContentPatch::stored_sidecar(dir, payload)
 }
 
 /// The saved marks when a write changed them; nothing otherwise.

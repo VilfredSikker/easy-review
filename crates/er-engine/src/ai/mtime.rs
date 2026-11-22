@@ -3,76 +3,63 @@
 //! This is a watch over the bucket's files, not a read of their contents, so it
 //! stays a filesystem stat until the store owns change events everywhere.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+/// The sidecars a bucket's AI state is read from.
+const SIDECARS: [&str; 10] = [
+    "review.json",
+    "order.json",
+    "tour.json",
+    "summary.md",
+    "checklist.json",
+    "questions.json",
+    "notes.json",
+    "github-comments.json",
+    "triage.json",
+    "professor.json",
+];
 
 /// Get the mtime of the most recently modified .er-* file
 pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
     latest_er_mtime_skipping(er_dir, None)
 }
 
+/// Each sidecar of `er_dir` that exists, with its mtime: the files above and
+/// every entry of the per-expert and diagram directories.
+pub fn er_mtimes(er_dir: &str) -> Vec<(PathBuf, SystemTime)> {
+    let er_dir = Path::new(er_dir);
+    let mtime = |path: PathBuf| {
+        Some((
+            path.clone(),
+            std::fs::metadata(&path).ok()?.modified().ok()?,
+        ))
+    };
+    let mut found: Vec<_> = SIDECARS
+        .iter()
+        .filter_map(|name| mtime(er_dir.join(name)))
+        .collect();
+    for sub in ["experts", "diagrams"] {
+        if let Ok(entries) = std::fs::read_dir(er_dir.join(sub)) {
+            found.extend(entries.flatten().filter_map(|entry| mtime(entry.path())));
+        }
+    }
+    found
+}
+
 pub fn latest_er_mtime_skipping(
     er_dir: &str,
     skip: Option<&Path>,
 ) -> Option<std::time::SystemTime> {
-    let er_dir = Path::new(er_dir);
-    let files = [
-        "review.json",
-        "order.json",
-        "tour.json",
-        "summary.md",
-        "checklist.json",
-        "questions.json",
-        "notes.json",
-        "github-comments.json",
-        "triage.json",
-        "professor.json",
-    ];
-
-    let skip_eq = |path: &Path| skip.is_some_and(|s| s == path);
-
-    let mut latest = files
-        .iter()
-        .filter_map(|name| {
-            let path = er_dir.join(name);
-            if skip_eq(&path) {
-                return None;
-            }
-            std::fs::metadata(&path).ok()?.modified().ok()
-        })
+    let latest = er_mtimes(er_dir)
+        .into_iter()
+        .filter(|(path, _)| skip.is_none_or(|s| s != path))
+        .map(|(_, mtime)| mtime)
         .max();
 
-    let experts_dir = er_dir.join("experts");
-    if let Ok(entries) = std::fs::read_dir(&experts_dir) {
-        for entry in entries.flatten() {
-            if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
-                latest = Some(match latest {
-                    Some(prev) => prev.max(m),
-                    None => m,
-                });
-            }
-        }
-    }
-
-    let diagrams_dir = er_dir.join("diagrams");
-    if let Ok(entries) = std::fs::read_dir(&diagrams_dir) {
-        for entry in entries.flatten() {
-            if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
-                latest = Some(match latest {
-                    Some(prev) => prev.max(m),
-                    None => m,
-                });
-            }
-        }
-    }
-
+    // `None` sorts below every `Some`, so the newer of the two wins.
     #[cfg(feature = "ui")]
-    if let Some(arena_mtime) = crate::arena::latest_arena_mtime(er_dir) {
-        latest = Some(match latest {
-            Some(prev) => prev.max(arena_mtime),
-            None => arena_mtime,
-        });
-    }
-
+    let latest = latest.max(crate::arena::latest_arena_mtime(Path::new(er_dir)));
     latest
 }
 
