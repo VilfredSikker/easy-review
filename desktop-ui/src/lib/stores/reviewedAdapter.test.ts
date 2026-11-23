@@ -7,7 +7,6 @@ import type { Ack } from "$lib/protocol/generated/Ack";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabReviewed } from "$lib/protocol/generated/TabReviewed";
 import type { AppSnapshot } from "$lib/pageTypes";
-import { isOptimisticCommand } from "../optimisticLocal";
 import { ResourceStore } from "./resourceStore";
 import { ReviewedAdapter, reviewedKey } from "./reviewedAdapter";
 
@@ -87,16 +86,6 @@ function adapter(store: ResourceStore, flagOn = true, rowsHeld: () => boolean = 
 const flags = (snap: AppSnapshot) => snap.files.map((f) => [f.path, f.reviewed]);
 
 describe("ReviewedAdapter", () => {
-  it("leaves the snapshot alone and sends nothing with the flag off", async () => {
-    const { store, sent } = backend({ version: 3, value: marks(["src/a.rs"], 1) });
-    await settle();
-    const reviewed = adapter(store, false);
-    const snap = snapshot();
-    expect(reviewed.overlay(snap)).toBe(snap);
-    expect(reviewed.route("mark_reviewed", { path: "src/a.rs" })).toBeNull();
-    expect(sent).toEqual([]);
-  });
-
   it("takes the marks and the count from reviewed(tab), in History too", async () => {
     const { store, held } = backend({ version: 3, value: marks(["src/b.rs"], 1) });
     await settle();
@@ -220,15 +209,6 @@ describe("ReviewedAdapter", () => {
     expect(backendState.sent).toEqual([
       { kind: "bulk_review_pillar", tab: KEY, view: VIEW, pillarId: "p-1", reviewed: false },
     ]);
-  });
-});
-
-describe("the bulk reviews with the flag on", () => {
-  it("leave the optimistic path, so a bulk review paints nothing until reviewed(tab) moves", () => {
-    for (const command of ["bulk_review_pillar", "unbulk_review_pillar"]) {
-      expect(isOptimisticCommand(command, true)).toBe(false);
-      expect(isOptimisticCommand(command, false)).toBe(true);
-    }
   });
 });
 

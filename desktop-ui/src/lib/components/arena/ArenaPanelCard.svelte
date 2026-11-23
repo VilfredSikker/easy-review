@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { digestLine, runOrdinals, runStatusLabel } from "$lib/arena/arenaView";
   import ArenaHistoryList from "$lib/components/arena/ArenaHistoryList.svelte";
@@ -15,7 +15,7 @@
   );
   const running = $derived(arena.hasLiveRun);
   const digest = $derived(latest ? arena.digests[latest.id] : undefined);
-  const activeRunId = $derived(app.snapshot?.active_arena_run ?? arena.liveRunId);
+  const activeRunId = $derived(pageView.current?.active_arena_run ?? arena.liveRunId);
 
   const line = $derived.by(() => {
     if (!latest) return "Several reviewers vote on the same diff; an arbiter rules on what survives.";

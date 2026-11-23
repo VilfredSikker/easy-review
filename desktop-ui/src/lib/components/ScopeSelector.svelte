@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { railView } from "$lib/stores/railView.svelte";
   import { footerScopeLabel } from "$lib/scopeRail";
   import type { CommitSummary } from "$lib/pageTypes";
@@ -20,7 +21,7 @@
     $props();
 
   const view = railView();
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
   const commitsToShow = $derived(commits.length > 0 ? commits : (snapshot?.commits ?? []));
   const selectedSha = $derived(snapshot?.selected_commit_sha ?? null);
 

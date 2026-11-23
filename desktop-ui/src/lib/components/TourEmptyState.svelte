@@ -1,11 +1,12 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { resolveActivePrNumber } from "$lib/prUrl";
   import { tourEmptyCopy } from "$lib/tourEmpty";
 
   /** The Tour page for a view with no tour: say so, and offer the ways out. */
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
   const copy = $derived(tourEmptyCopy(snapshot?.other_bucket));
   let generating = $state(false);
 

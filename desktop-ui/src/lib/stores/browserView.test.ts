@@ -23,14 +23,6 @@ function store() {
 }
 
 describe("BrowserViewAdapter", () => {
-  it("reads app.snapshot.browser with the flag off and shows no key", () => {
-    const s = store();
-    const view = new BrowserViewAdapter({ flagOn: false, store: s, snapshot: () => ({ browser: split }), activeKey: () => 12 });
-    expect(view.read()).toEqual(split);
-    expect(new BrowserViewAdapter({ flagOn: false, store: s, snapshot: () => null, activeKey: () => 12 }).read()).toEqual(NO_BROWSER);
-    expect(s.shown).toEqual([]);
-  });
-
   it("reads the active tab's view with the flag on and follows the active key", () => {
     const s = store();
     let active = 12;

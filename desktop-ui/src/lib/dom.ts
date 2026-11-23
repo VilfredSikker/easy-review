@@ -1,5 +1,6 @@
 import { tick } from "svelte";
 import { app } from "$lib/stores/app.svelte";
+import { pageView } from "$lib/stores/pageView.svelte";
 import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { diffPreview } from "$lib/stores/diffPreview.svelte";
@@ -36,7 +37,7 @@ export function jumpTo(id: string): void {
  * (reviewed flags, navigation cursor) before the visual scroll.
  */
 export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
-  const snap = app.snapshot;
+  const snap = pageView.current;
   if (!snap) return;
   const currentPath = snap.files[snap.selected_file]?.path;
   if (thread.file && thread.file !== currentPath) {
@@ -47,10 +48,10 @@ export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
     }
   }
   if (thread.file) {
-    if (app.snapshot) diffPreview.ensureRaw(app.snapshot, thread.file);
+    if (pageView.current) diffPreview.ensureRaw(pageView.current, thread.file);
     await tick();
     diffFileCollapse.expand(thread.file);
-    const latest = app.snapshot;
+    const latest = pageView.current;
     const fileSnap = latest?.files.find((f) => f.path === thread.file);
     if (fileSnap?.compacted) {
       await app.cmd("toggle_compacted", { path: fileSnap.path, compacted: false });
@@ -77,7 +78,7 @@ async function loadStub(file: FileSnapshot | undefined): Promise<void> {
  * Navigate to a finding, switching files first if needed.
  */
 export async function navigateToFinding(finding: FlatFinding): Promise<void> {
-  const snap = app.snapshot;
+  const snap = pageView.current;
   if (!snap) return;
   const currentPath = snap.files[snap.selected_file]?.path;
   if (finding.file && finding.file !== currentPath) {
@@ -88,10 +89,10 @@ export async function navigateToFinding(finding: FlatFinding): Promise<void> {
     }
   }
   if (finding.file) {
-    if (app.snapshot) diffPreview.ensureRaw(app.snapshot, finding.file);
+    if (pageView.current) diffPreview.ensureRaw(pageView.current, finding.file);
     await tick();
     diffFileCollapse.expand(finding.file);
-    const latest = app.snapshot;
+    const latest = pageView.current;
     const fileSnap = latest?.files.find((f) => f.path === finding.file);
     if (fileSnap?.compacted) {
       await app.cmd("toggle_compacted", { path: fileSnap.path, compacted: false });

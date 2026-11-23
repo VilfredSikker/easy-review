@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
   import type { AppSnapshot } from "$lib/pageTypes";
   import type { DiffViewMode } from "$lib/stores/app.svelte";
@@ -10,7 +10,7 @@
   }
   const { snapshot, viewModeOverride = null }: Props = $props();
 
-  $effect(() => { app.snapshot = snapshot; });
+  $effect(() => { pageView.current = snapshot; });
 </script>
 
 <div class="h-screen flex flex-col bg-bg text-fg">

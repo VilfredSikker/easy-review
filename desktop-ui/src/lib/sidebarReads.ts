@@ -1,13 +1,13 @@
 import type { AppSnapshot, ProjectSnapshot, TabSummary, WorktreeSnapshot } from "./pageTypes";
 
-/** What `detectedPrNumber` derives the active branch's PR from with the flag on. */
+/** What `detectedPrNumber` derives the active branch's PR from. */
 export type DetectSnapshot = Pick<AppSnapshot, "tabs" | "active_tab" | "branch" | "detected_pr_number">;
 
 /**
  * Where the page's pure helpers read the sidebar's projects, the active tab's
- * worktrees and the PR its branch has. The default reads the snapshot; with
- * the flag on the sidebar's wiring installs the adapters, so the helpers keep
- * one signature on both paths.
+ * worktrees and the PR its branch has. The default reads the view's own
+ * fields, which the unit tests set; the sidebar's wiring installs the
+ * adapters.
  */
 export interface SidebarReads {
   projects(snapshot: Pick<AppSnapshot, "projects">): ProjectSnapshot[];
@@ -24,7 +24,7 @@ const fromSnapshot: SidebarReads = {
 
 let reads: SidebarReads = fromSnapshot;
 
-/** With the flag on the sidebar's wiring reads from its adapters. */
+/** The sidebar's wiring reads from its adapters. */
 export function readSidebarFrom(next: SidebarReads): void {
   reads = next;
 }

@@ -44,8 +44,7 @@ describe("the GitHub senders with the flag on", () => {
     expect(held).toHaveLength(5);
   });
 
-  it("leave every command to its old route with the flag off, and other commands always", () => {
-    expect(writes(false).github.route("pull_github_comments", {})).toBeNull();
+  it("leave other commands to their own routes", () => {
     expect(writes(true).github.route("open_url_in_browser", {})).toBeNull();
     expect(githubWrite("reply_to_thread", {}, TAB)).toBeNull();
   });

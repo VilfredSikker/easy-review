@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { projectsResource, worktreesResource } from "$lib/stores/projectsResource.svelte";
@@ -43,7 +44,7 @@
   }
   const { collapsed = false, pinnedOverride }: Props = $props();
 
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
   const theme = $derived(themeByName(sessionResource.theme));
   const worktrees = $derived(worktreesResource.worktrees);
   const projects = $derived<ProjectSnapshot[]>(projectsResource.projects);

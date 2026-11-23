@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AiSnapshot, GithubStatusSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { githubStatusForActiveTab } from "$lib/prUrl";
   import { longAge } from "$lib/relativeTime";
   import { openExternalUrl } from "$lib/openExternalUrl";
@@ -26,8 +27,8 @@
   }
 
   const { github: githubOverride, ai: aiOverride, loadImage, onOpenRef }: Props = $props();
-  const github = $derived(githubOverride !== undefined ? githubOverride : githubStatusForActiveTab(app.snapshot));
-  const ai = $derived(aiOverride !== undefined ? aiOverride : (app.snapshot?.ai ?? null));
+  const github = $derived(githubOverride !== undefined ? githubOverride : githubStatusForActiveTab(pageView.current));
+  const ai = $derived(aiOverride !== undefined ? aiOverride : (pageView.current?.ai ?? null));
   const timeline = $derived(buildActivity(github, ai));
 
   const REVIEW_TEXT: Record<ReviewState, string> = {

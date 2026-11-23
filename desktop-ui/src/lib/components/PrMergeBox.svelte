@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { GithubStatusSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { anchoredMenuPosition } from "$lib/anchoredMenu";
   import AnchoredMenu from "$lib/components/ui/AnchoredMenu.svelte";
   import {
@@ -28,7 +29,7 @@
   const { github }: Props = $props();
 
   const model = $derived(mergeBoxModel(github));
-  const prDiffHead = $derived(app.snapshot?.pr_diff_head_oid ?? null);
+  const prDiffHead = $derived(pageView.current?.pr_diff_head_oid ?? null);
   const headNote = $derived(mergeHeadNote(github, prDiffHead));
 
   // ── Menus (fixed: the right panel clips overflow) ──────────────────────

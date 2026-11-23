@@ -41,14 +41,6 @@ describe("the card asks", () => {
     expect(held).toEqual(Array(5).fill('{"kind":"jobs"}@3'));
   });
 
-  it("leave every ask to its Tauri command with the flag off", () => {
-    const { asks: ai } = asks(false);
-    expect(ai.route("ask_ai", { threadId: "q-1", prompt: "" })).toBeNull();
-    expect(ai.route("validate_with_ai", { threadId: "q-1" })).toBeNull();
-    expect(ai.route("elaborate_with_ai", { threadId: "n-1" })).toBeNull();
-    expect(ai.route("reply_to_finding", { findingId: "f-1", body: "", aiAssist: true })).toBeNull();
-  });
-
   it("leave a plain finding reply and other commands to their own routes", () => {
     const { asks: ai } = asks(true);
     expect(ai.route("reply_to_finding", { findingId: "f-1", body: "agreed", aiAssist: false })).toBeNull();

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { localBranchBannerCopy } from "$lib/shellBanners";
   import { activeDiffSource, sourceToggleState } from "$lib/sourceToggle";
@@ -11,7 +12,7 @@
    * only for that view. A stale diff takes the slot instead: the two banners
    * share one row, and catching up with origin comes first.
    */
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
   const divergence = $derived(snapshot?.local_branch_divergence ?? null);
   const onLocal = $derived(activeDiffSource(snapshot?.mode, snapshot?.tour?.scope) === "local");
   const message = $derived(

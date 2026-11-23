@@ -50,7 +50,6 @@
     const body = quotedBody(quote, text);
     const lineNumEnd = lines.end !== lines.start ? lines.end : null;
     if (hunkIdx !== null && kind === "comment") {
-      if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
       const id = clientId ?? newCommentClientId();
       clientId = id;
       sending = true;
@@ -74,7 +73,6 @@
       return;
     }
     if (hunkIdx !== null) {
-      if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
       void app.cmd(ADD_COMMAND[kind], {
         file: file.path, hunkIdx, lineNum: lines.start, lineNumEnd, text: body, side: "RIGHT",
       });

@@ -8,6 +8,7 @@
 <script lang="ts">
   import { readAnnotationScreenshot } from "$lib/stores/annotationReads";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { annotationMatchesPage, pageKey, urlPath } from "$lib/stores/browserUrl";
   import { dismissBrowserAnnotationComposerNow } from "$lib/stores/keyboard";
@@ -19,7 +20,7 @@
     if (!browser.open) return [];
     const url = browser.url.trim();
     if (!url) return [];
-    return (app.snapshot?.ui_annotations ?? []).filter((a) =>
+    return (pageView.current?.ui_annotations ?? []).filter((a) =>
       annotationMatchesPage(a.url, url),
     );
   });

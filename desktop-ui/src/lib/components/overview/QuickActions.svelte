@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
@@ -21,7 +22,7 @@
   }
 
   const { snapshot: snapshotOverride }: Props = $props();
-  const snap = $derived(snapshotOverride !== undefined ? snapshotOverride : app.snapshot);
+  const snap = $derived(snapshotOverride !== undefined ? snapshotOverride : pageView.current);
 
   const scope = $derived(reviewScopeFromMode(snap?.mode));
   const generators = $derived(generatorStates(snap));

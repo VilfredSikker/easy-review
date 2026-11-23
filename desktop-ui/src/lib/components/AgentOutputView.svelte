@@ -1,6 +1,7 @@
 <script lang="ts">
   import { listReviewRevisions, readReviewJson } from "$lib/stores/annotationReads";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { copyToClipboard } from "$lib/clipboard";
 
@@ -17,8 +18,8 @@
   let selectedRevisionId = $state<string>("");
   let lastRevisionsTab = $state(-1);
 
-  const commands = $derived(app.snapshot?.agent_commands ?? []);
-  const log = $derived(app.snapshot?.agent_log ?? []);
+  const commands = $derived(pageView.current?.agent_commands ?? []);
+  const log = $derived(pageView.current?.agent_log ?? []);
 
   async function loadRevisions() {
     revisions = await listReviewRevisions();

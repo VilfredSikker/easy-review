@@ -58,18 +58,6 @@ function adapter(flagOn: boolean) {
 }
 
 describe("RiskAdapter", () => {
-  it("asks the old risk commands with the flag off", async () => {
-    const { backend, risk: adapterRisk } = adapter(false);
-    const view = await adapterRisk.load(TARGET, ["db/a.sql", "src/b.rs"]);
-    expect(view.repo).toBe("acme/widgets");
-    expect(view.files.map((f) => f.tier)).toEqual(["high", "ai"]);
-    expect(view.rules[0].fileCount).toBe(1);
-    expect(backend.names().sort()).toEqual(["get_risk_files", "get_risk_rules"]);
-    backend.calls.length = 0;
-    await adapterRisk.loadRules(TARGET, ["db/a.sql"]);
-    expect(backend.names()).toEqual(["get_risk_files"]);
-  });
-
   it("loads through er_send and reads risk(key) through er_fetch with the flag on", async () => {
     const { backend, risk: adapterRisk } = adapter(true);
     const view = await adapterRisk.load(TARGET, ["db/a.sql", "src/b.rs"]);

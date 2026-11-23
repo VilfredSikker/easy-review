@@ -65,11 +65,6 @@ const RAW = {
 } as unknown as AppSnapshot;
 
 describe("the PR adapter", () => {
-  it("leaves the snapshot's PR fields with the flag off", () => {
-    const { store } = backend(new Map());
-    expect(adapter(store, false, []).overlay(RAW)).toBe(RAW);
-  });
-
   it("with the flag on, reads the card and stack from pr(tab) and the status the card's PR names", async () => {
     const held = [list("acme/widgets", [row(9, "feat", "base"), row(8, "base")])];
     const target = { remote: "acme/widgets", number: 9 };
@@ -108,7 +103,6 @@ describe("the PR adapter", () => {
       { kind: "refresh_github_status", tab: KEY },
     ]);
     expect(pr.route("pull_github_comments")).toBeNull();
-    expect(adapter(store, false, []).route("refresh_stack")).toBeNull();
   });
 });
 

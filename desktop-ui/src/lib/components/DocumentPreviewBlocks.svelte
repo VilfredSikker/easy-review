@@ -1,7 +1,7 @@
 <script lang="ts">
   import { quoteSourceLines, threadsByBlock, type LineRange } from "$lib/documentAnchors";
   import type { DocumentBlock } from "$lib/documentPreview";
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import type { FileSnapshot } from "$lib/pageTypes";
   import DocumentMarkdown from "./DocumentMarkdown.svelte";
   import InlineThread from "./InlineThread.svelte";
@@ -18,7 +18,7 @@
   let draft = $state<{ quote: string; lines: LineRange; afterBlock: number } | null>(null);
   let root: HTMLElement | null = $state(null);
 
-  const threads = $derived(threadsByBlock(blocks, app.snapshot?.ai.threads ?? [], file.path));
+  const threads = $derived(threadsByBlock(blocks, pageView.current?.ai.threads ?? [], file.path));
 
   function blockOf(node: Node | null): HTMLElement | null {
     const el = node instanceof Element ? node : node?.parentElement;

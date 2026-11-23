@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { TriageSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { openOverviewFile } from "$lib/overviewFileOpen";
   import { arena } from "$lib/stores/arena.svelte";
   import Card from "$lib/components/ui/Card.svelte";
@@ -41,7 +42,7 @@
   let filesOpen = $state(false);
   let advancedFollowUpPending = $state(false);
 
-  const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
+  const reviewScope = $derived(reviewScopeFromMode(pageView.current?.mode));
   const label = $derived(verdictLabel(triage.verdict_primary));
   // A review of this diff answers "what next" better than triage's routing
   // call; the routing call stays under Verdict.
@@ -51,9 +52,9 @@
 
   const rows = $derived(takeaways(triage));
   const freshness = $derived(
-    triageFreshness(triage, app.snapshot?.diff_stale),
+    triageFreshness(triage, pageView.current?.diff_stale),
   );
-  const reviewFlow = $derived(app.snapshot?.review_flow ?? null);
+  const reviewFlow = $derived(pageView.current?.review_flow ?? null);
   const flowControls = $derived(reviewFlowControls(reviewFlow));
 
   const verdictSummary = $derived.by(() => {
@@ -86,19 +87,19 @@
   }
 
   function startReviewFlow() {
-    const snap = app.snapshot;
+    const snap = pageView.current;
     if (!reviewScope || !snap?.review_bucket_er_dir || !flowControls.start) return;
     void app.cmd("start_review_flow", { scope: reviewScope, erDir: snap.review_bucket_er_dir });
   }
 
   function controlReviewFlow(command: "confirm_review_flow" | "decline_review_flow" | "cancel_review_flow") {
-    const erDir = app.snapshot?.review_bucket_er_dir;
+    const erDir = pageView.current?.review_bucket_er_dir;
     if (!erDir) return;
     void app.cmd(command, { erDir });
   }
 
   function openFlowResults() {
-    const snap = app.snapshot;
+    const snap = pageView.current;
     const runId = snap?.review_flow?.arena_run_id;
     if (snap?.review_bucket_er_dir && runId) {
       void arena.openFlowOverlay(snap.review_bucket_er_dir, runId);

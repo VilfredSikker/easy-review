@@ -168,17 +168,6 @@ function adapter(flagOn: boolean, active: TabSummary | null = tab(), invokeFails
 }
 
 describe("ProjectsAdapter", () => {
-  it("reads app.snapshot with the flag off and sends the old commands", async () => {
-    const { calls, old, projects } = adapter(false);
-    await settle();
-    expect(projects.projects).toBe(snapshot.projects);
-    await projects.reorder(["b", "a"]);
-    await projects.addTrackedBranch("a", "feature");
-    expect(await projects.availableBranches("a")).toEqual(["old-path"]);
-    expect(old.map((c) => c.name)).toEqual(["reorder_projects", "add_tracked_branch", "list_available_branches"]);
-    expect(calls).toEqual([]);
-  });
-
   it("reads the projects and each shown project's branches through er_fetch with the flag on", async () => {
     const { calls, projects } = adapter(true);
     await settle();
@@ -222,25 +211,6 @@ describe("ProjectsAdapter", () => {
     expect(projects.heldPrs.map((p) => p.rows.map((r) => r.number))).toEqual([[5, 9]]);
   });
 
-  it("sends the PR writes through the old commands with the flag off", async () => {
-    const { calls, old, projects } = adapter(false);
-    await projects.savePr("a", 9, "Nine");
-    await projects.unsavePr("a", 9);
-    await projects.dismissPr("a", 5);
-    await projects.undismissPr("a", 5);
-    await projects.refreshProjectPrList("a");
-    await projects.refreshPrList();
-    expect(old).toEqual([
-      { name: "save_pr", args: { projectId: "a", prNumber: 9, title: "Nine" } },
-      { name: "unsave_pr", args: { projectId: "a", prNumber: 9 } },
-      { name: "dismiss_remote_pr", args: { projectId: "a", prNumber: 5 } },
-      { name: "undismiss_remote_pr", args: { projectId: "a", prNumber: 5 } },
-      { name: "refresh_project_pr_list", args: { projectId: "a" } },
-      { name: "refresh_pr_list", args: {} },
-    ]);
-    expect(calls).toEqual([]);
-  });
-
   it("with the flag on a pin paints nothing and shows once the prs push lands", async () => {
     const { calls, old, projects } = adapter(true);
     await settle();
@@ -266,32 +236,6 @@ describe("ProjectsAdapter", () => {
       project: "a",
       patch: { autoTriageMaxDiffKb: 12, reviewIgnoreGlobAdd: null, reviewIgnoreGlobRemove: null },
     });
-  });
-
-  // `app.cmd` drops a non-tab command while a tab switch is in flight, with
-  // no toast; SettingsPage called the command directly before this adapter.
-  it("with the flag off sends the review-settings change straight to the old command and applies its snapshot", async () => {
-    const { calls, old, commanded, ingested, projects } = adapter(false);
-    await projects.patchReviewSettings("a", { reviewIgnoreGlobAdd: "*.snap" });
-    expect(old).toEqual([
-      {
-        name: "patch_project_review_settings",
-        args: {
-          projectId: "a",
-          patch: { autoTriageMaxDiffKb: null, reviewIgnoreGlobAdd: "*.snap", reviewIgnoreGlobRemove: null },
-        },
-      },
-    ]);
-    expect(commanded).toEqual([]);
-    expect(ingested).toEqual([patchedSnapshot]);
-    expect(calls).toEqual([]);
-  });
-
-  it("with the flag off reports a failed review-settings change as the old toast did", async () => {
-    const { ingested, reported, projects } = adapter(false, tab(), "no such project");
-    await projects.patchReviewSettings("a", { autoTriageMaxDiffKb: 12 });
-    expect(reported).toEqual([{ command: "patch_project_review_settings", message: "no such project" }]);
-    expect(ingested).toEqual([]);
   });
 
   it("marks the branch the active tab views as current in the active project", async () => {

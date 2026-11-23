@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { layoutPanels } from "$lib/stores/layoutPanels.svelte";
   import { resolveContextIdentity, resolveContextTitle } from "$lib/contextIdentity";
@@ -10,7 +11,7 @@
 
   /** Review window top bar: breadcrumb with base and line counters, Live, the
    *  running-AI pill and the reviewed ring. */
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
   const activeTab = $derived(tabsResource.activeTab ?? undefined);
   const crumb = $derived(resolveContextTitle(snapshot));
   const identity = $derived(resolveContextIdentity(snapshot));

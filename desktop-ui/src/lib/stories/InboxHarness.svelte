@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import LeftSidebar from "$lib/components/LeftSidebar.svelte";
   import InboxView from "$lib/components/InboxView.svelte";
   import { richSnapshot } from "$lib/stories/fixtures";
@@ -14,9 +15,9 @@
 
   const { inboxItems = [], projects = [], page = false }: Props = $props();
 
-  // Seed app.snapshot so both the rail and the page derive from the store.
+  // Seed pageView.current so both the rail and the page derive from the store.
   $effect(() => {
-    app.snapshot = {
+    pageView.current = {
       ...richSnapshot,
       projects,
       inbox_items: inboxItems,

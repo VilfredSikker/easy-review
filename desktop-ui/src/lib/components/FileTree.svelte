@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { diffResource } from "$lib/stores/diffResource.svelte";
   import { buildTree, filesByPathMap, resolveTreeFile, visibleTree } from "$lib/treeFromPaths";
   import ScopeSelector from "./ScopeSelector.svelte";
@@ -46,7 +47,7 @@
   const rail = railView();
   const showScope = $derived(!pickerMode && rail.scopes.length > 1 && !rail.isPr);
 
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
   const diff = $derived(diffResource.read());
 
   /** Accurate tooltip for the annotation badge — breaks out comments / questions
@@ -57,7 +58,7 @@
   /// reader's, so only the client can say how many it is hiding. A count that
   /// silently shrinks is how a filter stops being trusted.
   const hiddenFindings = $derived(
-    hiddenFindingCounts(app.snapshot?.ai, (fallback) => findingsVisibility.minTrust(fallback)),
+    hiddenFindingCounts(pageView.current?.ai, (fallback) => findingsVisibility.minTrust(fallback)),
   );
 
   function annotationTitle(file: FileSnapshot): string {

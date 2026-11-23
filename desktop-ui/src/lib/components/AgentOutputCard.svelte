@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import type { AgentLogEntry, AgentCommandStatus } from "$lib/pageTypes";
   import { sourceColor } from "$lib/utils/agentLog";
 
-  const commands = $derived<AgentCommandStatus[]>(app.snapshot?.agent_commands ?? []);
-  const log = $derived<AgentLogEntry[]>(app.snapshot?.agent_log ?? []);
+  const commands = $derived<AgentCommandStatus[]>(pageView.current?.agent_commands ?? []);
+  const log = $derived<AgentLogEntry[]>(pageView.current?.agent_log ?? []);
 
   const hasActivity = $derived(commands.length > 0 || log.length > 0);
   const isRunning = $derived(commands.some((c) => c.status === "running"));

@@ -16,10 +16,12 @@ plugin({
   },
 });
 
-// The App store runs on runes too and is not under test. Bun keeps a module
+// The page view runs on runes too and is not under test. Bun keeps a module
 // mock for the whole run, which is safe here: no test loads the real store,
 // and keyboard.test.ts mocks it again.
-void mock.module("./app.svelte", () => ({ app: { overlaySnapshot: () => {} } }));
+void mock.module("./pageView.svelte", () => ({ pageView: { current: null, overlay: () => {}, readTabs: () => {} } }));
+void mock.module("./legacySnapshot.svelte", () => ({ legacySnapshot: { tabRows: [], overlay: (view: unknown) => view } }));
+void mock.module("./app.svelte", () => ({ app: { routeCmds: () => {} } }));
 
 const { followRunProgress } = await import("./arenaResource.svelte");
 const { jobsFixture } = await import("./arenaResourceFixture.svelte");
@@ -27,23 +29,10 @@ const { jobsFixture } = await import("./arenaResourceFixture.svelte");
 /** Lets the effects the last write scheduled run. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-/** A feed over the fixture's `jobs` that records what the desktop listener was asked for. */
-function feed(flagOn: boolean) {
-  const listened: string[] = [];
-  const handlers: (() => void)[] = [];
-  const listen = (event: string, handler: () => void) => {
-    listened.push(event);
-    handlers.push(handler);
-    return Promise.resolve(() => {});
-  };
-  return { feed: { flagOn, adapter: jobsFixture, listen }, listened, handlers };
-}
-
 describe("followRunProgress", () => {
-  it("calls the arena on each move of jobs with the flag on, and never listens for er://revision", async () => {
-    const { feed: on, listened } = feed(true);
+  it("calls the arena on each move of jobs", async () => {
     let revisions = 0;
-    const release = await followRunProgress(() => (revisions += 1), on);
+    const release = followRunProgress(() => (revisions += 1), jobsFixture);
     await settle();
     const first = revisions;
 
@@ -52,24 +41,10 @@ describe("followRunProgress", () => {
     jobsFixture.move();
     await settle();
     expect(revisions).toBe(first + 2);
-    expect(listened).toEqual([]);
 
     release();
     jobsFixture.move();
     await settle();
     expect(revisions).toBe(first + 2);
-  });
-
-  it("listens for er://revision with the flag off, and a move of jobs does not call the arena", async () => {
-    const { feed: off, listened, handlers } = feed(false);
-    let revisions = 0;
-    await followRunProgress(() => (revisions += 1), off);
-    jobsFixture.move();
-    await settle();
-    expect(revisions).toBe(0);
-    expect(listened).toEqual(["er://revision"]);
-
-    for (const handler of handlers) handler();
-    expect(revisions).toBe(1);
   });
 });

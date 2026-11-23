@@ -60,22 +60,13 @@ function backend(value: unknown = { kind: "tabs", ...wireTabs }) {
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe("TabsAdapter", () => {
-  it("reads app.snapshot with the flag off and never fetches", async () => {
-    const { calls, store } = backend();
-    const tabs = new TabsAdapter({ flagOn: false, store, snapshot: () => snapshot });
-    await settle();
-    expect(tabs.active).toBe(0);
-    expect(tabs.tabs.map((t) => t.label)).toEqual(["a", "b"]);
-    expect(calls).toEqual([]);
-  });
-
   it("reads the rows of the tabs resource through er_fetch with the flag on", async () => {
     const { calls, store } = backend({
       kind: "tabs",
       tabs: [wireRow(11, "x"), wireRow(12, "y", { kind: "remote_pr", branch: null, pr_number: 9, remote: "acme/y" })],
       active: 12,
     });
-    const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => null });
+    const tabs = new TabsAdapter({ store, rows: () => [] });
     await settle();
     expect(calls).toEqual(["er_fetch"]);
     expect(tabs.active).toBe(1);
@@ -88,7 +79,7 @@ describe("TabsAdapter", () => {
   it("shows the resource's rows while the snapshot lags it", async () => {
     const { store } = backend();
     let current = snapshot;
-    const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => current });
+    const tabs = new TabsAdapter({ store, rows: () => current.tabs });
     await settle();
     current = { tabs: [row(0, "a", true)], active_tab: 0 };
     expect(tabs.tabs.map((t) => [t.label, t.is_active])).toEqual([
@@ -291,12 +282,6 @@ describe("TabsAdapter.route", () => {
     ["prefetch_inbox_item", { id: "i-1" }, { kind: "prefetch_inbox_item", id: "i-1" }],
   ];
 
-  it("leaves every command to app.cmd with the flag off", () => {
-    const { store } = sender();
-    const tabs = new TabsAdapter({ flagOn: false, store, snapshot: () => snapshot });
-    for (const [name, args] of ROUTED) expect(tabs.route(name, args)).toBeNull();
-  });
-
   it("covers every command wireCommand maps", () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "tabsAdapter.ts"), "utf8");
     const arms = [...source.matchAll(/case "(\w+)":/g)].map((m) => m[1]);
@@ -306,7 +291,7 @@ describe("TabsAdapter.route", () => {
   for (const [name, args, wire] of ROUTED) {
     it(`sends ${name} ${JSON.stringify(args)} through er_send with the flag on, and resolves once the Ack's versions are held`, async () => {
       const { sent, waited, releases, store } = sender();
-      const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
+      const tabs = new TabsAdapter({ store, rows: () => snapshot.tabs });
       const routed = tabs.route(name, args);
       if (routed === null) throw new Error(`${name} fell back to app.cmd`);
       let settled = false;
@@ -328,7 +313,7 @@ describe("TabsAdapter.route", () => {
 
   it("resolves a prefetch with no hint at once and sends nothing", async () => {
     const { sent, waited, store } = sender(true);
-    const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
+    const tabs = new TabsAdapter({ store, rows: () => snapshot.tabs });
     await tabs.route("prefetch_pr_open", { projectId: "p", prNumber: 7 });
     expect(sent).toEqual([]);
     expect(waited).toEqual([]);
@@ -337,7 +322,7 @@ describe("TabsAdapter.route", () => {
 
   it("rejects a position the resource does not list", async () => {
     const { sent, store } = sender(true);
-    const tabs = new TabsAdapter({ flagOn: true, store, snapshot: () => snapshot });
+    const tabs = new TabsAdapter({ store, rows: () => snapshot.tabs });
     await expect(tabs.route("select_tab", { idx: 5 }) ?? Promise.resolve()).rejects.toThrow("no tab at position 5");
     expect(sent).toEqual([]);
   });

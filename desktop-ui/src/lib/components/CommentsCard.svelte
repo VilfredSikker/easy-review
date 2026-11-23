@@ -6,6 +6,7 @@
 <script lang="ts">
   import type { AiSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import {
     commentThreadsFromDiff,
     hiddenCommentsHint,
@@ -28,17 +29,17 @@
   let manualRefreshing = $state(false);
   let autoPulledFor = $state<string | null>(null);
 
-  const files = $derived(app.snapshot?.files);
+  const files = $derived(pageView.current?.files);
   const commentThreads = $derived(commentThreadsFromDiff(ai.threads, files));
   const vis = $derived(app.commentVisibility);
   const visibleCommentThreads = $derived(filterVisibleComments(ai.threads, vis, files));
-  const annotationCount = $derived(app.snapshot?.ui_annotations?.length ?? 0);
+  const annotationCount = $derived(pageView.current?.ui_annotations?.length ?? 0);
   const refreshing = $derived(
-    manualRefreshing || (app.snapshot?.bg_loading?.gh_comments ?? false),
+    manualRefreshing || (pageView.current?.bg_loading?.gh_comments ?? false),
   );
 
   function currentAutoPullKey(): string | null {
-    return commentAutoPullKey(app.snapshot);
+    return commentAutoPullKey(pageView.current);
   }
 
   function rememberAutoPull(key: string) {
@@ -51,14 +52,13 @@
 
   $effect(() => {
     if (!active) return;
-    if (app.pendingTabSwitch) return;
     const key = currentAutoPullKey();
     if (!key) return;
     if (autoPulledFor === key || autoPulledKeys.has(key)) return;
     autoPulledFor = key;
     void (async () => {
       await app.cmd("pull_github_comments");
-      if (app.pendingTabSwitch || currentAutoPullKey() !== key) {
+      if (currentAutoPullKey() !== key) {
         if (autoPulledFor === key) autoPulledFor = null;
         return;
       }

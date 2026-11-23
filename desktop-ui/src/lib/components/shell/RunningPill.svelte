@@ -1,14 +1,14 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { aggregateJobs } from "$lib/runningJobs";
   import { otherJobs, ownAgentCommands, runningPillView } from "$lib/runningPill";
   import JobsPopover from "./JobsPopover.svelte";
 
   /** The top bar's AI pill: hidden while nothing runs, opens the jobs popover. */
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
 
   let now = $state(Date.now());
   $effect(() => {

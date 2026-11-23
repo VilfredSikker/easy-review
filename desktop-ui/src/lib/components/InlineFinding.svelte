@@ -2,6 +2,7 @@
   import { annotationDrafts } from "$lib/stores/annotationDrafts.svelte";
   import type { FlatFinding, ThreadSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
   import EditMessageModal from "$lib/components/EditMessageModal.svelte";
   import ReplyActionBar from "$lib/components/ReplyActionBar.svelte";
@@ -16,7 +17,7 @@
   }
 
   const { finding, thread = null }: Props = $props();
-  const draft = $derived(annotationDrafts.get(app.snapshot, "finding", finding.id));
+  const draft = $derived(annotationDrafts.get(pageView.current, "finding", finding.id));
 
   function severityColorFor(severity: FlatFinding["severity"]): string {
     if (severity === "high") return "var(--color-risk-high)";
@@ -74,13 +75,11 @@
   // Resolve keeps the finding, dimmed, where Dismiss removes it (ADR 0047).
   function toggleResolved() {
     const command = finding.resolved ? "unresolve_finding" : "resolve_finding";
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked(command);
     void app.cmd(command, { findingId: finding.id });
   }
   function reply() {
     const body = draft.replyText.trim();
     if (!body) return;
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked("reply_to_finding");
     void app.cmd("reply_to_finding", { findingId: finding.id, body, aiAssist: false });
     draft.replyText = "";
     replyOpen = false;
@@ -108,7 +107,6 @@
 
   function submitEdit(body: string) {
     if (!editMessageId || !editOrigin) return;
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     const id = editMessageId;
     const origin = editOrigin;
     if (origin === "finding_response") {
@@ -165,7 +163,6 @@
   }
 
   async function submitPromote(body: string) {
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked("promote_finding_to_comment");
     promoteError = null;
     try {
       await app.cmd(

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { FileRiskSnapshot, RiskTier } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { openOverviewFile } from "$lib/overviewFileOpen";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
@@ -45,10 +46,10 @@
 
   let sort = $state<RiskQueueSort>("risk");
 
-  const allRows = $derived(riskQueueRows(risks, app.snapshot?.files ?? [], sort));
+  const allRows = $derived(riskQueueRows(risks, pageView.current?.files ?? [], sort));
   const rows = $derived(ratedRows(allRows));
   const counts = $derived(riskCounts(allRows));
-  const currentPaths = $derived(new Set((app.snapshot?.files ?? []).map((file) => file.path)));
+  const currentPaths = $derived(new Set((pageView.current?.files ?? []).map((file) => file.path)));
   const activeSortHint = $derived(SORTS.find((option) => option.value === sort)?.hint ?? "");
 
   function canJumpTo(path: string): boolean {

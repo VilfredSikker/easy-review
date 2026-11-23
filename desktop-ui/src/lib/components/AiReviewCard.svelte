@@ -5,6 +5,7 @@
   import { revealErFolder as reveal } from "$lib/tabCommands";
   import { readReviewJson } from "$lib/stores/annotationReads";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
@@ -83,7 +84,7 @@
     aiReviewFilter.filter === ALL_REVIEWERS && agentLabels.length > 1,
   );
   const agentSummaryOnly = $derived(useAgentScopedSummary(aiReviewFilter.filter));
-  const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
+  const reviewScope = $derived(reviewScopeFromMode(pageView.current?.mode));
   const activeTab = $derived(tabsResource.activeTab ?? undefined);
   const hasExpertFindings = $derived(
     agentScopedFindings.some((finding) => finding.expert_label != null),
@@ -137,24 +138,24 @@
   const branchArenaRuns = $derived(arena.branchSummaries);
   const latestArena = $derived(branchArenaRuns[0] ?? null);
   const arenaRunning = $derived(arena.hasLiveRun);
-  const activeArenaRunId = $derived(app.snapshot?.active_arena_run ?? arena.liveRunId);
-  const reviewFlow = $derived(app.snapshot?.review_flow ?? null);
+  const activeArenaRunId = $derived(pageView.current?.active_arena_run ?? arena.liveRunId);
+  const reviewFlow = $derived(pageView.current?.review_flow ?? null);
   const flowControls = $derived(reviewFlowControls(reviewFlow));
 
   function startReviewFlow() {
-    const snap = app.snapshot;
+    const snap = pageView.current;
     if (!reviewScope || !snap?.review_bucket_er_dir || !flowControls.start) return;
     void app.cmd("start_review_flow", { scope: reviewScope, erDir: snap.review_bucket_er_dir });
   }
 
   function controlReviewFlow(command: "confirm_review_flow" | "decline_review_flow" | "cancel_review_flow") {
-    const erDir = app.snapshot?.review_bucket_er_dir;
+    const erDir = pageView.current?.review_bucket_er_dir;
     if (!erDir) return;
     void app.cmd(command, { erDir });
   }
 
   function openFlowResults() {
-    const snap = app.snapshot;
+    const snap = pageView.current;
     const runId = snap?.review_flow?.arena_run_id;
     if (snap?.review_bucket_er_dir && runId) {
       void arena.openFlowOverlay(snap.review_bucket_er_dir, runId);

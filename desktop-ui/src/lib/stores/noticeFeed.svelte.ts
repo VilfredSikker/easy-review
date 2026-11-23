@@ -1,5 +1,4 @@
 import { NoticeFeed } from "$lib/protocol/notices";
-import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import { app, TOAST_LONG_MS } from "./app.svelte";
 
 const feed = new NoticeFeed((notice) =>
@@ -7,9 +6,9 @@ const feed = new NoticeFeed((notice) =>
 );
 let unlisten: Promise<() => void> | null = null;
 
-/** Shows the backend's notices as toasts. Only the `v1-service` build emits them. */
+/** Shows the backend's notices as toasts. */
 export function startNotices(): void {
-  if (!v1ServiceRequested() || unlisten) return;
+  if (unlisten) return;
   unlisten = feed.listen();
 }
 

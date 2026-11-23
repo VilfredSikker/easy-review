@@ -3,6 +3,7 @@
   import { readReviewJson } from "$lib/stores/annotationReads";
   import type { AiSnapshot, Confidence, FlatFinding } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
@@ -105,9 +106,9 @@
       app.showToast("error", e instanceof Error ? e.message : String(e));
     }
   }
-  const flowActive = $derived(app.snapshot?.review_flow != null);
+  const flowActive = $derived(pageView.current?.review_flow != null);
 
-  const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
+  const reviewScope = $derived(reviewScopeFromMode(pageView.current?.mode));
   const activeTab = $derived(tabsResource.activeTab ?? undefined);
   const hasExpertFindings = $derived((ai?.findings ?? []).some((f) => f.expert_label != null));
   const canValidateGeneralReview = $derived(

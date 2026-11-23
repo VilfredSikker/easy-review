@@ -163,17 +163,12 @@ describe("emptyBucketCopy", () => {
 const read = (name: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), name), "utf8");
 
 describe("overview writes", () => {
-  const PAINT_GUARD = "if (!app.canPaintOptimistic()) return app.explainPaintBlocked(";
-
-  it("guards promote and resolve before painting, and keeps Promote behind the modal", () => {
+  it("keeps Promote behind the modal", () => {
     const src = read("OverviewFindings.svelte");
     const promoteFn = src.slice(src.indexOf("function submitPromote"), src.indexOf("</script>"));
-    expect(promoteFn.indexOf(PAINT_GUARD)).toBeGreaterThan(-1);
     expect(promoteFn.indexOf('void app.cmd("promote_finding_to_comment"')).toBeLessThan(promoteFn.indexOf("promoting = null;"));
     expect(src).toContain("<PromoteModal");
     expect(src).not.toContain('onclick={() => void app.cmd("promote_finding_to_comment"');
-    const resolveFn = src.slice(src.indexOf("function toggleResolved"), src.indexOf("let promoting"));
-    expect(resolveFn).toContain(PAINT_GUARD);
   });
 
   it("keeps the comment draft when posting fails", () => {
@@ -191,7 +186,7 @@ describe("overview writes", () => {
     expect(setMode).toBeGreaterThan(-1);
     expect(fn).not.toContain('reviewPage.show("tour")');
     expect(fn.indexOf('if (!reviewPage.available("tour")) return;')).toBeGreaterThan(-1);
-    expect(fn.indexOf('app.snapshot?.mode !== "tour") return;')).toBeGreaterThan(setMode);
+    expect(fn.indexOf('pageView.current?.mode !== "tour") return;')).toBeGreaterThan(setMode);
     expect(fn.indexOf("await diffNav.scrollToFile(first)")).toBeGreaterThan(setMode);
     const row = src.slice(src.indexOf('data-testid="overview-tour-row"'));
     expect(row.slice(0, row.indexOf("onclick"))).toContain("disabled={!tourAvailable}");

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ChecklistSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { checklistProgress, groupChecklistItems } from "$lib/checklist";
@@ -20,11 +21,11 @@
   const items = $derived(checklist?.items ?? []);
   const groups = $derived(groupChecklistItems(items));
   const progress = $derived(checklistProgress(items));
-  const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
+  const reviewScope = $derived(reviewScopeFromMode(pageView.current?.mode));
   const activeTab = $derived(tabsResource.activeTab ?? undefined);
-  const reviewBranch = $derived(app.snapshot?.local_branch ?? app.snapshot?.branch);
+  const reviewBranch = $derived(pageView.current?.local_branch ?? pageView.current?.branch);
   const reviewRunning = $derived(
-    (app.snapshot?.background_tasks ?? []).some(
+    (pageView.current?.background_tasks ?? []).some(
       (task) =>
         task.kind === "review" &&
         (task.status === "queued" || task.status === "running") &&
@@ -41,7 +42,7 @@
   }
 
   async function jumpToFile(path: string) {
-    const snap = app.snapshot;
+    const snap = pageView.current;
     if (!snap) return;
     const f = snap.files.find((file) => file.path === path);
     if (f) {
@@ -57,7 +58,7 @@
   // A related finding can be gone (dismissed, dropped by the arbiter) while the
   // item that referred to it stays; the id is then all there is to show.
   function findingFor(id: string) {
-    return app.snapshot?.ai.findings.find((f) => f.id === id) ?? null;
+    return pageView.current?.ai.findings.find((f) => f.id === id) ?? null;
   }
 
   async function jumpToFinding(id: string) {

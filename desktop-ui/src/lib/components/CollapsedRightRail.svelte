@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AiSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { panelThreads } from "./rpanel/commentsPanel";
   import { scopeToReviewer } from "./rpanel/findingsPanel";
   import { useReviewerFilterSync } from "./rpanel/reviewerFilter.svelte";
@@ -27,11 +28,11 @@
     return findings.length > 0 ? "low" : null;
   });
   const threadCount = $derived(
-    panelThreads(ai?.threads, app.commentVisibility, app.snapshot?.files).length,
+    panelThreads(ai?.threads, app.commentVisibility, pageView.current?.files).length,
   );
-  const fileCount = $derived(app.snapshot?.files.length ?? 0);
+  const fileCount = $derived(pageView.current?.files.length ?? 0);
 
-  const github = $derived(app.snapshot?.github ?? null);
+  const github = $derived(pageView.current?.github ?? null);
   const checksStatus = $derived.by((): "success" | "failure" | "pending" | null => {
     const checks = github?.checks;
     if (!checks || checks.length === 0) return null;

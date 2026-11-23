@@ -39,6 +39,6 @@ describe("ChecklistCard", () => {
   it("points at the review action when the bucket has no checklist", () => {
     expect(src).toContain("{#if items.length === 0}");
     expect(src).toContain('app.cmd("run_ai_review", { scope: reviewScope })');
-    expect(src).toContain("reviewScopeFromMode(app.snapshot?.mode)");
+    expect(src).toContain("reviewScopeFromMode(pageView.current?.mode)");
   });
 });

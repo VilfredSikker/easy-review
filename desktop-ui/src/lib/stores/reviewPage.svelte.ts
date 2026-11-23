@@ -1,4 +1,5 @@
 import { app } from "./app.svelte";
+import { pageView } from "./pageView.svelte";
 import { sessionResource } from "./sessionResource.svelte";
 import {
   currentReviewPage,
@@ -22,7 +23,7 @@ let overviewVisited = $state(false);
  */
 export const reviewPage = {
   get current(): ReviewPage | null {
-    return currentReviewPage(app.mainView, app.snapshot?.mode);
+    return currentReviewPage(app.mainView, pageView.current?.mode);
   },
 
   /** Which review pages the shell keeps mounted, and which one is on screen. */
@@ -49,7 +50,7 @@ export const reviewPage = {
   },
 
   show(page: ReviewPage): void {
-    const snap = app.snapshot;
+    const snap = pageView.current;
     if (!reviewPageAvailable(page, sessionResource.features, overviewRendered)) return;
     app.setMainView(page === "overview" ? "overview" : "diff");
     const args = snap ? setModeArgsFor(page, snap) : null;

@@ -13,8 +13,6 @@ export function reviewedKey(tab: TabKey): ResourceKey {
 type Args = Record<string, unknown>;
 
 interface ReviewedAdapterDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "get" | "send" | "whenAt">;
   /** The registry's active tab, the one the page paints. */
   activeKey: () => TabKey | null;
@@ -43,9 +41,8 @@ export class ReviewedAdapter {
 
   constructor(private readonly deps: ReviewedAdapterDeps) {}
 
-  /** The active tab's marks as the resource holds them; null with the flag off or before the first fetch. */
+  /** The active tab's marks as the resource holds them; null before the first fetch. */
   held(): TabReviewed | null {
-    if (!this.deps.flagOn) return null;
     const key = this.deps.activeKey();
     if (key === null) return null;
     const value = this.deps.store.get(reviewedKey(key))?.value;
@@ -66,12 +63,11 @@ export class ReviewedAdapter {
   }
 
   /**
-   * With the flag on, a reviewed write goes through `er_send` keyed to the
-   * active tab, and a bulk review also names the view `reviewed(tab)` was
-   * read in; null for any other command and for every command with the flag off.
+   * A reviewed write goes through `er_send` keyed to the active tab, and a
+   * bulk review also names the view `reviewed(tab)` was read in; null for any
+   * other command.
    */
   route(command: string, args: Args = {}): Promise<void> | null {
-    if (!this.deps.flagOn) return null;
     const tab = this.deps.activeKey();
     if (tab === null) return null;
     switch (command) {

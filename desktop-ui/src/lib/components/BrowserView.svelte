@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { browser, pageKey } from "$lib/stores/browser.svelte";
   import {
@@ -250,7 +251,7 @@
       void sendToPage({ __er_clear_pins: true });
       return;
     }
-    const items = (app.snapshot?.ui_annotations ?? [])
+    const items = (pageView.current?.ui_annotations ?? [])
       .filter((a) => annotationMatchesPage(a.url, browser.url))
       .map((a, i) => ({
         id: a.id,
@@ -407,7 +408,7 @@
   let clearAllTimer: ReturnType<typeof setTimeout> | undefined;
 
   async function clearAnnotationsPage() {
-    const all = app.snapshot?.ui_annotations ?? [];
+    const all = pageView.current?.ui_annotations ?? [];
     const onPage = all.filter((a) => annotationMatchesPage(a.url, currentPageUrl()));
     const count = onPage.length;
     if (count === 0) return;
@@ -425,7 +426,7 @@
   }
 
   async function clearAnnotationsAll() {
-    const count = app.snapshot?.ui_annotations?.length ?? 0;
+    const count = pageView.current?.ui_annotations?.length ?? 0;
     if (count === 0) return;
     if (!pendingClearAll) {
       pendingClearAll = true;
@@ -441,7 +442,7 @@
   }
 
   function queryAllAnnotationRects() {
-    const anns = (app.snapshot?.ui_annotations ?? []).filter(
+    const anns = (pageView.current?.ui_annotations ?? []).filter(
       (a) => annotationMatchesPage(a.url, browser.url) && a.selector,
     );
     allPinRects = {};
@@ -467,7 +468,7 @@
   }
 
   function requestReanchor() {
-    const items = (app.snapshot?.ui_annotations ?? [])
+    const items = (pageView.current?.ui_annotations ?? [])
       .filter((a) => annotationMatchesPage(a.url, browser.url) && a.selector)
       .map((a) => ({
         id: a.id,
@@ -499,10 +500,6 @@
 
   function onComposerSubmit(data: Record<string, unknown>): boolean {
     if (!data.__er_composer_submit) return false;
-    if (!app.canPaintOptimistic()) {
-      app.explainPaintBlocked();
-      return true;
-    }
     composerOpenInPage = false;
     void submitAnnotation({ ...composerSubmission(data), screenshotDataUrl: null });
     return true;
@@ -614,7 +611,6 @@
     elementContext,
     domContext,
   }: AnnotationSubmission) {
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     void app.cmd("add_ui_annotation", {
       url: pageKey(browser.url),
       selector,
@@ -758,7 +754,7 @@
     void pageHandlesAnnotate;
     void browser.url;
     void browser.showAnnotationTooltips;
-    void app.snapshot?.ui_annotations?.length;
+    void pageView.current?.ui_annotations?.length;
     void paneWidth;
     void paneHeight;
     if (pageHandlesAnnotate) {
@@ -845,7 +841,7 @@
       type="button"
       class="text-xs px-2 py-1 rounded disabled:opacity-40 {pendingClearPage ? 'bg-error/15 text-error' : 'hover:bg-error/15 text-muted hover:text-error'}"
       onclick={clearAnnotationsPage}
-      disabled={!(app.snapshot?.ui_annotations ?? []).some((a) =>
+      disabled={!(pageView.current?.ui_annotations ?? []).some((a) =>
         annotationMatchesPage(a.url, currentPageUrl()),
       )}
       title={pendingClearPage ? "Click again to confirm" : "Clear annotations on this page"}
@@ -856,7 +852,7 @@
       type="button"
       class="text-xs px-2 py-1 rounded disabled:opacity-40 {pendingClearAll ? 'bg-error/15 text-error' : 'hover:bg-error/15 text-muted hover:text-error'}"
       onclick={clearAnnotationsAll}
-      disabled={(app.snapshot?.ui_annotations?.length ?? 0) === 0}
+      disabled={(pageView.current?.ui_annotations?.length ?? 0) === 0}
       title={pendingClearAll ? "Click again to confirm" : "Clear all UI annotations on this review tab"}
     >
       {pendingClearAll ? "Confirm clear all?" : "Clear all"}

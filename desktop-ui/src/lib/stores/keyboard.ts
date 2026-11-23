@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { app } from "./app.svelte";
+import { pageView } from "./pageView.svelte";
 import { tabsResource } from "./tabsResource.svelte";
 import { diffSel } from "./diffSelection.svelte";
 import { refHighlight } from "./referenceHighlight.svelte";
@@ -11,7 +12,6 @@ import { overlay } from "./overlay.svelte";
 import { commandPalette } from "./commandPalette.svelte";
 import { buildTree, flattenForNav } from "$lib/treeFromPaths";
 import { nextFile, prevFile } from "$lib/navigation";
-import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import type { AppSnapshot, FileSnapshot } from "$lib/pageTypes";
 import { openSource, selectedSource } from "$lib/tabCommands";
 import { asErError } from "$lib/protocol/client";
@@ -111,26 +111,11 @@ function togglePanelForKey(e: KeyboardEvent): boolean {
 type FileStepSnapshot = Pick<AppSnapshot, "files" | "selected_file">;
 
 /**
- * The file `j`/`k` select from `order` (paths). With the flag on the move is
- * the engine's (`navigation.ts`): a selection the order does not hold snaps to
- * its first file, and a path the snapshot lacks is skipped. With the flag off
- * the old step stays: such a selection counts as the order's first file, and
- * a path the snapshot lacks stops the move.
+ * The file `j`/`k` select from `order` (paths). The move is the engine's
+ * (`navigation.ts`): a selection the order does not hold snaps to its first
+ * file, and a path the view lacks is skipped.
  */
-export function fileStep(
-  snap: FileStepSnapshot,
-  order: readonly string[],
-  direction: 1 | -1,
-  flagOn: boolean,
-): FileSnapshot | undefined {
-  if (!flagOn) {
-    if (order.length === 0) return undefined;
-    const cur = snap.files[snap.selected_file]?.path;
-    let i = cur ? order.indexOf(cur) : -1;
-    if (i === -1) i = 0;
-    const nextPath = order[(i + direction + order.length) % order.length];
-    return snap.files.find((f) => f.path === nextPath);
-  }
+export function fileStep(snap: FileStepSnapshot, order: readonly string[], direction: 1 | -1): FileSnapshot | undefined {
   const byPath = new Map(snap.files.map((f) => [f.path, f]));
   const visible = order.flatMap((path) => byPath.get(path)?.source_index ?? []);
   const cur = snap.files[snap.selected_file]?.source_index ?? -1;
@@ -146,12 +131,12 @@ export function fileStep(
  * tree and reads in pillar order, so there `j`/`k` follow the column instead.
  */
 function moveFile(direction: 1 | -1) {
-  const snap = app.snapshot;
+  const snap = pageView.current;
   if (!snap || snap.files.length === 0) return;
   const tourOrder = reviewPage.current === "tour" ? diffNav.drawnFilePaths() : [];
   const order =
     tourOrder.length > 0 ? tourOrder : flattenForNav(buildTree(snap.files), fileTreeCollapse.collapsed);
-  const next = fileStep(snap, order, direction, v1ServiceRequested());
+  const next = fileStep(snap, order, direction);
   if (!next) return;
   void app.cmd("select_file", { idx: next.source_index }).then(() => {
     void diffNav.scrollToFile(next.path);
@@ -161,7 +146,7 @@ function moveFile(direction: 1 | -1) {
 /** `r` toggles reviewed on the file being read, falling back to the selected
  *  one when the reading line sits on a Tour pillar header. */
 function toggleReviewedHere() {
-  const snap = app.snapshot;
+  const snap = pageView.current;
   if (!snap) return;
   const path = diffNav.visibleFilePath() ?? snap.files[snap.selected_file]?.path;
   const file = snap.files.find((f) => f.path === path);
@@ -171,7 +156,7 @@ function toggleReviewedHere() {
 
 async function openInVsCode() {
   try {
-    const result = await openSource("open_in_vscode", selectedSource(app.snapshot));
+    const result = await openSource("open_in_vscode", selectedSource(pageView.current));
     if (result.kind === "needs_checkout") {
       app.showToast("info", result.target);
     }

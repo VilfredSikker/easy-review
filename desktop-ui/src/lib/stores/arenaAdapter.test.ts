@@ -68,14 +68,6 @@ describe("ArenaAdapter", () => {
     expect(moved).toEqual(["arena_start", "arena_accept_findings", "arena_delete"]);
   });
 
-  it("calls the Tauri commands with the flag off", async () => {
-    const { run, sent, invoked } = adapter(false);
-    expect(await run.start({ scope: "branch", reviewers: [FAKE] })).toEqual(["run-old"]);
-    await run.cancel("run-1");
-    expect(invoked.map(([command]) => command)).toEqual(["arena_start", "arena_cancel"]);
-    expect(sent).toEqual([]);
-  });
-
   it("sends a batch start keyed to the active tab and reads its run ids, one per line", async () => {
     const { run, sent } = adapter(true, "run-a\nrun-b");
     const ids = await run.start({

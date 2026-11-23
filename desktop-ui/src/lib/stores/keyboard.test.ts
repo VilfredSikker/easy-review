@@ -49,15 +49,31 @@ const collapsedFiles = ["a.ts", "b.ts", "c.ts", "lib/x.ts"].map((path, source_in
   reviewed: false,
 }));
 let snapshot = baseSnapshot;
-mock.module("./app.svelte", () => ({
-  app: {
-    get snapshot() {
+mock.module("./pageView.svelte", () => ({
+  pageView: {
+    get current() {
       return snapshot;
     },
-    // The tabs adapter reads the App's snapshot, which no overlay changes here.
-    get appSnapshot() {
-      return this.snapshot;
-    },
+    overlay: () => {},
+    readTabs: () => {},
+  },
+}));
+// The App's snapshot reader runs on runes, which bun does not compile here.
+mock.module("./legacySnapshot.svelte", () => ({ legacySnapshot: { tabRows: [], overlay: (view: unknown) => view } }));
+// The tab strip: the second of two tabs is active.
+mock.module("./tabsResource.svelte", () => ({
+  tabsResource: {
+    tabs: [
+      { idx: 0, is_active: false },
+      { idx: 1, is_active: true },
+    ],
+    active: 1,
+    activeKey: null,
+  },
+}));
+mock.module("./app.svelte", () => ({
+  app: {
+    routeCmds: () => {},
     cmd: (name: string, args?: Record<string, unknown>) => {
       const arg =
         args && "idx" in args ? `:${String(args.idx)}` : args && "path" in args ? `:${String(args.path)}` : "";
@@ -406,19 +422,6 @@ describe("bare keys", () => {
     expect(press({ key: "j" }).calls).toEqual(["cmd:select_file:0"]);
   });
 
-  it("j/k from a file under a collapsed folder keep the old step with the flag off", () => {
-    snapshot = { ...baseSnapshot, selected_file: 3, files: collapsedFiles };
-    collapsed.add("lib");
-    expect(press({ key: "j" }).calls).toEqual(["cmd:select_file:1"]);
-    expect(press({ key: "k" }).calls).toEqual(["cmd:select_file:2"]);
-  });
-
-  it("j in the Tour does nothing with the flag off when the next drawn path is not in the snapshot", () => {
-    state.inTour = true;
-    drawnPaths = ["a.ts", "gone.ts"];
-    expect(press({ key: "j" }).calls).toEqual([]);
-  });
-
   it("r toggles reviewed on the file being read, else the selected one", () => {
     expect(press({ key: "r" })).toEqual({ calls: ["cmd:mark_reviewed:a.ts"], prevented: true });
     visiblePath = "b.ts";
@@ -473,20 +476,14 @@ describe("fileStep", () => {
   const asFiles = collapsedFiles as unknown as Parameters<typeof fileStep>[0]["files"];
   const underCollapsed = { selected_file: 3, files: asFiles };
   const order = ["a.ts", "b.ts", "c.ts"];
-  const step = (dir: 1 | -1, flagOn: boolean, o: string[] = order, snap = underCollapsed) =>
-    fileStep(snap, o, dir, flagOn)?.path ?? null;
+  const step = (dir: 1 | -1, o: string[] = order, snap = underCollapsed) => fileStep(snap, o, dir)?.path ?? null;
 
-  it("with the flag on, snaps a selection the order does not hold to the order's first file", () => {
-    expect([step(1, true), step(-1, true)]).toEqual(["a.ts", "a.ts"]);
+  it("snaps a selection the order does not hold to the order's first file", () => {
+    expect([step(1), step(-1)]).toEqual(["a.ts", "a.ts"]);
   });
 
-  it("with the flag off, counts that selection as the order's first file", () => {
-    expect([step(1, false), step(-1, false)]).toEqual(["b.ts", "c.ts"]);
-  });
-
-  it("skips a Tour path the snapshot lacks with the flag on, and stops there with it off", () => {
+  it("skips a Tour path the view lacks", () => {
     const onA = { selected_file: 0, files: asFiles };
-    expect(step(1, true, ["a.ts", "gone.ts"], onA)).toBe("a.ts");
-    expect(step(1, false, ["a.ts", "gone.ts"], onA)).toBeNull();
+    expect(step(1, ["a.ts", "gone.ts"], onA)).toBe("a.ts");
   });
 });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import LeftSidebar from "$lib/components/LeftSidebar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
@@ -37,11 +37,11 @@
 
   /**
    * Seed the global app store with the story's fixture so child components
-   * (which all read from `app.snapshot`) render correctly. This is how we
+   * (which all read from `pageView.current`) render correctly. This is how we
    * recreate the full Tauri app without the Tauri shell.
    */
   $effect(() => {
-    app.snapshot = snapshot;
+    pageView.current = snapshot;
   });
 
   const panels = $derived(snapshot.panels);

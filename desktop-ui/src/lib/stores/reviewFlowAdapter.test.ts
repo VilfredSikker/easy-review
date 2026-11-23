@@ -59,15 +59,6 @@ const painted = (bucket: string) =>
   ({ review_bucket_er_dir: bucket, review_flow: { state: "done" } }) as unknown as AppSnapshot;
 
 describe("ReviewFlowAdapter", () => {
-  it("leaves the flag-off controls and run reads on the Tauri commands", async () => {
-    const { flows, sent, invoked } = adapter(false);
-    expect(flows.route("start_review_flow", { scope: "current", erDir: "/a" })).toBeNull();
-    expect(flows.flowFor("/a")).toBeNull();
-    await flows.getRun("/a", "run-1");
-    expect(invoked).toEqual([["flow_get_run", { erDir: "/a", runId: "run-1" }]]);
-    expect(sent).toEqual([]);
-  });
-
   it("reads the painted bucket's flow from jobs, and none for a bucket jobs does not hold", () => {
     const { flows } = adapter(true);
     expect(flows.overlay(painted("/b")).review_flow?.state).toBe("awaiting_confirmation");
@@ -110,7 +101,7 @@ describe("ReviewFlowAdapter", () => {
     const read = (name: string) => readFileSync(join(here, name), "utf8");
     expect(read("reviewFlowResource.svelte.ts")).toMatch(/^\/\/[^\n]*\nimport "\.\/diffResource\.svelte";/);
     expect(read("reviewFlowResource.svelte.ts")).toMatch(
-      /if \(flagOn\) \{\s*app\.overlaySnapshot\(\(raw\) => reviewFlowAdapter\.overlay\(raw\)\);\s*app\.routeCmds\(\(command, args\) => reviewFlowAdapter\.route\(command, args\)\);/,
+      /pageView\.overlay\(\(raw\) => reviewFlowAdapter\.overlay\(raw\)\);\s*app\.routeCmds\(\(command, args\) => reviewFlowAdapter\.route\(command, args\)\);/,
     );
     expect(read("arena.svelte.ts")).not.toContain('"flow_get_run"');
   });

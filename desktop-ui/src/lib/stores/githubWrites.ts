@@ -7,7 +7,7 @@ import type { ResourceStore } from "./resourceStore";
 
 type Args = Record<string, unknown>;
 
-/** The GitHub senders `er_send` carries with the flag on. */
+/** The GitHub senders `er_send` carries. */
 const ROUTED: ReadonlySet<string> = new Set([
   "pull_github_comments",
   "post_github_pr_comment",
@@ -54,15 +54,13 @@ export function githubWrite(command: string, a: Args, tab: TabKey): Command | nu
 }
 
 interface GithubWritesDeps {
-  /** Whether the backend serves resources (the `v1-service` build). */
-  flagOn: boolean;
   store: Pick<ResourceStore, "send" | "whenAt">;
   /** The registry's active tab, whose PR the page shows. */
   activeKey: () => TabKey | null;
 }
 
 /**
- * The GitHub senders with the flag on: each goes through `er_send` keyed to
+ * The GitHub senders: each goes through `er_send` keyed to
  * the active tab, so the server reads that tab's PR from the registry and
  * its content, and resolves once every key the `Ack` names is held.
  */
@@ -70,7 +68,7 @@ export class GithubWrites {
   constructor(private readonly deps: GithubWritesDeps) {}
 
   route(command: string, args: Args = {}): Promise<void> | null {
-    if (!this.deps.flagOn || !ROUTED.has(command)) return null;
+    if (!ROUTED.has(command)) return null;
     const tab = this.deps.activeKey();
     if (tab === null) return null;
     const wire = githubWrite(command, args, tab);

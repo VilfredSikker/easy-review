@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
@@ -55,7 +56,7 @@
   const hasActiveReview = $derived(
     overlay ||
       tabsResource.tabs.length > 0 ||
-      (app.snapshot?.files.length ?? 0) > 0,
+      (pageView.current?.files.length ?? 0) > 0,
   );
 
   function backToReview() {

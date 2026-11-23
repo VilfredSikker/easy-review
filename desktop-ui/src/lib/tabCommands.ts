@@ -1,7 +1,7 @@
 // The direct commands that act on one tab: open its file in the editor,
 // reveal its review bucket, attribute a file's lines, export its review. Each
-// names the tab the page shows by its key, which the flag-on commands read the
-// tab's content by; the flag-off ones read the App's tab and ignore it.
+// names the tab the page shows by its key, which the commands read the tab's
+// content by.
 
 import { invoke } from "@tauri-apps/api/core";
 import type { ExportOptions } from "$lib/protocol/generated/ExportOptions";

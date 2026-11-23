@@ -103,18 +103,6 @@ function adapter(flagOn: boolean) {
 }
 
 describe("SettingsAdapter", () => {
-  it("reads and writes through the old commands with the flag off", async () => {
-    const { backend, settings, notices } = adapter(false);
-    expect(settings.read()).toBeNull();
-    await settings.open();
-    expect(themeOf(settings.read())).toBe("dark");
-    await settings.patch("display.theme", "paper");
-    expect(themeOf(settings.read())).toBe("paper");
-    expect(settings.read()).not.toHaveProperty("warnings");
-    expect(notices).toEqual([["info", "Include {prompt} in args"]]);
-    expect(backend.names()).toEqual(["get_config_hub", "apply_config_patch"]);
-  });
-
   it("reads the settings resource and writes through er_send with the flag on", async () => {
     const { backend, settings } = adapter(true);
     await settings.open();

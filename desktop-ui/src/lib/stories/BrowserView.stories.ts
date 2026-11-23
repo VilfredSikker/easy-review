@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import BrowserView from "$lib/components/BrowserView.svelte";
-import { app } from "$lib/stores/app.svelte";
+import { pageView } from "$lib/stores/pageView.svelte";
 import type { UiAnnotation } from "$lib/pageTypes";
 import { diagramPresetsFixture } from "./fixtures";
 
@@ -36,7 +36,7 @@ type Story = StoryObj<typeof meta>;
 
 function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
   // Force a snapshot shaped just enough for the overlay/right-panel to render.
-  app.snapshot = {
+  pageView.current = {
     mode: "branch",
     branch: "demo",
     base: "main",

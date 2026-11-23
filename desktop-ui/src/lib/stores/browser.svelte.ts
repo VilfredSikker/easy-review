@@ -1,6 +1,6 @@
-// Browser pane state — the active tab's browser, from `app.snapshot.browser`
-// or the tab's `view` resource by build (`browserView`).
-// Annotations live in `app.snapshot.ui_annotations` (persisted via Tauri commands).
+// Browser pane state — the active tab's browser, from the tab's `view`
+// resource (`browserView`).
+// Annotations live in the page view's `ui_annotations` (from `ui_annotations(tab)`).
 
 import { app } from "./app.svelte";
 import { browserView } from "./tabsResource.svelte";

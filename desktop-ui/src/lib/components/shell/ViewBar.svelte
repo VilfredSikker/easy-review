@@ -6,6 +6,7 @@
 
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { settingsResource } from "$lib/stores/settingsResource.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
@@ -26,7 +27,7 @@
 
   /** The row under the top bar: which review page is open, where the diff
    *  comes from, how it is drawn, the panel toggles, and Review. */
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
   const activeTab = $derived(tabsResource.activeTab ?? undefined);
 
   const page = $derived(reviewPage.current);

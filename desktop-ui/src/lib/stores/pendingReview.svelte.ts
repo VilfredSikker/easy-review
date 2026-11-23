@@ -1,4 +1,5 @@
 import { app } from "./app.svelte";
+import { pageView } from "./pageView.svelte";
 import { addPendingReviewComment, getPendingReview, removePendingReviewComment } from "./githubResource.svelte";
 import {
   addedToast,
@@ -70,7 +71,7 @@ class PendingReviewStore {
   }
 
   show(): void {
-    this.decision = initialDecision(app.snapshot?.github);
+    this.decision = initialDecision(pageView.current?.github);
     this.open = true;
     void this.refresh();
   }

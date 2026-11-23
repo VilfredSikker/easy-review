@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AiSnapshot, DiagramSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { copyToClipboard } from "$lib/clipboard";
   import Card from "./ui/Card.svelte";
   import ModalShell from "./ui/ModalShell.svelte";
@@ -18,7 +19,7 @@
   // A diagram task's kind is `diagram:<kind>`; correlate running/queued tasks
   // with the preset buttons so each shows its own spinner.
   const diagramTasks = $derived(
-    (app.snapshot?.background_tasks ?? []).filter(
+    (pageView.current?.background_tasks ?? []).filter(
       (t) => t.kind.startsWith("diagram:") && (t.status === "running" || t.status === "queued"),
     ),
   );

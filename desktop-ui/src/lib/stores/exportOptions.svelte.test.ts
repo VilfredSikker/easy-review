@@ -29,10 +29,10 @@ void mock.module("@tauri-apps/api/core", () => ({
 }));
 
 const toasts: [string, string][] = [];
+void mock.module("./pageView.svelte", () => ({ pageView: { current: null, overlay: () => {}, readTabs: () => {} } }));
 void mock.module("./app.svelte", () => ({
   app: {
-    snapshot: null,
-    appSnapshot: null,
+    routeCmds: () => {},
     showToast: (kind: string, message: string) => toasts.push([kind, message]),
   },
 }));

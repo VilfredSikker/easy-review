@@ -99,14 +99,6 @@ function adapter(
 }
 
 describe("DiffAdapter", () => {
-  it("reads the snapshot with the flag off and never fetches", async () => {
-    const { calls, store } = backend([{ version: 1, value: { kind: "diff", ...tabDiff() } }]);
-    const diff = adapter(store, { flagOn: false, snap: snapshot({ mode: "branch" }) });
-    await settle();
-    expect(diff.files.map((f) => f.path)).toEqual(["history/commit.rs"]);
-    expect(calls).toEqual([]);
-  });
-
   it("reads the file list, counts and scope stats from diff(tab) with the flag on", async () => {
     const { store } = backend([{ version: 4, value: { kind: "diff", ...tabDiff() } }]);
     store.show(diffKey(KEY));
@@ -222,7 +214,6 @@ describe("DiffAdapter", () => {
       { kind: "set_filter", tab: KEY, query: "" },
       { kind: "refresh_diff", tab: KEY, sync: true },
     ]);
-    expect(adapter(store, { flagOn: false }).route("refresh_diff")).toBeNull();
   });
 
   it("maps each of the ten commands", () => {

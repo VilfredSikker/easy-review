@@ -13,7 +13,6 @@
 </script>
 
 <script lang="ts">
-  import { app } from "$lib/stores/app.svelte";
   import { registerBrowserAnnotationComposerDismiss } from "$lib/stores/keyboard";
 
   export type AnnotationComposerState = {
@@ -98,7 +97,6 @@
       composer = null;
       return;
     }
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     onSave({
       bbox: [composer.x, composer.y, composer.w, composer.h],
       selector: composer.selector,

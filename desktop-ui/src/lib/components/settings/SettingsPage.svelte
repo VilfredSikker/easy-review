@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { inboxResource } from "$lib/stores/inboxResource.svelte";
   import { riskResource, settingsResource } from "$lib/stores/settingsResource.svelte";
   import type { ReviewSettingsChange } from "$lib/stores/projectsAdapter";
@@ -73,8 +74,8 @@
   // not on every snapshot.
   async function loadRisk(): Promise<RiskRuleRow[] | null> {
     const { target, paths } = untrack(() => ({
-      target: riskTarget(app.snapshot),
-      paths: changedPaths(app.snapshot),
+      target: riskTarget(pageView.current),
+      paths: changedPaths(pageView.current),
     }));
     if (!target) {
       riskRepo = "";

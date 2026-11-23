@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import { SPLIT_ANNOTATION_TRAIL_PAD_PX } from "$lib/splitDiffLayout";
   import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { diffSel, type SelectionKind } from "$lib/stores/diffSelection.svelte";
   import { pendingReview } from "$lib/stores/pendingReview.svelte";
   import { resolveActivePrNumber } from "$lib/prUrl";
@@ -51,7 +52,7 @@
    * need old ranges; new-side selections use new ranges.
    */
   function findHunkIdx(): number {
-    const snap = app.snapshot;
+    const snap = pageView.current;
     if (!snap || diffSel.file === null || diffSel.start === null) return 0;
     const file = snap.files.find((f) => f.path === diffSel.file);
     if (!file) return 0;
@@ -101,14 +102,13 @@
     if (diffSel.side !== null) {
       cmdArgs.side = diffSel.side === "old" ? "LEFT" : "RIGHT";
     }
-    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     void app.cmd(command, cmdArgs);
     diffSel.clear();
   }
 
   // A GitHub comment goes to the PR, either now on its own or into the
   // pending review; both wait for GitHub, so the draft stays until it lands.
-  const github = $derived(reviewGate(resolveActivePrNumber(app.snapshot), app.snapshot?.github));
+  const github = $derived(reviewGate(resolveActivePrNumber(pageView.current), pageView.current?.github));
   const canPost = $derived(canSubmit && github.enabled && !pendingReview.busy);
   const singleBlocked = $derived(singleCommentBlockedReason(github, pendingReview.review));
   const canPostSingle = $derived(canPost && singleBlocked === null);

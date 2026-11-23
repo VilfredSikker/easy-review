@@ -1,51 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { error as logError, warn as logWarn, info as logInfo } from "@tauri-apps/plugin-log";
-import { tick } from "svelte";
+import { untrack } from "svelte";
 import { diffPreview } from "./diffPreview.svelte";
 import { annotationDrafts } from "./annotationDrafts.svelte";
 import {
   DEFAULT_COMMENT_VISIBILITY,
   type CommentVisibility,
 } from "../commentVisibility";
-import { LATEST_INVOKE_SKIPPED, createLatestInvokeQueue } from "../latestInvokeQueue";
-import { profileLog } from "../profileLog";
-import {
-  applyOptimisticOp,
-  buildOptimisticOp,
-  isGlobalOp,
-  isOptimisticCommand,
-  optimisticInvokeArgs,
-  reapplyOptimisticOps,
-  rollbackOptimisticOp,
-  type OptimisticOp,
-} from "../optimisticLocal";
-import {
-  canChromeMerge,
-  isStaleSnapshotGeneration,
-  mergeChromeSnapshot,
-  shouldDeferChromeIdentityChange,
-  snapshotViewIdentity,
-  snapshotViewParts,
-} from "../snapshotChrome";
-import { resolveOmittedHunks, type ResolveOmittedStats } from "../snapshotDelta";
-import { shouldShowNotification } from "../snapshotNotification";
 import { DEFAULT_SYNTAX_THEME_ID } from "../syntaxThemes";
-import {
-  TabSnapshotCache,
-  applyCachedTabSnapshot,
-  openTabCacheKeys,
-  shouldDropCommandSnapshot,
-  snapshotsShareTabCacheKey,
-  tabSnapshotCacheKey,
-  tabSnapshotCacheKeyFromTab,
-} from "../tabSnapshotCache";
-import type { AppSnapshot, NotificationSnapshot, PollResponse, SettingsTab } from "../pageTypes";
+import type { AppSnapshot, SettingsTab } from "../pageTypes";
 import { resolveSettingsTarget, type SettingsSectionId, type SettingsTarget } from "../settingsLink";
-import { syncToastMessage, type SyncReply } from "../syncToast";
+import { viewIdentity } from "../viewIdentity";
 import { aiReviewFilter } from "./aiReviewFilter.svelte";
 import { layoutPanels } from "./layoutPanels.svelte";
 import { mirrorPanelToggle } from "./panelMirror";
+import { pageView } from "./pageView.svelte";
 import { rightRail } from "./rightRail.svelte";
 import { reviewPage } from "./reviewPage.svelte";
 import { ReviewPageMemory, reviewPageTabKey } from "./reviewPageModel";
@@ -57,8 +26,6 @@ import {
   saveFlag,
 } from "./viewPrefs";
 import { inboxReturnView } from "../inboxNav";
-import { v1ServiceRequested } from "../v1ServiceFlag";
-import { resources } from "./resourceStore";
 import { errorText } from "./settingsAdapter";
 
 export type { CommentVisibility };
@@ -73,22 +40,6 @@ export interface ToastMessage {
   persist?: boolean;
   /** Optional action button shown in the toast footer. */
   action?: { label: string; onClick: () => void };
-}
-
-/** What `cmd` decided about one command before invoking it. */
-interface CmdRun {
-  isTabChange: boolean;
-  isSetMode: boolean;
-  /** Tab-change generation when the command started. */
-  startedGen: number;
-  /** Generation this tab change claimed; null for other commands. */
-  myTabChangeGen: number | null;
-  /** Active tab when set_mode started; forwarded so the backend sets that tab's mode. */
-  modeTabIdx: number | undefined;
-  isSlow: boolean;
-  isForceRefresh: boolean;
-  /** Tab a `select_tab` is switching to; null for every other command. */
-  selectIdx: number | null;
 }
 
 const TOAST_DURATION_MS: Record<ToastMessage["kind"], number> = {
@@ -158,125 +109,13 @@ function loadCommentVisibility(): CommentVisibility {
 }
 
 /**
- * Commands that typically take 2-3s to complete on the backend.
- *
- * `refresh_stack` (which shells out to `gh stack view`) is deliberately not
- * here: it is a background refresh of one card, not a view switch, so it must
- * not raise the full-screen "Switching review…" overlay or block optimistic
- * paints.
- */
-const SLOW_COMMANDS = new Set([
-  "open_local_branch",
-  "open_pr_review",
-  "select_tab",
-  "set_mode",
-  "open_remote_pr",
-  "open_pr_branch",
-  "open_inbox_item",
-]);
-
-/** Commands whose snapshot is allowed to replace a different tab than the one painted. */
-const TAB_CHANGE_COMMANDS = new Set([
-  "select_tab",
-  "close_tab",
-  "new_tab",
-  "reorder_tabs",
-  "open_local_branch",
-  "open_pr_review",
-  "open_remote_pr",
-  "open_pr_branch",
-  "open_pr_url",
-  "open_worktree",
-  "open_project_branch",
-  "open_inbox_item",
-]);
-
-const VOID_COMMANDS = new Set(["open_url_in_browser"]);
-
-/**
- * Sends a command some other way than its snapshot path, or answers null to
- * leave it to `cmd`. With the flag on the tabs adapter takes the tab commands
- * and the opens; this module does not import it.
+ * Sends a command through `er_send` or another store's path, or answers null
+ * to leave it to `cmd`. The stores that route hand their routes in; this
+ * module does not import them.
  */
 export type CmdRoute = (command: string, args: Record<string, unknown> | undefined) => Promise<void> | null;
 
-function timingSegmentMs(start: number, end: number): number {
-  return Math.max(0, Math.round(end - start));
-}
-
-/**
- * Optimistically adjust the `reviewedCount` of every Tour pillar that
- * contains `path` by `delta` (clamped to [0, totalCount]). Lets the rail badge
- * track a file's reviewed flip before the backend round-trip lands; the next
- * `mergeChromeSnapshot` overwrites `tour` with the authoritative backend value.
- */
-function bumpPillarReviewedCounts(snap: AppSnapshot, path: string, delta: number): void {
-  const pillars = snap.tour?.pillars;
-  if (!pillars) return;
-  for (const p of pillars) {
-    if (p.files.some((tf) => tf.path === path)) {
-      p.reviewedCount = Math.max(0, Math.min(p.totalCount, p.reviewedCount + delta));
-    }
-  }
-}
-
-function nextAnimationFrame(): Promise<void> {
-  return new Promise((resolve) => {
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => resolve());
-      return;
-    }
-    setTimeout(resolve, 0);
-  });
-}
-
 class AppStore {
-  /** The snapshot as the App built it. */
-  private raw = $state<AppSnapshot | null>(null);
-  /** Rewrite what readers see of the snapshot, each over the one before; with the flag on, the adapters' fields replace the App's. */
-  private overlays = $state<((raw: AppSnapshot) => AppSnapshot)[]>([]);
-  private readonly shown = $derived(this.raw && this.overlays.reduce((snap, overlay) => overlay(snap), this.raw));
-
-  /** The snapshot the page reads. */
-  get snapshot(): AppSnapshot | null {
-    return this.shown;
-  }
-
-  set snapshot(next: AppSnapshot | null) {
-    this.raw = next;
-  }
-
-  /** The snapshot as the App built it, for an adapter that replaces some of its fields. */
-  get appSnapshot(): AppSnapshot | null {
-    return this.raw;
-  }
-
-  /** Hands the page's snapshot reads an overlay over the App's snapshot, after those handed before it. */
-  overlaySnapshot(overlay: (raw: AppSnapshot) => AppSnapshot): void {
-    this.overlays = [...this.overlays, overlay];
-  }
-  loading = $state(false);
-  initialLoadDone = $state(false);
-  /** True while a slow tab-switch or branch-open command is in flight. */
-  switching = $state(false);
-  /**
-   * True while any tab-changing command is in flight (including cache-hit
-   * `select_tab` that skips the Switching overlay). Comments auto-pull and
-   * lazy fetches wait so they cannot hit the previous backend tab. Covers
-   * `open_pr_review` and friends, not just `select_tab`, because a later
-   * tab-change can skip an earlier `select_tab` invoke.
-   */
-  pendingTabSwitch = $state(false);
-  private inflightTabChanges = 0;
-  private inflightSlow = 0;
-  /** Bumped on every tab-changing command so a slower earlier switch cannot ingest last. */
-  private tabChangeGeneration = 0;
-  /** User-facing label for the active slow command. */
-  switchingLabel = $state<string | null>(null);
-  /** Tab an uncached `select_tab` is switching to, so the shell can name it while it loads. */
-  switchingTabIdx = $state<number | null>(null);
-  /** True while force_refresh_diff is fetching from the remote. */
-  refreshing = $state(false);
   error = $state<string | null>(null);
   toasts = $state<ToastMessage[]>([]);
   showEmptyState = $state(false);
@@ -306,39 +145,11 @@ class AppStore {
   /** Where the next Settings mount should land; the page takes it and clears it. */
   settingsTarget = $state<SettingsTarget | null>(null);
   private reviewPages = new ReviewPageMemory();
+  /** The review view the page showed last, so a switch resets the AI filter once. */
+  private shownIdentity: string | null = null;
 
-  private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private toastId = 0;
-  /** The last backend notification shown, so a repeat still shows. */
-  private lastSnapshotNotification: NotificationSnapshot | null = null;
-  // Safety-net interval — the backend pushes a `er://revision` event on every
-  // state change, so this is just a fallback in case an event is dropped or
-  // the listener hasn't attached yet. Used to be 2s when polling was the
-  // primary mechanism.
-  private pollIntervalMs = 30_000;
-  private lastPollRevision: number | null = null;
-  private lastPollContentRevision: number | null = null;
-  private lastPollChromeRevision: number | null = null;
-  private revisionUnlisten: UnlistenFn | null = null;
-  private pollInFlight = false;
-  /** Set when a revision event arrived while a poll was already in flight. */
-  private pollPending = false;
-  /** Bumped on every command snapshot so in-flight polls cannot clobber a newer view. */
-  private snapshotGeneration = 0;
-  /** Local sidecar writes shown before IPC returns. */
-  private pendingOps: OptimisticOp[] = [];
-  /** Flag-off only: with the flag on a revisited tab paints from its resources and the hunk cache. */
-  private tabCache: TabSnapshotCache | null = v1ServiceRequested() ? null : new TabSnapshotCache();
-
-  /** Splices the hunks a differential snapshot left out; with the flag on the backend leaves none out. */
-  private spliceOmitted(prev: AppSnapshot | null, next: AppSnapshot): ResolveOmittedStats {
-    return v1ServiceRequested() ? { reused: 0, refetch: 0 } : resolveOmittedHunks(prev, next);
-  }
-  /** Last snapshot the backend confirmed. Cache paints are not confirmed. */
-  private lastConfirmedSnapshot: AppSnapshot | null = null;
-  /** Serialize tab-change invokes so a later click cannot apply before an earlier one. */
-  private tabChangeInvokeQueue = createLatestInvokeQueue();
 
   /** Cycle unified → split → unified. Persists the choice. */
   toggleDiffViewMode() {
@@ -472,242 +283,7 @@ class AppStore {
     }
   }
 
-  private syncSnapshotToast(snapshot: AppSnapshot | null): boolean {
-    // With the flag on the backend sends each notification as a notice.
-    if (v1ServiceRequested()) return false;
-    const notification = snapshot?.notification ?? null;
-    if (notification === null) return false;
-    if (!shouldShowNotification(notification, this.lastSnapshotNotification)) {
-      return false;
-    }
-
-    this.lastSnapshotNotification = notification;
-    const message = notification.message;
-    const lower = message.toLowerCase();
-    const kind: "success" | "error" =
-      lower.includes("failed") ||
-      lower.includes("error") ||
-      lower.includes("invalid") ||
-      lower.includes("not found") ||
-      lower.includes("cannot") ||
-      lower.includes("no ")
-        ? "error"
-        : "success";
-    // `long` is the engine's "worth leaving up longer" flag; the desktop owns
-    // how long that is, same as the TUI does with its own dwell constants.
-    const durationMs =
-      notification.long && kind !== "error" ? TOAST_LONG_MS : undefined;
-    this.showToast(kind, message, durationMs);
-    return true;
-  }
-
-  async load() {
-    this.loading = true;
-    try {
-      const snap = await invoke<AppSnapshot>("get_snapshot");
-      this.spliceOmitted(this.raw, snap);
-      this.raw = snap;
-      this.keepOptimisticOps();
-      this.rememberSnapshot(snap);
-      this.lastConfirmedSnapshot = snap;
-      this.syncSnapshotToast(this.raw);
-      this.lastPollRevision = null;
-      this.lastPollContentRevision = null;
-      this.lastPollChromeRevision = null;
-    } catch (e) {
-      this.error = String(e);
-      this.showToast("error", String(e));
-    } finally {
-      this.loading = false;
-      this.initialLoadDone = true;
-    }
-  }
-
-  /** A changed polled snapshot: drop it (wrong tab), defer it (chrome identity), or apply it. */
-  private routePolledSnapshot(
-    next: PollResponse,
-    snapshot: AppSnapshot,
-    contentChanged: boolean,
-    invokeMs: number,
-    trigger: string,
-  ) {
-    const mergeOpts = {
-      chromeOnly: next.chrome_only,
-      contentChanged,
-    };
-    if (
-      this.raw !== null &&
-      !snapshotsShareTabCacheKey(this.raw, snapshot)
-    ) {
-      // Cache-hit paint of tab B can race a poll still built from tab A.
-      // Drop it. select_tab ingest applies B. Do not pollPending here
-      // (backend still on A would spin).
-      profileLog("snapshot_poll_wrong_tab", {
-        invoke_ms: invokeMs,
-        revision: next.revision,
-        trigger,
-      });
-    } else if (
-      shouldDeferChromeIdentityChange(this.raw, snapshot, mergeOpts)
-    ) {
-      if (!this.pendingTabSwitch && !this.switching) {
-        this.pollPending = true;
-      }
-      profileLog("snapshot_chrome_identity_deferred", {
-        invoke_ms: invokeMs,
-        revision: next.revision,
-        trigger,
-      });
-    } else {
-      this.applyPolledSnapshot(next, snapshot, mergeOpts, invokeMs, trigger);
-    }
-  }
-
-  /** Accept a polled snapshot for the current tab: chrome-merge or replace, then confirm it. */
-  private applyPolledSnapshot(
-    next: PollResponse,
-    snapshot: AppSnapshot,
-    mergeOpts: { chromeOnly: boolean; contentChanged: boolean },
-    invokeMs: number,
-    trigger: string,
-  ) {
-    this.lastPollRevision = next.revision;
-    this.lastPollContentRevision = next.content_revision;
-    this.lastPollChromeRevision = next.chrome_revision;
-    const prev = this.raw;
-    if (prev !== null && canChromeMerge(prev, snapshot, mergeOpts)) {
-      this.raw = mergeChromeSnapshot(prev, snapshot, "prev");
-      profileLog("snapshot_chrome_merge", {
-        invoke_ms: invokeMs,
-        revision: next.revision,
-        chrome_only: next.chrome_only ? 1 : 0,
-        trigger,
-      });
-    } else {
-      const hunkPrev =
-        prev !== null && snapshotsShareTabCacheKey(prev, snapshot)
-          ? prev
-          : (this.tabCache?.peek(tabSnapshotCacheKey(snapshot)) ?? null);
-      const delta = this.spliceOmitted(hunkPrev, snapshot);
-      this.raw = snapshot;
-      profileLog("snapshot_replace", {
-        invoke_ms: invokeMs,
-        revision: next.revision,
-        files: snapshot.files.length,
-        delta_reused: delta.reused,
-        delta_refetch: delta.refetch,
-        trigger,
-      });
-    }
-    this.rememberSnapshot(this.raw);
-    this.lastConfirmedSnapshot = this.raw;
-    this.keepOptimisticOps();
-    this.syncSnapshotToast(this.raw);
-  }
-
-  /**
-   * Push model: the backend emits `er://revision` whenever its desktop_revision
-   * counter advances. We respond by calling `poll` to fetch the updated
-   * snapshot. A long-interval safety timer covers the rare case where an event
-   * is missed (window mid-resume, dropped from queue, etc.).
-   *
-   * Coalesce concurrent calls with `pollInFlight` so a burst of events at
-   * startup doesn't spam the backend mutex.
-   */
-  startPolling(intervalMs = 30_000) {
-    if (this.pollTimer !== null) return;
-    this.pollIntervalMs = intervalMs;
-
-    const doPoll = async (trigger: "revision_event" | "safety_timer" | "unknown" = "unknown") => {
-      if (this.pollInFlight) {
-        this.pollPending = true;
-        return;
-      }
-      this.pollInFlight = true;
-      const generation = this.snapshotGeneration;
-      const t0 = performance.now();
-      profileLog("poll_invoke_start", { trigger });
-      try {
-        const next = await invoke<PollResponse>("poll");
-        const invokeMs = Math.round(performance.now() - t0);
-        if (isStaleSnapshotGeneration(generation, this.snapshotGeneration)) {
-          profileLog("poll_discard_stale_generation", {
-            invoke_ms: invokeMs,
-            trigger,
-            generation,
-            current: this.snapshotGeneration,
-          });
-          return;
-        }
-        const hadSnapshot = next.snapshot !== null;
-        const contentChanged =
-          this.lastPollContentRevision !== next.content_revision;
-        const chromeChanged =
-          this.lastPollChromeRevision !== next.chrome_revision;
-        if (contentChanged || chromeChanged) {
-          if (next.snapshot !== null) {
-            this.routePolledSnapshot(next, next.snapshot, contentChanged, invokeMs, trigger);
-          } else {
-            this.lastPollRevision = next.revision;
-            this.lastPollContentRevision = next.content_revision;
-            this.lastPollChromeRevision = next.chrome_revision;
-          }
-        }
-        profileLog("poll_invoke_done", {
-          invoke_ms: invokeMs,
-          revision: next.revision,
-          had_snapshot: hadSnapshot ? 1 : 0,
-          trigger,
-        });
-      } catch {
-        // Silently ignore poll errors (window may be closing).
-      } finally {
-        this.pollInFlight = false;
-        if (this.pollPending) {
-          this.pollPending = false;
-          void doPoll("revision_event");
-        }
-      }
-    };
-
-    // Event-driven: react to backend revision bumps. listen() is async but
-    // we don't await — events that fire before the listener attaches are
-    // safely covered by the safety-net interval and the initial load().
-    listen<number>("er://revision", (event) => {
-      profileLog("revision_event", { coalesced_rev: event.payload });
-      void doPoll("revision_event");
-    }).then((unlisten) => {
-      this.revisionUnlisten = unlisten;
-    });
-
-    // Safety-net poll — long interval; only fires if events were missed.
-    const safetyTick = async () => {
-      if (this.pollTimer === null) return;
-      await doPoll("safety_timer");
-      if (this.pollTimer !== null) {
-        this.pollTimer = setTimeout(safetyTick, this.pollIntervalMs);
-      }
-    };
-    this.pollTimer = setTimeout(safetyTick, this.pollIntervalMs);
-
-    // The ported stores read resources; the poll above keeps the rest fresh
-    // until every store has moved.
-    if (v1ServiceRequested()) void resources.start();
-  }
-
-  stopPolling() {
-    resources.stop();
-    if (this.pollTimer !== null) {
-      clearTimeout(this.pollTimer);
-      this.pollTimer = null;
-    }
-    if (this.revisionUnlisten !== null) {
-      this.revisionUnlisten();
-      this.revisionUnlisten = null;
-    }
-  }
-
-  /** Paint chrome locally, then tell the backend. Do not wait on a snapshot. */
+  /** Paint chrome locally, then tell the backend. */
   togglePanel(panel: "left" | "tree" | "right") {
     if (panel === "right") {
       rightRail.toggle();
@@ -743,103 +319,21 @@ class AppStore {
     this.mainView = "settings";
   }
 
-  /** Restore the review page the newly active tab was left on. */
-  private followReviewPage(snapshot: AppSnapshot | null): void {
-    const next = this.reviewPages.follow(reviewPageTabKey(snapshot),
-      this.mainView,
-      reviewPage.available("overview"),
-    );
+  /**
+   * Follows the page's view to a new tab or mode: restores the review page
+   * that tab was left on, resets the AI filter, and keeps the preview and
+   * draft caches to the open tabs.
+   */
+  followView(view: AppSnapshot | null): void {
+    const next = this.reviewPages.follow(reviewPageTabKey(view), this.mainView, reviewPage.available("overview"));
     if (next) this.mainView = next;
-  }
-
-  private rememberSnapshot(snapshot: AppSnapshot | null): void {
-    this.followReviewPage(snapshot);
-    diffPreview.sync(snapshot);
-    annotationDrafts.sync(snapshot);
-    if (!snapshot) return;
-    this.tabCache?.put(snapshot);
-    this.tabCache?.retain(openTabCacheKeys(snapshot));
-  }
-
-  private cachedSnapshotForTabIdx(idx: number): AppSnapshot | null {
-    const current = this.raw;
-    if (!current) return null;
-    const tab = current.tabs.find((t) => t.idx === idx) ?? current.tabs[idx];
-    if (!tab) return null;
-    return this.tabCache?.get(tabSnapshotCacheKeyFromTab(tab), tab.change_token) ?? null;
-  }
-
-  private spliceAndConfirmSnapshot(snapshot: AppSnapshot): void {
-    const incomingKey = tabSnapshotCacheKey(snapshot);
-    const hunkPrev =
-      this.raw !== null && tabSnapshotCacheKey(this.raw) === incomingKey
-        ? this.raw
-        : (this.tabCache?.peek(incomingKey) ?? null);
-    this.spliceOmitted(hunkPrev, snapshot);
-    this.lastConfirmedSnapshot = snapshot;
-  }
-
-  /** Apply snapshot from a Tauri command and show `notification` once (deduped). */
-  ingestCommandSnapshot(
-    snapshot: AppSnapshot,
-    opts?: { allowTabChange?: boolean; tabChangeGen?: number },
-  ): boolean {
-    if (
-      opts?.tabChangeGen != null &&
-      isStaleSnapshotGeneration(opts.tabChangeGen, this.tabChangeGeneration)
-    ) {
-      if (opts.allowTabChange) {
-        this.spliceAndConfirmSnapshot(snapshot);
-      }
-      profileLog("snapshot_ingest_stale_tab_change", {
-        captured: opts.tabChangeGen,
-        current: this.tabChangeGeneration,
-      });
-      return false;
+    const identity = view && viewIdentity(view);
+    if (identity !== this.shownIdentity) {
+      if (this.shownIdentity !== null) aiReviewFilter.reset();
+      this.shownIdentity = identity;
     }
-    if (shouldDropCommandSnapshot(this.raw, snapshot, opts?.allowTabChange === true)) {
-      profileLog("snapshot_ingest_wrong_tab", {
-        allow_tab_change: opts?.allowTabChange ? 1 : 0,
-      });
-      return false;
-    }
-    this.snapshotGeneration += 1;
-    if (
-      this.raw === null ||
-      snapshotViewIdentity(this.raw) !== snapshotViewIdentity(snapshot)
-    ) {
-      aiReviewFilter.reset();
-    }
-    this.spliceAndConfirmSnapshot(snapshot);
-    this.raw = snapshot;
-    this.keepOptimisticOps();
-    this.rememberSnapshot(snapshot);
-    this.initialLoadDone = true;
-    this.syncSnapshotToast(snapshot);
-    this.lastPollRevision = null;
-    this.lastPollContentRevision = null;
-    this.lastPollChromeRevision = null;
-    return true;
-  }
-
-  private restoreConfirmedSnapshot(): void {
-    if (!this.lastConfirmedSnapshot) return;
-    this.raw = this.lastConfirmedSnapshot;
-    this.keepOptimisticOps();
-    this.rememberSnapshot(this.raw);
-    this.snapshotGeneration += 1;
-    this.lastPollRevision = null;
-    this.lastPollContentRevision = null;
-    this.lastPollChromeRevision = null;
-  }
-
-  private keepOptimisticOps() {
-    if (!this.raw || this.pendingOps.length === 0) return;
-    reapplyOptimisticOps(this.raw, this.pendingOps);
-  }
-
-  private dropPendingOp(id: string) {
-    this.pendingOps = this.pendingOps.filter((p) => p.id !== id);
+    diffPreview.sync(view);
+    annotationDrafts.sync(view);
   }
 
   private reportCmdError(command: string, e: unknown) {
@@ -853,228 +347,13 @@ class AppStore {
     }, 5000);
   }
 
-  private rejectSkippedCmd(
-    command: string,
-    options: { throwOnError?: boolean },
-    reason = "skipped before invocation",
-  ): void {
-    if (!options.throwOnError) return;
-    const error = new Error(`${command} ${reason}`);
-    this.reportCmdError(command, error);
-    throw error;
-  }
-
   private throwCmdErrorIfRequested(error: unknown, options: { throwOnError?: boolean }): void {
     if (options.throwOnError) throw error;
   }
 
-  /** Serializes optimistic IPC so add-then-reply/delete hit the same id. */
-  private optimisticChain: Promise<void> = Promise.resolve();
-
-  private enqueueOptimistic(task: () => Promise<void>): Promise<void> {
-    const run = this.optimisticChain.then(task, task);
-    this.optimisticChain = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  }
-
-  /**
-   * Local sidecar writes skip when there is no snapshot or a tab switch
-   * is in flight. Composers that clear drafts must check this first.
-   */
-  canPaintOptimistic(): boolean {
-    return this.raw !== null && !this.pendingTabSwitch && !this.switching;
-  }
-
-  /**
-   * A local write could not paint because a view switch is in flight. Say so:
-   * a click that does nothing reads as a frozen app, and the composer keeps
-   * its draft for the retry.
-   */
-  explainPaintBlocked(command?: string): void {
-    profileLog("optimistic_paint_blocked", { command: command ?? "" });
-    this.showToast("error", "Still switching views, try again in a moment");
-  }
-
-  /**
-   * Paint a local sidecar write immediately, then run IPC in the
-   * background. Rollback only if the write fails. Apply happens before
-   * the first await so composers can close without waiting.
-   *
-   * View-scoped ops (threads, findings) are tied to the review view they were
-   * painted on: they roll back if the view changes and are confirmed by a
-   * full snapshot. Global ops (inbox, project pins) paint through tab
-   * switches and are confirmed by a chrome-only merge; a successful write is
-   * never rolled back.
-   */
-  private async cmdOptimistic(command: string, args: Record<string, unknown>): Promise<void> {
-    const snap = this.raw;
-    if (!snap) return;
-
-    const op = buildOptimisticOp(command, args, snap);
-    if (!op) return;
-    const global = isGlobalOp(op);
-    if (global ? this.switching : !this.canPaintOptimistic()) {
-      this.explainPaintBlocked(command);
-      return;
-    }
-
-    const viewAtStart = op.viewIdentity;
-    const originSnap = snap;
-    this.pendingOps = [...this.pendingOps, op];
-    applyOptimisticOp(snap, op);
-    const invokeArgs = optimisticInvokeArgs(
-      command,
-      args,
-      op,
-      global ? undefined : snapshotViewParts(snap),
-    );
-    const tStart = performance.now();
-
-    await this.enqueueOptimistic(async () => {
-      const rollbackPaintedView = () => {
-        rollbackOptimisticOp(originSnap, op);
-        if (
-          this.raw &&
-          this.raw !== originSnap &&
-          (global || snapshotViewIdentity(this.raw) === viewAtStart)
-        ) {
-          rollbackOptimisticOp(this.raw, op);
-        }
-      };
-      if (!global) {
-        const stillHere =
-          this.raw != null && snapshotViewIdentity(this.raw) === viewAtStart;
-        if (!stillHere) {
-          rollbackPaintedView();
-          this.dropPendingOp(op.id);
-          return;
-        }
-      }
-      const tInvokeStart = performance.now();
-      try {
-        const returned = await invoke<AppSnapshot>(command, invokeArgs);
-        const tInvokeDone = performance.now();
-        this.dropPendingOp(op.id);
-        if (global) {
-          this.mergeGlobalConfirm(returned);
-        } else if (
-          this.raw &&
-          snapshotViewIdentity(this.raw) === viewAtStart &&
-          snapshotViewIdentity(returned) === viewAtStart
-        ) {
-          this.ingestCommandSnapshot(returned);
-        } else {
-          rollbackPaintedView();
-        }
-        const tDone = performance.now();
-        const totalMs = timingSegmentMs(tStart, tDone);
-        if (totalMs > 500) {
-          logWarn(
-            `cmd_timing command=${command} optimistic=1 queue_ms=${timingSegmentMs(tStart, tInvokeStart)} invoke_ms=${timingSegmentMs(tInvokeStart, tInvokeDone)} ingest_ms=${timingSegmentMs(tInvokeDone, tDone)} total_ms=${totalMs}`,
-          ).catch(() => {});
-        }
-      } catch (e) {
-        this.dropPendingOp(op.id);
-        rollbackPaintedView();
-        if (global || (this.raw && snapshotViewIdentity(this.raw) === viewAtStart)) {
-          this.reportCmdError(command, e);
-        }
-      }
-    });
-  }
-
-  /**
-   * Confirm a global op. The backend answers with a chrome-only snapshot
-   * (no files/AI), so merge it onto the current view instead of replacing
-   * the diff. When the painted tab or mode moved on, skip the merge: the
-   * write succeeded and the revision-bump poll carries the truth. Flag off
-   * only: with the flag on no global op paints, and the pushes confirm.
-   */
-  private mergeGlobalConfirm(returned: AppSnapshot): void {
-    if (v1ServiceRequested()) return;
-    const current = this.raw;
-    if (
-      !current ||
-      this.pendingTabSwitch ||
-      !snapshotsShareTabCacheKey(current, returned) ||
-      snapshotViewIdentity(current) !== snapshotViewIdentity(returned)
-    ) {
-      return;
-    }
-    this.raw = mergeChromeSnapshot(current, returned, "prev");
-    // A poll that started before the click must not land on this merge with
-    // pre-write chrome; a new generation discards it.
-    this.snapshotGeneration += 1;
-    this.rememberSnapshot(this.raw);
-    this.lastConfirmedSnapshot = this.raw;
-    this.keepOptimisticOps();
-  }
-
-  /**
-   * Optimistically toggle a file's reviewed flag and update reviewed_count in
-   * place, then confirm with the backend. On success, applies the returned
-   * snapshot as a chrome-only merge (preserves hunks + highlight spans).
-   * Rolls back both mutations on error.
-   */
-  private async cmdReviewed(command: "mark_reviewed" | "unmark_reviewed", path: string): Promise<void> {
-    if (this.pendingTabSwitch) return;
-    const snap = this.raw;
-    if (!snap) return;
-    const originKey = tabSnapshotCacheKey(snap);
-    const file = snap.files.find((f) => f.path === path);
-    if (!file) return;
-
-    const wasReviewed = file.reviewed;
-    const newReviewed = command === "mark_reviewed";
-    if (file.reviewed === newReviewed) return; // no-op
-
-    // Optimistic update: mutate in place so $derived model rebuilds only the
-    // touched file's header block (cache_key unchanged → other blocks/spans stable).
-    file.reviewed = newReviewed;
-    snap.reviewed_count += newReviewed ? 1 : -1;
-    // Keep the Guide rail's per-pillar "NN/NN reviewed" badge in sync with the
-    // optimistic flip; mergeChromeSnapshot pulls the authoritative tour from the
-    // backend response, so this only spans the in-flight window.
-    bumpPillarReviewedCounts(snap, path, newReviewed ? 1 : -1);
-
-    try {
-      const returned = await invoke<AppSnapshot>(command, { path });
-      // Refresh chrome/sidebar fields from the backend response without replacing
-      // hunks/spans. reviewed_count + files are intentionally preserved from the
-      // optimistic state by mergeChromeSnapshot (the count must stay consistent
-      // with the kept files' reviewed flags).
-      if (this.raw && snapshotsShareTabCacheKey(this.raw, returned)) {
-        this.raw = mergeChromeSnapshot(this.raw, returned);
-        this.rememberSnapshot(this.raw);
-        this.lastConfirmedSnapshot = this.raw;
-        // The merge takes inbox/projects from the backend response; reapply
-        // any in-flight global op (inbox read, pin) painted on the old object.
-        this.keepOptimisticOps();
-      }
-    } catch (e) {
-      // Roll back optimistic mutation only on the tab we mutated.
-      if (this.raw && tabSnapshotCacheKey(this.raw) === originKey) {
-        const f = this.raw.files.find((ff) => ff.path === path);
-        if (f) f.reviewed = wasReviewed;
-        this.raw.reviewed_count -= newReviewed ? 1 : -1;
-        bumpPillarReviewedCounts(this.raw, path, newReviewed ? -1 : 1);
-      }
-      console.error(`${command} failed:`, e);
-      this.pushLog("error", command, String(e));
-      this.error = `${command}: ${e}`;
-      this.showToast("error", `${command}: ${e}`);
-      setTimeout(() => {
-        if (this.error?.startsWith(`${command}:`)) this.error = null;
-      }, 5000);
-    }
-  }
-
   private readonly cmdRoutes: CmdRoute[] = [];
 
-  /** Hands `cmd` a route that runs before its snapshot path; the first route that takes a command runs it. */
+  /** Hands `cmd` a route; the first route that takes a command runs it. */
   routeCmds(route: CmdRoute): void {
     this.cmdRoutes.push(route);
   }
@@ -1087,272 +366,29 @@ class AppStore {
     return null;
   }
 
-  /** A routed command answers no snapshot; the content follows the next poll. */
-  private async cmdRouted(
-    command: string,
-    routed: Promise<void>,
-    options: { throwOnError?: boolean },
-  ): Promise<void> {
-    try {
-      await routed;
-    } catch (e) {
-      this.reportCmdError(command, e);
-      this.throwCmdErrorIfRequested(e, options);
-    }
-  }
-
+  /**
+   * Sends a command through the first route that takes it, or else invokes
+   * it. What the command changed reaches the page through the resources.
+   */
   async cmd(
     command: string,
     args?: Record<string, unknown>,
     options: { throwOnError?: boolean } = {},
   ): Promise<void> {
-    const routed = this.routed(command, args);
-    if (routed) return this.cmdRouted(command, routed, options);
-    // Reviewed toggling uses an optimistic path that preserves hunks + spans.
-    if (command === "mark_reviewed" || command === "unmark_reviewed") {
-      const path = (args as { path?: string } | undefined)?.path;
-      if (path) return this.cmdReviewed(command, path);
-    }
-    if (isOptimisticCommand(command)) {
-      return this.cmdOptimistic(command, args ?? {});
-    }
-
-    const tStart = performance.now();
-    const run = this.beginCmd(command, args);
-    if (!run) {
-      this.rejectSkippedCmd(command, options);
-      return;
-    }
-    const tSwitchingSet = performance.now();
-    // Stays synchronous unless busy chrome must paint: an extra await here
-    // would let a later cmd bump the tab-change generation first.
-    if (this.showCmdBusyChrome(command, run)) {
-      await tick();
-      await nextAnimationFrame();
-    }
-    const tInvokeStart = performance.now();
     try {
-      if (this.cmdSuperseded(run)) {
-        this.rejectSkippedCmd(command, options, "superseded before invocation");
-        return;
-      }
-      if (VOID_COMMANDS.has(command)) {
-        await invoke<void>(command, args);
-        return;
-      }
-      const snapshot = await this.invokeCmdSnapshot(command, args, run);
-      if (snapshot === LATEST_INVOKE_SKIPPED) {
-        this.rejectSkippedCmd(command, options);
-        return;
-      }
-      const tInvokeDone = performance.now();
-      if (!this.applyCmdSnapshot(command, snapshot, run)) return;
-      logSlowCmdTiming(command, [tStart, tSwitchingSet, tInvokeStart, tInvokeDone, performance.now()]);
+      await (this.routed(command, args) ?? invoke(command, args));
     } catch (e) {
-      if (run.isTabChange && run.myTabChangeGen === this.tabChangeGeneration) {
-        this.restoreConfirmedSnapshot();
-      }
       this.reportCmdError(command, e);
       this.throwCmdErrorIfRequested(e, options);
-    } finally {
-      this.settleCmdFlags(run);
     }
-  }
-
-  /**
-   * Synchronous prologue of `cmd`: claim a tab-change generation and paint a
-   * cached tab. Null when a pending tab switch drops the command.
-   */
-  private beginCmd(command: string, args: Record<string, unknown> | undefined): CmdRun | null {
-    const isTabChange = TAB_CHANGE_COMMANDS.has(command);
-    const isSetMode = command === "set_mode";
-    if (this.pendingTabSwitch && !isTabChange && !isSetMode) return null;
-    const startedGen = this.tabChangeGeneration;
-    const myTabChangeGen = isTabChange ? ++this.tabChangeGeneration : null;
-    const modeTabIdx = isSetMode ? this.raw?.active_tab : undefined;
-    const selectIdx =
-      command === "select_tab" && typeof args?.idx === "number" ? args.idx : null;
-    const cachedTab =
-      selectIdx !== null ? this.cachedSnapshotForTabIdx(selectIdx) : null;
-    if (isTabChange) {
-      this.inflightTabChanges += 1;
-      this.pendingTabSwitch = true;
-    }
-    if (cachedTab && this.raw && selectIdx !== null) {
-      this.paintCachedTab(cachedTab, this.raw, selectIdx);
-    }
-    return {
-      isTabChange,
-      isSetMode,
-      startedGen,
-      myTabChangeGen,
-      modeTabIdx,
-      isSlow: SLOW_COMMANDS.has(command) && cachedTab === null,
-      isForceRefresh: command === "force_refresh_diff",
-      selectIdx,
-    };
-  }
-
-  /** Raise switching/refreshing chrome; true when it needs a paint before invoking. */
-  private showCmdBusyChrome(command: string, run: CmdRun): boolean {
-    if (run.isSlow) {
-      this.inflightSlow += 1;
-      this.switching = true;
-      this.switchingLabel = switchingLabelForCommand(command);
-      if (run.selectIdx !== null) this.switchingTabIdx = run.selectIdx;
-    }
-    if (run.isForceRefresh) this.refreshing = true;
-    return run.isSlow || run.isForceRefresh;
-  }
-
-  /** A newer tab change started while this command waited to invoke. */
-  private cmdSuperseded(run: CmdRun): boolean {
-    if (run.myTabChangeGen !== null && run.myTabChangeGen !== this.tabChangeGeneration) {
-      return true;
-    }
-    return run.isSetMode && run.startedGen !== this.tabChangeGeneration;
-  }
-
-  /**
-   * Tab changes and set_mode queue behind each other and are skipped once a
-   * newer tab change supersedes the generation they started under.
-   */
-  private invokeCmdSnapshot(
-    command: string,
-    args: Record<string, unknown> | undefined,
-    run: CmdRun,
-  ): Promise<AppSnapshot | typeof LATEST_INVOKE_SKIPPED> {
-    const invokeArgs =
-      run.isSetMode && run.modeTabIdx != null ? { ...args, tabIdx: run.modeTabIdx } : args;
-    const { myTabChangeGen, startedGen } = run;
-    if (run.isTabChange && myTabChangeGen != null) {
-      return this.tabChangeInvokeQueue.enqueue(
-        () => myTabChangeGen === this.tabChangeGeneration,
-        () => invoke<AppSnapshot>(command, invokeArgs),
-      );
-    }
-    if (run.isSetMode) {
-      return this.tabChangeInvokeQueue.enqueue(
-        () => startedGen === this.tabChangeGeneration,
-        () => invoke<AppSnapshot>(command, invokeArgs),
-      );
-    }
-    return invoke<AppSnapshot>(command, args);
-  }
-
-  /** Ingest a command's snapshot and toast success unless the backend already did. */
-  private applyCmdSnapshot(command: string, snapshot: AppSnapshot, run: CmdRun): boolean {
-    const before = this.raw;
-    const applied = this.ingestCommandSnapshot(snapshot, {
-      allowTabChange: run.isTabChange,
-      tabChangeGen: run.myTabChangeGen ?? undefined,
-    });
-    if (!applied) return false;
-    // The engine never clears its notification, so past the first one no
-    // fallback shows. With the flag on the notices say what happened.
-    const hadBackendToast = v1ServiceRequested() || snapshot.notification != null;
-    if (!hadBackendToast) {
-      // A Sync says where it landed and which Reviewed marks it cost in one
-      // toast; a second one for the marks would stack on top of it.
-      const message =
-        command === "force_refresh_diff"
-          ? syncToastMessage(before, snapshot as SyncReply)
-          : successToastForCommand(command);
-      if (message) this.showToast("success", message);
-    }
-    return true;
-  }
-
-  /** Paint a cached snapshot of the target tab before select_tab's invoke returns. */
-  private paintCachedTab(cachedTab: AppSnapshot, current: AppSnapshot, selectIdx: number) {
-    this.snapshotGeneration += 1;
-    const painted = applyCachedTabSnapshot(cachedTab, current, selectIdx);
-    if (snapshotViewIdentity(current) !== snapshotViewIdentity(painted)) {
-      aiReviewFilter.reset();
-    }
-    this.raw = painted;
-    this.followReviewPage(painted);
-    this.keepOptimisticOps();
-    this.initialLoadDone = true;
-    // Drop in-flight poll revisions from the previous tab.
-    this.lastPollRevision = null;
-    this.lastPollContentRevision = null;
-    this.lastPollChromeRevision = null;
-  }
-
-  /** Release the in-flight counters `cmd` took, clearing busy chrome at zero. */
-  private settleCmdFlags({ isTabChange, isSlow, isForceRefresh }: CmdRun) {
-    if (isTabChange) {
-      this.inflightTabChanges = Math.max(0, this.inflightTabChanges - 1);
-      this.pendingTabSwitch = this.inflightTabChanges > 0;
-    }
-    if (isSlow) {
-      this.inflightSlow = Math.max(0, this.inflightSlow - 1);
-      if (this.inflightSlow === 0) {
-        this.switching = false;
-        this.switchingLabel = null;
-        this.switchingTabIdx = null;
-      }
-    }
-    if (isForceRefresh) this.refreshing = false;
   }
 }
 
 export const app = new AppStore();
 
-/** Warn about a `cmd` slower than 500ms, split into paint / invoke / snapshot segments. */
-function logSlowCmdTiming(
-  command: string,
-  [tStart, tSwitchingSet, tInvokeStart, tInvokeDone, tSnapshotApplied]: [number, number, number, number, number],
-) {
-  const totalMs = timingSegmentMs(tStart, tSnapshotApplied);
-  if (totalMs <= 500) return;
-  const paintMs = timingSegmentMs(tSwitchingSet, tInvokeStart);
-  const invokeMs = timingSegmentMs(tInvokeStart, tInvokeDone);
-  logWarn(
-    `cmd_timing command=${command} paint_ms=${paintMs} invoke_ms=${invokeMs} total_ms=${totalMs} snapshot_ms=${timingSegmentMs(tInvokeDone, tSnapshotApplied)}`
-  ).catch(() => {});
-}
-
-function successToastForCommand(command: string): string | null {
-  switch (command) {
-    case "refresh_github_status":
-      return "GitHub status refreshed";
-    case "pull_github_comments":
-      return "Comments refreshed";
-    case "run_ai_review":
-      return "AI review started";
-    case "run_ai_review_files":
-      return null; // backend notify includes file count + review-files.txt hint
-    case "run_ai_expert_review":
-      return "Specialized review started";
-    case "run_ai_triage_review":
-    case "run_pr_triage":
-    case "run_branch_triage":
-      return "Triage scan started";
-    case "run_ai_professor_review":
-    case "run_ai_scoped_review":
-      return null;
-    default:
-      return null;
-  }
-}
-
-function switchingLabelForCommand(command: string): string {
-  switch (command) {
-    case "open_local_branch":
-      return "Opening branch...";
-    case "open_pr_review":
-    case "open_remote_pr":
-    case "open_pr_branch":
-      return "Opening PR...";
-    case "open_inbox_item":
-      return "Opening notification...";
-    case "select_tab":
-      return "Switching tab...";
-    case "set_mode":
-      return "Switching mode...";
-    default:
-      return "Switching review...";
-  }
-}
+$effect.root(() => {
+  $effect(() => {
+    const view = pageView.current;
+    untrack(() => app.followView(view));
+  });
+});

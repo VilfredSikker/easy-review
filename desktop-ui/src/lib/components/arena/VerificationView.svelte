@@ -23,7 +23,7 @@
     type VerificationFilter,
   } from "$lib/arena/verificationView";
   import { arena } from "$lib/stores/arena.svelte";
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { startWindowDrag } from "$lib/windowDrag";
   import ArenaVerdictPill from "$lib/components/arena/ArenaVerdictPill.svelte";
   import VerificationFindingDetail from "$lib/components/arena/VerificationFindingDetail.svelte";
@@ -83,7 +83,7 @@
   const meta = $derived(verificationMeta(snapshot));
   const excerpt = $derived.by(() => {
     if (!selected) return [];
-    const file = app.snapshot?.files.find((f) => f.path === selected.file);
+    const file = pageView.current?.files.find((f) => f.path === selected.file);
     return file && !file.is_lazy_stub ? evidenceExcerpt(file.hunks, selected) : [];
   });
 

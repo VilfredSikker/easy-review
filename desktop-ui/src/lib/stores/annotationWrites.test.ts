@@ -5,7 +5,6 @@ import type { PaintedView } from "$lib/protocol/generated/PaintedView";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { Versioned } from "$lib/protocol/generated/Versioned";
-import { isOptimisticCommand } from "$lib/optimisticLocal";
 import type { AiSnapshot, FlatFinding, ThreadSnapshot } from "$lib/pageTypes";
 import { AnnotationWrites, withPending } from "./annotationWrites";
 
@@ -88,7 +87,6 @@ describe("the annotation writes with the flag on", () => {
       ["delete_thread", { id: "q-1" }],
       ["update_thread_message", { id: "q-1", body: "edited" }],
     ] as const) {
-      expect(isOptimisticCommand(command, true), command).toBe(false);
       const done = writes.route(command, args);
       expect(writes.paints(), command).toEqual([]);
       await settle();
@@ -112,7 +110,6 @@ describe("the annotation writes with the flag on", () => {
       ["delete_review_artifact", { kind: "triage" }],
       ["delete_diagram", { id: "flows" }],
     ] as const) {
-      expect(isOptimisticCommand(command, true), command).toBe(false);
       const done = writes.route(command, args);
       expect(writes.paints(), command).toEqual([]);
       await settle();
@@ -142,7 +139,6 @@ describe("the annotation writes with the flag on", () => {
       ["clear_ui_annotations", {}],
       ["update_ui_annotation_anchors", { updates: [{ id: "ui-1", fresh: false, new_box: [5, 6, 7, 8] }] }],
     ] as const) {
-      expect(isOptimisticCommand(command, true), command).toBe(false);
       const done = writes.route(command, args);
       expect(writes.paints(), command).toEqual([]);
       await settle();

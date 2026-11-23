@@ -7,7 +7,7 @@ import {
   reapplyOptimisticThreads,
   removeOptimisticThread,
 } from "./optimisticComment";
-import { snapshotViewIdentity } from "./snapshotChrome";
+import { viewIdentity } from "./viewIdentity";
 import type {
   AiSnapshot,
   AppSnapshot,
@@ -142,7 +142,7 @@ function pendingFor(
   } as const;
   const kind = KIND[command];
   const filePath = parsed.file || view.files[0]?.path || "";
-  return buildOptimisticThreadForKind(kind, parsed, snapshotViewIdentity(view), filePath, {
+  return buildOptimisticThreadForKind(kind, parsed, viewIdentity(view), filePath, {
     id,
     nowIso: "2026-08-17T00:00:00.000Z",
   });

@@ -105,25 +105,6 @@ const sends = (calls: { command: string; args: Record<string, unknown> }[]) =>
   calls.filter((c) => c.command === "er_send").map((c) => c.args.command);
 
 describe("InboxAdapter", () => {
-  it("reads app.snapshot with the flag off and sends the old commands", async () => {
-    const { calls, old, inbox, snapshot } = adapter(false);
-    await settle();
-    expect(inbox.items).toBe(snapshot.inbox_items);
-    expect(inbox.unreadCount).toBe(2);
-    expect(inbox.lastRefreshMs).toBe(77);
-    await inbox.markItemsRead(["a"]);
-    await inbox.clearItems(["b"]);
-    await inbox.refresh();
-    await inbox.testNotification();
-    expect(old).toEqual([
-      { name: "mark_inbox_items_read", args: { ids: ["a"] } },
-      { name: "clear_inbox_items", args: { ids: ["b"] } },
-      { name: "refresh_notifications", args: {} },
-      { name: "test_native_notification", args: {} },
-    ]);
-    expect(calls).toEqual([]);
-  });
-
   it("reads the items, the server's unread count and the last refresh from inbox with the flag on", async () => {
     const { inbox } = adapter(true);
     expect(inbox.items).toEqual([]);

@@ -4,10 +4,11 @@
   import { openSource as openFile, selectedSource } from "$lib/tabCommands";
   import { devHeightProbeOn } from "$lib/dev/heightProbe";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { loadHashedHunks } from "$lib/stores/diffResource.svelte";
   import { layoutPanels } from "$lib/stores/layoutPanels.svelte";
-  import { tabSnapshotCacheKey } from "$lib/tabSnapshotCache";
+  import { tabViewKey } from "$lib/viewIdentity";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { diffPreview } from "$lib/stores/diffPreview.svelte";
@@ -159,7 +160,7 @@
   }
   const { viewModeOverride = null }: Props = $props();
 
-  const snapshot = $derived(app.snapshot);
+  const snapshot = $derived(pageView.current);
   $effect(() => { diffPreview.sync(snapshot); });
   $effect(() => { imagePreview.sync(snapshot); });
   // Order files to match the tree (folders-first, alphabetical, single-child
@@ -944,7 +945,7 @@
 
   function lazyRequestView(snap: AppSnapshot | null): LazyRequestView {
     return {
-      tabKey: snap ? tabSnapshotCacheKey(snap) : null,
+      tabKey: snap ? tabViewKey(snap) : null,
       tab: snap?.active_tab,
       mode: snap?.mode,
       base: snap?.base,
@@ -954,7 +955,7 @@
 
   function viewChangedSince(req: LazyRequestView, snap: AppSnapshot): boolean {
     return (
-      (req.tabKey !== null && tabSnapshotCacheKey(snap) !== req.tabKey) ||
+      (req.tabKey !== null && tabViewKey(snap) !== req.tabKey) ||
       snap.active_tab !== req.tab ||
       snap.mode !== req.mode ||
       snap.base !== req.base ||
@@ -986,25 +987,23 @@
   }
 
   async function requestLazyFiles(sourceIndices: number[]): Promise<void> {
-    if (app.pendingTabSwitch) return;
     const fresh = sourceIndices.filter((i) => !_requestingFiles.has(i));
     if (fresh.length === 0) return;
     for (const i of fresh) _requestingFiles.add(i);
-    const reqView = lazyRequestView(app.snapshot);
+    const reqView = lazyRequestView(pageView.current);
     try {
-      // With the flag on, a file's hunks are fetched by the hash its row names.
-      if (await loadHashedHunks((app.snapshot?.files ?? []).filter((f) => fresh.includes(f.source_index)))) {
+      // A file's hunks are fetched by the hash its row names.
+      if (await loadHashedHunks((pageView.current?.files ?? []).filter((f) => fresh.includes(f.source_index)))) {
         scheduleHighlightDrain();
         return;
       }
       const loaded = await invoke<FileSnapshot[]>("request_file_content", {
         sourceIndices: fresh,
       });
-      if (!loaded || !app.snapshot) return;
-      if (app.pendingTabSwitch) return;
+      if (!loaded || !pageView.current) return;
       // Drop stale responses: the view changed while the round-trip was in flight.
-      if (viewChangedSince(reqView, app.snapshot)) return;
-      for (const newFile of loaded) mergeLazyFile(app.snapshot, newFile);
+      if (viewChangedSince(reqView, pageView.current)) return;
+      for (const newFile of loaded) mergeLazyFile(pageView.current, newFile);
       scheduleHighlightDrain();
     } finally {
       for (const i of fresh) _requestingFiles.delete(i);
@@ -1046,7 +1045,6 @@
   }
 
   $effect(() => {
-    if (app.pendingTabSwitch) return;
     const pending: number[] = [];
     const seen = new Set<number>();
 
@@ -1257,7 +1255,7 @@
       const file = highlightTarget(filePath);
       if (!file) continue;
       const spanKey = highlightCache.key(file.path, file.cache_key, syntaxTheme.id);
-      const snapFile = app.snapshot?.files?.find((f) => f.path === file.path);
+      const snapFile = pageView.current?.files?.find((f) => f.path === file.path);
       if (!snapFile) continue;
       if (shouldSkipHighlightApply(snapFile, _spansAppliedKeys.has(spanKey))) {
         skippedApply += 1;
@@ -1318,8 +1316,8 @@
             highlight_ms: Math.round(performance.now() - tHighlight),
             lines: hunks.reduce((n, h) => n + h.lines.length, 0),
           });
-          if (!app.snapshot) return;
-          const live = app.snapshot.files?.find((f) => f.path === file.path);
+          if (!pageView.current) return;
+          const live = pageView.current.files?.find((f) => f.path === file.path);
           if (!live || requestCacheKey !== live.cache_key) return;
           if (!hunksHaveColor(hunks)) {
             _highlightFailedKeys.add(spanKey);
@@ -2289,14 +2287,14 @@
             {:else if row.type === "document-preview"}
               {@const file = files.find((f) => f.path === row.filePath)}
               <div data-row-identity={row.identity} data-row-idx={rowIdx}>
-                {#if snapshot && file && !app.pendingTabSwitch}
+                {#if snapshot && file}
                   <DocumentPreviewRow {snapshot} {file} />
                 {/if}
               </div>
             {:else if row.type === "image-preview"}
               {@const file = files.find((f) => f.path === row.filePath)}
               <div data-row-identity={row.identity} data-row-idx={rowIdx} style="min-height:{row.height}px">
-                {#if snapshot && file && !app.pendingTabSwitch}
+                {#if snapshot && file}
                   <ImagePreviewRow {snapshot} {file} height={row.height} />
                 {/if}
               </div>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
   import OverviewView from "$lib/components/overview/OverviewView.svelte";
   import { reviewLayers, type ReviewLayers } from "$lib/stores/reviewPageModel";
@@ -15,7 +15,7 @@
   const { snapshot, keepMounted }: Props = $props();
 
   $effect(() => {
-    app.snapshot = snapshot;
+    pageView.current = snapshot;
     applyTheme(snapshot.theme);
   });
 

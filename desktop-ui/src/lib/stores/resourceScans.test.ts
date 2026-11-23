@@ -16,12 +16,10 @@ describe("resource source scans", () => {
     expect(strip).toContain("tabsResource.tabs");
   });
 
-  it("starts the resource store under the flag and keeps the snapshot poll", () => {
-    const store = read("lib/stores/app.svelte.ts");
-    const start = store.indexOf("  startPolling(");
-    const body = store.slice(start, store.indexOf("\n  stopPolling()", start));
-    expect(body).toContain('invoke<PollResponse>("poll")');
-    expect(body).toMatch(/if \(v1ServiceRequested\(\)\) void resources\.start\(\);/);
+  it("the page starts the resource store and the App's snapshot reader beside it", () => {
+    const root = read(APP_ROOT);
+    expect(root).toMatch(/void resources\.start\(\);\s*legacySnapshot\.start\(\);/);
+    expect(root).toMatch(/resources\.stop\(\);\s*legacySnapshot\.stop\(\);/);
   });
 
   // Tab keys count from 1 in every backend process, so a stored key can name
@@ -39,18 +37,14 @@ describe("resource source scans", () => {
       importsResourceStore,
       importsTabs,
     ];
-    // app.svelte.ts imports the store only to start and stop it, and App.svelte
-    // the tabs adapter only to read its rows, which carry no key (the tests
-    // below hold both to that), so for each its import does not count.
+    // App.svelte imports the store only to start and stop it, and the tabs
+    // adapter only to read its rows, which carry no key, so neither import
+    // counts there.
     const clausesFor = (f: string) =>
-      f === APP_STORE
-        ? clauses.filter((c) => c !== importsResourceStore)
-        : f === APP_ROOT
-          ? clauses.filter((c) => c !== importsTabs)
-          : clauses;
+      f === APP_ROOT ? clauses.filter((c) => c !== importsTabs && c !== importsResourceStore) : clauses;
     const holders = files.filter((f) => clauses.some((c) => c.test(read(f))));
     expect(holders).toContain(join("lib", "stores", "tabsAdapter.ts"));
-    expect(holders).toContain(APP_STORE);
+    expect(holders).toContain(APP_ROOT);
     expect(
       files.filter((f) => {
         const text = read(f);
@@ -80,49 +74,30 @@ describe("resource source scans", () => {
 
   it("the chrome reads the session adapter, not the snapshot", () => {
     const field = new RegExp(`\\b(snapshot|snap)\\??\\.(${CHROME_FIELDS})\\b`);
-    // The adapter's flag-off reads, the snapshot plumbing that copies the
-    // fields between snapshots, and the flag-off toast in the app store.
-    const allowed = [
-      join("lib", "stores", "sessionAdapter.ts"),
-      join("lib", "tabSnapshotCache.ts"),
-      join("lib", "snapshotChrome.ts"),
-      APP_STORE,
-    ];
-    expect(sources().filter((f) => !allowed.includes(f) && field.test(stripped(f)))).toEqual([]);
+    expect(sources().filter((f) => field.test(stripped(f)))).toEqual([]);
   });
 
   it("the picker, update check and panel mirror call the old commands only from their adapters", () => {
     const old = /(invoke|cmd)(<[^>]*>)?\(\s*"(list_ai_providers|list_ai_reviewers|set_ai_selection|set_ai_effort|check_app_update|toggle_panel)"/;
-    const allowed = [join("lib", "stores", "sessionAdapter.ts"), join("lib", "stores", "panelMirror.ts")];
-    expect(sources().filter((f) => !allowed.includes(f) && old.test(stripped(f)))).toEqual([]);
+    expect(sources().filter((f) => old.test(stripped(f)))).toEqual([]);
   });
 
-  it("with the flag off Settings invokes the picks and the palette sends them through app.cmd", () => {
-    expect(stripped(join("lib", "components", "CommandPalette.svelte"))).toMatch(
-      /\.setAiSelection\(providerId, modelId, effort, "app"\)/,
-    );
-    expect(stripped(join("lib", "components", "settings", "AiSettings.svelte"))).not.toMatch(/setAi\w+\([^)]*"app"/);
+  // The page runs on the resources alone. The one reader of the App's
+  // snapshot serves only the fields no resource carries yet, and nothing
+  // reads the store's old snapshot or the build flag the old page branched on.
+  it("no module reads app.snapshot, and only the App's snapshot reader asks the App for one", () => {
+    const LEGACY = join("lib", "stores", "legacySnapshot.svelte.ts");
+    expect(sources().filter((f) => /\bapp\.(snapshot|appSnapshot)\b|\.overlaySnapshot\(/.test(stripped(f)))).toEqual([]);
+    const asksTheApp = /["'](get_snapshot|poll)["']|["']er:\/\/revision["']/;
+    expect(sources().filter((f) => asksTheApp.test(stripped(f)))).toEqual([LEGACY]);
+    expect(sources().filter((f) => /v1ServiceFlag|VITE_ER_V1_SERVICE|\bflagOn\b/.test(stripped(f)))).toEqual([]);
   });
 
-  it("with the flag on the app store shows no snapshot notification, which the notices carry", () => {
-    const store = stripped(APP_STORE);
-    const start = store.indexOf("private syncSnapshotToast(");
-    const body = store.slice(start, store.indexOf("snapshot?.notification", start));
-    expect(body).toMatch(/if \(v1ServiceRequested\(\)\) return false;/);
-  });
-
-  it("app.svelte.ts only starts and stops the resource store, and persists view prefs only", () => {
+  it("app.svelte.ts holds no resource store, and persists view prefs only", () => {
     const code = read(APP_STORE)
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n]*/g, "");
-    // Bound by its import and used only to start and stop, the store gives
-    // this module no value to hold.
-    expect(code.match(/\bresources\b(\.\w+)?/g)).toEqual([
-      "resources",
-      "resources.start",
-      "resources.stop",
-    ]);
-    expect(code).toMatch(/import \{ resources \} from "\.\/resourceStore";/);
+    expect(code).not.toMatch(/\bresources\b|resourceStore/);
     const otherStorage = code
       .replace(/\btypeof localStorage\b/g, "")
       .replace(/\blocalStorage\.(getItem|setItem)\(/g, "");
@@ -180,19 +155,19 @@ describe("resource source scans", () => {
     expect(prOpen).toMatch(/invokeFn: InvokeFn = \(command, args\) => prefetchSend\(command, args\)/);
   });
 
-  it("with the flag on app.cmd hands a routed command to the tabs adapter before its snapshot path", () => {
+  it("app.cmd hands a command to the first route that takes it, the tabs adapter's among them", () => {
     const store = stripped(APP_STORE);
     const start = store.indexOf("  async cmd(");
-    const body = store.slice(start, store.indexOf("this.beginCmd(", start));
-    expect(body).toMatch(/const routed = this\.routed\(command, args\);\s*if \(routed\) return this\.cmdRouted\(command, routed, options\);/);
+    const body = store.slice(start, store.indexOf("\n  }\n", start));
+    expect(body).toMatch(/await \(this\.routed\(command, args\) \?\? invoke\(command, args\)\);/);
     const wiring = stripped(join("lib", "stores", "tabsResource.svelte.ts"));
-    expect(wiring).toMatch(/if \(flagOn\) \{\s*app\.routeCmds\(\(command, args\) => tabsResource\.route\(command, args\)\);\s*routePrefetches\(/);
+    expect(wiring).toMatch(/app\.routeCmds\(\(command, args\) => tabsResource\.route\(command, args\)\);\s*routePrefetches\(/);
   });
 
-  // With the flag on `app.snapshot` runs the diff overlay, which reads the
-  // active tab and its PR head through these adapters, so a read of
-  // `app.snapshot` in either recurses until the stack overflows.
-  it("the adapters the diff overlay reads take the App's snapshot", () => {
+  // The page view runs the diff overlay, which reads the active tab and its
+  // PR head through these adapters, so a read of the page view in either
+  // recurses until the stack overflows.
+  it("the adapters the diff overlay reads never read the page view", () => {
     const block = (f: string, ctor: string) => {
       const code = stripped(join("lib", "stores", f));
       const start = code.indexOf(`new ${ctor}({`);
@@ -202,8 +177,9 @@ describe("resource source scans", () => {
       ["tabsResource.svelte.ts", "TabsAdapter"],
       ["diffResource.svelte.ts", "DiffAdapter"],
     ]) {
-      expect(block(f, ctor)).toMatch(/snapshot: \(\) => app\.appSnapshot,/);
+      expect(block(f, ctor)).not.toMatch(/pageView/);
     }
+    expect(block("tabsResource.svelte.ts", "TabsAdapter")).toMatch(/rows: \(\) => legacySnapshot\.tabRows,/);
     // Every dot, the active branch view's too, reads diff(tab), never the App's stale mark.
     expect(block("tabsResource.svelte.ts", "TabsAdapter")).not.toMatch(/diff_stale/);
   });
@@ -236,15 +212,6 @@ describe("resource source scans", () => {
     expect(read(APP_ROOT)).not.toContain("er://revision");
   });
 
-  it("followRunProgress's default feed reads the module's flag, the arena adapter and the Tauri listener", () => {
-    const code = stripped(join("lib", "stores", "arenaResource.svelte.ts"));
-    expect(code).toMatch(/^const flagOn = v1ServiceRequested\(\);$/m);
-    expect(code).toMatch(/^import \{ listen \} from "@tauri-apps\/api\/event";$/m);
-    expect(code).toMatch(/feed: RunProgressFeed = \{ flagOn, adapter: arenaAdapter, listen \},/);
-    // Nothing reassigns the flag the default feed reads.
-    expect(code.match(/\bflagOn\s*=(?!=)/g)).toEqual(["flagOn ="]);
-  });
-
   it("the review and screenshot reads go through the annotation reads, which fetch them with the flag on", () => {
     const old = /invoke(?:<[^>]*>)?\(\s*"(read_review_json|list_review_revisions|read_annotation_screenshot)"/;
     const callers = sources().filter((f) => old.test(stripped(f)));
@@ -260,7 +227,7 @@ describe("resource source scans", () => {
 
   it("DiffView joins its hunks with the threads of annotations(tab)", () => {
     const store = stripped(join("lib", "stores", "diffResource.svelte.ts"));
-    expect(store).toMatch(/threads: \(\) => \{[\s\S]*annotationsResource\.threads\(\)/);
+    expect(store).toMatch(/threads: \(\) => annotationsResource\.threads\(\) \?\? \[\],/);
   });
 
   it("with the flag on the previews and the path list read the tab's content through er_fetch", () => {

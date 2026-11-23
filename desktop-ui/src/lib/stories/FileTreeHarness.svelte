@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app } from "$lib/stores/app.svelte";
+  import { pageView } from "$lib/stores/pageView.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
   import type { AppSnapshot } from "$lib/pageTypes";
 
@@ -9,7 +9,7 @@
   const { snapshot }: Props = $props();
 
   $effect(() => {
-    app.snapshot = snapshot;
+    pageView.current = snapshot;
   });
 </script>
 
