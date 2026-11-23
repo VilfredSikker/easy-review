@@ -1,7 +1,6 @@
 //! The review export: the tab's annotations as markdown, returned to the page
-//! or written to disk for an agent. With the service, each command renders the
-//! tab its key names from that tab's published content; without it, the App's
-//! active tab.
+//! or written to disk for an agent. Each command renders the tab its key names
+//! from that tab's published content.
 
 use er_protocol::{ErError, ExportOptions};
 use tauri::State;
