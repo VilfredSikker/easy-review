@@ -234,7 +234,7 @@ fn a_finding_resolve_moves_the_annotations_once_across_the_next_tick() {
         let (written, _) = annotations(state, key);
         assert!(written > before, "the resolve moved no version");
 
-        crate::resources::tick::run(&state.desktop, &state.app);
+        crate::resources::tick::run(&state.desktop);
         std::thread::sleep(Duration::from_millis(500));
 
         assert_eq!(

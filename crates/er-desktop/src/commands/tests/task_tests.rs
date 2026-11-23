@@ -15,7 +15,7 @@ use er_service::WorkspaceDeps;
 use super::ai_ask_tests::jobs;
 use super::arena_resource_tests::{bucket, local_ports, open, wait_until};
 use super::diff_command_tests::send;
-use super::diff_resource_tests::{raw_diff, with_storage};
+use super::diff_resource_tests::{fake_ports, opened, raw_diff, with_storage};
 use super::{review_flow_test_state, ReviewFlowTestDir};
 use crate::commands::AppState;
 use crate::service::ServiceState;
@@ -276,6 +276,64 @@ fn a_queued_task_is_removed_from_jobs() {
         let removed = send(&state, "cancel_queued_task", cancel);
         assert!(removed.is_ok(), "{removed:?}");
         assert!(row(&state, &second).is_none(), "{:?}", tasks(&state));
+        release(&state, &agent);
+    });
+}
+
+/// An importance run that finishes well has the settings view load the
+/// repo's rules again, so `risk(key)` moves, and refreshes the loaded tabs on
+/// the repo, so their rows take the committed tiers at once. The test commits
+/// the table and finishes a queued importance task by hand: a run that
+/// commits a table needs a real provider CLI.
+#[test]
+fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
+    with_storage(|dir| {
+        let (state, agent) = tasking_on(dir, 1, fake_ports());
+        let (key, tab) = opened(&state, dir, "one");
+        let _first = queued(&state, dir.path(), "review");
+        let mut importance = launch(
+            &state,
+            dir.path(),
+            er_engine::ai::prompts::IMPORTANCE_TASK_KIND,
+            "feature",
+        );
+        importance.target.repo_root.clone_from(&tab.repo_root);
+        let importance = super::while_the_app_is_locked(&state, "the enqueue", move |state| {
+            crate::tasks::enqueue(&state.desktop, importance)
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+        let tier = || {
+            let diff = ResourceKey::Diff {
+                tab: er_service::wire_tab_key(key),
+            };
+            match crate::resources::fetch(&state.desktop, diff).map(|f| f.value) {
+                Ok(Resource::Diff(diff)) => (diff.files.iter())
+                    .find(|f| f.path == "src/f2.rs")
+                    .map(|f| f.risk_tier.clone()),
+                other => panic!("not a diff: {other:?}"),
+            }
+        };
+        assert_eq!(tier().as_deref(), Some("ai"));
+        let committed = er_engine::config::RiskRuleProposal {
+            repo: "widgets".into(),
+            rules: [("src/f2.rs".to_string(), "low".into())].into(),
+            ..Default::default()
+        };
+        let store = er_engine::store_registry::store();
+        assert!(committed.commit_to_store("widgets", &store).is_ok());
+
+        crate::tasks::finish(&state.desktop, &importance, Ok(()));
+
+        let view = state.service.settings().view();
+        assert!(
+            view.risk_for(&tab.repo_root, None).is_some(),
+            "rules unloaded"
+        );
+        wait_until("the tab's rows to take the committed tier", || {
+            tier().as_deref() == Some("low")
+        });
+        // The review still runs on the gated agent: end it before the
+        // storage goes, so it frees the process's one slot.
         release(&state, &agent);
     });
 }
