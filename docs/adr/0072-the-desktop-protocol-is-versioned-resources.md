@@ -1,6 +1,6 @@
 # The desktop protocol is versioned resources
 
-_Supersedes ADRs 0011, 0012, 0016, 0017, 0018, 0033 and 0034._
+_Supersedes ADRs 0011, 0012, 0016, 0017, 0018, 0032, 0033 and 0034._
 
 ## Context
 

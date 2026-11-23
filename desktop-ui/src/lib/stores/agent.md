@@ -7,11 +7,12 @@
 - The resource store (`resources`) is backend truth at rest. Each store reads its keys from it, and the page view (`pageView`) is built from those stores alone, each laying its fields over the tab strip's rows; it holds no state of its own. Render from it, read loading state from the resources that carry it, and never infer backend state from toasts.
 - A store shows a key while something holds it (`show` returns the release). A key nobody holds is dropped with its content, so a store that reads a key it never showed reads nothing.
 - While a write is in flight the page runs ahead of the server on purpose; see pending writes below.
-- localStorage holds frontend preferences only: diff view mode, comment visibility, drawer sizes, scroll offsets. Never review data, and never a wire key.
+- localStorage holds frontend preferences only: diff view mode, comment visibility, drawer sizes. Never review data, and never a wire key.
 
 ## Pending writes
 
-- A thread write (add, reply, promote) paints a pending row under the id it sends as `clientId`, so the confirming row lands on the same id and is not drawn twice (`withPending`). This is ADR 0017's `client_id` rule, which ADR 0072 keeps.
+- An add or a reply paints a pending row under the id it sends as `clientId`, so the confirming row lands on the same id and is not drawn twice (`withPending`). This is ADR 0017's `client_id` rule, which ADR 0072 keeps.
+- A promote sends no `clientId`: it hides the question and paints the note under a local id, and that paint goes by the rule below like any other.
 - The paint is dropped once every version the `Ack` names is held (`whenAt`), or when the send fails. A refused write takes its paint back with no rollback code; dropping it any earlier flashes the row out until the refetch lands.
 - A reviewed checkmark is pending the same way, until its `Ack`'s versions are held.
 - Every other write paints nothing: the push of the resource it moved paints the result.
