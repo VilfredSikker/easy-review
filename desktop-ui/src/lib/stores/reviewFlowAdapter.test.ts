@@ -22,6 +22,8 @@ const JOBS_HELD: Resource = {
     { er_dir: "/a", json: flow("finding") },
     { er_dir: "/b", json: flow("awaiting_confirmation") },
   ],
+  tasks: [],
+  triage: [],
 };
 
 /** An adapter over a backend that records what it was asked. */

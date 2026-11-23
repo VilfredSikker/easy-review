@@ -2,7 +2,7 @@
   import type { BackgroundTaskSnapshot, AgentLogEntry } from "$lib/types";
   import { sourceColor } from "$lib/utils/agentLog";
   import { copyToClipboard } from "$lib/clipboard";
-  import { invoke } from "@tauri-apps/api/core";
+  import { tasksAdapter } from "$lib/stores/tasksResource.svelte";
 
   /** Live log tail of one background task, expanded inside a jobs-popover row. */
   interface Props {
@@ -20,21 +20,25 @@
   let stickToBottom = $state(true);
   const running = $derived(task?.status === "running");
 
+  // A task `jobs` lists carries no tail, so its log is read once on open
+  // as well, finished or not.
   $effect(() => {
-    if (!running) return;
     const id = taskId;
+    const live = running;
     let cancelled = false;
-    const handle = setInterval(async () => {
+    const read = async () => {
       try {
-        const result = await invoke<AgentLogEntry[]>("get_background_task_log", { taskId: id });
-        if (!cancelled) logLines = result;
+        const result = await tasksAdapter.log(id);
+        if (!cancelled && (live || result.length > 0)) logLines = result;
       } catch {
         // A pruned task stops answering; the snapshot tail stays on screen.
       }
-    }, 1000);
+    };
+    void read();
+    const handle = live ? setInterval(read, 1000) : undefined;
     return () => {
       cancelled = true;
-      clearInterval(handle);
+      if (handle !== undefined) clearInterval(handle);
     };
   });
 
