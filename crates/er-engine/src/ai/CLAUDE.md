@@ -2,7 +2,7 @@
 
 Data model, loader, and persistence for the review sidecars. This module reads
 what an agent produced; it does not spawn one. Spawning lives in `er-agent`;
-`app/card_job.rs` and `app/state/comments.rs` build the prompts and specs they
+`card_job.rs` and `agent_prompt.rs` build the prompts and specs they
 pass, and the prompt text is compiled into `ai/prompts.rs` — nothing reads a
 prompt or skill file at runtime. `docs/adr/0023-self-contained-agent-prompts.md`.
 

@@ -407,6 +407,22 @@ fn no_resource_module_names_the_app() {
     assert!(scanned >= 2, "scanned {scanned} modules");
 }
 
+/// The asks, runs and task host outside `resources/` name nothing under the
+/// engine's `ui`-gated `app` either, so er-desktop can build on er-engine
+/// without `ui`. They reach the launcher and log types through the
+/// always-compiled half.
+#[test]
+fn no_flag_on_host_module_names_the_engine_app() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for file in ["ai_ask.rs", "ask_context.rs", "runs.rs", "tasks.rs"] {
+        let source = std::fs::read_to_string(src.join(file)).unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            !source.contains("er_engine::app"),
+            "{file} names er_engine::app"
+        );
+    }
+}
+
 /// An outside write to the loaded tabs' bucket reaches each tab's content
 /// through one tick, the inactive tab's too, with no frontend call.
 #[test]

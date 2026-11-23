@@ -394,7 +394,7 @@ fn agent(
     let (provider_id, model_id, effort) = crate::ai_ask::selection(&config);
     let (repo_root, er_dir) = (target.repo_root.clone(), target.er_dir.clone());
     tasks::hold_agent(desktop, target, name, |log_tx| {
-        er_engine::app::App::launch_agent_prompt(er_engine::app::AgentPromptRequest {
+        er_engine::agent_prompt::launch_agent_prompt(er_engine::agent_prompt::AgentPromptRequest {
             name,
             prompt,
             repo_root,

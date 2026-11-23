@@ -16,8 +16,9 @@ use std::collections::VecDeque;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use er_engine::agent_log::{AgentLogEntry, AgentLogSource};
+use er_engine::agent_prompt::AgentPromptRun;
 use er_engine::ai::ScopedRunStamp;
-use er_engine::app::{AgentLogEntry, AgentLogSource, AgentPromptRun};
 use er_engine::config::{AiSelection, ErConfig};
 use er_engine::job_staging::JobStaging;
 use er_engine::jobs::{AgentRunHandle, JobProgress};
@@ -184,7 +185,7 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
     let id = task_id(&launch.kind, &target);
     let row = TaskJob {
         id: id.clone(),
-        label: er_engine::app::kind_label(&launch.kind),
+        label: er_engine::task_target::kind_label(&launch.kind),
         kind: launch.kind.clone(),
         target_label: target.display_label(),
         scope: target.scope.clone(),
@@ -284,7 +285,7 @@ pub fn hold_agent(
     let id = task_id(name, &target);
     let row = TaskJob {
         id: id.clone(),
-        label: er_engine::app::kind_label(name),
+        label: er_engine::task_target::kind_label(name),
         kind: name.to_string(),
         target_label: target.display_label(),
         scope: target.scope.clone(),
@@ -561,7 +562,10 @@ fn log_line(name: &str, event: JobProgress, is_stream_json: bool) -> Option<Task
     let (source, text) = match event {
         JobProgress::StdoutLine(line) => (
             "stdout",
-            er_engine::app::stdout_log_text(line.trim_end_matches(['\r', '\n']), is_stream_json)?,
+            er_engine::agent_log::stdout_log_text(
+                line.trim_end_matches(['\r', '\n']),
+                is_stream_json,
+            )?,
         ),
         JobProgress::StderrLine(line) => {
             ("stderr", line.trim_end_matches(['\r', '\n']).to_string())

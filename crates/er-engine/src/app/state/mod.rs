@@ -4512,24 +4512,10 @@ pub enum CommandStatus {
     Failed(String),
 }
 
-#[derive(Debug, Clone)]
-pub enum AgentLogSource {
-    Stdout,
-    Stderr,
-    Status,
-}
-
-#[derive(Debug, Clone)]
-pub struct AgentLogEntry {
-    pub timestamp: std::time::Instant,
-    /// Shared, not owned: every line of a run carries the same name, and an
-    /// agent writing a JSON event per line allocates thousands of copies of a
-    /// string that never changes. `Arc<str>` rather than `Arc<String>` so the
-    /// allocation is one block.
-    pub command_name: std::sync::Arc<str>,
-    pub source: AgentLogSource,
-    pub text: String,
-}
+pub use crate::agent_log::{AgentLogEntry, AgentLogSource};
+// The stream-json renderer's tests stay beside the App path that shows it.
+#[cfg(test)]
+use crate::agent_log::{parse_stream_json_line, shorten_path};
 
 /// A message for a UI to surface once.
 ///
@@ -8260,66 +8246,6 @@ impl App {
         // Borrow the path for the notification after releasing tab_mut.
         let path = self.tab().files[raw_idx].path.clone();
         self.notify(&format!("Jumped to: {}", path));
-    }
-}
-
-/// Parse a Claude Code `--output-format stream-json` line into a human-readable string.
-/// Returns `None` for events that should be suppressed (noise).
-///
-/// The JSON shape is decoded in `er_agent::decode`, the one place that knows
-/// a provider's event format; this only renders what it reports.
-fn parse_stream_json_line(line: &str) -> Option<String> {
-    use er_agent::decode::{LogEvent, LogPart};
-
-    match er_agent::decode::decode_log_line(line)? {
-        LogEvent::Assistant(parts) => {
-            let rendered: Vec<String> = parts
-                .into_iter()
-                .map(|part| match part {
-                    LogPart::Text(text) => text,
-                    LogPart::ToolUse { name, input } => render_tool_use(&name, input.as_ref()),
-                })
-                .collect();
-            (!rendered.is_empty()).then(|| rendered.join("  "))
-        }
-        LogEvent::SystemNote(text) => Some(format!("⊘ {}", text)),
-    }
-}
-
-fn render_tool_use(name: &str, input: Option<&serde_json::Value>) -> String {
-    let input = input.and_then(|input| input.as_object());
-    let detail = match name {
-        "Read" | "Write" | "Edit" => input
-            .and_then(|input| input.get("file_path"))
-            .and_then(|path| path.as_str())
-            .map(shorten_path)
-            .unwrap_or_default(),
-        "Bash" => input
-            .and_then(|input| input.get("command"))
-            .and_then(|command| command.as_str())
-            .map(str::to_string)
-            .unwrap_or_default(),
-        "Glob" | "Grep" => input
-            .and_then(|input| input.get("pattern"))
-            .and_then(|pattern| pattern.as_str())
-            .map(str::to_string)
-            .unwrap_or_default(),
-        _ => String::new(),
-    };
-    if detail.is_empty() {
-        format!("→ {}", name)
-    } else {
-        format!("→ {} {}", name, detail)
-    }
-}
-
-fn shorten_path(path: &str) -> String {
-    // Show last 2 components for readability
-    let parts: Vec<&str> = path.rsplit('/').take(2).collect();
-    if parts.len() == 2 {
-        format!("{}/{}", parts[1], parts[0])
-    } else {
-        parts[0].to_string()
     }
 }
 

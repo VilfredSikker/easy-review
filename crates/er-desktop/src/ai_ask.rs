@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use er_engine::ai::{CommentType, AI_ACTION_ASK, AI_ACTION_ELABORATE};
-use er_engine::app::{plan_card_ai_invocation, run_card_ai_subprocess, CardAiInvocation};
+use er_engine::card_job::{plan_card_ai_invocation, run_card_ai_subprocess, CardAiInvocation};
 use er_engine::config::ErConfig;
 use er_engine::git::DiffFile;
 use er_engine::TabKey;

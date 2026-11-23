@@ -1,6 +1,5 @@
-pub mod card_ai_context;
-pub mod card_job;
 pub use crate::filter;
+pub use crate::{card_ai_context, card_job};
 pub use crate::{job_commit, job_staging};
 pub(crate) mod state;
 pub use state::preview::{
@@ -14,15 +13,16 @@ pub use card_job::{
 };
 
 #[cfg(any(test, feature = "test-support"))]
-pub use state::comments::take_submitted_tab_job_kinds;
+pub use crate::agent_prompt::take_submitted_tab_job_kinds;
 
+pub use crate::agent_log::{stdout_log_text, AgentLogEntry, AgentLogSource};
+pub use crate::agent_prompt::{launch_agent_prompt, AgentPromptRequest, AgentPromptRun};
 pub use crate::git::Worktree;
 pub use state::background::{
     debug_bg_enabled, kind_label, BackgroundTask, BackgroundTaskSnapshot, BackgroundTaskTarget,
     HostWriteDiagram,
 };
 pub use state::chrono_now;
-pub use state::comments::{stdout_log_text, AgentPromptRequest, AgentPromptRun};
 pub use state::github_post::{NewGitHubComment, PostedGitHubCommentLocation};
 pub use state::github_sync::{
     fetch_comment_sync_data, fetch_comment_sync_data_cached, CommentSyncContext, CommentSyncResult,
@@ -32,8 +32,8 @@ pub use state::preload::{
 };
 pub use state::{
     cleanup_note_replies, cleanup_question_answers, cleanup_questions_and_notes,
-    cleanup_review_artifacts, cleanup_reviews, cleanup_triage, AgentLogEntry, AgentLogSource,
-    AiActionKind, App, CommandStatus, CommentTarget, ConfigEditState, ConfirmAction, DiffMode,
-    DirEntry, HubAction, HubItem, HubKind, InputMode, Notification, OverlayData, PrRefreshInputs,
-    PrRefreshResult, SplitSide, StackState, TabState,
+    cleanup_review_artifacts, cleanup_reviews, cleanup_triage, AiActionKind, App, CommandStatus,
+    CommentTarget, ConfigEditState, ConfirmAction, DiffMode, DirEntry, HubAction, HubItem, HubKind,
+    InputMode, Notification, OverlayData, PrRefreshInputs, PrRefreshResult, SplitSide, StackState,
+    TabState,
 };
