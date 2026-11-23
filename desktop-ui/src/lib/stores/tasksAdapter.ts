@@ -59,6 +59,10 @@ export function runCommand(command: string, a: Args, tab: TabKey | null): Comman
       return scoped(tab, a, [], ["triage"]);
     case "run_ai_review_files":
       return scoped(tab, a, list(a.paths), ["general"]);
+    case "run_ai_validate":
+      return { kind: "run_validate", tab, scope: text(a.scope) };
+    case "send_note_to_agent":
+      return { kind: "send_note_to_agent", tab, noteId: text(a.noteId) };
     case "run_ai_scoped_review":
       return scoped(tab, a, list(a.paths), list(a.reviewerKinds));
     default:

@@ -110,6 +110,8 @@ describe("TasksAdapter", () => {
       "run_ai_triage_review",
       "run_ai_review_files",
       "run_ai_scoped_review",
+      "run_ai_validate",
+      "send_note_to_agent",
     ];
     for (const name of names) expect(runCommand(name, {}, TAB)).not.toBeNull();
     expect(runCommand("refresh_diff", {}, TAB)).toBeNull();
