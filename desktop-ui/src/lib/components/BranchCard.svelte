@@ -2,6 +2,7 @@
   import type { PrSnapshot, GithubStatusSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { pageView } from "$lib/stores/pageView.svelte";
+  import { prResource } from "$lib/stores/prResource.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { projectsResource } from "$lib/stores/projectsResource.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
@@ -94,7 +95,9 @@
       : "Watching",
   );
   let manualRefreshing = $state(false);
-  const refreshing = $derived(manualRefreshing || (pageView.current?.bg_loading?.gh_status ?? false));
+  const refreshing = $derived(
+    manualRefreshing || prResource.statusFetching(pageView.current?.local_branch ?? pageView.current?.branch),
+  );
 
   const checkStats = $derived(countChecks(github?.checks ?? []));
 

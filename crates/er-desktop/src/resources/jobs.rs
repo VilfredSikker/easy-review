@@ -2,7 +2,8 @@
 //! the ask-AI replies being written, which `AiReplyJobs` holds and counts;
 //! the arena runs and review flows the started workspaces hold, which their
 //! published views carry; and the background tasks and the sidebar triage
-//! requests, which the task host holds and counts. A task's output lines
+//! requests, which the task host holds and counts; and whether a PR-list
+//! refresh runs, which its clock counts. A task's output lines
 //! stay out: `task_log` reads them, so a line moves no version.
 
 use er_protocol::{AiReplyJob, ArenaRunJob, Jobs, Resource, ReviewFlowJob};
@@ -44,6 +45,7 @@ pub fn jobs(desktop: &DesktopState) -> (u64, Resource) {
         review_flows,
         tasks: desktop.tasks.rows(),
         triage,
+        pr_list_refresh: desktop.loading.lock().is_ok_and(|flags| flags.pr_list),
     };
     (version, Resource::Jobs(jobs))
 }
@@ -66,4 +68,5 @@ fn counted(desktop: &DesktopState, arena_runs: &[ArenaRunJob], flows: &[ReviewFl
     desktop.pending_ai_replies.clock.revision()
         + desktop.live_jobs.observe_flows(flows)
         + desktop.tasks.clock.revision()
+        + desktop.pr_list_clock.revision()
 }

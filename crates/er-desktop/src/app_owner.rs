@@ -479,6 +479,7 @@ fn build_statuses(
         .map(|((owner, repo, number), status)| {
             let status = PrStatus {
                 status: Some(github_status(status, me)),
+                fetching: false,
             };
             ((format!("{owner}/{repo}"), *number), status)
         })

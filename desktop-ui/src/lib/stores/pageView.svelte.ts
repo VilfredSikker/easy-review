@@ -58,7 +58,6 @@ function emptyView(tabs: Pick<AppSnapshot, "tabs" | "active_tab">): AppSnapshot 
     projects: [],
     local_branch: null,
     notification: null,
-    bg_loading: { pr_list: false, gh_status: false, gh_comments: false },
     ...tabs,
   };
 }

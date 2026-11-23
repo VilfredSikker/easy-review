@@ -1,10 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import { SvelteMap } from "svelte/reactivity";
 import { resourceClient } from "$lib/protocol/client";
 import { JOBS } from "./annotationsAdapter";
 import { app } from "./app.svelte";
-// Its overlay lays down the App's tasks, which this one's must follow.
-import "./legacySnapshot.svelte";
 import { pageView } from "./pageView.svelte";
 import { resources } from "./resourceStore";
 import { TasksAdapter } from "./tasksAdapter";
@@ -15,12 +12,11 @@ export const tasksAdapter = new TasksAdapter({
   store: resources,
   client: resourceClient(),
   activeKey: () => tabsResource.activeKey,
-  invoke,
   logs: new SvelteMap(),
 });
 
-// The page lists the host's tasks from `jobs` after the App's, and the runs
-// go through er_send keyed to the active tab.
+// The page lists the host's tasks from `jobs`, and the runs and stops go
+// through er_send keyed to the active tab.
 pageView.overlay((view) => tasksAdapter.overlay(view));
 app.routeCmds((command, args) => tasksAdapter.route(command, args));
 $effect.root(() => {

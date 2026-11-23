@@ -1160,6 +1160,8 @@ fn main() {
         ui_annotations_io: Arc::default(),
         gh_status_cache: Arc::clone(&gh_status_cache),
         loading: Arc::clone(&loading),
+        pr_list_clock: session.clock(),
+        status_fetch_clock: session.clock(),
         gh_status_in_flight: Arc::clone(&gh_status_in_flight),
         pr_open_prefetch_in_flight: Arc::new(Mutex::new(std::collections::HashMap::new())),
         branch_preload_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
@@ -1447,6 +1449,7 @@ fn main() {
         let gh_status_loading = Arc::clone(&loading);
         let gh_status_in_flight_bg = Arc::clone(&gh_status_in_flight);
         let gh_status_desktop_rev = Arc::clone(&desktop_revision);
+        let fetch_clock = state.status_fetch_clock.clone();
         std::thread::spawn(move || loop {
             // Sleep FIRST: kills the startup burst — a sleep at the bottom
             // lets the loop fire immediately on launch.
@@ -1490,6 +1493,7 @@ fn main() {
             if let Ok(mut f) = gh_status_loading.lock() {
                 f.gh_status = true;
             }
+            fetch_clock.bump();
             commands::fetch_and_store_github_status(
                 &gh_status_bg,
                 &gh_status_desktop_rev,
@@ -1503,6 +1507,7 @@ fn main() {
             let _ = gh_status_in_flight_bg
                 .lock()
                 .map(|mut s| s.remove(&(owner, repo, number)));
+            fetch_clock.bump();
         });
     }
 
@@ -1684,6 +1689,7 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = true;
             }
+            bg_state.pr_list_clock.bump();
             let failed = rt.block_on(bg_owner.refresh_prs(Arc::clone(&bg_github)));
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
             let handles = commands::InboxRefreshHandles {
@@ -1700,6 +1706,7 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
             }
+            bg_state.pr_list_clock.bump();
             profile_log::bump_desktop_revision(&bg_desktop_rev, "pr_cache_refresh");
         };
 
@@ -1709,6 +1716,7 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = true;
             }
+            bg_state.pr_list_clock.bump();
             let success =
                 rt.block_on(bg_owner.refresh_remote_prs(Arc::clone(&bg_github), &active_remote));
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
@@ -1727,6 +1735,7 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
             }
+            bg_state.pr_list_clock.bump();
             profile_log::bump_desktop_revision(&bg_desktop_rev, "pr_cache_active_remote");
         }
 

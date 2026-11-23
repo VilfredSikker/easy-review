@@ -89,7 +89,6 @@ function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
     notification: null,
     tabs: [],
     active_tab: 0,
-    bg_loading: { pr_list: false, gh_status: false, gh_comments: false },
     ui_annotations: items,
     browser: {
       url: SAMPLE_HTML,

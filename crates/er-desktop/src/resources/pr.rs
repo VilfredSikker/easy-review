@@ -49,13 +49,47 @@ pub fn published_version(desktop: &DesktopState, entry: &TabEntry) -> u64 {
 /// status for answers none at version 0 and starts one fetch in the
 /// background, which the push then brings.
 pub fn pr_status(desktop: &DesktopState, remote: &str, number: u64) -> (u64, Resource) {
-    let (version, status) = desktop.app_owner.pr_status(remote, number);
+    let (version, mut status) = desktop.app_owner.pr_status(remote, number);
     if status.status.is_none() {
         if let Some((owner, repo)) = remote.split_once('/') {
             kick_status(desktop, owner.to_string(), repo.to_string(), number);
         }
     }
+    let version = status_version(desktop, version);
+    status.fetching = fetching(desktop, remote, number);
     (version, Resource::PrStatus(Box::new(status)))
+}
+
+/// `pr_status`'s version: the owner's for the stored status, plus each start
+/// and end of a status fetch, which `fetching` follows.
+pub fn status_version(desktop: &DesktopState, stored: u64) -> u64 {
+    stored + desktop.status_fetch_clock.revision()
+}
+
+/// Whether a status fetch of `remote`'s PR `number` is running.
+fn fetching(desktop: &DesktopState, remote: &str, number: u64) -> bool {
+    let Some((owner, repo)) = remote.split_once('/') else {
+        return false;
+    };
+    let key = (owner.to_string(), repo.to_string(), number);
+    desktop
+        .gh_status_in_flight
+        .lock()
+        .is_ok_and(|in_flight| in_flight.contains(&key))
+}
+
+/// The statuses being fetched, as `pr_status` keys.
+pub fn fetched_keys(desktop: &DesktopState) -> Vec<ResourceKey> {
+    let Ok(in_flight) = desktop.gh_status_in_flight.lock() else {
+        return Vec::new();
+    };
+    in_flight
+        .iter()
+        .map(|(owner, repo, number)| ResourceKey::PrStatus {
+            remote: format!("{owner}/{repo}"),
+            number: *number,
+        })
+        .collect()
 }
 
 /// The `(owner, repo, number)` whose status `key`'s card shows: the tab's own
@@ -76,15 +110,7 @@ pub fn active_status_key(desktop: &DesktopState) -> Option<(String, String, u64)
 }
 
 fn kick_status(desktop: &DesktopState, owner: String, repo: String, number: u64) {
-    commands::kick_github_status_refresh(
-        desktop.gh_status_cache.clone(),
-        std::sync::Arc::clone(&desktop.gh_status_in_flight),
-        std::sync::Arc::clone(&desktop.desktop_revision),
-        Some(std::sync::Arc::clone(&desktop.loading)),
-        owner,
-        repo,
-        number,
-    );
+    commands::kick_github_status_refresh(desktop, owner, repo, number);
 }
 
 /// Applies `command` when it is a PR card command.

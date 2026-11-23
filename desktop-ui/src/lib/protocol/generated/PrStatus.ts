@@ -6,4 +6,8 @@ import type { GithubStatus } from "./GithubStatus";
  * none until a fetch stores one. Field names follow the snapshot's
  * `github`.
  */
-export type PrStatus = { status: GithubStatus | null, };
+export type PrStatus = { status: GithubStatus | null, 
+/**
+ * A fetch of this status is running.
+ */
+fetching: boolean, };

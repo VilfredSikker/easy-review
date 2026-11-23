@@ -58,6 +58,11 @@ pub struct DesktopState {
     pub gh_status_cache: GhStatusCache,
     /// Which background fetches are currently in-flight — surfaced in every snapshot.
     pub loading: LoadingState,
+    /// Moves when a PR-list refresh starts or ends, so `jobs` pushes it.
+    pub pr_list_clock: WriteClock,
+    /// Moves when a GitHub status fetch starts or ends, so `pr_status`
+    /// pushes it.
+    pub status_fetch_clock: WriteClock,
     /// Keys with an in-flight gh_status fetch. Prevents duplicate concurrent fetches.
     pub gh_status_in_flight: Arc<Mutex<HashSet<(String, String, u64)>>>,
     /// Keys (project_id, pr_number) with an in-flight PR-open prefetch,

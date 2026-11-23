@@ -215,3 +215,103 @@ fn the_status_loop_picks_the_active_pr_with_the_app_locked() {
         assert_eq!(picked, Some(("acme".into(), "widgets".into(), 7)));
     });
 }
+
+fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn status_of(state: &AppState, remote: &str, number: u64) -> (u64, PrStatus) {
+    let key = ResourceKey::PrStatus {
+        remote: remote.into(),
+        number,
+    };
+    let fetched = crate::resources::fetch(&state.desktop, key).unwrap_or_else(|e| panic!("{e:?}"));
+    match fetched.value {
+        Resource::PrStatus(status) => (fetched.version.0, *status),
+        other => panic!("not a status: {other:?}"),
+    }
+}
+
+/// A status fetch shows on its `pr_status` while it runs, moves the version
+/// when it starts and again when it ends, and the relay watches the key
+/// before any status is stored.
+#[test]
+fn a_status_fetch_shows_on_its_pr_status_while_it_runs() {
+    with_storage(|dir| {
+        let state = state_over(dir, er_engine::ports::Ports::for_test());
+        let before = crate::resources::version(
+            &state.desktop,
+            ResourceKey::PrStatus {
+                remote: "acme/widgets".into(),
+                number: 9,
+            },
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        crate::commands::kick_github_status_refresh(&state, "acme".into(), "widgets".into(), 9);
+        {
+            // The fetch clears the flag before it leaves the in-flight set,
+            // so holding the flags holds it in flight.
+            let _held = state.loading.lock();
+            let (version, status) = status_of(&state, "acme/widgets", 9);
+            assert!(status.fetching, "{status:?}");
+            assert!(version > before.0, "{version} after {before:?}");
+            let watched = crate::resources::watched(&state.desktop);
+            let key = crate::resources::Watched::Sidebar(ResourceKey::PrStatus {
+                remote: "acme/widgets".into(),
+                number: 9,
+            });
+            assert_eq!(watched.get(&key), Some(&version));
+        }
+        let (during, _) = status_of(&state, "acme/widgets", 9);
+        wait_until("the fetch to end", || {
+            !status_of(&state, "acme/widgets", 9).1.fetching
+        });
+        let (after, _) = status_of(&state, "acme/widgets", 9);
+        assert!(after > during, "{after} after {during}");
+    });
+}
+
+fn jobs_of(state: &AppState) -> (u64, er_protocol::Jobs) {
+    let fetched = crate::resources::fetch(&state.desktop, ResourceKey::Jobs)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    match fetched.value {
+        Resource::Jobs(jobs) => (fetched.version.0, jobs),
+        other => panic!("not jobs: {other:?}"),
+    }
+}
+
+/// A PR-list refresh shows in `jobs` while it runs, and moves `jobs` when it
+/// starts and again when it ends.
+#[test]
+fn a_pr_list_refresh_shows_in_jobs_while_it_runs() {
+    with_storage(|dir| {
+        let state = state_over(dir, er_engine::ports::Ports::for_test());
+        let (before, idle) = jobs_of(&state);
+        assert!(!idle.pr_list_refresh);
+        let started = {
+            // The refresh stamps the inbox before it ends, so holding the
+            // inbox holds it running.
+            let _held = state.inbox.lock();
+            let kicked = crate::commands::kick_pr_list_refresh(
+                &state,
+                Some("acme/widgets".into()),
+                Default::default,
+            );
+            assert!(kicked.is_ok(), "{kicked:?}");
+            let (started, running) = jobs_of(&state);
+            assert!(running.pr_list_refresh);
+            assert!(started > before, "{started} after {before}");
+            started
+        };
+        wait_until("the refresh to end", || !jobs_of(&state).1.pr_list_refresh);
+        let (after, _) = jobs_of(&state);
+        assert!(after > started, "{after} after {started}");
+    });
+}

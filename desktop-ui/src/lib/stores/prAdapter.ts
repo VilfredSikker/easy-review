@@ -147,6 +147,13 @@ export class PrAdapter {
     return next;
   }
 
+  /** Whether the status the card shows for `branch` is being fetched. */
+  statusFetching(branch: string | null | undefined): boolean {
+    const target = this.target(branch);
+    const status = target === null ? undefined : this.deps.store.get(prStatusKey(target))?.value;
+    return status?.kind === "pr_status" && status.fetching;
+  }
+
   route(command: string): Promise<void> | null {
     if (!ROUTED.has(command)) return null;
     const tab = this.deps.activeKey();
