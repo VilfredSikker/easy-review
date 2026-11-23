@@ -350,11 +350,11 @@ fn compaction_runs_both_ways_on_the_service_and_holds_across_a_load() {
     });
 }
 
-/// The tab-switch median on the resource path, over the 5,000-line diff the
-/// flag-off baseline in `latency_tests.rs` reads: `er_send` `select_tab` to
-/// its `Ack`, then `er_fetch` of what it names and of the new tab's
-/// `diff(tab)`, serialised. Warm: the page holds the tab's hunks by hash, so
-/// that is all a switch back fetches. Cold: the first twelve files' hunks too.
+/// The tab-switch median on the resource path, over a 5,000-line diff:
+/// `er_send` `select_tab` to its `Ack`, then `er_fetch` of what it names and
+/// of the new tab's `diff(tab)`, serialised. Warm: the page holds the tab's
+/// hunks by hash, so that is all a switch back fetches. Cold: the first
+/// twelve files' hunks too.
 #[test]
 #[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]
 fn the_tab_switch_reports_its_median() {

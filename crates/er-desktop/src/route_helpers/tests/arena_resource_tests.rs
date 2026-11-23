@@ -179,7 +179,7 @@ pub(super) fn record(bucket: &str, run_id: &str) -> Option<er_engine::arena::Are
     er_engine::arena::load_run(&ArenaPaths::for_run(Path::new(bucket), run_id)).ok()
 }
 
-/// Starts two fake reviewers on `tab`; answers the run.
+/// Starts two fake reviewers on `tab` on a thread; answers the run.
 pub(super) fn started(state: &DesktopState, tab: TabKey) -> String {
     super::on_a_thread(state, "arena start", move |state| {
         let wire = er_service::wire_tab_key(tab);
@@ -189,8 +189,8 @@ pub(super) fn started(state: &DesktopState, tab: TabKey) -> String {
     .unwrap_or_else(|e| panic!("{e:?}"))
 }
 
-/// The registry moved to B while the page shows A: a start keyed to A
-/// files its run in A's bucket and none in B's.
+/// The registry moved to B while the page shows A: a start keyed to A files
+/// its run in A's bucket and none in B's.
 #[test]
 fn an_arena_start_runs_on_the_tab_it_names() {
     with_storage(|dir| {
@@ -242,7 +242,7 @@ fn an_arena_start_runs_at_the_saved_effort() {
 }
 
 /// A branch tab viewing a branch other than the checkout's, with a review in
-/// its AI section: the context built files under the
+/// its AI section: the context files under the
 /// viewed branch and carries the review's hash.
 #[test]
 fn an_arena_context_takes_the_viewed_branch_and_the_review_hash() {

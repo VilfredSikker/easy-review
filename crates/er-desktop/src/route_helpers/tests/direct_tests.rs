@@ -10,8 +10,8 @@ use super::on_a_thread;
 use crate::direct::os::{content_source, target, view_bucket, Editor, Target};
 use crate::direct::{export, line_commits};
 
-/// The open, reveal, line-commit and export commands
-/// each answer from the content of the tab their key names.
+/// The open, reveal, line-commit and export commands each answer
+/// from the content of the tab their key names.
 #[test]
 fn the_keyed_direct_commands_answer() {
     with_tab(|state, (key, tab)| {

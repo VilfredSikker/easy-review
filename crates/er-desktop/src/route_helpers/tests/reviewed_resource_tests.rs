@@ -215,9 +215,9 @@ fn a_bulk_review_on_the_view_the_marks_name_is_accepted_on_every_kind() {
     });
 }
 
-/// A9's mark reviewed on the flag path, beside the flag-off baseline in
-/// `latency_tests.rs`: `er_send` `mark_reviewed` to its `Ack`, then
-/// `er_fetch` of what it names, serialised, over a 5,000-line diff.
+/// A9's mark reviewed on the resource path: `er_send` `mark_reviewed` to its
+/// `Ack`, then `er_fetch` of what it names, serialised, over a 5,000-line
+/// diff.
 /// Alternate runs mark and clear, so each is a write.
 #[test]
 #[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]

@@ -1195,8 +1195,7 @@ fn main() {
     });
 
     // Spawn background meta-cache refresh: keeps per-project git metadata
-    // (branches, worktrees, current/base branch) fresh without ever taking
-    // the AppState.app mutex.
+    // (branches, worktrees, current/base branch) fresh.
     let meta_owner = Arc::clone(&app_owner);
     let meta_desktop_rev = Arc::clone(&desktop_revision);
     let meta_state = state.clone();

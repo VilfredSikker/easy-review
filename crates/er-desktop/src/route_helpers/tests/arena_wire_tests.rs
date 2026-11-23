@@ -72,8 +72,8 @@ fn ended(job: &ArenaRunJob) -> bool {
 }
 
 /// The registry moved to B while the page shows A: an `er_send` start keyed
-/// to A files its run in A's bucket and none in
-/// B's, and `jobs` lists it there.
+/// to A files its run in A's bucket and none in B's, and `jobs` lists it
+/// there.
 #[test]
 fn an_er_send_start_runs_on_the_tab_it_names() {
     with_storage(|dir| {
@@ -216,8 +216,8 @@ fn live_jobs_counts_a_change_of_progress_alone() {
     );
 }
 
-/// `arena_estimate` prices the plan on the files it names, never
-/// through the actor's queue.
+/// `arena_estimate` prices the plan on the files it names, read off the
+/// actor's queue.
 #[test]
 fn an_estimate_prices_the_files_its_plan_names() {
     with_storage(|dir| {

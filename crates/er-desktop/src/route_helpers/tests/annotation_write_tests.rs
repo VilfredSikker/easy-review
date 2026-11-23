@@ -325,9 +325,9 @@ fn a_document_thread_is_checked_against_its_own_tabs_preview() {
     });
 }
 
-/// A9's add question on the flag path, beside the flag-off baseline in
-/// `latency_tests.rs`: `er_send` `add_question` to its `Ack`, then
-/// `er_fetch` of what it names, serialised, over a 5,000-line diff.
+/// A9's add question on the resource path: `er_send` `add_question` to its
+/// `Ack`, then `er_fetch` of what it names, serialised, over a 5,000-line
+/// diff.
 #[test]
 #[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]
 fn the_add_question_reports_its_median() {

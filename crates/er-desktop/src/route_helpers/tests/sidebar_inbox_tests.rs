@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use er_protocol::{Command, ConfigFieldValue, ErErrorKind, Inbox, Resource, ResourceKey};
 
 use super::on_a_thread;
-use super::tab_resource_tests::{dir_in, register_project, send_locked, state as tab_state};
+use super::tab_resource_tests::{dir_in, register_project, send_on_a_thread, state as tab_state};
 use super::{review_flow_test_state, ReviewFlowTestDir};
 use crate::app_owner::{startup, AppOwner};
 use crate::inbox::{InboxItem, InboxTarget};
@@ -338,7 +338,7 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_off_thread() {
             id: "feature".into(),
             replace: false,
         };
-        let ack = send_locked(&state, open, None).unwrap_or_else(|e| panic!("open: {e:?}"));
+        let ack = send_on_a_thread(&state, open, None).unwrap_or_else(|e| panic!("open: {e:?}"));
         let view = state.service.app_registry().tabs_view();
         assert_eq!(view.tabs.len(), before + 1, "the open added no tab");
         let tabs = ack.changed.iter().find(|c| c.key == ResourceKey::Tabs);
@@ -365,7 +365,7 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_off_thread() {
             id: "lost".into(),
             replace: true,
         };
-        let refused = send_locked(&state, lost, None).unwrap_err();
+        let refused = send_on_a_thread(&state, lost, None).unwrap_err();
         assert_eq!(refused.kind, ErErrorKind::Refused, "{refused:?}");
         assert!(refused.message.contains("Could not open"), "{refused:?}");
         assert!(
@@ -380,7 +380,7 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_off_thread() {
             .is_none());
         for id in ["remote", "feature", "lost", "gone"] {
             let prefetch = Command::PrefetchInboxItem { id: id.into() };
-            let ack = send_locked(&state, prefetch, None);
+            let ack = send_on_a_thread(&state, prefetch, None);
             assert_eq!(ack.map(|ack| ack.changed), Ok(Vec::new()), "{id}");
         }
         let warmed = wait_for(|| {
@@ -395,7 +395,8 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_off_thread() {
             id: "remote".into(),
             replace: true,
         };
-        let ack = send_locked(&state, replace, None).unwrap_or_else(|e| panic!("replace: {e:?}"));
+        let ack =
+            send_on_a_thread(&state, replace, None).unwrap_or_else(|e| panic!("replace: {e:?}"));
         let view = registry.tabs_view();
         assert_eq!(view.tabs.len(), before, "the open with replace added a tab");
         let active = view
@@ -413,9 +414,8 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_off_thread() {
 
 /// The mark-read median on the resource path: `er_send`
 /// `mark_inbox_item_read` to its `Ack`, then `er_fetch` of what it names
-/// and the serialisation. The inbox holds one item, as the flag-off row's
-/// does; an untimed reset marks it unread before each run, so the version
-/// moves every time. Compare with the flag-off row in `latency_tests.rs`.
+/// and the serialisation. The inbox holds one item; an untimed reset marks
+/// it unread before each run, so the version moves every time.
 #[test]
 #[ignore = "latency harness: run with --ignored --nocapture and paste the numbers in the PR; never a CI assertion"]
 fn the_mark_read_reports_its_median() {
