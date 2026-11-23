@@ -63,10 +63,6 @@ otherwise have to dig out of a PR thread. One section per package.
   pill still does.
 - **The findings panel shows beside Tour and Diff only**, and not while a tab
   loads, matching the prototype's `renderRpanel`.
-- **A tab switch with no cached snapshot shows `TabPlaceholder`** for the tab
-  being opened instead of the old tab under a blurred spinner. The app store
-  records the target (`switchingTabIdx`) only for an uncached `select_tab`; a
-  cached one paints at once and needs no placeholder.
 - **Tour with no tour for the view is an empty state, not a pillar-less
   diff.** When the other view of a local PR tab has a tour (`other_bucket`),
   the copy names it and offers to switch; switching lands on that view's Tour,
