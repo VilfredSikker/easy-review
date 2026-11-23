@@ -25,6 +25,7 @@ struct Agent {
     pid: PathBuf,
     first: PathBuf,
     second: PathBuf,
+    settings: PathBuf,
 }
 
 impl Agent {
@@ -33,27 +34,30 @@ impl Agent {
             pid: dir.join("agent.pid"),
             first: dir.join("gate-1"),
             second: dir.join("gate-2"),
+            settings: dir.join("settings"),
         }
     }
 
     /// Prints its pid to a file and `line-a`, waits for the first gate,
     /// prints `line-b`, waits for the second. Each wait gives up after
-    /// about thirty seconds, so a failed test leaves no shell behind.
+    /// about thirty seconds, or once the test's settings are gone, so a
+    /// failed test leaves no shell behind holding a slot.
     fn config(&self, cap: usize) -> String {
-        let (pid, first, second) = (
-            self.pid.display(),
-            self.first.display(),
-            self.second.display(),
-        );
-        let wait = |gate: &dyn std::fmt::Display| {
+        let pid = self.pid.display();
+        // The settings directory, not the test's own: a shell that starts as
+        // the directory is removed writes its pid file into it, so the
+        // removal fails and the directory stays, without its gates.
+        let settings = self.settings.display();
+        let wait = |gate: &Path| {
+            let gate = gate.display();
             format!(
-                r#"n=0; while [ ! -e "{gate}" ] && [ $n -lt 1500 ]; do sleep 0.02; n=$((n+1)); done"#
+                r#"n=0; while [ ! -e "{gate}" ] && [ -d "{settings}" ] && [ $n -lt 1500 ]; do sleep 0.02; n=$((n+1)); done"#
             )
         };
         let script = format!(
             r#"echo $$ > "{pid}"; printf 'line-a\n'; {}; printf 'line-b\n'; {}"#,
-            wait(&first),
-            wait(&second)
+            wait(&self.first),
+            wait(&self.second)
         );
         format!(
             r#"
@@ -78,6 +82,26 @@ fn open_gate(gate: &Path) {
     std::fs::write(gate, "").unwrap_or_else(|e| panic!("gate: {e}"));
 }
 
+/// Drops the queued tasks, opens both gates and waits for every task to
+/// end, so no agent outlives the test. One that did would hold a slot of
+/// the process's pool for a minute, and a later test at a cap of one would
+/// wait on it.
+fn release(state: &AppState, agent: &Agent) {
+    for row in tasks(state)
+        .into_iter()
+        .filter(|row| row.status == "queued")
+    {
+        state.desktop.tasks.cancel_queued(&row.id);
+    }
+    open_gate(&agent.first);
+    open_gate(&agent.second);
+    wait_until("every task to end", || {
+        tasks(state)
+            .iter()
+            .all(|row| !matches!(row.status.as_str(), "queued" | "running"))
+    });
+}
+
 /// A state whose tasks run the gated agent, under `cap` running reviews.
 fn tasking(dir: &ReviewFlowTestDir, cap: usize) -> (AppState, Agent) {
     tasking_on(dir, cap, local_ports())
@@ -90,8 +114,8 @@ fn tasking_on(
     ports: er_engine::ports::Ports,
 ) -> (AppState, Agent) {
     let agent = Agent::in_dir(dir.path());
-    let path = dir.path().join("settings").join("config.toml");
-    std::fs::create_dir_all(dir.path().join("settings")).unwrap_or_else(|e| panic!("{e}"));
+    let path = agent.settings.join("config.toml");
+    std::fs::create_dir_all(&agent.settings).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(&path, agent.config(cap)).unwrap_or_else(|e| panic!("config: {e}"));
     let mut state = review_flow_test_state(dir);
     state.desktop.ports = ports.clone();
@@ -231,8 +255,7 @@ fn a_stop_reaches_the_runner() {
         wait_until("the task to end", || {
             row(&state, &id).is_some_and(|row| row.status == "failed")
         });
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
@@ -253,8 +276,7 @@ fn a_queued_task_is_removed_from_jobs() {
         let removed = send(&state, "cancel_queued_task", cancel);
         assert!(removed.is_ok(), "{removed:?}");
         assert!(row(&state, &second).is_none(), "{:?}", tasks(&state));
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
@@ -363,8 +385,7 @@ fn a_review_run_prepares_the_content_diff_with_the_app_locked() {
         );
         let prepared = std::fs::read_to_string(Path::new(&bucket).join("diff-tmp"));
         assert_eq!(prepared.ok().as_deref(), Some(raw_diff().as_str()));
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
@@ -389,8 +410,7 @@ fn the_run_commands_start_with_the_app_locked() {
         let kinds: Vec<String> = tasks(&state).into_iter().map(|row| row.kind).collect();
         assert!(kinds.contains(&"tour".to_string()), "{kinds:?}");
         assert!(kinds.contains(&"triage".to_string()), "{kinds:?}");
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
@@ -442,8 +462,7 @@ fn each_run_command_through_er_send_lists_its_kind_in_jobs() {
         }
         let listed = std::fs::read_to_string(Path::new(&bucket).join("review-files.txt"));
         assert_eq!(listed.ok().as_deref(), Some("src/f1.rs\n"));
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
@@ -477,8 +496,7 @@ fn a_scoped_run_sends_one_notice() {
         let told = told.unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(told.len(), 1, "{told:?}");
         assert!(told[0].starts_with("Started 2 reviewer(s)"), "{told:?}");
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
@@ -510,8 +528,8 @@ fn a_queued_scoped_reviewer_tells_its_start_once() {
         );
         open_gate(&agent.first);
         open_gate(&agent.second);
-        // The slot pool is the process's, so another test's agent can hold
-        // the one slot; the tick's poll starts the queue once it frees.
+        // The slot pool is the process's, so a test in another module can
+        // hold the one slot; the tick's poll starts the queue once it frees.
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             crate::tasks::poll(&state.desktop);
@@ -569,8 +587,7 @@ fn a_second_run_of_a_running_lens_is_refused() {
             .filter(|row| row.kind == "triage")
             .count();
         assert_eq!(triages, 1);
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 
@@ -628,6 +645,36 @@ fn a_sidebar_triage_queues_on_the_host_with_the_app_locked() {
             (row.repo_root.as_str(), row.branch_label.as_str()),
             (queued_root.as_str(), "feature")
         );
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// A sidebar triage tells the person once, with the sidebar's own message;
+/// its task sends no started notice of its own.
+#[test]
+fn a_sidebar_triage_sends_one_notice() {
+    with_storage(|dir| {
+        let (mut state, agent) = tasking(dir, 50);
+        let git: Arc<dyn er_git::Git> = Arc::new(
+            er_git::FakeGit::default()
+                .with_detect_base_branch(Ok("main".to_string()))
+                .with_diff_raw_range(Ok(raw_diff())),
+        );
+        state.desktop.ports = er_engine::ports::Ports::with_git(git);
+        let root = dir.path().join("a");
+        std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("{e}"));
+        let root = root.to_string_lossy().into_owned();
+        let _ = crate::resources::notice::told(&state.desktop);
+        let ctx = crate::commands::triage_ctx(&state.desktop);
+        crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", &root, "feature", &[]);
+        let mut told = Vec::new();
+        wait_until("the sidebar's notice", || {
+            told.extend(crate::resources::notice::told(&state.desktop));
+            told.iter()
+                .any(|m| m.starts_with("Triage started for branch"))
+        });
+        assert_eq!(told, vec!["Triage started for branch feature".to_string()]);
         open_gate(&agent.first);
         open_gate(&agent.second);
     });
@@ -844,8 +891,7 @@ fn two_clicks_at_once_queue_one_task() {
             });
             assert_eq!(accepted, 1, "round {round} queued {accepted} reviews");
         }
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        release(&state, &agent);
     });
 }
 

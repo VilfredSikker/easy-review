@@ -2236,7 +2236,7 @@ pub(crate) fn triage_ctx(desktop: &DesktopState) -> crate::auto_triage::AutoTria
                 target,
                 prompt,
                 None,
-                false,
+                true,
             )
         }),
         notify: Arc::new(move |message| {
