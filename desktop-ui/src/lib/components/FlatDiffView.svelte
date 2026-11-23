@@ -2,6 +2,7 @@
   import { onMount, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { openSource as openFile, selectedSource } from "$lib/tabCommands";
+  import { devHeightProbeOn } from "$lib/dev/heightProbe";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { loadHashedHunks } from "$lib/stores/diffResource.svelte";
@@ -1986,7 +1987,7 @@
   let devRo: ResizeObserver | null = null;
   $effect(() => {
     if (!import.meta.env.DEV || !scrollEl) return;
-    if (globalThis.localStorage?.getItem("erDevHeightProbe") !== "1") return;
+    if (!devHeightProbeOn()) return;
     void vw.start;
     void vw.end;
     devRo?.disconnect();

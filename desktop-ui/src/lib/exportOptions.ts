@@ -1,3 +1,4 @@
+import { asErError } from "./protocol/client";
 import type { AiSnapshot, AppSnapshot, TabSummary } from "./types";
 
 /**
@@ -161,6 +162,11 @@ export function exportTabKey(snapshot: AppSnapshot | null | undefined): string {
     snapshot?.tabs.find((t) => t.is_active) ?? snapshot?.tabs.find((t) => t.idx === snapshot.active_tab);
   if (!tab) return "";
   return JSON.stringify([tab.repo_root, tab.remote, tab.kind, tab.pr_number == null ? tab.branch : null, tab.pr_number]);
+}
+
+/** What a failed export says. The backend rejects with an `ErError`. */
+export function exportFailedText(e: unknown): string {
+  return `Export failed: ${asErError(e).message}`;
 }
 
 export function markdownLineCount(md: string): number {

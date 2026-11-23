@@ -52,7 +52,7 @@
       error = null;
     } catch (e) {
       if (requestId !== previewRequestId) return;
-      error = String(e);
+      error = asErError(e).message;
     } finally {
       if (requestId === previewRequestId) loadingPreview = false;
     }
