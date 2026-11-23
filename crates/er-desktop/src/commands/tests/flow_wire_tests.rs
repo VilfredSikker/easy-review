@@ -70,7 +70,10 @@ fn an_er_send_flow_start_runs_on_the_tab_it_names_with_the_app_locked() {
         let started = start(&state, painted.0, er_dir.clone());
         let ack = started.unwrap_or_else(|e| panic!("{e:?}"));
 
-        assert!(ack.changed.iter().any(|changed| changed.key == ResourceKey::Jobs));
+        assert!(ack
+            .changed
+            .iter()
+            .any(|changed| changed.key == ResourceKey::Jobs));
         let flow_actor = state.service.published_view(&actor_key(&painted.1));
         assert!(
             flow_actor.is_some_and(|view| view.review_flow(&er_dir).is_some()),

@@ -56,7 +56,12 @@ pub fn run(
 /// `jobs`, which holds the flows, and the tab's `annotations(tab)`, which
 /// an acceptance moves.
 pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
-    let Command::ReviewFlow { tab, er_dir, action } = command else {
+    let Command::ReviewFlow {
+        tab,
+        er_dir,
+        action,
+    } = command
+    else {
         return Routed::Other(command);
     };
     let control = match action {
