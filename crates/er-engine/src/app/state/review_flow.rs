@@ -15,19 +15,17 @@ pub mod results {
 }
 
 use super::background::BackgroundTaskTarget;
-use super::{App, CommandStatus, DiffMode};
+use super::{App, CommandStatus};
 use crate::ai::review_flow::{FlowTaskStatus, ReviewFlow};
 use crate::ai::WorkflowHolder;
-use crate::arena::{
-    ArenaRunControl, ArenaRunInputs, ArenaScope, ArenaStartParams, SeededStartParams,
-};
+use crate::arena::{ArenaRunControl, ArenaRunInputs, ArenaStartParams, SeededStartParams};
 use crate::config::{AiSelection, ErConfig};
 use crate::ports::Ports;
 use crate::review_flow_driver::{
     flow_from_record, holder_of, ReviewFlowHost, ReviewFlowInputs, ReviewFlowLease, ReviewFlows,
     StageCompletion,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use results::ReviewFlowResults;
 use std::sync::Arc;
 
@@ -190,41 +188,42 @@ impl App {
         let tab = self
             .tabs
             .iter()
-            .find(|tab| tab_matches_target(tab, target))
+            .find(|tab| {
+                crate::review_flow_driver::shows_target(&tab.identity(), &tab.er_dir(), target)
+            })
             .context("The captured review target is no longer open; start a new Review")?;
         let raw_diff = tab
             .fetch_tab_raw_diff(&target.scope)
             .context("fetch the current diff for review acceptance")?;
-        let globs = crate::projects_pins::review_ignore_globs_for_repo(
+        Ok(crate::review_flow_driver::filtered_review_diff(
+            &raw_diff,
             &target.repo_root,
             target.remote_repo.as_deref(),
-        );
-        Ok(crate::git::filter_raw_diff_exclude_globs(&raw_diff, &globs))
+        ))
     }
 }
 
-fn tab_matches_target(tab: &crate::app::TabState, target: &BackgroundTaskTarget) -> bool {
-    let branch_ref = tab
-        .local_branch_view
-        .as_deref()
-        .unwrap_or(tab.current_branch.as_str());
-    let scope_matches = match target.scope.as_str() {
-        "branch" => matches!(
-            tab.mode,
-            DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour
-        ),
-        "staged" => tab.mode == DiffMode::Staged,
-        "unstaged" => tab.mode == DiffMode::Unstaged,
-        _ => false,
-    };
-    tab.repo_root == target.repo_root
-        && tab.er_dir() == target.er_dir
-        && branch_ref == target.branch_label
-        && tab.base_branch == target.base_branch
-        && tab.pr_number == target.pr_number
-        && tab.remote_repo == target.remote_repo
-        && tab.is_remote() == (target.remote_repo.is_some() && tab.local_branch_view.is_none())
-        && scope_matches
+/// The App's tab, read by the rules every host shares.
+impl crate::review_flow_driver::ReviewedTab for crate::app::TabState {
+    fn identity(&self) -> crate::tab_identity::TabIdentity<'_> {
+        crate::app::TabState::identity(self)
+    }
+
+    fn er_dir(&self) -> String {
+        crate::app::TabState::er_dir(self)
+    }
+
+    fn raw_diff(&self, scope: &str) -> Result<String> {
+        self.raw_diff_for_review(scope)
+    }
+
+    fn owned_rules(&self) -> crate::ai::change_facts::OwnedRepoRules {
+        self.owned_repo_rules()
+    }
+
+    fn review_md_source(&self) -> crate::ai::review_md::ReviewMdSource {
+        crate::app::TabState::review_md_source(self)
+    }
 }
 
 /// Stages queue as App background tasks, so they share the review cap, the
@@ -251,67 +250,7 @@ impl ReviewFlowHost for App {
     }
 
     fn review_flow_inputs(&self, scope: &str) -> Result<ReviewFlowInputs> {
-        let tab = self.tab();
-        let arena_scope = match (scope, tab.mode) {
-            ("branch", DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour) => ArenaScope::Branch,
-            ("unstaged", DiffMode::Unstaged) => ArenaScope::Unstaged,
-            ("staged", DiffMode::Staged) => ArenaScope::Staged,
-            _ => bail!("Review requires the active branch, staged, or unstaged diff"),
-        };
-        if tab.repo_root.trim().is_empty() || tab.is_remote() {
-            bail!("Review requires a local repository view");
-        }
-        let branch_ref = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        // A PR or branch view whose head has no worktree runs in the main
-        // checkout, like the other review actions, and the prompts name the
-        // ref that holds the reviewed code. Staged and unstaged diffs only
-        // exist in a checkout of the viewed branch.
-        let (execution_root, reviewed_ref_note) = match tab.local_checkout_root() {
-            Some(root) => (root.to_owned(), None),
-            None if arena_scope == ArenaScope::Branch => (
-                tab.repo_root.clone(),
-                Some(crate::ai::prompts::reviewed_ref_section(
-                    tab.pr_head_ref.as_deref().unwrap_or(&branch_ref),
-                    tab.pr_number,
-                )),
-            ),
-            None => bail!(
-                "Review of staged or unstaged changes requires a checkout of the viewed branch"
-            ),
-        };
-        let raw = tab.raw_diff_for_review(scope)?;
-        let globs = crate::projects_pins::review_ignore_globs_for_repo(
-            &tab.repo_root,
-            tab.remote_repo.as_deref(),
-        );
-        let filtered = crate::git::filter_raw_diff_exclude_globs(&raw, &globs);
-        if filtered.trim().is_empty() {
-            bail!("Nothing to review after ignored files are removed");
-        }
-        let target = BackgroundTaskTarget {
-            repo_root: tab.repo_root.clone(),
-            er_dir: tab.er_dir(),
-            branch_label: branch_ref.clone(),
-            base_branch: tab.base_branch.clone(),
-            scope: scope.to_owned(),
-            pr_number: tab.pr_number,
-            remote_repo: tab.remote_repo.clone(),
-            managed_local: tab.remote_repo.is_none(),
-        };
-        Ok(ReviewFlowInputs {
-            target,
-            arena_scope,
-            repo_root: execution_root,
-            reviewed_ref_note,
-            branch_ref,
-            base_branch: tab.base_branch.clone(),
-            raw_diff: filtered,
-            owned_rules: tab.owned_repo_rules(),
-            review_md_source: tab.review_md_source(),
-        })
+        crate::review_flow_driver::review_flow_inputs(self.tab(), scope)
     }
 
     fn current_review_diff(&self, target: &BackgroundTaskTarget) -> Result<String> {

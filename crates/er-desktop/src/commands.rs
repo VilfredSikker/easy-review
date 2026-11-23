@@ -3927,24 +3927,27 @@ pub(crate) fn resolve_review_scope(
     scope: &str,
     tab: &er_engine::app::TabState,
 ) -> Result<String, String> {
+    resolve_review_scope_in(scope, tab.mode)
+}
+
+/// The git scope a review of `scope` reads on a tab showing `mode`.
+pub(crate) fn resolve_review_scope_in(scope: &str, mode: DiffMode) -> Result<String, String> {
     let resolved = if scope == "current" {
-        match tab.mode {
-            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
-                tab.mode.git_mode().to_string()
-            }
+        match mode {
+            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => mode.git_mode().to_string(),
             // Guide (tour) reviews the branch diff it was built from.
             DiffMode::PrDiff | DiffMode::Tour => "branch".to_string(),
             _ => {
                 return Err(format!(
                     "AI review not available in {} view — switch to All changes, PR Diff, Unstaged, or Staged",
-                    tab.mode.git_mode()
+                    mode.git_mode()
                 ));
             }
         }
     } else if scope == "pr" {
         "branch".to_string()
     } else if matches!(scope, "branch" | "unstaged" | "staged") {
-        if matches!(scope, "unstaged" | "staged") && tab.mode == DiffMode::PrDiff {
+        if matches!(scope, "unstaged" | "staged") && mode == DiffMode::PrDiff {
             return Err(
                 "Unstaged/Staged review not available in PR Diff — switch to Unstaged or Staged view"
                     .to_string(),
@@ -5415,7 +5418,14 @@ pub async fn run_standard_review_flow(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     #[cfg(feature = "v1-service")]
-    return run_blocking(move || crate::flow_service::run_standard(&state, er_dir)).await;
+    return run_blocking(move || {
+        crate::arena_commands::flow_on_active(
+            &state,
+            er_dir,
+            crate::flow_service::Control::RunStandard,
+        )
+    })
+    .await;
     #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -12303,6 +12313,8 @@ mod tests {
     mod direct_tests;
     #[cfg(feature = "v1-service")]
     mod finding_write_tests;
+    #[cfg(feature = "v1-service")]
+    mod flow_resource_tests;
     #[cfg(feature = "v1-service")]
     mod github_sender_tests;
     #[cfg(feature = "v1-service")]

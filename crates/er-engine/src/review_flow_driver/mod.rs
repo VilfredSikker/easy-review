@@ -16,10 +16,15 @@ mod progress;
 mod record;
 mod results;
 mod standard;
+mod view;
 
 pub use host::{ReviewFlowHost, ReviewFlowInputs, ReviewFlowLease, StageCompletion};
 pub use record::{flow_from_record, holder_of, rerun_plan, task_from_stage};
 pub use results::{flow_run_results, ReviewFlowResultFinding, ReviewFlowResults};
+pub use view::{
+    cached_diff_matches_scope, filtered_review_diff, review_flow_inputs, review_md_source,
+    shows_target, ReviewedTab,
+};
 
 use crate::ai::flow_providers::{
     assign_lenses_to_models, resolve_review_models, FlowLensAssignment, FlowProvider,
