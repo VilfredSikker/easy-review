@@ -227,6 +227,24 @@ describe("resource source scans", () => {
     expect(code.replace(/\blocalStorage\.(getItem|setItem)\(/g, "")).not.toMatch(/\b(localStorage|sessionStorage)\b/);
   });
 
+  // With the flag on a live run's progress reaches the arena page through
+  // `jobs`; followRunProgress's own test drives the feed it is handed, so these
+  // hold App.svelte to calling it and its default feed to the module's flag.
+  it("App.svelte follows a run's progress through followRunProgress and listens for no er://revision", () => {
+    expect(stripped(APP_ROOT)).toMatch(/followRunProgress\(\(\) => arena\.onRevision\(\)\)/);
+    // Read unstripped: the comment strip would cut the event name at its "//".
+    expect(read(APP_ROOT)).not.toContain("er://revision");
+  });
+
+  it("followRunProgress's default feed reads the module's flag, the arena adapter and the Tauri listener", () => {
+    const code = stripped(join("lib", "stores", "arenaResource.svelte.ts"));
+    expect(code).toMatch(/^const flagOn = v1ServiceRequested\(\);$/m);
+    expect(code).toMatch(/^import \{ listen \} from "@tauri-apps\/api\/event";$/m);
+    expect(code).toMatch(/feed: RunProgressFeed = \{ flagOn, adapter: arenaAdapter, listen \},/);
+    // Nothing reassigns the flag the default feed reads.
+    expect(code.match(/\bflagOn\s*=(?!=)/g)).toEqual(["flagOn ="]);
+  });
+
   it("the review and screenshot reads go through the annotation reads, which fetch them with the flag on", () => {
     const old = /invoke(?:<[^>]*>)?\(\s*"(read_review_json|list_review_revisions|read_annotation_screenshot)"/;
     const callers = sources().filter((f) => old.test(stripped(f)));

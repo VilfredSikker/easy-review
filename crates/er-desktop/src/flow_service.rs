@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 
 use er_engine::arena::ArenaRunSnapshot;
 use er_engine::ports::Ports;
+use er_engine::task_target::BackgroundTaskTarget;
 use er_protocol::{ErError, ErErrorKind};
 use er_service::{AcceptanceDiff, Command, FlowCommand, FlowContext, Reply, TabEntry, TabsView};
 
@@ -190,22 +191,9 @@ pub fn accept(
     let current = view
         .review_flow(&er_dir)
         .and_then(|live| live.run_targets.iter().find(|(id, _)| *id == run_id))
-        .map(|(_, target)| {
-            let tabs = desktop.service.app_registry().tabs_view();
-            let contents: Vec<_> = tabs
-                .tabs
-                .iter()
-                .filter_map(|entry| desktop.service.content(entry.key, &entry.descriptor))
-                .collect();
-            AcceptanceDiff {
-                target: target.clone(),
-                diff: er_service::current_review_diff(
-                    &desktop.ports,
-                    contents.iter().map(AsRef::as_ref),
-                    target,
-                )
-                .map_err(|error| format!("{error:#}")),
-            }
+        .map(|(_, target)| AcceptanceDiff {
+            target: target.clone(),
+            diff: acceptance_diff(desktop, target),
         });
     let command = FlowCommand::AcceptFindings {
         er_dir,
@@ -220,6 +208,22 @@ pub fn accept(
             format!("unexpected answer from the workspace: {other:?}"),
         )),
     }
+}
+
+/// The diff acceptance checks a run against: the first listed tab whose
+/// loaded content shows `target`, fetched fresh, or why there is none.
+pub(crate) fn acceptance_diff(
+    desktop: &DesktopState,
+    target: &BackgroundTaskTarget,
+) -> Result<String, String> {
+    let tabs = desktop.service.app_registry().tabs_view();
+    let contents: Vec<_> = tabs
+        .tabs
+        .iter()
+        .filter_map(|entry| desktop.service.content(entry.key, &entry.descriptor))
+        .collect();
+    er_service::current_review_diff(&desktop.ports, contents.iter().map(AsRef::as_ref), target)
+        .map_err(|error| format!("{error:#}"))
 }
 
 /// A flow run from its captured bucket, checked against the flow and target

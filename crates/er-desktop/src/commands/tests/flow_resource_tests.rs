@@ -170,6 +170,65 @@ fn a_flow_context_takes_the_saved_effort_with_the_app_locked() {
     });
 }
 
+/// Acceptance, with the App locked, fetches the diff of the listed tab whose
+/// content shows the run's target; once that tab shows another view, no tab
+/// shows the target and acceptance is told it is no longer open.
+#[test]
+fn acceptance_fetches_the_diff_of_the_tab_that_shows_the_run_target() {
+    with_storage(|dir| {
+        let sink = Arc::new(HoldingSink::default());
+        let state = flow_state(dir, local_ports(), Arc::clone(&sink));
+        let shown = open(&state, dir.path(), "a");
+        let er_dir = bucket(&state, &shown);
+        let wire = er_service::wire_tab_key(shown.0);
+        let target = super::while_the_app_is_locked(&state, "flow context", move |state| {
+            let tab = crate::arena_service::tab(&state.desktop, Some(wire))?;
+            Ok::<_, ErError>(flow_service::context(&state.desktop, &tab, Some("branch")))
+        })
+        .unwrap_or_else(|e| panic!("{e:?}"))
+        .view
+        .unwrap_or_else(|e| panic!("{e}"))
+        .target;
+        assert_eq!(target.er_dir, er_dir);
+        let content = state
+            .service
+            .content(shown.0, &shown.1)
+            .unwrap_or_else(|| panic!("no content"));
+        assert!(
+            er_engine::review_flow_driver::shows_target(
+                &content.tab.identity(),
+                &content.context.er_dir,
+                &target
+            ),
+            "the fixture's tab does not show its own target"
+        );
+        let accept = |target: er_engine::task_target::BackgroundTaskTarget| {
+            super::while_the_app_is_locked(&state, "acceptance diff", move |state| {
+                flow_service::acceptance_diff(&state.desktop, &target)
+            })
+        };
+
+        let fetched = accept(target.clone()).unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            !fetched.trim().is_empty() && fetched.contains("src/f0.rs"),
+            "{fetched:?}"
+        );
+
+        let staged =
+            content_routes::set_tab_mode(&state.desktop, shown.0, "staged", DiffMode::Staged, None);
+        assert!(staged.is_ok(), "{staged:?}");
+        wait_until("the staged view to load", || {
+            state
+                .service
+                .content(shown.0, &shown.1)
+                .is_some_and(|c| c.tab.mode == DiffMode::Staged)
+        });
+        let refused = accept(target).unwrap_err();
+        assert!(refused.contains("no longer open"), "{refused}");
+        sink.release();
+    });
+}
+
 /// A remote PR tab's flows run on its `remote:` actor, never on the actor
 /// of the directory its content roots at: startup recovery over the
 /// registry's list recovers its flow there.
