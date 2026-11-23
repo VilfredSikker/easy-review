@@ -6,7 +6,7 @@ import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { AppSnapshot, BackgroundTaskSnapshot } from "$lib/types";
 import { JOBS } from "./annotationsAdapter";
-import { TasksAdapter } from "./tasksAdapter";
+import { runCommand, TasksAdapter } from "./tasksAdapter";
 
 const TAB = 4;
 const TASK = {
@@ -28,7 +28,7 @@ const TASK = {
 const HELD: Resource = { kind: "jobs", ai_replies: [], arena_runs: [], review_flows: [], tasks: [TASK], triage: [] };
 const APP_TASK = { ...TASK, id: "triage:9", kind: "triage" } as BackgroundTaskSnapshot;
 
-function adapter(flagOn: boolean) {
+function adapter(flagOn: boolean, logs = new Map<string, { command_name: string; source: string; text: string }[]>()) {
   const sent: Command[] = [];
   const fetched: ResourceKey[] = [];
   const invoked: string[] = [];
@@ -41,6 +41,7 @@ function adapter(flagOn: boolean) {
     flagOn,
     activeKey: () => TAB,
     invoke,
+    logs,
     store: {
       get: (key: ResourceKey) => (key.kind === JOBS.kind ? { key, version: 2, value: HELD } : undefined) as never,
       send: async (command: Command) => {
@@ -59,7 +60,7 @@ function adapter(flagOn: boolean) {
       },
     },
   });
-  return { tasks, sent, fetched, invoked, awaited };
+  return { tasks, sent, fetched, invoked, awaited, logs };
 }
 
 describe("TasksAdapter", () => {
@@ -84,5 +85,45 @@ describe("TasksAdapter", () => {
     expect(fetched).toEqual([{ kind: "task_log", id: "review:1" }]);
     expect((await tasks.log("triage:9")).map((l) => l.text)).toEqual(["app"]);
     expect(invoked).toEqual(["get_background_task_log"]);
+  });
+
+  it("sends a run through er_send keyed to the active tab and waits for jobs", async () => {
+    const { tasks, sent, awaited } = adapter(true);
+    await tasks.route("run_ai_review", { scope: "branch" });
+    await tasks.route("run_ai_triage_review", { scope: "current" });
+    expect(sent).toEqual([
+      { kind: "run_review", tab: TAB, scope: "branch" },
+      { kind: "run_scoped_review", tab: TAB, scope: "current", paths: [], reviewers: ["triage"], focusPrompt: null },
+    ]);
+    expect(awaited).toEqual(["jobs@3", "jobs@3"]);
+    expect(adapter(false).tasks.route("run_ai_review", { scope: "branch" })).toBeNull();
+  });
+
+  it("maps every run command the page sends", () => {
+    const names = [
+      "run_ai_review",
+      "generate_tour",
+      "run_importance_agent",
+      "generate_diagram",
+      "run_ai_expert_review",
+      "run_ai_professor_review",
+      "run_ai_triage_review",
+      "run_ai_review_files",
+      "run_ai_scoped_review",
+    ];
+    for (const name of names) expect(runCommand(name, {}, TAB)).not.toBeNull();
+    expect(runCommand("refresh_diff", {}, TAB)).toBeNull();
+  });
+
+  it("shows the painted bucket's host tasks in the agent output, rows and log", async () => {
+    const { tasks, logs } = adapter(true);
+    await tasks.refreshLogs("/bucket");
+    expect(logs.get("review:1")?.map((l) => l.text)).toEqual(["host"]);
+    const raw = { review_bucket_er_dir: "/bucket", agent_commands: [], agent_log: [] } as unknown as AppSnapshot;
+    const shown = tasks.overlay(raw);
+    expect(shown.agent_commands).toEqual([{ name: "review", status: "running", error: null }]);
+    expect(shown.agent_log?.map((l) => l.text)).toEqual(["host"]);
+    const elsewhere = tasks.overlay({ ...raw, review_bucket_er_dir: "/other" } as AppSnapshot);
+    expect(elsewhere.agent_commands).toEqual([]);
   });
 });
