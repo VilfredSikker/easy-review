@@ -145,6 +145,98 @@ pub struct StatusReviewer {
     pub state: Option<String>,
 }
 
+/// The PR a card action was clicked on. The action runs only while it is
+/// still the PR the tab's card shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PrTarget {
+    pub owner: String,
+    pub repo: String,
+    #[ts(type = "number")]
+    pub number: u64,
+}
+
+/// A branch action on the card's PR. Field names follow the merge box's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PrAction {
+    Merge {
+        method: MergeMethod,
+        auto: bool,
+        /// Merge past unmet requirements (`gh pr merge --admin`).
+        admin: bool,
+        /// The head of the diff the page showed; GitHub refuses the merge
+        /// when the branch moved since.
+        expected_head: String,
+        delete_branch: bool,
+    },
+    DisableAutoMerge,
+    UpdateBranch {
+        rebase: bool,
+    },
+    Close,
+    Reopen,
+    MarkReady,
+    ConvertToDraft,
+    DeleteBranch,
+    RestoreBranch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeMethod {
+    Merge,
+    Squash,
+    Rebase,
+}
+
+/// A line the composer picked for a review comment, in its side's numbering.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewLine {
+    pub file: String,
+    #[ts(type = "number")]
+    pub line_num: u64,
+    #[ts(type = "number | null")]
+    pub line_num_end: Option<u64>,
+    /// `LEFT` or `RIGHT`; none is the new side.
+    pub side: Option<String>,
+}
+
+/// The viewer's pending review on a tab's PR, read from GitHub on each fetch
+/// and never pushed. Field names follow the Review popover's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PendingReview {
+    #[ts(type = "number")]
+    pub pr_number: u64,
+    /// None until a first comment starts one.
+    #[ts(type = "number | null")]
+    pub review_id: Option<u64>,
+    pub comments: Vec<PendingReviewComment>,
+    pub viewer: Option<String>,
+    pub review_request: Option<ReviewRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PendingReviewComment {
+    /// What removal takes.
+    pub id: String,
+    #[ts(type = "number | null")]
+    pub database_id: Option<u64>,
+    pub path: String,
+    #[ts(type = "number | null")]
+    pub line: Option<u64>,
+    #[ts(type = "number | null")]
+    pub start_line: Option<u64>,
+    pub side: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ReviewRequest {
+    pub requested_by: String,
+    pub requested_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RepoMerge {
     pub merge_commit_allowed: bool,

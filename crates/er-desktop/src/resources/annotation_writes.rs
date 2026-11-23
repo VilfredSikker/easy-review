@@ -121,6 +121,24 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
                 }
             })),
         ),
+        Command::ReplyToGithubThread {
+            tab,
+            view,
+            parent_id,
+            body,
+            client_id,
+        } => (
+            tab,
+            view,
+            service(Box::new(move |context| {
+                er_service::Command::ReplyToGithubThread {
+                    context,
+                    parent_id,
+                    body,
+                    client_id,
+                }
+            })),
+        ),
         Command::UpdateThreadMessage {
             tab,
             view,

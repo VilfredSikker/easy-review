@@ -59,6 +59,7 @@ const ROUTED: ReadonlySet<string> = new Set([
   "add_comment",
   "add_document_thread",
   "reply_to_thread",
+  "reply_to_github_thread",
   "update_thread_message",
   "delete_thread",
   "resolve_thread",
@@ -232,6 +233,11 @@ export function annotationWrite(
       return addDocumentThread(a, tab);
     case "reply_to_thread":
       return replyToThread(a, tab, view, ai);
+    case "reply_to_github_thread": {
+      // Posted to GitHub first, so it paints nothing; the push brings it.
+      const parentId = text(pick(a, "parentId", "parent_id")) ?? "";
+      return { command: { kind: "reply_to_github_thread", tab, view, parentId, body: text(a.text) ?? "", clientId: text(a.id) } };
+    }
     case "update_thread_message":
       return { command: { kind: "update_thread_message", tab, view, id, body: body ?? "" } };
     case "delete_thread":

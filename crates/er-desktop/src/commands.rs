@@ -3871,7 +3871,7 @@ impl ReviewLineTarget {
     }
 }
 
-fn review_comment_body(text: &str) -> Result<String, String> {
+pub(crate) fn review_comment_body(text: &str) -> Result<String, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err("Comment body cannot be empty".to_string());
@@ -3965,7 +3965,7 @@ fn read_pending_review(state: &AppState) -> Result<PendingReviewView, String> {
 
 /// A posted or submitted comment changes what `pull_github_comments` should
 /// return, so drop its cache and let the status card recount.
-fn after_github_write(state: &AppState, owner: String, repo: String, number: u64) {
+pub(crate) fn after_github_write(state: &DesktopState, owner: String, repo: String, number: u64) {
     er_engine::github::invalidate_pr_comments_cache();
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
@@ -6840,30 +6840,21 @@ fn route_annotation(
     Ok(AppSnapshot::default())
 }
 
-/// The active tab's context and the workspace it belongs to, for a sender
-/// that is not an annotation command (a GitHub command, the comment tick).
-#[cfg(feature = "v1-service")]
-pub fn active_tab_command(app: &App) -> (String, er_service::TabContext) {
-    let context = tab_context(app);
-    let key = context.workspace_key();
-    (key, context)
-}
-
-/// Sends one GitHub command for the active tab and waits for the reply. The
-/// lock is held only to read the tab; the `gh` work runs in the actor's effect.
+/// Sends one GitHub command for the registry's active tab and waits for the
+/// reply. The tab and its context come from the registry and the tab's
+/// content, so a held App never holds the command; the `gh` work runs in the
+/// actor's effect.
 #[cfg(feature = "v1-service")]
 fn send_for_active_tab(
     state: &AppState,
     build: impl FnOnce(er_service::TabContext) -> er_service::Command,
 ) -> Result<er_service::Reply, er_service::WorkspaceError> {
-    let (key, context) = {
-        let app = state
-            .app
-            .lock()
-            .map_err(|e| er_service::WorkspaceError::Failed(e.to_string()))?;
-        active_tab_command(&app)
-    };
-    state.service.send(&key, build(context))
+    let (tab, content) =
+        content_routes::active_tab_content(state).map_err(er_service::WorkspaceError::Failed)?;
+    let workspace = crate::service::actor_key(&tab);
+    state
+        .service
+        .send(&workspace, build(content.context.clone()))
 }
 
 #[cfg(feature = "v1-service")]
@@ -6874,7 +6865,7 @@ fn unexpected_reply(reply: &er_service::Reply) -> String {
 /// The flag path's wording for a failed review write. GitHub's classification
 /// picks the hints; no error text is read.
 #[cfg(feature = "v1-service")]
-fn review_write_message(error: er_service::WorkspaceError) -> String {
+pub(crate) fn review_write_message(error: er_service::WorkspaceError) -> String {
     match error {
         er_service::WorkspaceError::Github(gh) => {
             let unprocessable = matches!(gh, er_engine::github::GhError::Unprocessable { .. });
@@ -12816,6 +12807,8 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod finding_write_tests;
     #[cfg(feature = "v1-service")]
+    mod github_sender_tests;
+    #[cfg(feature = "v1-service")]
     mod hunks_tests;
     #[cfg(not(feature = "v1-service"))]
     mod latency_tests;
@@ -14070,6 +14063,25 @@ mod tests {
         });
     }
 
+    /// Opens acme/widgets#7 as the registry's active tab, which the flag-on
+    /// GitHub routes read their tab from.
+    #[cfg(feature = "v1-service")]
+    fn open_remote_pr(state: &AppState) {
+        let tab = er_engine::tabs_record::TabDescriptor {
+            kind: er_engine::tabs_record::TabKind::RemotePr,
+            repo_root: String::new(),
+            branch: None,
+            pr_owner: Some("acme".into()),
+            pr_repo: Some("widgets".into()),
+            pr_number: Some(7),
+            pr_head_ref: None,
+            base_ref: None,
+            extra: Default::default(),
+        };
+        let opened = content_routes::open(state, tab, false);
+        assert!(opened.is_ok(), "{opened:?}");
+    }
+
     /// With the feature on, each sync and pending-review route sends its
     /// command for the active tab's PR to the service, whose scripted port
     /// answers. The flag-off bodies are not compiled in this build, so a
@@ -14108,12 +14120,7 @@ mod tests {
             state.service = Arc::new(crate::service::ServiceState::new(
                 er_engine::ports::Ports::with_github(github_port),
             ));
-            {
-                let mut app = state.app.lock().unwrap();
-                let tab = app.tab_mut();
-                tab.remote_repo = Some("acme/widgets".to_string());
-                tab.pr_number = Some(7);
-            }
+            open_remote_pr(&state);
 
             let synced = service_pull_github_comments(&state, false);
             assert!(synced.is_ok(), "sync: {synced:?}");
@@ -14184,12 +14191,7 @@ mod tests {
             state.service = Arc::new(crate::service::ServiceState::new(
                 er_engine::ports::Ports::with_github(github_port),
             ));
-            {
-                let mut app = state.app.lock().unwrap();
-                let tab = app.tab_mut();
-                tab.remote_repo = Some("acme/widgets".to_string());
-                tab.pr_number = Some(7);
-            }
+            open_remote_pr(&state);
 
             assert!(service_post_github_pr_comment(&state, "ship it").is_err());
             let target = ReviewLineTarget {

@@ -86,6 +86,7 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::AnnotationScreenshot { path } => super::annotations::screenshot(path)?,
         ResourceKey::Pr { tab } => super::pr::pr(desktop, *tab)?,
         ResourceKey::PrStatus { remote, number } => super::pr::pr_status(desktop, remote, *number),
+        ResourceKey::PendingReview { tab } => super::github_writes::pending_review(desktop, *tab)?,
     };
     Ok(Versioned {
         key,
@@ -120,7 +121,8 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         | ResourceKey::DiffPaths { .. }
         | ResourceKey::ReviewJson { .. }
         | ResourceKey::ReviewRevisions { .. }
-        | ResourceKey::AnnotationScreenshot { .. } => 0,
+        | ResourceKey::AnnotationScreenshot { .. }
+        | ResourceKey::PendingReview { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Inbox => sidebar(desktop).inbox().0,
@@ -336,7 +338,16 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::ClearUiAnnotations { .. }
         | Command::UpdateUiAnnotationAnchors { .. }
         | Command::RefreshStack { .. }
-        | Command::RefreshGithubStatus { .. }) => {
+        | Command::RefreshGithubStatus { .. }
+        | Command::ReplyToGithubThread { .. }
+        | Command::PullGithubComments { .. }
+        | Command::PostGithubPrComment { .. }
+        | Command::PostGithubLineComment { .. }
+        | Command::SubmitGithubPrDecision { .. }
+        | Command::AddPendingReviewComment { .. }
+        | Command::RemovePendingReviewComment { .. }
+        | Command::SubmitPendingReview { .. }
+        | Command::RunGithubPrAction { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),

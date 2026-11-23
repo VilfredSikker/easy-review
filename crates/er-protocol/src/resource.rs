@@ -3,9 +3,9 @@ use ts_rs::TS;
 
 use crate::{
     AnnotationScreenshot, Annotations, AvailableBranches, AvailablePrs, Branches, DiffPaths,
-    FileHunks, FilePreview, ImagePreview, Inbox, Jobs, Panels, PrStatus, Projects, Prs, ReviewJson,
-    ReviewRevisions, Risk, Session, Settings, TabDiff, TabPr, TabReviewed, TabRow, TabView,
-    UiAnnotations, Worktrees,
+    FileHunks, FilePreview, ImagePreview, Inbox, Jobs, Panels, PendingReview, PrStatus, Projects,
+    Prs, ReviewJson, ReviewRevisions, Risk, Session, Settings, TabDiff, TabPr, TabReviewed, TabRow,
+    TabView, UiAnnotations, Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -113,6 +113,9 @@ pub enum ResourceKey {
         #[ts(type = "number")]
         number: u64,
     },
+    /// The viewer's pending review on one open tab's PR, read from GitHub on
+    /// each fetch and never pushed.
+    PendingReview { tab: TabKey },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -146,6 +149,7 @@ pub enum Resource {
     AnnotationScreenshot(AnnotationScreenshot),
     Pr(Box<TabPr>),
     PrStatus(Box<PrStatus>),
+    PendingReview(Box<PendingReview>),
 }
 
 /// The open tabs in strip order, and the active one.
