@@ -2,15 +2,20 @@
 //! the bucket the page painted and runs on that tab's actor with the App
 //! locked, and the flows reach the page through `jobs`.
 
+use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use er_engine::ai::review_flow::FlowState;
+use er_engine::tabs_record::TabDescriptor;
 use er_engine::TabKey;
 use er_protocol::{Ack, Command, ErError, Resource, ResourceKey, ReviewFlowAction, ReviewFlowJob};
+use er_service::{LiveReviewFlow, WorkspaceDeps};
 
 use super::arena_resource_tests::{local_ports, open, wait_until, HoldingSink};
 use super::diff_command_tests::send;
 use super::diff_resource_tests::with_storage;
-use super::flow_resource_tests::flow_state;
+use super::flow_resource_tests::{flow_state, state_with};
 use crate::commands::AppState;
 use crate::resources::Watched;
 use crate::service::actor_key;
@@ -155,4 +160,183 @@ fn the_flow_wire_names_no_app() {
     for app in ["er_engine::app", "AppState", ".app.lock(", "state.app"] {
         assert!(!body.contains(app), "resources/flows.rs names {app}");
     }
+}
+
+/// Each action names its own control, and acceptance carries its run and
+/// findings.
+#[test]
+fn each_flow_action_names_its_own_control() {
+    use crate::flow_service::Control;
+    use crate::resources::flows::{step, Step};
+
+    let cases = [
+        (
+            ReviewFlowAction::Start {
+                scope: "current".into(),
+            },
+            Step::Control(Control::Start("current".into())),
+        ),
+        (ReviewFlowAction::Confirm, Step::Control(Control::Confirm)),
+        (ReviewFlowAction::Decline, Step::Control(Control::Decline)),
+        (ReviewFlowAction::Rerun, Step::Control(Control::Rerun)),
+        (ReviewFlowAction::Cancel, Step::Control(Control::Cancel)),
+        (
+            ReviewFlowAction::RunStandard,
+            Step::Control(Control::RunStandard),
+        ),
+        (
+            ReviewFlowAction::AcceptFindings {
+                run_id: "run-1".into(),
+                finding_ids: vec!["f-1".into()],
+            },
+            Step::Accept {
+                run_id: "run-1".into(),
+                finding_ids: vec!["f-1".into()],
+            },
+        ),
+    ];
+    for (action, expected) in cases {
+        let named = format!("{action:?}");
+        assert_eq!(step(action), expected, "{named}");
+    }
+}
+
+/// Two fake providers whose jobs run: triage picks Deep, and each reviewer
+/// and the arbiter answer at once with no findings.
+fn deep_config() -> String {
+    let script = [
+        "case \"$1\" in".to_owned(),
+        format!(
+            "*triage.json*) {}; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{{\"primary\":\"arena\",\"experts\":[\"security\"]}}}}' \"$h\" > \"$out/triage.json\" ;;",
+            er_engine::test_support::STAGING_PREAMBLE
+        ),
+        r#"*) printf '{"findings":[],"ballots":[],"verdicts":[]}' ;;"#.to_owned(),
+        "esac".to_owned(),
+    ]
+    .join("\n");
+    let provider = |id: &str| {
+        format!(
+            "[ai_hub.providers.{id}]\ncommand = \"/bin/sh\"\nargs = [\"-c\", '''{script}''', \"fake-flow\", \"{{prompt}}\"]\n\n[[ai_hub.providers.{id}.models]]\nid = \"fake-model\"\n"
+        )
+    };
+    let model = |id: &str| format!("{{ provider_id = \"{id}\", model_id = \"fake-model\" }}");
+    format!(
+        "[ai_hub]\ndefault_provider = \"fake\"\nmax_concurrent_reviews = 16\nmax_concurrent_agents = 16\n\n{}\n{}\n[ai_hub.review_models]\nfast = [{fake}]\nstandard = [{fake}]\nadvanced = [{fake}, {second}]\n",
+        provider("fake"),
+        provider("fake-second"),
+        fake = model("fake"),
+        second = model("fake-second"),
+    )
+}
+
+/// Waits until the flow in `er_dir` on `tab`'s actor is `done`; a Deep
+/// flow runs triage, two reviewers over its rounds and an arbiter as real
+/// processes.
+fn flow_until(
+    state: &AppState,
+    tab: &TabDescriptor,
+    er_dir: &str,
+    what: &str,
+    done: impl Fn(&LiveReviewFlow) -> bool,
+) -> LiveReviewFlow {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let view = state.service.published_view(&actor_key(tab));
+        if let Some(live) = view.as_ref().and_then(|view| view.review_flow(er_dir)) {
+            if done(live) {
+                return live.clone();
+            }
+        }
+        assert!(Instant::now() < deadline, "{what} within 60s");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Gives a finished run one kept finding, so acceptance has one to take.
+fn add_kept_finding(er_dir: &str, run_id: &str) {
+    let paths = er_engine::arena::ArenaPaths::for_run(Path::new(er_dir), run_id);
+    let mut run = er_engine::arena::load_run(&paths).unwrap_or_else(|e| panic!("{e:#}"));
+    let finding = serde_json::json!({
+        "id": "kept", "file": "src/f0.rs", "line": 1, "title": "A kept finding",
+        "body": "body", "severity_by_round": {}, "raised_by": [], "verdict": "kept",
+        "confidence": 0.9, "rationale": "", "rounds": []
+    });
+    run.findings
+        .push(serde_json::from_value(finding).unwrap_or_else(|e| panic!("{e}")));
+    er_engine::arena::save_run(&paths, &run).unwrap_or_else(|e| panic!("{e:#}"));
+}
+
+/// A Deep flow started and confirmed through `er_send` on tab A reaches its
+/// arena run; `review_flow_run`, keyed to tab B, answers that run from A's
+/// actor; and an acceptance through `er_send` answers its count in
+/// `Ack.created`.
+#[test]
+fn a_deep_flow_run_is_read_on_er_fetch_from_another_tab_and_accepted_on_er_send() {
+    with_storage(|dir| {
+        let ports = local_ports();
+        let state = state_with(
+            dir,
+            ports.clone(),
+            WorkspaceDeps::new(ports),
+            &deep_config(),
+        );
+        let flow_tab = open(&state, dir.path(), "a");
+        let er_dir = painted_bucket(&state, flow_tab.0);
+        let other = open(&state, dir.path(), "b");
+        let control = |action: ReviewFlowAction| {
+            let command = Command::ReviewFlow {
+                tab: er_service::wire_tab_key(flow_tab.0),
+                er_dir: er_dir.clone(),
+                action,
+            };
+            send(&state, "flow control", command)
+        };
+
+        let started = control(ReviewFlowAction::Start {
+            scope: "current".into(),
+        });
+        assert!(started.is_ok(), "{started:?}");
+        flow_until(
+            &state,
+            &flow_tab.1,
+            &er_dir,
+            "triage asks for confirmation",
+            |live| matches!(live.flow.state, FlowState::AwaitingConfirmation),
+        );
+        let confirmed = control(ReviewFlowAction::Confirm);
+        assert!(confirmed.is_ok(), "{confirmed:?}");
+        let finished = flow_until(
+            &state,
+            &flow_tab.1,
+            &er_dir,
+            "the Deep flow finishes",
+            |live| matches!(live.flow.state, FlowState::Done { .. }) && !live.draining,
+        );
+        let run_id = finished
+            .flow
+            .arena_run_id
+            .unwrap_or_else(|| panic!("the flow names no run"));
+
+        let key = ResourceKey::ReviewFlowRun {
+            tab: er_service::wire_tab_key(other.0),
+            er_dir: er_dir.clone(),
+            run_id: run_id.clone(),
+        };
+        let fetched =
+            crate::resources::fetch(&state.desktop, key).unwrap_or_else(|e| panic!("{e:?}"));
+        let Resource::ReviewFlowRun(run) = fetched.value else {
+            panic!("not a flow run: {:?}", fetched.value);
+        };
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&run.json).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(snapshot["run"]["id"], run_id.as_str(), "{snapshot}");
+
+        add_kept_finding(&er_dir, &run_id);
+        let accepted = control(ReviewFlowAction::AcceptFindings {
+            run_id,
+            finding_ids: vec!["kept".into()],
+        });
+        let ack = accepted.unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(ack.created.as_deref(), Some("1"), "{ack:?}");
+    });
 }

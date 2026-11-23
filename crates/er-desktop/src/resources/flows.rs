@@ -64,8 +64,8 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
     else {
         return Routed::Other(command);
     };
-    let control = match action {
-        ReviewFlowAction::AcceptFindings {
+    let control = match step(action) {
+        Step::Accept {
             run_id,
             finding_ids,
         } => {
@@ -76,6 +76,35 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
                 accepted.map(|accepted| ack(desktop, tab, Some(accepted.to_string()))),
             );
         }
+        Step::Control(control) => control,
+    };
+    let applied = crate::arena_service::tab(desktop, Some(tab))
+        .and_then(|named| flow_service::run(desktop, &named, er_dir, control));
+    Routed::Applied(applied.map(|()| ack(desktop, tab, None)))
+}
+
+/// What an action asks of `flow_service`: a control, or an acceptance,
+/// which carries the run and the findings it takes.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    Control(Control),
+    Accept {
+        run_id: String,
+        finding_ids: Vec<String>,
+    },
+}
+
+pub(crate) fn step(action: ReviewFlowAction) -> Step {
+    let control = match action {
+        ReviewFlowAction::AcceptFindings {
+            run_id,
+            finding_ids,
+        } => {
+            return Step::Accept {
+                run_id,
+                finding_ids,
+            }
+        }
         ReviewFlowAction::Start { scope } => Control::Start(scope),
         ReviewFlowAction::Confirm => Control::Confirm,
         ReviewFlowAction::Decline => Control::Decline,
@@ -83,9 +112,7 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
         ReviewFlowAction::Cancel => Control::Cancel,
         ReviewFlowAction::RunStandard => Control::RunStandard,
     };
-    let applied = crate::arena_service::tab(desktop, Some(tab))
-        .and_then(|named| flow_service::run(desktop, &named, er_dir, control));
-    Routed::Applied(applied.map(|()| ack(desktop, tab, None)))
+    Step::Control(control)
 }
 
 fn ack(desktop: &DesktopState, wire: er_protocol::TabKey, created: Option<String>) -> Ack {
