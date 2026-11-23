@@ -287,7 +287,7 @@ fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
             match crate::resources::fetch(&state.desktop, diff).map(|f| f.value) {
                 Ok(Resource::Diff(diff)) => (diff.files.iter())
                     .find(|f| f.path == "src/f2.rs")
-                    .map(|f| f.risk_tier.to_string()),
+                    .map(|f| f.risk_tier.clone()),
                 other => panic!("not a diff: {other:?}"),
             }
         };
