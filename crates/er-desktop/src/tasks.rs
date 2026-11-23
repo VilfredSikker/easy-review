@@ -169,18 +169,6 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
     if target.repo_root.is_empty() && target.remote_repo.is_none() {
         return Err("Open a repository or PR first — nothing to review yet".to_string());
     }
-    let busy = host.lock().iter().any(|task| {
-        task.row.kind == launch.kind
-            && task.target == target
-            && (task.run.is_some() || task.queued.is_some())
-    });
-    if busy {
-        return Err(format!(
-            "{} already running for {}",
-            launch.command_name,
-            target.display_label()
-        ));
-    }
     let (staging, prompt) =
         staging_for(&launch.kind, launch.prompt, &target.er_dir).map_err(|e| e.to_string())?;
     let launch = Launch { prompt, ..launch };
@@ -202,13 +190,30 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
         finished_at_ms: None,
     };
     let command_name = launch.command_name.clone();
-    host.lock().push(Task {
-        row,
-        log: VecDeque::new(),
-        run: None,
-        queued: Some(Queued { launch, staging }),
-        target: target.clone(),
-    });
+    {
+        // One lock over the busy check and the push, so two clicks at once
+        // queue one task.
+        let mut tasks = host.lock();
+        let busy = tasks.iter().any(|task| {
+            task.row.kind == launch.kind
+                && task.target == target
+                && (task.run.is_some() || task.queued.is_some())
+        });
+        if busy {
+            return Err(format!(
+                "{} already running for {}",
+                launch.command_name,
+                target.display_label()
+            ));
+        }
+        tasks.push(Task {
+            row,
+            log: VecDeque::new(),
+            run: None,
+            queued: Some(Queued { launch, staging }),
+            target: target.clone(),
+        });
+    }
     host.clock.bump();
     dispatch(desktop);
     let position = {

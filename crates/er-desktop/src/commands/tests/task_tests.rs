@@ -110,17 +110,26 @@ fn log(state: &AppState, id: &str) -> Vec<String> {
 /// A task of `kind` on a bucket under `dir`, run with the settings view's
 /// config and saved pick, queued with the App locked. Answers its id.
 fn queued(state: &AppState, dir: &Path, kind: &str) -> String {
+    let launch = launch(state, dir, kind, "feature");
+    super::while_the_app_is_locked(state, "the enqueue", move |state| {
+        crate::tasks::enqueue(&state.desktop, launch)
+    })
+    .unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// A task of `kind` on `branch`, on a bucket under `dir`.
+fn launch(state: &AppState, dir: &Path, kind: &str, branch: &str) -> crate::tasks::Launch {
     let config = crate::arena_service::config(&state.desktop);
     let (provider_id, model_id, effort) = crate::ai_ask::selection(&config);
     let bucket = dir.join("bucket");
     std::fs::create_dir_all(&bucket).unwrap_or_else(|e| panic!("bucket: {e}"));
-    let launch = crate::tasks::Launch {
+    crate::tasks::Launch {
         kind: kind.to_string(),
         command_name: kind.to_string(),
         target: BackgroundTaskTarget {
             repo_root: dir.to_string_lossy().into_owned(),
             er_dir: bucket.to_string_lossy().into_owned(),
-            branch_label: "feature".into(),
+            branch_label: branch.into(),
             base_branch: "main".into(),
             scope: "branch".into(),
             pr_number: None,
@@ -137,11 +146,7 @@ fn queued(state: &AppState, dir: &Path, kind: &str) -> String {
             model_id,
             effort,
         },
-    };
-    super::while_the_app_is_locked(state, "the enqueue", move |state| {
-        crate::tasks::enqueue(&state.desktop, launch)
-    })
-    .unwrap_or_else(|e| panic!("{e}"))
+    }
 }
 
 fn row(state: &AppState, id: &str) -> Option<TaskJob> {
@@ -260,4 +265,60 @@ fn the_task_host_names_no_app() {
             assert!(!text.contains(word), "{name} names {word}");
         }
     }
+}
+
+/// A sidebar triage request moves `jobs` as it is taken and as it ends, so
+/// the spinner that reads `jobs.triage` shows it, and `jobs` lists each
+/// request held.
+#[test]
+fn a_triage_request_shows_in_jobs() {
+    with_storage(|dir| {
+        let (state, _agent) = tasking(dir, 50);
+        let before = version(&state);
+        let ctx = crate::commands::auto_triage_ctx(&state);
+        // No clone, so the request ends at once.
+        crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", "", "feature", &[]);
+        wait_until("the request to move jobs twice", || {
+            version(&state) >= before + 2
+        });
+
+        let held = "branch:o/r:other".to_string();
+        if let Ok(mut queue) = state.desktop.auto_triage_in_flight.lock() {
+            queue.insert(held.clone());
+        }
+        assert_eq!(jobs(&state).triage, vec![held]);
+    });
+}
+
+/// Two enqueues of the same task at once queue one and refuse the other:
+/// the busy check and the push are one step.
+#[test]
+fn two_clicks_at_once_queue_one_task() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 1);
+        for round in 0..20 {
+            let branch = format!("feature-{round}");
+            let gate = std::sync::Barrier::new(2);
+            let accepted = std::thread::scope(|scope| {
+                let clicks: Vec<_> = (0..2)
+                    .map(|_| {
+                        let one = launch(&state, dir.path(), "review", &branch);
+                        let (state, gate) = (&state, &gate);
+                        scope.spawn(move || {
+                            gate.wait();
+                            crate::tasks::enqueue(&state.desktop, one).is_ok()
+                        })
+                    })
+                    .collect();
+                clicks
+                    .into_iter()
+                    .map(|click| click.join().unwrap_or(false))
+                    .filter(|accepted| *accepted)
+                    .count()
+            });
+            assert_eq!(accepted, 1, "round {round} queued {accepted} reviews");
+        }
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
 }
