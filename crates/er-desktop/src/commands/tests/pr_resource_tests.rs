@@ -49,8 +49,8 @@ fn with_stacked_tab(test: impl FnOnce(&DesktopState, er_engine::TabKey)) {
 
 fn pr(state: &DesktopState, key: er_engine::TabKey) -> (u64, TabPr) {
     let tab = er_service::wire_tab_key(key);
-    let fetched = crate::resources::fetch(&state, ResourceKey::Pr { tab })
-        .unwrap_or_else(|e| panic!("{e:?}"));
+    let fetched =
+        crate::resources::fetch(state, ResourceKey::Pr { tab }).unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::Pr(pr) => (fetched.version.0, *pr),
         other => panic!("not a PR: {other:?}"),
@@ -202,7 +202,7 @@ fn status_of(state: &DesktopState, remote: &str, number: u64) -> (u64, PrStatus)
         remote: remote.into(),
         number,
     };
-    let fetched = crate::resources::fetch(&state, key).unwrap_or_else(|e| panic!("{e:?}"));
+    let fetched = crate::resources::fetch(state, key).unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::PrStatus(status) => (fetched.version.0, *status),
         other => panic!("not a status: {other:?}"),
@@ -403,7 +403,7 @@ fn every_refresh_and_status_fetch_goes_through_its_guard() {
 
 fn jobs_of(state: &DesktopState) -> (u64, er_protocol::Jobs) {
     let fetched =
-        crate::resources::fetch(&state, ResourceKey::Jobs).unwrap_or_else(|e| panic!("{e:?}"));
+        crate::resources::fetch(state, ResourceKey::Jobs).unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::Jobs(jobs) => (fetched.version.0, jobs),
         other => panic!("not jobs: {other:?}"),

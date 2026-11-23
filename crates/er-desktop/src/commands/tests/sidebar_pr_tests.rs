@@ -64,7 +64,7 @@ fn fetch_prs(state: &DesktopState, remote: &str) -> (u64, Prs) {
     let key = ResourceKey::Prs {
         remote: remote.into(),
     };
-    let fetched = resources::fetch(&state, key).unwrap();
+    let fetched = resources::fetch(state, key).unwrap();
     let Resource::Prs(prs) = fetched.value else {
         panic!("{:?}", fetched.value);
     };
@@ -104,7 +104,7 @@ fn command_fixture(dir: &ReviewFlowTestDir) -> DesktopState {
 
 fn send(state: &DesktopState, command: Command) -> er_protocol::Ack {
     resources::send::apply(
-        &state,
+        state,
         command,
         &resources::send::Effects {
             notify: &|_, _| {},

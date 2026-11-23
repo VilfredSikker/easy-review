@@ -90,7 +90,7 @@ fn effects(notify: &dyn Fn(NoticeLevel, String)) -> Effects<'_> {
 }
 
 fn send(state: &DesktopState, command: Command) -> Applied {
-    apply(&state, command, &effects(&|_, _| {})).unwrap_or_else(|e| panic!("er_send failed: {e:?}"))
+    apply(state, command, &effects(&|_, _| {})).unwrap_or_else(|e| panic!("er_send failed: {e:?}"))
 }
 
 fn pick_second() -> Command {
@@ -102,7 +102,7 @@ fn pick_second() -> Command {
 }
 
 fn fetch_session(state: &DesktopState) -> (ResourceVersion, Session) {
-    let fetched = resources::fetch(&state, ResourceKey::Session)
+    let fetched = resources::fetch(state, ResourceKey::Session)
         .unwrap_or_else(|e| panic!("session fetch: {e:?}"));
     match fetched.value {
         Resource::Session(session) => (fetched.version, *session),
@@ -111,7 +111,7 @@ fn fetch_session(state: &DesktopState) -> (ResourceVersion, Session) {
 }
 
 fn fetch_settings(state: &DesktopState) -> Settings {
-    match resources::fetch(&state, ResourceKey::Settings).map(|f| f.value) {
+    match resources::fetch(state, ResourceKey::Settings).map(|f| f.value) {
         Ok(Resource::Settings(settings)) => *settings,
         other => panic!("not a settings resource: {other:?}"),
     }

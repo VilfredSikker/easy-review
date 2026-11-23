@@ -14,7 +14,7 @@ fn reviewed(state: &DesktopState, key: TabKey) -> (u64, TabReviewed) {
     let key = ResourceKey::Reviewed {
         tab: er_service::wire_tab_key(key),
     };
-    let fetched = crate::resources::fetch(&state, key).unwrap_or_else(|e| panic!("{e:?}"));
+    let fetched = crate::resources::fetch(state, key).unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::Reviewed(reviewed) => (fetched.version.0, reviewed),
         other => panic!("not the marks: {other:?}"),

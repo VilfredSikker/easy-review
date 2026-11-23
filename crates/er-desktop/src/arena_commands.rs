@@ -134,9 +134,9 @@ pub fn arena_estimate(
     req: ArenaEstimateRequest,
     state: State<AppState>,
 ) -> Result<ArenaDiffPreview, String> {
-    return on_active(&state, |desktop, tab| {
+    on_active(&state, |desktop, tab| {
         crate::arena_service::estimate(desktop, tab, &estimate_plan(req))
-    });
+    })
 }
 
 #[tauri::command]
@@ -144,9 +144,9 @@ pub fn arena_estimate_batch(
     req: ArenaBatchEstimateRequest,
     state: State<AppState>,
 ) -> Result<ArenaDiffPreview, String> {
-    return on_active(&state, |desktop, tab| {
+    on_active(&state, |desktop, tab| {
         crate::arena_service::estimate_batch(desktop, tab, &estimate_batch_params(req))
-    });
+    })
 }
 
 #[tauri::command]
@@ -154,7 +154,7 @@ pub async fn arena_start(
     req: ArenaStartRequest,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    return {
+    {
         let state = state.inner().clone();
         crate::commands::run_blocking(move || {
             on_active(&state, |desktop, tab| {
@@ -162,7 +162,7 @@ pub async fn arena_start(
             })
         })
         .await
-    };
+    }
 }
 
 /// The flag path checks the painted bucket against the named tab's content
@@ -185,10 +185,10 @@ pub async fn start_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    return crate::commands::run_blocking(move || {
+    crate::commands::run_blocking(move || {
         flow_on_active(&state, er_dir, crate::flow_service::Control::Start(scope))
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -197,10 +197,10 @@ pub async fn confirm_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    return crate::commands::run_blocking(move || {
+    crate::commands::run_blocking(move || {
         flow_on_active(&state, er_dir, crate::flow_service::Control::Confirm)
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -209,10 +209,10 @@ pub async fn decline_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    return crate::commands::run_blocking(move || {
+    crate::commands::run_blocking(move || {
         flow_on_active(&state, er_dir, crate::flow_service::Control::Decline)
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -221,10 +221,10 @@ pub async fn rerun_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    return crate::commands::run_blocking(move || {
+    crate::commands::run_blocking(move || {
         flow_on_active(&state, er_dir, crate::flow_service::Control::Rerun)
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -233,10 +233,10 @@ pub async fn cancel_review_flow(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    return crate::commands::run_blocking(move || {
+    crate::commands::run_blocking(move || {
         flow_on_active(&state, er_dir, crate::flow_service::Control::Cancel)
     })
-    .await;
+    .await
 }
 
 /// Accept selected findings from the arena run captured by a review flow.
@@ -250,7 +250,7 @@ pub async fn flow_accept_findings(
     state: State<'_, AppState>,
 ) -> Result<crate::snapshot::AppSnapshot, String> {
     let state = state.inner().clone();
-    return crate::commands::run_blocking(move || {
+    crate::commands::run_blocking(move || {
         let bucket = er_dir.clone();
         crate::flow_service::entry(&state.desktop, None)
             .and_then(|active| {
@@ -265,7 +265,7 @@ pub async fn flow_accept_findings(
         }
         Ok(crate::commands::snap_from_command(&app, &state))
     })
-    .await;
+    .await
 }
 
 /// Fetch a review-flow arena run from its captured bucket. Unlike `arena_get`,
@@ -277,14 +277,14 @@ pub async fn flow_get_run(
     state: State<'_, AppState>,
 ) -> Result<ArenaRunSnapshotWire, String> {
     let state = state.inner().clone();
-    return crate::commands::run_blocking(move || {
+    crate::commands::run_blocking(move || {
         crate::flow_service::entry(&state.desktop, None)
             .and_then(|active| {
                 crate::flow_service::get_run(&state.desktop, &active, &er_dir, &run_id)
             })
             .map_err(|error| error.message)
     })
-    .await;
+    .await
 }
 
 /// Validate the current tab's expert findings: dedupe them and rule on the
@@ -296,7 +296,7 @@ pub async fn flow_get_run(
 /// main thread otherwise.
 #[tauri::command]
 pub async fn arena_validate_findings(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    return {
+    {
         let state = state.inner().clone();
         crate::commands::run_blocking(move || {
             on_active(&state, |desktop, tab| {
@@ -304,7 +304,7 @@ pub async fn arena_validate_findings(state: State<'_, AppState>) -> Result<Optio
             })
         })
         .await
-    };
+    }
 }
 
 #[tauri::command]
@@ -312,7 +312,7 @@ pub async fn arena_start_batch(
     req: ArenaBatchStartRequest,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    return {
+    {
         let state = state.inner().clone();
         crate::commands::run_blocking(move || {
             on_active(&state, |desktop, tab| {
@@ -320,7 +320,7 @@ pub async fn arena_start_batch(
             })
         })
         .await
-    };
+    }
 }
 
 #[tauri::command]
@@ -328,9 +328,9 @@ pub fn arena_accept_findings(
     req: ArenaAcceptRequest,
     state: State<AppState>,
 ) -> Result<usize, String> {
-    return on_active(&state, |desktop, tab| {
+    on_active(&state, |desktop, tab| {
         crate::arena_service::accept_findings(desktop, tab, req.run_id, req.finding_ids)
-    });
+    })
 }
 
 #[tauri::command]
@@ -338,37 +338,37 @@ pub fn arena_progress(
     run_id: String,
     state: State<AppState>,
 ) -> Result<ArenaProgressState, String> {
-    return on_active(&state, |desktop, tab| {
+    on_active(&state, |desktop, tab| {
         Ok(crate::arena_service::progress(desktop, tab, &run_id))
-    });
+    })
 }
 
 #[tauri::command]
 pub fn arena_get(run_id: String, state: State<AppState>) -> Result<ArenaRunSnapshotWire, String> {
-    return on_active(&state, |desktop, tab| {
+    on_active(&state, |desktop, tab| {
         crate::arena_service::get(desktop, tab, &run_id)
-    });
+    })
 }
 
 #[tauri::command]
 pub fn arena_list(state: State<AppState>) -> Result<Vec<ArenaRunSummaryWire>, String> {
-    return on_active(&state, |desktop, tab| {
+    on_active(&state, |desktop, tab| {
         crate::arena_service::list(desktop, tab)
-    });
+    })
 }
 
 #[tauri::command]
 pub fn arena_delete(run_id: String, state: State<AppState>) -> Result<(), String> {
-    return on_active(&state, |desktop, tab| {
+    on_active(&state, |desktop, tab| {
         crate::arena_service::delete(desktop, tab, run_id)
-    });
+    })
 }
 
 #[tauri::command]
 pub fn arena_cancel(run_id: String, state: State<AppState>) -> Result<(), String> {
-    return on_active(&state, |desktop, tab| {
+    on_active(&state, |desktop, tab| {
         crate::arena_service::cancel(desktop, tab, run_id)
-    });
+    })
 }
 
 #[tauri::command]
@@ -376,7 +376,7 @@ pub fn arena_override(
     req: ArenaOverrideRequest,
     state: State<AppState>,
 ) -> Result<ArenaRunSnapshotWire, String> {
-    return on_active(&state, |desktop, tab| {
+    on_active(&state, |desktop, tab| {
         let run_id = req.run_id.clone();
         let verdict = parse_verdict(&req.verdict);
         crate::arena_service::override_finding(
@@ -388,7 +388,7 @@ pub fn arena_override(
             req.note,
         )?;
         crate::arena_service::get(desktop, tab, &run_id)
-    });
+    })
 }
 
 /// Runs a flag-on flow control on the registry's active tab with no App

@@ -40,7 +40,7 @@ pub(super) fn send(
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &|| None,
         };
-        apply(&state, command, &effects).map(|applied| applied.ack)
+        apply(state, command, &effects).map(|applied| applied.ack)
     })
 }
 
@@ -48,7 +48,7 @@ pub(super) fn diff(state: &DesktopState, key: TabKey) -> (u64, TabDiff) {
     let key = ResourceKey::Diff {
         tab: er_service::wire_tab_key(key),
     };
-    let fetched = crate::resources::fetch(&state, key).unwrap_or_else(|e| panic!("{e:?}"));
+    let fetched = crate::resources::fetch(state, key).unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::Diff(diff) => (fetched.version.0, *diff),
         other => panic!("not a diff: {other:?}"),

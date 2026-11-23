@@ -65,7 +65,7 @@ fn inbox_fixture(dir: &ReviewFlowTestDir) -> DesktopState {
 }
 
 fn fetch_inbox(state: &DesktopState) -> (u64, Inbox) {
-    let fetched = resources::fetch(&state, ResourceKey::Inbox).unwrap();
+    let fetched = resources::fetch(state, ResourceKey::Inbox).unwrap();
     let Resource::Inbox(inbox) = fetched.value else {
         panic!("{:?}", fetched.value);
     };
@@ -74,7 +74,7 @@ fn fetch_inbox(state: &DesktopState) -> (u64, Inbox) {
 
 fn apply(state: &DesktopState, command: Command) -> Result<er_protocol::Ack, er_protocol::ErError> {
     resources::send::apply(
-        &state,
+        state,
         command,
         &resources::send::Effects {
             notify: &|_, _| {},

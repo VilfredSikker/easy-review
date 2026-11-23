@@ -133,7 +133,7 @@ fn content_tab(
         state.service.content(key, descriptor).is_some()
     });
     if let Some(mode) = mode {
-        let moved = content_routes::set_tab_mode(&state, key, mode.git_mode(), mode, None);
+        let moved = content_routes::set_tab_mode(state, key, mode.git_mode(), mode, None);
         assert!(moved.is_ok(), "{moved:?}");
         wait_until("the switch", || {
             state

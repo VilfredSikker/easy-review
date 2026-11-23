@@ -182,8 +182,8 @@ pub(super) fn record(bucket: &str, run_id: &str) -> Option<er_engine::arena::Are
 pub(super) fn started(state: &DesktopState, tab: TabKey) -> String {
     super::on_a_thread(state, "arena start", move |state| {
         let wire = er_service::wire_tab_key(tab);
-        let tab = crate::arena_service::tab(&state, Some(wire))?;
-        crate::arena_service::start(&state, &tab, params())
+        let tab = crate::arena_service::tab(state, Some(wire))?;
+        crate::arena_service::start(state, &tab, params())
     })
     .unwrap_or_else(|e| panic!("{e:?}"))
 }
@@ -285,9 +285,9 @@ fn an_arena_context_takes_the_viewed_branch_and_the_review_hash_with_the_app_loc
 
         let wire = er_service::wire_tab_key(entry.0);
         let arena = super::on_a_thread(&state, "arena context", move |state| {
-            let tab = crate::arena_service::tab(&state, Some(wire))?;
-            let config = crate::arena_service::config(&state);
-            Ok::<_, er_protocol::ErError>(crate::arena_service::context(&state, &tab, config))
+            let tab = crate::arena_service::tab(state, Some(wire))?;
+            let config = crate::arena_service::config(state);
+            Ok::<_, er_protocol::ErError>(crate::arena_service::context(state, &tab, config))
         })
         .unwrap_or_else(|e| panic!("{e:?}"));
 

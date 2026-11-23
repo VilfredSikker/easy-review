@@ -21,7 +21,7 @@ use crate::service::actor_key;
 use crate::state::DesktopState;
 
 fn jobs(state: &DesktopState) -> (u64, Vec<ReviewFlowJob>) {
-    match crate::resources::fetch(&state, ResourceKey::Jobs) {
+    match crate::resources::fetch(state, ResourceKey::Jobs) {
         Ok(fetched) => match fetched.value {
             Resource::Jobs(jobs) => (fetched.version.0, jobs.review_flows),
             other => panic!("not jobs: {other:?}"),
@@ -37,11 +37,11 @@ fn painted_bucket(state: &DesktopState, tab: TabKey) -> String {
     };
     wait_until("the tab's diff", || {
         matches!(
-            crate::resources::fetch(&state, key.clone()).map(|f| f.value),
+            crate::resources::fetch(state, key.clone()).map(|f| f.value),
             Ok(Resource::Diff(ref diff)) if !diff.review_bucket_er_dir.is_empty()
         )
     });
-    match crate::resources::fetch(&state, key).map(|f| f.value) {
+    match crate::resources::fetch(state, key).map(|f| f.value) {
         Ok(Resource::Diff(diff)) => diff.review_bucket_er_dir,
         other => panic!("not a diff: {other:?}"),
     }

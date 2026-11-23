@@ -256,7 +256,7 @@ fn working(dir: &ReviewFlowTestDir, raw: String) -> (DesktopState, (TabKey, TabD
 
 fn annotations_version(state: &DesktopState, (key, _): &(TabKey, TabDescriptor)) -> u64 {
     let tab = er_service::wire_tab_key(*key);
-    match resources::version(&state, ResourceKey::Annotations { tab }) {
+    match resources::version(state, ResourceKey::Annotations { tab }) {
         Ok(version) => version.0,
         Err(e) => panic!("{e:?}"),
     }
@@ -331,7 +331,7 @@ fn annotations(
     (key, _): &(TabKey, TabDescriptor),
 ) -> (u64, er_protocol::AiAnnotations) {
     let tab = er_service::wire_tab_key(*key);
-    match resources::fetch(&state, ResourceKey::Annotations { tab }) {
+    match resources::fetch(state, ResourceKey::Annotations { tab }) {
         Ok(fetched) => match fetched.value {
             Resource::Annotations(a) => (fetched.version.0, a.ai),
             other => panic!("not annotations: {other:?}"),

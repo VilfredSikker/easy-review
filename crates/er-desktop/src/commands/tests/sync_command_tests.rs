@@ -79,7 +79,7 @@ fn send(state: &DesktopState, command: Command) -> Ack {
         webviews: &crate::browser_webview::NoWebviews,
         pick_folder: &|| None,
     };
-    let applied = apply(&state, command, &effects);
+    let applied = apply(state, command, &effects);
     applied
         .map(|applied| applied.ack)
         .unwrap_or_else(|e| panic!("{e:?}"))

@@ -109,7 +109,7 @@ fn a_github_post_through_er_send_names_its_tab() {
 fn a_github_reply_painted_elsewhere_is_refused() {
     with_pr_tab(|state, key, _| {
         let painted = view(state, key);
-        let moved = content_routes::set_tab_mode(&state, key, "branch", DiffMode::Branch, None);
+        let moved = content_routes::set_tab_mode(state, key, "branch", DiffMode::Branch, None);
         assert!(moved.is_ok(), "{moved:?}");
         let reply = |tab| Command::ReplyToGithubThread {
             tab,

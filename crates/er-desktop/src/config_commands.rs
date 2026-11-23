@@ -137,36 +137,36 @@ pub async fn delete_ai_model(
 // ── Command bodies: one per command, each split by the feature ──────────────
 
 pub(crate) fn config_hub(state: &AppState) -> Result<GetConfigHubResponse, String> {
-    return service_route::config_hub(&state.service);
+    service_route::config_hub(&state.service)
 }
 
 pub(crate) fn apply_patch(
     state: &AppState,
     patch: ConfigPatch,
 ) -> Result<GetConfigHubResponse, String> {
-    return service_route::apply_patch(&state.service, patch);
+    service_route::apply_patch(&state.service, patch)
 }
 
 pub(crate) fn save_global(state: &AppState) -> Result<AppSnapshot, String> {
-    return service_route::save_global(&state.service);
+    service_route::save_global(&state.service)
 }
 
 pub(crate) fn uninstall_preview(
     state: &AppState,
     options: UninstallOptions,
 ) -> Result<UninstallPreview, String> {
-    return service_route::uninstall_preview(&state.service, options);
+    service_route::uninstall_preview(&state.service, options)
 }
 
 fn uninstall(state: &AppState, options: UninstallOptions) -> Result<UninstallResult, String> {
-    return service_route::uninstall(&state.service, options);
+    service_route::uninstall(&state.service, options)
 }
 
 pub(crate) fn review_flow_models(
     state: &AppState,
     groups: ReviewModelGroups,
 ) -> Result<GetConfigHubResponse, String> {
-    return service_route::review_flow_models(&state.service, groups);
+    service_route::review_flow_models(&state.service, groups)
 }
 
 pub(crate) fn refresh_models(
@@ -174,21 +174,21 @@ pub(crate) fn refresh_models(
     provider_id: Option<String>,
     force: bool,
 ) -> Result<RefreshAiModelsResponse, String> {
-    return service_route::refresh_models(&state.service, provider_id, force);
+    service_route::refresh_models(&state.service, provider_id, force)
 }
 
 pub(crate) fn provider_upsert(
     state: &AppState,
     provider: ProviderUpsert,
 ) -> Result<GetConfigHubResponse, String> {
-    return service_route::provider_upsert(&state.service, provider);
+    service_route::provider_upsert(&state.service, provider)
 }
 
 pub(crate) fn provider_delete(
     state: &AppState,
     provider_id: String,
 ) -> Result<GetConfigHubResponse, String> {
-    return service_route::provider_delete(&state.service, provider_id);
+    service_route::provider_delete(&state.service, provider_id)
 }
 
 pub(crate) fn model_upsert(
@@ -196,7 +196,7 @@ pub(crate) fn model_upsert(
     provider_id: String,
     model: ModelUpsert,
 ) -> Result<GetConfigHubResponse, String> {
-    return service_route::model_upsert(&state.service, provider_id, model);
+    service_route::model_upsert(&state.service, provider_id, model)
 }
 
 pub(crate) fn model_delete(
@@ -204,7 +204,7 @@ pub(crate) fn model_delete(
     provider_id: String,
     model_id: String,
 ) -> Result<GetConfigHubResponse, String> {
-    return service_route::model_delete(&state.service, provider_id, model_id);
+    service_route::model_delete(&state.service, provider_id, model_id)
 }
 
 // ── Uninstall ───────────────────────────────────────────────────────────────

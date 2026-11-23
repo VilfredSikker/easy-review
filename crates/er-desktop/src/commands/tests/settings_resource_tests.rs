@@ -47,11 +47,11 @@ fn effects(notify: &dyn Fn(NoticeLevel, String)) -> Effects<'_> {
 }
 
 fn send(state: &DesktopState, command: Command) -> Result<Applied, er_protocol::ErError> {
-    apply(&state, command, &effects(&|_, _| {}))
+    apply(state, command, &effects(&|_, _| {}))
 }
 
 fn fetch_settings(state: &DesktopState) -> (ResourceVersion, Settings) {
-    let fetched = resources::fetch(&state, ResourceKey::Settings)
+    let fetched = resources::fetch(state, ResourceKey::Settings)
         .unwrap_or_else(|e| panic!("settings fetch: {e:?}"));
     match fetched.value {
         Resource::Settings(settings) => (fetched.version, *settings),
@@ -221,7 +221,7 @@ fn a_risk_read_is_a_load_then_a_fetch_without_the_app() {
             .unwrap_or_else(|e| panic!("the load failed: {e:?}"))
             .ack;
             let key = ack.created.clone().unwrap_or_default();
-            (ack, resources::fetch(&state, ResourceKey::Risk { key }))
+            (ack, resources::fetch(state, ResourceKey::Risk { key }))
         });
         let fetched = fetched.unwrap_or_else(|e| panic!("risk fetch: {e:?}"));
         assert_eq!(

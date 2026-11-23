@@ -458,7 +458,7 @@ fn command_fixture(dir: &ReviewFlowTestDir) -> DesktopState {
 }
 
 fn project_ids(state: &DesktopState) -> Vec<String> {
-    let fetched = resources::fetch(&state, ResourceKey::Projects).unwrap();
+    let fetched = resources::fetch(state, ResourceKey::Projects).unwrap();
     let Resource::Projects(projects) = fetched.value else {
         panic!("{:?}", fetched.value);
     };

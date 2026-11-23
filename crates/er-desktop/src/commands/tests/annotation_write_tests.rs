@@ -22,7 +22,7 @@ use crate::snapshot::PendingAiReply;
 
 pub(super) fn annotations(state: &DesktopState, key: TabKey) -> (u64, Annotations) {
     let tab = er_service::wire_tab_key(key);
-    let fetched = crate::resources::fetch(&state, ResourceKey::Annotations { tab })
+    let fetched = crate::resources::fetch(state, ResourceKey::Annotations { tab })
         .unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::Annotations(annotations) => (fetched.version.0, *annotations),
@@ -203,7 +203,7 @@ fn deleting_a_thread_drops_its_pending_ai_reply_from_jobs() {
             ai_action: Some(er_engine::ai::AI_ACTION_ASK),
         };
         state.pending_ai_replies.insert("q-1-5".into(), reply);
-        let jobs = || match crate::resources::fetch(&state, ResourceKey::Jobs) {
+        let jobs = || match crate::resources::fetch(state, ResourceKey::Jobs) {
             Ok(fetched) => match fetched.value {
                 Resource::Jobs(jobs) => (fetched.version.0, jobs.ai_replies),
                 other => panic!("{other:?}"),
@@ -260,7 +260,7 @@ fn readme_tab(state: &DesktopState, root: &Path) -> (TabKey, TabDescriptor) {
 /// README's preview key in the tab's content as it is now.
 fn readme_key(state: &DesktopState, key: TabKey) -> String {
     let tab = er_service::wire_tab_key(key);
-    let context = match crate::resources::fetch(&state, ResourceKey::Diff { tab }) {
+    let context = match crate::resources::fetch(state, ResourceKey::Diff { tab }) {
         Ok(fetched) => match fetched.value {
             Resource::Diff(diff) => diff.preview_context_key,
             other => panic!("not a diff: {other:?}"),
@@ -269,7 +269,7 @@ fn readme_key(state: &DesktopState, key: TabKey) -> String {
     };
     let path = "README.md".to_string();
     let preview = ResourceKey::FilePreview { tab, path, context };
-    match crate::resources::fetch(&state, preview).map(|f| f.value) {
+    match crate::resources::fetch(state, preview).map(|f| f.value) {
         Ok(Resource::FilePreview(preview)) => preview.preview_key,
         other => panic!("not a preview: {other:?}"),
     }

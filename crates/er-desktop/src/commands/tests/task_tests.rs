@@ -129,12 +129,12 @@ fn tasks(state: &DesktopState) -> Vec<TaskJob> {
 }
 
 fn version(state: &DesktopState) -> u64 {
-    crate::resources::jobs::version(&state)
+    crate::resources::jobs::version(state)
 }
 
 fn log(state: &DesktopState, id: &str) -> Vec<String> {
     let key = ResourceKey::TaskLog { id: id.to_string() };
-    match crate::resources::fetch(&state, key).map(|f| f.value) {
+    match crate::resources::fetch(state, key).map(|f| f.value) {
         Ok(Resource::TaskLog(log)) => log.lines.into_iter().map(|l| l.text).collect(),
         other => panic!("not a task log: {other:?}"),
     }
@@ -145,14 +145,14 @@ fn log(state: &DesktopState, id: &str) -> Vec<String> {
 fn queued(state: &DesktopState, dir: &Path, kind: &str) -> String {
     let launch = launch(state, dir, kind, "feature");
     super::on_a_thread(state, "the enqueue", move |state| {
-        crate::tasks::enqueue(&state, launch)
+        crate::tasks::enqueue(state, launch)
     })
     .unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// A task of `kind` on `branch`, on a bucket under `dir`.
 fn launch(state: &DesktopState, dir: &Path, kind: &str, branch: &str) -> crate::tasks::Launch {
-    let config = crate::arena_service::config(&state);
+    let config = crate::arena_service::config(state);
     let (provider_id, model_id, effort) = crate::ai_ask::selection(&config);
     let bucket = dir.join("bucket");
     std::fs::create_dir_all(&bucket).unwrap_or_else(|e| panic!("bucket: {e}"));
@@ -299,7 +299,7 @@ fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
         );
         importance.target.repo_root.clone_from(&tab.repo_root);
         let importance = super::on_a_thread(&state, "the enqueue", move |state| {
-            crate::tasks::enqueue(&state, importance)
+            crate::tasks::enqueue(state, importance)
         })
         .unwrap_or_else(|e| panic!("{e}"));
         let tier = || {
@@ -487,9 +487,9 @@ fn a_scoped_run_sends_one_notice() {
                 webviews: &crate::browser_webview::NoWebviews,
                 pick_folder: &|| None,
             };
-            let _ = crate::resources::notice::told(&state);
-            crate::resources::send::apply(&state, command, &effects).map(drop)?;
-            Ok::<_, er_protocol::ErError>(crate::resources::notice::told(&state))
+            let _ = crate::resources::notice::told(state);
+            crate::resources::send::apply(state, command, &effects).map(drop)?;
+            Ok::<_, er_protocol::ErError>(crate::resources::notice::told(state))
         });
         let told = told.unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(told.len(), 1, "{told:?}");
@@ -626,7 +626,7 @@ fn a_sidebar_triage_queues_on_the_host_with_the_app_locked() {
         let root = root.to_string_lossy().into_owned();
         let queued_root = root.clone();
         super::on_a_thread(&state, "the sidebar triage", move |state| {
-            let ctx = crate::commands::triage_ctx(&state);
+            let ctx = crate::commands::triage_ctx(state);
             crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", &root, "feature", &[]);
             wait_until("a triage task in jobs", || {
                 tasks(state).iter().any(|row| row.kind == "triage")
@@ -856,7 +856,7 @@ fn two_clicks_at_once_queue_one_task() {
                         let (state, gate) = (&state, &gate);
                         scope.spawn(move || {
                             gate.wait();
-                            crate::tasks::enqueue(&state, one).is_ok()
+                            crate::tasks::enqueue(state, one).is_ok()
                         })
                     })
                     .collect();
@@ -910,7 +910,7 @@ fn send_at_gate(
     launches: &Launches,
 ) -> bool {
     gate.wait();
-    crate::tasks::hold_agent(&state, target, "validate", |_| launches.launch()).is_ok()
+    crate::tasks::hold_agent(state, target, "validate", |_| launches.launch()).is_ok()
 }
 
 /// Two sends of the same tab command on one bucket at once start one

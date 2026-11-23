@@ -38,7 +38,7 @@ fn hunks_key(key: TabKey, path: &str, hash: &str) -> ResourceKey {
 }
 
 fn diff(state: &DesktopState, key: TabKey) -> TabDiff {
-    let fetched = resources::fetch(&state, ResourceKey::Diff { tab: wire(key) });
+    let fetched = resources::fetch(state, ResourceKey::Diff { tab: wire(key) });
     match fetched.map(|f| f.value) {
         Ok(Resource::Diff(diff)) => *diff,
         other => panic!("not a diff: {other:?}"),
@@ -59,7 +59,7 @@ fn hunks(
     path: &str,
     hash: &str,
 ) -> Result<FileHunks, ErErrorKind> {
-    match resources::fetch(&state, hunks_key(key, path, hash)) {
+    match resources::fetch(state, hunks_key(key, path, hash)) {
         Ok(fetched) => match fetched.value {
             Resource::Hunks(hunks) => Ok(hunks),
             other => panic!("not hunks: {other:?}"),
@@ -289,7 +289,7 @@ fn set_compacted(state: &DesktopState, key: TabKey, compacted: bool) {
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &|| None,
         };
-        apply(&state, command, &effects).map(|applied| applied.ack)
+        apply(state, command, &effects).map(|applied| applied.ack)
     });
     let ack = ack.unwrap_or_else(|e| panic!("{e:?}"));
     let named = ack

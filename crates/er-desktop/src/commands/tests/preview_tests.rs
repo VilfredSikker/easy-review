@@ -21,7 +21,7 @@ use crate::service::actor_key;
 
 fn context(state: &DesktopState, key: er_engine::TabKey) -> String {
     let tab = er_service::wire_tab_key(key);
-    match resources::fetch(&state, ResourceKey::Diff { tab }).map(|f| f.value) {
+    match resources::fetch(state, ResourceKey::Diff { tab }).map(|f| f.value) {
         Ok(Resource::Diff(diff)) => diff.preview_context_key,
         other => panic!("not a diff: {other:?}"),
     }
@@ -169,7 +169,7 @@ fn the_path_list_is_every_file_and_history_lists_its_commit() {
         }
         let tab_key = er_service::wire_tab_key(key);
         let paths = |state: &DesktopState| {
-            let fetched = resources::fetch(&state, ResourceKey::DiffPaths { tab: tab_key });
+            let fetched = resources::fetch(state, ResourceKey::DiffPaths { tab: tab_key });
             fetched.map(|f| f.value)
         };
         let Ok(Resource::DiffPaths(listed)) = paths(&state) else {

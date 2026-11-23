@@ -111,8 +111,8 @@ fn recovered(
 fn start(state: &DesktopState, tab: TabKey, er_dir: String) -> Result<(), ErError> {
     super::on_a_thread(state, "flow start", move |state| {
         let wire = er_service::wire_tab_key(tab);
-        let tab = crate::arena_service::tab(&state, Some(wire))?;
-        flow_service::run(&state, &tab, er_dir, Control::Start("branch".into()))
+        let tab = crate::arena_service::tab(state, Some(wire))?;
+        flow_service::run(state, &tab, er_dir, Control::Start("branch".into()))
     })
 }
 
@@ -168,8 +168,8 @@ fn a_flow_context_takes_the_saved_effort_with_the_app_locked() {
 
         let wire = er_service::wire_tab_key(tab.0);
         let context = super::on_a_thread(&state, "flow context", move |state| {
-            let tab = crate::arena_service::tab(&state, Some(wire))?;
-            Ok::<_, ErError>(flow_service::context(&state, &tab, Some("branch")))
+            let tab = crate::arena_service::tab(state, Some(wire))?;
+            Ok::<_, ErError>(flow_service::context(state, &tab, Some("branch")))
         })
         .unwrap_or_else(|e| panic!("{e:?}"));
 
@@ -192,8 +192,8 @@ fn acceptance_fetches_the_diff_of_the_tab_that_shows_the_run_target() {
         let er_dir = bucket(&state, &shown);
         let wire = er_service::wire_tab_key(shown.0);
         let target = super::on_a_thread(&state, "flow context", move |state| {
-            let tab = crate::arena_service::tab(&state, Some(wire))?;
-            Ok::<_, ErError>(flow_service::context(&state, &tab, Some("branch")))
+            let tab = crate::arena_service::tab(state, Some(wire))?;
+            Ok::<_, ErError>(flow_service::context(state, &tab, Some("branch")))
         })
         .unwrap_or_else(|e| panic!("{e:?}"))
         .view
@@ -214,7 +214,7 @@ fn acceptance_fetches_the_diff_of_the_tab_that_shows_the_run_target() {
         );
         let accept = |target: er_engine::task_target::BackgroundTaskTarget| {
             super::on_a_thread(&state, "acceptance diff", move |state| {
-                flow_service::acceptance_diff(&state, &target)
+                flow_service::acceptance_diff(state, &target)
             })
         };
 

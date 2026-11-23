@@ -121,7 +121,7 @@ pub(super) fn replies(bucket: &str, question: &str) -> Vec<(String, Option<Strin
 }
 
 pub(super) fn jobs(state: &DesktopState) -> Jobs {
-    match crate::resources::fetch(&state, ResourceKey::Jobs).map(|f| f.value) {
+    match crate::resources::fetch(state, ResourceKey::Jobs).map(|f| f.value) {
         Ok(Resource::Jobs(jobs)) => jobs,
         other => panic!("not jobs: {other:?}"),
     }

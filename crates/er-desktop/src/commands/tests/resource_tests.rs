@@ -267,7 +267,7 @@ fn the_tabs_read_comes_from_the_published_list() {
 
 /// The `tabs` row of `key`, fetched.
 fn tab_row(state: &DesktopState, key: TabKey) -> er_protocol::TabRow {
-    let fetched = resources::fetch(&state, ResourceKey::Tabs);
+    let fetched = resources::fetch(state, ResourceKey::Tabs);
     let Ok(er_protocol::Versioned {
         value: er_protocol::Resource::Tabs(tabs),
         ..

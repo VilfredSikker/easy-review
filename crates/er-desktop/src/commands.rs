@@ -946,16 +946,16 @@ pub async fn request_file_content(
     let state = state.inner().clone();
     // Flag-on, the parsed files reach the page with the snapshot that reads
     // the content, so this answers no files.
-    return run_blocking(move || {
+    run_blocking(move || {
         content_routes::request_file_content(&state, &source_indices).map(|()| Vec::new())
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
 pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || content_routes::select_file(&state, idx)).await;
+    run_blocking(move || content_routes::select_file(&state, idx)).await
 }
 
 #[derive(serde::Serialize)]
@@ -1323,13 +1323,13 @@ pub async fn toggle_reviewed(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         content_routes::write_reviewed(&state, |context| er_service::Command::ToggleReviewed {
             context,
             path,
         })
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -1338,14 +1338,14 @@ pub async fn mark_reviewed(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         content_routes::write_reviewed(&state, |context| er_service::Command::MarkReviewed {
             context,
             path,
             reviewed: true,
         })
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -1354,14 +1354,14 @@ pub async fn unmark_reviewed(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         content_routes::write_reviewed(&state, |context| er_service::Command::MarkReviewed {
             context,
             path,
             reviewed: false,
         })
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -1371,7 +1371,7 @@ pub async fn bulk_review_pillar(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::BulkReviewPillar {
                 context,
@@ -1380,7 +1380,7 @@ pub async fn bulk_review_pillar(
             }
         })
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -1390,7 +1390,7 @@ pub async fn unbulk_review_pillar(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::BulkReviewPillar {
                 context,
@@ -1399,7 +1399,7 @@ pub async fn unbulk_review_pillar(
             }
         })
     })
-    .await;
+    .await
 }
 
 /// Result of comparing the running desktop build to GitHub Releases latest.
@@ -1936,10 +1936,10 @@ pub fn run_pr_triage(
     pr_number: u64,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    return ask_on_desktop(&state, |desktop| {
+    ask_on_desktop(&state, |desktop| {
         pr_triage(desktop, &triage_ctx(desktop), &project_id, pr_number)
             .map_err(crate::tasks::refused)
-    });
+    })
 }
 
 /// Queues triage of one project's PR on `ctx`.
@@ -1983,10 +1983,10 @@ pub fn run_branch_triage(
     branch: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    return ask_on_desktop(&state, |desktop| {
+    ask_on_desktop(&state, |desktop| {
         branch_triage(desktop, &triage_ctx(desktop), &project_id, &branch)
             .map_err(crate::tasks::refused)
-    });
+    })
 }
 
 /// Queues triage of one project's branch on `ctx`: its open PR when it has
@@ -2026,7 +2026,7 @@ pub(crate) fn branch_triage(
 /// Running reviews are unaffected.
 #[tauri::command]
 pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    return ask_on_desktop(&state, |desktop| crate::tasks::cancel_queued(desktop, &id));
+    ask_on_desktop(&state, |desktop| crate::tasks::cancel_queued(desktop, &id))
 }
 
 /// Stop a running review.
@@ -2036,7 +2036,7 @@ pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSna
 /// other command — including the poll that would show the stop took effect.
 #[tauri::command]
 pub fn cancel_running_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    return ask_on_desktop(&state, |desktop| crate::tasks::cancel_running(desktop, &id));
+    ask_on_desktop(&state, |desktop| crate::tasks::cancel_running(desktop, &id))
 }
 
 #[tauri::command]
@@ -2147,7 +2147,7 @@ pub async fn add_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::AddComment {
                 context,
@@ -2163,7 +2163,7 @@ pub async fn add_comment(
             }
         })
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -2183,7 +2183,7 @@ pub async fn add_question(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::AddQuestion {
                 context,
@@ -2201,7 +2201,7 @@ pub async fn add_question(
             }
         })
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -2221,7 +2221,7 @@ pub async fn add_note(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::AddNote {
                 context,
@@ -2239,7 +2239,7 @@ pub async fn add_note(
             }
         })
     })
-    .await;
+    .await
 }
 
 /// A question or note on a document line the diff does not show, written from
@@ -2258,7 +2258,7 @@ pub async fn add_document_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         service_add_document_thread(
             &state,
             DocumentThread {
@@ -2271,7 +2271,7 @@ pub async fn add_document_thread(
             },
         )
     })
-    .await;
+    .await
 }
 
 /// A document thread as the preview sends it.
@@ -2352,7 +2352,7 @@ pub async fn reply_to_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::ReplyToThread {
                 context,
@@ -2362,7 +2362,7 @@ pub async fn reply_to_thread(
             }
         })
     })
-    .await;
+    .await
 }
 
 /// Reply to a comment that is already on GitHub: post the reply now and
@@ -2376,7 +2376,7 @@ pub async fn reply_to_github_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, None, |context| {
             er_service::Command::ReplyToGithubThread {
                 context,
@@ -2386,7 +2386,7 @@ pub async fn reply_to_github_thread(
             }
         })
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -2396,12 +2396,12 @@ pub async fn delete_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::DeleteThread { context, id }
         })
     })
-    .await;
+    .await
 }
 
 /// Remove all question/github threads linked to a finding (`finding_ref`), keeping the finding.
@@ -2474,12 +2474,12 @@ pub async fn resolve_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::ResolveThread { context, id }
         })
     })
-    .await;
+    .await
 }
 
 // ── GitHub sync ───────────────────────────────────────────────────────────────
@@ -2489,10 +2489,8 @@ pub async fn resolve_thread(
 #[tauri::command]
 pub async fn refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
-        content_routes::refresh(&state, false).map(|_| AppSnapshot::default())
-    })
-    .await;
+    run_blocking(move || content_routes::refresh(&state, false).map(|_| AppSnapshot::default()))
+        .await
 }
 
 /// Fetch the `gh stack` (github/gh-stack) stack for the active tab's branch and
@@ -2600,7 +2598,7 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcom
     let state = state.inner().clone();
     // Flag-on, the active tab's actor refetches and the route lines the stale
     // pill's baselines up, as the App path below does.
-    return run_blocking(move || {
+    run_blocking(move || {
         let synced = content_routes::sync(&state)?;
         kick_meta_refresh(&state, synced.repo_root);
         refresh_status_after_sync(&state, synced.status_key);
@@ -2609,7 +2607,7 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcom
             reviewed_cleared: synced.reviewed_cleared,
         })
     })
-    .await;
+    .await
     // Heavy: shells out to git/gh fetches. Run off the main thread so the
     // window stays responsive for the whole fetch.
 }
@@ -2661,7 +2659,7 @@ pub async fn pull_github_comments(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     let force = force.unwrap_or(false);
-    return run_blocking(move || service_pull_github_comments(&state, force)).await;
+    run_blocking(move || service_pull_github_comments(&state, force)).await
 }
 
 #[cfg(test)]
@@ -2720,7 +2718,7 @@ pub async fn post_github_pr_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || service_post_github_pr_comment(&state, &body)).await;
+    run_blocking(move || service_post_github_pr_comment(&state, &body)).await
 }
 
 // ── Pending review ───────────────────────────────────────────────────────────
@@ -2778,7 +2776,7 @@ pub(crate) fn after_github_write(state: &DesktopState, owner: String, repo: Stri
 #[tauri::command]
 pub async fn get_pending_review(state: State<'_, AppState>) -> Result<PendingReviewView, String> {
     let state = state.inner().clone();
-    return run_blocking(move || service_get_pending_review(&state)).await;
+    run_blocking(move || service_get_pending_review(&state)).await
 }
 
 #[tauri::command]
@@ -2788,7 +2786,7 @@ pub async fn add_pending_review_comment(
     state: State<'_, AppState>,
 ) -> Result<PendingReviewView, String> {
     let state = state.inner().clone();
-    return run_blocking(move || service_add_pending_review_comment(&state, target, &text)).await;
+    run_blocking(move || service_add_pending_review_comment(&state, target, &text)).await
 }
 
 #[tauri::command]
@@ -2797,7 +2795,7 @@ pub async fn remove_pending_review_comment(
     state: State<'_, AppState>,
 ) -> Result<PendingReviewView, String> {
     let state = state.inner().clone();
-    return run_blocking(move || service_remove_pending_review_comment(&state, comment_id)).await;
+    run_blocking(move || service_remove_pending_review_comment(&state, comment_id)).await
 }
 
 /// Submit the pending review with a decision. Without pending comments this
@@ -2809,7 +2807,7 @@ pub async fn submit_pending_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || service_submit_pending_review(&state, &mode, summary)).await;
+    run_blocking(move || service_submit_pending_review(&state, &mode, summary)).await
 }
 
 /// "Add single comment": one line comment posted to the PR now, outside any
@@ -2821,7 +2819,7 @@ pub async fn post_github_line_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || service_post_github_line_comment(&state, target, &text)).await;
+    run_blocking(move || service_post_github_line_comment(&state, target, &text)).await
 }
 
 // ── AI integration ───────────────────────────────────────────────────────────
@@ -2890,10 +2888,10 @@ pub async fn run_ai_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| crate::runs::review(desktop, None, scope))
     })
-    .await;
+    .await
 }
 
 /// Generate a guided Tour with AI: captures the active view's diff and spawns the
@@ -2905,10 +2903,7 @@ pub async fn run_ai_review(
 #[tauri::command]
 pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
-        ask_on_desktop(&state, |desktop| crate::runs::tour(desktop, None))
-    })
-    .await;
+    run_blocking(move || ask_on_desktop(&state, |desktop| crate::runs::tour(desktop, None))).await
 }
 
 /// Run the agent that proposes this repo's importance rules.
@@ -2921,10 +2916,8 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
 #[tauri::command]
 pub async fn run_importance_agent(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
-        ask_on_desktop(&state, |desktop| crate::runs::importance(desktop, None))
-    })
-    .await;
+    run_blocking(move || ask_on_desktop(&state, |desktop| crate::runs::importance(desktop, None)))
+        .await
 }
 
 /// Generate a mermaid diagram of the active view's diff (`kind` =
@@ -2941,12 +2934,12 @@ pub async fn generate_diagram(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::runs::diagram(desktop, None, kind, custom_prompt)
         })
     })
-    .await;
+    .await
 }
 
 /// Delete one diagram sidecar (`{er_dir}/diagrams/<id>.json`) from the active
@@ -2993,12 +2986,12 @@ pub async fn run_ai_expert_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::runs::expert(desktop, None, scope, expert_id)
         })
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -3043,12 +3036,12 @@ pub async fn run_ai_scoped_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::runs::scoped(desktop, None, scope, paths, reviewer_kinds, focus_prompt)
         })
     })
-    .await;
+    .await
 }
 
 /// The diff a scoped run reviews: `raw` cut to `paths` (sorted, without
@@ -3339,12 +3332,12 @@ pub async fn run_ai_validate(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::runs::validate(desktop, None, scope)
         })
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -3380,7 +3373,7 @@ pub async fn list_ai_providers(state: State<'_, AppState>) -> Result<Vec<AiProvi
 /// every pick saves, so the pick is the settings actor's default selection,
 /// which its view already marks; the App lock is never taken.
 pub(crate) fn ai_providers(state: &AppState) -> Result<Vec<AiProviderInfo>, String> {
-    return Ok(state.service.settings().view().hub.providers.clone());
+    Ok(state.service.settings().view().hub.providers.clone())
 }
 
 #[tauri::command]
@@ -3526,12 +3519,12 @@ pub async fn promote_to_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::PromoteToComment { context, id, body }
         })
     })
-    .await;
+    .await
 }
 
 /// Promote a question to a local note. Notes are still private but framed as
@@ -3546,12 +3539,12 @@ pub async fn promote_to_note(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::PromoteToNote { context, id, body }
         })
     })
-    .await;
+    .await
 }
 
 // ── Finding promotions sidecar ───────────────────────────────────────────────
@@ -3580,12 +3573,12 @@ pub async fn validate_with_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::ai_ask::validate(desktop, None, thread_id, finding_id)
         })
     })
-    .await;
+    .await
 }
 
 /// Elaborate on a question or note: the AI rewrites it into a self-contained
@@ -3597,12 +3590,12 @@ pub async fn elaborate_with_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::ai_ask::elaborate(desktop, None, thread_id)
         })
     })
-    .await;
+    .await
 }
 
 /// Tracked agent-command name for Send to agent. Single-flight per tab: two
@@ -3712,14 +3705,14 @@ pub async fn run_standard_review_flow(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         crate::arena_commands::flow_on_active(
             &state,
             er_dir,
             crate::flow_service::Control::RunStandard,
         )
     })
-    .await;
+    .await
 }
 
 /// Hand a note to the configured agent CLI to carry out (ADR 0031). It runs as
@@ -3733,12 +3726,12 @@ pub async fn send_note_to_agent(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::runs::send_note(desktop, None, note_id)
         })
     })
-    .await;
+    .await
 }
 
 /// The prompt that sends note `note_id` and its replies from `notes` to the
@@ -3794,12 +3787,12 @@ pub async fn ask_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::ai_ask::ask(desktop, None, thread_id, prompt)
         })
     })
-    .await;
+    .await
 }
 
 /// A card ask on the flag path, on the registry's active tab. It reads the
@@ -4654,11 +4647,11 @@ pub async fn open_remote_pr(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         service_open_remote_pr(&state, owner, repo, number, replace)
             .map(|()| AppSnapshot::default())
     })
-    .await;
+    .await
 }
 
 fn open_remote_pr_impl(
@@ -4680,10 +4673,8 @@ pub async fn open_pr_url(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
-        service_open_pr_url(&state, url, replace).map(|()| AppSnapshot::default())
-    })
-    .await;
+    run_blocking(move || service_open_pr_url(&state, url, replace).map(|()| AppSnapshot::default()))
+        .await
 }
 
 // ── Worktree picker (stub — no dialog dep) ──────────────────────────────────
@@ -4699,7 +4690,7 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
     };
     let path_str = path.to_string_lossy().to_string();
     // The picked folder is the only input the workspace needs.
-    return service_open_folder(&state, path_str).map(|()| AppSnapshot::default());
+    service_open_folder(&state, path_str).map(|()| AppSnapshot::default())
 }
 
 /// Opens a Working tab on a picked folder, registering it as a project.
@@ -4934,12 +4925,12 @@ pub async fn open_local_branch(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         let tab = content_routes::branch_tab(&project_id, name)?;
         content_routes::open(&state, tab, replace.unwrap_or(false))?;
         Ok(AppSnapshot::default())
     })
-    .await;
+    .await
 }
 
 fn open_local_branch_impl(
@@ -5694,7 +5685,7 @@ pub async fn open_pr_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return {
+    {
         // The open path is service-owned now; the hint is not consumed until
         // the desktop renders from the view.
         drop(hint);
@@ -5703,7 +5694,7 @@ pub async fn open_pr_review(
             Ok(AppSnapshot::default())
         })
         .await
-    };
+    }
 }
 
 fn open_pr_review_impl(
@@ -6142,11 +6133,11 @@ pub async fn open_pr_branch(
 ) -> Result<AppSnapshot, String> {
     let _ = head_ref; // ignored; PR head is fetched directly from origin
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         service_open_pr_review(&state, project_id, pr_number, replace)?;
         Ok(AppSnapshot::default())
     })
-    .await;
+    .await
 }
 
 /// Fire-and-forget background warmup of the PR-open cache. Invoked from the
@@ -6879,8 +6870,8 @@ pub fn open_project_branch(
     replace: Option<bool>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    return service_open_project_branch(&state, project_id, branch, replace.unwrap_or(false))
-        .map(|()| AppSnapshot::default());
+    service_open_project_branch(&state, project_id, branch, replace.unwrap_or(false))
+        .map(|()| AppSnapshot::default())
 }
 
 pub(crate) fn service_open_project_branch(
@@ -7247,7 +7238,7 @@ pub(crate) fn project_available_prs(
 
 #[tauri::command]
 pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    return service_set_active_project(&state, &id).map(|()| AppSnapshot::default());
+    service_set_active_project(&state, &id).map(|()| AppSnapshot::default())
 }
 
 /// Opens a Working tab on the project's root through the registry, as the
@@ -7416,7 +7407,7 @@ pub async fn promote_finding_to_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::PromoteFindingToComment {
                 context,
@@ -7425,7 +7416,7 @@ pub async fn promote_finding_to_comment(
             }
         })
     })
-    .await;
+    .await
 }
 
 #[tauri::command]
@@ -7438,10 +7429,10 @@ pub async fn reply_to_finding(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         reply_to_finding_on_service(&state, finding_id, body, ai_assist, id, view.as_ref())
     })
-    .await;
+    .await
 }
 
 /// The flag path of a finding reply. The plain reply is the workspace's
@@ -7482,12 +7473,12 @@ pub async fn update_thread_message(
     }
 
     let state = state.inner().clone();
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::UpdateThreadMessage { context, id, body }
         })
     })
-    .await;
+    .await
 }
 
 // ── Commit composer ──────────────────────────────────────────────────────────
@@ -7504,7 +7495,7 @@ pub fn open_commit_composer(state: State<AppState>) -> Result<AppSnapshot, Strin
 #[tauri::command]
 pub async fn select_commit(sha: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || content_routes::select_commit(&state, &sha)).await;
+    run_blocking(move || content_routes::select_commit(&state, &sha)).await
     // A commit row is a primary click target, and loading it runs git log and
     // git diff under the App lock — on the main thread that freezes the window.
 }
@@ -7515,7 +7506,7 @@ pub async fn select_commit(sha: String, state: State<'_, AppState>) -> Result<Ap
 #[tauri::command]
 pub async fn exit_history(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    return run_blocking(move || content_routes::exit_history(&state)).await;
+    run_blocking(move || content_routes::exit_history(&state)).await
     // Leaving History re-runs the view's git diff under the App lock.
 }
 
@@ -8230,10 +8221,10 @@ pub fn update_tab_browser(
         split_ratio,
     };
     let navigate = navigate.unwrap_or(false);
-    return {
+    {
         let _ = &browser_state;
         update_tab_browser_routed(&state, &app_handle, update, navigate)
-    };
+    }
 }
 
 /// The flag-on body of `update_tab_browser`: the registry's active tab, as
@@ -8255,10 +8246,10 @@ pub fn cycle_tab_browser_layout(
     browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    return {
+    {
         let _ = &browser_state;
         cycle_tab_browser_layout_routed(&state, &app_handle)
-    };
+    }
 }
 
 /// The flag-on body of `cycle_tab_browser_layout`, as `er_send` runs it.
@@ -9032,7 +9023,7 @@ pub fn get_background_task_log(
     task_id: String,
     state: State<AppState>,
 ) -> Result<Vec<AgentLogSnapshot>, String> {
-    return Ok(state
+    Ok(state
         .desktop
         .tasks
         .log(&task_id)
@@ -9042,7 +9033,7 @@ pub fn get_background_task_log(
             source: line.source,
             text: line.text,
         })
-        .collect());
+        .collect())
 }
 
 #[cfg(test)]

@@ -55,7 +55,7 @@ fn started(state: &DesktopState, tab: TabKey) -> String {
 }
 
 fn jobs(state: &DesktopState) -> (u64, Vec<ArenaRunJob>) {
-    match crate::resources::fetch(&state, ResourceKey::Jobs) {
+    match crate::resources::fetch(state, ResourceKey::Jobs) {
         Ok(fetched) => match fetched.value {
             Resource::Jobs(jobs) => (fetched.version.0, jobs.arena_runs),
             other => panic!("not jobs: {other:?}"),
@@ -231,7 +231,7 @@ fn an_estimate_prices_the_files_its_plan_names() {
         };
 
         let fetched = super::on_a_thread(&state, "estimate", move |state| {
-            crate::resources::fetch(&state, key).map(|f| f.value)
+            crate::resources::fetch(state, key).map(|f| f.value)
         });
 
         let Ok(Resource::ArenaEstimate(estimate)) = fetched else {

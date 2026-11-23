@@ -150,7 +150,7 @@ pub(super) fn send_locked(
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &pick,
         };
-        apply(&state, command, &effects).map(|applied| applied.ack)
+        apply(state, command, &effects).map(|applied| applied.ack)
     })
 }
 
@@ -159,7 +159,7 @@ fn send_tab_command(state: &DesktopState, command: Command) -> er_service::TabsV
     let what = format!("{command:?}");
     let ack = send_locked(state, command, None).unwrap_or_else(|e| panic!("{what}: {e:?}"));
     let view = state.service.app_registry().tabs_view();
-    let version = crate::resources::version(&state, ResourceKey::Tabs);
+    let version = crate::resources::version(state, ResourceKey::Tabs);
     let version = version.unwrap_or_else(|e| panic!("{what}: {e:?}"));
     assert!(version.0 >= view.revision, "{what}: {version:?}");
     assert_eq!(
@@ -358,7 +358,7 @@ fn the_browser_commands_write_the_registry_active_tab() {
                 tooltips: Some(true),
                 split_ratio: None,
             };
-            apply(&state, command, &effects).map(|applied| applied.ack)
+            apply(state, command, &effects).map(|applied| applied.ack)
         });
         let ack = ack.unwrap_or_else(|e| panic!("update_tab_browser: {e:?}"));
         let written = browser_of(&state, active);
@@ -408,7 +408,7 @@ fn cycle_tab_browser_layout_through_er_send_moves_the_registry_active_tab() {
                 pick_folder: &|| None,
             };
             let command = Command::CycleTabBrowserLayout;
-            apply(&state, command, &effects).map(|applied| applied.ack)
+            apply(state, command, &effects).map(|applied| applied.ack)
         });
         let ack = ack.unwrap_or_else(|e| panic!("cycle_tab_browser_layout: {e:?}"));
         let layout = browser_of(&state, active).layout;
@@ -495,7 +495,7 @@ fn a_close_prunes_the_closed_tabs_view() {
                 pick_folder: &|| None,
             };
             let closed_tab = Command::CloseTab { key: wire(closed) };
-            let ack = apply(&state, closed_tab, &effects).map(|applied| applied.ack);
+            let ack = apply(state, closed_tab, &effects).map(|applied| applied.ack);
             assert!(ack.is_ok(), "{ack:?}");
             let deadline = Instant::now() + WAIT;
             while !browser_of(state, closed).url.is_empty() {

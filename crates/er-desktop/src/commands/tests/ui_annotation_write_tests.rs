@@ -49,7 +49,7 @@ type Check<'a> = Box<dyn Fn(&[UiAnnotation], &Ack) + 'a>;
 
 fn fetched(state: &DesktopState, key: TabKey) -> (u64, Vec<UiAnnotation>) {
     let tab = er_service::wire_tab_key(key);
-    let fetched = crate::resources::fetch(&state, ResourceKey::UiAnnotations { tab })
+    let fetched = crate::resources::fetch(state, ResourceKey::UiAnnotations { tab })
         .unwrap_or_else(|e| panic!("{e:?}"));
     match fetched.value {
         Resource::UiAnnotations(ui) => (fetched.version.0, ui.rows),
@@ -297,7 +297,7 @@ fn browser_annotation_writes_sent_together_each_land() {
                         }),
                     };
                     start.wait();
-                    match ui_annotation_writes::apply(&state, command) {
+                    match ui_annotation_writes::apply(state, command) {
                         Routed::Applied(Ok(_)) => {}
                         Routed::Applied(Err(e)) => panic!("{id}: {e:?}"),
                         Routed::Other(_) => panic!("{id} was not a browser annotation write"),
