@@ -2156,10 +2156,20 @@ fn ingest_github_notifications(
     }
 }
 
-fn auto_triage_ctx(state: &AppState) -> crate::auto_triage::AutoTriageContext {
+/// The sidebar triage context. On the flag path a move of the request set
+/// moves `jobs`, which lists it.
+pub(crate) fn auto_triage_ctx(state: &AppState) -> crate::auto_triage::AutoTriageContext {
+    #[cfg(feature = "v1-service")]
+    let queue_moved: Arc<dyn Fn() + Send + Sync> = {
+        let clock = state.desktop.tasks.clock.clone();
+        Arc::new(move || clock.bump())
+    };
+    #[cfg(not(feature = "v1-service"))]
+    let queue_moved: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
     crate::auto_triage::AutoTriageContext {
         app: Arc::clone(&state.app),
         in_flight: Arc::clone(&state.auto_triage_in_flight),
+        queue_moved,
         desktop_revision: Arc::clone(&state.desktop_revision),
     }
 }
