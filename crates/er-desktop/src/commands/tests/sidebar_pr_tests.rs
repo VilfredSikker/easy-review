@@ -108,7 +108,6 @@ fn send(state: &AppState, command: Command) -> er_protocol::Ack {
         command,
         &resources::send::Effects {
             notify: &|_, _| {},
-            follow_selection: &|_| {},
             check_update: || panic!("no update check in this test"),
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &|| None,
@@ -452,7 +451,6 @@ fn every_pr_command_reaches_the_sidebar_owner() {
                 command.clone(),
                 &resources::send::Effects {
                     notify: &|_, _| {},
-                    follow_selection: &|_| {},
                     check_update: || panic!("no update check in this test"),
                     webviews: &crate::browser_webview::NoWebviews,
                     pick_folder: &|| None,
@@ -467,7 +465,6 @@ fn every_pr_command_reaches_the_sidebar_owner() {
             },
             &resources::send::Effects {
                 notify: &|_, _| {},
-                follow_selection: &|_| {},
                 check_update: || panic!("no update check in this test"),
                 webviews: &crate::browser_webview::NoWebviews,
                 pick_folder: &|| None,

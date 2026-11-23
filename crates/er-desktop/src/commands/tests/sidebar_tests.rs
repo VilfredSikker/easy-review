@@ -659,7 +659,6 @@ fn er_send_routes_a_project_command_to_the_sidebar_owner() {
             },
             &resources::send::Effects {
                 notify: &|_, _| {},
-                follow_selection: &|_| {},
                 check_update: || panic!("no update check in this test"),
                 webviews: &crate::browser_webview::NoWebviews,
                 pick_folder: &|| None,

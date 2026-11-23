@@ -273,6 +273,142 @@ pub fn scoped(
     Ok(())
 }
 
+/// Validates the review's findings and the eligible GitHub comments on
+/// `scope`, each through the agent launcher as the App's tab commands run.
+/// The comments are the tab's own: its actor relocated them at its last load.
+pub fn validate(
+    desktop: &DesktopState,
+    wire: Option<er_protocol::TabKey>,
+    scope: String,
+) -> Result<(), ErError> {
+    let tab = crate::arena_service::tab(desktop, wire)?;
+    let content = &tab.content;
+    let scope = review_scope(content, &scope)?;
+    if content.context.is_remote {
+        return Err(refused(
+            "Validate review is local-only. Check out the PR locally first.",
+        ));
+    }
+    let er_dir = content.context.er_dir.clone();
+    admit(&er_dir)?;
+    let has_review = er_engine::ai::review_file_exists(&er_dir);
+    let comment_count = crate::commands::github_comment_count(
+        content.ai.state.github_comments.as_ref(),
+        &content.context.comments_dir,
+    );
+    if !has_review && comment_count == 0 {
+        return Err(refused(
+            "Nothing to validate. Run AI review or add GitHub comments first.",
+        ));
+    }
+    let raw = review_raw(desktop, content, &scope)?;
+    if raw.trim().is_empty() {
+        return Err(refused("Nothing to validate"));
+    }
+    let diff_hash =
+        er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw).map_err(refused)?;
+    let source =
+        er_engine::review_flow_driver::review_md_source(&desktop.ports, &content.tab.identity());
+    let review_md = er_engine::ai::review_md::collect(&desktop.ports, &source, &raw);
+    er_engine::ai::review_md::write_review_md(&er_dir, review_md.as_deref()).map_err(refused)?;
+    let target = target(content, er_dir.clone(), scope.clone());
+    if has_review {
+        let prompt = prompts::build_validate_prompt_prepared_diff(&scope, &er_dir, &diff_hash);
+        agent(desktop, content, target.clone(), "validate", &prompt)?;
+    }
+    if comment_count > 0 {
+        let prompt =
+            prompts::build_validate_github_comments_prompt_prepared_diff(&er_dir, &diff_hash);
+        agent(desktop, content, target, "validate-comments", &prompt)?;
+    }
+    let message = match (has_review, comment_count) {
+        (true, n) if n > 0 => format!("Validation started (review + {n} comments)"),
+        (true, _) => "Validation started (review)".to_string(),
+        (false, n) => format!("Validation started ({n} comments)"),
+    };
+    crate::resources::notice::tell(desktop, message, false);
+    Ok(())
+}
+
+/// Hands note `note_id` and its replies to the agent to carry out in the
+/// tab's working tree (ADR 0031), the note read from the tab's AI section.
+pub fn send_note(
+    desktop: &DesktopState,
+    wire: Option<er_protocol::TabKey>,
+    note_id: String,
+) -> Result<(), ErError> {
+    if !note_id.starts_with("n-") {
+        return Err(refused("Send to agent works on notes only"));
+    }
+    let tab = crate::arena_service::tab(desktop, wire)?;
+    let content = &tab.content;
+    let resolved = &content.tab;
+    crate::commands::send_note_blocked(
+        content.context.is_remote,
+        resolved.checkout_root.as_deref(),
+        &resolved.repo_root,
+    )
+    .map_err(refused)?;
+    let name = crate::commands::SEND_NOTE_COMMAND;
+    let er_dir = content.context.er_dir.clone();
+    let running = desktop
+        .tasks
+        .rows()
+        .iter()
+        .any(|row| row.kind == name && row.er_dir == er_dir && row.status == "running");
+    if running {
+        return Err(refused(
+            "An agent is already working on a note in this tab. Wait for it to finish.",
+        ));
+    }
+    let (prompt, toast) = crate::commands::note_prompt(
+        content.ai.state.notes.as_ref(),
+        &note_id,
+        &resolved.repo_root,
+        &resolved.base_branch,
+        &resolved.current_branch,
+    )
+    .map_err(refused)?;
+    let target = target(content, er_dir, content.context.scope.clone());
+    agent(desktop, content, target, name, &prompt)?;
+    crate::resources::notice::tell(desktop, toast, false);
+    Ok(())
+}
+
+/// Starts tab command `name` through the agent launcher on the settings
+/// view's config and saved selection (A18), held on the task host.
+fn agent(
+    desktop: &DesktopState,
+    content: &TabContent,
+    target: BackgroundTaskTarget,
+    name: &str,
+    prompt: &str,
+) -> Result<(), ErError> {
+    let config = crate::arena_service::config(desktop);
+    let (provider_id, model_id, effort) = crate::ai_ask::selection(&config);
+    let (repo_root, er_dir) = (target.repo_root.clone(), target.er_dir.clone());
+    tasks::hold_agent(desktop, target, name, |log_tx| {
+        er_engine::app::App::launch_agent_prompt(er_engine::app::AgentPromptRequest {
+            name,
+            prompt,
+            repo_root,
+            er_dir,
+            is_remote: content.context.is_remote,
+            remote_repo: content.tab.remote_repo.clone(),
+            config: &config,
+            selection: er_engine::config::AiSelection {
+                provider_id,
+                model_id,
+                effort,
+            },
+            ports: &desktop.ports,
+            log_tx,
+        })
+    })
+    .map(|_| ())
+    .map_err(refused)
+}
+
 /// Queues one finding lens, under the task kind and command name the App
 /// gives it.
 pub fn spawn_reviewer(

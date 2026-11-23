@@ -1989,13 +1989,6 @@ fn main() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
                     *h = Some(app.handle().clone());
                 }
-                // The wire's AI picks copy the saved selection into the App
-                // through this, and through nothing else of the App.
-                #[cfg(feature = "v1-service")]
-                app.manage(er_desktop::ai_selection_service::SessionPick::new(
-                    Arc::clone(&state.app),
-                    Arc::clone(&state.desktop_revision),
-                ));
                 native_notify::initialize(app.handle());
                 er_desktop::app_owner::startup::flush_pending_notifications(&state);
                 // Revision watcher: emit a Tauri event whenever the backend's

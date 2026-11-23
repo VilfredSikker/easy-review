@@ -5075,13 +5075,22 @@ pub(crate) fn spawn_scoped_reviewers(
     Ok((started, skipped))
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn eligible_github_comment_count(tab: &er_engine::app::TabState) -> usize {
-    if let Some(gc) = tab.ai.github_comments.as_ref() {
+    github_comment_count(tab.ai.github_comments.as_ref(), &tab.github_comments_dir())
+}
+
+/// The GitHub comments a validation checks: from the loaded sidecar, else
+/// read from `comments_dir`.
+pub(crate) fn github_comment_count(
+    loaded: Option<&er_engine::ai::ErGithubComments>,
+    comments_dir: &str,
+) -> usize {
+    if let Some(gc) = loaded {
         return er_engine::ai::count_eligible_github_comments(gc);
     }
     let store = er_engine::store_registry::store();
-    let comments_dir = tab.github_comments_dir();
-    if let Ok(scope) = er_store::Scope::dir(comments_dir.as_str()) {
+    if let Ok(scope) = er_store::Scope::dir(comments_dir) {
         if let Ok(er_store::Loaded::Found(stored)) =
             er_engine::ai::annotation_store::load_github_comments(&store, &scope)
         {
@@ -5097,6 +5106,14 @@ pub async fn run_ai_validate(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::runs::validate(desktop, None, scope)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         let scope = resolve_review_scope(&scope, app.tab())?;
@@ -5176,7 +5193,11 @@ pub async fn set_ai_model(
 /// writer of the config files (ADR 0069); the flag-off bodies save the App's.
 pub(crate) fn ai_model(state: &AppState, model: String) -> Result<AppSnapshot, String> {
     #[cfg(feature = "v1-service")]
-    return crate::ai_selection_service::ai_model(state, model);
+    {
+        crate::ai_selection_service::ai_model(&state.desktop, model)?;
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        return Ok(snap_from(&app, state));
+    }
     #[cfg(not(feature = "v1-service"))]
     {
         let app = state.app.lock().map_err(|e| e.to_string())?;
@@ -5249,7 +5270,9 @@ pub(crate) fn ai_selection(
     let persist = persist.unwrap_or(true);
     #[cfg(feature = "v1-service")]
     if persist {
-        return crate::ai_selection_service::ai_selection(state, provider_id, model_id, effort);
+        crate::ai_selection_service::ai_selection(&state.desktop, provider_id, model_id, effort)?;
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        return Ok(snap_from(&app, state));
     }
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let agent = app.config.agent.clone();
@@ -5309,7 +5332,9 @@ pub(crate) fn ai_effort(
     let persist = persist.unwrap_or(false);
     #[cfg(feature = "v1-service")]
     if persist {
-        return crate::ai_selection_service::ai_effort(state, effort);
+        crate::ai_selection_service::ai_effort(&state.desktop, effort)?;
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        return Ok(snap_from(&app, state));
     }
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let default_selection = app
@@ -5569,7 +5594,7 @@ pub async fn elaborate_with_ai(
 
 /// Tracked agent-command name for Send to agent. Single-flight per tab: two
 /// agents editing one working tree would race over the same files.
-const SEND_NOTE_COMMAND: &str = "send-to-agent";
+pub(crate) const SEND_NOTE_COMMAND: &str = "send-to-agent";
 
 /// What the Send-to-agent prompt says about the note and where it sits.
 struct SendNotePromptParams<'a> {
@@ -5644,13 +5669,8 @@ Finish with a short markdown summary: the files you changed and what changed in 
 /// agent command runs. A remote PR tab has no working tree and opening one must
 /// not check anything out (ADR 0020); a local PR or branch view whose head is
 /// not checked out would have the agent edit some other branch.
+#[cfg(any(test, not(feature = "v1-service")))]
 fn send_note_blocked_reason(tab: &er_engine::app::TabState) -> Result<(), String> {
-    if tab.is_remote() {
-        return Err(
-            "Send to agent edits the working tree, so it is off on a remote PR tab. Check the PR out locally to use it."
-                .to_string(),
-        );
-    }
     // `local_checkout_root` treats a local PR tab as the main checkout; its
     // branch only is one once the watcher has set the checkout root.
     let checked_out = if tab.pr_number.is_some() || tab.is_local_branch_view() {
@@ -5658,8 +5678,24 @@ fn send_note_blocked_reason(tab: &er_engine::app::TabState) -> Result<(), String
     } else {
         tab.local_checkout_root()
     };
+    send_note_blocked(tab.is_remote(), checked_out, &tab.repo_root)
+}
+
+/// Why a note cannot go to the agent: a remote tab, or a branch checked out
+/// elsewhere or nowhere, so there is no working tree here to edit.
+pub(crate) fn send_note_blocked(
+    is_remote: bool,
+    checked_out: Option<&str>,
+    repo_root: &str,
+) -> Result<(), String> {
+    if is_remote {
+        return Err(
+            "Send to agent edits the working tree, so it is off on a remote PR tab. Check the PR out locally to use it."
+                .to_string(),
+        );
+    }
     match checked_out {
-        Some(root) if root == tab.repo_root => Ok(()),
+        Some(root) if root == repo_root => Ok(()),
         Some(root) => Err(format!(
             "This branch is checked out at {root}. Open that worktree to send notes to an agent."
         )),
@@ -5712,6 +5748,14 @@ pub async fn send_note_to_agent(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
+    #[cfg(feature = "v1-service")]
+    return run_blocking(move || {
+        ask_on_desktop(&state, |desktop| {
+            crate::runs::send_note(desktop, None, note_id)
+        })
+    })
+    .await;
+    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
         if !note_id.starts_with("n-") {
             return Err("Send to agent works on notes only".to_string());
@@ -5729,39 +5773,13 @@ pub async fn send_note_to_agent(
 
         let (prompt, toast) = {
             let tab = app.tab();
-            let notes: &[er_engine::ai::PrivateAnnotation] = tab
-                .ai
-                .notes
-                .as_ref()
-                .map(|ns| ns.notes.as_slice())
-                .unwrap_or(&[]);
-            let note = notes
-                .iter()
-                .find(|n| n.id == note_id)
-                .ok_or_else(|| "Note not found".to_string())?;
-            let mut thread_body = note.text.clone();
-            for r in notes
-                .iter()
-                .filter(|r| r.in_reply_to.as_deref() == Some(note_id.as_str()))
-            {
-                thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
-            }
-            let prompt = build_send_note_prompt(&SendNotePromptParams {
-                repo_root: &tab.repo_root,
-                base_branch: &tab.base_branch,
-                current_branch: &tab.current_branch,
-                file: &note.file,
-                line_start: note.line_start,
-                line_end: note.line_end,
-                line_content: &note.line_content,
-                thread_body: &thread_body,
-            });
-            let name = note.file.rsplit('/').next().unwrap_or(&note.file);
-            let toast = match note_range_label(note.line_start, note.line_end) {
-                Some(range) => format!("Note sent to the agent with {range} of {name} as context"),
-                None => format!("Note sent to the agent with {name} as context"),
-            };
-            (prompt, toast)
+            note_prompt(
+                tab.ai.notes.as_ref(),
+                &note_id,
+                &tab.repo_root,
+                &tab.base_branch,
+                &tab.current_branch,
+            )?
         };
 
         app.spawn_agent_prompt(SEND_NOTE_COMMAND, &prompt)
@@ -5772,6 +5790,46 @@ pub async fn send_note_to_agent(
         Ok(snap_from(&app, &state))
     })
     .await
+}
+
+/// The prompt that sends note `note_id` and its replies from `notes` to the
+/// agent, and the toast that names its context.
+pub(crate) fn note_prompt(
+    notes: Option<&er_engine::ai::ErNotes>,
+    note_id: &str,
+    repo_root: &str,
+    base_branch: &str,
+    current_branch: &str,
+) -> Result<(String, String), String> {
+    let notes: &[er_engine::ai::PrivateAnnotation] =
+        notes.map(|ns| ns.notes.as_slice()).unwrap_or(&[]);
+    let note = notes
+        .iter()
+        .find(|n| n.id == note_id)
+        .ok_or_else(|| "Note not found".to_string())?;
+    let mut thread_body = note.text.clone();
+    for r in notes
+        .iter()
+        .filter(|r| r.in_reply_to.as_deref() == Some(note_id))
+    {
+        thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
+    }
+    let prompt = build_send_note_prompt(&SendNotePromptParams {
+        repo_root,
+        base_branch,
+        current_branch,
+        file: &note.file,
+        line_start: note.line_start,
+        line_end: note.line_end,
+        line_content: &note.line_content,
+        thread_body: &thread_body,
+    });
+    let name = note.file.rsplit('/').next().unwrap_or(&note.file);
+    let toast = match note_range_label(note.line_start, note.line_end) {
+        Some(range) => format!("Note sent to the agent with {range} of {name} as context"),
+        None => format!("Note sent to the agent with {name} as context"),
+    };
+    Ok((prompt, toast))
 }
 
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or

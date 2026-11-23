@@ -30,6 +30,10 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
             reviewers,
             focus_prompt,
         } => crate::runs::scoped(desktop, Some(tab), scope, paths, reviewers, focus_prompt),
+        Command::RunValidate { tab, scope } => crate::runs::validate(desktop, Some(tab), scope),
+        Command::SendNoteToAgent { tab, note_id } => {
+            crate::runs::send_note(desktop, Some(tab), note_id)
+        }
         Command::RunPrTriage {
             project_id,
             pr_number,

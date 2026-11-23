@@ -85,13 +85,9 @@ fn echo_state(dir: &ReviewFlowTestDir) -> AppState {
     state
 }
 
-fn effects<'a>(
-    notify: &'a dyn Fn(NoticeLevel, String),
-    follow: &'a dyn Fn(&er_engine::config::AiSelection),
-) -> Effects<'a> {
+fn effects(notify: &dyn Fn(NoticeLevel, String)) -> Effects<'_> {
     Effects {
         notify,
-        follow_selection: follow,
         check_update: || panic!("no update check in this test"),
         webviews: &crate::browser_webview::NoWebviews,
         pick_folder: &|| None,
@@ -99,7 +95,7 @@ fn effects<'a>(
 }
 
 fn send(state: &AppState, command: Command) -> Applied {
-    apply(&state.desktop, command, &effects(&|_, _| {}, &|_| {}))
+    apply(&state.desktop, command, &effects(&|_, _| {}))
         .unwrap_or_else(|e| panic!("er_send failed: {e:?}"))
 }
 
@@ -332,7 +328,6 @@ fn an_update_check_lands_in_session() {
             Command::CheckAppUpdate,
             &Effects {
                 notify: &|_, _| {},
-                follow_selection: &|_| {},
                 check_update: || AppUpdate {
                     current: "1.0.0".into(),
                     latest: Some("9.9.9".into()),
@@ -374,7 +369,7 @@ fn a_model_refresh_names_the_count() {
                 provider_id: Some("echo".into()),
                 force: true,
             },
-            &effects(&notify, &|_| {}),
+            &effects(&notify),
         );
         assert!(applied.is_ok(), "{applied:?}");
         let notices = notices.into_inner().unwrap_or_default();
