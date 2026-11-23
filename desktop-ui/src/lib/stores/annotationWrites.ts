@@ -66,6 +66,15 @@ const ROUTED: ReadonlySet<string> = new Set([
   "promote_to_comment",
   "promote_finding_to_comment",
   "reply_to_finding",
+  "dismiss_finding",
+  "resolve_finding",
+  "unresolve_finding",
+  "remove_finding_thread",
+  "update_finding_response",
+  "delete_finding_response",
+  "toggle_checklist_item",
+  "delete_review_artifact",
+  "delete_diagram",
 ]);
 
 function text(value: unknown): string | null {
@@ -234,6 +243,35 @@ export function annotationWrite(
     }
     case "reply_to_finding":
       return replyToFinding(a, tab, view, ai);
+    default:
+      return findingWrite(command, a, tab, view);
+  }
+}
+
+/** A finding, checklist, triage or diagram write; none of them paints. */
+function findingWrite(command: string, a: Args, tab: TabKey, view: PaintedView): Write | null {
+  const findingId = text(pick(a, "findingId", "finding_id")) ?? "";
+  const responseId = text(pick(a, "responseId", "response_id")) ?? "";
+  switch (command) {
+    case "dismiss_finding":
+      return { command: { kind: "dismiss_finding", tab, view, findingId } };
+    case "resolve_finding":
+    case "unresolve_finding":
+      return { command: { kind: "set_finding_resolved", tab, view, findingId, resolved: command === "resolve_finding" } };
+    case "remove_finding_thread":
+      return { command: { kind: "remove_finding_thread", tab, view, findingId } };
+    case "update_finding_response":
+      return { command: { kind: "update_finding_response", tab, view, findingId, responseId, body: text(a.body) ?? "" } };
+    case "delete_finding_response":
+      return { command: { kind: "delete_finding_response", tab, view, findingId, responseId } };
+    case "toggle_checklist_item": {
+      const index = num(a.index);
+      return index === null ? null : { command: { kind: "toggle_checklist_item", tab, view, index } };
+    }
+    case "delete_review_artifact":
+      return { command: { kind: "delete_review_artifact", tab, view, artifact: text(a.kind) ?? "" } };
+    case "delete_diagram":
+      return { command: { kind: "delete_diagram", tab, view, id: text(a.id) ?? "" } };
     default:
       return null;
   }

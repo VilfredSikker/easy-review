@@ -126,6 +126,47 @@ pub enum Command {
         ai_assist: bool,
         client_id: Option<String>,
     },
+    /// Remove a finding from the review, with the threads linked to it and
+    /// its promotion entry.
+    DismissFinding {
+        context: TabContext,
+        finding_id: String,
+    },
+    /// Mark a finding resolved, or reopen it.
+    SetFindingResolved {
+        context: TabContext,
+        finding_id: String,
+        resolved: bool,
+    },
+    /// Delete the threads linked to a finding; the finding stays.
+    RemoveFindingThread {
+        context: TabContext,
+        finding_id: String,
+    },
+    /// Replace one of a finding's responses.
+    UpdateFindingResponse {
+        context: TabContext,
+        finding_id: String,
+        response_id: String,
+        body: String,
+    },
+    /// Delete one of a finding's responses.
+    DeleteFindingResponse {
+        context: TabContext,
+        finding_id: String,
+        response_id: String,
+    },
+    /// Flip the checklist item the tab's AI section holds at `index`. An
+    /// index it no longer holds writes nothing.
+    ToggleChecklistItem { context: TabContext, index: usize },
+    /// Delete the triage or the reviews from the bucket. Refused while a
+    /// review flow holds it.
+    DeleteReviewArtifact {
+        context: TabContext,
+        artifact: ReviewArtifact,
+    },
+    /// Delete one diagram from the bucket.
+    DeleteDiagram { context: TabContext, id: String },
 
     // ── Job and arena commands ──
     /// Run one agent job on an effect thread. The actor keeps its stop handle
@@ -547,6 +588,14 @@ pub struct AnnotationTarget {
     pub line_num_end: Option<usize>,
 }
 
+/// What `DeleteReviewArtifact` deletes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewArtifact {
+    Triage,
+    /// Every review, with the checklist, order and summary; triage stays.
+    Review,
+}
+
 /// Which private annotation a document anchor creates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnnotationKind {
@@ -617,6 +666,9 @@ pub enum Reply {
         root_id: String,
         reply_id: String,
     },
+    /// A finding, checklist or review write landed, and the tabs that read
+    /// the bucket hold its AI state.
+    AiWritten,
     JobStarted {
         job: JobId,
     },

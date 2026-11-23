@@ -430,6 +430,58 @@ pub enum Command {
         body: String,
         client_id: Option<String>,
     },
+    /// Removes a finding from the review, with the threads linked to it.
+    DismissFinding {
+        tab: TabKey,
+        view: PaintedView,
+        finding_id: String,
+    },
+    /// Marks a finding resolved, or reopens it.
+    SetFindingResolved {
+        tab: TabKey,
+        view: PaintedView,
+        finding_id: String,
+        resolved: bool,
+    },
+    /// Deletes the threads linked to a finding, and any ask-AI reply still
+    /// being written for them; the finding stays.
+    RemoveFindingThread {
+        tab: TabKey,
+        view: PaintedView,
+        finding_id: String,
+    },
+    UpdateFindingResponse {
+        tab: TabKey,
+        view: PaintedView,
+        finding_id: String,
+        response_id: String,
+        body: String,
+    },
+    DeleteFindingResponse {
+        tab: TabKey,
+        view: PaintedView,
+        finding_id: String,
+        response_id: String,
+    },
+    /// Flips the checklist item at `index` in the checklist `annotations(tab)`
+    /// holds.
+    ToggleChecklistItem {
+        tab: TabKey,
+        view: PaintedView,
+        index: u32,
+    },
+    /// Deletes the view bucket's `triage` or its `review` artifacts. Refused
+    /// while a review flow holds the bucket.
+    DeleteReviewArtifact {
+        tab: TabKey,
+        view: PaintedView,
+        artifact: String,
+    },
+    DeleteDiagram {
+        tab: TabKey,
+        view: PaintedView,
+        id: String,
+    },
 }
 
 /// The diff line a thread anchors to, as the page painted it.

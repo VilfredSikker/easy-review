@@ -314,7 +314,15 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::PromoteToNote { .. }
         | Command::PromoteToComment { .. }
         | Command::PromoteFindingToComment { .. }
-        | Command::ReplyToFinding { .. }) => {
+        | Command::ReplyToFinding { .. }
+        | Command::DismissFinding { .. }
+        | Command::SetFindingResolved { .. }
+        | Command::RemoveFindingThread { .. }
+        | Command::UpdateFindingResponse { .. }
+        | Command::DeleteFindingResponse { .. }
+        | Command::ToggleChecklistItem { .. }
+        | Command::DeleteReviewArtifact { .. }
+        | Command::DeleteDiagram { .. }) => {
             return Err(ErError {
                 kind: ErErrorKind::Internal,
                 message: format!("not a sidebar command: {other:?}"),

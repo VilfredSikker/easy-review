@@ -22,6 +22,7 @@ pub mod arena;
 mod content;
 mod diff_resource;
 mod effect;
+mod finding_writes;
 mod flows;
 mod freshness;
 mod github_comments;
@@ -62,8 +63,8 @@ pub use hunks::{file_hunks, read_hunks, HunkRead};
 pub use pending_review::OWN_PR_APPROVAL_REFUSED;
 pub use protocol::{
     AcceptanceDiff, AnnotationKind, AnnotationTarget, ArenaCommand, ArenaContext, Command, Event,
-    FlowCommand, FlowContext, JobOutcome, OpenTarget, PrRef, Reply, ReviewEvent, ReviewLineTarget,
-    SyncSource, TabContext,
+    FlowCommand, FlowContext, JobOutcome, OpenTarget, PrRef, Reply, ReviewArtifact, ReviewEvent,
+    ReviewLineTarget, SyncSource, TabContext,
 };
 pub use reviewed_resource::{
     content_view, painted_view_matches, reviewed_resource, reviewed_version,
