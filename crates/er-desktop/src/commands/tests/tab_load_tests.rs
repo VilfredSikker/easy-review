@@ -1,4 +1,4 @@
-//! The flag path's loads that no route asks for: the tab the registry makes
+//! The loads that no route asks for: the tab the registry makes
 //! active loads on that change, and the warmer loads the active repo's other
 //! tabs once each, never the active one.
 
@@ -10,16 +10,16 @@ use er_engine::TabKey;
 use er_service::AppCommand;
 
 use super::diff_resource_tests::{fake_ports, listed, state_over, with_storage};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::tabs;
 
 const WAIT: Duration = Duration::from_secs(10);
 
-fn loaded(state: &AppState, key: TabKey, tab: &TabDescriptor) -> bool {
+fn loaded(state: &DesktopState, key: TabKey, tab: &TabDescriptor) -> bool {
     state.service.content(key, tab).is_some()
 }
 
-fn wait_for_load(state: &AppState, key: TabKey, tab: &TabDescriptor) -> bool {
+fn wait_for_load(state: &DesktopState, key: TabKey, tab: &TabDescriptor) -> bool {
     let deadline = Instant::now() + WAIT;
     while !loaded(state, key, tab) {
         if Instant::now() > deadline {
@@ -40,7 +40,7 @@ fn a_followed_stub_gets_its_first_diff_when_it_becomes_active() {
         let (shown, shown_tab) = listed(&state, dir, "shown");
         tabs::follow_service(
             &state.service,
-            Arc::clone(&state.app),
+            super::app_stub(),
             Arc::clone(&state.view),
             fake_ports(),
         );
@@ -94,7 +94,7 @@ fn an_open_succeeds_when_the_follower_loads_its_tab_first() {
         let state = state_over(dir, fake_ports());
         tabs::follow_service(
             &state.service,
-            Arc::clone(&state.app),
+            super::app_stub(),
             Arc::clone(&state.view),
             fake_ports(),
         );

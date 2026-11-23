@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 use er_engine::tabs_record::TabDescriptor;
 use er_engine::TabKey;
 use er_protocol::{ResourceChanged, ResourceKey};
-use er_service::{AppCommand, Command, Reply, TabContent};
+use er_service::{AppCommand, Command, TabContent};
 
 use super::{review_flow_test_state, ReviewFlowTestDir};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::resources::relay::{self, Moved};
 use crate::resources::{self, tick, Watched};
 use crate::service::{actor_key, ServiceState};
@@ -54,7 +54,7 @@ fn fixture(
     dir: &ReviewFlowTestDir,
     wake: Option<Sender<()>>,
     repos: &[&str],
-) -> (AppState, Vec<(TabKey, TabDescriptor)>) {
+) -> (DesktopState, Vec<(TabKey, TabDescriptor)>) {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
     let service = ServiceState::with_settings_path(ports(), settings);
@@ -97,7 +97,7 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     }
 }
 
-fn content(state: &AppState, (key, tab): &(TabKey, TabDescriptor)) -> Arc<TabContent> {
+fn content(state: &DesktopState, (key, tab): &(TabKey, TabDescriptor)) -> Arc<TabContent> {
     state
         .service
         .content(*key, tab)
@@ -106,11 +106,11 @@ fn content(state: &AppState, (key, tab): &(TabKey, TabDescriptor)) -> Arc<TabCon
 
 /// The relay over `state`, started once the fixture's own publishes have
 /// settled, so each burst it hands on comes from the test's write.
-fn relay(state: &AppState, wakes: Receiver<()>) -> Receiver<Moved> {
+fn relay(state: &DesktopState, wakes: Receiver<()>) -> Receiver<Moved> {
     std::thread::sleep(Duration::from_millis(200));
     while wakes.try_recv().is_ok() {}
     let (tx, bursts) = mpsc::channel();
-    relay::spawn(state.desktop.clone(), wakes, move |moved| {
+    relay::spawn(state.clone(), wakes, move |moved| {
         let _ = tx.send(moved);
     });
     bursts
@@ -144,22 +144,6 @@ fn stamp_ahead(path: &std::path::Path) {
         .unwrap_or_else(|e| panic!("stamp {}: {e}", path.display()));
 }
 
-/// A command the App started that has already finished, so the next
-/// `check_commands` takes it.
-fn finished_command(state: &AppState) {
-    let (tx, rx) = mpsc::channel();
-    let _ = tx.send(Ok(()));
-    let mut app = state.app.lock().unwrap_or_else(|e| e.into_inner());
-    app.tab_mut()
-        .command_rx
-        .insert("tick-probe".to_string(), rx);
-}
-
-fn command_pending(state: &AppState) -> bool {
-    let app = state.app.lock().unwrap_or_else(|e| e.into_inner());
-    app.tab().command_rx.contains_key("tick-probe")
-}
-
 /// A reviewed write moves that tab's reviewed section and nothing else, so
 /// the relay hands on that one key: no other section of either tab, and no
 /// `tabs` change.
@@ -171,24 +155,25 @@ fn the_relay_hands_on_only_the_sections_that_moved() {
         let bursts = relay(&state, wakes);
         let active = tabs[1].0;
 
-        let written = content_routes::write_reviewed(&state, |context| Command::MarkReviewed {
-            context,
-            path: "src/f0.rs".to_string(),
-            reviewed: true,
-        });
+        let written =
+            content_routes::write_keyed(&state, active, None, |context| Command::MarkReviewed {
+                context,
+                path: "src/f0.rs".to_string(),
+                reviewed: true,
+            });
         assert!(written.is_ok(), "{written:?}");
 
         let moved = bursts.recv_timeout(WAIT).expect("no burst after the write");
         let reviewed = content(&state, &tabs[1]).reviewed.revision;
         // The tab's diff lists each file's reviewed mark, and its tour counts
         // the reviewed files of each pillar, so both move too.
-        let diff = resources::diff::published_version(&state.desktop, active, &tabs[1].1);
+        let diff = resources::diff::published_version(&state, active, &tabs[1].1);
         let annotations = er_service::annotations_version(&content(&state, &tabs[1]));
         let entry = er_service::TabEntry {
             key: active,
             descriptor: tabs[1].1.clone(),
         };
-        let marks = resources::reviewed::published_version(&state.desktop, &entry);
+        let marks = resources::reviewed::published_version(&state, &entry);
         assert_eq!(
             moved,
             vec![
@@ -226,7 +211,7 @@ fn a_tab_change_reaches_the_wire_as_one_tabs_change() {
         let moved = bursts
             .recv_timeout(WAIT)
             .expect("no burst after the tab change");
-        let version = resources::version(&state.desktop, ResourceKey::Tabs);
+        let version = resources::version(&state, ResourceKey::Tabs);
         let version = version.unwrap_or_else(|e| panic!("tabs version: {e:?}"));
         assert_eq!(
             relay::wire(&moved),
@@ -259,7 +244,7 @@ fn the_tabs_read_comes_from_the_published_list() {
 
     with_storage(|dir| {
         let (state, tabs) = fixture(dir, None, &["one", "two"]);
-        let fetched = resources::fetch(&state.desktop, ResourceKey::Tabs);
+        let fetched = resources::fetch(&state, ResourceKey::Tabs);
         let view = state.service.app_registry().tabs_view();
         let Ok(fetched) = fetched else {
             panic!("tabs answered {fetched:?}");
@@ -281,8 +266,8 @@ fn the_tabs_read_comes_from_the_published_list() {
 }
 
 /// The `tabs` row of `key`, fetched.
-fn tab_row(state: &AppState, key: TabKey) -> er_protocol::TabRow {
-    let fetched = resources::fetch(&state.desktop, ResourceKey::Tabs);
+fn tab_row(state: &DesktopState, key: TabKey) -> er_protocol::TabRow {
+    let fetched = resources::fetch(state, ResourceKey::Tabs);
     let Ok(er_protocol::Versioned {
         value: er_protocol::Resource::Tabs(tabs),
         ..
@@ -323,7 +308,7 @@ fn a_tab_row_carries_its_diffs_change_token() {
 
 /// A local PR tab saved with no branch, loaded, over a clone whose `origin`
 /// names acme/widgets.
-fn local_pr_without_a_branch(dir: &ReviewFlowTestDir) -> (AppState, (TabKey, TabDescriptor)) {
+fn local_pr_without_a_branch(dir: &ReviewFlowTestDir) -> (DesktopState, (TabKey, TabDescriptor)) {
     let github = er_engine::github::FakeGitHub::default()
         .with_pr_diff(Ok(raw_diff()))
         .with_pr_commits(Ok(Vec::new()))
@@ -383,7 +368,7 @@ fn a_loaded_rows_values_move_tabs_past_the_registry() {
     with_storage(|dir| {
         let (state, _) = fixture(dir, None, &["one"]);
         let revision = state.service.app_registry().tabs_view().revision;
-        let version = resources::version(&state.desktop, ResourceKey::Tabs);
+        let version = resources::version(&state, ResourceKey::Tabs);
         let version = version.unwrap_or_else(|e| panic!("tabs version: {e:?}"));
         assert!(version.0 > revision, "{version:?} at revision {revision}");
     });
@@ -434,7 +419,7 @@ fn the_tick_reloads_every_loaded_tab() {
         let context = &before[0].context;
         write_review(&context.er_dir, &context.branch_diff_hash);
 
-        tick::run(&state.desktop);
+        tick::run(&state);
 
         for (tab, loaded) in tabs.iter().zip(&before) {
             wait_until("each loaded tab's reload", || {
@@ -468,7 +453,7 @@ fn an_outside_question_reaches_the_flag_on_export_after_one_tick() {
         );
         stamp_ahead(&dir.join("questions.json"));
 
-        tick::run(&state.desktop);
+        tick::run(&state);
 
         let wire = er_service::wire_tab_key(tabs[0].0);
         let options = er_protocol::ExportOptions::default();
@@ -476,33 +461,6 @@ fn an_outside_question_reaches_the_flag_on_export_after_one_tick() {
         wait_until("the question in the export", || {
             export().is_ok_and(|body| body.contains("Asked from outside the app"))
         });
-    });
-}
-
-/// With the flag on the poll runs none of the tick's duties: a finished
-/// command stays for the tick, and the sidecars are not read again, so a
-/// reload after the poll still finds the outside write new.
-#[test]
-fn the_flag_on_poll_leaves_the_duties_to_the_tick() {
-    with_storage(|dir| {
-        let (state, tabs) = fixture(dir, None, &["one"]);
-        let active = &tabs[0];
-        let loaded = content(&state, active);
-        finished_command(&state);
-        write_review(&loaded.context.er_dir, &loaded.context.branch_diff_hash);
-
-        let polled = crate::commands::poll_impl(&state);
-        assert!(polled.is_ok(), "{:?}", polled.err());
-
-        assert!(command_pending(&state), "the poll checked the commands");
-        let reload = state.service.send(
-            &actor_key(&active.1),
-            Command::ReloadSidecars { key: active.0 },
-        );
-        assert!(
-            matches!(reload, Ok(Reply::SidecarsReloaded { reloaded: true, .. })),
-            "the poll reloaded the sidecars: {reload:?}"
-        );
     });
 }
 
@@ -518,7 +476,7 @@ fn a_tick_bumps_no_desktop_revision() {
         write_review(&loaded.context.er_dir, &loaded.context.branch_diff_hash);
         let before = revision();
 
-        tick::run(&state.desktop);
+        tick::run(&state);
 
         wait_until("the tab's reload", || {
             content(&state, &tabs[0]).ai.revision > loaded.ai.revision
@@ -533,7 +491,7 @@ fn a_tick_bumps_no_desktop_revision() {
 fn a_wake_runs_the_tick_before_the_interval() {
     with_storage(|dir| {
         let (state, tabs) = fixture(dir, None, &["one"]);
-        let wake = tick::spawn(state.desktop.clone(), Duration::from_secs(600));
+        let wake = tick::spawn(state.clone(), Duration::from_secs(600));
         let loaded = content(&state, &tabs[0]);
         write_review(&loaded.context.er_dir, &loaded.context.branch_diff_hash);
 
@@ -555,7 +513,7 @@ fn a_revision_bump_runs_the_tick_through_the_watcher() {
         let stop = Arc::new(AtomicBool::new(false));
         let (emitted, emits) = mpsc::channel();
         let follower = {
-            let desktop = state.desktop.clone();
+            let desktop = state.clone();
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
                 let emit = move |revision: u64, _delta: u64| {
@@ -608,7 +566,7 @@ fn the_tick_reload_reports_its_cost() {
         samples.sort_unstable();
         let median = samples[RUNS / 2];
         let started = Instant::now();
-        let posted = tick::reload_loaded_tabs(&state.desktop);
+        let posted = tick::reload_loaded_tabs(&state);
         println!(
             "reload of {} loaded tabs: median {median:?} ({:?} per tab) over {RUNS} runs; \
              posting {posted} from the tick took {:?}",

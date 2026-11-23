@@ -13,7 +13,7 @@ use er_protocol::{ErErrorKind, Resource, ResourceKey, TabDiff, Versioned};
 use er_service::{AppCommand, Command, SettingsCommand};
 
 use super::{review_flow_test_state, ReviewFlowTestDir};
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::resources::{self, Watched};
 use crate::service::{actor_key, ServiceState};
 
@@ -55,7 +55,7 @@ pub(super) fn fake_ports() -> er_engine::ports::Ports {
     er_engine::ports::Ports { git, github }
 }
 
-pub(super) fn state_over(dir: &ReviewFlowTestDir, ports: er_engine::ports::Ports) -> AppState {
+pub(super) fn state_over(dir: &ReviewFlowTestDir, ports: er_engine::ports::Ports) -> DesktopState {
     let mut state = review_flow_test_state(dir);
     let settings = dir.path().join("settings").join("config.toml");
     state.service = Arc::new(ServiceState::with_settings_path(ports, settings));
@@ -70,7 +70,7 @@ pub(super) fn with_storage(test: impl FnOnce(&ReviewFlowTestDir)) {
 
 /// A working tab on `repo` in the registry, which nothing has loaded.
 pub(super) fn listed(
-    state: &AppState,
+    state: &DesktopState,
     dir: &ReviewFlowTestDir,
     repo: &str,
 ) -> (TabKey, TabDescriptor) {
@@ -87,7 +87,7 @@ pub(super) fn listed(
 }
 
 pub(super) fn opened(
-    state: &AppState,
+    state: &DesktopState,
     dir: &ReviewFlowTestDir,
     repo: &str,
 ) -> (TabKey, TabDescriptor) {
@@ -108,8 +108,8 @@ fn diff_key(key: TabKey) -> ResourceKey {
 
 /// Fetches `key`'s diff on a thread of its own, so a fetch that waits on a
 /// held actor fails the bound instead of hanging the test.
-fn fetch_within_bound(state: &AppState, key: TabKey) -> (Versioned<Resource>, Duration) {
-    let desktop = state.desktop.clone();
+fn fetch_within_bound(state: &DesktopState, key: TabKey) -> (Versioned<Resource>, Duration) {
+    let desktop = state.clone();
     let (tx, rx) = mpsc::channel();
     let started = Instant::now();
     std::thread::spawn(move || {
@@ -130,7 +130,7 @@ fn diff_of(fetched: &Versioned<Resource>) -> &TabDiff {
 }
 
 /// Holds `tab`'s actor: every later command to it queues behind this one.
-fn hold(state: &AppState, tab: &TabDescriptor) {
+fn hold(state: &DesktopState, tab: &TabDescriptor) {
     let held = state
         .service
         .post_if_started(&actor_key(tab), Command::Hold);
@@ -198,7 +198,7 @@ fn the_push_after_the_load_brings_the_rows_of_a_tab_nothing_loaded() {
         wait_until("the load the fetch sent", || {
             state.service.content(key, &tab).is_some()
         });
-        let watched = resources::watched(&state.desktop);
+        let watched = resources::watched(&state);
         let pushed = watched.get(&Watched::TabDiff(key)).copied().unwrap_or(0);
         assert!(pushed > 0, "the relay announces no diff version");
         let (second, _) = fetch_within_bound(&state, key);
@@ -213,7 +213,7 @@ fn an_unlisted_key_is_not_found() {
         let state = state_over(dir, fake_ports());
         // A listed tab, so a fetch that fell back to any tab would answer.
         listed(&state, dir, "one");
-        let fetched = resources::fetch(&state.desktop, diff_key(TabKey::next()));
+        let fetched = resources::fetch(&state, diff_key(TabKey::next()));
         let kind = fetched.err().map(|e| e.kind);
         assert_eq!(kind, Some(ErErrorKind::NotFound));
     });
@@ -241,7 +241,7 @@ fn a_failed_first_load_answers_its_error_and_a_refresh_loads_once_the_cause_is_g
         assert_eq!(first.version.0, 0);
 
         let watched = || {
-            resources::watched(&state.desktop)
+            resources::watched(&state)
                 .get(&Watched::TabDiff(key))
                 .copied()
                 .unwrap_or(0)
@@ -258,7 +258,7 @@ fn a_failed_first_load_answers_its_error_and_a_refresh_loads_once_the_cause_is_g
         git(&root, &["add", "a.txt"]);
         git(&root, &["commit", "-q", "-m", "first"]);
 
-        let refreshed = content_routes::refresh(&state, false);
+        let refreshed = content_routes::refresh_tab(&state, super::active_key(&state), false);
         assert!(refreshed.is_ok(), "{refreshed:?}");
         let (loaded, _) = fetch_within_bound(&state, key);
         assert!(loaded.version.0 > failed.version.0);
@@ -304,11 +304,11 @@ fn the_rows_read_the_repo_rule_tables_and_a_settings_write_moves_the_diff() {
             .map(|s| (s.name.as_str(), s.files))
             .collect();
         assert_eq!(kinds, [("code", Some(2)), ("generated", Some(1))]);
-        let before = resources::diff::published_version(&state.desktop, key, &tab);
+        let before = resources::diff::published_version(&state, key, &tab);
         assert!(settings.send_and_wait(SettingsCommand::SaveConfig).is_ok());
-        let after = resources::diff::published_version(&state.desktop, key, &tab);
+        let after = resources::diff::published_version(&state, key, &tab);
         assert!(after > before, "a settings write left the diff at {before}");
-        let pushed = resources::watched(&state.desktop);
+        let pushed = resources::watched(&state);
         assert_eq!(pushed.get(&Watched::TabDiff(key)), Some(&after));
     });
 }

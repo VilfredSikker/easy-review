@@ -1,14 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(not(feature = "v1-service"))]
-use std::sync::Condvar;
 use std::sync::{Arc, Mutex};
 use tauri::State;
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
 
-#[cfg(feature = "v1-service")]
 pub(crate) mod content_routes;
 
 use crate::inbox::{
@@ -22,14 +19,10 @@ use crate::snapshot::{
     GhCommentSummary, GhReviewSummary, GhUser, GithubStatusSnapshot, PrInfo,
 };
 pub use crate::state::{run_blocking, DesktopState, PrOpenPrefetchClaim, PrOpenPrefetchMap};
-#[cfg(not(feature = "v1-service"))]
-use er_engine::ai::CommentType;
-#[cfg(any(test, not(feature = "v1-service")))]
+#[cfg(test)]
 use er_engine::app::run_card_ai_subprocess;
 #[cfg(test)]
 use er_engine::app::CardAiInvocation;
-#[cfg(not(feature = "v1-service"))]
-use er_engine::app::{plan_card_ai_invocation, CommentTarget};
 use er_engine::app::{App, DiffMode, InputMode};
 use er_engine::config::InboxConfig;
 
@@ -266,7 +259,7 @@ fn snapshot_sources(state: &AppState) -> crate::snapshot::SnapshotSources<'_> {
         inbox: Some(&state.inbox),
         // With the flag on the page fetches hunks by hash, so nothing records
         // which hunks it holds.
-        sent_files: (!cfg!(feature = "v1-service")).then_some(&state.sent_files),
+        sent_files: None,
         branch_base_remote_oid: Some(&state.branch_base_remote_oid),
         view: Some(&state.view),
     }
@@ -380,7 +373,6 @@ fn chrome_snap_from(app: &App, state: &AppState) -> AppSnapshot {
 /// so every snapshot an App command builds sends it, under the lock the
 /// command holds, and answers what it sent. P62.2 deletes this with the
 /// App's commands.
-#[cfg(feature = "v1-service")]
 fn send_app_notice(app: &App, state: &AppState) -> Option<er_protocol::Notice> {
     let notice = app_notice(app.notification.as_ref(), &state.session.app_notice_seq)?;
     let handle = state
@@ -394,15 +386,9 @@ fn send_app_notice(app: &App, state: &AppState) -> Option<er_protocol::Notice> {
     Some(notice)
 }
 
-#[cfg(not(feature = "v1-service"))]
-fn send_app_notice(_: &App, _: &AppState) -> Option<er_protocol::Notice> {
-    None
-}
-
 /// The App's notification as a notice, once: `sent` holds the engine's
 /// sequence number of the last one sent, and the App keeps its last
 /// notification set, so every later snapshot sees it again.
-#[cfg(feature = "v1-service")]
 pub(crate) fn app_notice(
     notification: Option<&er_engine::app::Notification>,
     sent: &AtomicU64,
@@ -433,17 +419,6 @@ fn log_branch_open_phase(
 
 pub(crate) fn now_ms() -> u64 {
     crate::inbox::now_epoch_ms()
-}
-
-/// Clone inbox prefs from the live `App`. Callers must not hold the inbox lock.
-/// The flag build reads them from the settings actor instead
-/// (`app_owner::startup::inbox_prefs`), so it has no caller there.
-#[cfg(not(feature = "v1-service"))]
-pub fn clone_inbox_prefs(app: &Arc<Mutex<App>>) -> InboxConfig {
-    app.lock()
-        .ok()
-        .map(|g| g.config.inbox.clone())
-        .unwrap_or_default()
 }
 
 /// Show native notifications for inbox items that were created before the Tauri
@@ -579,100 +554,25 @@ pub(crate) fn active_github_key(app: &App, state: &AppState) -> Option<(String, 
     crate::snapshot::resolve_github_status_key(tab, &cache)
 }
 
-#[cfg(not(feature = "v1-service"))]
-fn active_pr_author(
-    app: &App,
-    state: &AppState,
-    owner: &str,
-    repo: &str,
-    number: u64,
-) -> Option<String> {
-    let tab = app.tab();
-    if tab.pr_number == Some(number) {
-        if let Some(author) = tab
-            .pr_data
-            .as_ref()
-            .map(|pr| pr.author.trim())
-            .filter(|author| !author.is_empty())
-        {
-            return Some(author.to_string());
-        }
-    }
-
-    let key = (owner.to_string(), repo.to_string(), number);
-    state
-        .gh_status_cache
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(&key).map(|status| status.author.clone()))
-        .filter(|author| !author.trim().is_empty())
-}
-
-#[cfg(any(test, not(feature = "v1-service")))]
+#[cfg(test)]
 fn own_pr_approval_error() -> String {
     "GitHub does not allow approving your own pull request.".to_string()
 }
 
-#[cfg(any(test, not(feature = "v1-service")))]
+#[cfg(test)]
 fn is_own_pr_approval_error(raw: &str) -> bool {
     let lower = raw.to_lowercase();
     lower.contains("can not approve your own pull request")
         || lower.contains("cannot approve your own pull request")
 }
 
-/// GitHub keeps one pending review per reviewer per PR and refuses a
-/// standalone review comment while it exists, so "Add single comment" has to
-/// wait until the review is submitted (as github.com hides it meanwhile).
-#[cfg(not(feature = "v1-service"))]
-fn pending_review_blocks_single_comment() -> String {
-    er_engine::github_post::PENDING_REVIEW_BLOCKS_COMMENT.to_string()
-}
-
-#[cfg(any(test, not(feature = "v1-service")))]
+#[cfg(test)]
 fn is_one_pending_review_error(raw: &str) -> bool {
     raw.to_lowercase().contains("one pending review")
 }
 
-/// Files the finished and failed background tasks in the inbox. The poll
-/// runs it with the flag off; with the flag on the task host files each task
-/// as it finishes (`file_tasks_in_inbox`).
-#[cfg(not(feature = "v1-service"))]
-pub(crate) fn process_ai_task_inbox(app: &App, state: &DesktopState) {
-    let tasks = app.background_task_snapshots();
-    let tab = app.tab();
-    let target = InboxTarget {
-        project_id: projects::resolve_project_id_for_inbox(
-            None,
-            Some(tab.repo_root.as_str()),
-            tab.remote_repo.as_deref(),
-        ),
-        repo_root: Some(tab.repo_root.clone()),
-        remote: tab.remote_repo.clone(),
-        pr_number: tab.pr_number,
-        branch: Some(
-            tab.local_branch_view
-                .clone()
-                .unwrap_or_else(|| tab.current_branch.clone()),
-        ),
-        url: None,
-    };
-    let rows = tasks.iter().map(|task| {
-        let row = InboxTask {
-            id: &task.id,
-            kind: &task.kind,
-            status: &task.status,
-            target_label: &task.target_label,
-            label: &task.label,
-            error: task.error.as_deref(),
-        };
-        (row, target.clone())
-    });
-    file_in_inbox(state, &app.config.inbox, rows);
-}
-
 /// Files finished background tasks of the flag path in the inbox, each
 /// under its own target's project.
-#[cfg(feature = "v1-service")]
 pub(crate) fn file_tasks_in_inbox(state: &DesktopState, tasks: &[er_protocol::TaskJob]) {
     let config = crate::arena_service::config(state);
     let rows = tasks.iter().map(|task| {
@@ -1046,70 +946,16 @@ pub async fn request_file_content(
     let state = state.inner().clone();
     // Flag-on, the parsed files reach the page with the snapshot that reads
     // the content, so this answers no files.
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         content_routes::request_file_content(&state, &source_indices).map(|()| Vec::new())
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if app.tab().mode == er_engine::app::DiffMode::History {
-            return Ok(vec![]);
-        }
-        {
-            let tab = app.tab_mut();
-            for &source_index in &source_indices {
-                if source_index < tab.files.len() {
-                    tab.ensure_file_parsed_at(source_index);
-                }
-            }
-        }
-        let tab = app.tab();
-        let pending_ai = Some(state.pending_ai_replies.replies());
-        let out: Vec<FileSnapshot> = source_indices
-            .iter()
-            .filter_map(|&source_index| {
-                tab.files.get(source_index).map(|f| {
-                    crate::snapshot::build_file_snapshot(source_index, f, tab, pending_ai, true)
-                })
-            })
-            .collect();
-        // These hunks bypass build_snapshot — record them so later polls can
-        // omit the same content.
-        for snap in &out {
-            crate::snapshot::record_sent_file(&app, tab, snap, &state.sent_files);
-        }
-        Ok(out)
-    })
-    .await;
+    .await
 }
 
 #[tauri::command]
 pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || content_routes::select_file(&state, idx)).await;
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        {
-            let tab = app.tab_mut();
-            if tab.mode == er_engine::app::DiffMode::History {
-                tab.history_select_file(idx);
-            } else if idx < tab.files.len() {
-                tab.selected_file = idx;
-                tab.current_hunk = 0;
-                tab.current_line = None;
-                tab.diff_scroll = 0;
-                tab.h_scroll = 0;
-                tab.ensure_file_parsed();
-                tab.rebuild_hunk_offsets();
-            }
-        }
-        Ok(snap_from(&app, &state))
-    })
-    .await;
+    run_blocking(move || content_routes::select_file(&state, idx)).await
 }
 
 #[derive(serde::Serialize)]
@@ -1137,7 +983,6 @@ fn file_preview(
     path: String,
     expected_preview_context_key: String,
 ) -> Result<FilePreviewResponse, String> {
-    #[cfg(feature = "v1-service")]
     if let Some(entry) = crate::resources::preview::active(state) {
         let preview = crate::resources::preview::document(
             state,
@@ -1220,7 +1065,6 @@ fn image_preview(
     path: String,
     expected_preview_context_key: String,
 ) -> Result<ImagePreviewResponse, String> {
-    #[cfg(feature = "v1-service")]
     if let Some(entry) = crate::resources::preview::active(state) {
         let preview =
             crate::resources::preview::image(state, &entry, &path, &expected_preview_context_key)
@@ -1384,7 +1228,6 @@ fn set_mode_impl(
     tab_idx: Option<usize>,
 ) -> Result<AppSnapshot, String> {
     // Every view the workspace loads goes to the active tab's actor.
-    #[cfg(feature = "v1-service")]
     if let Some(diff_mode) = content_routes::routed_mode(mode) {
         return content_routes::set_mode(state, mode, diff_mode, pr_number, tab_idx);
     }
@@ -1480,26 +1323,13 @@ pub async fn toggle_reviewed(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         content_routes::write_reviewed(&state, |context| er_service::Command::ToggleReviewed {
             context,
             path,
         })
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let _ = path;
-        run_blocking(move || {
-            let mut app = state.app.lock().map_err(|e| e.to_string())?;
-            // toggle_reviewed bumps tab.reviewed_revision internally
-            app.toggle_reviewed().map_err(|e| e.to_string())?;
-            // Return chrome-only: counts update, no hunk rebuild needed
-            Ok(chrome_snap_from(&app, &state))
-        })
-        .await
-    }
+    .await
 }
 
 #[tauri::command]
@@ -1508,33 +1338,14 @@ pub async fn mark_reviewed(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         content_routes::write_reviewed(&state, |context| er_service::Command::MarkReviewed {
             context,
             path,
             reviewed: true,
         })
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    {
-        run_blocking(move || {
-            let mut app = state.app.lock().map_err(|e| e.to_string())?;
-            {
-                let tab = app.tab_mut();
-                if tab.active_diff_files().iter().any(|f| f.path == path) {
-                    let hash = tab.per_file_hash(&path);
-                    tab.reviewed.insert(path, hash);
-                    tab.reviewed_revision += 1;
-                    let _ = tab.save_reviewed_files();
-                }
-            }
-            // Return chrome-only: counts update, no hunk rebuild needed
-            Ok(chrome_snap_from(&app, &state))
-        })
-        .await
-    }
+    .await
 }
 
 #[tauri::command]
@@ -1543,71 +1354,14 @@ pub async fn unmark_reviewed(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         content_routes::write_reviewed(&state, |context| er_service::Command::MarkReviewed {
             context,
             path,
             reviewed: false,
         })
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    {
-        run_blocking(move || {
-            let mut app = state.app.lock().map_err(|e| e.to_string())?;
-            {
-                let tab = app.tab_mut();
-                if tab.active_diff_files().iter().any(|f| f.path == path) {
-                    tab.reviewed.remove(&path);
-                    tab.reviewed_revision += 1;
-                    let _ = tab.save_reviewed_files();
-                }
-            }
-            // Return chrome-only: counts update, no hunk rebuild needed
-            Ok(chrome_snap_from(&app, &state))
-        })
-        .await
-    }
-}
-
-/// Paths of a tour pillar's files that are present in the current diff. The
-/// synthetic `__other__` pillar resolves to diff files no pillar references.
-/// Filtering to in-diff files keeps stale-tour entries out of the shared branch
-/// `reviewed` set (mirrors `mark_reviewed`'s `active_diff_files` guard).
-#[cfg(not(feature = "v1-service"))]
-fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<String> {
-    let diff_paths: std::collections::HashSet<&str> = tab
-        .active_diff_files()
-        .iter()
-        .map(|f| f.path.as_str())
-        .collect();
-    let Some(tour) = tab.ai.tour.as_ref() else {
-        return Vec::new();
-    };
-    // Use the shared ownership rule (`ErTour::pillar_ownership`) so bulk-review
-    // attributes each file to exactly the pillar the desktop snapshot displays
-    // it under — including the global cross-pillar dedup that gives a shared
-    // related file to the first pillar that references it. Keeping these in sync
-    // is what lets a pillar's "Review all" reach 100%.
-    let ownership = tour.pillar_ownership(|p| diff_paths.contains(p));
-    if pillar_id == "__other__" {
-        let assigned: std::collections::HashSet<&str> = ownership
-            .iter()
-            .flat_map(|(_, paths)| paths.iter().map(String::as_str))
-            .collect();
-        return tab
-            .active_diff_files()
-            .iter()
-            .map(|f| f.path.clone())
-            .filter(|p| !assigned.contains(p.as_str()))
-            .collect();
-    }
-    ownership
-        .into_iter()
-        .find(|(id, _)| id == pillar_id)
-        .map(|(_, paths)| paths)
-        .unwrap_or_default()
+    .await
 }
 
 #[tauri::command]
@@ -1617,8 +1371,7 @@ pub async fn bulk_review_pillar(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::BulkReviewPillar {
                 context,
@@ -1626,33 +1379,6 @@ pub async fn bulk_review_pillar(
                 reviewed: true,
             }
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-            return early;
-        }
-        {
-            let tab = app.tab_mut();
-            let paths = pillar_file_paths(tab, &pillar_id);
-            let mut changed = false;
-            for path in paths {
-                let hash = tab.per_file_hash(&path);
-                tab.reviewed.insert(path, hash);
-                changed = true;
-            }
-            if changed {
-                tab.reviewed_revision += 1;
-                let _ = tab.save_reviewed_files();
-            }
-        }
-        // Full snapshot (not chrome-only): this command is invoked via the generic
-        // `app.cmd` path, which replaces the whole snapshot. A chrome-only snapshot
-        // carries `files: []`, which would blank the diff. snap_from keeps files
-        // (hunks differential-omitted + spliced by the frontend).
-        Ok(snap_from(&app, &state))
     })
     .await
 }
@@ -1664,8 +1390,7 @@ pub async fn unbulk_review_pillar(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::BulkReviewPillar {
                 context,
@@ -1673,29 +1398,6 @@ pub async fn unbulk_review_pillar(
                 reviewed: false,
             }
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-            return early;
-        }
-        {
-            let tab = app.tab_mut();
-            let paths = pillar_file_paths(tab, &pillar_id);
-            let mut changed = false;
-            for path in paths {
-                if tab.reviewed.remove(&path).is_some() {
-                    changed = true;
-                }
-            }
-            if changed {
-                tab.reviewed_revision += 1;
-                let _ = tab.save_reviewed_files();
-            }
-        }
-        Ok(snap_from(&app, &state))
     })
     .await
 }
@@ -2172,30 +1874,8 @@ fn ingest_github_notifications(
     }
 }
 
-#[cfg(not(feature = "v1-service"))]
-fn auto_triage_ctx(state: &AppState) -> crate::auto_triage::AutoTriageContext {
-    let (app, spawn_app) = (Arc::clone(&state.app), Arc::clone(&state.app));
-    crate::auto_triage::AutoTriageContext {
-        ports: state.desktop.ports.clone(),
-        spawn: Arc::new(move |target, prompt| {
-            let mut app = spawn_app.lock().map_err(|e| e.to_string())?;
-            app.spawn_background_triage_review(target, prompt, true)
-                .map_err(|e| e.to_string())
-        }),
-        notify: Arc::new(move |message| {
-            if let Ok(mut app) = app.lock() {
-                app.notify(&message);
-            }
-        }),
-        in_flight: Arc::clone(&state.auto_triage_in_flight),
-        queue_moved: Arc::new(|| {}),
-        desktop_revision: Arc::clone(&state.desktop_revision),
-    }
-}
-
 /// Sidebar triage on the flag path: queued on the task host, with the
 /// request set shown in `jobs`.
-#[cfg(feature = "v1-service")]
 pub(crate) fn triage_ctx(desktop: &DesktopState) -> crate::auto_triage::AutoTriageContext {
     let (spawn_desktop, notify_desktop, clock) = (
         desktop.clone(),
@@ -2256,22 +1936,10 @@ pub fn run_pr_triage(
     pr_number: u64,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    #[cfg(feature = "v1-service")]
-    return ask_on_desktop(&state, |desktop| {
+    ask_on_desktop(&state, |desktop| {
         pr_triage(desktop, &triage_ctx(desktop), &project_id, pr_number)
             .map_err(crate::tasks::refused)
-    });
-    #[cfg(not(feature = "v1-service"))]
-    {
-        pr_triage(
-            &state.desktop,
-            &auto_triage_ctx(&state),
-            &project_id,
-            pr_number,
-        )?;
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
-    }
+    })
 }
 
 /// Queues triage of one project's PR on `ctx`.
@@ -2315,22 +1983,10 @@ pub fn run_branch_triage(
     branch: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    #[cfg(feature = "v1-service")]
-    return ask_on_desktop(&state, |desktop| {
+    ask_on_desktop(&state, |desktop| {
         branch_triage(desktop, &triage_ctx(desktop), &project_id, &branch)
             .map_err(crate::tasks::refused)
-    });
-    #[cfg(not(feature = "v1-service"))]
-    {
-        branch_triage(
-            &state.desktop,
-            &auto_triage_ctx(&state),
-            &project_id,
-            &branch,
-        )?;
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
-    }
+    })
 }
 
 /// Queues triage of one project's branch on `ctx`: its open PR when it has
@@ -2370,17 +2026,7 @@ pub(crate) fn branch_triage(
 /// Running reviews are unaffected.
 #[tauri::command]
 pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    #[cfg(feature = "v1-service")]
-    return ask_on_desktop(&state, |desktop| crate::tasks::cancel_queued(desktop, &id));
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if !app.cancel_queued_background_task(&id) {
-            return Err("Queued review not found (it may have started)".to_string());
-        }
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
-    }
+    ask_on_desktop(&state, |desktop| crate::tasks::cancel_queued(desktop, &id))
 }
 
 /// Stop a running review.
@@ -2390,24 +2036,7 @@ pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSna
 /// other command — including the poll that would show the stop took effect.
 #[tauri::command]
 pub fn cancel_running_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    #[cfg(feature = "v1-service")]
-    return ask_on_desktop(&state, |desktop| crate::tasks::cancel_running(desktop, &id));
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let run = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            app.running_background_review(&id)
-        };
-        let Some(run) = run else {
-            return Err("No running review with that id".to_string());
-        };
-        run.kill();
-
-        // Re-read for the snapshot only after the signal is away.
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
-    }
+    ask_on_desktop(&state, |desktop| crate::tasks::cancel_running(desktop, &id))
 }
 
 #[tauri::command]
@@ -2518,8 +2147,7 @@ pub async fn add_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::AddComment {
                 context,
@@ -2535,65 +2163,7 @@ pub async fn add_comment(
             }
         })
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        add_comment_impl(
-            file,
-            hunk_idx,
-            line_num,
-            line_num_end,
-            text,
-            side,
-            id,
-            view,
-            &state,
-        )
-    })
     .await
-}
-
-#[cfg(not(feature = "v1-service"))]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the parameters are the JS IPC payload; a params struct would change the command contract"
-)]
-fn add_comment_impl(
-    file: String,
-    hunk_idx: usize,
-    line_num: Option<usize>,
-    line_num_end: Option<usize>,
-    text: String,
-    side: Option<String>,
-    id: Option<String>,
-    view: Option<crate::snapshot::OptimisticView>,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
-            return early;
-        }
-    }
-    let posted = post_github_comment_flow(
-        state,
-        crate::github_comment_builders::line_intent(
-            file,
-            hunk_idx,
-            line_num,
-            line_num_end,
-            side,
-            text,
-        ),
-        id,
-    )?;
-    let kept_earlier_body = posted.posted.kept_earlier_body;
-    posted.finish(state);
-    if kept_earlier_body {
-        return Err("Your earlier version was posted; this edit was not".to_string());
-    }
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from_confirmed(&app, state))
 }
 
 #[tauri::command]
@@ -2613,8 +2183,7 @@ pub async fn add_question(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::AddQuestion {
                 context,
@@ -2631,32 +2200,6 @@ pub async fn add_question(
                 finding_ref: None,
             }
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-            return early;
-        }
-        if let Some(ref s) = side {
-            app.tab_mut().comment_side = Some(s.clone());
-        }
-        app.submit_comment_text_with_id(
-            CommentTarget {
-                file,
-                hunk_idx,
-                line_num,
-                line_num_end,
-            },
-            text,
-            CommentType::Question,
-            None,
-            None,
-            id,
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -2678,8 +2221,7 @@ pub async fn add_note(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::AddNote {
                 context,
@@ -2696,32 +2238,6 @@ pub async fn add_note(
                 finding_ref: None,
             }
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-            return early;
-        }
-        if let Some(ref s) = side {
-            app.tab_mut().comment_side = Some(s.clone());
-        }
-        app.submit_comment_text_with_id(
-            CommentTarget {
-                file,
-                hunk_idx,
-                line_num,
-                line_num_end,
-            },
-            text,
-            CommentType::Note,
-            None,
-            None,
-            id,
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -2742,8 +2258,7 @@ pub async fn add_document_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         service_add_document_thread(
             &state,
             DocumentThread {
@@ -2756,52 +2271,10 @@ pub async fn add_document_thread(
             },
         )
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    let comment_type = match kind.as_str() {
-        "question" => CommentType::Question,
-        "note" => CommentType::Note,
-        other => return Err(format!("A document anchor cannot hold a {other}")),
-    };
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let (active_tab, request) = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            (
-                app.active_tab,
-                app.tab()
-                    .capture_file_preview(&file)
-                    .map_err(|e| e.to_string())?,
-            )
-        };
-        if request.preview_key != preview_key {
-            return Err("The document changed before the comment was saved".to_string());
-        }
-        let source = request.read(&*state.ports.git).map_err(|e| e.to_string())?;
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if app.active_tab != active_tab || app.tab().file_preview_key(&file) != request.preview_key
-        {
-            return Err("The document changed before the comment was saved".to_string());
-        }
-        app.submit_document_comment(
-            CommentTarget {
-                file,
-                hunk_idx: 0,
-                line_num: Some(line_num),
-                line_num_end,
-            },
-            text,
-            comment_type,
-            &source,
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(snap_from_confirmed(&app, &state))
-    })
     .await
 }
 
 /// A document thread as the preview sends it.
-#[cfg(feature = "v1-service")]
 pub(crate) struct DocumentThread {
     pub file: String,
     pub kind: String,
@@ -2816,7 +2289,6 @@ pub(crate) struct DocumentThread {
 /// active tab, as every annotation route's does. The App's tab key is read
 /// with the preview, so while the App lags the registry the text is refused
 /// rather than written to the registry's other tab.
-#[cfg(feature = "v1-service")]
 pub(crate) fn service_add_document_thread(
     state: &AppState,
     thread: DocumentThread,
@@ -2880,8 +2352,7 @@ pub async fn reply_to_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::ReplyToThread {
                 context,
@@ -2891,90 +2362,7 @@ pub async fn reply_to_thread(
             }
         })
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || reply_to_thread_impl(parent_id, text, view, &state)).await
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn reply_to_thread_impl(
-    parent_id: String,
-    text: String,
-    view: Option<crate::snapshot::OptimisticView>,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
-            return early;
-        }
-        let (file, hunk_idx, line_num, comment_type) = {
-            let tab = app.tab();
-            if parent_id.starts_with("q-") {
-                let q = tab
-                    .ai
-                    .questions
-                    .as_ref()
-                    .and_then(|qs| qs.questions.iter().find(|q| q.id == parent_id))
-                    .map(|q| {
-                        (
-                            q.file.clone(),
-                            q.hunk_index.unwrap_or(0),
-                            q.line_start,
-                            CommentType::Question,
-                        )
-                    });
-                q.ok_or_else(|| "Question not found".to_string())?
-            } else if parent_id.starts_with("n-") {
-                let n = tab
-                    .ai
-                    .notes
-                    .as_ref()
-                    .and_then(|ns| ns.notes.iter().find(|n| n.id == parent_id))
-                    .map(|n| {
-                        (
-                            n.file.clone(),
-                            n.hunk_index.unwrap_or(0),
-                            n.line_start,
-                            CommentType::Note,
-                        )
-                    });
-                n.ok_or_else(|| "Note not found".to_string())?
-            } else {
-                let c = tab
-                    .ai
-                    .github_comments
-                    .as_ref()
-                    .and_then(|gc| gc.comments.iter().find(|c| c.id == parent_id))
-                    .ok_or_else(|| "Comment not found".to_string())?;
-                if c.github_id.is_some() {
-                    return Err(
-                        "This comment is on GitHub — use reply_to_github_thread".to_string()
-                    );
-                }
-                (
-                    c.file.clone(),
-                    c.hunk_index.unwrap_or(0),
-                    c.line_start,
-                    CommentType::GitHubComment,
-                )
-            }
-        };
-        app.submit_comment_text(
-            CommentTarget {
-                file,
-                hunk_idx,
-                line_num,
-                line_num_end: None,
-            },
-            text,
-            comment_type,
-            Some(parent_id),
-            None,
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(snap_from_confirmed(&app, state))
-    }
+    .await
 }
 
 /// Reply to a comment that is already on GitHub: post the reply now and
@@ -2988,8 +2376,7 @@ pub async fn reply_to_github_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, None, |context| {
             er_service::Command::ReplyToGithubThread {
                 context,
@@ -2998,22 +2385,6 @@ pub async fn reply_to_github_thread(
                 client_id: Some(id),
             }
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let posted = post_github_comment_flow(
-            &state,
-            crate::github_comment_builders::reply_intent(parent_id, text),
-            Some(id),
-        )?;
-        let kept_earlier_body = posted.posted.kept_earlier_body;
-        posted.finish(&state);
-        if kept_earlier_body {
-            return Err("Your earlier version was posted; this edit was not".to_string());
-        }
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -3025,25 +2396,10 @@ pub async fn delete_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::DeleteThread { context, id }
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-            return early;
-        }
-        app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-        state.pending_ai_replies.remove([id.as_str()]);
-        state
-            .desktop_revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -3111,138 +2467,6 @@ pub async fn remove_finding_thread(
     .await
 }
 
-#[cfg(not(feature = "v1-service"))]
-fn scope_for_sidecar_dir(dir: &str) -> Result<er_store::Scope, String> {
-    er_store::Scope::dir(dir).map_err(|e| e.to_string())
-}
-
-/// Mark a thread root resolved in whichever sidecar holds it. Returns the path
-/// of the sidecar that holds the thread (written only if it was unresolved),
-/// or `None` when no sidecar knows the id.
-#[cfg(not(feature = "v1-service"))]
-fn mark_thread_resolved_in_files(
-    id: &str,
-    er_dir: &str,
-    gc_dir: &str,
-) -> Result<Option<String>, String> {
-    let store = er_engine::store_registry::store();
-    let q_path = er_engine::ai::annotation_store::path_of::<er_engine::ai::ErQuestions>(
-        &store,
-        &scope_for_sidecar_dir(er_dir)?,
-    )
-    .map_err(|e| e.to_string())?;
-    let notes_path = er_engine::ai::annotation_store::path_of::<er_engine::ai::ErNotes>(
-        &store,
-        &scope_for_sidecar_dir(er_dir)?,
-    )
-    .map_err(|e| e.to_string())?;
-    let gc_path = er_engine::ai::annotation_store::path_of::<er_engine::ai::ErGithubComments>(
-        &store,
-        &scope_for_sidecar_dir(gc_dir)?,
-    )
-    .map_err(|e| e.to_string())?;
-
-    let scope = scope_for_sidecar_dir(er_dir)?;
-    if let Ok(er_store::Loaded::Found(stored)) =
-        er_engine::ai::annotation_store::load_questions(&store, &scope)
-    {
-        if stored.value.questions.iter().any(|q| q.id == id) {
-            let id = id.to_string();
-            if stored
-                .value
-                .questions
-                .iter()
-                .any(|q| q.id == id && !q.resolved)
-            {
-                er_engine::ai::annotation_store::update_questions(&store, &scope, move |current| {
-                    let mut qs =
-                        current.ok_or_else(|| anyhow::anyhow!("the questions file vanished"))?;
-                    if let Some(q) = qs.questions.iter_mut().find(|q| q.id == id) {
-                        q.resolved = true;
-                    }
-                    Ok::<_, anyhow::Error>(qs)
-                })
-                .map_err(|e| e.to_string())?;
-            }
-            return Ok(Some(q_path.to_string_lossy().into_owned()));
-        }
-    }
-
-    let scope = scope_for_sidecar_dir(er_dir)?;
-    if let Ok(er_store::Loaded::Found(stored)) =
-        er_engine::ai::annotation_store::load_notes(&store, &scope)
-    {
-        if stored.value.notes.iter().any(|n| n.id == id) {
-            let id = id.to_string();
-            if stored.value.notes.iter().any(|n| n.id == id && !n.resolved) {
-                er_engine::ai::annotation_store::update_notes(&store, &scope, move |current| {
-                    let mut ns =
-                        current.ok_or_else(|| anyhow::anyhow!("the notes file vanished"))?;
-                    if let Some(n) = ns.notes.iter_mut().find(|n| n.id == id) {
-                        n.resolved = true;
-                    }
-                    Ok::<_, anyhow::Error>(ns)
-                })
-                .map_err(|e| e.to_string())?;
-            }
-            return Ok(Some(notes_path.to_string_lossy().into_owned()));
-        }
-    }
-
-    let scope = scope_for_sidecar_dir(gc_dir)?;
-    if let Ok(er_store::Loaded::Found(stored)) =
-        er_engine::ai::annotation_store::load_github_comments(&store, &scope)
-    {
-        if stored.value.comments.iter().any(|c| c.id == id) {
-            let id = id.to_string();
-            if stored
-                .value
-                .comments
-                .iter()
-                .any(|c| c.id == id && !c.resolved)
-            {
-                er_engine::ai::annotation_store::update_github_comments(
-                    &store,
-                    &scope,
-                    move |current| {
-                        let mut gc = current
-                            .ok_or_else(|| anyhow::anyhow!("the GitHub comments file vanished"))?;
-                        if let Some(c) = gc.comments.iter_mut().find(|c| c.id == id) {
-                            c.resolved = true;
-                        }
-                        Ok::<_, anyhow::Error>(gc)
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-            }
-            return Ok(Some(gc_path.to_string_lossy().into_owned()));
-        }
-    }
-    Ok(None)
-}
-
-/// Mirror `mark_thread_resolved_in_files` on the in-memory AI state so the
-/// handler does not need `reload_ai_state()` (which re-reads every sidecar).
-#[cfg(not(feature = "v1-service"))]
-fn mark_thread_resolved_in_memory(ai: &mut er_engine::ai::AiState, id: &str) {
-    if let Some(qs) = ai.questions.as_mut() {
-        for q in qs.questions.iter_mut().filter(|q| q.id == id) {
-            q.resolved = true;
-        }
-    }
-    if let Some(ns) = ai.notes.as_mut() {
-        for n in ns.notes.iter_mut().filter(|n| n.id == id) {
-            n.resolved = true;
-        }
-    }
-    if let Some(gc) = ai.github_comments.as_mut() {
-        for c in gc.comments.iter_mut().filter(|c| c.id == id) {
-            c.resolved = true;
-        }
-    }
-    ai.rebuild_comment_index();
-}
-
 #[tauri::command]
 pub async fn resolve_thread(
     id: String,
@@ -3250,32 +2474,10 @@ pub async fn resolve_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::ResolveThread { context, id }
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-            return early;
-        }
-
-        let tab = app.tab();
-        let er_dir = tab.er_dir();
-        let gc_dir = tab.github_comments_dir();
-        let Some(touched) = mark_thread_resolved_in_files(&id, &er_dir, &gc_dir)? else {
-            return Err(format!("Thread not found or already resolved: {id}"));
-        };
-        {
-            let tab = app.tab_mut();
-            mark_thread_resolved_in_memory(&mut tab.ai, &id);
-            tab.mark_sidecar_written(&touched);
-        }
-        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -3287,18 +2489,8 @@ pub async fn resolve_thread(
 #[tauri::command]
 pub async fn refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
-        content_routes::refresh(&state, false).map(|_| AppSnapshot::default())
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
-    })
-    .await;
+    run_blocking(move || content_routes::refresh(&state, false).map(|_| AppSnapshot::default()))
+        .await
 }
 
 /// Fetch the `gh stack` (github/gh-stack) stack for the active tab's branch and
@@ -3406,8 +2598,7 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcom
     let state = state.inner().clone();
     // Flag-on, the active tab's actor refetches and the route lines the stale
     // pill's baselines up, as the App path below does.
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         let synced = content_routes::sync(&state)?;
         kick_meta_refresh(&state, synced.repo_root);
         refresh_status_after_sync(&state, synced.status_key);
@@ -3416,51 +2607,9 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcom
             reviewed_cleared: synced.reviewed_cleared,
         })
     })
-    .await;
+    .await
     // Heavy: shells out to git/gh fetches. Run off the main thread so the
     // window stays responsive for the whole fetch.
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || {
-        let (root, reviewed_cleared) = {
-            let mut app = state.app.lock().map_err(|e| e.to_string())?;
-            let reviewed_cleared = app
-                .tab_mut()
-                .refetch_and_refresh_diff_counting_cleared()
-                .map_err(|e| e.to_string())?;
-
-            // Clear the stale pill on a completed sync by aligning the tab's
-            // freshness baseline with the exact source the pill compares against
-            // (see `build_snapshot`'s `diff_stale`). Without this the pill stays
-            // stuck "stale" after a successful sync, because the value recorded
-            // during refresh comes from a different source than the comparison.
-            let pr_number = app.tab().pr_number;
-            let is_branch_diff = app.tab().shows_branch_base_diff();
-            let base_branch = app.tab().base_branch.clone();
-            let repo_root = app.tab().repo_root.clone();
-
-            if let Some(pr_number) = pr_number {
-                // PR pill compares pr_cache `head_oid` (gh) vs `last_diff_head_oid`,
-                // but refresh records the latter from the local pull/<n>/head ref.
-                // Mirror the remote loop and adopt the cache value.
-                if let Some(oid) = pr_cache_head_oid_for_pr(&state, pr_number) {
-                    app.tab_mut().last_diff_head_oid = Some(oid);
-                }
-            } else if is_branch_diff {
-                align_branch_base_probe(&state, &repo_root, &base_branch);
-            }
-
-            crate::tabs::persist_app_tabs(&app, &state.view);
-            (repo_root, reviewed_cleared)
-        };
-        kick_meta_refresh(&state, root);
-        refresh_active_status_after_sync(&state);
-        let snapshot: Result<AppSnapshot, String> = snap!(state);
-        Ok(SyncOutcome {
-            snapshot: snapshot?,
-            reviewed_cleared,
-        })
-    })
-    .await;
 }
 
 /// A Sync moves the diff on screen to a newer PR head, but the cached status
@@ -3510,106 +2659,10 @@ pub async fn pull_github_comments(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     let force = force.unwrap_or(false);
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || service_pull_github_comments(&state, force)).await;
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || pull_github_comments_blocking(&state, force)).await;
+    run_blocking(move || service_pull_github_comments(&state, force)).await
 }
 
-#[cfg(not(feature = "v1-service"))]
-fn pull_github_comments_blocking(state: &AppState, force: bool) -> Result<AppSnapshot, String> {
-    // Identity + files + comments_path must come from one lock. Re-reading
-    // `app.tab()` after `local_pr_target` (git/gh) can mix PR A's comments
-    // into tab B's sidecar if the user switched tabs mid-resolve.
-    let (mut ctx, remote_repo, explicit_pr) = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab = app.tab();
-        let remote_repo = tab.remote_repo.clone();
-        let explicit_pr = tab.pr_number;
-        let ctx = app
-            .snapshot_for_comment_sync(String::new(), String::new(), 0)
-            .map_err(|e| e.to_string())?;
-        (ctx, remote_repo, explicit_pr)
-    };
-
-    let identity = if ctx.is_remote {
-        match (remote_repo.as_deref(), explicit_pr) {
-            (Some(slug), Some(n)) => {
-                let mut parts = slug.split('/');
-                match (parts.next(), parts.next(), parts.next()) {
-                    (Some(owner), Some(repo), None) if !owner.is_empty() && !repo.is_empty() => {
-                        Some((owner.to_string(), repo.to_string(), n))
-                    }
-                    _ => {
-                        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-                        app.notify("Invalid remote repo slug");
-                        return Ok(snap_from(&app, state));
-                    }
-                }
-            }
-            _ => {
-                let mut app = state.app.lock().map_err(|e| e.to_string())?;
-                app.notify("No PR info for remote mode");
-                return Ok(snap_from(&app, state));
-            }
-        }
-    } else {
-        match er_engine::sync::local_pr_target(&*state.ports.git, &ctx.repo_root, explicit_pr) {
-            Ok(info) => Some(info),
-            Err(_) => {
-                let mut app = state.app.lock().map_err(|e| e.to_string())?;
-                app.notify("No PR found for current branch");
-                return Ok(snap_from(&app, state));
-            }
-        }
-    };
-
-    let Some((owner, repo, number)) = identity else {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        return Ok(snap_from(&app, state));
-    };
-    ctx.owner = owner;
-    ctx.repo_name = repo;
-    ctx.pr_number = number;
-
-    if force {
-        er_engine::github::invalidate_pr_comments_cache();
-    }
-
-    if let Ok(mut flags) = state.loading.lock() {
-        flags.gh_comments = true;
-    }
-    crate::profile_log::bump_desktop_revision(&state.desktop_revision, "gh_comments_pull_start");
-
-    // `force` already cleared the cache above so this misses and refills;
-    // auto-pull hits the hover-prefetch bundle when it is still warm.
-    let result = er_engine::app::fetch_comment_sync_data_cached(&ctx);
-
-    if let Ok(mut flags) = state.loading.lock() {
-        flags.gh_comments = false;
-    }
-
-    match result {
-        Ok(sync) => {
-            let mut app = state.app.lock().map_err(|e| e.to_string())?;
-            app.apply_comment_sync_result(sync);
-            Ok(snap_from(&app, state))
-        }
-        Err(e) => {
-            log::error!(
-                "pull_github_comments: {}/{}#{} force={force} err={e}",
-                ctx.owner,
-                ctx.repo_name,
-                ctx.pr_number
-            );
-            let mut app = state.app.lock().map_err(|e| e.to_string())?;
-            app.notify(&format!("GitHub sync error: {e}"));
-            Ok(snap_from(&app, state))
-        }
-    }
-}
-
-#[cfg(any(test, not(feature = "v1-service")))]
+#[cfg(test)]
 fn gh_review_submit_err(e: anyhow::Error) -> String {
     let raw = e.to_string();
     if is_own_pr_approval_error(&raw) {
@@ -3646,7 +2699,6 @@ fn with_review_hints(raw: String, unprocessable: bool) -> String {
 ///
 /// The flag path is async: its reply waits on `gh`, which must not block the
 /// main thread.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn submit_github_pr_decision(
     mode: String,
@@ -3655,79 +2707,6 @@ pub async fn submit_github_pr_decision(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || service_submit_github_pr_decision(&state, &mode, &summary)).await
-}
-
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn submit_github_pr_decision(
-    mode: String,
-    summary: String,
-    state: State<AppState>,
-) -> Result<AppSnapshot, String> {
-    let event = match mode.as_str() {
-        "APPROVE" | "REQUEST_CHANGES" | "COMMENT" => mode.as_str(),
-        _ => {
-            return Err(format!(
-                "Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES."
-            ));
-        }
-    };
-
-    let summary_trimmed = summary.trim().to_string();
-    // GitHub itself rejects REQUEST_CHANGES and COMMENT reviews with a blank body.
-    // APPROVE is fine without a body.
-    if event != "APPROVE" && summary_trimmed.is_empty() {
-        return Err(format!(
-            "GitHub requires a comment for {event} reviews. Add a summary first."
-        ));
-    }
-
-    let (owner, repo, number, is_remote, repo_root) = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab = app.tab();
-        let is_remote = tab.is_remote();
-        let repo_root = tab.repo_root.clone();
-        let (owner, repo, number) = active_github_key(&app, &state)
-            .ok_or_else(|| "No GitHub PR detected for the active tab".to_string())?;
-        if event == "APPROVE" {
-            let me = state.gh_user.lock().ok().and_then(|login| login.clone());
-            if let (Some(me), Some(author)) =
-                (me, active_pr_author(&app, &state, &owner, &repo, number))
-            {
-                if author.eq_ignore_ascii_case(&me) {
-                    return Err(own_pr_approval_error());
-                }
-            }
-        }
-        (owner, repo, number, is_remote, repo_root)
-    };
-
-    // Call the handle rather than the wrapper: the wrapper renders the error
-    // as text, and the 422 hint below needs the typed `GhError` in the chain.
-    let submit_result = if is_remote {
-        state
-            .ports
-            .github
-            .submit_review_remote(&owner, &repo, number, &[], event, &summary_trimmed)
-    } else {
-        state.ports.github.submit_review(
-            &owner,
-            &repo,
-            number,
-            &[],
-            &repo_root,
-            event,
-            &summary_trimmed,
-        )
-    };
-    submit_result
-        .map_err(anyhow::Error::from)
-        .map_err(gh_review_submit_err)?;
-
-    kick_github_status_refresh(&state, owner, repo, number);
-
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
 }
 
 /// Post a PR-wide (issue-stream) comment on the active tab's PR. Used by the
@@ -3739,34 +2718,7 @@ pub async fn post_github_pr_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || service_post_github_pr_comment(&state, &body)).await;
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || post_github_pr_comment_impl(body, &state)).await;
-}
-
-/// `gh` network call; runs on the blocking pool so the window stays responsive.
-#[cfg(not(feature = "v1-service"))]
-fn post_github_pr_comment_impl(body: String, state: &AppState) -> Result<AppSnapshot, String> {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return Err("Comment body cannot be empty".to_string());
-    }
-
-    let (owner, repo, number) = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        active_github_key(&app, state)
-            .ok_or_else(|| "No GitHub PR detected for the active tab".to_string())?
-    };
-
-    er_engine::github::gh_pr_general_comment_remote(&owner, &repo, number, trimmed)
-        .map_err(|e| format!("Failed to post comment: {e}"))?;
-
-    // Refresh the cached GitHub status so the comment count + recent list update.
-    kick_github_status_refresh(state, owner, repo, number);
-
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, state))
+    run_blocking(move || service_post_github_pr_comment(&state, &body)).await
 }
 
 // ── Pending review ───────────────────────────────────────────────────────────
@@ -3796,18 +2748,6 @@ pub struct ReviewLineTarget {
 }
 
 impl ReviewLineTarget {
-    #[cfg(any(test, not(feature = "v1-service")))]
-    fn batch_entry(&self, body: &str) -> Result<er_engine::github::ReviewBatchEntry, String> {
-        crate::github_comment_builders::review_batch_entry(
-            &self.file,
-            self.line_num,
-            self.line_num_end,
-            self.side.as_deref(),
-            body,
-        )
-    }
-
-    #[cfg(feature = "v1-service")]
     fn into_service(self) -> er_service::ReviewLineTarget {
         er_service::ReviewLineTarget {
             file: self.file,
@@ -3826,90 +2766,6 @@ pub(crate) fn review_comment_body(text: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-#[cfg(not(feature = "v1-service"))]
-fn active_pr_or_err(state: &AppState) -> Result<(String, String, u64), String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    active_github_key(&app, state)
-        .ok_or_else(|| "No pull request for this view — open a PR to review on GitHub".to_string())
-}
-
-/// What a posted create landed on.
-#[cfg(not(feature = "v1-service"))]
-struct PostedTo {
-    owner: String,
-    repo: String,
-    pr: u64,
-    posted: er_engine::github_post::PostedGitHubComment,
-    /// The create that posted, so a later failed step can keep it reconcilable.
-    request: er_engine::github_post::GitHubPostRequest,
-}
-
-#[cfg(not(feature = "v1-service"))]
-impl PostedTo {
-    /// Refresh the data a posted comment changes, and record the write cost.
-    fn finish(self, state: &AppState) {
-        after_github_write(state, self.owner, self.repo, self.pr);
-        crate::profile_log::profile_log(
-            "github_comment_post",
-            &[("github_id", self.posted.github_id.to_string())],
-        );
-    }
-}
-
-/// Post a comment in three phases so no `gh` call holds the App lock:
-/// context under the lock, resolve outside, begin under, execute outside,
-/// finish under. Then refresh the status card.
-#[cfg(not(feature = "v1-service"))]
-fn post_github_comment_flow(
-    state: &AppState,
-    intent: er_engine::app::NewGitHubComment,
-    client_id: Option<String>,
-) -> Result<PostedTo, String> {
-    let ctx = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        app.comment_post_context()
-    };
-    let pr = er_engine::github_post::resolve_post_target(&*state.ports.git, &ctx)
-        .map_err(|e| e.to_string())?;
-    let (ticket, poster) = {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let ticket = app
-            .begin_github_comment_post(intent, pr, ctx, client_id)
-            .map_err(|e| e.to_string())?;
-        (ticket, app.github_comment_poster())
-    };
-    let target = ticket.request.pr.clone();
-    let request = ticket.request.clone();
-    let execution = er_engine::github_post::execute_comment_post(
-        poster.as_ref(),
-        &ticket.request,
-        ticket.pending.as_ref(),
-    );
-    let posted = {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.finish_github_comment_post(ticket, execution)
-            .map_err(|e| e.to_string())?
-    };
-    Ok(PostedTo {
-        owner: target.owner,
-        repo: target.repo,
-        pr: target.pr,
-        posted,
-        request,
-    })
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn read_pending_review(state: &AppState) -> Result<PendingReviewView, String> {
-    let (owner, repo, number) = active_pr_or_err(state)?;
-    let review = er_engine::github::gh_pending_review(&owner, &repo, number)
-        .map_err(|e| format!("{e:#}"))?;
-    Ok(PendingReviewView {
-        pr_number: number,
-        review,
-    })
-}
-
 /// A posted or submitted comment changes what `pull_github_comments` should
 /// return, so drop its cache and let the status card recount.
 pub(crate) fn after_github_write(state: &DesktopState, owner: String, repo: String, number: u64) {
@@ -3920,10 +2776,7 @@ pub(crate) fn after_github_write(state: &DesktopState, owner: String, repo: Stri
 #[tauri::command]
 pub async fn get_pending_review(state: State<'_, AppState>) -> Result<PendingReviewView, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || service_get_pending_review(&state)).await;
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || read_pending_review(&state)).await;
+    run_blocking(move || service_get_pending_review(&state)).await
 }
 
 #[tauri::command]
@@ -3933,18 +2786,7 @@ pub async fn add_pending_review_comment(
     state: State<'_, AppState>,
 ) -> Result<PendingReviewView, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || service_add_pending_review_comment(&state, target, &text)).await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let entry = target.batch_entry(&review_comment_body(&text)?)?;
-        let (owner, repo, number) = active_pr_or_err(&state)?;
-        er_engine::github::gh_pending_review_add_comment(&owner, &repo, number, &entry)
-            .map_err(gh_review_submit_err)?;
-        after_github_write(&state, owner, repo, number);
-        read_pending_review(&state)
-    })
-    .await
+    run_blocking(move || service_add_pending_review_comment(&state, target, &text)).await
 }
 
 #[tauri::command]
@@ -3953,15 +2795,7 @@ pub async fn remove_pending_review_comment(
     state: State<'_, AppState>,
 ) -> Result<PendingReviewView, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || service_remove_pending_review_comment(&state, comment_id)).await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        er_engine::github::gh_pending_review_remove_comment(&comment_id)
-            .map_err(|e| format!("{e:#}"))?;
-        read_pending_review(&state)
-    })
-    .await
+    run_blocking(move || service_remove_pending_review_comment(&state, comment_id)).await
 }
 
 /// Submit the pending review with a decision. Without pending comments this
@@ -3973,42 +2807,7 @@ pub async fn submit_pending_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || service_submit_pending_review(&state, &mode, summary)).await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let event = match mode.as_str() {
-            "APPROVE" | "REQUEST_CHANGES" | "COMMENT" => mode.clone(),
-            _ => {
-                return Err(format!(
-                    "Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES."
-                ));
-            }
-        };
-        let (owner, repo, number) = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            let (owner, repo, number) = active_github_key(&app, &state).ok_or_else(|| {
-                "No pull request for this view — open a PR to review on GitHub".to_string()
-            })?;
-            if event == "APPROVE" {
-                let me = state.gh_user.lock().ok().and_then(|login| login.clone());
-                if let (Some(me), Some(author)) =
-                    (me, active_pr_author(&app, &state, &owner, &repo, number))
-                {
-                    if author.eq_ignore_ascii_case(&me) {
-                        return Err(own_pr_approval_error());
-                    }
-                }
-            }
-            (owner, repo, number)
-        };
-        er_engine::github::gh_pending_review_submit(&owner, &repo, number, &event, summary.trim())
-            .map_err(gh_review_submit_err)?;
-        after_github_write(&state, owner, repo, number);
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
-    })
-    .await
+    run_blocking(move || service_submit_pending_review(&state, &mode, summary)).await
 }
 
 /// "Add single comment": one line comment posted to the PR now, outside any
@@ -4020,46 +2819,10 @@ pub async fn post_github_line_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || service_post_github_line_comment(&state, target, &text)).await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let entry = target.batch_entry(&review_comment_body(&text)?)?;
-        let (owner, repo, number) = active_pr_or_err(&state)?;
-        // Ask first rather than make a call GitHub will refuse. If the check
-        // itself fails, the post still goes and its error is mapped below.
-        if er_engine::github::gh_pending_review(&owner, &repo, number)
-            .is_ok_and(|p| p.review_id.is_some())
-        {
-            return Err(pending_review_blocks_single_comment());
-        }
-        let comment = crate::github_comment_builders::line_comment(&entry);
-        er_engine::github::gh_pr_push_comment_remote(&owner, &repo, number, comment).map_err(
-            |e| {
-                let raw = format!("{e:#}");
-                if is_one_pending_review_error(&raw) {
-                    pending_review_blocks_single_comment()
-                } else {
-                    raw
-                }
-            },
-        )?;
-        after_github_write(&state, owner, repo, number);
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
-    })
-    .await
+    run_blocking(move || service_post_github_line_comment(&state, target, &text)).await
 }
 
 // ── AI integration ───────────────────────────────────────────────────────────
-
-#[cfg(any(test, not(feature = "v1-service")))]
-pub(crate) fn resolve_review_scope(
-    scope: &str,
-    tab: &er_engine::app::TabState,
-) -> Result<String, String> {
-    resolve_review_scope_in(scope, tab.mode)
-}
 
 /// The git scope a review of `scope` reads on a tab showing `mode`.
 pub(crate) fn resolve_review_scope_in(scope: &str, mode: DiffMode) -> Result<String, String> {
@@ -4125,111 +2888,8 @@ pub async fn run_ai_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
-        ask_on_desktop(&state, |desktop| crate::runs::review(desktop, None, scope))
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
     run_blocking(move || {
-        let (
-            scope,
-            repo_root,
-            branch_label,
-            base_branch,
-            er_dir,
-            pr_number,
-            remote_repo,
-            is_remote,
-            mut raw,
-            rules,
-            review_md_source,
-        ) = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            let scope = resolve_review_scope(&scope, app.tab())?;
-            let tab = app.tab();
-            app.check_review_bucket_admission(&tab.er_dir())
-                .map_err(|e| e.to_string())?;
-            let branch_label = tab
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| tab.current_branch.clone());
-            let raw = tab.raw_diff_for_review(&scope).map_err(|e| e.to_string())?;
-            (
-                scope,
-                tab.repo_root.clone(),
-                branch_label,
-                tab.base_branch.clone(),
-                tab.er_dir(),
-                tab.pr_number,
-                tab.remote_repo.clone(),
-                tab.remote_repo.is_some(),
-                raw,
-                tab.owned_repo_rules(),
-                tab.review_md_source(),
-            )
-        };
-
-        let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
-            &repo_root,
-            remote_repo.as_deref(),
-        );
-        if !ignore.is_empty() {
-            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
-        }
-        if raw.trim().is_empty() {
-            return Err("Nothing to review".to_string());
-        }
-        let review_md = er_engine::ai::review_md::collect(&state.ports, &review_md_source, &raw);
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.check_review_bucket_admission(&er_dir)
-            .map_err(|e| e.to_string())?;
-        std::fs::create_dir_all(&er_dir)
-            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
-            &er_dir,
-            &raw,
-            rules.as_rules(),
-            review_md.as_deref(),
-        )?;
-        let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
-            &scope,
-            &er_dir,
-            &base_branch,
-            &branch_label,
-            &diff_hash,
-            None,
-        );
-        let target = er_engine::app::BackgroundTaskTarget {
-            repo_root,
-            er_dir,
-            branch_label,
-            base_branch,
-            scope,
-            pr_number,
-            remote_repo,
-            managed_local: !is_remote,
-        };
-        app.spawn_background_review(target, prompt, true, None)
-            .map_err(|e| e.to_string())?;
-        let debug_bg = er_engine::app::debug_bg_enabled();
-        if debug_bg {
-            eprintln!(
-                "[bg] run_ai_review post-spawn snapshots={}",
-                app.background_task_snapshots().len()
-            );
-        }
-        state
-            .desktop_revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if debug_bg {
-            let snap = snap_from(&app, &state);
-            eprintln!(
-                "[bg] run_ai_review snapshot.background_tasks.len()={}",
-                snap.background_tasks.len()
-            );
-        }
-        Ok(snap_from(&app, &state))
+        ask_on_desktop(&state, |desktop| crate::runs::review(desktop, None, scope))
     })
     .await
 }
@@ -4243,100 +2903,7 @@ pub async fn run_ai_review(
 #[tauri::command]
 pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
-        ask_on_desktop(&state, |desktop| crate::runs::tour(desktop, None))
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        // `raw_diff_for_review("branch")` returns the active view's diff (the PR
-        // head-vs-base diff in PrDiff mode), so only the destination bucket differs.
-        let scope = "branch".to_string();
-
-        let (
-            repo_root,
-            branch_label,
-            base_branch,
-            er_dir,
-            pr_number,
-            remote_repo,
-            is_remote,
-            tour_file,
-            is_pr,
-        ) = {
-            let tab = app.tab();
-            let branch_label = tab
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| tab.current_branch.clone());
-            // Route to the active context's tour bucket (PR vs branch), matching where
-            // `resolve_view_tour` reads — including a PR guide regenerated from the Guide tab.
-            let er_dir = tab.tour_bucket_er_dir().unwrap_or_else(|| tab.er_dir());
-            (
-                tab.repo_root.clone(),
-                branch_label,
-                tab.base_branch.clone(),
-                er_dir,
-                tab.pr_number,
-                tab.remote_repo.clone(),
-                tab.remote_repo.is_some(),
-                // Per-view buckets disambiguate, so the sidecar is always `tour.json`.
-                "tour.json".to_string(),
-                tab.tour_context_is_pr(),
-            )
-        };
-
-        // No bucket admission check: a tour prepares its own diff under
-        // `tour_input_dir` and writes only `tour.json`, so it can run beside a
-        // review flow that owns the bucket.
-        let diff_dir = er_engine::ai::prepared_diff::tour_input_dir(&er_dir);
-        std::fs::create_dir_all(&diff_dir)
-            .map_err(|e| format!("Failed to create tour managed directory: {e}"))?;
-
-        let mut raw = app
-            .tab()
-            .raw_diff_for_review(&scope)
-            .map_err(|e| e.to_string())?;
-        let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
-            &repo_root,
-            remote_repo.as_deref(),
-        );
-        if !ignore.is_empty() {
-            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
-        }
-        if raw.trim().is_empty() {
-            return Err("Nothing to tour".to_string());
-        }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&diff_dir, &raw)?;
-
-        let scope_label = if is_pr { "PR diff" } else { "branch diff" };
-        let prompt = er_engine::ai::prompts::build_tour_prompt_split_dirs(
-            scope_label,
-            &diff_dir,
-            &er_dir,
-            &tour_file,
-            &diff_hash,
-        );
-        let target = er_engine::app::BackgroundTaskTarget {
-            repo_root,
-            er_dir,
-            branch_label,
-            base_branch,
-            scope,
-            pr_number,
-            remote_repo,
-            managed_local: !is_remote,
-        };
-        app.spawn_background_tour(target, prompt, true)
-            .map_err(|e| e.to_string())?;
-        state
-            .desktop_revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
-    })
-    .await
+    run_blocking(move || ask_on_desktop(&state, |desktop| crate::runs::tour(desktop, None))).await
 }
 
 /// Run the agent that proposes this repo's importance rules.
@@ -4349,19 +2916,8 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
 #[tauri::command]
 pub async fn run_importance_agent(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
-        ask_on_desktop(&state, |desktop| crate::runs::importance(desktop, None))
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.spawn_background_importance()
-            .map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
-    })
-    .await
+    run_blocking(move || ask_on_desktop(&state, |desktop| crate::runs::importance(desktop, None)))
+        .await
 }
 
 /// Generate a mermaid diagram of the active view's diff (`kind` =
@@ -4378,109 +2934,10 @@ pub async fn generate_diagram(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::runs::diagram(desktop, None, kind, custom_prompt)
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        if !er_engine::ai::is_valid_diagram_kind(&kind) {
-            return Err(format!("Unknown diagram kind: {kind}"));
-        }
-        let custom_prompt = custom_prompt
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty());
-        if kind == er_engine::ai::DIAGRAM_KIND_CUSTOM && custom_prompt.is_none() {
-            return Err("A custom diagram needs a prompt".to_string());
-        }
-
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let scope = "branch".to_string();
-
-        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
-            let tab = app.tab();
-            let branch_label = tab
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| tab.current_branch.clone());
-            (
-                tab.repo_root.clone(),
-                branch_label,
-                tab.base_branch.clone(),
-                tab.er_dir(),
-                tab.pr_number,
-                tab.remote_repo.clone(),
-                tab.remote_repo.is_some(),
-            )
-        };
-
-        app.check_review_bucket_admission(&er_dir)
-            .map_err(|e| e.to_string())?;
-
-        let diagrams_dir = format!("{er_dir}/diagrams");
-        std::fs::create_dir_all(&diagrams_dir)
-            .map_err(|e| format!("Failed to create diagrams directory: {e}"))?;
-
-        let mut raw = app
-            .tab()
-            .raw_diff_for_review(&scope)
-            .map_err(|e| e.to_string())?;
-        let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
-            &repo_root,
-            remote_repo.as_deref(),
-        );
-        if !ignore.is_empty() {
-            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
-        }
-        if raw.trim().is_empty() {
-            return Err("Nothing to diagram".to_string());
-        }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
-
-        // Presets regenerate in place (`mental-model.json`, …); each custom
-        // prompt produces a new timestamped diagram so they accumulate.
-        let output_file = er_engine::ai::diagram_output_file(&kind);
-
-        let scope_label = if app.tab().tour_context_is_pr() {
-            "PR diff"
-        } else {
-            "branch diff"
-        };
-        let prompt = er_engine::ai::prompts::build_diagram_prompt_prepared_diff(
-            scope_label,
-            &er_dir,
-            &output_file,
-            &diff_hash,
-            &kind,
-            custom_prompt.as_deref(),
-        );
-        let output_path = er_engine::ai::diagram_sidecar_path(&er_dir, &output_file)
-            .ok_or_else(|| format!("Invalid diagram output file: {output_file}"))?;
-        let target = er_engine::app::BackgroundTaskTarget {
-            repo_root,
-            er_dir,
-            branch_label,
-            base_branch,
-            scope,
-            pr_number,
-            remote_repo,
-            managed_local: !is_remote,
-        };
-        let host_write = er_engine::app::HostWriteDiagram {
-            output_path,
-            kind: kind.clone(),
-            diff_hash,
-            custom_prompt,
-        };
-        app.spawn_background_diagram(&kind, target, prompt, true, host_write)
-            .map_err(|e| e.to_string())?;
-        state
-            .desktop_revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
     })
     .await
 }
@@ -4529,89 +2986,10 @@ pub async fn run_ai_expert_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::runs::expert(desktop, None, scope, expert_id)
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        if er_engine::ai::expert_by_id(&expert_id).is_none() {
-            return Err(format!("Unknown expert: {expert_id}"));
-        }
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let scope = resolve_review_scope(&scope, app.tab())?;
-
-        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
-            let tab = app.tab();
-            let branch_label = tab
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| tab.current_branch.clone());
-            (
-                tab.repo_root.clone(),
-                branch_label,
-                tab.base_branch.clone(),
-                tab.er_dir(),
-                tab.pr_number,
-                tab.remote_repo.clone(),
-                tab.remote_repo.is_some(),
-            )
-        };
-
-        app.check_review_bucket_admission(&er_dir)
-            .map_err(|e| e.to_string())?;
-
-        std::fs::create_dir_all(&er_dir)
-            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-
-        let mut raw = app
-            .tab()
-            .raw_diff_for_review(&scope)
-            .map_err(|e| e.to_string())?;
-        if raw.trim().is_empty() {
-            return Err("Nothing to review".to_string());
-        }
-        let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
-            &repo_root,
-            remote_repo.as_deref(),
-        );
-        if !ignore.is_empty() {
-            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
-        }
-        let review_md =
-            er_engine::ai::review_md::collect(&app.ports, &app.tab().review_md_source(), &raw);
-        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
-            &er_dir,
-            &raw,
-            app.tab().repo_rules(),
-            review_md.as_deref(),
-        )?;
-
-        let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
-            &scope, &er_dir, &expert_id, &diff_hash, None,
-        );
-
-        let target = er_engine::app::BackgroundTaskTarget {
-            repo_root,
-            er_dir,
-            branch_label,
-            base_branch,
-            scope,
-            pr_number,
-            remote_repo,
-            managed_local: !is_remote,
-        };
-
-        app.spawn_background_expert_review(&expert_id, target, prompt, true, None)
-            .map_err(|e| e.to_string())?;
-
-        state
-            .desktop_revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
     })
     .await
 }
@@ -4658,112 +3036,10 @@ pub async fn run_ai_scoped_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::runs::scoped(desktop, None, scope, paths, reviewer_kinds, focus_prompt)
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        if reviewer_kinds.is_empty() {
-            return Err("No reviewers selected".to_string());
-        }
-
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let scope = resolve_review_scope(&scope, app.tab())?;
-
-        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
-            let tab = app.tab();
-            let branch_label = tab
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| tab.current_branch.clone());
-            (
-                tab.repo_root.clone(),
-                branch_label,
-                tab.base_branch.clone(),
-                tab.er_dir(),
-                tab.pr_number,
-                tab.remote_repo.clone(),
-                tab.remote_repo.is_some(),
-            )
-        };
-
-        app.check_review_bucket_admission(&er_dir)
-            .map_err(|e| e.to_string())?;
-
-        std::fs::create_dir_all(&er_dir)
-            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-
-        let raw = app
-            .tab()
-            .raw_diff_for_review(&scope)
-            .map_err(|e| e.to_string())?;
-        if raw.trim().is_empty() {
-            return Err("Nothing to review".to_string());
-        }
-
-        let (scoped_files, scope_paths, diff_body) =
-            scoped_diff(&er_dir, raw, paths, &repo_root, remote_repo.as_deref())?;
-        let file_count = scope_paths.len();
-
-        let review_md = er_engine::ai::review_md::collect(
-            &app.ports,
-            &app.tab().review_md_source(),
-            &diff_body,
-        );
-        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
-            &er_dir,
-            &diff_body,
-            app.tab().repo_rules(),
-            review_md.as_deref(),
-        )?;
-
-        let target = er_engine::app::BackgroundTaskTarget {
-            repo_root,
-            er_dir: er_dir.clone(),
-            branch_label,
-            base_branch,
-            scope: scope.clone(),
-            pr_number,
-            remote_repo,
-            managed_local: !is_remote,
-        };
-
-        let stamps = if scoped_files {
-            scope_stamps(&er_dir, &scope_paths, &reviewer_kinds)
-        } else {
-            std::collections::HashMap::new()
-        };
-
-        let (started, skipped) = spawn_scoped_reviewers(
-            &mut |reviewer, target, prompt, stamp| {
-                spawn_on_app(&mut app, reviewer, target, prompt, stamp)
-            },
-            target,
-            &reviewer_kinds,
-            focus_prompt.as_deref(),
-            &diff_hash,
-            &stamps,
-        )?;
-
-        state
-            .desktop_revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        if started.is_empty() && !skipped.is_empty() {
-            return Err(format!(
-                "All selected reviewers already running: {}",
-                skipped.join(", ")
-            ));
-        }
-
-        let msg = scoped_message(&started, &skipped, scoped_files.then_some(file_count));
-        app.notify(&msg);
-
-        Ok(snap_from(&app, &state))
     })
     .await
 }
@@ -4935,29 +3211,6 @@ pub(crate) type SpawnReviewer<'a> = dyn FnMut(
     ) -> Result<(), String>
     + 'a;
 
-/// Starts a reviewer on the App, as the flag-off scoped run does.
-#[cfg(not(feature = "v1-service"))]
-fn spawn_on_app(
-    app: &mut App,
-    reviewer: &er_engine::ai::ReviewerKind,
-    target: er_engine::task_target::BackgroundTaskTarget,
-    prompt: String,
-    stamp: Option<er_engine::ai::ScopedRunStamp>,
-) -> Result<(), String> {
-    use er_engine::ai::ReviewerKind;
-    match reviewer {
-        ReviewerKind::Triage => app.spawn_background_triage_review(target, prompt, true),
-        ReviewerKind::General => app.spawn_background_review(target, prompt, true, stamp),
-        ReviewerKind::Expert(id) => {
-            app.spawn_background_expert_review(id, target, prompt, true, stamp)
-        }
-        ReviewerKind::Professor => {
-            app.spawn_background_professor_review(target, prompt, true, stamp)
-        }
-    }
-    .map_err(|e| e.to_string())
-}
-
 pub(crate) fn spawn_scoped_reviewers(
     spawn: &mut SpawnReviewer<'_>,
     target: er_engine::task_target::BackgroundTaskTarget,
@@ -5053,11 +3306,6 @@ pub(crate) fn spawn_scoped_reviewers(
     Ok((started, skipped))
 }
 
-#[cfg(not(feature = "v1-service"))]
-fn eligible_github_comment_count(tab: &er_engine::app::TabState) -> usize {
-    github_comment_count(tab.ai.github_comments.as_ref(), &tab.github_comments_dir())
-}
-
 /// The GitHub comments a validation checks: from the loaded sidecar, else
 /// read from `comments_dir`.
 pub(crate) fn github_comment_count(
@@ -5084,76 +3332,10 @@ pub async fn run_ai_validate(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::runs::validate(desktop, None, scope)
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let scope = resolve_review_scope(&scope, app.tab())?;
-
-        if app.tab().is_remote() {
-            return Err(
-                "Validate review is local-only. Check out the PR locally first.".to_string(),
-            );
-        }
-
-        let er_dir = app.tab().er_dir();
-        app.check_review_bucket_admission(&er_dir)
-            .map_err(|e| e.to_string())?;
-        let has_review = er_engine::ai::review_file_exists(&er_dir);
-        let comment_count = eligible_github_comment_count(app.tab());
-        if !has_review && comment_count == 0 {
-            return Err(
-                "Nothing to validate. Run AI review or add GitHub comments first.".to_string(),
-            );
-        }
-
-        let raw = app
-            .tab()
-            .raw_diff_for_review(&scope)
-            .map_err(|e| e.to_string())?;
-        if raw.trim().is_empty() {
-            return Err("Nothing to validate".to_string());
-        }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
-        let review_md =
-            er_engine::ai::review_md::collect(&app.ports, &app.tab().review_md_source(), &raw);
-        er_engine::ai::review_md::write_review_md(&er_dir, review_md.as_deref())?;
-
-        app.tab_mut().relocate_all_comments();
-
-        if has_review {
-            let prompt = er_engine::ai::prompts::build_validate_prompt_prepared_diff(
-                &scope, &er_dir, &diff_hash,
-            );
-            app.spawn_agent_prompt("validate", &prompt)
-                .map_err(|e| e.to_string())?;
-        }
-        if comment_count > 0 {
-            let prompt =
-                er_engine::ai::prompts::build_validate_github_comments_prompt_prepared_diff(
-                    &er_dir, &diff_hash,
-                );
-            app.spawn_agent_prompt("validate-comments", &prompt)
-                .map_err(|e| e.to_string())?;
-        }
-
-        let msg = match (has_review, comment_count) {
-            (true, n) if n > 0 => format!("Validation started (review + {n} comments)"),
-            (true, _) => "Validation started (review)".to_string(),
-            (false, n) => format!("Validation started ({n} comments)"),
-        };
-        app.notify(&msg);
-
-        state
-            .desktop_revision
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
     })
     .await
 }
@@ -5170,20 +3352,9 @@ pub async fn set_ai_model(
 /// With `v1-service` the AI picker's saves go to the settings actor, the one
 /// writer of the config files (ADR 0069); the flag-off bodies save the App's.
 pub(crate) fn ai_model(state: &AppState, model: String) -> Result<AppSnapshot, String> {
-    #[cfg(feature = "v1-service")]
     {
         crate::ai_selection_service::ai_model(&state.desktop, model)?;
         let app = state.app.lock().map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, state))
-    }
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-
-        let mut cfg = er_engine::config::load_global_config();
-        cfg.agent.model = model;
-        er_engine::config::save_config(&cfg).map_err(|e| e.to_string())?;
-
         Ok(snap_from(&app, state))
     }
 }
@@ -5202,26 +3373,7 @@ pub async fn list_ai_providers(state: State<'_, AppState>) -> Result<Vec<AiProvi
 /// every pick saves, so the pick is the settings actor's default selection,
 /// which its view already marks; the App lock is never taken.
 pub(crate) fn ai_providers(state: &AppState) -> Result<Vec<AiProviderInfo>, String> {
-    #[cfg(feature = "v1-service")]
-    return Ok(state.service.settings().view().hub.providers.clone());
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.sync_config_from_active_tab();
-        let hub = &app.config.ai_hub;
-        // Palette / session highlight: use live current_* (not persisted defaults).
-        let current_provider = app.current_ai_provider.as_deref();
-        let current_model = app.current_ai_model.as_deref();
-        let resolved_provider = hub.resolve_provider_id(current_provider);
-        let resolved_model = resolved_provider
-            .as_deref()
-            .and_then(|pid| hub.resolve_model_id(pid, current_model));
-        Ok(map_ai_providers(
-            hub,
-            resolved_provider.as_deref(),
-            resolved_model.as_deref(),
-        ))
-    }
+    Ok(state.service.settings().view().hub.providers.clone())
 }
 
 #[tauri::command]
@@ -5246,7 +3398,6 @@ pub(crate) fn ai_selection(
     // Palette and title-bar picks are the user's default. Settings also
     // passes true. Session-only remains available via persist: false.
     let persist = persist.unwrap_or(true);
-    #[cfg(feature = "v1-service")]
     if persist {
         crate::ai_selection_service::ai_selection(&state.desktop, provider_id, model_id, effort)?;
         let app = state.app.lock().map_err(|e| e.to_string())?;
@@ -5308,7 +3459,6 @@ pub(crate) fn ai_effort(
     persist: Option<bool>,
 ) -> Result<AppSnapshot, String> {
     let persist = persist.unwrap_or(false);
-    #[cfg(feature = "v1-service")]
     if persist {
         crate::ai_selection_service::ai_effort(&state.desktop, effort)?;
         let app = state.app.lock().map_err(|e| e.to_string())?;
@@ -5369,83 +3519,12 @@ pub async fn promote_to_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::PromoteToComment { context, id, body }
         })
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || promote_to_comment_impl(id, body, view, &state)).await
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn promote_to_comment_impl(
-    id: String,
-    body: Option<String>,
-    view: Option<crate::snapshot::OptimisticView>,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    let promoted = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
-            return early;
-        }
-
-        let tab = app.tab();
-        // Both questions and notes use the `PrivateAnnotation` shape; pick the
-        // collection by id prefix so notes can be promoted too.
-        let (items, item): (
-            &[er_engine::ai::PrivateAnnotation],
-            &er_engine::ai::PrivateAnnotation,
-        ) = if id.starts_with("n-") {
-            let ns = tab
-                .ai
-                .notes
-                .as_ref()
-                .ok_or_else(|| "No notes loaded".to_string())?;
-            let n = ns
-                .notes
-                .iter()
-                .find(|n| n.id == id)
-                .ok_or_else(|| format!("Note not found: {id}"))?;
-            (ns.notes.as_slice(), n)
-        } else {
-            let qs = tab
-                .ai
-                .questions
-                .as_ref()
-                .ok_or_else(|| "No questions loaded".to_string())?;
-            let q = qs
-                .questions
-                .iter()
-                .find(|q| q.id == id)
-                .ok_or_else(|| format!("Question not found: {id}"))?;
-            (qs.questions.as_slice(), q)
-        };
-
-        er_engine::ai::promote::promote_to_github(item, items, body)
-            .map_err(|error| error.to_string())?
-    };
-
-    let posted = post_github_comment_flow(
-        state,
-        er_engine::app::NewGitHubComment::from(promoted),
-        Some(format!("c-promote-{id}")),
-    )?;
-    let request = posted.request.clone();
-    posted.finish(state);
-
-    // The source is replaced only once GitHub holds the comment, so a
-    // failure keeps it and a retry can post it again.
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if let Err(e) = app.delete_comment_direct(&id) {
-        // The comment is on GitHub; the next promote must adopt it.
-        app.remember_posted_for_retry(request);
-        return Err(e.to_string());
-    }
-    Ok(snap_from_confirmed(&app, state))
+    .await
 }
 
 /// Promote a question to a local note. Notes are still private but framed as
@@ -5460,24 +3539,10 @@ pub async fn promote_to_note(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::PromoteToNote { context, id, body }
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-            return early;
-        }
-
-        app.promote_question_to_note(&id, body)
-            .map_err(|e| e.to_string())?;
-
-        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -5508,34 +3573,10 @@ pub async fn validate_with_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::ai_ask::validate(desktop, None, thread_id, finding_id)
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let resolved_finding = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            finding_id.or_else(|| {
-                thread_id
-                    .as_ref()
-                    .and_then(|tid| crate::ask_context::finding_id_for_thread(&app.tab().ai, tid))
-            })
-        };
-        if let Some(fid) = resolved_finding {
-            return ask_ai_for_finding(fid, VALIDATE_CARD_AI_PROMPT.to_string(), &state);
-        }
-        let resolved_thread =
-            thread_id.ok_or_else(|| "thread_id or finding_id is required".to_string())?;
-        ask_ai_impl(
-            resolved_thread,
-            VALIDATE_CARD_AI_PROMPT.to_string(),
-            None,
-            &state,
-        )
     })
     .await
 }
@@ -5549,23 +3590,10 @@ pub async fn elaborate_with_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::ai_ask::elaborate(desktop, None, thread_id)
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let prompt = card_action_prompt(&thread_id, er_engine::ai::AI_ACTION_ELABORATE)
-            .ok_or_else(|| "Elaborate works on questions and notes only".to_string())?;
-        ask_ai_impl(
-            thread_id,
-            prompt.to_string(),
-            Some(er_engine::ai::AI_ACTION_ELABORATE),
-            &state,
-        )
     })
     .await
 }
@@ -5642,23 +3670,6 @@ Finish with a short markdown summary: the files you changed and what changed in 
     )
 }
 
-/// Why this tab cannot send a note to an agent. The agent edits files, so the
-/// viewed branch has to be checked out at `repo_root`, which is where a tracked
-/// agent command runs. A remote PR tab has no working tree and opening one must
-/// not check anything out (ADR 0020); a local PR or branch view whose head is
-/// not checked out would have the agent edit some other branch.
-#[cfg(any(test, not(feature = "v1-service")))]
-fn send_note_blocked_reason(tab: &er_engine::app::TabState) -> Result<(), String> {
-    // `local_checkout_root` treats a local PR tab as the main checkout; its
-    // branch only is one once the watcher has set the checkout root.
-    let checked_out = if tab.pr_number.is_some() || tab.is_local_branch_view() {
-        tab.local_branch_checkout_root.as_deref()
-    } else {
-        tab.local_checkout_root()
-    };
-    send_note_blocked(tab.is_remote(), checked_out, &tab.repo_root)
-}
-
 /// Why a note cannot go to the agent: a remote tab, or a branch checked out
 /// elsewhere or nowhere, so there is no working tree here to edit.
 pub(crate) fn send_note_blocked(
@@ -5694,23 +3705,12 @@ pub async fn run_standard_review_flow(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         crate::arena_commands::flow_on_active(
             &state,
             er_dir,
             crate::flow_service::Control::RunStandard,
         )
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        crate::arena_commands::validate_review_flow_bucket(&app, &er_dir)?;
-        app.run_review_flow_standard(&er_dir)
-            .map_err(|e| e.to_string())?;
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(snap_from_command(&app, &state))
     })
     .await
 }
@@ -5726,46 +3726,10 @@ pub async fn send_note_to_agent(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::runs::send_note(desktop, None, note_id)
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        if !note_id.starts_with("n-") {
-            return Err("Send to agent works on notes only".to_string());
-        }
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        send_note_blocked_reason(app.tab())?;
-        if app.tab().command_status.get(SEND_NOTE_COMMAND)
-            == Some(&er_engine::app::CommandStatus::Running)
-        {
-            return Err(
-                "An agent is already working on a note in this tab. Wait for it to finish."
-                    .to_string(),
-            );
-        }
-
-        let (prompt, toast) = {
-            let tab = app.tab();
-            note_prompt(
-                tab.ai.notes.as_ref(),
-                &note_id,
-                &tab.repo_root,
-                &tab.base_branch,
-                &tab.current_branch,
-            )?
-        };
-
-        app.spawn_agent_prompt(SEND_NOTE_COMMAND, &prompt)
-            .map_err(|e| e.to_string())?;
-        // Replaces the generic "started" notice with one that names the context.
-        app.notify(&toast);
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
     })
     .await
 }
@@ -5823,29 +3787,10 @@ pub async fn ask_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         ask_on_desktop(&state, |desktop| {
             crate::ai_ask::ask(desktop, None, thread_id, prompt)
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        // An empty prompt is the one-click Ask AI: answer with the kind's own
-        // prompt. Typed text is the reviewer's own question and goes as written.
-        let prompt = if prompt.trim().is_empty() {
-            card_action_prompt(&thread_id, er_engine::ai::AI_ACTION_ASK)
-                .map_or(prompt, str::to_string)
-        } else {
-            prompt
-        };
-        ask_ai_impl(
-            thread_id,
-            prompt,
-            Some(er_engine::ai::AI_ACTION_ASK),
-            &state,
-        )
     })
     .await
 }
@@ -5853,130 +3798,12 @@ pub async fn ask_ai(
 /// A card ask on the flag path, on the registry's active tab. It reads the
 /// tab's content and the settings view, never the App, and the reply being
 /// written shows in `jobs`; the page reads that, so no snapshot is built.
-#[cfg(feature = "v1-service")]
 fn ask_on_desktop(
     state: &AppState,
     ask: impl FnOnce(&crate::state::DesktopState) -> Result<(), er_protocol::ErError>,
 ) -> Result<AppSnapshot, String> {
     ask(&state.desktop).map_err(|e| e.message)?;
     Ok(AppSnapshot::default())
-}
-
-#[cfg(not(feature = "v1-service"))]
-/// Body of `ask_ai`; also reached from `validate_with_ai`, `elaborate_with_ai`
-/// and `reply_to_finding`. Blocking: builds the prompt context (raw diff,
-/// files) under the app lock, so callers run it on the blocking pool.
-/// `ai_action` is stamped on the reply when the thread is a question or note.
-fn ask_ai_impl(
-    thread_id: String,
-    prompt: String,
-    ai_action: Option<&'static str>,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.sync_ai_selection();
-
-    let (context, target) = crate::ask_context::thread_ask(app_ask_tab(app.tab()), &thread_id)?;
-    let system_context = context.system_prompt();
-    let model_id = app.current_ai_model.clone();
-    let cfg = er_engine::config::load_global_config();
-    let invocation = plan_card_ai_invocation(
-        &cfg,
-        app.current_ai_provider.as_deref(),
-        model_id.as_deref(),
-        app.current_ai_effort.as_deref(),
-        context.work_dir.clone(),
-    );
-    let model_for_subprocess = card_model(model_id, app.config.agent.model.clone());
-
-    // Mark thread as pending BEFORE spawning. Snapshot reads this map to
-    // inject the "…thinking" placeholder reply.
-    state.pending_ai_replies.insert(
-        thread_id.clone(),
-        crate::snapshot::PendingAiReply {
-            started_at_ms: now_ms(),
-            ai_action,
-        },
-    );
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-
-    let user_prompt = if prompt.trim().is_empty() {
-        DEFAULT_ASK_AI_PROMPT.to_string()
-    } else {
-        prompt
-    };
-    let app_arc = Arc::clone(&state.app);
-    let pending = state.pending_ai_replies.clone();
-    let app_owner = Arc::clone(&state.app_owner);
-    let desktop_revision = Arc::clone(&state.desktop_revision);
-    let ports = state.ports.clone();
-    let repo_root_for_thread = context.repo_root;
-
-    // Build snapshot before releasing locks (test path expects synchronous
-    // visibility of the pending state).
-    let snap = snap_from(&app, state);
-
-    // Release lock before spawning so the subprocess runs without holding the App mutex.
-    drop(app);
-
-    std::thread::spawn(move || {
-        let body = run_card_ai_subprocess(
-            &invocation,
-            &system_context,
-            &user_prompt,
-            model_for_subprocess.as_deref(),
-            Some(card_progress()),
-        )
-        .into_inner();
-        // Take App lock to submit the reply.
-        if let Ok(mut app) = app_arc.lock() {
-            let ai_action = match target.kind {
-                CommentType::Question | CommentType::Note => ai_action,
-                CommentType::GitHubComment => None,
-            };
-            let _ = app.submit_ai_reply(
-                CommentTarget {
-                    file: target.file,
-                    hunk_idx: target.hunk_idx,
-                    line_num: target.line_num,
-                    line_num_end: None,
-                },
-                body,
-                target.kind,
-                Some(thread_id.clone()),
-                ai_action,
-            );
-        }
-        pending.remove([thread_id.as_str()]);
-        app_owner.refresh_meta(&*ports.git, &repo_root_for_thread);
-        desktop_revision.fetch_add(1, Ordering::Relaxed);
-    });
-
-    Ok(snap)
-}
-
-#[cfg(any(test, not(feature = "v1-service")))]
-/// What an ask reads from the App's tab: the raw diff a review of the view
-/// reads, and the checkout, or a remote tab's bucket, as the provider's
-/// directory.
-fn app_ask_tab(tab: &er_engine::app::TabState) -> crate::ask_context::AskTab<'_> {
-    let scope = match tab.mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => tab.mode.git_mode(),
-        _ => "branch",
-    };
-    crate::ask_context::AskTab {
-        repo_root: &tab.repo_root,
-        base_branch: &tab.base_branch,
-        current_branch: &tab.current_branch,
-        work_dir: if tab.is_remote() {
-            tab.er_dir()
-        } else {
-            tab.repo_root.clone()
-        },
-        files: tab.files.clone(),
-        raw_diff: tab.raw_diff_for_review(scope).ok(),
-        ai: &tab.ai,
-    }
 }
 
 /// The model a card ask runs: the one picked, else the agent's.
@@ -5991,79 +3818,6 @@ pub(crate) fn card_progress() -> er_engine::app::ProgressSink {
     Arc::new(|line: &str| {
         log::debug!("card ai: {line}");
     })
-}
-
-/// Run AI validation on a finding; reply is stored in `Finding.responses`.
-#[cfg(not(feature = "v1-service"))]
-fn ask_ai_for_finding(
-    finding_id: String,
-    prompt: String,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.sync_ai_selection();
-
-    let context = crate::ask_context::finding_ask(app_ask_tab(app.tab()), &finding_id)?;
-    let er_dir = app.tab().er_dir();
-    let system_context = context.system_prompt();
-    let model_id = app.current_ai_model.clone();
-    let cfg = er_engine::config::load_global_config();
-    let invocation = plan_card_ai_invocation(
-        &cfg,
-        app.current_ai_provider.as_deref(),
-        model_id.as_deref(),
-        app.current_ai_effort.as_deref(),
-        context.work_dir.clone(),
-    );
-    let model_for_subprocess = card_model(model_id, app.config.agent.model.clone());
-
-    let pending_key = format!("finding:{finding_id}");
-    state.pending_ai_replies.insert(
-        pending_key.clone(),
-        crate::snapshot::PendingAiReply {
-            started_at_ms: now_ms(),
-            ai_action: None,
-        },
-    );
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-
-    let user_prompt = if prompt.trim().is_empty() {
-        DEFAULT_ASK_AI_PROMPT.to_string()
-    } else {
-        prompt
-    };
-    let app_arc = Arc::clone(&state.app);
-    let pending = state.pending_ai_replies.clone();
-    let app_owner = Arc::clone(&state.app_owner);
-    let desktop_revision = Arc::clone(&state.desktop_revision);
-    let ports = state.ports.clone();
-    let repo_root_for_thread = context.repo_root;
-
-    let snap = snap_from(&app, state);
-    drop(app);
-
-    std::thread::spawn(move || {
-        let body = run_card_ai_subprocess(
-            &invocation,
-            &system_context,
-            &user_prompt,
-            model_for_subprocess.as_deref(),
-            Some(card_progress()),
-        )
-        .into_inner();
-        if let Ok(mut app) = app_arc.lock() {
-            if let Err(e) = er_engine::ai::append_finding_response(&er_dir, &finding_id, &body) {
-                app.notify(&format!("Failed to save finding validation: {e}"));
-            } else {
-                app.tab_mut().reload_ai_state();
-            }
-        }
-        pending.remove([pending_key.as_str()]);
-        app_owner.refresh_meta(&*ports.git, &repo_root_for_thread);
-        desktop_revision.fetch_add(1, Ordering::Relaxed);
-    });
-
-    Ok(snap)
 }
 
 #[tauri::command]
@@ -6543,7 +4297,6 @@ fn record_remote_recent_pr(
 /// The local project for `remote`, which decides whether a PR URL opens as a
 /// local review or a remote PR. It never picks an actor: the opened tab's own
 /// descriptor does.
-#[cfg(feature = "v1-service")]
 fn project_root_for_remote(remote: &str) -> String {
     let file = projects::load();
     find_project_id_for_remote(&file, remote)
@@ -6560,7 +4313,6 @@ fn project_root_for_remote(remote: &str) -> String {
 /// resolved here, where they live, so the actor's command carries the repo
 /// root and the remote and the service never reads the store. The actor is
 /// the one the opened tab keys, so the open and the tab's content meet there.
-#[cfg(feature = "v1-service")]
 pub(crate) fn service_open(
     state: &DesktopState,
     target: er_service::OpenTarget,
@@ -6593,7 +4345,6 @@ pub(crate) fn service_open(
 /// from the App, a painted view or a path or thread id on screen, so the App
 /// tab's key goes to `annotate`, which refuses the command when the
 /// registry's active tab is another one.
-#[cfg(feature = "v1-service")]
 fn route_annotation(
     state: &AppState,
     view: Option<&crate::snapshot::OptimisticView>,
@@ -6617,7 +4368,6 @@ fn route_annotation(
 /// reply. The tab and its context come from the registry and the tab's
 /// content, so a held App never holds the command; the `gh` work runs in the
 /// actor's effect.
-#[cfg(feature = "v1-service")]
 fn send_for_active_tab(
     state: &AppState,
     build: impl FnOnce(er_service::TabContext) -> er_service::Command,
@@ -6630,14 +4380,12 @@ fn send_for_active_tab(
         .send(&workspace, build(content.context.clone()))
 }
 
-#[cfg(feature = "v1-service")]
 fn unexpected_reply(reply: &er_service::Reply) -> String {
     format!("The workspace answered with an unexpected reply: {reply:?}")
 }
 
 /// The flag path's wording for a failed review write. GitHub's classification
 /// picks the hints; no error text is read.
-#[cfg(feature = "v1-service")]
 pub(crate) fn review_write_message(error: er_service::WorkspaceError) -> String {
     match error {
         er_service::WorkspaceError::Github(gh) => {
@@ -6650,7 +4398,6 @@ pub(crate) fn review_write_message(error: er_service::WorkspaceError) -> String 
 
 /// Sends a pending-review command and returns the PR it acted on and the view
 /// the popover renders.
-#[cfg(feature = "v1-service")]
 fn service_pending_review(
     state: &AppState,
     build: impl FnOnce(er_service::TabContext) -> er_service::Command,
@@ -6668,7 +4415,6 @@ fn service_pending_review(
     }
 }
 
-#[cfg(feature = "v1-service")]
 fn service_get_pending_review(state: &AppState) -> Result<PendingReviewView, String> {
     service_pending_review(
         state,
@@ -6678,7 +4424,6 @@ fn service_get_pending_review(state: &AppState) -> Result<PendingReviewView, Str
     .map(|(_, view)| view)
 }
 
-#[cfg(feature = "v1-service")]
 fn service_add_pending_review_comment(
     state: &AppState,
     target: ReviewLineTarget,
@@ -6699,7 +4444,6 @@ fn service_add_pending_review_comment(
     Ok(view)
 }
 
-#[cfg(feature = "v1-service")]
 fn service_remove_pending_review_comment(
     state: &AppState,
     comment_node_id: String,
@@ -6715,7 +4459,6 @@ fn service_remove_pending_review_comment(
     .map(|(_, view)| view)
 }
 
-#[cfg(feature = "v1-service")]
 fn service_pull_github_comments(state: &AppState, force: bool) -> Result<AppSnapshot, String> {
     let source = er_service::SyncSource::Manual { force };
     let reply = send_for_active_tab(state, |context| er_service::Command::SyncGithubComments {
@@ -6729,7 +4472,6 @@ fn service_pull_github_comments(state: &AppState, force: bool) -> Result<AppSnap
     }
 }
 
-#[cfg(feature = "v1-service")]
 fn service_submit_pending_review(
     state: &AppState,
     mode: &str,
@@ -6753,7 +4495,6 @@ fn service_submit_pending_review(
     }
 }
 
-#[cfg(feature = "v1-service")]
 fn service_post_github_pr_comment(state: &AppState, body: &str) -> Result<AppSnapshot, String> {
     let body = body.trim().to_string();
     if body.is_empty() {
@@ -6774,7 +4515,6 @@ fn service_post_github_pr_comment(state: &AppState, body: &str) -> Result<AppSna
     }
 }
 
-#[cfg(feature = "v1-service")]
 fn service_post_github_line_comment(
     state: &AppState,
     target: ReviewLineTarget,
@@ -6799,7 +4539,6 @@ fn service_post_github_line_comment(
     }
 }
 
-#[cfg(feature = "v1-service")]
 fn service_submit_github_pr_decision(
     state: &AppState,
     mode: &str,
@@ -6833,7 +4572,6 @@ fn service_submit_github_pr_decision(
     }
 }
 
-#[cfg(feature = "v1-service")]
 pub(crate) fn service_open_pr_url(
     state: &DesktopState,
     url: String,
@@ -6850,7 +4588,6 @@ pub(crate) fn service_open_pr_url(
     )
 }
 
-#[cfg(feature = "v1-service")]
 pub(crate) fn service_open_remote_pr(
     state: &DesktopState,
     owner: String,
@@ -6872,7 +4609,6 @@ pub(crate) fn service_open_remote_pr(
     )
 }
 
-#[cfg(feature = "v1-service")]
 pub(crate) fn service_open_pr_review(
     state: &DesktopState,
     project_id: String,
@@ -6911,14 +4647,11 @@ pub async fn open_remote_pr(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         service_open_remote_pr(&state, owner, repo, number, replace)
             .map(|()| AppSnapshot::default())
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || open_remote_pr_impl(owner, repo, number, replace, &state)).await;
+    .await
 }
 
 fn open_remote_pr_impl(
@@ -6940,51 +4673,8 @@ pub async fn open_pr_url(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
-        service_open_pr_url(&state, url, replace).map(|()| AppSnapshot::default())
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || open_pr_url_impl(url, replace, &state)).await;
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn open_pr_url_impl(
-    url: String,
-    replace: Option<bool>,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    let pr_ref = er_engine::github::parse_github_pr_url(&url)
-        .ok_or_else(|| format!("Not a valid GitHub PR URL: {url}"))?;
-    let remote = format!("{}/{}", pr_ref.owner, pr_ref.repo);
-    let file = projects::load();
-    if let Some(project_id) = find_project_id_for_remote(&file, &remote) {
-        let has_cached = state
-            .pr_cache
-            .lock()
-            .map(|cache| {
-                cache
-                    .get(&remote)
-                    .map(|prs| prs.iter().any(|pr| pr.number == pr_ref.number))
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-        if !has_cached {
-            cache_single_pr_for_remote(state, &remote, pr_ref.number)?;
-        }
-        projects::track_pr(&project_id, pr_ref.number).map_err(|e| e.to_string())?;
-        return open_pr_review_impl(project_id, pr_ref.number, replace, None, state);
-    }
-
-    let _project_id = record_remote_recent_pr(state, &remote, pr_ref.number)?;
-    activate_or_open_remote_pr(
-        &pr_ref.owner,
-        &pr_ref.repo,
-        pr_ref.number,
-        replace.unwrap_or(false),
-        state,
-    )
+    run_blocking(move || service_open_pr_url(&state, url, replace).map(|()| AppSnapshot::default()))
+        .await
 }
 
 // ── Worktree picker (stub — no dialog dep) ──────────────────────────────────
@@ -6996,40 +4686,17 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
         .pick_folder();
     let Some(path) = picked else {
         // User cancelled — return current snapshot, no-op.
-        #[cfg(feature = "v1-service")]
         return Ok(AppSnapshot::default());
-        #[cfg(not(feature = "v1-service"))]
-        return snap!(state);
     };
     let path_str = path.to_string_lossy().to_string();
     // The picked folder is the only input the workspace needs.
-    #[cfg(feature = "v1-service")]
-    return service_open_folder(&state, path_str).map(|()| AppSnapshot::default());
-    #[cfg(not(feature = "v1-service"))]
-    return open_worktree_tab(&state, path_str);
+    service_open_folder(&state, path_str).map(|()| AppSnapshot::default())
 }
 
 /// Opens a Working tab on a picked folder, registering it as a project.
-#[cfg(feature = "v1-service")]
 pub(crate) fn service_open_folder(state: &DesktopState, path: String) -> Result<(), String> {
     let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path);
     content_routes::open(state, content_routes::working_tab(path), false)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn open_worktree_tab(state: &AppState, path_str: String) -> Result<AppSnapshot, String> {
-    let mut new_tab = er_engine::app::TabState::new(path_str.clone(), state.ports.clone())
-        .map_err(|e| format!("Failed to open {path_str}: {e}"))?;
-    new_tab
-        .refresh_diff()
-        .map_err(|e| format!("Failed to refresh {path_str}: {e}"))?;
-
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.open_tab(new_tab);
-    crate::tabs::persist_app_tabs(&app, &state.view);
-    let _ = projects::auto_register(&*state.ports.github, &*state.ports.git, &path_str);
-    kick_meta_refresh(state, app.tab().repo_root.clone());
-    Ok(snap_from(&app, state))
 }
 
 // ── Project commands ─────────────────────────────────────────────────────────
@@ -7121,18 +4788,6 @@ fn build_local_branch_tab_for_repo(
     // project's remote happens to be active in the app.
     tab.remote_repo = projects::resolve_repo_remote(&*ports.github, &*ports.git, repo_root);
     Ok(tab)
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn refresh_branch_open_diff(tab: &mut er_engine::app::TabState) -> Result<(), String> {
-    match tab.refetch_and_refresh_diff() {
-        Ok(()) => Ok(()),
-        Err(err) if er_engine::github::is_no_upstream_to_refresh(&err) => {
-            log::info!("branch open falling back to local diff: {err}");
-            tab.refresh_diff().map_err(|e| e.to_string())
-        }
-        Err(err) => Err(format!("Failed to refresh branch from upstream: {err}")),
-    }
 }
 
 /// Background branch-refresh workers currently running, keyed
@@ -7270,15 +4925,12 @@ pub async fn open_local_branch(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         let tab = content_routes::branch_tab(&project_id, name)?;
         content_routes::open(&state, tab, replace.unwrap_or(false))?;
         Ok(AppSnapshot::default())
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || open_local_branch_impl(project_id, name, replace, &state)).await;
+    .await
 }
 
 fn open_local_branch_impl(
@@ -7422,8 +5074,6 @@ fn remember_pr_open_entry(
         );
     }
     // With `v1-service` the service's app registry is the file's one writer.
-    #[cfg(not(feature = "v1-service"))]
-    crate::pr_open_cache::save_persisted_pr_open_cache(cache);
 }
 
 fn run_gh_pr_view_for_open(
@@ -8035,8 +5685,7 @@ pub async fn open_pr_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return {
+    {
         // The open path is service-owned now; the hint is not consumed until
         // the desktop renders from the view.
         drop(hint);
@@ -8045,9 +5694,7 @@ pub async fn open_pr_review(
             Ok(AppSnapshot::default())
         })
         .await
-    };
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, hint, &state)).await
+    }
 }
 
 fn open_pr_review_impl(
@@ -8486,15 +6133,11 @@ pub async fn open_pr_branch(
 ) -> Result<AppSnapshot, String> {
     let _ = head_ref; // ignored; PR head is fetched directly from origin
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         service_open_pr_review(&state, project_id, pr_number, replace)?;
         Ok(AppSnapshot::default())
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, None, &state))
-        .await;
+    .await
 }
 
 /// Fire-and-forget background warmup of the PR-open cache. Invoked from the
@@ -8513,7 +6156,6 @@ pub fn prefetch_pr_open(
 }
 
 /// With `v1-service` the app registry warms its own cache through the ports.
-#[cfg(feature = "v1-service")]
 pub(crate) fn prefetch_pr_open_impl(
     project_id: String,
     pr_number: u64,
@@ -8537,134 +6179,6 @@ pub(crate) fn prefetch_pr_open_impl(
         .map_err(|e| e.to_string())
 }
 
-#[cfg(not(feature = "v1-service"))]
-fn prefetch_pr_open_impl(
-    project_id: String,
-    pr_number: u64,
-    hint: PrOpenHint,
-    state: &AppState,
-) -> Result<(), String> {
-    let file = projects::load();
-    let Some(proj) = file.projects.iter().find(|p| p.id == project_id).cloned() else {
-        return Ok(());
-    };
-    let repo_root = proj.root_path;
-    let key = pr_open_cache_key(&project_id, &repo_root, pr_number);
-    let freshness = freshness_from_hint(&hint);
-
-    // Skip if we already have a fresh cached entry matching the hint's freshness.
-    if cached_pr_open_diff(&state.pr_open_cache, &key, &freshness).is_some() {
-        return Ok(());
-    }
-
-    // Dedupe: claim the in-flight slot atomically.
-    let claim_key = (project_id, pr_number);
-    let claim = {
-        let mut guard = state
-            .pr_open_prefetch_in_flight
-            .lock()
-            .map_err(|e| e.to_string())?;
-        if guard.contains_key(&claim_key) {
-            return Ok(());
-        }
-        let claim = Arc::new(PrOpenPrefetchClaim {
-            freshness: freshness.clone(),
-            done: Mutex::new(false),
-            cv: Condvar::new(),
-        });
-        guard.insert(claim_key.clone(), Arc::clone(&claim));
-        claim
-    };
-
-    let cache = Arc::clone(&state.pr_open_cache);
-    let in_flight = Arc::clone(&state.pr_open_prefetch_in_flight);
-    let branch_label = format!("pr-{}", pr_number);
-    let ports = state.ports.clone();
-    std::thread::spawn(move || {
-        let t = std::time::Instant::now();
-        // Warm the PR comment sync cache: detached so the in-flight claim is
-        // released as soon as the diff is cached; the post-open
-        // `pull_github_comments` (~2.5–3 s of gh calls) is served from memory
-        // when the user clicks within the 60 s TTL.
-        {
-            let warm_root = repo_root.clone();
-            let warm_ports = ports.clone();
-            std::thread::spawn(move || {
-                if let Ok(owner_repo) =
-                    er_engine::github::get_repo_info(&*warm_ports.git, &warm_root)
-                {
-                    let _ = er_engine::github::gh_pr_comment_bundle_cached(
-                        &owner_repo.0,
-                        &owner_repo.1,
-                        pr_number,
-                        Some(&warm_root),
-                    );
-                }
-            });
-        }
-        let diff_root = repo_root.clone();
-        let base_root = repo_root.clone();
-        let commits_root = repo_root.clone();
-        let base_branch = freshness.base_branch.clone();
-        let (diff_res, base_res, commits) = std::thread::scope(|s| {
-            let diff_git = ports.git.clone();
-            let diff_h =
-                s.spawn(move || run_gh_pr_diff_for_open(&*diff_git, &diff_root, pr_number));
-            let base_git = ports.git.clone();
-            let base_h = s.spawn(move || {
-                er_engine::github::ensure_base_ref_available(&*base_git, &base_root, &base_branch)
-                    .map_err(|e| e.to_string())
-            });
-            let commits_h = s.spawn(move || run_gh_pr_commits_for_open(&commits_root, pr_number));
-            let diff_res = diff_h
-                .join()
-                .unwrap_or_else(|_| Err("gh pr diff thread panicked".to_string()));
-            let base_res = base_h
-                .join()
-                .unwrap_or_else(|_| Err("base ref fetch thread panicked".to_string()));
-            let commits = commits_h.join().unwrap_or_default();
-            (diff_res, base_res, commits)
-        });
-        match (diff_res, base_res) {
-            (Ok(raw_diff), Ok(_)) => {
-                remember_pr_open_entry(
-                    &cache,
-                    key,
-                    freshness.clone(),
-                    raw_diff,
-                    None,
-                    Some(commits),
-                );
-                log::info!(
-                    "pr_open_prefetch project={} branch={} ok ms={}",
-                    claim_key.0,
-                    branch_label,
-                    t.elapsed().as_millis()
-                );
-            }
-            (Err(e), _) | (_, Err(e)) => {
-                log::warn!(
-                    "pr_open_prefetch project={} branch={} failed ms={} err={}",
-                    claim_key.0,
-                    branch_label,
-                    t.elapsed().as_millis(),
-                    e
-                );
-            }
-        }
-        // Signal completion (success or failure) so a waiting open can stop
-        // blocking and re-check the cache, then release the claim.
-        if let Ok(mut done) = claim.done.lock() {
-            *done = true;
-        }
-        claim.cv.notify_all();
-        if let Ok(mut guard) = in_flight.lock() {
-            guard.remove(&claim_key);
-        }
-    });
-    Ok(())
-}
-
 /// Fire-and-forget background warmup of the remote-only PR open cache.
 ///
 /// Invoked from the sidebar's `onmouseenter` (after a short debounce) for
@@ -8680,7 +6194,6 @@ pub fn prefetch_remote_pr_open(
     prefetch_remote_pr_open_impl(owner, repo, number, state.inner())
 }
 
-#[cfg(feature = "v1-service")]
 pub(crate) fn prefetch_remote_pr_open_impl(
     owner: String,
     repo: String,
@@ -8697,85 +6210,6 @@ pub(crate) fn prefetch_remote_pr_open_impl(
         .send_app(command)
         .map(|_| ())
         .map_err(|e| e.to_string())
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn prefetch_remote_pr_open_impl(
-    owner: String,
-    repo: String,
-    number: u64,
-    state: &AppState,
-) -> Result<(), String> {
-    // Skip when already cached or already in flight.
-    if crate::remote_pr_open_cache::get_remote_pr_open_entry(
-        &state.remote_pr_open_cache,
-        &owner,
-        &repo,
-        number,
-    )
-    .is_some()
-    {
-        return Ok(());
-    }
-    if !crate::remote_pr_open_cache::claim_remote_pr_open(
-        &state.remote_pr_open_in_flight,
-        &owner,
-        &repo,
-        number,
-    ) {
-        return Ok(());
-    }
-
-    let cache = Arc::clone(&state.remote_pr_open_cache);
-    let in_flight = Arc::clone(&state.remote_pr_open_in_flight);
-    let ports = state.ports.clone();
-    std::thread::spawn(move || {
-        let t = std::time::Instant::now();
-        // Warm the PR comment sync cache — detached, like the local prefetch;
-        // the remote variant needs no local clone.
-        {
-            let warm_owner = owner.clone();
-            let warm_repo = repo.clone();
-            std::thread::spawn(move || {
-                let _ = er_engine::github::gh_pr_comment_bundle_cached(
-                    &warm_owner,
-                    &warm_repo,
-                    number,
-                    None,
-                );
-            });
-        }
-        let result = fetch_remote_pr_open_inputs(&*ports.git, &owner, &repo, number);
-        match result {
-            Ok(inputs) => {
-                crate::remote_pr_open_cache::insert_remote_pr_open_entry(
-                    &cache,
-                    &owner,
-                    &repo,
-                    number,
-                    crate::remote_pr_open_cache::RemotePrOpenEntry {
-                        base_branch: inputs.base_branch,
-                        head_branch: inputs.head_branch,
-                        raw_diff: inputs.raw_diff,
-                        pr_data: inputs.pr_data,
-                        pr_commits: inputs.pr_commits,
-                        head_oid: inputs.head_oid,
-                        last_touched: 0,
-                    },
-                );
-                log::info!(
-                    "remote_pr_prefetch {owner}/{repo}#{number} ok ms={}",
-                    t.elapsed().as_millis()
-                );
-            }
-            Err(e) => log::warn!(
-                "remote_pr_prefetch {owner}/{repo}#{number} failed ms={} err={e}",
-                t.elapsed().as_millis()
-            ),
-        }
-        crate::remote_pr_open_cache::release_remote_pr_open(&in_flight, &owner, &repo, number);
-    });
-    Ok(())
 }
 
 /// Trigger a manual PR-list refresh. Returns the current snapshot immediately
@@ -9115,10 +6549,7 @@ pub fn prefetch_inbox_item(id: String, state: State<AppState>) -> Result<(), Str
 
 /// What the open-cache prefetches take: the desktop's state with the flag
 /// on, the App's without.
-#[cfg(feature = "v1-service")]
 type PrefetchState = DesktopState;
-#[cfg(not(feature = "v1-service"))]
-type PrefetchState = AppState;
 
 /// Warms the open cache for the inbox item's PR; an item with no PR, or one
 /// gone from the inbox, warms nothing.
@@ -9168,7 +6599,6 @@ const NO_INBOX_TARGET: &str =
 
 /// `er_send`'s inbox open: the read, then the open a sidebar click takes. A
 /// target no project holds is refused after the read has landed.
-#[cfg(feature = "v1-service")]
 pub(crate) fn service_open_inbox_item(
     state: &DesktopState,
     id: &str,
@@ -9189,7 +6619,6 @@ fn open_inbox_item_impl(
     let target = read_inbox_item(&id, state)?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
-    #[cfg(feature = "v1-service")]
     if let Some(target) = target
         .clone()
         .and_then(|t| resolve_inbox_open_target(t, state))
@@ -9221,7 +6650,6 @@ fn open_inbox_item_impl(
 }
 
 /// An inbox open through the same flag-on helpers as a sidebar click.
-#[cfg(feature = "v1-service")]
 fn service_open_inbox_target(
     state: &DesktopState,
     target: InboxOpenTarget,
@@ -9442,14 +6870,10 @@ pub fn open_project_branch(
     replace: Option<bool>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    #[cfg(feature = "v1-service")]
-    return service_open_project_branch(&state, project_id, branch, replace.unwrap_or(false))
-        .map(|()| AppSnapshot::default());
-    #[cfg(not(feature = "v1-service"))]
-    return open_project_branch_tab(project_id, branch, replace, &state);
+    service_open_project_branch(&state, project_id, branch, replace.unwrap_or(false))
+        .map(|()| AppSnapshot::default())
 }
 
-#[cfg(feature = "v1-service")]
 pub(crate) fn service_open_project_branch(
     state: &DesktopState,
     project_id: String,
@@ -9460,50 +6884,6 @@ pub(crate) fn service_open_project_branch(
     content_routes::open(state, tab, replace)?;
     projects::set_active(&project_id);
     Ok(())
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn open_project_branch_tab(
-    project_id: String,
-    branch: String,
-    replace: Option<bool>,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    // Read-only: same logic as open_local_branch. We also mark the project active.
-    let file = projects::load();
-    let proj = file
-        .projects
-        .iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("Project not found: {project_id}"))?
-        .clone();
-    let mut new_tab = build_local_branch_tab_for_repo(
-        &proj.root_path,
-        state
-            .ports
-            .git
-            .detect_base_branch(&proj.root_path)
-            .map_err(|e| e.to_string())?,
-        branch,
-        &state.ports,
-    )?;
-    // Light, as in `build_local_branch_tab`: the refresh below reloads the AI
-    // sidecars through its own gate, so a full sync duplicates that read.
-    new_tab.sync_managed_storage_light();
-    refresh_branch_open_diff(&mut new_tab)?;
-
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    place_tab(
-        &mut app,
-        &state.view,
-        new_tab,
-        replace.unwrap_or(false),
-        false,
-    );
-    projects::set_active(&project_id);
-    kick_meta_refresh(state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, state);
-    Ok(snap_from(&app, state))
 }
 
 #[tauri::command]
@@ -9858,15 +7238,11 @@ pub(crate) fn project_available_prs(
 
 #[tauri::command]
 pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    #[cfg(feature = "v1-service")]
-    return service_set_active_project(&state, &id).map(|()| AppSnapshot::default());
-    #[cfg(not(feature = "v1-service"))]
-    return set_active_project_impl(&id, &state);
+    service_set_active_project(&state, &id).map(|()| AppSnapshot::default())
 }
 
 /// Opens a Working tab on the project's root through the registry, as the
 /// other flag-on opens do.
-#[cfg(feature = "v1-service")]
 pub(crate) fn service_set_active_project(state: &DesktopState, id: &str) -> Result<(), String> {
     let root = projects::load()
         .projects
@@ -9877,27 +7253,6 @@ pub(crate) fn service_set_active_project(state: &DesktopState, id: &str) -> Resu
     content_routes::open(state, content_routes::working_tab(root), false)?;
     projects::set_active(id);
     Ok(())
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn set_active_project_impl(id: &str, state: &AppState) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let file = projects::load();
-    let proj = file
-        .projects
-        .iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| format!("Project not found: {id}"))?
-        .clone();
-    let new_tab = er_engine::app::TabState::new(proj.root_path.clone(), state.ports.clone())
-        .map_err(|e| format!("Failed to open {}: {e}", proj.root_path))?;
-    app.open_tab(new_tab);
-    app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
-    crate::tabs::persist_app_tabs(&app, &state.view);
-    projects::set_active(id);
-    kick_meta_refresh(state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, state);
-    Ok(snap_from(&app, state))
 }
 
 #[tauri::command]
@@ -10052,8 +7407,7 @@ pub async fn promote_finding_to_comment(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::PromoteFindingToComment {
                 context,
@@ -10062,79 +7416,8 @@ pub async fn promote_finding_to_comment(
             }
         })
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || promote_finding_to_comment_impl(finding_id, body, view, &state)).await
+    .await
 }
-
-#[cfg(not(feature = "v1-service"))]
-fn promote_finding_to_comment_impl(
-    finding_id: String,
-    body: Option<String>,
-    view: Option<crate::snapshot::OptimisticView>,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    let (er_dir, promoted) = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
-            return early;
-        }
-
-        let er_dir = app.tab().er_dir();
-        let review = app
-            .tab()
-            .ai
-            .review
-            .as_ref()
-            .ok_or_else(|| "No AI review loaded".to_string())?;
-        let (file, finding) = review
-            .files
-            .iter()
-            .find_map(|(path, file)| {
-                file.findings
-                    .iter()
-                    .find(|finding| finding.id == finding_id)
-                    .map(|finding| (path, finding))
-            })
-            .ok_or_else(|| format!("Finding not found: {finding_id}"))?;
-        let replies = er_engine::ai::collect_finding_promote_replies(&app.tab().ai, &finding_id);
-        let promoted = er_engine::ai::promote::promote_finding(file, finding, &replies, body)
-            .map_err(|error| error.to_string())?;
-        (er_dir, promoted)
-    };
-
-    let posted = post_github_comment_flow(
-        state,
-        er_engine::app::NewGitHubComment::from(promoted),
-        Some(format!("c-promote-finding-{finding_id}")),
-    )?;
-    let request = posted.request.clone();
-    posted.finish(state);
-
-    // The finding is removed only once GitHub holds the comment, so a failure
-    // keeps it and a retry can post it again.
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if let Err(e) = er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id) {
-        // The comment is on GitHub; the next promote must adopt it.
-        app.remember_posted_for_retry(request);
-        return Err(format!("Failed to remove finding after promote: {e}"));
-    }
-    let _ = er_engine::ai::delete_threads_linked_to_finding(
-        &er_dir,
-        &app.tab().github_comments_dir(),
-        &finding_id,
-    );
-    let mut promotions = load_finding_promotions(&er_dir);
-    if promotions.remove(&finding_id).is_some() {
-        let _ = save_finding_promotions(&er_dir, &promotions);
-    }
-    app.tab_mut().reload_ai_state();
-
-    Ok(snap_from_confirmed(&app, state))
-}
-
-#[cfg(not(feature = "v1-service"))]
-const FINDING_THREAD_STUB: &str = "Follow-up on this finding.";
 
 #[tauri::command]
 pub async fn reply_to_finding(
@@ -10146,19 +7429,15 @@ pub async fn reply_to_finding(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         reply_to_finding_on_service(&state, finding_id, body, ai_assist, id, view.as_ref())
     })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || reply_to_finding_impl(finding_id, body, ai_assist, id, view, &state)).await
+    .await
 }
 
 /// The flag path of a finding reply. The plain reply is the workspace's
 /// write; an AI-assisted one finds or creates the finding's thread there and
 /// asks in it, with the reply being written shown in `jobs`.
-#[cfg(feature = "v1-service")]
 fn reply_to_finding_on_service(
     state: &AppState,
     finding_id: String,
@@ -10181,164 +7460,6 @@ fn reply_to_finding_on_service(
     })
 }
 
-#[cfg(not(feature = "v1-service"))]
-fn reply_to_finding_impl(
-    finding_id: String,
-    body: String,
-    ai_assist: bool,
-    id: Option<String>,
-    view: Option<crate::snapshot::OptimisticView>,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
-        return early;
-    }
-    // Reuse the id the frontend painted with (see `optimisticInvokeArgs`) so the
-    // confirming snapshot lands on the same row. It goes to the first write only:
-    // the stub root when a thread is created, else the reply.
-
-    // v1: create a github comment that references the finding's location.
-    let (target, finding_text) = {
-        let tab = app.tab();
-        let mut result: Option<(String, usize, Option<usize>)> = None;
-        let mut text: Option<(String, String)> = None;
-        if let Some(review) = tab.ai.review.as_ref() {
-            'outer: for (path, file) in review.files.iter() {
-                for f in file.findings.iter() {
-                    if f.id == finding_id {
-                        result = Some((path.clone(), f.hunk_index.unwrap_or(0), f.line_start));
-                        text = Some((f.title.clone(), f.description.clone()));
-                        break 'outer;
-                    }
-                }
-            }
-        }
-        (result, text)
-    };
-
-    let (file, hunk_idx, line_start) =
-        target.ok_or_else(|| format!("Finding not found: {finding_id}"))?;
-
-    if ai_assist {
-        let prompt = if body.trim().is_empty() {
-            DEFAULT_ASK_AI_PROMPT.to_string()
-        } else {
-            body
-        };
-        let enriched_prompt = if let Some((title, desc)) = finding_text {
-            format!("Finding: {title}\n\n{desc}\n\n---\n\n{prompt}")
-        } else {
-            prompt
-        };
-
-        let root_id = if let Some(root) =
-            er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id)
-        {
-            root
-        } else {
-            app.submit_comment_text_with_id(
-                CommentTarget {
-                    file,
-                    hunk_idx,
-                    line_num: line_start,
-                    line_num_end: None,
-                },
-                "AI follow-up requested for this finding.".to_string(),
-                CommentType::GitHubComment,
-                None,
-                Some(finding_id.clone()),
-                id,
-            )
-            .map_err(|e| e.to_string())?;
-            app.tab()
-                .ai
-                .github_comments
-                .as_ref()
-                .and_then(|gc| {
-                    gc.comments
-                        .iter()
-                        .find(|c| {
-                            c.finding_ref.as_deref() == Some(finding_id.as_str())
-                                && c.in_reply_to.is_none()
-                        })
-                        .map(|c| c.id.clone())
-                })
-                .ok_or_else(|| "Failed to create finding comment thread".to_string())?
-        };
-        drop(app);
-        return ask_ai_impl(
-            root_id,
-            enriched_prompt,
-            Some(er_engine::ai::AI_ACTION_ASK),
-            state,
-        );
-    }
-
-    let root_id = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id);
-    if let Some(root_id) = root_id {
-        app.submit_comment_text_with_id(
-            CommentTarget {
-                file,
-                hunk_idx,
-                line_num: line_start,
-                line_num_end: None,
-            },
-            body,
-            CommentType::GitHubComment,
-            Some(root_id),
-            None,
-            id,
-        )
-        .map_err(|e| e.to_string())?;
-    } else {
-        app.submit_comment_text_with_id(
-            CommentTarget {
-                file: file.clone(),
-                hunk_idx,
-                line_num: line_start,
-                line_num_end: None,
-            },
-            FINDING_THREAD_STUB.to_string(),
-            CommentType::GitHubComment,
-            None,
-            Some(finding_id.clone()),
-            id,
-        )
-        .map_err(|e| e.to_string())?;
-        let root_id = app
-            .tab()
-            .ai
-            .github_comments
-            .as_ref()
-            .and_then(|gc| {
-                gc.comments
-                    .iter()
-                    .find(|c| {
-                        c.finding_ref.as_deref() == Some(finding_id.as_str())
-                            && c.in_reply_to.is_none()
-                    })
-                    .map(|c| c.id.clone())
-            })
-            .ok_or_else(|| "Failed to create finding comment thread".to_string())?;
-        app.submit_comment_text(
-            CommentTarget {
-                file,
-                hunk_idx,
-                line_num: line_start,
-                line_num_end: None,
-            },
-            body,
-            CommentType::GitHubComment,
-            Some(root_id),
-            None,
-        )
-        .map_err(|e| e.to_string())?;
-    }
-
-    Ok(snap_from_confirmed(&app, state))
-}
-
 #[tauri::command]
 pub async fn update_thread_message(
     id: String,
@@ -10352,52 +7473,10 @@ pub async fn update_thread_message(
     }
 
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || {
+    run_blocking(move || {
         route_annotation(&state, view.as_ref(), |context| {
             er_service::Command::UpdateThreadMessage { context, id, body }
         })
-    })
-    .await;
-    #[cfg(not(feature = "v1-service"))]
-    run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-            return early;
-        }
-        let author = {
-            let tab = app.tab();
-            if id.starts_with("q-") {
-                tab.ai
-                    .questions
-                    .as_ref()
-                    .and_then(|qs| qs.questions.iter().find(|q| q.id == id))
-                    .map(|q| q.author.clone())
-            } else if id.starts_with("n-") {
-                tab.ai
-                    .notes
-                    .as_ref()
-                    .and_then(|ns| ns.notes.iter().find(|n| n.id == id))
-                    .map(|n| n.author.clone())
-            } else {
-                tab.ai
-                    .github_comments
-                    .as_ref()
-                    .and_then(|gc| gc.comments.iter().find(|c| c.id == id))
-                    .map(|c| c.author.clone())
-            }
-        };
-        let author = author.ok_or_else(|| format!("Thread message not found: {id}"))?;
-        if author == "ai" {
-            return Err("Cannot edit AI-generated text".to_string());
-        }
-        if !author.is_empty() && author != "You" {
-            return Err("Can only edit your own messages".to_string());
-        }
-
-        app.update_comment_text(&id, &text)
-            .map_err(|e| e.to_string())?;
-        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -10416,34 +7495,9 @@ pub fn open_commit_composer(state: State<AppState>) -> Result<AppSnapshot, Strin
 #[tauri::command]
 pub async fn select_commit(sha: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || content_routes::select_commit(&state, &sha)).await;
+    run_blocking(move || content_routes::select_commit(&state, &sha)).await
     // A commit row is a primary click target, and loading it runs git log and
     // git diff under the App lock — on the main thread that freezes the window.
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        {
-            let tab = app.tab_mut();
-            if tab.is_remote() {
-                return Err("Commits on a remote PR are display-only: there is no local clone to diff them in".to_string());
-            }
-            // Switching into History mode lazily initializes HistoryState —
-            // needed when the user clicks a commit from Branch/Unstaged/Staged
-            // or the PR diff, where history was never loaded.
-            if tab.mode != DiffMode::History {
-                tab.set_mode(DiffMode::History);
-            }
-            if let Some(history) = tab.history.as_mut() {
-                if let Some(pos) = history.commits.iter().position(|c| c.hash == sha) {
-                    history.selected_commit = pos;
-                    tab.history_load_selected_diff();
-                }
-            }
-        }
-        Ok(snap_from(&app, &state))
-    })
-    .await;
 }
 
 /// "All changes" from the single-commit view. The engine recorded which view
@@ -10452,16 +7506,8 @@ pub async fn select_commit(sha: String, state: State<'_, AppState>) -> Result<Ap
 #[tauri::command]
 pub async fn exit_history(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    #[cfg(feature = "v1-service")]
-    return run_blocking(move || content_routes::exit_history(&state)).await;
+    run_blocking(move || content_routes::exit_history(&state)).await
     // Leaving History re-runs the view's git diff under the App lock.
-    #[cfg(not(feature = "v1-service"))]
-    return run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.tab_mut().exit_history();
-        Ok(snap_from(&app, &state))
-    })
-    .await;
 }
 
 // ── Tab management ──────────────────────────────────────────────────────────
@@ -10472,14 +7518,12 @@ pub async fn exit_history(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 // builds the desktop's snapshot; the flag-on desktop does not render from the
 // registry yet, so each command answers with an empty snapshot.
 
-#[cfg(feature = "v1-service")]
 fn service_tab_key(state: &DesktopState, idx: usize) -> Result<er_engine::TabKey, String> {
     let view = state.service.app_registry().tabs_view();
     view.key_at(idx)
         .ok_or_else(|| format!("no tab at position {idx}"))
 }
 
-#[cfg(feature = "v1-service")]
 fn service_tab_command(
     state: &DesktopState,
     command: er_service::AppCommand,
@@ -10490,7 +7534,6 @@ fn service_tab_command(
 
 /// A Working tab on the active tab's repo, read from the registry's view
 /// rather than the App, so the command never waits on the App lock.
-#[cfg(feature = "v1-service")]
 pub(crate) fn service_new_tab(state: &DesktopState) -> Result<AppSnapshot, String> {
     let view = state.service.app_registry().tabs_view();
     let root = new_tab_root(&view, project_root_for_remote)
@@ -10502,7 +7545,6 @@ pub(crate) fn service_new_tab(state: &DesktopState) -> Result<AppSnapshot, Strin
 /// The root a new Working tab opens on: the active tab's. A remote PR has no
 /// local root, so it takes the root of the project that tracks its repo, and
 /// failing that the first open tab that has one.
-#[cfg(feature = "v1-service")]
 fn new_tab_root(
     view: &er_service::TabsView,
     project_root: impl Fn(&str) -> String,
@@ -10522,18 +7564,15 @@ fn new_tab_root(
 }
 
 /// Closing a tab also drops its content on the actor that loaded it.
-#[cfg(feature = "v1-service")]
 fn service_close_tab(state: &DesktopState, idx: usize) -> Result<AppSnapshot, String> {
     content_routes::close(state, idx)
 }
 
-#[cfg(feature = "v1-service")]
 fn service_select_tab(state: &DesktopState, idx: usize) -> Result<AppSnapshot, String> {
     let key = service_tab_key(state, idx)?;
     service_tab_command(state, er_service::AppCommand::SelectTab { key })
 }
 
-#[cfg(feature = "v1-service")]
 fn service_reorder_tabs(
     state: &DesktopState,
     from: usize,
@@ -10546,26 +7585,22 @@ fn service_reorder_tabs(
     )
 }
 
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
     service_new_tab(&state)
 }
 
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub fn close_tab(idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
     service_close_tab(&state, idx)
 }
 
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn select_tab(idx: usize, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || service_select_tab(&state, idx)).await
 }
 
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 #[expect(
     non_snake_case,
@@ -10577,108 +7612,6 @@ pub fn reorder_tabs(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     service_reorder_tabs(&state, fromIdx, toIdx)
-}
-
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    // Spawn a working-tree tab cloned from the active tab's repo root.
-    // If that fails (e.g. deleted repo), fall back to the first tab's root.
-    let root = app.tab().repo_root.clone();
-    let tab = er_engine::app::TabState::new(root.clone(), state.ports.clone())
-        .or_else(|_| {
-            er_engine::app::TabState::new(app.tabs[0].repo_root.clone(), state.ports.clone())
-        })
-        .map_err(|e| format!("Failed to open new tab: {e}"))?;
-    app.open_tab(tab);
-    crate::tabs::persist_app_tabs(&app, &state.view);
-    kick_meta_refresh(&state, root);
-    Ok(snap_from(&app, &state))
-}
-
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub fn close_tab(
-    idx: usize,
-    app_handle: tauri::AppHandle,
-    state: State<AppState>,
-    browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
-) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.close_tab_at(idx);
-    kick_deferred_tab_refresh(&mut app, &state);
-    crate::browser_webview::reset_all_tab_webviews(&app_handle, &browser_state)?;
-    let active = app.active_tab;
-    crate::browser_webview::on_tab_selected(
-        &app_handle,
-        &browser_state,
-        &state.view,
-        app.tabs[active].key(),
-        active,
-    )?;
-    crate::tabs::persist_app_tabs(&app, &state.view);
-    kick_active_gh_status(&app, &state);
-    Ok(snap_from(&app, &state))
-}
-
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub async fn select_tab(
-    idx: usize,
-    app_handle: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<AppSnapshot, String> {
-    let state = state.inner().clone();
-    run_blocking(move || {
-        use tauri::Manager;
-        let t_total = std::time::Instant::now();
-        let browser_state = app_handle.state::<crate::browser_webview::BrowserWebviewState>();
-        let t_lock = std::time::Instant::now();
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let app_lock_ms = t_lock.elapsed().as_millis();
-        let idx_before = app.active_tab;
-        app.select_tab(idx);
-        let deferred = app.tab().needs_initial_refresh;
-        kick_deferred_tab_refresh(&mut app, &state);
-        kick_active_gh_status(&app, &state);
-        let t_webview = std::time::Instant::now();
-        let key = app
-            .tabs
-            .get(idx)
-            .map(er_engine::app::TabState::key)
-            .ok_or_else(|| format!("tab index {idx} out of range"))?;
-        crate::browser_webview::on_tab_selected(
-            &app_handle,
-            &browser_state,
-            &state.view,
-            key,
-            idx,
-        )?;
-        let webview_ms = t_webview.elapsed().as_millis();
-        let t_persist = std::time::Instant::now();
-        crate::tabs::persist_app_tabs(&app, &state.view);
-        let persist_ms = t_persist.elapsed().as_millis();
-        let t_snap = std::time::Instant::now();
-        let snapshot = snap_from_command(&app, &state);
-        let snap_build_ms = t_snap.elapsed().as_millis();
-        crate::profile_log::profile_log(
-            "select_tab",
-            &[
-                ("idx", idx.to_string()),
-                ("from_idx", idx_before.to_string()),
-                ("files", snapshot.files.len().to_string()),
-                ("needs_initial_refresh", deferred.to_string()),
-                ("app_lock_ms", app_lock_ms.to_string()),
-                ("webview_ms", webview_ms.to_string()),
-                ("persist_ms", persist_ms.to_string()),
-                ("snap_build_ms", snap_build_ms.to_string()),
-                ("total_ms", t_total.elapsed().as_millis().to_string()),
-            ],
-        );
-        Ok(snapshot)
-    })
-    .await
 }
 
 /// If the active tab was restored as a lazy stub, kick its first
@@ -11288,44 +8221,14 @@ pub fn update_tab_browser(
         split_ratio,
     };
     let navigate = navigate.unwrap_or(false);
-    #[cfg(feature = "v1-service")]
-    return {
+    {
         let _ = &browser_state;
         update_tab_browser_routed(&state, &app_handle, update, navigate)
-    };
-    #[cfg(not(feature = "v1-service"))]
-    return {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab_idx = app.active_tab;
-        let key = app.tab().key();
-        let (show, sync_annotate) = crate::browser_webview::webview_step(&update, navigate);
-        set_active_tab_browser(&app, &state.view, update)?;
-        if show {
-            crate::browser_webview::on_tab_selected(
-                &app_handle,
-                &browser_state,
-                &state.view,
-                key,
-                tab_idx,
-            )?;
-        } else if let Some(sync_annotate) = sync_annotate {
-            crate::browser_webview::sync_tab_browser_chrome(
-                &app_handle,
-                &browser_state,
-                &state.view,
-                key,
-                tab_idx,
-                sync_annotate,
-            )?;
-        }
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
-    };
+    }
 }
 
 /// The flag-on body of `update_tab_browser`: the registry's active tab, as
 /// `er_send` writes it.
-#[cfg(feature = "v1-service")]
 pub(crate) fn update_tab_browser_routed(
     state: &AppState,
     webviews: &dyn crate::browser_webview::TabWebviews,
@@ -11337,80 +8240,25 @@ pub(crate) fn update_tab_browser_routed(
     Ok(AppSnapshot::default())
 }
 
-/// Write a browser update into the active tab's view state. The view lock is
-/// released on return, before any snapshot build takes it again.
-#[cfg(any(test, not(feature = "v1-service")))]
-fn set_active_tab_browser(
-    app: &App,
-    view: &crate::view_state::ViewStateHandle,
-    update: crate::view_state::BrowserUpdate,
-) -> Result<(), String> {
-    let key = app.tab().key();
-    view.lock()
-        .map_err(|e| e.to_string())?
-        .browser_mut(key)
-        .apply(update);
-    Ok(())
-}
-
 #[tauri::command]
 pub fn cycle_tab_browser_layout(
     app_handle: tauri::AppHandle,
     browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    #[cfg(feature = "v1-service")]
-    return {
+    {
         let _ = &browser_state;
         cycle_tab_browser_layout_routed(&state, &app_handle)
-    };
-    #[cfg(not(feature = "v1-service"))]
-    return {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab_idx = app.active_tab;
-        let key = app.tab().key();
-        {
-            let mut view = state.view.lock().map_err(|e| e.to_string())?;
-            let browser = view.browser_mut(key);
-            browser.layout = browser.layout.cycle();
-        }
-        crate::browser_webview::on_tab_selected(
-            &app_handle,
-            &browser_state,
-            &state.view,
-            key,
-            tab_idx,
-        )?;
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
-    };
+    }
 }
 
 /// The flag-on body of `cycle_tab_browser_layout`, as `er_send` runs it.
-#[cfg(feature = "v1-service")]
 pub(crate) fn cycle_tab_browser_layout_routed(
     state: &AppState,
     webviews: &dyn crate::browser_webview::TabWebviews,
 ) -> Result<AppSnapshot, String> {
     crate::resources::tabs::cycle_browser_layout(state, webviews).map_err(|e| e.message)?;
     Ok(AppSnapshot::default())
-}
-
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-#[expect(
-    non_snake_case,
-    reason = "camelCase parameters match the keys of the JS IPC payload"
-)]
-pub fn reorder_tabs(
-    fromIdx: usize,
-    toIdx: usize,
-    state: State<AppState>,
-) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.reorder_tabs(fromIdx, toIdx);
-    crate::tabs::persist_app_tabs(&app, &state.view);
-    Ok(snap_from(&app, &state))
 }
 
 // ── UI annotations (browser view) ───────────────────────────────────────────
@@ -11793,58 +8641,9 @@ pub async fn poll(state: State<'_, AppState>) -> Result<PollResponse, String> {
     run_blocking(move || poll_impl(&state)).await
 }
 
-/// Pass one: the calls that mutate. A short lock, released before the
-/// snapshot re-takes it — so a `select_file` or `set_mode` arriving
-/// mid-poll waits for this pass rather than for the whole snapshot build.
-/// With the flag on the backend tick runs these duties and the sidecar
-/// reload instead, so each has one driver.
-#[cfg(not(feature = "v1-service"))]
-fn poll_first_pass(state: &AppState) -> Result<(), String> {
-    let warm_target;
-    {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        // Drain pending agent log entries and check for completed commands.
-        app.drain_agent_log();
-        // Consume completed command receivers — updates command_status to
-        // done/failed and emits completion log entries. Agent-written sidecars
-        // have newer mtimes than the last check, so the .er reload below picks
-        // them up via the mtime comparison (no forced last_ai_check reset — O5).
-        app.check_commands();
-        // Same lifecycle for app-level background tasks (cross-tab reviews).
-        // Only log poll diagnostics when there's actually a task in flight to
-        // avoid flooding stderr every 2 seconds during normal use.
-        let pre = app.background_task_snapshots().len();
-        let debug_bg = er_engine::app::debug_bg_enabled() && pre > 0;
-        if debug_bg {
-            eprintln!("[bg] poll: pre poll_background_tasks snapshots={pre}");
-        }
-        app.poll_background_tasks();
-        let post = app.background_task_snapshots().len();
-        if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
-            eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
-        }
-        process_ai_task_inbox(&app, state);
-        // Drain again so completion/failure log entries are visible in this poll.
-        app.drain_agent_log();
-        // Check if .er/ AI files changed — cheap mtime check, reloads if yes.
-        app.tab_mut().check_ai_files_changed();
-        // Identity for the off-lock warm kicked below, captured while the guard
-        // is held so the worker needs no lock of its own.
-        warm_target = (app.tab().repo_root.clone(), app.tab().base_branch.clone());
-    }
-    // Warm the worktree-metadata cache off the critical section. Pass two builds
-    // the snapshot with the lock held, and a cold entry there pays the entire
-    // fan-out inside it; warming here means the next build reads a warm entry.
-    // No-op unless the cached entry is actually getting old (see the fn).
-    crate::snapshot::kick_worktrees_warm(state.ports.clone(), &warm_target.0, &warm_target.1);
-    Ok(())
-}
-
 fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     let t0 = std::time::Instant::now();
     let lock_t0 = std::time::Instant::now();
-    #[cfg(not(feature = "v1-service"))]
-    poll_first_pass(state)?;
     let lock_wait_ms = lock_t0.elapsed().as_millis();
 
     // Pass two: re-take for the revisions and the snapshot, so the two agree
@@ -12037,7 +8836,6 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
 /// bumps the desktop revision too, which wakes the poll but moves only the
 /// chrome revision. Every writer of `last_sent_content_revision` goes through
 /// here, or a confirmed write's follow-up poll would resend the content.
-#[cfg(feature = "v1-service")]
 fn with_service_view(state: &AppState, app: &App, content: u64) -> u64 {
     use std::hash::{Hash, Hasher};
     let key = app.tab().identity().workspace_key();
@@ -12048,11 +8846,6 @@ fn with_service_view(state: &AppState, app: &App, content: u64) -> u64 {
     content.hash(&mut h);
     view.revision.hash(&mut h);
     h.finish()
-}
-
-#[cfg(not(feature = "v1-service"))]
-fn with_service_view(_: &AppState, _: &App, content: u64) -> u64 {
-    content
 }
 
 fn compute_content_revision(app: &App) -> u64 {
@@ -12230,8 +9023,7 @@ pub fn get_background_task_log(
     task_id: String,
     state: State<AppState>,
 ) -> Result<Vec<AgentLogSnapshot>, String> {
-    #[cfg(feature = "v1-service")]
-    return Ok(state
+    Ok(state
         .desktop
         .tasks
         .log(&task_id)
@@ -12241,25 +9033,7 @@ pub fn get_background_task_log(
             source: line.source,
             text: line.text,
         })
-        .collect());
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let entries = app.background_task_log_tail(&task_id);
-        let log: Vec<AgentLogSnapshot> = entries
-            .iter()
-            .map(|e| AgentLogSnapshot {
-                command_name: e.command_name.to_string(),
-                source: match &e.source {
-                    er_engine::app::AgentLogSource::Stdout => "stdout".to_string(),
-                    er_engine::app::AgentLogSource::Stderr => "stderr".to_string(),
-                    er_engine::app::AgentLogSource::Status => "status".to_string(),
-                },
-                text: e.text.clone(),
-            })
-            .collect();
-        Ok(log)
-    }
+        .collect())
 }
 
 #[cfg(test)]
@@ -12267,74 +9041,38 @@ mod tests {
     use super::*;
     use er_engine::ai::{load_ui_annotations, save_ui_annotations, UiAnnotation};
 
-    #[cfg(feature = "v1-service")]
     mod ai_ask_tests;
-    #[cfg(feature = "v1-service")]
     mod annotation_write_tests;
-    #[cfg(feature = "v1-service")]
     mod annotations_resource_tests;
-    #[cfg(feature = "v1-service")]
     mod arena_resource_tests;
-    #[cfg(feature = "v1-service")]
     mod arena_wire_tests;
-    #[cfg(feature = "v1-service")]
     mod ask_context_tests;
-    #[cfg(feature = "v1-service")]
     mod content_route_tests;
-    #[cfg(feature = "v1-service")]
     mod diff_command_tests;
-    #[cfg(feature = "v1-service")]
     mod diff_resource_tests;
-    #[cfg(feature = "v1-service")]
     mod direct_tests;
-    #[cfg(feature = "v1-service")]
     mod finding_write_tests;
-    #[cfg(feature = "v1-service")]
     mod flow_resource_tests;
-    #[cfg(feature = "v1-service")]
     mod flow_wire_tests;
-    #[cfg(feature = "v1-service")]
     mod github_sender_tests;
-    #[cfg(feature = "v1-service")]
     mod hunks_tests;
-    #[cfg(not(feature = "v1-service"))]
-    mod latency_tests;
-    #[cfg(feature = "v1-service")]
     mod pr_resource_tests;
-    #[cfg(feature = "v1-service")]
     mod preview_tests;
-    #[cfg(feature = "v1-service")]
     mod resource_tests;
-    #[cfg(feature = "v1-service")]
     mod reviewed_resource_tests;
-    #[cfg(feature = "v1-service")]
     mod session_resource_tests;
-    #[cfg(feature = "v1-service")]
     mod settings_resource_tests;
-    #[cfg(feature = "v1-service")]
     mod sidebar_inbox_tests;
-    #[cfg(feature = "v1-service")]
     mod sidebar_pr_tests;
-    #[cfg(feature = "v1-service")]
     mod sidebar_tests;
-    #[cfg(feature = "v1-service")]
     mod sync_command_tests;
-    #[cfg(feature = "v1-service")]
     mod tab_key_tests;
-    #[cfg(feature = "v1-service")]
     mod tab_load_tests;
-    #[cfg(feature = "v1-service")]
     mod tab_resource_tests;
-    #[cfg(feature = "v1-service")]
     mod task_tests;
-    #[cfg(feature = "v1-service")]
     mod ui_annotation_write_tests;
-    #[cfg(feature = "v1-service")]
     mod watcher_tests;
-    #[cfg(feature = "v1-service")]
     mod workspace_key_tests;
-    #[cfg(not(feature = "v1-service"))]
-    use er_engine::ai::{ErGithubComments, ErQuestions, GithubComment, PrivateAnnotation};
 
     #[test]
     fn an_available_branch_error_names_the_command_once() {
@@ -12424,35 +9162,16 @@ mod tests {
 
     #[test]
     fn send_note_needs_the_viewed_branch_checked_out_here() {
-        use er_engine::app::TabState;
-        let mut working = TabState::new_for_test(vec![]);
-        working.repo_root = "/repo".into();
-        assert_eq!(send_note_blocked_reason(&working), Ok(()));
-
-        let mut remote = TabState::new_for_test(vec![]);
-        remote.repo_root = "/repo".into();
-        remote.remote_repo = Some("o/r".into());
-        remote.pr_number = Some(7);
-        assert!(send_note_blocked_reason(&remote)
+        assert_eq!(send_note_blocked(false, Some("/repo"), "/repo"), Ok(()));
+        assert!(send_note_blocked(true, Some("/repo"), "/repo")
             .unwrap_err()
             .contains("remote PR"));
-
-        // A local PR tab is only a working tree once its head is checked out.
-        let mut local_pr = TabState::new_for_test(vec![]);
-        local_pr.repo_root = "/repo".into();
-        local_pr.pr_number = Some(7);
-        assert!(send_note_blocked_reason(&local_pr)
+        // A PR or branch view is only a working tree once its head is checked out.
+        assert!(send_note_blocked(false, None, "/repo")
             .unwrap_err()
             .contains("not checked out"));
-        local_pr.local_branch_checkout_root = Some("/repo".into());
-        assert_eq!(send_note_blocked_reason(&local_pr), Ok(()));
-
         // Checked out in another worktree: the command would run in the wrong one.
-        let mut view = TabState::new_for_test(vec![]);
-        view.repo_root = "/repo".into();
-        view.local_branch_view = Some("feat/x".into());
-        view.local_branch_checkout_root = Some("/repo-wt".into());
-        assert!(send_note_blocked_reason(&view)
+        assert!(send_note_blocked(false, Some("/repo-wt"), "/repo")
             .unwrap_err()
             .contains("/repo-wt"));
     }
@@ -12493,129 +9212,10 @@ mod tests {
         );
     }
 
-    fn init_local_branch_fixture(dir: &ReviewFlowTestDir) -> std::path::PathBuf {
-        let repo = dir.path().join("branch-repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        git_fixture_command(&repo, &["init", "-q"]);
-        git_fixture_command(&repo, &["checkout", "-qb", "main"]);
-        git_fixture_command(&repo, &["config", "user.name", "Review Flow Test"]);
-        git_fixture_command(&repo, &["config", "commit.gpgsign", "false"]);
-        git_fixture_command(
-            &repo,
-            &["config", "user.email", "review-flow-test@example.invalid"],
-        );
-        std::fs::write(repo.join("tracked.rs"), "fn tracked() {\n    1\n}\n").unwrap();
-        git_fixture_command(&repo, &["add", "tracked.rs"]);
-        git_fixture_command(&repo, &["commit", "-qm", "baseline"]);
-        repo
-    }
-
-    fn assert_local_branch_working_modes(tab: &er_engine::app::TabState) {
-        let mut config = er_engine::config::ErConfig::default();
-        config.features.view_branch = true;
-        config.features.view_unstaged = true;
-        config.features.view_staged = true;
-        let modes = tab.visible_modes(&config);
-        assert!(modes.contains(&er_engine::app::DiffMode::Staged));
-        assert!(modes.contains(&er_engine::app::DiffMode::Unstaged));
-    }
-
-    /// A route painted on a view that has since changed must fail, because the
-    /// flag-on desktop does not render the service snapshot: Ok would leave the
-    /// orphan paint in place.
-    #[cfg(feature = "v1-service")]
-    #[test]
-    fn a_route_on_a_stale_view_returns_an_error() {
-        let dir = ReviewFlowTestDir::new();
-        let Ok(tmp) = tempfile::tempdir() else {
-            panic!("temp dir");
-        };
-        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
-            let state = review_flow_test_state(&dir);
-            let stale = crate::snapshot::OptimisticView {
-                active_tab: 99,
-                repo_root: "/gone".to_string(),
-                pr_number: None,
-                branch: String::new(),
-                mode: "branch".to_string(),
-            };
-            let result = route_annotation(&state, Some(&stale), |context| {
-                er_service::Command::ToggleReviewed {
-                    context,
-                    path: "src/lib.rs".to_string(),
-                }
-            });
-            assert!(
-                result.is_err(),
-                "a stale route reported success: {result:?}"
-            );
-        });
-    }
-
-    fn review_flow_test_state(dir: &ReviewFlowTestDir) -> AppState {
-        use er_engine::config::{AiHubConfig, AiModelConfig, AiProviderConfig};
+    fn review_flow_test_state(dir: &ReviewFlowTestDir) -> DesktopState {
         use std::sync::{Arc, Mutex};
 
-        let repo = dir.path().join("repo");
-        let bucket = dir.path().join("bucket");
-        std::fs::create_dir_all(&repo).unwrap();
-        std::fs::create_dir_all(&bucket).unwrap();
-        // The provider writes into the job's staging directory; the host
-        // commits it after the run.
-        let script = format!(
-            "{preamble}\n\
-             case \"$1\" in\n\
-             *triage.json*) printf '{{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{{\"primary\":\"general\",\"experts\":[]}}}}' \"$h\" > \"$out/triage.json\" ;;\n\
-             *review.json*) printf '{{\"version\":1,\"diff_hash\":\"%s\",\"files\":{{}}}}' \"$h\" > \"$out/review.json\"; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"order\":[],\"groups\":{{}}}}' \"$h\" > \"$out/order.json\"; printf '{{\"version\":1,\"diff_hash\":\"%s\",\"items\":[]}}' \"$h\" > \"$out/checklist.json\"; printf 'summary\\n' > \"$out/summary.md\" ;;\n\
-             *) echo \"unexpected review-flow prompt\" >&2; exit 2 ;;\n\
-             esac",
-            preamble = er_engine::test_support::STAGING_PREAMBLE
-        );
-        let provider = AiProviderConfig {
-            command: "/bin/sh".into(),
-            args: vec!["-c".into(), script, "fake-flow".into(), "{prompt}".into()],
-            models: vec![AiModelConfig {
-                id: "fake-model".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let mut app = er_engine::app::App::new_for_test(Vec::new());
-        app.ports = er_engine::ports::Ports::cli();
-        app.config.ai_hub = AiHubConfig {
-            default_provider: Some("fake".into()),
-            review_models: {
-                let models = vec![er_engine::config::ReviewModelRef {
-                    provider_id: "fake".into(),
-                    model_id: "fake-model".into(),
-                }];
-                er_engine::config::ReviewModelGroups {
-                    fast: models.clone(),
-                    standard: models.clone(),
-                    advanced: models,
-                }
-            },
-            providers: [("fake".into(), provider)].into(),
-            max_concurrent_reviews: 4,
-            max_concurrent_agents: 4,
-            ..Default::default()
-        };
-        {
-            let tab = app.tab_mut();
-            tab.ports = er_engine::ports::Ports::cli();
-            tab.repo_root = repo.to_string_lossy().into_owned();
-            tab.er_root = er_engine::paths::ErRoot::Managed {
-                agent_dir: bucket.to_string_lossy().into_owned(),
-                session_dir: bucket.to_string_lossy().into_owned(),
-            };
-            tab.set_raw_diff_for_test(
-                "diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
-            );
-        }
-
         let desktop_revision = Arc::new(AtomicU64::new(0));
-        crate::arena_commands::attach_arena_notify(&mut app, Arc::clone(&desktop_revision));
-        let app = Arc::new(Mutex::new(app));
         let meta_cache = Arc::new(Mutex::new(HashMap::new()));
         let pr_cache = Arc::new(Mutex::new(HashMap::new()));
         let gh_user = Arc::new(Mutex::new(None));
@@ -12629,11 +9229,9 @@ mod tests {
             Arc::clone(&inbox),
         ));
         let gh_status_cache = Arc::new(Mutex::new(HashMap::new()));
-        let loading = Arc::new(Mutex::new(crate::snapshot::LoadingFlags::default()));
         let watch_status = Arc::new(Mutex::new(crate::snapshot::WatchStatusSnapshot::default()));
         let desktop = DesktopState {
             ports: er_engine::ports::Ports::cli(),
-            #[cfg(feature = "v1-service")]
             service: Arc::new(crate::service::ServiceState::with_settings_path(
                 er_engine::ports::Ports::for_test(),
                 dir.path().join("settings").join("config.toml"),
@@ -12642,7 +9240,6 @@ mod tests {
             pr_cache,
             pr_cache_fetched_at,
             branch_base_remote_oid: Arc::new(Mutex::new(HashMap::new())),
-            pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
             app_owner,
             meta_cache,
             gh_user,
@@ -12651,14 +9248,15 @@ mod tests {
             ui_annotations: Default::default(),
             ui_annotations_io: Arc::default(),
             gh_status_cache,
-            loading,
-            gh_status_in_flight: Arc::new(Mutex::new(HashSet::new())),
-            gh_status_fetched: Arc::default(),
+            loading: Arc::new(Mutex::new(crate::snapshot::LoadingFlags::default())),
+            pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
             pr_open_prefetch_in_flight: Arc::new(Mutex::new(HashMap::new())),
             branch_preload_in_flight: Arc::new(Mutex::new(HashSet::new())),
             pr_ref_fetch_in_flight: Arc::new(Mutex::new(HashSet::new())),
             remote_pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
             remote_pr_open_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            gh_status_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            gh_status_fetched: Arc::default(),
             desktop_revision,
             watch_status,
             inbox,
@@ -12670,226 +9268,14 @@ mod tests {
             live_tabs: Default::default(),
             pr_list_clock: Default::default(),
             status_fetch_clock: Default::default(),
-            #[cfg(feature = "v1-service")]
             tasks: Default::default(),
         };
-        #[cfg(feature = "v1-service")]
         crate::app_owner::startup::read_inbox_prefs_from_settings(&desktop);
-        AppState::new(desktop, app)
+        desktop
     }
 
-    /// A view the active tab's actor publishes rebuilds the content on the
-    /// next poll. The relay's desktop bump alone moves only the chrome
-    /// revision, so this test leaves the relay out: the content revision has
-    /// to move by itself.
-    #[cfg(feature = "v1-service")]
-    #[test]
-    fn a_published_workspace_view_refreshes_the_content() {
-        publish_refreshes_the_content(|_| None);
-    }
-
-    /// The same for a remote PR tab, whose root is the directory it was opened
-    /// from: the view its own actor publishes, keyed on the remote, refreshes
-    /// the content.
-    #[cfg(feature = "v1-service")]
-    #[test]
-    fn a_remote_tab_view_refreshes_the_content() {
-        publish_refreshes_the_content(|tab| {
-            tab.remote_repo = Some("acme/widgets".to_string());
-            tab.pr_number = Some(7);
-            tab.local_branch_view = None;
-            assert!(!tab.repo_root.is_empty(), "the tab keeps its opening root");
-            Some(er_engine::tab_identity::workspace_key(None, "acme/widgets"))
-        });
-    }
-
-    /// Shapes the active tab, which names the key it expects, then publishes a
-    /// view on the tab's actor and polls.
-    #[cfg(feature = "v1-service")]
-    fn publish_refreshes_the_content(
-        shape: impl FnOnce(&mut er_engine::app::TabState) -> Option<String>,
-    ) {
-        use std::time::{Duration, Instant};
-
-        let dir = ReviewFlowTestDir::new();
-        let tmp = tempfile::tempdir().expect("temp dir");
-        er_engine::storage::with_test_storage_root(tmp.path(), || {
-            let state = review_flow_test_state(&dir);
-            let (key, root) = {
-                let mut app = state.app.lock().unwrap();
-                let tab = app.tab_mut();
-                tab.files = er_engine::git::parse_diff(
-                    "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
-                );
-                let expected = shape(tab);
-                let key = tab.identity().workspace_key();
-                if let Some(expected) = expected {
-                    assert_eq!(key, expected);
-                }
-                let root = if tab.is_remote() {
-                    String::new()
-                } else {
-                    tab.repo_root.clone()
-                };
-                (key, root)
-            };
-            // Start the actor at revision 0 before the poll settles.
-            assert_eq!(state.service.view(&key).revision, 0);
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while poll_impl(&state).unwrap().snapshot.is_some() {
-                assert!(Instant::now() < deadline, "the poll settles");
-                std::thread::sleep(Duration::from_millis(20));
-            }
-
-            let target = er_service::OpenTarget::RemotePr {
-                owner: "acme".to_string(),
-                repo: "widgets".to_string(),
-                number: 7,
-                repo_root: root,
-            };
-            // Success or failure, the actor publishes a new view.
-            let _ = state.service.open_target(&key, target, false);
-            assert!(state.service.view(&key).revision > 0, "the actor published");
-
-            let polled = poll_impl(&state).unwrap();
-            assert!(!polled.chrome_only, "the poll rebuilds the content");
-            let snapshot = polled.snapshot.expect("a snapshot follows the view");
-            assert!(
-                !snapshot.files.is_empty(),
-                "a content snapshot carries the tab's files"
-            );
-        });
-    }
-
-    /// With the feature on, the four tab commands edit the app registry's list,
-    /// mapping the strip's index to its key, without taking the App lock; the
-    /// registry saves `tabs.json`, and the App's own save writes nothing.
-    #[cfg(feature = "v1-service")]
-    #[test]
-    fn the_tab_commands_route_with_the_feature_on() {
-        use crate::tabs::{TabDescriptor, TabKind};
-        use std::time::Duration;
-
-        let working = |root: &str| TabDescriptor {
-            kind: TabKind::Working,
-            repo_root: root.to_string(),
-            branch: None,
-            pr_owner: None,
-            pr_repo: None,
-            pr_number: None,
-            pr_head_ref: None,
-            base_ref: None,
-            extra: serde_json::Map::new(),
-        };
-        let dir = ReviewFlowTestDir::new();
-        let Ok(tmp) = tempfile::tempdir() else {
-            panic!("temp dir");
-        };
-        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
-            crate::tabs::save_tabs(&[working("/a"), working("/b")], 0).expect("seed tabs");
-            let state = review_flow_test_state(&dir);
-            let held = match state.app.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            let seeded = state.service.app_registry().tabs_view();
-            let (Some(ka), Some(kb)) = (seeded.key_at(0), seeded.key_at(1)) else {
-                panic!("the registry loaded the seeded tabs: {seeded:?}");
-            };
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let calling = state.clone();
-            std::thread::spawn(move || {
-                // The registry's view after each command, so a command that
-                // resolves the wrong index fails at its own step.
-                let after = |routed: Result<AppSnapshot, String>| {
-                    routed.map(|_| calling.service.app_registry().tabs_view())
-                };
-                let steps = [
-                    after(service_select_tab(&calling, 1)),
-                    after(service_reorder_tabs(&calling, 1, 0)),
-                    after(service_new_tab(&calling)),
-                    after(service_close_tab(&calling, 2)),
-                ];
-                let _ = done_tx.send(steps.into_iter().collect::<Result<Vec<_>, _>>());
-            });
-            let Ok(steps) = done_rx.recv_timeout(Duration::from_secs(5)) else {
-                panic!("a routed tab command blocked on the App lock");
-            };
-            let steps = steps.expect("every routed command answered");
-            let keys = |step: &er_service::TabsView| -> Vec<er_engine::TabKey> {
-                step.tabs.iter().map(|tab| tab.key).collect()
-            };
-            assert_eq!(
-                (keys(&steps[0]), steps[0].active),
-                (vec![ka, kb], Some(kb)),
-                "select(1) makes the tab at index 1 active"
-            );
-            assert_eq!(
-                (keys(&steps[1]), steps[1].active),
-                (vec![kb, ka], Some(kb)),
-                "reorder(1, 0) moves the tab at index 1 to the front"
-            );
-            let Some(kn) = steps[2].key_at(2) else {
-                panic!("new_tab added a tab: {:?}", steps[2]);
-            };
-            assert_eq!(
-                (keys(&steps[2]), steps[2].active),
-                (vec![kb, ka, kn], Some(kn)),
-                "new_tab appends a tab and makes it active"
-            );
-            assert_eq!(
-                steps[2].tabs[2].descriptor.repo_root, "/b",
-                "the new tab opens on the active tab's repo"
-            );
-            assert_eq!(
-                (keys(&steps[3]), steps[3].active),
-                (vec![kb, ka], Some(ka)),
-                "close(2) closes the tab at index 2"
-            );
-            let revisions: Vec<u64> = steps.iter().map(|step| step.revision).collect();
-            assert_eq!(revisions, [1, 2, 3, 4], "each command published once");
-
-            let view = state.service.app_registry().tabs_view();
-            let roots: Vec<&str> = view
-                .tabs
-                .iter()
-                .map(|tab| tab.descriptor.repo_root.as_str())
-                .collect();
-            assert_eq!(
-                roots,
-                ["/b", "/a"],
-                "select, reorder, new and close all routed"
-            );
-            assert_eq!(view.revision, 4);
-            let saved = crate::tabs::load_tabs().expect("the registry saved");
-            assert_eq!((saved.tabs.len(), saved.active_idx), (2, 1));
-
-            // The App's tab list differs from the registry's; its save must not
-            // write over the registry's record on the flag path.
-            crate::tabs::persist_app_tabs(&held, &state.view);
-            drop(held);
-            assert_eq!(crate::tabs::load_tabs(), Some(saved));
-            // Nor does the desktop's own open cache save.
-            let freshness = PrOpenFreshness {
-                base_branch: "main".to_string(),
-                head_branch: "feature".to_string(),
-                head_oid: "oid".to_string(),
-                updated_at: String::new(),
-            };
-            let key = pr_open_cache_key("proj", "/a", 7);
-            remember_pr_open_entry(&state.pr_open_cache, key, freshness, "d".into(), None, None);
-            let on_disk = er_engine::pr_open_cache::load_persisted_pr_open_cache();
-            assert!(
-                matches!(on_disk, Ok(None)),
-                "the desktop saved the open cache"
-            );
-        });
-    }
-
-    /// With the feature on, both prefetch commands go to the app registry,
-    /// which warms its caches through the service's ports; the desktop's own
-    /// caches stay empty.
-    #[cfg(feature = "v1-service")]
+    /// Both prefetch commands go to the app registry, which warms its caches
+    /// through the service's ports.
     #[test]
     fn the_prefetch_commands_route_with_the_feature_on() {
         use er_engine::github::FakeGitHub;
@@ -12920,7 +9306,18 @@ mod tests {
                     .with_pr_diff(Ok("diff --git a/y b/y\n".to_string()))
                     .with_pr_commits(Ok(Vec::new()))
                     .with_pr_head_oid_remote(Ok("head-1".to_string()))
-                    .with_overview_remote(Ok(Some(pr_overview_from_hint(&hint, 7, None))))
+                    .with_overview_remote(Ok(Some(er_engine::github::PrOverviewData {
+                        number: 7,
+                        title: hint.title.clone(),
+                        state: "OPEN".to_string(),
+                        author: hint.author.clone(),
+                        base_branch: hint.base_ref.clone(),
+                        head_branch: hint.head_ref.clone(),
+                        url: String::new(),
+                        body: String::new(),
+                        checks: Vec::new(),
+                        reviewers: Vec::new(),
+                    })))
                     .with_pr_diff_remote(Ok("diff --git a/x b/x\n".to_string()))
                     .with_commits_remote(Ok(Vec::new())),
             );
@@ -12945,7 +9342,11 @@ mod tests {
             prefetch_pr_open_impl(project_id.clone(), 7, hint, &state).expect("local prefetch");
 
             let registry = state.service.app_registry();
-            let key = pr_open_cache_key(&project_id, &repo_root, 7);
+            let key = er_engine::pr_open_entry::PrOpenCacheKey {
+                project_id: project_id.clone(),
+                repo_root,
+                pr_number: 7,
+            };
             assert!(
                 wait_for(&|| registry
                     .remote_pr_open_entry("acme", "widgets", 7)
@@ -12978,15 +9379,9 @@ mod tests {
         });
     }
 
-    /// The flag-on open path must not take the App lock: it resolves the
-    /// project, sends to the actor, and answers the thread's snapshot from the
-    /// view. Holding the lock through the call and enforcing the call's own
-    /// deadline turns a lock attempt into a failing test, not a hung suite.
-    #[cfg(feature = "v1-service")]
+    /// The open path resolves the project and sends to the actor.
     #[test]
-    fn the_service_open_path_does_not_take_the_app_lock() {
-        use std::time::Duration;
-
+    fn the_service_open_path_opens_through_the_actor() {
         let dir = ReviewFlowTestDir::new();
         let Ok(tmp) = tempfile::tempdir() else {
             panic!("temp dir");
@@ -13003,24 +9398,11 @@ mod tests {
             state.service = Arc::new(crate::service::ServiceState::new(
                 er_engine::ports::Ports::with_github(github_port),
             ));
-            let held = match state.app.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let calling_state = state.clone();
-            std::thread::spawn(move || {
-                let result = service_open_pr_url(
-                    &calling_state,
-                    "https://github.com/acme/widgets/pull/7".to_string(),
-                    None,
-                );
-                let _ = done_tx.send(result);
-            });
-            let Ok(result) = done_rx.recv_timeout(Duration::from_secs(5)) else {
-                panic!("the service open path blocked on the App lock");
-            };
-            drop(held);
+            let result = service_open_pr_url(
+                &state,
+                "https://github.com/acme/widgets/pull/7".to_string(),
+                None,
+            );
             assert!(result.is_ok(), "the service open path failed: {result:?}");
             // The open resolves the target, then loads the new tab's diff and
             // fills its PR section, which no prefetch warmed.
@@ -13038,912 +9420,37 @@ mod tests {
         });
     }
 
-    /// Runs `body` on another thread while this one holds the App lock. A body
-    /// that waits on the lock trips the deadline instead of hanging the suite.
-    #[cfg(feature = "v1-service")]
-    fn while_the_app_is_locked<T: Send + 'static>(
-        state: &AppState,
+    /// Runs `body` on another thread. A body that blocks trips the deadline
+    /// instead of hanging the suite.
+    fn on_a_thread<T: Send + 'static>(
+        state: &DesktopState,
         what: &str,
-        body: impl FnOnce(&AppState) -> T + Send + 'static,
+        body: impl FnOnce(&DesktopState) -> T + Send + 'static,
     ) -> T {
         use std::time::Duration;
 
-        let held = match state.app.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let calling_state = state.clone();
         std::thread::spawn(move || {
             let _ = done_tx.send(body(&calling_state));
         });
         let Ok(result) = done_rx.recv_timeout(Duration::from_secs(10)) else {
-            panic!("{what} waited on the App lock");
+            panic!("{what} did not return");
         };
-        drop(held);
         result
     }
 
-    #[cfg(feature = "v1-service")]
-    fn theme_row(response: &crate::settings::GetConfigHubResponse) -> Option<String> {
-        response
-            .settings
-            .general
-            .iter()
-            .find_map(|field| match field {
-                er_engine::config::ConfigHubFieldDto::Cycle { key, value, .. }
-                    if key == "display.theme" =>
-                {
-                    Some(value.clone())
-                }
-                _ => None,
-            })
-    }
-
-    /// A flag-on settings write reaches the settings actor without the App
-    /// lock: it returns while the lock is held, the service copy changes, and
-    /// the App's copy does not.
-    #[cfg(feature = "v1-service")]
-    #[test]
-    fn a_flag_on_settings_write_does_not_lock_the_app() {
-        let dir = ReviewFlowTestDir::new();
-        let Ok(tmp) = tempfile::tempdir() else {
-            panic!("temp dir");
-        };
-        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
-            let state = review_flow_test_state(&dir);
-            let before = state.app.lock().map(|app| app.config.display.theme.clone());
-            let result = while_the_app_is_locked(&state, "apply_config_patch", |state| {
-                crate::config_commands::apply_patch(
-                    state,
-                    crate::config_commands::ConfigPatch {
-                        key: "display.theme".to_string(),
-                        value: er_engine::config::ConfigFieldValue::String("paper".to_string()),
-                    },
-                )
-            });
-            let Ok(response) = result else {
-                panic!("the routed patch failed: {result:?}");
-            };
-            assert_eq!(theme_row(&response).as_deref(), Some("paper"));
-            assert_eq!(
-                state.service.settings().view().config.display.theme,
-                "paper"
-            );
-            let after = state.app.lock().map(|app| app.config.display.theme.clone());
-            assert_eq!(after.ok(), before.ok(), "the App's copy was written");
-        });
-    }
-
-    /// Every config command but `run_uninstall` runs for real against a held
-    /// App lock, and each is checked by an effect only the settings actor
-    /// produces: a reload of a file repaired mid-session, a save, a preview,
-    /// an edit, a reordered model group, a raised revision. `run_uninstall`
-    /// deletes files, so only its route is checked, by the source scan.
-    #[cfg(feature = "v1-service")]
-    #[test]
-    fn the_config_commands_route_with_the_feature_on() {
-        use crate::config_commands as cc;
-        use er_engine::config::{ModelUpsert, ProviderUpsert};
-        use er_engine::uninstall::UninstallOptions;
-
-        let source = include_str!("config_commands.rs");
-        for command in [
-            "ReloadIfFailed",
-            "ApplyConfigPatch",
-            "SaveConfig",
-            "PreviewUninstall",
-            "RunUninstall",
-            "SetReviewFlowModels",
-            "RefreshAiModels",
-            "UpsertAiProvider",
-            "DeleteAiProvider",
-            "UpsertAiModel",
-            "DeleteAiModel",
-        ] {
-            assert!(
-                source.contains(&format!("SettingsCommand::{command}")),
-                "{command} has no service route"
-            );
-        }
-        for body in [
-            "config_hub",
-            "apply_patch",
-            "save_global",
-            "uninstall_preview",
-            "uninstall",
-            "review_flow_models",
-            "refresh_models",
-            "provider_upsert",
-            "provider_delete",
-            "model_upsert",
-            "model_delete",
-        ] {
-            assert!(
-                source.contains(&format!("return service_route::{body}(&state.service")),
-                "{body} does not dispatch to the service with the feature on"
-            );
-        }
-
-        let dir = ReviewFlowTestDir::new();
-        let Ok(tmp) = tempfile::tempdir() else {
-            panic!("temp dir");
-        };
-        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
-            let state = review_flow_test_state(&dir);
-            let settings = state.service.settings();
-            let locked = |what: &str, body: fn(&AppState) -> Result<(), String>| {
-                let result = while_the_app_is_locked(&state, what, body);
-                assert!(result.is_ok(), "{what} failed: {result:?}");
-            };
-
-            // Break the file mid-session and repair it: only the actor's
-            // reload, sent when Settings reopens, adopts the repaired theme.
-            let config_path = dir.path().join("settings").join("config.toml");
-            let theme = |value: &str| {
-                settings.send_and_wait(er_service::SettingsCommand::ApplyConfigPatch {
-                    key: "display.theme".to_string(),
-                    value: er_engine::config::ConfigFieldValue::String(value.to_string()),
-                })
-            };
-            assert!(theme("first-theme").is_ok(), "the first save failed");
-            let Ok(good) = std::fs::read_to_string(&config_path) else {
-                panic!("the first save wrote no config.toml");
-            };
-            assert!(std::fs::write(&config_path, "not = = toml").is_ok());
-            assert!(theme("while-broken").is_err(), "a save over a broken file");
-            let repaired = good.replace("first-theme", "repaired-theme");
-            assert!(std::fs::write(&config_path, repaired).is_ok());
-            let reopened = while_the_app_is_locked(&state, "get_config_hub", cc::config_hub);
-            let Ok(reopened) = reopened else {
-                panic!("get_config_hub failed: {reopened:?}");
-            };
-            assert_eq!(theme_row(&reopened).as_deref(), Some("repaired-theme"));
-            assert_eq!(settings.view().config.display.theme, "repaired-theme");
-
-            assert!(std::fs::remove_file(&config_path).is_ok());
-            locked("save_config_global_cmd", |s| cc::save_global(s).map(drop));
-            assert!(config_path.exists());
-
-            locked("preview_uninstall", |s| {
-                let none = UninstallOptions {
-                    remove_config: false,
-                    remove_data: false,
-                    remove_cache: false,
-                    remove_binaries: false,
-                    remove_desktop_app: false,
-                };
-                cc::uninstall_preview(s, none).map(drop)
-            });
-            assert!(settings.view().uninstall_preview.is_some());
-
-            locked("upsert_ai_provider", |s| {
-                let provider = ProviderUpsert {
-                    id: "fixture-cli".into(),
-                    original_id: None,
-                    label: None,
-                    command: "fixture-cli".into(),
-                    args: "-p {prompt}".into(),
-                    family: None,
-                    models_command: None,
-                };
-                cc::provider_upsert(s, provider).map(drop)
-            });
-            assert!(settings
-                .view()
-                .config
-                .ai_hub
-                .providers
-                .contains_key("fixture-cli"));
-
-            locked("upsert_ai_model", |s| {
-                let model = ModelUpsert {
-                    id: "fixture-model".into(),
-                    original_id: None,
-                    label: None,
-                    description: None,
-                    args: String::new(),
-                    effort_levels: Vec::new(),
-                    cost_per_1k_in: None,
-                    cost_per_1k_out: None,
-                    avg_latency_ms: None,
-                };
-                cc::model_upsert(s, "fixture-cli".into(), model).map(drop)
-            });
-            let has_model = |view: &er_service::SettingsView| {
-                view.config.ai_hub.providers["fixture-cli"]
-                    .models
-                    .iter()
-                    .any(|m| m.id == "fixture-model")
-            };
-            assert!(has_model(&settings.view()));
-
-            locked("delete_ai_model", |s| {
-                cc::model_delete(s, "fixture-cli".into(), "fixture-model".into()).map(drop)
-            });
-            assert!(!has_model(&settings.view()));
-
-            locked("delete_ai_provider", |s| {
-                cc::provider_delete(s, "fixture-cli".into()).map(drop)
-            });
-            assert!(!settings
-                .view()
-                .config
-                .ai_hub
-                .providers
-                .contains_key("fixture-cli"));
-
-            let mut fast = settings.view().config.ai_hub.review_models.fast.clone();
-            assert!(
-                fast.len() >= 2 && fast[0] != fast[1],
-                "the reorder needs two distinct fast models: {fast:?}"
-            );
-            locked("set_review_flow_models", |s| {
-                let mut groups = s
-                    .service
-                    .settings()
-                    .view()
-                    .config
-                    .ai_hub
-                    .review_models
-                    .clone();
-                groups.fast.reverse();
-                cc::review_flow_models(s, groups).map(drop)
-            });
-            fast.reverse();
-            assert_eq!(settings.view().config.ai_hub.review_models.fast, fast);
-
-            // An unknown provider has no models command, so nothing shells
-            // out; the actor still publishes the empty discovery.
-            let before = settings.view().revision;
-            locked("refresh_ai_models", |s| {
-                cc::refresh_models(s, Some("no-such-provider".into()), true).map(drop)
-            });
-            assert!(settings.view().revision > before);
-        });
-    }
-
-    /// A state whose settings actor owns the managed config, the file the
-    /// flag-off App saves to, so a save from either side lands in one place.
-    /// The App's config is on disk first and the actor is started over it,
-    /// as an open Settings page would have started it. `fake-model` offers
-    /// two effort levels.
-    #[cfg(feature = "v1-service")]
-    fn shared_config_state(dir: &ReviewFlowTestDir) -> AppState {
-        let mut state = review_flow_test_state(dir);
-        let path = er_engine::config::managed_config_path();
-        {
-            let Ok(mut app) = state.app.lock() else {
-                panic!("the App lock is poisoned");
-            };
-            if let Some(provider) = app.config.ai_hub.providers.get_mut("fake") {
-                provider.models[0].effort_levels = vec!["low".into(), "high".into()];
-            }
-            assert!(er_engine::config::save_config_pair_to(&path, &app.config).is_ok());
-        }
-        state.service = std::sync::Arc::new(crate::service::ServiceState::with_settings_path(
+    /// An App with no repo, for the follower until it is deleted.
+    pub(super) fn app_stub() -> Arc<Mutex<App>> {
+        Arc::new(Mutex::new(App::new_empty(
             er_engine::ports::Ports::for_test(),
-            path,
-        ));
-        let _ = state.service.settings().view();
-        state
+        )))
     }
 
-    /// Runs `body` while this thread holds the App lock and waits for the
-    /// settings actor to show the write before releasing it.
-    #[cfg(feature = "v1-service")]
-    fn saved_while_locked(
-        state: &AppState,
-        what: &str,
-        body: fn(&AppState) -> Result<AppSnapshot, String>,
-        saved: fn(&er_service::SettingsView) -> bool,
-    ) {
-        use std::time::{Duration, Instant};
-
-        let held = match state.app.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let calling_state = state.clone();
-        std::thread::spawn(move || {
-            let _ = done_tx.send(body(&calling_state).map(drop));
-        });
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !saved(&state.service.settings().view()) {
-            assert!(
-                Instant::now() < deadline,
-                "{what} did not reach the settings actor while the App was locked"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        drop(held);
-        let Ok(result) = done_rx.recv_timeout(Duration::from_secs(10)) else {
-            panic!("{what} never returned");
-        };
-        assert!(result.is_ok(), "{what} failed: {result:?}");
-    }
-
-    /// With the feature on, the AI picker's three saves reach the settings
-    /// actor before the App lock is taken, and the App takes none of it:
-    /// neither its session pick nor its copy of the config is written.
-    #[cfg(feature = "v1-service")]
-    #[test]
-    fn the_ai_picker_saves_route_with_the_feature_on() {
-        let dir = ReviewFlowTestDir::new();
-        let Ok(tmp) = tempfile::tempdir() else {
-            panic!("temp dir");
-        };
-        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
-            let state = shared_config_state(&dir);
-            let before = {
-                let Ok(app) = state.app.lock() else {
-                    panic!("the App lock is poisoned");
-                };
-                (
-                    app.current_ai_provider.clone(),
-                    app.current_ai_model.clone(),
-                    app.current_ai_effort.clone(),
-                )
-            };
-            assert_ne!(before.0.as_deref(), Some("fake"), "the fixture's pick");
-            assert_ne!(
-                before.1.as_deref(),
-                Some("fake-model"),
-                "the fixture's pick"
-            );
-            saved_while_locked(
-                &state,
-                "set_ai_model",
-                |s| ai_model(s, "fixture-agent-model".into()),
-                |view| view.config.agent.model == "fixture-agent-model",
-            );
-            saved_while_locked(
-                &state,
-                "set_ai_selection",
-                |s| {
-                    ai_selection(
-                        s,
-                        "fake".into(),
-                        Some("fake-model".into()),
-                        Some(true),
-                        None,
-                    )
-                },
-                |view| view.config.ai_hub.default_model.as_deref() == Some("fake-model"),
-            );
-            saved_while_locked(
-                &state,
-                "set_ai_effort",
-                |s| ai_effort(s, Some("high".into()), Some(true)),
-                |view| view.config.ai_hub.default_effort.as_deref() == Some("high"),
-            );
-
-            let Ok(app) = state.app.lock() else {
-                panic!("the App lock is poisoned");
-            };
-            assert_eq!(
-                (
-                    app.current_ai_provider.clone(),
-                    app.current_ai_model.clone(),
-                    app.current_ai_effort.clone(),
-                ),
-                before,
-                "the saved pick was copied into the App"
-            );
-            assert_eq!(
-                app.config.ai_hub.default_model, None,
-                "the App's copy was written"
-            );
-            assert_eq!(
-                app.config.ai_hub.default_effort, None,
-                "the App's copy was written"
-            );
-        });
-    }
-
-    /// With the feature on, a picker save and a Settings write in either
-    /// order both reach the disk. Two writers would each save over the
-    /// other's change.
-    #[cfg(feature = "v1-service")]
-    #[test]
-    fn picker_saves_and_settings_writes_all_reach_the_disk() {
-        let dir = ReviewFlowTestDir::new();
-        let Ok(tmp) = tempfile::tempdir() else {
-            panic!("temp dir");
-        };
-        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
-            let state = shared_config_state(&dir);
-            let selected = ai_selection(
-                &state,
-                "fake".into(),
-                Some("fake-model".into()),
-                Some(true),
-                None,
-            );
-            assert!(selected.is_ok(), "set_ai_selection failed: {selected:?}");
-            let patched = crate::config_commands::apply_patch(
-                &state,
-                crate::config_commands::ConfigPatch {
-                    key: "display.theme".to_string(),
-                    value: er_engine::config::ConfigFieldValue::String("ember".to_string()),
-                },
-            );
-            assert!(patched.is_ok(), "apply_config_patch failed: {patched:?}");
-            let effort = ai_effort(&state, Some("high".into()), Some(true));
-            assert!(effort.is_ok(), "set_ai_effort failed: {effort:?}");
-
-            let path = er_engine::config::managed_config_path();
-            let read = |name: &str| std::fs::read_to_string(path.with_file_name(name));
-            let (Ok(agents), Ok(config)) = (read("agents.toml"), read("config.toml")) else {
-                panic!("the config pair was not saved");
-            };
-            assert!(
-                agents.contains("default_model = \"fake-model\""),
-                "the selection was saved over:\n{agents}"
-            );
-            assert!(
-                agents.contains("default_effort = \"high\""),
-                "the effort was saved over:\n{agents}"
-            );
-            assert!(
-                config.contains("theme = \"ember\""),
-                "the Settings write was saved over:\n{config}"
-            );
-        });
-    }
-
-    /// The risk view answers for the paths the caller passes, with the
-    /// default tier for a path no rule claims.
-    #[test]
-    fn risk_files_answer_for_the_query_paths() {
-        let dir = ReviewFlowTestDir::new();
-        let Ok(tmp) = tempfile::tempdir() else {
-            panic!("temp dir");
-        };
-        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
-            let state = review_flow_test_state(&dir);
-            // Not a clone, so the rules key is the directory's name.
-            let repo_root = dir.path().join("risk-repo").to_string_lossy().into_owned();
-            let edit = r#"{"source":"project","repo":"risk-repo","pattern":"db/**","tier":"high"}"#;
-            let patched = crate::config_commands::apply_patch(
-                &state,
-                crate::config_commands::ConfigPatch {
-                    key: er_engine::config::RISK_RULE_PATCH_KEY.to_string(),
-                    value: er_engine::config::ConfigFieldValue::String(edit.to_string()),
-                },
-            );
-            assert!(patched.is_ok(), "the rule edit failed: {patched:?}");
-
-            let paths = ["db/0001.sql", "README.md"].map(str::to_string);
-            let result = crate::risk_commands::risk_files(&state, repo_root, None, &paths);
-            let Ok(view) = result else {
-                panic!("the risk files failed: {result:?}");
-            };
-            let answered: Vec<&str> = view.files.iter().map(|f| f.path.as_str()).collect();
-            assert_eq!(answered, ["db/0001.sql", "README.md"]);
-            assert_eq!(
-                view.files[0].resolved.tier,
-                er_engine::config::RiskTier::High
-            );
-            assert_eq!(
-                view.files[0].resolved.rule.as_ref().map(|r| r.key.as_str()),
-                Some("db/**")
-            );
-            assert_eq!(view.files[1].resolved.tier, er_engine::config::RiskTier::Ai);
-            assert!(view.files[1].resolved.rule.is_none());
-            let rule = view.rules.iter().find(|r| r.pattern == "db/**");
-            assert_eq!(rule.map(|r| r.file_count), Some(1));
-        });
-    }
-
-    /// The `importance_*` fields are gone from the Settings payload.
-    #[test]
-    fn the_settings_payload_has_no_importance_keys() {
-        fn keys(value: &serde_json::Value, out: &mut Vec<String>) {
-            match value {
-                serde_json::Value::Object(map) => {
-                    for (key, child) in map {
-                        out.push(key.clone());
-                        keys(child, out);
-                    }
-                }
-                serde_json::Value::Array(items) => {
-                    for item in items {
-                        keys(item, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let dir = ReviewFlowTestDir::new();
-        let Ok(tmp) = tempfile::tempdir() else {
-            panic!("temp dir");
-        };
-        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
-            let state = review_flow_test_state(&dir);
-            let result = crate::config_commands::config_hub(&state);
-            let Ok(response) = result else {
-                panic!("get_config_hub failed: {result:?}");
-            };
-            let Ok(json) = serde_json::to_value(&response) else {
-                panic!("the hub response does not serialize");
-            };
-            let mut found = Vec::new();
-            keys(&json, &mut found);
-            assert!(found.iter().any(|key| key == "general"));
-            let importance: Vec<&String> = found
-                .iter()
-                .filter(|key| key.to_lowercase().contains("importance"))
-                .collect();
-            assert!(importance.is_empty(), "importance keys: {importance:?}");
-        });
-    }
-
-    /// Opens acme/widgets#7 as the registry's active tab, which the flag-on
-    /// GitHub routes read their tab from.
-    #[cfg(feature = "v1-service")]
-    fn open_remote_pr(state: &AppState) {
-        let tab = er_engine::tabs_record::TabDescriptor {
-            kind: er_engine::tabs_record::TabKind::RemotePr,
-            repo_root: String::new(),
-            branch: None,
-            pr_owner: Some("acme".into()),
-            pr_repo: Some("widgets".into()),
-            pr_number: Some(7),
-            pr_head_ref: None,
-            base_ref: None,
-            extra: Default::default(),
-        };
-        let opened = content_routes::open(state, tab, false);
-        assert!(opened.is_ok(), "{opened:?}");
-    }
-
-    /// With the feature on, each sync and pending-review route sends its
-    /// command for the active tab's PR to the service, whose scripted port
-    /// answers. The flag-off bodies are not compiled in this build, so a
-    /// recorded call can only have come through the service.
-    #[cfg(feature = "v1-service")]
-    #[test]
-    fn the_sync_and_pending_review_commands_route_with_the_feature_on() {
-        use er_engine::github::{FakeGitHub, GhError};
-
-        let dir = ReviewFlowTestDir::new();
-        let Ok(tmp) = tempfile::tempdir() else {
-            panic!("temp dir");
-        };
-        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
-            let bundle = er_engine::github::PrCommentBundle {
-                comments: Vec::new(),
-                threads: HashMap::new(),
-            };
-            // Writes fail, so no route kicks a real status refresh.
-            let refused = || {
-                Err(GhError::Unprocessable {
-                    message: "Validation Failed".to_string(),
-                })
-            };
-            let github = Arc::new(
-                FakeGitHub::default()
-                    .with_pr_diff_remote(Ok(String::new()))
-                    .with_pr_comment_bundle_cached(Ok(Arc::new(bundle)))
-                    .with_pending_review(Ok(er_engine::github::PendingReview::default()))
-                    .with_pending_review_add_comment(refused())
-                    .with_pending_review_remove_comment(Ok(()))
-                    .with_pending_review_submit(refused().map(|()| 0)),
-            );
-            let github_port: Arc<dyn er_engine::github::GitHub> = github.clone();
-            let mut state = review_flow_test_state(&dir);
-            state.service = Arc::new(crate::service::ServiceState::new(
-                er_engine::ports::Ports::with_github(github_port),
-            ));
-            open_remote_pr(&state);
-
-            let synced = service_pull_github_comments(&state, false);
-            assert!(synced.is_ok(), "sync: {synced:?}");
-            let read = service_get_pending_review(&state).map(|view| view.pr_number);
-            assert_eq!(read, Ok(7));
-            let target = ReviewLineTarget {
-                file: "src/lib.rs".to_string(),
-                line_num: 1,
-                line_num_end: None,
-                side: None,
-            };
-            let added = service_add_pending_review_comment(&state, target, "note");
-            let Err(message) = added else {
-                panic!("the scripted 422 was not reported: {added:?}");
-            };
-            assert!(message.contains("Likely causes"), "{message}");
-            let removed = service_remove_pending_review_comment(&state, "PRRC_1".to_string());
-            assert!(removed.is_ok(), "remove: {removed:?}");
-            let submitted = service_submit_pending_review(&state, "COMMENT", "ok".to_string());
-            assert!(submitted.is_err_and(|message| message.contains("Likely causes")));
-
-            let calls = github.calls();
-            let names: Vec<&str> = calls
-                .iter()
-                .filter_map(|call| call.split('(').next())
-                .collect();
-            for sent in [
-                "pr_comment_bundle_cached",
-                "pending_review",
-                "pending_review_add_comment",
-                "pending_review_remove_comment",
-                "pending_review_submit",
-            ] {
-                assert!(names.contains(&sent), "{sent} was not routed: {calls:?}");
-            }
-            let named_pr = calls
-                .iter()
-                .any(|call| call.starts_with("pending_review(") && call.contains("pr=7"));
-            assert!(named_pr, "the read did not name the tab's PR: {calls:?}");
-        });
-    }
-
-    /// The three PR-level posts route to the service with the feature on. Each
-    /// scripted write fails, so no route kicks a real status refresh.
-    #[cfg(feature = "v1-service")]
-    #[test]
-    fn the_pr_level_posts_route_with_the_feature_on() {
-        use er_engine::github::{FakeGitHub, GhError};
-
-        let dir = ReviewFlowTestDir::new();
-        let Ok(tmp) = tempfile::tempdir() else {
-            panic!("temp dir");
-        };
-        er_engine::storage::with_process_test_storage_root(tmp.path(), || {
-            let refused = GhError::Unprocessable {
-                message: "Validation Failed".to_string(),
-            };
-            // No head oid is scripted, so the line post stops before sending.
-            let github = Arc::new(
-                FakeGitHub::default()
-                    .with_pr_diff_remote(Ok(String::new()))
-                    .with_pending_review(Ok(er_engine::github::PendingReview::default()))
-                    .with_post_general(Err(refused.clone()))
-                    .with_submit_review_remote(Err(refused)),
-            );
-            let github_port: Arc<dyn er_engine::github::GitHub> = github.clone();
-            let mut state = review_flow_test_state(&dir);
-            state.service = Arc::new(crate::service::ServiceState::new(
-                er_engine::ports::Ports::with_github(github_port),
-            ));
-            open_remote_pr(&state);
-
-            assert!(service_post_github_pr_comment(&state, "ship it").is_err());
-            let target = ReviewLineTarget {
-                file: "src/lib.rs".to_string(),
-                line_num: 1,
-                line_num_end: None,
-                side: None,
-            };
-            assert!(service_post_github_line_comment(&state, target, "here").is_err());
-            let decided = service_submit_github_pr_decision(&state, "REQUEST_CHANGES", "fix");
-            assert!(decided.is_err_and(|message| message.contains("Likely causes")));
-
-            let calls = github.calls();
-            let names: Vec<&str> = calls
-                .iter()
-                .filter_map(|call| call.split('(').next())
-                .collect();
-            for sent in ["post_general", "pending_review", "submit_review_remote"] {
-                assert!(names.contains(&sent), "{sent} was not routed: {calls:?}");
-            }
-        });
-    }
-
-    /// The App's flows run only with the flag off; with it on the service
-    /// runs them (P60.1) and the tick no longer polls the App's tasks.
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn review_flow_poll_delivers_flow_progress_after_background_wake() {
-        use std::time::{Duration, Instant};
-
-        let dir = ReviewFlowTestDir::new();
-        // The poll path folds completed AI tasks into the inbox, which
-        // persists through the app store.
-        let tmp = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(tmp.path(), || {
-            let state = review_flow_test_state(&dir);
-            let bucket = state.app.lock().unwrap().tab().er_dir();
-
-            let initial = poll_impl(&state).unwrap();
-            let initial_snapshot = initial.snapshot.unwrap();
-            assert_eq!(initial_snapshot.review_bucket_er_dir, bucket);
-            assert!(initial_snapshot.review_flow.is_none());
-            let started = {
-                let mut app = state.app.lock().unwrap();
-                app.start_review_flow("branch").unwrap();
-                state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-                snap_from_command(&app, &state)
-            };
-            assert!(started.review_flow.is_some());
-            assert_eq!(started.review_flow.unwrap().state, "triaging");
-            let starting_revision = state.desktop_revision.load(Ordering::Relaxed);
-
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let mut observed_terminal = false;
-            while Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(20));
-                let response = poll_impl(&state).unwrap();
-                if let Some(snapshot) = response.snapshot {
-                    if snapshot
-                        .review_flow
-                        .as_ref()
-                        .is_some_and(|flow| flow.state == "done")
-                    {
-                        assert_eq!(snapshot.review_bucket_er_dir, bucket);
-                        observed_terminal = true;
-                        break;
-                    }
-                }
-            }
-            assert!(
-                observed_terminal,
-                "poll did not deliver terminal flow state"
-            );
-            assert!(
-                state.desktop_revision.load(Ordering::Relaxed) > starting_revision,
-                "background completion did not wake the desktop revision watcher"
-            );
-        });
-    }
-
-    #[test]
-    fn review_flow_lease_refuses_delete_before_review_artifact_mutation() {
-        let dir = ReviewFlowTestDir::new();
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let state = review_flow_test_state(&dir);
-            let (bucket, review_path) = {
-                let mut app = state.app.lock().unwrap();
-                let bucket = app.tab().er_dir();
-                app.start_review_flow("branch").unwrap();
-                let review_path = std::path::Path::new(&bucket).join("review.json");
-                std::fs::write(&review_path, b"preserve exact review bytes").unwrap();
-                (bucket, review_path)
-            };
-
-            let before_bytes = std::fs::read(&review_path).unwrap();
-            let before_task_ids = state
-                .app
-                .lock()
-                .unwrap()
-                .background_task_snapshots()
-                .into_iter()
-                .map(|task| task.id)
-                .collect::<Vec<_>>();
-            let result = {
-                let mut app = state.app.lock().unwrap();
-                delete_review_artifact_from_app(&mut app, "review")
-            };
-
-            assert!(result.is_err());
-            assert_eq!(std::fs::read(&review_path).unwrap(), before_bytes);
-            let after_task_ids = state
-                .app
-                .lock()
-                .unwrap()
-                .background_task_snapshots()
-                .into_iter()
-                .map(|task| task.id)
-                .collect::<Vec<_>>();
-            assert_eq!(after_task_ids, before_task_ids);
-            assert_eq!(
-                state.app.lock().unwrap().tab().er_dir(),
-                bucket,
-                "the helper must guard the same captured bucket"
-            );
-        });
-    }
-
-    #[test]
-    fn local_branch_tab_uses_main_checkout_for_dirty_tracked_diff() {
-        let dir = ReviewFlowTestDir::new();
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let repo = init_local_branch_fixture(&dir);
-            std::fs::write(
-                repo.join("tracked.rs"),
-                "fn tracked() {\n    2 // dirty main checkout\n}\n",
-            )
-            .unwrap();
-            let root = repo.to_string_lossy().into_owned();
-
-            let mut tab = build_local_branch_tab_for_repo(
-                &root,
-                "main".into(),
-                "main".into(),
-                &er_engine::ports::Ports::cli(),
-            )
-            .unwrap();
-            assert_eq!(tab.repo_root, root);
-            assert_eq!(tab.local_branch_view.as_deref(), Some("main"));
-            assert_eq!(
-                tab.local_branch_checkout_root.as_deref(),
-                Some(root.as_str())
-            );
-            assert_local_branch_working_modes(&tab);
-
-            tab.refresh_diff_without_remote_fetch_quick().unwrap();
-            let raw = tab.raw_diff_for_review("branch").unwrap();
-            assert!(raw.contains("dirty main checkout"), "{raw}");
-        });
-    }
-
-    #[test]
-    fn local_branch_tab_uses_linked_checkout_without_changing_repo_root() {
-        let dir = ReviewFlowTestDir::new();
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let repo = init_local_branch_fixture(&dir);
-            let linked = dir.path().join("linked-checkout");
-            let linked_arg = linked.to_string_lossy().into_owned();
-            git_fixture_command(
-                &repo,
-                &["worktree", "add", "-qb", "linked", &linked_arg, "HEAD"],
-            );
-            std::fs::write(
-                linked.join("tracked.rs"),
-                "fn tracked() {\n    2 // dirty linked checkout\n}\n",
-            )
-            .unwrap();
-            let root = repo.to_string_lossy().into_owned();
-
-            let mut tab = build_local_branch_tab_for_repo(
-                &root,
-                "main".into(),
-                "linked".into(),
-                &er_engine::ports::Ports::cli(),
-            )
-            .unwrap();
-            let expected_checkout = linked
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
-            assert_eq!(tab.repo_root, root);
-            assert_eq!(tab.local_branch_view.as_deref(), Some("linked"));
-            assert_eq!(
-                tab.local_branch_checkout_root.as_deref(),
-                Some(expected_checkout.as_str())
-            );
-            assert_local_branch_working_modes(&tab);
-
-            tab.refresh_diff_without_remote_fetch_quick().unwrap();
-            let raw = tab.raw_diff_for_review("branch").unwrap();
-            assert!(raw.contains("dirty linked checkout"), "{raw}");
-        });
-    }
-
-    #[test]
-    fn local_branch_tab_without_checkout_remains_read_only() {
-        let dir = ReviewFlowTestDir::new();
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let repo = init_local_branch_fixture(&dir);
-            let root = repo.to_string_lossy().into_owned();
-            let tab = build_local_branch_tab_for_repo(
-                &root,
-                "main".into(),
-                "not-checked-out".into(),
-                &er_engine::ports::Ports::cli(),
-            )
-            .unwrap();
-
-            assert_eq!(tab.repo_root, root);
-            assert_eq!(tab.local_branch_view.as_deref(), Some("not-checked-out"));
-            assert!(tab.local_branch_checkout_root.is_none());
-            let mut config = er_engine::config::ErConfig::default();
-            config.features.view_branch = true;
-            config.features.view_unstaged = true;
-            config.features.view_staged = true;
-            let modes = tab.visible_modes(&config);
-            assert!(modes.contains(&er_engine::app::DiffMode::Branch));
-            assert!(!modes.contains(&er_engine::app::DiffMode::Unstaged));
-            assert!(!modes.contains(&er_engine::app::DiffMode::Staged));
-        });
+    /// The registry's active tab.
+    pub(super) fn active_key(state: &DesktopState) -> er_engine::TabKey {
+        let active = state.service.app_registry().tabs_view().active;
+        active.unwrap_or_else(|| panic!("no active tab"))
     }
 
     fn ann(id: &str) -> UiAnnotation {
@@ -13973,129 +9480,18 @@ mod tests {
 
     #[test]
     fn resolve_review_scope_accepts_pr_diff_mode() {
-        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
-        tab.mode = er_engine::app::DiffMode::PrDiff;
-        tab.pr_number = Some(42);
-        assert_eq!(resolve_review_scope("branch", &tab).unwrap(), "branch");
-        assert_eq!(resolve_review_scope("current", &tab).unwrap(), "branch");
-        assert_eq!(resolve_review_scope("pr", &tab).unwrap(), "branch");
+        let mode = DiffMode::PrDiff;
+        assert_eq!(resolve_review_scope_in("branch", mode).unwrap(), "branch");
+        assert_eq!(resolve_review_scope_in("current", mode).unwrap(), "branch");
+        assert_eq!(resolve_review_scope_in("pr", mode).unwrap(), "branch");
     }
 
     #[test]
     fn resolve_review_scope_accepts_tour_mode() {
         // Guide (tour) reviews the branch diff it was regrouped from.
-        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
-        tab.mode = er_engine::app::DiffMode::Tour;
-        assert_eq!(resolve_review_scope("branch", &tab).unwrap(), "branch");
-        assert_eq!(resolve_review_scope("current", &tab).unwrap(), "branch");
-    }
-
-    /// Insert directly into the cache map for read-side gating tests, bypassing
-    /// `remember_pr_open_entry` so the test never triggers a real disk write.
-    fn insert_pr_open_test_entry(
-        cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
-        key: PrOpenCacheKey,
-        freshness: PrOpenFreshness,
-        raw_diff: String,
-    ) {
-        cache.lock().unwrap().insert(
-            key,
-            PrOpenCacheEntry {
-                freshness,
-                raw_diff,
-                pr_data: None,
-                pr_commits: None,
-                last_touched: 0,
-            },
-        );
-    }
-
-    #[test]
-    fn pr_open_cache_returns_matching_fresh_diff() {
-        let cache = Arc::new(Mutex::new(HashMap::new()));
-        let key = pr_open_cache_key("p1", "/repo", 1112);
-        let freshness = PrOpenFreshness {
-            base_branch: "main".into(),
-            head_branch: "feature".into(),
-            head_oid: "abc".into(),
-            updated_at: "2026-05-17T10:00:00Z".into(),
-        };
-        insert_pr_open_test_entry(&cache, key.clone(), freshness.clone(), "diff --git".into());
-
-        assert_eq!(
-            cached_pr_open_diff(&cache, &key, &freshness).as_deref(),
-            Some("diff --git")
-        );
-    }
-
-    #[test]
-    fn pr_open_cache_rejects_stale_freshness() {
-        let cache = Arc::new(Mutex::new(HashMap::new()));
-        let key = pr_open_cache_key("p1", "/repo", 1112);
-        let freshness = PrOpenFreshness {
-            base_branch: "main".into(),
-            head_branch: "feature".into(),
-            head_oid: "abc".into(),
-            updated_at: "2026-05-17T10:00:00Z".into(),
-        };
-        insert_pr_open_test_entry(&cache, key.clone(), freshness.clone(), "old diff".into());
-
-        let stale_probe = PrOpenFreshness {
-            head_oid: "def".into(),
-            ..freshness
-        };
-        assert!(cached_pr_open_diff(&cache, &key, &stale_probe).is_none());
-    }
-
-    #[test]
-    fn pr_open_entry_renders_stale_head_but_rejects_rebase() {
-        // When the head moved on origin (stale-by-head), the hint open is still a
-        // cache hit — we render the diff we already hold and let the 30s pill flag it.
-        // The lookup must return the ENTRY's own freshness (the oid the cached diff
-        // was built against), not the newer requested oid; seeding the staleness probe
-        // with the requested oid would suppress the pill and show a stale diff silently.
-        let cache = Arc::new(Mutex::new(HashMap::new()));
-        let key = pr_open_cache_key("p1", "/repo", 1112);
-        let entry_freshness = PrOpenFreshness {
-            base_branch: "main".into(),
-            head_branch: "feature".into(),
-            head_oid: "OLD".into(),
-            updated_at: "2026-05-17T10:00:00Z".into(),
-        };
-        insert_pr_open_test_entry(
-            &cache,
-            key.clone(),
-            entry_freshness.clone(),
-            "cached diff".into(),
-        );
-
-        // Head advanced (OLD → NEW), same base → HIT returning the entry's OLD oid.
-        let requested_new_head = PrOpenFreshness {
-            head_oid: "NEW".into(),
-            ..entry_freshness.clone()
-        };
-        let (raw_diff, returned_freshness, pr_data, pr_commits) =
-            cached_pr_open_entry(&cache, &key, &requested_new_head)
-                .expect("stale-by-head with matching base must be a cache hit");
-        assert_eq!(raw_diff, "cached diff");
-        assert_eq!(
-            returned_freshness.head_oid, "OLD",
-            "must return the entry's own oid so the staleness pill lights on the moved head"
-        );
-        assert_eq!(returned_freshness.base_branch, "main");
-        assert!(pr_data.is_none(), "no pr_data was cached");
-        assert!(pr_commits.is_none(), "no pr_commits were cached");
-
-        // Base retargeted (main → develop) → MISS: the pill watches only head_oid, so
-        // a silently re-based diff would render with no warning. Re-fetch instead.
-        let requested_rebased = PrOpenFreshness {
-            base_branch: "develop".into(),
-            ..entry_freshness
-        };
-        assert!(
-            cached_pr_open_entry(&cache, &key, &requested_rebased).is_none(),
-            "a base retarget must be a hard cache miss"
-        );
+        let mode = DiffMode::Tour;
+        assert_eq!(resolve_review_scope_in("branch", mode).unwrap(), "branch");
+        assert_eq!(resolve_review_scope_in("current", mode).unwrap(), "branch");
     }
 
     #[test]
@@ -14176,114 +9572,6 @@ mod tests {
     }
 
     #[test]
-    fn evict_lru_removes_oldest_touched_when_over_cap() {
-        // Fill the cache to the cap with distinct, ascending touch times so the
-        // first-inserted key (touch = 1) is the least-recent.
-        let mut map: HashMap<PrOpenCacheKey, PrOpenCacheEntry> = HashMap::new();
-        let mk = |n: u64| pr_open_cache_key("p1", "/repo", n);
-        for n in 0..MAX_PR_OPEN_CACHE_ENTRIES as u64 {
-            map.insert(
-                mk(n),
-                PrOpenCacheEntry {
-                    freshness: PrOpenFreshness {
-                        base_branch: "main".into(),
-                        head_branch: "feature".into(),
-                        head_oid: format!("oid-{n}"),
-                        updated_at: "2026-05-17T10:00:00Z".into(),
-                    },
-                    raw_diff: format!("diff-{n}"),
-                    pr_data: None,
-                    pr_commits: None,
-                    last_touched: n + 1,
-                },
-            );
-        }
-        assert_eq!(map.len(), MAX_PR_OPEN_CACHE_ENTRIES);
-        evict_lru(&mut map); // at cap → no eviction
-        assert_eq!(map.len(), MAX_PR_OPEN_CACHE_ENTRIES);
-
-        // One more entry pushes over the cap; the oldest (touch=1, key=0) is evicted.
-        map.insert(
-            mk(99),
-            PrOpenCacheEntry {
-                freshness: PrOpenFreshness {
-                    base_branch: "main".into(),
-                    head_branch: "feature".into(),
-                    head_oid: "oid-99".into(),
-                    updated_at: "2026-05-17T10:00:00Z".into(),
-                },
-                raw_diff: "diff-99".into(),
-                pr_data: None,
-                pr_commits: None,
-                last_touched: 1000,
-            },
-        );
-        evict_lru(&mut map);
-        assert_eq!(
-            map.len(),
-            MAX_PR_OPEN_CACHE_ENTRIES,
-            "back to cap after one eviction"
-        );
-        assert!(
-            !map.contains_key(&mk(0)),
-            "least-recently-touched entry evicted"
-        );
-        assert!(map.contains_key(&mk(99)), "newly-inserted entry retained");
-        assert!(
-            map.contains_key(&mk(31)),
-            "most-recent of the originals retained"
-        );
-    }
-
-    #[test]
-    fn evict_lru_keeps_recently_read_entry_over_untouched_ones() {
-        // An entry that was *read* (touch bumped) must outlive one only written.
-        let mut map: HashMap<PrOpenCacheKey, PrOpenCacheEntry> = HashMap::new();
-        let mk = |n: u64| pr_open_cache_key("p1", "/repo", n);
-        for n in 0..MAX_PR_OPEN_CACHE_ENTRIES as u64 {
-            map.insert(
-                mk(n),
-                PrOpenCacheEntry {
-                    freshness: PrOpenFreshness {
-                        base_branch: "main".into(),
-                        head_branch: "feature".into(),
-                        head_oid: format!("oid-{n}"),
-                        updated_at: "2026-05-17T10:00:00Z".into(),
-                    },
-                    raw_diff: format!("diff-{n}"),
-                    pr_data: None,
-                    pr_commits: None,
-                    last_touched: n + 1,
-                },
-            );
-        }
-        // Bump key 0 to be the most-recent (simulating a read hit), then overflow.
-        map.get_mut(&mk(0)).unwrap().last_touched = 10_000;
-        map.insert(
-            mk(99),
-            PrOpenCacheEntry {
-                freshness: PrOpenFreshness {
-                    base_branch: "main".into(),
-                    head_branch: "feature".into(),
-                    head_oid: "oid-99".into(),
-                    updated_at: "2026-05-17T10:00:00Z".into(),
-                },
-                raw_diff: "diff-99".into(),
-                pr_data: None,
-                pr_commits: None,
-                last_touched: 10_001,
-            },
-        );
-        evict_lru(&mut map);
-        assert!(
-            map.contains_key(&mk(0)),
-            "recently-read entry survives eviction"
-        );
-        // The least-recent untouched entry (touch=2, key=1) is the one evicted.
-        assert!(!map.contains_key(&mk(1)), "oldest untouched entry evicted");
-    }
-
-    #[test]
     fn card_ai_subprocess_honors_fake_sentinel_ok() {
         let inv = CardAiInvocation {
             command: "claude".into(),
@@ -14347,30 +9635,6 @@ mod tests {
         assert_eq!(body.as_str(), "custom-response-text");
     }
 
-    #[test]
-    fn review_line_target_maps_ranges_and_sides() {
-        let t = |end: Option<usize>, side: Option<&str>| ReviewLineTarget {
-            file: "src/a.rs".into(),
-            line_num: 10,
-            line_num_end: end,
-            side: side.map(str::to_string),
-        };
-        let single = t(None, None).batch_entry("x").unwrap();
-        assert_eq!((single.line, single.start_line), (10, None));
-        assert_eq!(single.side, "RIGHT");
-
-        let range = t(Some(12), Some("LEFT")).batch_entry("x").unwrap();
-        assert_eq!((range.line, range.start_line), (12, Some(10)));
-        assert_eq!(range.side, "LEFT");
-
-        // An end at or before the start is a single line, not a reversed range.
-        let flat = t(Some(10), None).batch_entry("x").unwrap();
-        assert_eq!(flat.start_line, None);
-
-        assert!(t(None, Some("BOTH")).batch_entry("x").is_err());
-        assert!(review_comment_body("  \n").is_err());
-    }
-
     fn github_pr_json() -> &'static [u8] {
         br#"{"number":7,"title":"Tidy up","headRefName":"feat/x","baseRefName":"main","headRefOid":"abc123","updatedAt":"2026-01-02T03:04:05Z","state":"OPEN","isDraft":false,"author":{"login":"alice"},"assignees":[{"login":"bob"}],"reviewRequests":[{"login":"carol"}],"reviewDecision":"APPROVED","mergedAt":null,"latestReviews":[{"author":{"login":"dan"},"state":"APPROVED"}]}"#
     }
@@ -14416,32 +9680,6 @@ mod tests {
         let error = fetch_single_pr_for_remote(&github, "o/r", 7).unwrap_err();
 
         assert_eq!(error, "Failed to fetch PR #7 for o/r: nope");
-    }
-
-    #[test]
-    fn run_gh_pr_view_for_open_parses_the_handle_output() {
-        let json = br#"{"number":7,"title":"Tidy up","body":"why","state":"OPEN","author":{"login":"alice"},"url":"https://github.com/o/r/pull/7","baseRefName":"main","headRefName":"feat/x","headRefOid":"abc123","updatedAt":"2026-01-02T03:04:05Z","reviews":[{"author":{"login":"dan"},"state":"APPROVED"}],"commits":[]}"#;
-        let github = er_engine::github::FakeGitHub::default().with_pr_view_json(Ok(json.to_vec()));
-
-        let metadata = run_gh_pr_view_for_open(&github, "/tmp/repo", 7).unwrap();
-
-        assert_eq!(metadata.freshness.base_branch, "main");
-        assert_eq!(metadata.freshness.head_branch, "feat/x");
-        assert_eq!(metadata.freshness.head_oid, "abc123");
-        assert_eq!(metadata.pr_data.title, "Tidy up");
-        assert_eq!(metadata.pr_data.body, "why");
-        assert_eq!(metadata.pr_data.author, "alice");
-        assert_eq!(metadata.pr_data.reviewers.len(), 1);
-        assert_eq!(metadata.pr_data.reviewers[0].login, "dan");
-        assert_eq!(metadata.pr_data.reviewers[0].state, "APPROVED");
-        assert_eq!(
-            github.calls(),
-            vec![format!(
-                "pr_view_json(repo_slug=None, dir=Some({:?}), number=7, fields={:?})",
-                "/tmp/repo",
-                "number,title,body,state,author,url,baseRefName,headRefName,headRefOid,updatedAt,reviews,commits"
-            )]
-        );
     }
 
     #[cfg(unix)]
@@ -14513,114 +9751,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn resolve_thread_updates_question_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let q_path = tmp.path().join("questions.json");
-            let questions = ErQuestions {
-                version: 1,
-                diff_hash: "x".to_string(),
-                questions: vec![PrivateAnnotation {
-                    id: "q-1".to_string(),
-                    timestamp: "t".to_string(),
-                    file: "a.rs".to_string(),
-                    hunk_index: Some(0),
-                    line_start: Some(1),
-                    line_end: None,
-                    line_content: String::new(),
-                    text: "question".to_string(),
-                    resolved: false,
-                    stale: false,
-                    context_before: vec![],
-                    context_after: vec![],
-                    old_line_start: None,
-                    side: "RIGHT".to_string(),
-                    hunk_header: String::new(),
-                    anchor_status: "original".to_string(),
-                    relocated_at_hash: String::new(),
-                    in_reply_to: None,
-                    author: "You".to_string(),
-                    promoted_to: None,
-                    finding_ref: None,
-                    ai_action: None,
-                }],
-            };
-            er_engine::test_support::write_sidecar(tmp.path(), &questions);
-            er_engine::test_support::write_sidecar_json::<ErGithubComments>(
-                tmp.path(),
-                serde_json::json!({"version": 1, "diff_hash": "x", "comments": []}),
-            );
-
-            let changed = mark_thread_resolved_in_files(
-                "q-1",
-                &tmp.path().to_string_lossy(),
-                &tmp.path().to_string_lossy(),
-            )
-            .unwrap();
-            assert_eq!(changed, Some(q_path.to_string_lossy().to_string()));
-            let updated: ErQuestions = er_engine::test_support::read_sidecar(tmp.path());
-            assert!(updated.questions[0].resolved);
-        });
-    }
-
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn resolve_thread_updates_github_comment_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let gc_path = tmp.path().join("github-comments.json");
-            er_engine::test_support::write_sidecar_json::<ErQuestions>(
-                tmp.path(),
-                serde_json::json!({"version": 1, "diff_hash": "x", "questions": []}),
-            );
-            let comments = ErGithubComments {
-                version: 1,
-                diff_hash: "x".to_string(),
-                github: None,
-                comments: vec![GithubComment {
-                    id: "c-1".to_string(),
-                    timestamp: "t".to_string(),
-                    file: "a.rs".to_string(),
-                    hunk_index: Some(0),
-                    line_start: Some(2),
-                    line_end: None,
-                    line_content: String::new(),
-                    comment: "note".to_string(),
-                    in_reply_to: None,
-                    resolved: false,
-                    source: "local".to_string(),
-                    github_id: None,
-                    author: "You".to_string(),
-                    outdated: false,
-                    stale: false,
-                    context_before: vec![],
-                    context_after: vec![],
-                    old_line_start: None,
-                    hunk_header: String::new(),
-                    anchor_status: "original".to_string(),
-                    relocated_at_hash: String::new(),
-                    finding_ref: None,
-                    side: "RIGHT".to_string(),
-                }],
-            };
-            er_engine::test_support::write_sidecar(tmp.path(), &comments);
-
-            let changed = mark_thread_resolved_in_files(
-                "c-1",
-                &tmp.path().to_string_lossy(),
-                &tmp.path().to_string_lossy(),
-            )
-            .unwrap();
-            assert_eq!(changed, Some(gc_path.to_string_lossy().to_string()));
-            let updated: ErGithubComments = er_engine::test_support::read_sidecar(tmp.path());
-            assert!(updated.comments[0].resolved);
-        });
-    }
-
     #[test]
     fn save_annotation_screenshot_writes_bytes_and_returns_path() {
         let tmp = tempfile::tempdir().unwrap();
@@ -14667,333 +9797,6 @@ mod tests {
         assert!(decode_data_url_png("data:image/png,plainstuff").is_none());
     }
 
-    fn make_app_with_n_tabs(n: usize) -> App {
-        use er_engine::app::TabState;
-        let mut seed = TabState::new_for_test(vec![]);
-        seed.repo_root = "tab0".into();
-        let mut app = App::new_remote(seed, None, er_engine::ports::Ports::for_test());
-        for i in 1..n {
-            let mut t = TabState::new_for_test(vec![]);
-            t.repo_root = format!("tab{i}");
-            app.tabs.push(t);
-        }
-        app
-    }
-
-    fn browser_url_update(url: &str) -> crate::view_state::BrowserUpdate {
-        crate::view_state::BrowserUpdate {
-            url: Some(url.to_string()),
-            layout: Some("split".to_string()),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn update_tab_browser_updates_the_view_state() {
-        let tmp = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(tmp.path(), || {
-            let mut app = make_app_with_n_tabs(2);
-            app.active_tab = 1;
-            let view = crate::view_state::ViewStateHandle::default();
-            set_active_tab_browser(&app, &view, browser_url_update("http://localhost:1/")).unwrap();
-
-            let view = view.lock().unwrap();
-            let active = view.browser(app.tabs[1].key());
-            assert_eq!(active.url, "http://localhost:1/");
-            assert_eq!(active.layout, crate::view_state::BrowserLayout::Split);
-            assert_eq!(
-                view.browser(app.tabs[0].key()),
-                crate::view_state::TabBrowserState::default(),
-                "the other tab is untouched"
-            );
-        });
-    }
-
-    /// Cmd-T and the tab strip "+" open a Working tab on the active repo, and
-    /// nothing dedupes it, so two open tabs can name the same target.
-    #[test]
-    fn two_tabs_on_one_repo_keep_separate_browser_state() {
-        use er_engine::app::TabState;
-
-        let tmp = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(tmp.path(), || {
-            // The snapshot asks git for the working tree's stat, so these tabs
-            // run real git against an empty directory.
-            let repo = tempfile::tempdir().unwrap();
-            let working_tab = || {
-                let mut tab =
-                    TabState::new_for_test_with_ports(vec![], er_engine::ports::Ports::cli());
-                tab.repo_root = repo.path().to_string_lossy().into_owned();
-                tab
-            };
-            let mut app = App::new_remote(working_tab(), None, er_engine::ports::Ports::cli());
-            let view = crate::view_state::ViewStateHandle::default();
-            set_active_tab_browser(&app, &view, browser_url_update("http://localhost:1/a"))
-                .unwrap();
-
-            app.open_tab(working_tab());
-            assert_eq!(app.active_tab, 1);
-            let sources = crate::snapshot::SnapshotSources {
-                view: Some(&view),
-                ..Default::default()
-            };
-            let snap = crate::snapshot::build_snapshot_with_delta(&app, &sources);
-            assert_eq!(snap.browser.url, "", "the new tab opens with no page");
-            assert_eq!(snap.browser.layout, "hidden");
-
-            set_active_tab_browser(&app, &view, browser_url_update("http://localhost:1/b"))
-                .unwrap();
-            let saved_urls = |app: &App| -> Vec<Option<String>> {
-                let view = view.lock().unwrap();
-                app.tabs
-                    .iter()
-                    .map(|t| {
-                        let saved = crate::tabs::descriptor_from_tab(t, &view);
-                        saved.extra.get("browser_url")?.as_str().map(String::from)
-                    })
-                    .collect()
-            };
-            let (a, b) = (
-                Some("http://localhost:1/a".to_string()),
-                Some("http://localhost:1/b".to_string()),
-            );
-            assert_eq!(saved_urls(&app), [a.clone(), b.clone()]);
-
-            assert!(app.reorder_tabs(1, 0));
-            assert_eq!(
-                saved_urls(&app),
-                [b, a.clone()],
-                "each page follows its tab"
-            );
-
-            app.close_tab_at(0);
-            assert_eq!(
-                saved_urls(&app),
-                [a],
-                "closing one tab leaves the other's page"
-            );
-        });
-    }
-
-    /// `open_local_branch` with `replace = Some(true)` swaps the active tab's
-    /// slot instead of pushing — `tabs.len()` stays constant. We exercise the
-    /// shared placement helper (`place_tab`) used by the Tauri command, which
-    /// avoids needing a full `State<AppState>` plus on-disk projects.json.
-    #[test]
-    fn open_local_branch_replace_swaps_active_slot() {
-        use er_engine::app::TabState;
-
-        let tmp = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(tmp.path(), || {
-            let mut app = make_app_with_n_tabs(2);
-            app.active_tab = 1;
-
-            let mut incoming = TabState::new_for_test(vec![]);
-            incoming.repo_root = "new".into();
-            place_tab(&mut app, &Default::default(), incoming, true, false);
-
-            assert_eq!(app.tabs.len(), 2, "replace must not grow tabs");
-            assert_eq!(app.active_tab, 1, "active stays on the replaced slot");
-            assert_eq!(app.tabs[1].repo_root, "new", "active slot got new tab");
-            assert_eq!(app.tabs[0].repo_root, "tab0", "other tab is untouched");
-        });
-    }
-
-    /// Replacing a slot skips `push_tab`; the incoming tab must still get its
-    /// repo's `[file_kinds]`, or the header count ignores the overrides.
-    #[test]
-    fn place_tab_replace_hands_the_tab_its_repo_rules() {
-        use er_engine::app::TabState;
-        use er_engine::config::FileKindRepoConfig;
-
-        // `place_tab` registers the tab's remote as a project, which writes to
-        // the store: keep that out of the real data directory.
-        let tmp = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(tmp.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
-                "e2e/**".to_string(),
-                "test".to_string(),
-            )]));
-            app.config
-                .file_kinds
-                .items
-                .insert("my-service".to_string(), table.clone());
-
-            let mut incoming = TabState::new_for_test(vec![]);
-            incoming.repo_root = "/".into();
-            incoming.remote_repo = Some("acme/my-service".into());
-            place_tab(&mut app, &Default::default(), incoming, true, true);
-
-            assert_eq!(app.tabs[0].file_kinds, table);
-        });
-    }
-
-    #[test]
-    fn place_tab_append_pushes_and_focuses() {
-        use er_engine::app::TabState;
-
-        let tmp = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(tmp.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            app.active_tab = 0;
-
-            let mut incoming = TabState::new_for_test(vec![]);
-            incoming.repo_root = "new".into();
-            place_tab(&mut app, &Default::default(), incoming, false, false);
-
-            assert_eq!(app.tabs.len(), 2, "append grows tabs by one");
-            assert_eq!(app.active_tab, 1, "new tab is focused");
-            assert_eq!(app.tabs[1].repo_root, "new");
-        });
-    }
-
-    #[test]
-    fn place_tab_skip_storage_sync_still_places_and_focuses() {
-        use er_engine::app::TabState;
-
-        // The PR-open hot path skips the storage sync:
-        // `enter_pr_diff_*` performs the authoritative reload right
-        // after, so placement must still work and focus the tab.
-        let tmp = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(tmp.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            app.active_tab = 0;
-
-            let mut incoming = TabState::new_for_test(vec![]);
-            incoming.repo_root = "new".into();
-            place_tab(&mut app, &Default::default(), incoming, true, true);
-
-            assert_eq!(app.tabs.len(), 1, "replace must not grow tabs");
-            assert_eq!(app.active_tab, 0, "active stays on the replaced slot");
-            assert_eq!(app.tabs[0].repo_root, "new", "slot got the new tab");
-        });
-    }
-
-    #[test]
-    fn branch_preload_target_skips_non_pr_tabs() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let app = make_app_with_n_tabs(1);
-            assert!(branch_preload_target(&app, 0).is_none());
-        });
-    }
-
-    #[test]
-    fn branch_preload_target_skips_pr_without_number() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            app.tab_mut().local_branch_view = Some("feature".into());
-            assert!(branch_preload_target(&app, 0).is_none());
-        });
-    }
-
-    #[test]
-    fn branch_preload_target_local_pr_without_checkout_is_eligible() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            let tab = app.tab_mut();
-            tab.local_branch_view = Some("feature-x".into());
-            tab.pr_number = Some(42);
-            tab.pr_head_ref = Some("refs/er/pr/42/head".into());
-            tab.base_branch = "main".into();
-            let inputs = branch_preload_target(&app, 0).expect("eligible");
-            assert_eq!(inputs.pr_number, Some(42));
-            assert_eq!(inputs.local_branch_view.as_deref(), Some("feature-x"));
-            assert_eq!(inputs.base_branch, "main");
-            assert!(inputs.remote_repo.is_none());
-            assert!(inputs.checkout_root.is_none());
-        });
-    }
-
-    #[test]
-    fn branch_preload_target_skips_checked_out_pr() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            let tab = app.tab_mut();
-            tab.local_branch_view = Some("feature-x".into());
-            tab.pr_number = Some(42);
-            tab.local_branch_checkout_root = Some("/worktree".into());
-            assert!(
-                branch_preload_target(&app, 0).is_none(),
-                "working-tree scope is local + staleness-prone — no preload"
-            );
-        });
-    }
-
-    #[test]
-    fn branch_preload_target_remote_pr_is_eligible() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            let tab = app.tab_mut();
-            tab.remote_repo = Some("owner/repo".into());
-            tab.pr_number = Some(7);
-            let inputs = branch_preload_target(&app, 0).expect("eligible");
-            assert_eq!(inputs.remote_repo.as_deref(), Some("owner/repo"));
-            assert_eq!(inputs.pr_number, Some(7));
-            assert_eq!(inputs.dedupe_key(), ("owner/repo".to_string(), 7));
-        });
-    }
-
-    #[test]
-    fn remote_pr_tab_from_entry_builds_without_network() {
-        use crate::remote_pr_open_cache::RemotePrOpenEntry;
-        let tmp = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(tmp.path(), || {
-            let pr_ref = er_engine::github::PrRef {
-                owner: "o".to_string(),
-                repo: "r".to_string(),
-                number: 9,
-            };
-            const DIFF: &str = "diff --git a/f.rs b/f.rs\nindex 0000000..1111111 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1,2 @@\n fn f() {}\n+fn f2() {}\n";
-            let mut tab = remote_pr_tab_from_entry(
-                &pr_ref,
-                RemotePrOpenEntry {
-                    base_branch: "main".into(),
-                    head_branch: "feature".into(),
-                    raw_diff: DIFF.into(),
-                    pr_data: None,
-                    pr_commits: Vec::new(),
-                    head_oid: Some("oid-1".into()),
-                    last_touched: 0,
-                },
-                &er_engine::ports::Ports::for_test(),
-            )
-            .unwrap();
-            assert_eq!(tab.remote_repo.as_deref(), Some("o/r"));
-            assert_eq!(tab.pr_number, Some(9));
-            assert_eq!(tab.base_branch, "main");
-            assert_eq!(
-                tab.last_diff_head_oid.as_deref(),
-                Some("oid-1"),
-                "staleness baseline = the oid the cached diff was fetched at"
-            );
-            assert_eq!(tab.files.len(), 1);
-            assert_eq!(tab.preview_head_oid.as_deref(), Some("oid-1"));
-            assert_eq!(
-                tab.preloaded_branch_raw
-                    .as_ref()
-                    .unwrap()
-                    .preview_head_oid
-                    .as_deref(),
-                Some("oid-1")
-            );
-            let preview_context = tab.preview_context_key();
-            tab.last_diff_head_oid = Some("newer-freshness-baseline".into());
-            assert_eq!(tab.preview_context_key(), preview_context);
-            assert_eq!(tab.files[0].path, "f.rs");
-            assert!(!tab.needs_initial_refresh, "cache-opened tab is not a stub");
-            assert!(
-                tab.preloaded_branch_raw.is_some(),
-                "cache entry seeds the branch preload (branch scope == raw_diff for remote tabs)"
-            );
-        });
-    }
-
     #[test]
     fn image_data_url_carries_mime_and_exact_bytes() {
         assert_eq!(
@@ -15004,185 +9807,6 @@ mod tests {
             image_data_url("image/svg+xml", b"<svg/>"),
             "data:image/svg+xml;base64,PHN2Zy8+"
         );
-    }
-
-    #[test]
-    fn arbiter_verdict_and_rationale_invalidate_content_revision() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            let before = compute_content_revision(&app);
-            app.tab_mut().ai.arbiter_verdicts.insert(
-                "claim".into(),
-                (
-                    er_engine::ai::ArbiterRuling::Escalated,
-                    "first reason".into(),
-                ),
-            );
-            let with_verdict = compute_content_revision(&app);
-            assert_ne!(before, with_verdict);
-            app.tab_mut()
-                .ai
-                .arbiter_verdicts
-                .get_mut("claim")
-                .unwrap()
-                .1 = "new reason".into();
-            assert_ne!(with_verdict, compute_content_revision(&app));
-        });
-    }
-
-    #[test]
-    fn confidence_regrade_invalidates_content_revision_without_verdict_change() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
-                dir.path(),
-                serde_json::json!({
-                    "version": 1, "diff_hash": "hash",
-                    "files": {"a.rs": {"risk": "medium", "findings": [
-                        {"id": "f", "severity": "medium", "title": "claim", "confidence": "tentative"}
-                    ]}}
-                }),
-            );
-            let mut app = make_app_with_n_tabs(1);
-            app.tab_mut().ai =
-                er_engine::ai::load_ai_state(dir.path().to_str().unwrap(), "hash", None);
-            let before = compute_content_revision(&app);
-            app.tab_mut()
-                .ai
-                .review
-                .as_mut()
-                .unwrap()
-                .files
-                .get_mut("a.rs")
-                .unwrap()
-                .findings[0]
-                .confidence = er_engine::ai::Confidence::Confirmed;
-            assert_ne!(before, compute_content_revision(&app));
-        });
-    }
-
-    #[test]
-    fn arbiter_metadata_change_invalidates_content_revision() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let er_dir = dir.path().join(".er");
-            er_engine::test_support::write_sidecar_json::<er_engine::ai::ErReview>(
-                &er_dir,
-                serde_json::json!({
-                    "version": 1, "diff_hash": "hash",
-                    "files": {"a.rs": {"risk": "medium", "findings": [
-                        {"id": "f", "severity": "medium", "title": "claim", "confidence": "tentative"}
-                    ]}}
-                }),
-            );
-            let key = er_engine::ai::finding_key("a.rs", None, "claim");
-            let overlay = |provider| serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[{"id":key,"verdict":"escalated","rationale":"same","providers":[provider]}]});
-            er_engine::test_support::write_sidecar_json::<er_engine::ai::ArbiterReview>(
-                &er_dir,
-                overlay("first"),
-            );
-            let mut app = make_app_with_n_tabs(1);
-            app.tab_mut().er_root =
-                er_engine::paths::ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
-            app.tab_mut().branch_diff_hash = "hash".into();
-            app.tab_mut().reload_ai_state();
-            let before = compute_content_revision(&app);
-            assert_eq!(
-                app.tab().ai.review.as_ref().unwrap().files["a.rs"].findings[0].providers,
-                vec!["first"]
-            );
-            er_engine::test_support::write_sidecar_json::<er_engine::ai::ArbiterReview>(
-                &er_dir,
-                overlay("second"),
-            );
-            assert!(app.tab_mut().check_ai_files_changed());
-            assert_eq!(
-                app.tab().ai.review.as_ref().unwrap().files["a.rs"].findings[0].providers,
-                vec!["second"]
-            );
-            assert_ne!(before, compute_content_revision(&app));
-        });
-    }
-
-    #[test]
-    fn other_bucket_arbiter_change_invalidates_only_review_views() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            let tab = app.tab_mut();
-            tab.mode = DiffMode::PrDiff;
-            tab.pr_number = Some(7);
-            tab.current_branch = "feature".into();
-            assert!(crate::snapshot::other_bucket_dir(tab).is_some());
-            let before = compute_content_revision_with_arbiter(&app, None);
-            let with_arbiter = compute_content_revision_with_arbiter(&app, Some(b"first"));
-            assert_ne!(before, with_arbiter);
-            assert_ne!(
-                with_arbiter,
-                compute_content_revision_with_arbiter(&app, Some(b"second"))
-            );
-            assert_eq!(before, compute_content_revision_with_arbiter(&app, None));
-            app.tab_mut().mode = DiffMode::Unstaged;
-            let unrelated = compute_content_revision_with_arbiter(&app, None);
-            assert_eq!(
-                unrelated,
-                compute_content_revision_with_arbiter(&app, Some(b"third"))
-            );
-        });
-    }
-
-    #[test]
-    fn preview_file_keys_invalidate_content_revision_without_hunk_changes() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            let raw = "diff --git a/readme.md b/readme.md\nindex abcdef0..0000000 100644\n--- a/readme.md\n+++ b/readme.md\n@@ -1 +1 @@\n-old\n+new\n";
-            let tab = app.tab_mut();
-            tab.set_raw_diff_for_test(raw);
-            tab.files = er_engine::git::parse_diff(raw);
-            tab.file_headers = er_engine::git::parse_diff_headers(raw);
-            tab.mtime_cache
-                .insert("readme.md".into(), std::time::SystemTime::UNIX_EPOCH);
-            let context = tab.preview_context_key();
-            let revision = compute_content_revision(&app);
-            app.tab_mut().mtime_cache.insert(
-                "readme.md".into(),
-                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
-            );
-            assert_eq!(context, app.tab().preview_context_key());
-            assert_ne!(revision, compute_content_revision(&app));
-        });
-    }
-
-    #[test]
-    fn branch_preload_target_stays_eligible_when_preload_already_seeded() {
-        use er_engine::app::PreloadedBranchRaw;
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            let tab = app.tab_mut();
-            tab.remote_repo = Some("owner/repo".into());
-            tab.pr_number = Some(7);
-            tab.preloaded_branch_raw = Some(PreloadedBranchRaw {
-                raw: "diff".into(),
-                preview_head_oid: None,
-                base_branch: "main".into(),
-                pr_number: Some(7),
-                local_branch_view: None,
-                checkout_root: None,
-                remote_repo: Some("owner/repo".into()),
-                pr_head_ref: None,
-                parity: true,
-            });
-            assert!(
-                branch_preload_target(&app, 0).is_some(),
-                "seeded tabs stay eligible: the worker skips the refetch but still \
-                 preloads the branch-view AI sidecars (collapsed-view fix)"
-            );
-        });
     }
 
     #[test]
@@ -15345,19 +9969,6 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn clone_inbox_prefs_reads_app_config() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let mut app = make_app_with_n_tabs(1);
-            app.config.inbox.notify.ai_review_done = false;
-            let prefs = clone_inbox_prefs(&Arc::new(Mutex::new(app)));
-            assert!(!prefs.notify.ai_review_done);
-            assert!(prefs.show.ai_review_done);
-        });
-    }
-
     #[test]
     fn flush_pending_respects_passed_prefs() {
         let inbox: InboxHandle = Arc::new(Mutex::new(crate::inbox::InboxState::default()));
@@ -15392,243 +10003,18 @@ mod tests {
         );
     }
 
-    /// Every palette-hot leaf command must be `pub async fn` whose body
-    /// contains `run_blocking`. Running one synchronously locks `App` and
-    /// rebuilds a full snapshot (for reviews, also shelling out to git and
-    /// writing diff artifacts) on the **main thread**, freezing the window for
-    /// a noticeable stretch — the same class of bug as the file-filter freeze
-    /// (`set_filter` → `run_blocking`).
-    ///
-    /// Thin `.await` wrappers (triage / files / professor → scoped_review) must
-    /// stay async and lock-free.
-    #[test]
-    fn cmdk_ai_actions_must_run_off_main_thread() {
-        let src = include_str!("commands.rs");
-        let must_run_blocking = [
-            "set_ai_selection",
-            "set_ai_model",
-            "set_ai_effort",
-            "list_ai_providers",
-            "run_ai_review",
-            "run_ai_scoped_review",
-            "run_ai_validate",
-            "run_ai_expert_review",
-            "generate_tour",
-            "refresh_diff",
-            "force_refresh_diff",
-            // Commit rows are primary click targets; both run git diff under
-            // the App lock.
-            "select_commit",
-            "exit_history",
-            // These must be async: a sync command would lock App, reload every
-            // AI sidecar, and rebuild the snapshot on the main thread — a
-            // freeze and a spinner per inline comment, though the comment is
-            // unpushed.
-            "add_comment",
-            "add_question",
-            "add_note",
-            "reply_to_thread",
-            "reply_to_github_thread",
-            "delete_thread",
-            "resolve_thread",
-            "update_thread_message",
-            "dismiss_finding",
-            "resolve_finding",
-            "unresolve_finding",
-            "promote_to_comment",
-            "promote_to_note",
-            "bulk_review_pillar",
-            "unbulk_review_pillar",
-            "add_ui_annotation",
-            "delete_ui_annotation",
-            // These must be async: rebuilding the panel chrome synchronously
-            // freezes the window before `[` / `\` / `]` takes effect.
-            "toggle_panel",
-            // Finding-thread actions: optimistic on the frontend, view-gated here.
-            "remove_finding_thread",
-            "promote_finding_to_comment",
-            "update_finding_response",
-            "delete_finding_response",
-            "reply_to_finding",
-            // Checklist toggles write a sidecar, so they lock and hit disk too.
-            "toggle_checklist_item",
-            // AI card actions build prompt context under the app lock; the gh
-            // push/post commands are network round trips. All of them froze the
-            // window as sync commands.
-            "ask_ai",
-            "validate_with_ai",
-            "elaborate_with_ai",
-            "post_github_pr_comment",
-            "get_pending_review",
-            "add_pending_review_comment",
-            "remove_pending_review_comment",
-            "submit_pending_review",
-            "post_github_line_comment",
-            // App-wide chrome writes (inbox, pins, ignores): painted optimistically,
-            // confirmed with a chrome-only snapshot.
-            "mark_inbox_item_read",
-            "mark_all_inbox_read",
-            "mark_inbox_items_read",
-            "clear_read_inbox_items",
-            "clear_inbox_items",
-            "save_pr",
-            "unsave_pr",
-            "dismiss_remote_pr",
-            "undismiss_remote_pr",
-        ];
-        let wrappers = [
-            "run_ai_triage_review",
-            "run_ai_review_files",
-            "run_ai_professor_review",
-        ];
-
-        fn body_of<'a>(src: &'a str, name: &str) -> Option<&'a str> {
-            let sig = format!("pub async fn {name}");
-            let start = src.find(&sig)?;
-            let rest = src.get(start + 1..)?;
-            let next = [
-                "\n#[tauri::command]",
-                "\npub async fn ",
-                "\npub fn ",
-                "\npub use ",
-            ]
-            .iter()
-            .filter_map(|m| rest.find(m).map(|i| i + 1))
-            .min()
-            .unwrap_or(rest.len());
-            src.get(start..start + 1 + next)
-        }
-
-        let mut failures = Vec::new();
-        for name in must_run_blocking {
-            let async_sig = format!("pub async fn {name}");
-            let sync_sig = format!("pub fn {name}");
-            if !src.contains(&async_sig) {
-                if src.contains(&sync_sig) {
-                    failures.push(format!(
-                        "{name} is still `pub fn` (sync / main-thread) — must be `pub async fn` + run_blocking"
-                    ));
-                } else {
-                    failures.push(format!("{name} signature not found in commands.rs"));
-                }
-                continue;
-            }
-            let Some(body) = body_of(src, name) else {
-                failures.push(format!("{name} body could not be extracted"));
-                continue;
-            };
-            if !body.contains("run_blocking") {
-                failures.push(format!("{name} is async but its body has no run_blocking"));
-            }
-            if matches!(
-                name,
-                "add_comment"
-                    | "add_question"
-                    | "add_note"
-                    | "reply_to_thread"
-                    | "delete_thread"
-                    | "resolve_thread"
-                    | "update_thread_message"
-                    | "dismiss_finding"
-                    | "resolve_finding"
-                    | "unresolve_finding"
-                    | "promote_to_comment"
-                    | "promote_to_note"
-                    | "bulk_review_pillar"
-                    | "unbulk_review_pillar"
-                    | "add_ui_annotation"
-                    | "delete_ui_annotation"
-                    | "remove_finding_thread"
-                    | "promote_finding_to_comment"
-                    | "update_finding_response"
-                    | "delete_finding_response"
-                    | "reply_to_finding"
-                    | "toggle_checklist_item"
-            ) && !body.contains("abort_wrong_view")
-            {
-                failures.push(format!(
-                    "{name} must abort when the optimistic view no longer matches"
-                ));
-            }
-        }
-        for name in wrappers {
-            let async_sig = format!("pub async fn {name}");
-            let sync_sig = format!("pub fn {name}");
-            if !src.contains(&async_sig) {
-                if src.contains(&sync_sig) {
-                    failures.push(format!(
-                        "{name} is still `pub fn` — must be `pub async fn` wrapper"
-                    ));
-                } else {
-                    failures.push(format!("{name} signature not found in commands.rs"));
-                }
-                continue;
-            }
-            let Some(body) = body_of(src, name) else {
-                failures.push(format!("{name} body could not be extracted"));
-                continue;
-            };
-            if !body.contains(".await") {
-                failures.push(format!("{name} wrapper body has no .await"));
-            }
-            if body.contains("state.app.lock") {
-                failures.push(format!(
-                    "{name} should stay a thin .await wrapper (no App lock)"
-                ));
-            }
-        }
-        assert!(
-            failures.is_empty(),
-            "⌘K/AI actions would freeze the UI:\n{}",
-            failures.join("\n")
-        );
-    }
-
-    #[test]
-    fn toggle_panel_does_not_build_a_snapshot() {
-        let src = include_str!("commands.rs");
-        let (_, from) = src
-            .split_once("pub async fn toggle_panel")
-            .expect("toggle_panel must be async");
-        let (body, _) = from
-            .split_once(".await")
-            .expect("toggle_panel awaits run_blocking");
-        assert!(body.contains("run_blocking"));
-        assert!(body.contains("Ok(())"));
-        assert!(
-            !body.contains("snap_from"),
-            "toggle_panel must not rebuild a snapshot"
-        );
-        assert!(
-            body.contains("state.view.lock()") && !body.contains("state.app.lock()"),
-            "toggle_panel writes the view state and does not wait on the engine lock"
-        );
-    }
-
     #[test]
     fn diff_syncs_refresh_the_github_status() {
         // The merge box blocks a merge when the synced diff's head and the
         // cached PR head differ; without a refresh it stays blocked after a
-        // Sync and tells the user to sync again.
-        let src = include_str!("commands.rs");
-        for command in ["pub async fn force_refresh_diff", "pub async fn sync_pr"] {
-            let (_, from) = src.split_once(command).expect(command);
-            let (body, _) = from.split_once("\n}\n").expect("function end");
-            assert!(
-                body.contains("refresh_active_status_after_sync(&state);"),
-                "{command} must refresh the GitHub status"
-            );
-        }
-        // The flag-on sync takes its key from the tab's content, since the
-        // App's tab is not the one the route refreshed.
-        let flag_on = src
-            .split_once("pub async fn force_refresh_diff")
-            .and_then(|(_, from)| from.split_once("#[cfg(not(feature = \"v1-service\"))]"))
-            .map(|(flag_on, _)| flag_on)
-            .expect("force_refresh_diff's flag-on block");
+        // Sync and tells the user to sync again. The sync takes its key from
+        // the tab's content.
+        let src = include_str!("resources/diff.rs");
+        let (_, from) = src.split_once("fn refresh(").expect("the diff refresh");
+        let (body, _) = from.split_once("\n}\n").expect("function end");
         assert!(
-            flag_on.contains("refresh_status_after_sync(&state, synced.status_key);"),
-            "the flag-on sync must refresh the GitHub status"
+            body.contains("refresh_status_after_sync(desktop, synced.status_key);"),
+            "a sync must refresh the GitHub status"
         );
     }
 
@@ -15729,212 +10115,6 @@ mod tests {
             Some(InboxOpenTarget::LocalPr { ref project_id, pr_number: 7, hint: Some(_) })
                 if project_id == "tp"
         ));
-    }
-
-    #[cfg(not(feature = "v1-service"))]
-    struct RefusingCommentPoster;
-
-    #[cfg(not(feature = "v1-service"))]
-    impl er_engine::github_post::GitHubCommentPoster for RefusingCommentPoster {
-        fn post(
-            &self,
-            _request: &er_engine::github_post::GitHubPostRequest,
-        ) -> er_engine::github_post::GitHubPostOutcome {
-            er_engine::github_post::GitHubPostOutcome::NotPosted {
-                error: "network down".to_string(),
-            }
-        }
-
-        fn list(
-            &self,
-            _request: &er_engine::github_post::GitHubPostRequest,
-        ) -> anyhow::Result<Vec<er_engine::github_post::ListedGitHubComment>> {
-            Ok(Vec::new())
-        }
-
-        fn viewer_login(
-            &self,
-            _request: &er_engine::github_post::GitHubPostRequest,
-        ) -> anyhow::Result<String> {
-            Ok("viewer".to_string())
-        }
-    }
-
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn add_comment_failure_returns_the_error_and_writes_nothing() {
-        use std::sync::Arc;
-
-        let dir = ReviewFlowTestDir::new();
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let state = review_flow_test_state(&dir);
-            {
-                let mut app = state.app.lock().unwrap();
-                app.tab_mut().remote_repo = Some("owner/repo".to_string());
-                app.tab_mut().pr_number = Some(7);
-                app.set_github_comment_poster(Arc::new(RefusingCommentPoster));
-            }
-            let comments_path = state.app.lock().unwrap().tab().github_comments_path();
-            assert!(!std::path::Path::new(&comments_path).exists());
-
-            let error = add_comment_impl(
-                "src/lib.rs".to_string(),
-                0,
-                Some(1),
-                None,
-                "hello".to_string(),
-                Some("RIGHT".to_string()),
-                None,
-                None,
-                &state,
-            )
-            .unwrap_err();
-
-            assert!(error.contains("Comment not posted"), "{error}");
-            assert!(
-                !std::path::Path::new(&comments_path).exists(),
-                "a failed post must write nothing"
-            );
-        });
-    }
-
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn reply_to_thread_refuses_a_parent_on_github() {
-        let dir = ReviewFlowTestDir::new();
-        er_engine::storage::with_test_storage_root(dir.path(), || {
-            let state = review_flow_test_state(&dir);
-            {
-                let mut app = state.app.lock().unwrap();
-                app.tab_mut().ai.github_comments = Some(
-                    serde_json::from_value(serde_json::json!({
-                        "version": 1,
-                        "diff_hash": "hash",
-                        "comments": [{
-                            "id": "gh-11",
-                            "file": "src/lib.rs",
-                            "hunk_index": 0,
-                            "line_start": 1,
-                            "comment": "already on GitHub",
-                            "source": "github",
-                            "github_id": 11,
-                            "author": "octo"
-                        }]
-                    }))
-                    .unwrap(),
-                );
-            }
-
-            let error = reply_to_thread_impl(
-                "gh-11".to_string(),
-                "a local reply".to_string(),
-                None,
-                &state,
-            )
-            .unwrap_err();
-
-            assert!(error.contains("reply_to_github_thread"), "{error}");
-        });
-    }
-
-    #[cfg(not(feature = "v1-service"))]
-    struct PostingCommentPoster;
-
-    #[cfg(not(feature = "v1-service"))]
-    impl er_engine::github_post::GitHubCommentPoster for PostingCommentPoster {
-        fn post(
-            &self,
-            _request: &er_engine::github_post::GitHubPostRequest,
-        ) -> er_engine::github_post::GitHubPostOutcome {
-            er_engine::github_post::GitHubPostOutcome::Posted {
-                github_id: 42,
-                created_at: "2026-01-01T00:00:00Z".to_string(),
-                author: "you".to_string(),
-            }
-        }
-
-        fn list(
-            &self,
-            _request: &er_engine::github_post::GitHubPostRequest,
-        ) -> anyhow::Result<Vec<er_engine::github_post::ListedGitHubComment>> {
-            Ok(Vec::new())
-        }
-
-        fn viewer_login(
-            &self,
-            _request: &er_engine::github_post::GitHubPostRequest,
-        ) -> anyhow::Result<String> {
-            Ok("you".to_string())
-        }
-    }
-
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn promote_to_comment_deletes_the_source_question() {
-        use std::sync::Arc;
-
-        let dir = ReviewFlowTestDir::new();
-        // The fixture's inner type changed with the release branch; a separate
-        // temp dir keeps this test independent of it.
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let state = review_flow_test_state(&dir);
-
-            let questions_path;
-            {
-                let mut app = state.app.lock().unwrap();
-                app.tab_mut().remote_repo = Some("owner/repo".to_string());
-                app.tab_mut().pr_number = Some(7);
-                let er_dir = app.tab().er_dir();
-                questions_path = std::path::Path::new(&er_dir).join("questions.json");
-                let payload: er_engine::ai::ErQuestions =
-                    serde_json::from_value(serde_json::json!({
-                        "version": 1,
-                        "diff_hash": "hash",
-                        "questions": [{
-                            "id": "q-1",
-                            "file": "src/lib.rs",
-                            "hunk_index": 0,
-                            "line_start": 1,
-                            "line_content": "new",
-                            "text": "why?",
-                            "side": "RIGHT",
-                            "author": "You"
-                        }]
-                    }))
-                    .unwrap();
-                er_engine::test_support::write_sidecar(std::path::Path::new(&er_dir), &payload);
-                app.tab_mut().ai.questions = Some(payload);
-                app.set_github_comment_poster(Arc::new(PostingCommentPoster));
-            }
-
-            promote_to_comment_impl(
-                "q-1".to_string(),
-                Some("promoted".to_string()),
-                None,
-                &state,
-            )
-            .unwrap();
-
-            {
-                let app = state.app.lock().unwrap();
-                assert!(
-                    app.tab()
-                        .ai
-                        .questions
-                        .as_ref()
-                        .is_none_or(|qs| qs.questions.iter().all(|q| q.id != "q-1")),
-                    "the source question is gone from memory"
-                );
-            }
-            let stored: er_engine::ai::ErQuestions =
-                er_engine::test_support::read_sidecar(questions_path.parent().unwrap());
-            assert!(
-                stored.questions.iter().all(|q| q.id != "q-1"),
-                "the source question is gone from the file"
-            );
-        });
     }
 }
 
@@ -16065,7 +10245,7 @@ mod projected_review_tests {
     }
 }
 
-#[cfg(all(test, feature = "v1-service"))]
+#[cfg(test)]
 mod route_tests {
     /// Both finding replies take the service route: the plain reply is the
     /// workspace's write, and an AI-assisted one asks through the flag path's

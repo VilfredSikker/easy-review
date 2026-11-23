@@ -5,9 +5,7 @@ use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 
-#[cfg(not(feature = "v1-service"))]
-use er_desktop::comment_tick::cached_head_oid;
-#[cfg(any(test, not(feature = "v1-service")))]
+#[cfg(test)]
 use er_desktop::comment_tick::comment_sync_recently_synced;
 use er_desktop::frame_script::FRAME_SCRIPT;
 use er_desktop::snapshot::{
@@ -609,35 +607,6 @@ fn probe_recently_done(
     last_probe.is_some_and(|last_at| now.saturating_duration_since(*last_at) < ttl)
 }
 
-/// The active tab's PR as `(owner, repo, number)`. A remote PR tab names it
-/// directly; a working-tree or local-branch tab is looked up in the PR cache by
-/// head ref, preferring an open PR.
-#[cfg(not(feature = "v1-service"))]
-fn active_pr_identity(
-    tab: &er_engine::app::TabState,
-    pr_cache: &pr_cache::PrCacheMap,
-) -> Option<(String, String, u64)> {
-    if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
-        return slug
-            .split_once('/')
-            .map(|(o, r)| (o.to_string(), r.to_string(), n));
-    }
-    let branch = tab
-        .local_branch_view
-        .as_deref()
-        .unwrap_or(&tab.current_branch);
-    let cache = pr_cache.lock().ok()?;
-    cache.iter().find_map(|(slug, prs)| {
-        prs.iter()
-            .filter(|p| p.head_ref == branch)
-            .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-            .and_then(|p| {
-                slug.split_once('/')
-                    .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-            })
-    })
-}
-
 /// The desktop active-branch watcher thread. Follows the currently active tab's
 /// local-branch checkout (project root or linked worktree) and refreshes the
 /// diff when tracked files in that checkout change.
@@ -652,8 +621,8 @@ fn run_active_branch_watcher(
     watcher_status: WatchStatusState,
     watcher_session: er_desktop::state::SessionClock,
     watcher_desktop_rev: Arc<std::sync::atomic::AtomicU64>,
-    #[cfg(feature = "v1-service")] watcher_service: Arc<er_desktop::service::ServiceState>,
-    #[cfg(feature = "v1-service")] watcher_git: Arc<dyn er_engine::git::Git>,
+    watcher_service: Arc<er_desktop::service::ServiceState>,
+    watcher_git: Arc<dyn er_engine::git::Git>,
 ) {
     use er_engine::watch::{FileWatcher, WatchEvent};
     use std::path::Path;
@@ -664,19 +633,12 @@ fn run_active_branch_watcher(
     let mut _watcher: Option<FileWatcher> = None;
     let mut current_key: Option<(String, String)> = None;
     let poll_interval = std::time::Duration::from_millis(400);
-    #[cfg(feature = "v1-service")]
     let mut follower = er_desktop::watcher::Follower::default();
 
     loop {
-        #[cfg(feature = "v1-service")]
         let desired = follower
             .next(&watcher_service, &*watcher_git)
             .and_then(|w| w.target());
-        #[cfg(not(feature = "v1-service"))]
-        let desired = match watcher_app.lock() {
-            Ok(g) => desired_local_branch_watch(&g),
-            Err(_) => None,
-        };
 
         if desired != current_key {
             _watcher = None; // drop old watcher
@@ -729,7 +691,6 @@ fn run_active_branch_watcher(
         let Some((watched_branch, _root_path)) = current_key.clone() else {
             continue;
         };
-        #[cfg(feature = "v1-service")]
         follower.on_change(&watcher_service);
         let app = Arc::clone(&watcher_app);
         let rev = Arc::clone(&watcher_desktop_rev);
@@ -768,7 +729,6 @@ fn run_active_branch_watcher(
 /// the App, and posts origin's tip of a branch view's base and the PR list's
 /// head for the checkout to the tab's actor, whose content then carries the
 /// stale mark and the divergence.
-#[cfg(feature = "v1-service")]
 fn spawn_base_probe(
     service: Arc<er_desktop::service::ServiceState>,
     git: Arc<dyn er_engine::git::Git>,
@@ -816,21 +776,16 @@ fn spawn_base_probe(
     });
 }
 
-/// The App tab's refresh on a watched file change. With `v1-service` the
-/// content's refresh clears the reviewed marks, so the App's only redraws.
+/// The App tab's refresh on a watched file change. The content's refresh
+/// clears the reviewed marks, so the App's only redraws.
 fn refresh_watched_app_tab(tab: &mut er_engine::app::TabState) -> anyhow::Result<()> {
-    if cfg!(feature = "v1-service") {
-        tab.refresh_diff_quick()
-    } else {
-        tab.refresh_diff_quick_with_unmark()
-    }
+    tab.refresh_diff_quick()
 }
 
 /// Mirrors the watcher's target onto the App's active tab. With
 /// `v1-service` on a thread of its own, so the watcher never waits on the
 /// App lock.
 fn mirror_checkout_root(app: &Arc<Mutex<App>>, desired: Option<(String, String)>) {
-    #[cfg(feature = "v1-service")]
     {
         let app = Arc::clone(app);
         std::thread::spawn(move || {
@@ -839,64 +794,10 @@ fn mirror_checkout_root(app: &Arc<Mutex<App>>, desired: Option<(String, String)>
             }
         });
     }
-    #[cfg(not(feature = "v1-service"))]
-    if let Ok(mut g) = app.lock() {
-        apply_watch_checkout_root(g.tab_mut(), desired);
-    }
-}
-
-/// Whether this build compiled the v1 service path.
-///
-/// desktop-ui runs only on the service's resources and refuses to start when
-/// this answers false, so a backend built without the feature fails loudly
-/// instead of serving a page that cannot read it.
-#[tauri::command]
-fn v1_service_enabled() -> bool {
-    cfg!(feature = "v1-service")
-}
-
-/// Rebuilds the saved tabs into the App, the active one with its diff and the
-/// rest as stubs. Answers the stubs' indices and the view state the saved
-/// browser fields went into.
-#[cfg(not(feature = "v1-service"))]
-fn restore_app_tabs(
-    app: &mut App,
-    ports: &er_engine::ports::Ports,
-) -> (Vec<usize>, er_desktop::view_state::DesktopViewState) {
-    let mut deferred_tab_indices: Vec<usize> = Vec::new();
-    let mut view_state = er_desktop::view_state::DesktopViewState::default();
-    if let Some(file) = tabs::load_tabs() {
-        let active_idx = file.active_idx.min(file.tabs.len().saturating_sub(1));
-        let mut rebuilt: Vec<er_engine::app::TabState> = Vec::new();
-        for (i, d) in file.tabs.iter().enumerate() {
-            let eager = i == active_idx;
-            match tabs::restore_tab(d, !eager, ports, &mut view_state) {
-                Ok(t) => {
-                    if !eager {
-                        deferred_tab_indices.push(rebuilt.len());
-                    }
-                    rebuilt.push(t);
-                }
-                Err(e) => log::warn!(
-                    "er-desktop: skipping persisted tab {:?} ({}): {e}",
-                    d.kind,
-                    d.repo_root
-                ),
-            }
-        }
-        if !rebuilt.is_empty() {
-            app.tabs = rebuilt;
-            app.active_tab = active_idx.min(app.tabs.len() - 1);
-            // Restored tabs bypass `push_tab`, so hand them their rule tables.
-            app.sync_repo_rules_to_tabs();
-        }
-    }
-    (deferred_tab_indices, view_state)
 }
 
 /// The App keeps its startup tab until the service is built; then
 /// `tabs::restore` replaces it with the registry's tabs under their keys.
-#[cfg(feature = "v1-service")]
 fn restore_app_tabs(
     _app: &mut App,
     _ports: &er_engine::ports::Ports,
@@ -990,20 +891,9 @@ fn main() {
     // Register every unique repo root / remote referenced by open tabs. With
     // `v1-service` the App holds only its startup tab here, so the
     // registration waits for the registry (`register_open_projects`).
-    #[cfg(not(feature = "v1-service"))]
-    {
-        projects::sync_projects_from_tabs(&app.tabs);
-        if projects::load().projects.is_empty() {
-            let root = app.tab().repo_root.clone();
-            if !root.is_empty() {
-                let _ = projects::auto_register(&*ports.github, &*ports.git, &root);
-            }
-        }
-    }
 
     // With every saved tab broken, the restore opens a Working tab here, and
     // the launch root falls back to it for a remote PR.
-    #[cfg(feature = "v1-service")]
     let restore_root: Option<String> = cwd_repo_root
         .clone()
         .or_else(|| startup_root_from_projects(&projects::load()));
@@ -1011,15 +901,6 @@ fn main() {
     // Scope background tab warmup to the active project (or the restored active
     // tab's repo). Never warm cross-project stubs when active_id is missing.
     // With `v1-service` the registry's active tab scopes it (`tabs::warm`).
-    #[cfg(not(feature = "v1-service"))]
-    let warmer_scope_root: Option<String> = active_root_from_projects()
-        .or_else(|| {
-            app.tabs
-                .get(app.active_tab)
-                .map(|t| t.repo_root.clone())
-                .filter(|r| !r.is_empty())
-        })
-        .or(cwd_repo_root);
 
     let pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>> = Arc::new(Mutex::new(HashMap::new()));
     let pr_cache_fetched_at: Arc<Mutex<HashMap<String, u64>>> =
@@ -1047,7 +928,6 @@ fn main() {
         Arc::clone(&gh_user),
         Arc::clone(&inbox),
     ));
-    #[cfg(feature = "v1-service")]
     app_owner.read_status_from(Arc::clone(&gh_status_cache));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
@@ -1073,8 +953,6 @@ fn main() {
 
     // Capture the launch-time active root for the first meta-refresh iteration.
     // On the service path the registry's active tab names it, after the restore.
-    #[cfg(not(feature = "v1-service"))]
-    let launch_root: String = app.tab().repo_root.clone();
 
     let gh_status_in_flight: Arc<Mutex<std::collections::HashSet<(String, String, u64)>>> =
         Arc::new(Mutex::new(std::collections::HashSet::new()));
@@ -1091,12 +969,9 @@ fn main() {
     let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
     // The resource relay's wakes; the relay starts with the window.
-    #[cfg(feature = "v1-service")]
     let (resource_wake, resource_wakes) = std::sync::mpsc::channel();
     let session = er_desktop::state::SessionClock::default();
-    #[cfg(feature = "v1-service")]
     session.wake_with(resource_wake.clone());
-    #[cfg(feature = "v1-service")]
     let service = Arc::new(
         er_desktop::service::ServiceState::with_revision_relay(ports.clone(), {
             // The revision watcher emits `er://revision` for this bump, so the
@@ -1108,11 +983,9 @@ fn main() {
         })
         .with_resource_wake(resource_wake.clone()),
     );
-    #[cfg(feature = "v1-service")]
     app_owner.set_wake(resource_wake);
     // The registry issues every tab key on this path: the App restores from
     // its list, then follows each change to it.
-    #[cfg(feature = "v1-service")]
     {
         let registry = Arc::clone(service.app_registry());
         tabs::restore(
@@ -1125,18 +998,15 @@ fn main() {
         let (app, view) = (Arc::clone(&app_arc), Arc::clone(&view_arc));
         tabs::follow_service(&service, app, view, ports.clone());
     }
-    #[cfg(feature = "v1-service")]
     let launch_root = er_desktop::app_owner::startup::launch_root(
         service.app_registry(),
         restore_root.as_deref(),
     );
-    #[cfg(feature = "v1-service")]
     if let Ok(app) = app_arc.lock() {
         er_desktop::arena_commands::attach_live_runs(&app, Arc::clone(&service));
     }
     // Each listed tab's flow bucket, resolved from its descriptor: no tab has
     // loaded yet, and the App is not read.
-    #[cfg(feature = "v1-service")]
     er_desktop::flow_service::reconcile_on_load(
         &service.app_registry().tabs_view(),
         &ports,
@@ -1144,7 +1014,6 @@ fn main() {
     );
     let desktop = er_desktop::state::DesktopState {
         ports: ports.clone(),
-        #[cfg(feature = "v1-service")]
         service: Arc::clone(&service),
         view: Arc::clone(&view_arc),
         pr_cache: Arc::clone(&pr_cache),
@@ -1178,13 +1047,10 @@ fn main() {
         session: session.clone(),
         live_jobs: Default::default(),
         live_tabs: Default::default(),
-        #[cfg(feature = "v1-service")]
         tasks: er_desktop::tasks::TaskHost::new(session.clock()),
     };
     let state = AppState::new(desktop.clone(), Arc::clone(&app_arc));
-    #[cfg(feature = "v1-service")]
     er_desktop::app_owner::startup::read_inbox_prefs_from_settings(&desktop);
-    #[cfg(feature = "v1-service")]
     er_desktop::app_owner::startup::register_open_projects(&state);
 
     match pr_cache::load_persisted_pr_cache() {
@@ -1240,10 +1106,7 @@ fn main() {
             if let Ok(mut map) = pr_open_cache.lock() {
                 pr_open_cache::prune_pr_open_cache(&mut map, &pr_open_keep);
             }
-            #[cfg(not(feature = "v1-service"))]
-            pr_open_cache::save_persisted_pr_open_cache(&pr_open_cache);
             // The app registry owns the file on the flag path; it prunes its own copy.
-            #[cfg(feature = "v1-service")]
             state
                 .service
                 .app_registry()
@@ -1276,86 +1139,11 @@ fn main() {
     //   Phase 3 (brief lock) — cache the oid; bump the revision ONLY when it
     //                          actually changed, so we don't churn polls.
     // With `v1-service` the probe posts to the tab's actor (`spawn_base_probe`).
-    #[cfg(feature = "v1-service")]
     spawn_base_probe(
         Arc::clone(&service),
         Arc::clone(&ports.git),
         Arc::clone(&pr_cache),
     );
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let probe_app = Arc::clone(&app_arc);
-        let probe_cache = Arc::clone(&branch_base_remote_oid);
-        let probe_rev = Arc::clone(&desktop_revision);
-        let probe_ports = ports.clone();
-        let mut probe_interval_secs = PROBE_INTERVAL_SECS;
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(probe_interval_secs));
-
-            // Phase 1: brief lock — capture the active branch tab's identity.
-            let identity = {
-                let guard = match probe_app.try_lock() {
-                    Ok(g) => g,
-                    Err(_) => continue,
-                };
-                let tab = guard.tab();
-                if !tab.shows_branch_base_diff() {
-                    None
-                } else {
-                    let base_short = tab.base_branch.trim_start_matches("origin/").to_string();
-                    Some((tab.repo_root.clone(), base_short))
-                }
-            };
-            let Some((repo_root, base_short)) = identity else {
-                // Not probing at all, so re-arm: a branch view appearing later
-                // should get its first probe at the fast cadence.
-                probe_interval_secs = PROBE_INTERVAL_SECS;
-                continue;
-            };
-            if base_short.is_empty() {
-                probe_interval_secs = PROBE_INTERVAL_SECS;
-                continue;
-            }
-
-            // Phase 2: no lock — ask origin for the base branch tip.
-            let oid = probe_ports
-                .git
-                .ls_remote(&repo_root, "origin", &base_short)
-                .ok()
-                .and_then(|stdout| {
-                    stdout
-                        .lines()
-                        .next()
-                        .and_then(|line| line.split_whitespace().next())
-                        .map(|s| s.to_string())
-                        .filter(|s| !s.is_empty())
-                });
-            let Some(oid) = oid else {
-                // Probe failed. Treat as unchanged and back off, so a flaky
-                // network is not hammered at the fast cadence.
-                probe_interval_secs = next_probe_interval_secs(probe_interval_secs, false);
-                continue;
-            };
-
-            // Phase 3: brief lock — store + bump only on a real change.
-            let key = format!("{repo_root}\u{0}{base_short}");
-            let changed = match probe_cache.lock() {
-                Ok(mut cache) => {
-                    if cache.get(&key).map(|v| v.as_str()) == Some(oid.as_str()) {
-                        false
-                    } else {
-                        cache.insert(key, oid);
-                        true
-                    }
-                }
-                Err(_) => false,
-            };
-            if changed {
-                profile_log::bump_desktop_revision(&probe_rev, "branch_stale_probe");
-            }
-            probe_interval_secs = next_probe_interval_secs(probe_interval_secs, changed);
-        });
-    }
 
     // Background PR-head staleness probe on a 30s cadence. Detection only —
     // lights the "PR head updated on origin" pill fast (vs the 10-min pr_cache
@@ -1441,12 +1229,7 @@ fn main() {
     // duplicate concurrent fetches when a branch switch fires during this loop.
     {
         let gh_status_bg = Arc::clone(&gh_status_cache);
-        #[cfg(feature = "v1-service")]
         let loop_state = state.clone();
-        #[cfg(not(feature = "v1-service"))]
-        let app_bg = Arc::clone(&app_arc);
-        #[cfg(not(feature = "v1-service"))]
-        let pr_cache_bg = Arc::clone(&pr_cache);
         let fetches = state.desktop.clone();
         let gh_status_desktop_rev = Arc::clone(&desktop_revision);
         std::thread::spawn(move || loop {
@@ -1455,14 +1238,8 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_secs(30));
 
             // The flag path reads the registry's active tab, never the App.
-            #[cfg(feature = "v1-service")]
             let key = er_desktop::status_loop::pick(&loop_state);
             // Snapshot identity in a short critical section.
-            #[cfg(not(feature = "v1-service"))]
-            let key: Option<(String, String, u64)> = app_bg
-                .lock()
-                .ok()
-                .and_then(|g| active_pr_identity(g.tab(), &pr_cache_bg));
             // Lock released. Skip the fetch entirely when the cached snapshot
             // for this key is still fresh (<90s old) — most ticks on an idle
             // PR now do nothing at all.
@@ -1496,123 +1273,13 @@ fn main() {
         });
     }
 
-    #[cfg(feature = "v1-service")]
-    er_desktop::comment_tick::spawn(state.clone());
+    er_desktop::comment_tick::spawn(state.desktop.clone());
 
     // Spawn background GitHub comment sync. Three-phase design so network I/O
     // never holds the app mutex:
     //   Phase 1 (brief lock) — snapshot identity + files from active tab.
     //   Phase 2 (no lock)   — fetch comments, review threads, PR overview.
     //   Phase 3 (brief lock) — apply results to the correct tab.
-    #[cfg(not(feature = "v1-service"))]
-    {
-        let comments_app = Arc::clone(&app_arc);
-        let comments_pr_cache = Arc::clone(&pr_cache);
-        let comments_loading = Arc::clone(&loading);
-        let comments_desktop_rev = Arc::clone(&desktop_revision);
-        std::thread::spawn(move || {
-            // (owner, repo, number) -> (head OID synced against, when).
-            // Throttles the comment/review pull: within `ttl` of a sync against
-            // the same head OID the 45s tick skips the network I/O. Comments and
-            // reviews are independent of pushes, so `ttl` is the worst-case
-            // comment-panel latency on a push-idle PR — NOT a "nothing changed"
-            // guarantee. A push changes head_oid (via the pr-head-probe loop,
-            // itself throttled to ~60s), so a fresh push resyncs within ~1-2 min
-            // instead of waiting out `ttl`. Manual sync (`G` key / Comments
-            // re-fetch) uses the same three-phase fetch as this loop
-            // (`pull_github_comments` → `fetch_comment_sync_data_cached`) and
-            // never consults this map.
-            let mut last_synced: HashMap<(String, String, u64), (String, std::time::Instant)> =
-                HashMap::new();
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(45));
-
-                // Phase 1: brief lock — snapshot identity + files, then release.
-                let resolved = {
-                    let guard = match comments_app.try_lock() {
-                        Ok(g) => g,
-                        Err(_) => continue,
-                    };
-                    let Some((owner, repo, number)) =
-                        active_pr_identity(guard.tab(), &comments_pr_cache)
-                    else {
-                        continue;
-                    };
-
-                    // Throttle gate: same head OID already synced within the
-                    // window → skip this tick (bounds comment-panel latency to
-                    // ~90s on a push-idle PR; does not guarantee nothing
-                    // changed). An empty/unknown OID never skips (fail open —
-                    // keep syncing every tick until the probe loop populates
-                    // pr_cache).
-                    let head_oid = cached_head_oid(&comments_pr_cache, &owner, &repo, number);
-                    if comment_sync_recently_synced(
-                        last_synced.get(&(owner.clone(), repo.clone(), number)),
-                        &head_oid,
-                        std::time::Instant::now(),
-                        std::time::Duration::from_secs(90),
-                    ) {
-                        continue;
-                    }
-                    // Snapshot all data needed for the fetch — releases
-                    // the lock after this block. Carry the gate-time
-                    // head_oid forward (instead of re-reading it after
-                    // the fetch) so a push landing mid-fetch isn't
-                    // mistaken for "already synced" on the next tick.
-                    let ctx = match guard.snapshot_for_comment_sync(owner, repo, number) {
-                        Ok(ctx) => ctx,
-                        Err(e) => {
-                            log::error!("comment sync snapshot failed: {e}");
-                            continue;
-                        }
-                    };
-                    (ctx, head_oid)
-                };
-
-                // Phase 2: network I/O — no lock held.
-                let (ctx, head_oid) = resolved;
-                if let Ok(mut f) = comments_loading.lock() {
-                    f.gh_comments = true;
-                }
-                let applied = match er_engine::app::fetch_comment_sync_data(&ctx) {
-                    Ok(result) => {
-                        // The fetched data supersedes any cached bundle —
-                        // a manual pull within the bundle TTL must not
-                        // regress this fresher file.
-                        er_engine::github::invalidate_pr_comments_cache();
-                        // Phase 3: brief lock — apply pre-fetched results to the correct tab.
-                        match comments_app.lock() {
-                            Ok(mut g) => {
-                                g.apply_comment_sync_result(result);
-                                true
-                            }
-                            Err(e) => {
-                                log::error!("comment sync apply lock failed: {e}");
-                                false
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("github comment sync failed: {e}");
-                        false
-                    }
-                };
-                if let Ok(mut f) = comments_loading.lock() {
-                    f.gh_comments = false;
-                }
-                if applied {
-                    last_synced.insert(
-                        (ctx.owner.clone(), ctx.repo_name.clone(), ctx.pr_number),
-                        (head_oid, std::time::Instant::now()),
-                    );
-                    profile_log::bump_desktop_revision(
-                        &comments_desktop_rev,
-                        "comment_sync_applied",
-                    );
-                }
-            }
-        });
-    }
 
     // Spawn the desktop active-branch watcher. Follows the currently active
     // tab's local-branch checkout (project root or linked worktree) and
@@ -1622,9 +1289,7 @@ fn main() {
         let watcher_status = Arc::clone(&watch_status);
         let watcher_session = session.clone();
         let watcher_desktop_rev = Arc::clone(&desktop_revision);
-        #[cfg(feature = "v1-service")]
         let watcher_service = Arc::clone(&service);
-        #[cfg(feature = "v1-service")]
         let watcher_git = Arc::clone(&ports.git);
         move || {
             run_active_branch_watcher(
@@ -1632,9 +1297,7 @@ fn main() {
                 watcher_status,
                 watcher_session,
                 watcher_desktop_rev,
-                #[cfg(feature = "v1-service")]
                 watcher_service,
-                #[cfg(feature = "v1-service")]
                 watcher_git,
             );
         }
@@ -1776,107 +1439,9 @@ fn main() {
     // Avoids paying `git diff` cost on launch for repos the user didn't open.
     // With `v1-service` the warmer loads the registry's tabs through the
     // service (`tabs::spawn_warmer`), after the same grace period.
-    #[cfg(feature = "v1-service")]
     {
         let _ = deferred_tab_indices;
         tabs::spawn_warmer(Arc::clone(&service), std::time::Duration::from_secs(2));
-    }
-    #[cfg(not(feature = "v1-service"))]
-    if !deferred_tab_indices.is_empty() {
-        let warmer_app = Arc::clone(&app_arc);
-        let warmer_rev = Arc::clone(&desktop_revision);
-        let warmer_ports = ports.clone();
-        std::thread::spawn(move || {
-            // Brief grace period so the active tab's diff + the first frame land
-            // before we start consuming CPU on background tabs.
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            loop {
-                let next_idx: Option<usize> = match warmer_app.try_lock() {
-                    Ok(g) => g.tabs.iter().position(|t| {
-                        if !t.needs_initial_refresh {
-                            return false;
-                        }
-                        warmer_scope_root
-                            .as_deref()
-                            .is_some_and(|root| t.repo_root == root)
-                    }),
-                    Err(_) => None,
-                };
-                let Some(idx) = next_idx else {
-                    break;
-                };
-
-                // Phase 1 — brief lock: claim the tab and capture what the fetch
-                // needs, then release. The network legs must not run with the
-                // guard held: a `gh` round trip here blocks every command the
-                // user can issue, and this loop runs while they are working.
-                let inputs = {
-                    let Ok(mut g) = warmer_app.lock() else { break };
-                    if idx >= g.tabs.len() || !g.tabs[idx].needs_initial_refresh {
-                        continue;
-                    }
-                    g.tabs[idx].needs_initial_refresh = false;
-                    g.tabs[idx].pr_refresh_inputs()
-                };
-
-                // Phase 2 — no lock: the PR's network legs, if this tab has any.
-                // Timed separately from the rebuild, because this is the leg that
-                // reaches the network and the only one that can stall — reporting
-                // the rebuild alone would leave the part worth watching invisible.
-                let mut fetch_failed = false;
-                let t_fetch = std::time::Instant::now();
-                let fetched = inputs.and_then(|inputs| {
-                    match er_engine::app::TabState::fetch_pr_refresh(&*warmer_ports.git, &inputs) {
-                        Ok(result) => Some(result),
-                        Err(e) => {
-                            log::warn!("background tab warmup fetch failed: {e}");
-                            fetch_failed = true;
-                            None
-                        }
-                    }
-                });
-                let fetch_ms = t_fetch.elapsed().as_millis();
-
-                // Phase 3 — brief lock: apply and rebuild the diff. `None` means a
-                // failed fetch, which leaves the stub alone rather than rebuilding
-                // against refs that could not be refreshed; phase 2 logged why.
-                let t = std::time::Instant::now();
-                let res = if fetch_failed {
-                    None
-                } else {
-                    let Ok(mut g) = warmer_app.lock() else { break };
-                    let Some(tab) = g.tabs.get_mut(idx) else {
-                        break;
-                    };
-                    if let Some(result) = fetched {
-                        tab.apply_pr_refresh(result);
-                    }
-                    Some(tab.refresh_diff())
-                };
-                match res {
-                    Some(Ok(())) => {
-                        let refresh_ms = t.elapsed().as_millis();
-                        profile_log::profile_log(
-                            "background_tab_warmup",
-                            &[
-                                ("tab_idx", idx.to_string()),
-                                // Split so a slow warmup says which leg cost it:
-                                // `fetch_ms` is the network, `refresh_ms` is the
-                                // local diff rebuild. `ms` is the sum of both.
-                                ("fetch_ms", fetch_ms.to_string()),
-                                ("refresh_ms", refresh_ms.to_string()),
-                                ("ms", (fetch_ms + refresh_ms).to_string()),
-                            ],
-                        );
-                        profile_log::bump_desktop_revision(&warmer_rev, "background_tab_warmup");
-                    }
-                    Some(Err(e)) => log::warn!("background tab warmup failed: {e}"),
-                    None => {}
-                }
-                // Yield between tabs so the UI thread can grab the mutex if needed.
-                std::thread::sleep(std::time::Duration::from_millis(150));
-            }
-        });
     }
 
     let persist_app = Arc::clone(&app_arc);
@@ -1994,7 +1559,6 @@ fn main() {
                 };
                 // With the flag on, each emitted revision also runs the backend
                 // tick, which drives the duties the poll ran on each event.
-                #[cfg(feature = "v1-service")]
                 {
                     use er_desktop::resources::tick;
                     let desktop = state.desktop.clone();
@@ -2003,15 +1567,6 @@ fn main() {
                         tick::follow_revisions(desktop, tick::INTERVAL, &never, &emit);
                     });
                 }
-                #[cfg(not(feature = "v1-service"))]
-                {
-                    let watch_rev = Arc::clone(&state.desktop_revision);
-                    std::thread::spawn(move || {
-                        let never = std::sync::atomic::AtomicBool::new(false);
-                        er_desktop::revision_watcher::follow(&watch_rev, &never, &emit, &|| {});
-                    });
-                }
-                #[cfg(feature = "v1-service")]
                 {
                     use er_desktop::resources::relay;
                     use tauri::Emitter;
@@ -2085,7 +1640,6 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            v1_service_enabled,
             er_desktop::resources::commands::er_send,
             er_desktop::resources::commands::er_fetch,
             er_desktop::resources::commands::er_versions,
@@ -2339,19 +1893,6 @@ fn watch_branch_for_tab(tab: &er_engine::app::TabState) -> Option<String> {
     }
 }
 
-/// Checkout root + branch for the active tab when that branch is checked out
-/// (project root HEAD or a linked worktree). Returns None for remote-only tabs
-/// or tabs whose branch isn't checked out anywhere. Local PR tabs are allowed:
-/// if their head branch is checked out, the watcher attaches a checkout root
-/// so Unstaged/Staged/working-tree Branch views become available.
-#[cfg(not(feature = "v1-service"))]
-fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
-    let tab = app.tab();
-    let branch = watch_branch_for_tab(tab)?;
-    let root = commands::resolve_head_checkout(&*app.ports.git, &tab.repo_root, &branch)?;
-    Some((branch, root))
-}
-
 /// Branch name the active tab is reviewing (for watch refresh guard).
 fn active_tab_watched_branch(app: &App) -> Option<String> {
     watch_branch_for_tab(app.tab())
@@ -2369,18 +1910,6 @@ fn apply_watch_checkout_root(
     if watch_branch_for_tab(tab) == desired_branch {
         tab.local_branch_checkout_root = desired.as_ref().map(|(_, r)| r.clone());
     }
-}
-
-/// Read the persisted active project's root path, if any.
-#[cfg(not(feature = "v1-service"))]
-fn active_root_from_projects() -> Option<String> {
-    let file = projects::load();
-    let active_id = file.active_id.as_ref()?;
-    file.projects
-        .iter()
-        .find(|p| &p.id == active_id)
-        .map(|p| p.root_path.clone())
-        .filter(|s| !s.is_empty())
 }
 
 /// Root to open when the CWD is not a repo, which is every Finder launch.
@@ -2438,22 +1967,6 @@ fn next_probe_interval_secs(current: u64, changed: bool) -> u64 {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
-
-    /// The flag is on by default: desktop-ui reads only resources, so a plain
-    /// build must compile the service path and report it. Dropping the feature
-    /// from `default` makes this fail before anything runs.
-    #[test]
-    #[expect(
-        clippy::assertions_on_constants,
-        reason = "the constant is the build's compiled feature value, which is the point"
-    )]
-    fn the_service_flag_is_on_in_a_default_build() {
-        assert!(
-            cfg!(feature = "v1-service"),
-            "v1-service must be on by default"
-        );
-        assert!(v1_service_enabled());
-    }
 
     // ── comment_sync_recently_synced (skip gate) ──
     // `base` is the synced-at instant; `base + elapsed` is "now", so the gate

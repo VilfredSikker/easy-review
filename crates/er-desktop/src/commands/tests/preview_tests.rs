@@ -1,7 +1,7 @@
-//! The previews and the path list on the flag path: a document or image
-//! preview is read from the tab's content with the App locked, and refused
-//! once the view moved, before the read or during it; the path list is every
-//! file the diff holds, History's the files of its commit.
+//! The previews and the path list: a document or image preview is read from
+//! the tab's content, and refused once the view moved, before the read or
+//! during it; the path list is every file the diff holds, History's the files
+//! of its commit.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -13,23 +13,33 @@ use er_protocol::{Resource, ResourceKey};
 use er_service::{AppCommand, Command};
 
 use super::diff_resource_tests::{fake_git, listed, state_over, with_storage};
+use super::on_a_thread;
 use super::watcher_tests::{canonical, git};
-use super::while_the_app_is_locked;
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::resources;
 use crate::service::actor_key;
 
-fn context(state: &AppState, key: er_engine::TabKey) -> String {
+fn context(state: &DesktopState, key: er_engine::TabKey) -> String {
     let tab = er_service::wire_tab_key(key);
-    match resources::fetch(&state.desktop, ResourceKey::Diff { tab }).map(|f| f.value) {
+    match resources::fetch(state, ResourceKey::Diff { tab }).map(|f| f.value) {
         Ok(Resource::Diff(diff)) => diff.preview_context_key,
         other => panic!("not a diff: {other:?}"),
     }
 }
 
-fn preview(state: &AppState, context: String) -> Result<String, String> {
-    while_the_app_is_locked(state, "the document preview", move |state| {
-        crate::commands::file_preview(state, "README.md".into(), context).map(|p| p.text)
+/// The active tab's entry in the registry, which a preview reads.
+fn active(state: &DesktopState) -> er_service::TabEntry {
+    let view = state.service.app_registry().tabs_view();
+    view.active_entry()
+        .cloned()
+        .unwrap_or_else(|| panic!("no active tab"))
+}
+
+fn preview(state: &DesktopState, context: String) -> Result<String, String> {
+    on_a_thread(state, "the document preview", move |state| {
+        resources::preview::document(state, &active(state), "README.md", &context)
+            .map(|p| p.text)
+            .map_err(|e| e.message)
     })
 }
 
@@ -43,10 +53,10 @@ fn repo(root: &Path) {
     std::fs::write(root.join("README.md"), "# two\n").unwrap_or_else(|e| panic!("{e}"));
 }
 
-/// With the App locked, the preview answers from the active tab's content;
+/// The preview answers from the active tab's content;
 /// after the file changes and the tab refreshes, the old context is refused.
 #[test]
-fn a_document_preview_reads_the_content_with_the_app_locked_and_refuses_a_moved_view() {
+fn a_document_preview_reads_the_content_and_refuses_a_moved_view() {
     with_storage(|dir| {
         let root = dir.path().join("repo");
         repo(&root);
@@ -80,9 +90,9 @@ fn a_document_preview_reads_the_content_with_the_app_locked_and_refuses_a_moved_
 }
 
 /// History is loaded on the service, so its preview reads the selected
-/// commit's file from the content with the App locked, as the other views do.
+/// commit's file from the content, as the other views do.
 #[test]
-fn a_history_preview_reads_the_commit_from_the_content_with_the_app_locked() {
+fn a_history_preview_reads_the_commit_from_the_content() {
     with_storage(|dir| {
         let root = dir.path().join("repo");
         repo(&root);
@@ -158,8 +168,8 @@ fn the_path_list_is_every_file_and_history_lists_its_commit() {
             view.set_filter(key, "src/f1.rs");
         }
         let tab_key = er_service::wire_tab_key(key);
-        let paths = |state: &AppState| {
-            let fetched = resources::fetch(&state.desktop, ResourceKey::DiffPaths { tab: tab_key });
+        let paths = |state: &DesktopState| {
+            let fetched = resources::fetch(state, ResourceKey::DiffPaths { tab: tab_key });
             fetched.map(|f| f.value)
         };
         let Ok(Resource::DiffPaths(listed)) = paths(&state) else {
@@ -190,16 +200,17 @@ fn png(bytes: &[u8]) -> Option<String> {
     Some(crate::commands::image_data_url("image/png", bytes))
 }
 
-fn image(state: &AppState, context: String) -> Result<Sides, String> {
-    while_the_app_is_locked(state, "the image preview", move |state| {
-        crate::commands::image_preview(state, "logo.png".into(), context)
+fn image(state: &DesktopState, context: String) -> Result<Sides, String> {
+    on_a_thread(state, "the image preview", move |state| {
+        resources::preview::image(state, &active(state), "logo.png", &context)
             .map(|p| (p.before, p.after))
+            .map_err(|e| e.message)
     })
 }
 
 /// A repo whose image has an unstaged edit, loaded in Unstaged as the
 /// registry's active tab.
-fn image_tab(state: &AppState, root: &Path) -> (er_engine::TabKey, TabDescriptor) {
+fn image_tab(state: &DesktopState, root: &Path) -> (er_engine::TabKey, TabDescriptor) {
     std::fs::create_dir_all(root).unwrap_or_else(|e| panic!("repo dir: {e}"));
     git(root, &["init", "-q", "-b", "main"]);
     std::fs::write(root.join("logo.png"), PNG_ONE).unwrap_or_else(|e| panic!("{e}"));
@@ -222,11 +233,11 @@ fn image_tab(state: &AppState, root: &Path) -> (er_engine::TabKey, TabDescriptor
     (key, tab)
 }
 
-/// With the App locked, both sides answer from the active tab's content, by
-/// the old command and by the resource; after the image changes and the tab
-/// refreshes, the old context is refused.
+/// Both sides answer from the active tab's content, by the read and by the
+/// resource; after the image changes and the tab refreshes, the old context
+/// is refused.
 #[test]
-fn an_image_preview_reads_the_content_with_the_app_locked_and_refuses_a_moved_view() {
+fn an_image_preview_reads_the_content_and_refuses_a_moved_view() {
     with_storage(|dir| {
         let root = dir.path().join("repo");
         let state = state_over(dir, er_engine::ports::Ports::cli());
@@ -240,10 +251,8 @@ fn an_image_preview_reads_the_content_with_the_app_locked_and_refuses_a_moved_vi
         let fetch = |context: String| {
             let tab = er_service::wire_tab_key(key);
             let path = "logo.png".to_string();
-            let fetched = resources::fetch(
-                &state.desktop,
-                ResourceKey::ImagePreview { tab, path, context },
-            );
+            let fetched =
+                resources::fetch(&state, ResourceKey::ImagePreview { tab, path, context });
             match fetched.map(|f| f.value) {
                 Ok(Resource::ImagePreview(p)) => Ok((p.before, p.after)),
                 Ok(other) => panic!("not an image preview: {other:?}"),
@@ -287,11 +296,12 @@ fn an_image_preview_refuses_a_view_that_moved_while_it_read() {
                 let refreshed = service.send(&actor_key(&tab), refresh);
                 assert!(refreshed.is_ok(), "{refreshed:?}");
             });
-        state.desktop.ports.git = Arc::new(moving);
+        state.ports.git = Arc::new(moving);
 
-        let read = crate::commands::image_preview(&state, "logo.png".into(), context(&state, key));
+        let context = context(&state, key);
+        let read = resources::preview::image(&state, &active(&state), "logo.png", &context);
         assert_eq!(
-            read.map(|p| (p.before, p.after)),
+            read.map(|p| (p.before, p.after)).map_err(|e| e.message),
             Err("Image preview context changed".to_string())
         );
     });

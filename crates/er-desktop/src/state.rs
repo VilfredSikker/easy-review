@@ -25,7 +25,6 @@ pub struct DesktopState {
     pub ports: er_engine::ports::Ports,
     /// Workspace actors for the `v1-service` command path (ADR 0067). The
     /// default build has no service and no field.
-    #[cfg(feature = "v1-service")]
     pub service: Arc<crate::service::ServiceState>,
     /// Desktop-only view state (ADR 0068). Lock it after `app`, never before.
     pub view: crate::view_state::ViewStateHandle,
@@ -108,7 +107,6 @@ pub struct DesktopState {
     /// have moved.
     pub live_tabs: LiveTabs,
     /// The background agent tasks the flag path runs, which `jobs` lists.
-    #[cfg(feature = "v1-service")]
     pub tasks: crate::tasks::TaskHost,
 }
 

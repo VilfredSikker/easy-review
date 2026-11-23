@@ -271,11 +271,9 @@ build-engine-headless:
 build-service-headless:
     cargo check -p er-service --all-targets
 
-# The flag-on suite. The default-build flag assertion lives in the er-desktop
-# bin target, so the lib target is what runs with the feature on.
+# The flag-on suite: er-tui is the one package that declares the flag.
 [group('ci')]
 test-v1: build-service-headless
-    cargo test -p er-desktop --lib --features v1-service
     cargo test -p er-tui --features v1-service
 
 # Fast local pre-commit gate: format the tree, clippy, then TUI/engine tests.

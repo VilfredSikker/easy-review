@@ -84,12 +84,6 @@ impl SentFilesState {
         self.order.clear();
     }
 
-    /// Whether no view records a path.
-    #[cfg(all(test, feature = "v1-service"))]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.views.values().all(HashMap::is_empty)
-    }
-
     /// Touch `token` as most-recent, creating an empty map if needed. Drops the
     /// oldest view when the cap is exceeded.
     fn activate(&mut self, token: u64) -> &mut HashMap<String, u64> {
@@ -147,28 +141,6 @@ pub fn optimistic_view_matches(app: &App, expected: &OptimisticView) -> bool {
         && tab.pr_number == expected.pr_number
         && branch == expected.branch
         && mode_str(tab.mode) == expected.mode
-}
-
-/// Record that the frontend now holds full hunks for `snap` (viewport-driven
-/// lazy loads bypass `build_snapshot`, so `request_file_content` calls this).
-/// Flag-off only: with the flag on the page fetches hunks by hash.
-#[cfg(not(feature = "v1-service"))]
-pub fn record_sent_file(
-    app: &App,
-    tab: &TabState,
-    snap: &FileSnapshot,
-    sent_files: &SentFilesHandle,
-) {
-    if matches!(tab.mode, DiffMode::History) || snap.hunks.is_empty() {
-        return;
-    }
-    let Ok(mut guard) = sent_files.lock() else {
-        return;
-    };
-    let token = snapshot_view_token(app, tab, mode_str(tab.mode));
-    if let Ok(key) = u64::from_str_radix(&snap.delta_key, 16) {
-        guard.activate(token).insert(snap.path.clone(), key);
-    }
 }
 
 /// Identity of the current view — anything that changes which files the
@@ -3328,10 +3300,10 @@ fn log_snapshot_build(
     );
 }
 
-/// Whether the snapshot carries the App's hunks. With the flag on the page
-/// fetches them by hash in every view.
+/// Whether the snapshot carries the App's hunks. The page fetches them by
+/// hash in every view.
 const fn app_shows_hunks() -> bool {
-    !cfg!(feature = "v1-service")
+    false
 }
 
 /// The active tab's rows, read from the engine tab. See
@@ -6972,24 +6944,10 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
         );
     }
 
-    #[cfg(not(feature = "v1-service"))]
-    fn delta_snap(app: &App, sent: &SentFilesHandle) -> AppSnapshot {
-        build_snapshot_with_delta(
-            app,
-            &SnapshotSources {
-                sent_files: Some(sent),
-                ..SnapshotSources::default()
-            },
-        )
-    }
-
     const DELTA_FIXTURE_DIFF: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..1111111 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,3 @@\n fn foo() {}\n+fn bar() {}\n fn baz() {}\n";
-    #[cfg(not(feature = "v1-service"))]
-    const DELTA_FIXTURE_DIFF_V2: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..2222222 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,4 @@\n fn foo() {}\n+fn bar() {}\n+fn qux() {}\n fn baz() {}\n";
 
     /// `hunks(hash)` carries the fields of the snapshot's hunks it replaces,
     /// a fold line included; only the threads are left to the page's join.
-    #[cfg(feature = "v1-service")]
     #[test]
     fn the_hash_keyed_hunks_match_the_snapshot_hunks() {
         let mut files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
@@ -7050,141 +7008,15 @@ diff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n-c\n+C\n";
 
     // The differential snapshot is the flag-off path: with the flag on the
     // page fetches hunks by hash and nothing records what it holds.
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn differential_snapshot_omits_unchanged_hunks() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
-            let mut app = er_engine::app::App::new_for_test(files);
-            use_cli_ports(&mut app);
-            let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
-
-            // First snapshot sends full hunks.
-            let s1 = delta_snap(&app, &sent);
-            let f1 = &s1.files[0];
-            assert!(!f1.hunks_omitted, "first send must carry hunks");
-            assert!(!f1.hunks.is_empty());
-
-            // Unchanged content → hunks omitted, metadata + delta_key still present.
-            let s2 = delta_snap(&app, &sent);
-            let f2 = &s2.files[0];
-            assert!(f2.hunks_omitted, "second send should omit unchanged hunks");
-            assert!(f2.hunks.is_empty());
-            assert!(!f2.is_lazy_stub, "omitted is not a lazy stub");
-            assert_eq!(f2.delta_key, f1.delta_key);
-            assert_eq!(f2.additions, f1.additions);
-            assert_eq!(f2.cache_key, f1.cache_key);
-        });
-    }
 
     // The differential snapshot is the flag-off path: with the flag on the
     // page fetches hunks by hash and nothing records what it holds.
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn differential_snapshot_resends_on_content_change() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
-            let mut app = er_engine::app::App::new_for_test(files);
-            use_cli_ports(&mut app);
-            let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
-
-            let s1 = delta_snap(&app, &sent);
-            assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
-
-            // Diff content changed → full resend with a new delta_key, and the
-            // per-file cache_key advances (highlights re-run for this file only).
-            app.tab_mut().files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF_V2);
-            let s3 = delta_snap(&app, &sent);
-            let f3 = &s3.files[0];
-            assert!(!f3.hunks_omitted, "changed file must be resent");
-            assert!(!f3.hunks.is_empty());
-            assert_ne!(f3.delta_key, s1.files[0].delta_key);
-            assert_ne!(f3.cache_key, s1.files[0].cache_key);
-
-            // And the new content is omitted again on the next poll.
-            assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
-        });
-    }
 
     // The differential snapshot is the flag-off path: with the flag on the
     // page fetches hunks by hash and nothing records what it holds.
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn differential_snapshot_resends_when_threads_change() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
-            let mut app = er_engine::app::App::new_for_test(files);
-            use_cli_ports(&mut app);
-            let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
-
-            let s1 = delta_snap(&app, &sent);
-            assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
-
-            // A new comment thread inside the hunk changes the wire payload even
-            // though diff lines are identical — must be resent, not omitted.
-            let mut comment = github_comment(false, false);
-            comment.file = "src/foo.rs".to_string();
-            comment.hunk_index = Some(0);
-            comment.line_start = Some(2);
-            app.tab_mut().ai.github_comments = Some(ErGithubComments {
-                version: 1,
-                diff_hash: "hash".to_string(),
-                github: None,
-                comments: vec![comment],
-            });
-
-            let s3 = delta_snap(&app, &sent);
-            let f3 = &s3.files[0];
-            assert!(!f3.hunks_omitted, "thread change must resend hunks");
-            assert!(
-                f3.hunks.iter().any(|h| !h.threads.is_empty()),
-                "resent hunks should carry the new thread"
-            );
-            assert_ne!(f3.delta_key, s1.files[0].delta_key);
-            // Lines are unchanged, so the highlight cache key must NOT move.
-            assert_eq!(f3.cache_key, s1.files[0].cache_key);
-        });
-    }
 
     // The differential snapshot is the flag-off path: with the flag on the
     // page fetches hunks by hash and nothing records what it holds.
-    #[cfg(not(feature = "v1-service"))]
-    #[test]
-    fn differential_snapshot_clears_on_view_change_and_reset() {
-        let storage = tempfile::tempdir().unwrap();
-        er_engine::storage::with_test_storage_root(storage.path(), || {
-            let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
-            let mut app = er_engine::app::App::new_for_test(files);
-            use_cli_ports(&mut app);
-            let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
-
-            let _ = delta_snap(&app, &sent);
-            assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
-
-            // View switch (mode change) — first visit of the new token resends.
-            app.tab_mut().mode = DiffMode::Unstaged;
-            let s3 = delta_snap(&app, &sent);
-            assert!(
-                !s3.files[0].hunks_omitted,
-                "new view token must resend hunks"
-            );
-            assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
-
-            // Switch back to the original view — keys for that token are kept.
-            app.tab_mut().mode = DiffMode::Branch;
-            assert!(
-                delta_snap(&app, &sent).files[0].hunks_omitted,
-                "revisit of a remembered view must omit unchanged hunks"
-            );
-
-            // Reset (frontend re-fetches from scratch) — full resend.
-            sent.lock().unwrap().reset();
-            assert!(!delta_snap(&app, &sent).files[0].hunks_omitted);
-        });
-    }
 
     #[test]
     fn worktrees_meta_cache_recomputes_only_on_key_change() {

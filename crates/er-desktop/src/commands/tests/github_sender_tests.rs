@@ -1,6 +1,5 @@
-//! The GitHub senders on the flag path: each reads its tab from the
-//! registry and its content, never the App, so each answers with the App
-//! locked; the comment tick picks its PR the same way; a reply on a GitHub
+//! The GitHub senders: each reads its tab from the registry and its
+//! content; the comment tick picks its PR the same way; a reply on a GitHub
 //! thread follows the annotation writes' refusal rule.
 
 use std::sync::Arc;
@@ -14,8 +13,8 @@ use er_service::AppCommand;
 use super::annotation_write_tests::view;
 use super::diff_command_tests::send;
 use super::diff_resource_tests::{fake_git, raw_diff, state_over, with_storage};
-use super::while_the_app_is_locked;
-use crate::commands::{content_routes, AppState};
+use super::on_a_thread;
+use crate::commands::{content_routes, DesktopState};
 use crate::snapshot::PrInfo;
 
 fn github() -> Arc<er_engine::github::FakeGitHub> {
@@ -34,7 +33,7 @@ fn github() -> Arc<er_engine::github::FakeGitHub> {
 
 /// A local PR tab on acme/widgets#7, loaded and active, with the PR cache
 /// listing it.
-fn with_pr_tab(test: impl FnOnce(&AppState, TabKey, &er_engine::github::FakeGitHub)) {
+fn with_pr_tab(test: impl FnOnce(&DesktopState, TabKey, &er_engine::github::FakeGitHub)) {
     with_storage(|dir| {
         let fake = github();
         let git: Arc<dyn er_git::Git> =
@@ -77,21 +76,8 @@ fn posts(github: &er_engine::github::FakeGitHub) -> usize {
         .count()
 }
 
-/// The old command's flag path answers while the App is locked: it reads the
-/// registry's active tab and its content to pick the workspace.
-#[test]
-fn a_github_post_answers_with_the_app_locked() {
-    with_pr_tab(|state, _, github| {
-        let posted = while_the_app_is_locked(state, "the PR comment", |state| {
-            crate::commands::service_post_github_pr_comment(state, "ship it")
-        });
-        assert!(posted.is_ok(), "{posted:?}");
-        assert_eq!(posts(github), 1);
-    });
-}
-
-/// Through `er_send` the post names its tab, which lands with the App
-/// locked; a key the registry no longer lists is `NotFound`.
+/// Through `er_send` the post names its tab; a key the registry no longer
+/// lists is `NotFound`.
 #[test]
 fn a_github_post_through_er_send_names_its_tab() {
     with_pr_tab(|state, key, github| {
@@ -123,8 +109,7 @@ fn a_github_post_through_er_send_names_its_tab() {
 fn a_github_reply_painted_elsewhere_is_refused() {
     with_pr_tab(|state, key, _| {
         let painted = view(state, key);
-        let moved =
-            content_routes::set_tab_mode(&state.desktop, key, "branch", DiffMode::Branch, None);
+        let moved = content_routes::set_tab_mode(state, key, "branch", DiffMode::Branch, None);
         assert!(moved.is_ok(), "{moved:?}");
         let reply = |tab| Command::ReplyToGithubThread {
             tab,
@@ -150,9 +135,9 @@ fn a_github_reply_painted_elsewhere_is_refused() {
 }
 
 /// A PR action built for another PR than the one the tab's card shows is
-/// refused with the App locked, before any `gh` call.
+/// refused before any `gh` call.
 #[test]
-fn a_pr_action_for_another_pr_is_refused_with_the_app_locked() {
+fn a_pr_action_for_another_pr_is_refused() {
     with_pr_tab(|state, key, _| {
         let tab = er_service::wire_tab_key(key);
         let pr = er_protocol::PrTarget {
@@ -173,14 +158,14 @@ fn a_pr_action_for_another_pr_is_refused_with_the_app_locked() {
     });
 }
 
-/// With the App locked, one comment tick picks the active tab's PR from the
+/// One comment tick picks the active tab's PR from the
 /// registry, its content and the PR cache, and sends the sync to that tab's
 /// workspace.
 #[test]
-fn the_comment_tick_syncs_the_active_pr_with_the_app_locked() {
+fn the_comment_tick_syncs_the_active_pr() {
     with_pr_tab(|state, _, github| {
         let before = github.calls().len();
-        let ticked = while_the_app_is_locked(state, "the comment tick", |state| {
+        let ticked = on_a_thread(state, "the comment tick", |state| {
             crate::comment_tick::tick(state, &mut Default::default())
         });
         let (pr, _) = ticked.unwrap_or_else(|| panic!("the tick skipped"));

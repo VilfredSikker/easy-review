@@ -12,7 +12,7 @@ use er_protocol::{Ack, Command, ResourceKey};
 
 use super::diff_resource_tests::{fake_git, raw_diff, state_over, with_storage};
 use super::ReviewFlowTestDir;
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::projects::{self, ProjectRecord, ProjectsFile};
 use crate::resources::send::{apply, Effects};
 
@@ -33,7 +33,7 @@ fn ports() -> er_engine::ports::Ports {
 }
 
 /// A state with the project saved and PR 7 in its PR list.
-fn project(dir: &ReviewFlowTestDir) -> (AppState, String) {
+fn project(dir: &ReviewFlowTestDir) -> (DesktopState, String) {
     let state = state_over(dir, ports());
     let root = dir.path().join("repo");
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
@@ -59,27 +59,27 @@ fn project(dir: &ReviewFlowTestDir) -> (AppState, String) {
         "head_oid": "7".repeat(40), "state": "OPEN", "is_draft": false, "author": "me",
     });
     let pr = serde_json::from_value(pr).unwrap_or_else(|e| panic!("pr: {e}"));
-    if let Ok(mut cache) = state.desktop.pr_cache.lock() {
+    if let Ok(mut cache) = state.pr_cache.lock() {
         cache.insert(REMOTE.into(), vec![pr]);
     }
     (state, root)
 }
 
-fn open(state: &AppState, tab: TabDescriptor) -> TabKey {
+fn open(state: &DesktopState, tab: TabDescriptor) -> TabKey {
     let opened = content_routes::open(state, tab, false);
     assert!(opened.is_ok(), "{opened:?}");
     let key = state.service.app_registry().tabs_view().active;
     key.unwrap_or_else(|| panic!("no active tab"))
 }
 
-fn send(state: &AppState, command: Command) -> Ack {
+fn send(state: &DesktopState, command: Command) -> Ack {
     let effects = Effects {
         notify: &|_, _| {},
         check_update: || panic!("no update check in this test"),
         webviews: &crate::browser_webview::NoWebviews,
         pick_folder: &|| None,
     };
-    let applied = apply(&state.desktop, command, &effects);
+    let applied = apply(state, command, &effects);
     applied
         .map(|applied| applied.ack)
         .unwrap_or_else(|e| panic!("{e:?}"))

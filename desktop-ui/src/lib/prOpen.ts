@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { tick } from "svelte";
 import type { PrInfo } from "$lib/pageTypes";
 
@@ -162,7 +161,7 @@ const PR_HOVER_PREFETCH_DELAY_MS = 150;
 
 type InvokeFn = (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
 
-let prefetchSend: InvokeFn = invoke;
+let prefetchSend: InvokeFn = () => Promise.resolve();
 
 /** The tabs adapter sends the prefetches through `er_send`. */
 export function routePrefetches(send: InvokeFn): void {

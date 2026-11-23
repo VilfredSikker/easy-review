@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { resourceClient } from "$lib/protocol/client";
 import type { ErError } from "$lib/protocol/generated/ErError";
 import type { Resource } from "$lib/protocol/generated/Resource";
@@ -24,7 +23,7 @@ async function fetchOne(key: ResourceKey): Promise<Resource> {
  */
 export async function readReviewJson(): Promise<string> {
   const tab = annotationsResource.fetchedTab();
-  if (tab === null) return invoke<string>("read_review_json", { revisionId: null });
+  if (tab === null) throw new Error("No review.json found");
   const value = await fetchOne({ kind: "review_json", tab });
   if (value.kind === "review_json" && value.json !== null) return value.json;
   throw new Error("No review.json found");
@@ -33,7 +32,7 @@ export async function readReviewJson(): Promise<string> {
 /** The active tab's review revisions: at most the current one. */
 export async function listReviewRevisions(): Promise<ReviewRevision[]> {
   const tab = annotationsResource.fetchedTab();
-  if (tab === null) return invoke<ReviewRevision[]>("list_review_revisions");
+  if (tab === null) return [];
   const value = await fetchOne({ kind: "review_revisions", tab });
   return value.kind === "review_revisions" ? value.revisions : [];
 }

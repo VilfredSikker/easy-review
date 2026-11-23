@@ -1,19 +1,19 @@
 //! The direct commands that read a tab, with the flag on: each names the tab
-//! by its key and reads that tab's published content with the App locked.
+//! by its key and reads that tab's published content.
 
 use er_protocol::ExportOptions;
 
 use super::annotations_resource_tests::branch_view_of_a_pr;
 use super::diff_command_tests::with_tab;
 use super::diff_resource_tests::with_storage;
-use super::while_the_app_is_locked;
+use super::on_a_thread;
 use crate::direct::os::{content_source, target, view_bucket, Editor, Target};
 use crate::direct::{export, line_commits};
 
-/// With the App locked, the open, reveal, line-commit and export commands
-/// each answer from the content of the tab their key names.
+/// The open, reveal, line-commit and export commands each answer
+/// from the content of the tab their key names.
 #[test]
-fn the_keyed_direct_commands_answer_with_the_app_locked() {
+fn the_keyed_direct_commands_answer() {
     with_tab(|state, (key, tab)| {
         let content = state.service.content(key, &tab).expect("the tab's content");
         let root = content.tab.repo_root.clone();
@@ -22,7 +22,7 @@ fn the_keyed_direct_commands_answer_with_the_app_locked() {
         std::fs::write(&file, "").unwrap_or_else(|e| panic!("{e}"));
         let wire = er_service::wire_tab_key(key);
 
-        let opened = while_the_app_is_locked(state, "open_source", move |state| {
+        let opened = on_a_thread(state, "open_source", move |state| {
             content_source(state, wire)
                 .map(|source| target(&source, Some("src/lib.rs"), Some(3), Editor::Default))
         });
@@ -35,12 +35,12 @@ fn the_keyed_direct_commands_answer_with_the_app_locked() {
             })
         );
 
-        let bucket = while_the_app_is_locked(state, "reveal_er_folder", move |state| {
+        let bucket = on_a_thread(state, "reveal_er_folder", move |state| {
             view_bucket(state, wire)
         });
         assert_eq!(bucket, Ok(content.context.er_dir.clone()));
 
-        let attributed = while_the_app_is_locked(state, "line_commits", move |state| {
+        let attributed = on_a_thread(state, "line_commits", move |state| {
             line_commits::keyed_line_commits(state, wire, "src/lib.rs".into(), "k".into())
         });
         let attributed = attributed.unwrap_or_else(|e| panic!("{e:?}"));
@@ -49,7 +49,7 @@ fn the_keyed_direct_commands_answer_with_the_app_locked() {
             ("src/lib.rs", "k")
         );
 
-        let rendered = while_the_app_is_locked(state, "export_review", move |state| {
+        let rendered = on_a_thread(state, "export_review", move |state| {
             export::render_tab(state, wire, &ExportOptions::default())
         });
         let branch = &content.tab.current_branch;

@@ -1,5 +1,5 @@
 //! The arena on `er_send` and `er_fetch`: a command names the tab the page
-//! painted and runs there with the App locked, a read answers from the tab's
+//! painted and runs there, a read answers from the tab's
 //! buckets, and the live runs reach the page through `jobs`.
 
 use std::sync::Arc;
@@ -15,8 +15,8 @@ use super::arena_resource_tests::{
 };
 use super::diff_command_tests::send;
 use super::diff_resource_tests::with_storage;
-use crate::commands::AppState;
 use crate::resources::Watched;
+use crate::state::DesktopState;
 
 fn fake() -> ArenaReviewer {
     ArenaReviewer {
@@ -48,14 +48,14 @@ fn start(tab: TabKey) -> Command {
     }
 }
 
-fn started(state: &AppState, tab: TabKey) -> String {
+fn started(state: &DesktopState, tab: TabKey) -> String {
     let ack = send(state, "arena start", start(tab)).unwrap_or_else(|e| panic!("{e:?}"));
     ack.created
         .unwrap_or_else(|| panic!("the start named no run"))
 }
 
-fn jobs(state: &AppState) -> (u64, Vec<ArenaRunJob>) {
-    match crate::resources::fetch(&state.desktop, ResourceKey::Jobs) {
+fn jobs(state: &DesktopState) -> (u64, Vec<ArenaRunJob>) {
+    match crate::resources::fetch(state, ResourceKey::Jobs) {
         Ok(fetched) => match fetched.value {
             Resource::Jobs(jobs) => (fetched.version.0, jobs.arena_runs),
             other => panic!("not jobs: {other:?}"),
@@ -72,10 +72,10 @@ fn ended(job: &ArenaRunJob) -> bool {
 }
 
 /// The registry moved to B while the page shows A: an `er_send` start keyed
-/// to A, sent with the App locked, files its run in A's bucket and none in
-/// B's, and `jobs` lists it there.
+/// to A files its run in A's bucket and none in B's, and `jobs` lists it
+/// there.
 #[test]
-fn an_er_send_start_runs_on_the_tab_it_names_with_the_app_locked() {
+fn an_er_send_start_runs_on_the_tab_it_names() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = arena_state(dir, local_ports(), Arc::clone(&sink));
@@ -116,7 +116,7 @@ fn a_live_run_moves_jobs_and_a_diff_publish_does_not() {
         let state = arena_state(dir, local_ports(), Arc::clone(&sink));
         let tab = open(&state, dir.path(), "a");
         let (before, _) = jobs(&state);
-        let mut last = crate::resources::watched(&state.desktop);
+        let mut last = crate::resources::watched(&state);
 
         let run_id = started(&state, tab.0);
         wait_until("the run to show in jobs", || {
@@ -124,7 +124,7 @@ fn a_live_run_moves_jobs_and_a_diff_publish_does_not() {
         });
         let (live, _) = jobs(&state);
         assert!(live > before, "jobs stayed at {before}");
-        let now = crate::resources::watched(&state.desktop);
+        let now = crate::resources::watched(&state);
         let moved = crate::resources::relay::moved(&mut last, now);
         assert!(
             moved.iter().any(|(key, _)| *key == Watched::Jobs),
@@ -160,14 +160,15 @@ fn a_progress_tick_moves_jobs_while_the_status_holds() {
         let state = arena_state(dir, local_ports(), Arc::clone(&sink));
         let tab = open(&state, dir.path(), "a");
         let run_id = started(&state, tab.0);
-        let live = |state: &AppState| jobs(state).1.into_iter().find(|run| run.run_id == run_id);
+        let live =
+            |state: &DesktopState| jobs(state).1.into_iter().find(|run| run.run_id == run_id);
         wait_until("both reviewers to be held", || sink.held() == 2);
         wait_until("the reviewers to show as thinking", || {
             live(&state).is_some_and(|run| !run.progress.thinking.is_empty())
         });
         let before = live(&state).unwrap_or_else(|| panic!("the run left jobs"));
         let (version, _) = jobs(&state);
-        let mut last = crate::resources::watched(&state.desktop);
+        let mut last = crate::resources::watched(&state);
 
         sink.end_one();
         wait_until("the reviewer's end to show in jobs", || {
@@ -178,7 +179,7 @@ fn a_progress_tick_moves_jobs_while_the_status_holds() {
         assert_eq!(after.status, before.status, "the status moved too");
         let (moved_to, _) = jobs(&state);
         assert!(moved_to > version, "a progress tick left jobs at {version}");
-        let now = crate::resources::watched(&state.desktop);
+        let now = crate::resources::watched(&state);
         let moved = crate::resources::relay::moved(&mut last, now);
         assert!(
             moved.iter().any(|(key, _)| *key == Watched::Jobs),
@@ -215,8 +216,8 @@ fn live_jobs_counts_a_change_of_progress_alone() {
     );
 }
 
-/// `arena_estimate` prices the plan on the files it names, read with the App
-/// locked and never through the actor's queue.
+/// `arena_estimate` prices the plan on the files it names, read off the
+/// actor's queue.
 #[test]
 fn an_estimate_prices_the_files_its_plan_names() {
     with_storage(|dir| {
@@ -229,8 +230,8 @@ fn an_estimate_prices_the_files_its_plan_names() {
             plan: plan(Some(files.clone())),
         };
 
-        let fetched = super::while_the_app_is_locked(&state, "estimate", move |state| {
-            crate::resources::fetch(&state.desktop, key).map(|f| f.value)
+        let fetched = super::on_a_thread(&state, "estimate", move |state| {
+            crate::resources::fetch(state, key).map(|f| f.value)
         });
 
         let Ok(Resource::ArenaEstimate(estimate)) = fetched else {
@@ -264,14 +265,14 @@ fn an_arena_run_reads_as_its_snapshot_text() {
             run_id: run_id.clone(),
         };
 
-        let fetched = crate::resources::fetch(&state.desktop, key).map(|f| f.value);
+        let fetched = crate::resources::fetch(&state, key).map(|f| f.value);
 
         let Ok(Resource::ArenaRun(run)) = fetched else {
             panic!("not a run: {fetched:?}");
         };
-        let arena_tab = crate::arena_service::tab(&state.desktop, Some(wire));
+        let arena_tab = crate::arena_service::tab(&state, Some(wire));
         let arena_tab = arena_tab.unwrap_or_else(|e| panic!("{e:?}"));
-        let read = crate::arena_service::get(&state.desktop, &arena_tab, &run_id);
+        let read = crate::arena_service::get(&state, &arena_tab, &run_id);
         let read = read.unwrap_or_else(|e| panic!("{e:?}"));
         let text = serde_json::to_string(&read).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(run.json, text);
@@ -292,7 +293,7 @@ fn an_unloaded_tab_answers_no_runs_and_loads() {
         );
         let wire = er_service::wire_tab_key(key);
 
-        let fetched = crate::resources::fetch(&state.desktop, ResourceKey::ArenaRuns { tab: wire });
+        let fetched = crate::resources::fetch(&state, ResourceKey::ArenaRuns { tab: wire });
 
         let fetched = fetched.unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(fetched.version.0, 0);
@@ -326,7 +327,7 @@ fn the_run_list_matches_the_flag_off_list() {
         }
         let wire = er_service::wire_tab_key(tab.0);
 
-        let fetched = crate::resources::fetch(&state.desktop, ResourceKey::ArenaRuns { tab: wire });
+        let fetched = crate::resources::fetch(&state, ResourceKey::ArenaRuns { tab: wire });
 
         let Ok(Resource::ArenaRuns(listed)) = fetched.map(|f| f.value) else {
             panic!("not a run list");

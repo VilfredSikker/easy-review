@@ -7,11 +7,11 @@
 //! resolved range oids, so a rebase that keeps a file's hunks byte-identical
 //! still re-attributes it.
 
-#[cfg(any(test, not(feature = "v1-service")))]
+#[cfg(test)]
 use std::sync::Mutex;
 
 use er_engine::app::DiffMode;
-#[cfg(any(test, not(feature = "v1-service")))]
+#[cfg(test)]
 use er_engine::app::TabState;
 use er_engine::git::{
     BlameEnd, BlameRequest, BlameSpan, DiffFile, FileStatus, GitError, LineAttribution,
@@ -19,8 +19,6 @@ use er_engine::git::{
 use er_protocol::{ErError, LineCommits};
 use tauri::State;
 
-#[cfg(not(feature = "v1-service"))]
-use crate::commands::AppState;
 use crate::line_commits_cache::CacheKey;
 pub use crate::line_commits_cache::{LineCommitsCache, LineCommitsLru};
 
@@ -77,7 +75,7 @@ fn rename_source<'a>(files: impl IntoIterator<Item = &'a DiffFile>, path: &str) 
 }
 
 /// The App's active tab, as blame reads it.
-#[cfg(any(test, not(feature = "v1-service")))]
+#[cfg(test)]
 fn resolve(tab: &TabState, path: &str) -> Result<Target, String> {
     let history = tab.history.as_ref();
     let files = match tab.mode {
@@ -102,7 +100,6 @@ fn resolve(tab: &TabState, path: &str) -> Result<Target, String> {
 
 /// A tab's published content, as blame reads it. In History its diff section
 /// holds the selected commit's diff.
-#[cfg(feature = "v1-service")]
 fn resolve_content(content: &er_service::TabContent, path: &str) -> Result<Target, String> {
     let tab = &content.tab;
     resolve_view(ShownTab {
@@ -242,7 +239,7 @@ fn attribute(
     Ok(attribution)
 }
 
-#[cfg(any(test, not(feature = "v1-service")))]
+#[cfg(test)]
 fn line_commits_for(
     ports: &er_engine::ports::Ports,
     app: &Mutex<er_engine::app::App>,
@@ -259,7 +256,6 @@ fn line_commits_for(
 
 /// The attribution of `path` in the tab `wire` names, resolved from its
 /// published content.
-#[cfg(feature = "v1-service")]
 pub(crate) fn keyed_line_commits(
     desktop: &crate::state::DesktopState,
     wire: er_protocol::TabKey,
@@ -309,7 +305,6 @@ fn wire_spans(spans: Vec<BlameSpan>) -> Vec<er_protocol::BlameSpan> {
 
 /// Which commit introduced (or removed) each changed line of `path` in the
 /// view the tab `tab` shows. `cache_key` is the file row's `cache_key`.
-#[cfg(feature = "v1-service")]
 #[tauri::command]
 pub async fn line_commits(
     tab: er_protocol::TabKey,
@@ -321,29 +316,6 @@ pub async fn line_commits(
     crate::state::run_blocking(move || Ok(keyed_line_commits(&desktop, tab, path, cache_key)))
         .await
         .map_err(super::failed)?
-}
-
-/// Which commit introduced (or removed) each changed line of `path` in the
-/// active view. `cache_key` is the file's `FileSnapshot.cache_key`.
-#[cfg(not(feature = "v1-service"))]
-#[tauri::command]
-pub async fn line_commits(
-    path: String,
-    cache_key: String,
-    state: State<'_, AppState>,
-) -> Result<LineCommits, ErError> {
-    let state = state.inner().clone();
-    crate::state::run_blocking(move || {
-        line_commits_for(
-            &state.ports,
-            &state.app,
-            &state.line_commits_cache,
-            path,
-            cache_key,
-        )
-    })
-    .await
-    .map_err(super::failed)
 }
 
 #[cfg(test)]

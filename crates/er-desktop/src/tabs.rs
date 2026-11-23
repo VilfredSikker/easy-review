@@ -11,13 +11,9 @@ pub use er_engine::tabs_record::{load_tabs, save_tabs, TabDescriptor, TabKind, T
 
 use crate::view_state::{BrowserLayout, DesktopViewState, TabBrowserState, ViewStateHandle};
 
-#[cfg(feature = "v1-service")]
 mod follow;
-#[cfg(feature = "v1-service")]
 mod load;
-#[cfg(feature = "v1-service")]
 pub use follow::{follow, follow_registry, follow_service, prune, restore};
-#[cfg(feature = "v1-service")]
 pub use load::{load_active, spawn_warmer, warm, warm_targets};
 
 /// Serialize the live tab list and active index to disk. Each tab's browser URL
@@ -58,19 +54,7 @@ fn persisted_tabs(
 /// record's one writer, and the view state is pruned over the registry's list
 /// on each tab-list change ([`follow_service`]).
 pub fn persist_app_tabs(app: &er_engine::app::App, view: &ViewStateHandle) {
-    #[cfg(feature = "v1-service")]
     let _ = (app, view);
-    #[cfg(not(feature = "v1-service"))]
-    let Ok(mut view) = view.lock() else {
-        log::warn!("er-desktop: view state lock poisoned; tabs not persisted");
-        return;
-    };
-    #[cfg(not(feature = "v1-service"))]
-    view.retain_tabs(&app.tabs.iter().map(|t| t.key()).collect::<Vec<_>>());
-    #[cfg(not(feature = "v1-service"))]
-    if let Err(e) = save_app_tabs(app, &view) {
-        log::warn!("er-desktop: failed to persist tabs: {e}");
-    }
 }
 
 /// The keys a tab's browser state is saved under. The engine keeps them in the
