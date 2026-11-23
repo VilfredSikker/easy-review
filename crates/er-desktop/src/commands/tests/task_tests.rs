@@ -330,3 +330,31 @@ fn the_runs_name_no_app() {
         assert!(!text.contains(word), "runs.rs names {word}");
     }
 }
+
+/// A lens already queued or running on the tab's bucket is skipped, so a
+/// second click starts no second agent on the same sidecar.
+#[test]
+fn a_second_run_of_a_running_lens_is_refused() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab: (TabKey, _) = open(&state, dir.path(), "a");
+        let _ = bucket(&state, &tab);
+        let triage = |state: &AppState| {
+            crate::commands::ask_on_desktop(state, |desktop| {
+                let reviewers = vec!["triage".to_string()];
+                crate::runs::scoped(desktop, None, "branch".into(), Vec::new(), reviewers, None)
+            })
+            .map(drop)
+        };
+        assert_eq!(triage(&state), Ok(()));
+        let again = triage(&state).expect_err("a second triage started");
+        assert!(again.contains("already running"), "{again}");
+        let triages = tasks(&state)
+            .into_iter()
+            .filter(|row| row.kind == "triage")
+            .count();
+        assert_eq!(triages, 1);
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
