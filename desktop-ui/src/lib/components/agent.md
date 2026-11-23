@@ -1,6 +1,6 @@
 # Components
 
-Thin views over `app.snapshot` plus `app.cmd` calls. The tree shows what exists; this file is the traps.
+Thin views over the page view (`pageView`) and the resource stores, plus `app.cmd` calls. The tree shows what exists; this file is the traps.
 
 ## The diff
 
@@ -21,12 +21,12 @@ Route every modal through [`ui/ModalShell.svelte`](ui/ModalShell.svelte). It own
 
 - `agent_commands` and `agent_log` are the **active tab's**; `background_tasks` is **session-wide, across all tabs**. `AgentOutputCard` reads the first pair, the top bar's `RunningPill` the second.
 - **Effort-gated activation**: picking a model that advertises `effort_levels` opens an effort submenu rather than activating it. `set_ai_selection` fires with the chosen `effort`, or immediately when the model has none (`effortChoicesForModel`).
-- **Reviewed state is read live from the snapshot** (`files[].reviewed`, `reviewed_count`), never copied into local state: `app.cmd` mutates those in place optimistically and rolls back on failure (ADR 0017, ADR 0016).
+- **Reviewed state is read live from the page view** (`files[].reviewed`, `reviewed_count`), never copied into local state: a click's checkmark is a pending paint the reviewed store drops once the write's `Ack` is held or the write fails (ADR 0072).
 
 ## Test seam
 
-Components default to `app.snapshot` and let an explicit prop win, which is how stories and tests inject state — `viewModeOverride` (`FlatDiffView`, else `app.diffViewMode`), `filesOverride` (`FileTree` picker), `pinnedOverride` (`LeftSidebar`), `tabs`/`active` (`TabStrip`). Follow the pattern for a state the snapshot cannot supply.
+Components default to the page view or a resource store and let an explicit prop win, which is how stories and tests inject state — `viewModeOverride` (`FlatDiffView`, else `app.diffViewMode`), `filesOverride` (`FileTree` picker), `pinnedOverride` (`LeftSidebar`), `tabs`/`active` (`TabStrip`). Follow the pattern for a state the resources cannot supply.
 
 ## Writes
 
-Mutations go through `app.cmd` so the returned snapshot is ingested and failures reach the toast, banner and log; raw `invoke` is for commands whose result must not replace the live snapshot. See ADR 0018. Do not build command names dynamically from user input.
+Mutations go through `app.cmd`, which hands each to the store that routes it to `er_send`, and failures reach the toast, banner and log; what a write changed comes back through the resources (ADR 0072). Raw `invoke` is for the direct commands only. Do not build command names dynamically from user input.

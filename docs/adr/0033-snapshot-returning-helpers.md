@@ -1,5 +1,7 @@
 # A snapshot-returning helper says something about the next poll, not only this one
 
+_Superseded by ADR 0072._
+
 Two helpers build a command's reply, and the difference is invisible in the reply itself. `snap_from_confirmed` sets the `last_sent_*` revision markers to the current values, so the next poll compares equal and answers `poll_skip` — right when the frontend already holds exactly this content. `snap_from_command` deliberately leaves those markers misaligned (`wrapping_add(1)`), forcing the next poll to emit a full content snapshot — right when the command changed something the frontend has not seen.
 
 Which helper a command returns from is a decision with a cost in both directions, and it is spread across roughly sixty return sites. Using the confirming helper on a view-changing command loses the forced resend, so the frontend keeps rendering pre-change content until something unrelated invalidates it. Using the invalidating helper after an optimistic write adds a redundant full rebuild of a view the frontend already painted.

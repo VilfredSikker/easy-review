@@ -13,7 +13,7 @@ and validate stay tab-local (`command_rx` / `command_status`), because they fini
 against the diff they were started on — do not promote them.
 
 State only one front end reads belongs in that front end: the desktop's caches live on
-`crates/er-desktop::AppState`.
+its `DesktopState`. The desktop builds no `App`; the TUI is its one user.
 
 ## Background review tasks
 
@@ -30,14 +30,14 @@ tab at all.
 
 Session-only, in every direction. A finished task stays in `background_tasks` for 8s
 (the toast window), then is retired to `recent_background_tasks`, capped at 32.
-Per-task log ring 500 entries, a tab's `agent_log` 5000. The poll path drains the log
-and result channels and retires; nothing here persists across restarts.
+Per-task log ring 500 entries, a tab's `agent_log` 5000. The front end's loop drains
+the log and result channels and retires; nothing here persists across restarts.
 
 ## Comments
 
 Three stores, one per audience (`docs/adr/0007-three-comment-stores.md`); replies are
 flat (`docs/adr/0008-flat-comment-threads.md`). The unified thread shape the desktop
-draws (`Thread`, `crates/er-protocol/src/annotations.rs`) is a wire type — an
+draws (`Thread` in the `annotations` resource, `crates/er-protocol/src/annotations.rs`) is a wire type — an
 engine-side one would put a single front end's needs into the shared model. A new
 comment-like entity needs its storage file, staleness rule, sync behavior and export
 behavior decided before it is written.
@@ -52,8 +52,7 @@ behavior decided before it is written.
   the visible file from scroll position, in the frontend. The engine cursor still
   names one focused file. Engine work keyed on the cursor does not follow what the
   user is looking at, and a view that trusted the cursor would jump on every scroll.
-- **Cursor movement stays cheap.** A plain move must not rebuild all diff rows; the
-  desktop snapshot contract is the only reason to.
+- **Cursor movement stays cheap.** A plain move must not rebuild all diff rows.
 - **`DiffMode` doubles as the artifact scope** — eight variants, including the PR and
   tour views, so a mode change can move the managed root and reload the AI state.
   `docs/adr/0004-per-view-artifact-scoping.md`.

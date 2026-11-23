@@ -1,7 +1,6 @@
 # The desktop protocol is versioned resources
 
-_Supersedes ADRs 0011, 0012, 0016, 0017, 0018, 0033 and 0034 once the
-flag-off desktop path is deleted; until then that path runs under them._
+_Supersedes ADRs 0011, 0012, 0016, 0017, 0018, 0032, 0033 and 0034._
 
 ## Context
 
@@ -33,9 +32,7 @@ one writer that stamps a version when it replaces the content.
   settings editor's soft warning or a provider whose model listing failed,
   goes out on `er://notice` with a sequence number. An `Ack` carries only
   versions, and a notice has nothing to refetch, so neither a resource nor
-  the `Ack` holds it. The frontend shows each sequence number once. The
-  App's own notifications go out the same way until the App leaves the flag
-  path, each once, with the level and dwell the snapshot's toast had.
+  the `Ack` holds it. The frontend shows each sequence number once.
 - **One resource may join two owners.** `session` carries the AI pick's
   labels, which the settings actor owns, beside the watcher, the version and
   the update check, which the desktop owns. Its version is the settings
@@ -83,9 +80,9 @@ the painted key.
 
 ## Consequences
 
-- Until the flag-off path is deleted, each ported store is an adapter with
-  one read API, fed from `app.snapshot` with `v1-service` off and from
-  `er_fetch` with it on, and its tests run both modes. The snapshot's `poll`
-  keeps running with the flag on for the stores not yet ported.
+- The desktop has no other read path: no snapshot, no `poll`, and no
+  command that answers with page state. A Tauri command outside the three is
+  a direct one, for work that is not published state (a terminal, the
+  browser webview, an export, an OS launch).
 - A store that looks stale points at a writer that did not stamp a version,
   or a relay that did not hand it on. Shortening the safety net hides that.

@@ -1,5 +1,7 @@
 # Content and chrome revisions are tracked separately
 
+_Superseded by ADR 0072._
+
 The desktop poll response carries independent `content_revision` and `chrome_revision` counters, plus a third, `reviewed_revision`, that is deliberately kept out of both. The frontend applies a snapshot when either of the first two changes, and a `chrome_only` response is merged over the hunks and spans it already holds rather than replacing them. With a single combined revision, every chrome change and every checkmark on a reviewed file looked identical to a changed diff — so marking a file reviewed paid to re-send and rebuild the diff.
 
 ## Consequences
