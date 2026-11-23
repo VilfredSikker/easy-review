@@ -9,6 +9,14 @@ import type { ResourceStore } from "./resourceStore";
 
 type Args = Record<string, unknown>;
 
+/** Runs `fn` every `ms` until the returned stop is called. */
+export type Every = (fn: () => void, ms: number) => () => void;
+
+const every: Every = (fn, ms) => {
+  const handle = setInterval(fn, ms);
+  return () => clearInterval(handle);
+};
+
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -192,6 +200,32 @@ export class TasksAdapter {
     const [entry] = await this.deps.client.fetch([{ kind: "task_log", id }]);
     const value: Resource | undefined = entry?.value;
     return value?.kind === "task_log" ? value.lines : [];
+  }
+
+  /**
+   * Keeps a task panel's log current: every second while the task runs, and
+   * once on open for a host task, whose `jobs` row carries no tail. An App
+   * task is first read a second in, and a finished one never, as before the
+   * host existed. Returns the stop.
+   */
+  follow(id: string, live: boolean, show: (lines: AgentLogEntry[]) => void, tick: Every = every): () => void {
+    const onOpen = this.onHost(id);
+    if (!live && !onOpen) return () => {};
+    let cancelled = false;
+    const read = async () => {
+      try {
+        const lines = await this.log(id);
+        if (!cancelled && (live || lines.length > 0)) show(lines);
+      } catch {
+        // A pruned task stops answering; the snapshot tail stays on screen.
+      }
+    };
+    if (onOpen) void read();
+    const stop = live ? tick(() => void read(), 1000) : () => {};
+    return () => {
+      cancelled = true;
+      stop();
+    };
   }
 
   private async send(command: Command): Promise<void> {

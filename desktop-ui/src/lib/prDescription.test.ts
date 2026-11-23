@@ -1,5 +1,13 @@
-import { describe, expect, it } from "bun:test";
-import { onExternalLinkClick } from "./openExternalUrl";
+import { describe, expect, it, mock } from "bun:test";
+
+// The guard falls back to window.open when the Tauri open command fails, as
+// it does with no backend. Other test files mock this module for the whole
+// process with an invoke that resolves, so pin the no-backend answer here.
+mock.module("@tauri-apps/api/core", () => ({
+  invoke: () => Promise.reject(new Error("no Tauri backend in this test")),
+}));
+
+const { onExternalLinkClick } = await import("./openExternalUrl");
 import { fenceLanguage, imageRoute, prMarkdownHtml, refClickTarget, renderPrDescription } from "./prDescription";
 import { LINEAR_COMMENT_BODY, VERCEL_COMMENT_BODY, VERCEL_HTML_COMMENT_BODY } from "./stories/botCommentFixtures";
 
