@@ -9,10 +9,11 @@ use er_desktop::browser_webview::BrowserWebviewState;
 #[cfg(test)]
 use er_desktop::comment_tick::comment_sync_recently_synced;
 use er_desktop::frame_script::FRAME_SCRIPT;
-use er_desktop::snapshot::{PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState};
+use er_desktop::page_view::{PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState};
 use er_desktop::{
-    browser_proxy, browser_webview, commands, dev_log, gh_status_cache, inbox, main_webview_policy,
-    native_notify, pr_cache, profile_log, projects, snapshot, tabs, terminal, window_placement,
+    browser_proxy, browser_webview, dev_log, gh_status_cache, inbox, main_webview_policy,
+    native_notify, page_view, pr_cache, profile_log, projects, route_helpers, tabs, terminal,
+    window_placement,
 };
 
 /// Inject the annotation content script before `</head>` (or `</body>` as fallback).
@@ -750,7 +751,7 @@ fn main() {
         Arc::new(Mutex::new(HashMap::new()));
     let meta_cache: Arc<Mutex<HashMap<String, ProjectMeta>>> = Arc::new(Mutex::new(HashMap::new()));
     let gh_user: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let gh_status_cache: snapshot::GhStatusCache = Arc::new(Mutex::new(
+    let gh_status_cache: page_view::GhStatusCache = Arc::new(Mutex::new(
         gh_status_cache::load_persisted_gh_status_cache()
             .ok()
             .flatten()
@@ -758,7 +759,7 @@ fn main() {
     ));
     let inbox = Arc::new(Mutex::new(inbox::load_inbox_state()));
     let app_owner = Arc::new(er_desktop::app_owner::AppOwner::new(
-        Arc::clone(&meta_cache),
+        meta_cache,
         Arc::clone(&pr_cache),
         Arc::clone(&pr_cache_fetched_at),
         Arc::clone(&gh_user),
@@ -835,9 +836,7 @@ fn main() {
         service: Arc::clone(&service),
         view: Arc::clone(&view_arc),
         pr_cache: Arc::clone(&pr_cache),
-        pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
         branch_base_remote_oid: Arc::clone(&branch_base_remote_oid),
-        meta_cache: Arc::clone(&meta_cache),
         app_owner: Arc::clone(&app_owner),
         gh_user: Arc::clone(&gh_user),
         terminals: Arc::clone(&terminals),
@@ -1072,7 +1071,7 @@ fn main() {
                 continue;
             };
             let (owner, repo, number) = &key;
-            commands::fetch_and_store_github_status(
+            route_helpers::fetch_and_store_github_status(
                 &gh_status_bg,
                 &gh_status_desktop_rev,
                 owner,
@@ -1143,7 +1142,7 @@ fn main() {
             let refresh = bg_state.begin_pr_list_refresh();
             let failed = rt.block_on(bg_owner.refresh_prs(Arc::clone(&bg_github)));
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
-            let handles = commands::InboxRefreshHandles {
+            let handles = route_helpers::InboxRefreshHandles {
                 pr_cache: &bg_cache,
                 gh_user: &bg_gh_user,
                 inbox: &bg_inbox,
@@ -1151,9 +1150,9 @@ fn main() {
                 app_handle: &bg_handle,
             };
             for remote in failed {
-                commands::process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
+                route_helpers::process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
             }
-            commands::process_inbox_after_pr_refresh(handles, &prefs, None);
+            route_helpers::process_inbox_after_pr_refresh(handles, &prefs, None);
             drop(refresh);
             profile_log::bump_desktop_revision(&bg_desktop_rev, "pr_cache_refresh");
         };
@@ -1165,14 +1164,14 @@ fn main() {
             let success =
                 rt.block_on(bg_owner.refresh_remote_prs(Arc::clone(&bg_github), &active_remote));
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
-            let handles = commands::InboxRefreshHandles {
+            let handles = route_helpers::InboxRefreshHandles {
                 pr_cache: &bg_cache,
                 gh_user: &bg_gh_user,
                 inbox: &bg_inbox,
                 desktop_revision: &bg_desktop_rev,
                 app_handle: &bg_handle,
             };
-            commands::process_inbox_after_pr_refresh(
+            route_helpers::process_inbox_after_pr_refresh(
                 handles,
                 &prefs,
                 if success { None } else { Some(active_remote) },

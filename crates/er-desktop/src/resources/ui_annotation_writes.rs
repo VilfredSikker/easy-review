@@ -10,8 +10,9 @@ use er_protocol::{
     ResourceChanged, ResourceKey, ResourceVersion,
 };
 
+use super::content_routes;
 use super::tabs::Routed;
-use crate::commands::{self, content_routes};
+use crate::route_helpers;
 use crate::state::DesktopState;
 
 /// A write in a view bucket, answering the id or path it created.
@@ -42,7 +43,7 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
         Command::DeleteUiAnnotation { tab, view, id } => (
             tab,
             view,
-            Box::new(move |dir| commands::delete_ui_annotation_in(dir, &id).map(|()| None)),
+            Box::new(move |dir| route_helpers::delete_ui_annotation_in(dir, &id).map(|()| None)),
         ),
         Command::ClearUiAnnotationsForPage {
             tab,
@@ -52,13 +53,13 @@ pub fn apply(desktop: &DesktopState, command: Command) -> Routed {
             tab,
             view,
             Box::new(move |dir| {
-                commands::clear_ui_annotations_in(dir, Some(&page_url)).map(|()| None)
+                route_helpers::clear_ui_annotations_in(dir, Some(&page_url)).map(|()| None)
             }),
         ),
         Command::ClearUiAnnotations { tab, view } => (
             tab,
             view,
-            Box::new(|dir| commands::clear_ui_annotations_in(dir, None).map(|()| None)),
+            Box::new(|dir| route_helpers::clear_ui_annotations_in(dir, None).map(|()| None)),
         ),
         Command::UpdateUiAnnotationAnchors { tab, view, updates } => (
             tab,
@@ -106,7 +107,7 @@ fn add(dir: &str, annotation: NewUiAnnotation) -> Result<String, String> {
         .map(serde_json::from_str)
         .transpose()
         .map_err(|e| format!("The DOM context is not JSON: {e}"))?;
-    let new = commands::NewUiAnnotation {
+    let new = route_helpers::NewUiAnnotation {
         url: annotation.url,
         selector: annotation.selector,
         bbox: annotation.bbox,
@@ -117,25 +118,25 @@ fn add(dir: &str, annotation: NewUiAnnotation) -> Result<String, String> {
         dom_context,
         id: annotation.client_id,
     };
-    commands::write_ui_annotation(dir, new)
+    route_helpers::write_ui_annotation(dir, new)
 }
 
 fn screenshot(dir: &str, id: &str, data_url: &str) -> Result<String, String> {
-    let bytes = commands::decode_data_url_png(data_url)
+    let bytes = route_helpers::decode_data_url_png(data_url)
         .ok_or_else(|| "The screenshot is not a PNG data URL".to_string())?;
-    commands::save_annotation_screenshot_in(dir, id, &bytes).map(|(path, _)| path)
+    route_helpers::save_annotation_screenshot_in(dir, id, &bytes).map(|(path, _)| path)
 }
 
 fn anchors(dir: &str, updates: Vec<AnchorUpdate>) -> Result<(), String> {
-    let updates: Vec<commands::AnchorUpdate> = updates
+    let updates: Vec<route_helpers::AnchorUpdate> = updates
         .into_iter()
-        .map(|update| commands::AnchorUpdate {
+        .map(|update| route_helpers::AnchorUpdate {
             id: update.id,
             fresh: update.fresh,
             new_box: update.new_box,
         })
         .collect();
-    commands::apply_anchor_updates(dir, &updates).map_err(|e| e.to_string())
+    route_helpers::apply_anchor_updates(dir, &updates).map_err(|e| e.to_string())
 }
 
 fn refused(message: String) -> ErError {

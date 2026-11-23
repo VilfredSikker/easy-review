@@ -13,7 +13,7 @@ because one surface draws or keys it belongs there.
 
 When a front end needs something the shared state model does not express, add an
 explicit field or translate in that front end (the desktop's translation lives in
-`crates/er-desktop/src/snapshot.rs`). Never widen or repurpose an existing field
+`crates/er-desktop/src/page_view.rs`). Never widen or repurpose an existing field
 so it carries a second meaning: it compiles for both front ends, so nothing flags
 it, and it breaks at runtime in whichever one the change was not written for. The
 reasoning and consequences are in `docs/adr/0006-engine-state-is-the-ui-contract.md`.

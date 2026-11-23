@@ -11,8 +11,8 @@ use er_engine::tabs_record::TabDescriptor;
 use er_engine::TabKey;
 use er_service::{Command, RemoteTips};
 
+use crate::page_view::PrInfo;
 use crate::service::{actor_key, ServiceState};
-use crate::snapshot::PrInfo;
 
 /// The registry's active tab, as its content was loaded and as its checkout
 /// is now.

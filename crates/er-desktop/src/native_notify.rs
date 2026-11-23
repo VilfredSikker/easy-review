@@ -2,7 +2,7 @@
 //!
 //! macOS posts through `UNUserNotificationCenter` so banners still appear while
 //! Easy Review is focused. Other platforms use `tauri-plugin-notification`
-//! from `commands.rs`.
+//! from `route_helpers.rs`.
 
 use tauri::AppHandle;
 

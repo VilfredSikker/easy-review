@@ -110,8 +110,8 @@ pub fn image(
     unmoved(desktop, entry, keys, IMAGE_MOVED)?;
     Ok(ImagePreview {
         path: path.to_string(),
-        before: before.map(|b| crate::commands::image_data_url(mime, &b)),
-        after: after.map(|b| crate::commands::image_data_url(mime, &b)),
+        before: before.map(|b| crate::route_helpers::image_data_url(mime, &b)),
+        after: after.map(|b| crate::route_helpers::image_data_url(mime, &b)),
         preview_context_key: keys.preview_context_key.clone(),
         preview_key: keys.preview_key.clone(),
     })

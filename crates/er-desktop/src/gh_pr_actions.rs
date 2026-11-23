@@ -4,8 +4,8 @@
 //! action, and refreshes the cached status before returning so the card shows
 //! the result rather than the state before the click.
 
-use crate::commands::fetch_and_store_github_status;
-use crate::snapshot::GithubStatusSnapshot;
+use crate::page_view::GithubStatusSnapshot;
+use crate::route_helpers::fetch_and_store_github_status;
 use crate::state::DesktopState;
 use er_engine::gh_pr_actions::{self as actions, MergeMethod, PrAction};
 use serde::Deserialize;

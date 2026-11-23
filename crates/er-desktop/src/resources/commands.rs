@@ -24,7 +24,7 @@ pub async fn er_send(
         };
         let effects = super::send::Effects {
             notify: &notify,
-            check_update: || super::session::app_update(crate::commands::app_update_cached()),
+            check_update: || super::session::app_update(crate::route_helpers::app_update_cached()),
             webviews: &emitter,
             pick_folder: &pick_folder,
         };

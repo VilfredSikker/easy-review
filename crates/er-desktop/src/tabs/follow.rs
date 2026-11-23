@@ -85,7 +85,7 @@ pub fn restore(
     let failed = broken(&view, ports);
     if failed.len() == view.tabs.len() {
         if let Some(root) = fallback_root.filter(|root| !root.is_empty()) {
-            let tab = crate::commands::content_routes::working_tab(root.to_string());
+            let tab = crate::resources::content_routes::working_tab(root.to_string());
             let _ = registry.send(AppCommand::NewTab { tab });
         }
     }

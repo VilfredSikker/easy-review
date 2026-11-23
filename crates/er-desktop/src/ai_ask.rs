@@ -24,11 +24,12 @@ use er_service::{AnnotationTarget, Command, Reply, TabContent, TabContext};
 
 use crate::arena_service::ArenaTab;
 use crate::ask_context::{self, AnswerTarget, AskContext, AskTab};
-use crate::commands::{
-    card_action_prompt, card_model, card_progress, content_routes, now_ms, DEFAULT_ASK_AI_PROMPT,
+use crate::page_view::PendingAiReply;
+use crate::resources::content_routes;
+use crate::route_helpers::{
+    card_action_prompt, card_model, card_progress, now_ms, DEFAULT_ASK_AI_PROMPT,
     VALIDATE_CARD_AI_PROMPT,
 };
-use crate::snapshot::PendingAiReply;
 use crate::state::DesktopState;
 
 /// Asks about a thread with `prompt`, or with the thread kind's own prompt

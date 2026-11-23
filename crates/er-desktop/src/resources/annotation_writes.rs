@@ -13,8 +13,8 @@ use er_protocol::{
 };
 use er_service::{AnnotationKind, AnnotationTarget, Reply, ReviewArtifact, TabContent};
 
+use super::content_routes;
 use super::tabs::Routed;
-use crate::commands::content_routes;
 use crate::state::DesktopState;
 
 const DOCUMENT_CHANGED: &str = "The document changed before the comment was saved";
@@ -402,7 +402,7 @@ fn remove_finding_thread(
     let mut pending = Vec::new();
     let (mut ack, _) = write(desktop, wire, Some(view), |content| {
         let ai = &content.ai.state;
-        pending = crate::commands::finding_linked_thread_ids(ai, &finding_id);
+        pending = crate::route_helpers::finding_linked_thread_ids(ai, &finding_id);
         pending.extend(er_engine::ai::find_finding_thread_root(ai, &finding_id));
         Ok(er_service::Command::RemoveFindingThread {
             context: content.context.clone(),

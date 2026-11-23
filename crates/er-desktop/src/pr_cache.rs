@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::page_view::PrInfo;
 use crate::projects;
-use crate::snapshot::PrInfo;
 use anyhow::Result;
 use er_store::{Artifact, Loaded};
 

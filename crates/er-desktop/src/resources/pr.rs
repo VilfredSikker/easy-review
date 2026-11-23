@@ -14,10 +14,11 @@ use er_protocol::{
 };
 use er_service::{pr_resource, pr_version, resolve_tab_key, TabEntry};
 
+use super::content_routes;
 use super::diff::{listed, published, Published};
 use super::tabs::Routed;
 use crate::app_owner::SidebarOwner;
-use crate::commands::{self, content_routes};
+use crate::route_helpers;
 use crate::service::actor_key;
 use crate::state::DesktopState;
 
@@ -100,7 +101,7 @@ pub fn status_key(desktop: &DesktopState, key: TabKey) -> Option<(String, String
     let entry = tabs.tabs.iter().find(|entry| entry.key == key)?;
     let content = desktop.service.content(entry.key, &entry.descriptor)?;
     let cache = desktop.pr_cache.lock().ok()?;
-    crate::snapshot::resolve_github_status_key_for(&content.tab.identity(), &cache)
+    crate::page_view::resolve_github_status_key_for(&content.tab.identity(), &cache)
 }
 
 /// [`status_key`] of the registry's active tab.
@@ -110,7 +111,7 @@ pub fn active_status_key(desktop: &DesktopState) -> Option<(String, String, u64)
 }
 
 fn kick_status(desktop: &DesktopState, owner: String, repo: String, number: u64) {
-    commands::kick_github_status_refresh(desktop, owner, repo, number);
+    route_helpers::kick_github_status_refresh(desktop, owner, repo, number);
 }
 
 /// Applies `command` when it is a PR card command.

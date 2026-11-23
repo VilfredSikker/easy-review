@@ -26,7 +26,7 @@ use er_engine::stage_job::{staging_for, HostWriteDiagram, StageJob, StageJobRequ
 use er_engine::task_target::BackgroundTaskTarget;
 use er_protocol::{ErError, ErErrorKind, TaskJob, TaskLogLine};
 
-use crate::commands::now_ms;
+use crate::route_helpers::now_ms;
 use crate::state::{DesktopState, WriteClock};
 
 /// How long a finished task stays listed, so its pill can show the outcome.
@@ -482,7 +482,7 @@ pub(crate) fn finish(desktop: &DesktopState, id: &str, result: Result<(), String
     }
     crate::resources::notice::tell(desktop, message, true);
     if !agent {
-        crate::commands::file_tasks_in_inbox(desktop, &[row]);
+        crate::route_helpers::file_tasks_in_inbox(desktop, &[row]);
     }
 }
 
