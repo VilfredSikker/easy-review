@@ -67,10 +67,12 @@ describe("resource source scans", () => {
         !f.includes("protocol/generated/") &&
         !f.startsWith(join("lib", "stories")),
     );
+  // A line comment starts a line or follows whitespace, so the "//" inside a
+  // string such as "er://revision" survives the strip.
   const stripped = (f: string) =>
     read(f)
       .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/\/\/[^\n]*/g, "");
+      .replace(/(^|\s)\/\/[^\n]*/gm, "$1");
 
   it("the chrome reads the session adapter, not the snapshot", () => {
     const field = new RegExp(`\\b(snapshot|snap)\\??\\.(${CHROME_FIELDS})\\b`);
@@ -208,7 +210,6 @@ describe("resource source scans", () => {
   // hold App.svelte to calling it and its default feed to the module's flag.
   it("App.svelte follows a run's progress through followRunProgress and listens for no er://revision", () => {
     expect(stripped(APP_ROOT)).toMatch(/followRunProgress\(\(\) => arena\.onRevision\(\)\)/);
-    // Read unstripped: the comment strip would cut the event name at its "//".
     expect(read(APP_ROOT)).not.toContain("er://revision");
   });
 
