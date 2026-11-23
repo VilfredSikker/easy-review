@@ -1,4 +1,5 @@
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
+import { AiAsks } from "./aiAsks";
 import { AnnotationsAdapter, JOBS, annotationsKey, uiAnnotationsKey } from "./annotationsAdapter";
 import { AnnotationWrites } from "./annotationWrites";
 import { app } from "./app.svelte";
@@ -15,6 +16,9 @@ export const annotationWrites = new AnnotationWrites({
   shownAi: () => app.snapshot?.ai ?? null,
 });
 
+/** The card asks, through `er_send` with the flag on. */
+export const aiAsks = new AiAsks({ flagOn, store: resources, activeKey: () => tabsResource.activeKey });
+
 /** The active tab's annotations, from the snapshot or `annotations(tab)`, `ui_annotations(tab)` and `jobs` by build. */
 export const annotationsResource = new AnnotationsAdapter({
   flagOn,
@@ -29,6 +33,7 @@ export const annotationsResource = new AnnotationsAdapter({
 if (flagOn) {
   app.overlaySnapshot((raw) => annotationsResource.overlay(raw));
   app.routeCmds((command, args) => annotationWrites.route(command, args));
+  app.routeCmds((command, args) => aiAsks.route(command, args));
   $effect.root(() => {
     $effect(() => resources.show(JOBS));
     $effect(() => {

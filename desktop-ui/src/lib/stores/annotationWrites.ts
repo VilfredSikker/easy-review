@@ -347,7 +347,7 @@ interface AnnotationWritesDeps {
  * refuses one painted on a view the tab left. A create shows its row at once
  * and keeps it pending until every key the `Ack` names is held; the other
  * writes paint nothing, and the push shows the result. An AI-assisted finding
- * reply keeps its old route.
+ * reply is a card ask, which `AiAsks` sends.
  */
 export class AnnotationWrites {
   private readonly pending = new SvelteMap<string, PendingPaint>();
