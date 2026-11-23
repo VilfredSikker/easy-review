@@ -97,7 +97,12 @@ fn start(state: &AppState, tab: TabKey, er_dir: String) -> Result<(), ErError> {
     super::while_the_app_is_locked(state, "flow start", move |state| {
         let wire = er_service::wire_tab_key(tab);
         let tab = crate::arena_service::tab(&state.desktop, Some(wire))?;
-        flow_service::run(&state.desktop, &tab, er_dir, Control::Start("branch".into()))
+        flow_service::run(
+            &state.desktop,
+            &tab,
+            er_dir,
+            Control::Start("branch".into()),
+        )
     })
 }
 
@@ -177,9 +182,9 @@ fn a_review_flow_on_a_remote_pr_tab_keys_through_tabs() {
             .into_iter()
             .find(|(kind, _)| *kind == "remote PR")
             .unwrap_or_else(|| panic!("no remote PR kind"));
-        let added = state
-            .service
-            .send_app(AppCommand::NewTab { tab: remote.clone() });
+        let added = state.service.send_app(AppCommand::NewTab {
+            tab: remote.clone(),
+        });
         assert!(added.is_ok(), "{added:?}");
         let resolved = er_engine::tab_identity::resolve_descriptor(&*ports.git, &remote)
             .unwrap_or_else(|e| panic!("{e}"));
@@ -188,8 +193,8 @@ fn a_review_flow_on_a_remote_pr_tab_keys_through_tabs() {
             resolved.repo_root,
             "the fixture keys one actor"
         );
-        let er_dir = er_service::descriptor_bucket(&*ports.git, &remote)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let er_dir =
+            er_service::descriptor_bucket(&*ports.git, &remote).unwrap_or_else(|e| panic!("{e}"));
         write_interrupted_deep(&er_dir);
 
         let tabs = state.service.app_registry().tabs_view();
@@ -282,7 +287,8 @@ fn a_flow_command_finds_the_flow_actor_after_a_tab_switch() {
         let flow_tab = listed(&state, dir, "a");
         let other = listed(&state, dir, "b");
         let flow_bucket = descriptor_bucket(&state, &flow_tab.1);
-        let active = || flow_service::entry(&state.desktop, None).unwrap_or_else(|e| panic!("{e:?}"));
+        let active =
+            || flow_service::entry(&state.desktop, None).unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(active().key, other.0);
 
         // No actor has published the flow yet: the listed tab on the bucket

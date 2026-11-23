@@ -4125,9 +4125,7 @@ pub(crate) fn resolve_review_scope(
 pub(crate) fn resolve_review_scope_in(scope: &str, mode: DiffMode) -> Result<String, String> {
     let resolved = if scope == "current" {
         match mode {
-            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
-                mode.git_mode().to_string()
-            }
+            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => mode.git_mode().to_string(),
             // Guide (tour) reviews the branch diff it was built from.
             DiffMode::PrDiff | DiffMode::Tour => "branch".to_string(),
             _ => {
@@ -12787,10 +12785,6 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod arena_wire_tests;
     #[cfg(feature = "v1-service")]
-    mod flow_resource_tests;
-    #[cfg(feature = "v1-service")]
-    mod flow_wire_tests;
-    #[cfg(feature = "v1-service")]
     mod content_route_tests;
     #[cfg(feature = "v1-service")]
     mod diff_command_tests;
@@ -12798,6 +12792,10 @@ mod tests {
     mod diff_resource_tests;
     #[cfg(feature = "v1-service")]
     mod finding_write_tests;
+    #[cfg(feature = "v1-service")]
+    mod flow_resource_tests;
+    #[cfg(feature = "v1-service")]
+    mod flow_wire_tests;
     #[cfg(feature = "v1-service")]
     mod github_sender_tests;
     #[cfg(feature = "v1-service")]

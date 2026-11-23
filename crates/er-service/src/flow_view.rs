@@ -64,7 +64,8 @@ impl ReviewedTab for ContentTab<'_> {
 pub fn review_raw_diff(ports: &Ports, content: &TabContent, scope: &str) -> Result<String> {
     let meta = &content.diff.meta;
     let id = content.tab.identity();
-    if !meta.branch_diff_hash.is_empty() && review_flow_driver::cached_diff_matches_scope(&id, scope)
+    if !meta.branch_diff_hash.is_empty()
+        && review_flow_driver::cached_diff_matches_scope(&id, scope)
     {
         return Ok(meta.raw.clone());
     }

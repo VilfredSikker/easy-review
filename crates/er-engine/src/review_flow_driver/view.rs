@@ -38,7 +38,10 @@ pub fn cached_diff_matches_scope(id: &TabIdentity<'_>, scope: &str) -> bool {
         "staged" => id.mode == DiffMode::Staged,
         // Tour is the branch diff regrouped, so its cached raw_diff is the
         // branch diff and matches a "branch"-scoped review.
-        _ => matches!(id.mode, DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour),
+        _ => matches!(
+            id.mode,
+            DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour
+        ),
     }
 }
 
@@ -85,9 +88,9 @@ pub fn review_flow_inputs(tab: &dyn ReviewedTab, scope: &str) -> Result<ReviewFl
                 id.pr_number,
             )),
         ),
-        None => bail!(
-            "Review of staged or unstaged changes requires a checkout of the viewed branch"
-        ),
+        None => {
+            bail!("Review of staged or unstaged changes requires a checkout of the viewed branch")
+        }
     };
     let raw = tab.raw_diff(scope)?;
     let filtered = filtered_review_diff(&raw, id.repo_root, id.remote_repo);
@@ -121,7 +124,10 @@ pub fn review_flow_inputs(tab: &dyn ReviewedTab, scope: &str) -> Result<ReviewFl
 /// captured, so acceptance can read that view's diff again.
 pub fn shows_target(id: &TabIdentity<'_>, er_dir: &str, target: &BackgroundTaskTarget) -> bool {
     let scope_matches = match target.scope.as_str() {
-        "branch" => matches!(id.mode, DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour),
+        "branch" => matches!(
+            id.mode,
+            DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour
+        ),
         "staged" => id.mode == DiffMode::Staged,
         "unstaged" => id.mode == DiffMode::Unstaged,
         _ => false,
