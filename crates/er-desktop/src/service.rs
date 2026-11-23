@@ -179,6 +179,12 @@ impl ServiceState {
 
     /// The app registry. Tab and open-cache commands go here, never to a
     /// workspace actor picked from a tab.
+    /// The ports and registry every actor is built with, for a read that
+    /// needs no actor.
+    pub fn deps(&self) -> &WorkspaceDeps {
+        &self.deps
+    }
+
     pub fn app_registry(&self) -> &Arc<AppRegistry> {
         &self.app_registry
     }

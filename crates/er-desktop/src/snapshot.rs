@@ -2004,7 +2004,7 @@ fn snapshot_stack(tab: &TabState) -> Option<StackSnapshot> {
 
 /// [`snapshot_stack`] over the two inputs that decide the shape, so the
 /// ineligible / not-yet-looked-up / known cases are unit-testable without a repo.
-fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnapshot> {
+pub(crate) fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnapshot> {
     if !eligible {
         return None;
     }
