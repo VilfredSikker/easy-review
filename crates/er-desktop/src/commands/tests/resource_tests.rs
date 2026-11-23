@@ -342,7 +342,7 @@ fn an_outside_question_reaches_the_flag_on_export_after_one_tick() {
 
         let wire = er_service::wire_tab_key(tabs[0].0);
         let options = er_protocol::ExportOptions::default();
-        let export = || crate::direct::export::render_tab(&state.desktop, wire, &options);
+        let export = || crate::direct::export::render_tab(&state, wire, &options);
         wait_until("the question in the export", || {
             export().is_ok_and(|body| body.contains("Asked from outside the app"))
         });
