@@ -23,6 +23,7 @@ mod content;
 mod diff_resource;
 mod effect;
 mod finding_writes;
+mod flow_view;
 mod flows;
 mod freshness;
 mod github_comments;
@@ -56,6 +57,7 @@ pub use content::{
 };
 pub use diff_resource::{diff_load_error, diff_resource, diff_version, DiffInputs};
 pub use effect::{descriptor_bucket, tab_bucket};
+pub use flow_view::{current_review_diff, review_flow_inputs, review_raw_diff};
 pub use flows::read_flow_run;
 pub use freshness::{BaseBehind, Divergence, Freshness, RemoteTips};
 pub use handle::{WorkspaceError, WorkspaceHandle, REPLY_TIMEOUT};

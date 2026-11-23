@@ -2734,23 +2734,7 @@ impl TabState {
 
     /// Whether `raw_diff` (if present) matches the review `scope` for this tab.
     fn review_scope_matches_cached_diff(&self, scope: &str) -> bool {
-        if self.remote_repo.is_some() {
-            return true;
-        }
-        if self.local_branch_view.is_some() && self.local_branch_checkout_root.is_none() {
-            return true;
-        }
-        match scope {
-            "unstaged" => self.mode == DiffMode::Unstaged,
-            "staged" => self.mode == DiffMode::Staged,
-            // Tour is the branch diff regrouped, so its cached raw_diff is the
-            // branch diff and matches a "branch"-scoped review.
-            _ => {
-                self.mode == DiffMode::Branch
-                    || self.mode == DiffMode::PrDiff
-                    || self.mode == DiffMode::Tour
-            }
-        }
+        crate::review_flow_driver::cached_diff_matches_scope(&self.identity(), scope)
     }
 
     /// GitHub PR diff for AI review when this tab is PR-associated. Skips local
@@ -3670,33 +3654,7 @@ impl TabState {
 
     /// Where this tab's base-branch `REVIEW.md` files are read from.
     pub fn review_md_source(&self) -> crate::ai::review_md::ReviewMdSource {
-        use crate::ai::review_md::ReviewMdSource;
-        if self.base_branch.is_empty() {
-            return ReviewMdSource::None;
-        }
-        if !self.is_remote() {
-            return ReviewMdSource::Git {
-                repo_root: self.repo_root.clone(),
-                base_ref: self.base_branch.clone(),
-            };
-        }
-        match self.remote_repo.as_deref() {
-            Some(slug) => match self.ports.github.local_checkout_for_repo(
-                &*self.ports.git,
-                &self.repo_root,
-                slug,
-            ) {
-                Some(path) => ReviewMdSource::Git {
-                    repo_root: path,
-                    base_ref: format!("origin/{}", self.base_branch),
-                },
-                None => ReviewMdSource::Gh {
-                    repo_slug: slug.to_string(),
-                    base_ref: self.base_branch.clone(),
-                },
-            },
-            None => ReviewMdSource::None,
-        }
+        crate::review_flow_driver::review_md_source(&self.ports, &self.identity())
     }
 
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
