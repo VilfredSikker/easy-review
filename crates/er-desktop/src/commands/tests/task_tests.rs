@@ -596,7 +596,8 @@ fn a_sidebar_triage_sends_one_notice() {
         let mut told = Vec::new();
         wait_until("the sidebar's notice", || {
             told.extend(crate::resources::notice::told(&state.desktop));
-            told.iter().any(|m| m.starts_with("Triage started for branch"))
+            told.iter()
+                .any(|m| m.starts_with("Triage started for branch"))
         });
         assert_eq!(told, vec!["Triage started for branch feature".to_string()]);
         open_gate(&agent.first);
