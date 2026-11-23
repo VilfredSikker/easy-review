@@ -33,7 +33,8 @@ use er_engine::app::{
 };
 use er_engine::config::InboxConfig;
 
-pub(crate) const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
+pub(crate) const DEFAULT_ASK_AI_PROMPT: &str =
+    "Elaborate on this and answer any question directly.";
 
 /// Per-card validation: check whether a comment, question, or finding still holds.
 pub(crate) const VALIDATE_CARD_AI_PROMPT: &str = r#"Validate whether this review note is still accurate against the current code context provided.
@@ -12454,11 +12455,11 @@ mod tests {
     #[cfg(feature = "v1-service")]
     mod annotations_resource_tests;
     #[cfg(feature = "v1-service")]
-    mod ask_context_tests;
-    #[cfg(feature = "v1-service")]
     mod arena_resource_tests;
     #[cfg(feature = "v1-service")]
     mod arena_wire_tests;
+    #[cfg(feature = "v1-service")]
+    mod ask_context_tests;
     #[cfg(feature = "v1-service")]
     mod content_route_tests;
     #[cfg(feature = "v1-service")]

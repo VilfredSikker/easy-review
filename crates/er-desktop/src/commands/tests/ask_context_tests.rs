@@ -99,7 +99,11 @@ fn service_state(dir: &ReviewFlowTestDir, ports: &Ports) -> AppState {
 }
 
 /// The tab opened in the registry and loaded, then switched to `mode`.
-fn content_tab(state: &AppState, descriptor: &TabDescriptor, mode: Option<DiffMode>) -> (TabKey, Arc<TabContent>) {
+fn content_tab(
+    state: &AppState,
+    descriptor: &TabDescriptor,
+    mode: Option<DiffMode>,
+) -> (TabKey, Arc<TabContent>) {
     let opened = content_routes::open(state, descriptor.clone(), false);
     assert!(opened.is_ok(), "{opened:?}");
     let key = state
@@ -108,7 +112,9 @@ fn content_tab(state: &AppState, descriptor: &TabDescriptor, mode: Option<DiffMo
         .tabs_view()
         .active
         .unwrap_or_else(|| panic!("no active tab"));
-    wait_until("the content", || state.service.content(key, descriptor).is_some());
+    wait_until("the content", || {
+        state.service.content(key, descriptor).is_some()
+    });
     if let Some(mode) = mode {
         let moved = content_routes::set_tab_mode(&state.desktop, key, mode.git_mode(), mode, None);
         assert!(moved.is_ok(), "{moved:?}");
@@ -119,7 +125,10 @@ fn content_tab(state: &AppState, descriptor: &TabDescriptor, mode: Option<DiffMo
                 .is_some_and(|c| c.tab.mode == mode)
         });
     }
-    let content = state.service.content(key, descriptor).unwrap_or_else(|| panic!("no content"));
+    let content = state
+        .service
+        .content(key, descriptor)
+        .unwrap_or_else(|| panic!("no content"));
     (key, content)
 }
 
@@ -136,11 +145,19 @@ fn a_history_ask_on_an_unchecked_out_branch_reads_no_diff() {
         let (_, content) = content_tab(&state, &descriptor, Some(DiffMode::History));
         let id = content.tab.identity();
         assert!(id.checkout_root.is_none(), "the branch has a checkout");
-        assert!(er_engine::review_flow_driver::cached_diff_matches_scope(&id, "branch"));
+        assert!(er_engine::review_flow_driver::cached_diff_matches_scope(
+            &id, "branch"
+        ));
         assert!(!content.diff.meta.branch_diff_hash.is_empty(), "no hash");
-        assert!(!content.diff.meta.raw.is_empty(), "the content shows no commit");
+        assert!(
+            !content.diff.meta.raw.is_empty(),
+            "the content shows no commit"
+        );
 
-        assert_eq!(er_service::ask_raw_diff(&state.desktop.ports, &content), None);
+        assert_eq!(
+            er_service::ask_raw_diff(&state.desktop.ports, &content),
+            None
+        );
     });
 }
 
@@ -176,16 +193,28 @@ fn an_unhashed_diff_is_fetched_again() {
         };
         let loaded = handle.send_and_wait_with(load, std::time::Duration::from_secs(10));
         assert!(loaded.is_ok(), "{loaded:?}");
-        let content = handle.view().tab(key).cloned().unwrap_or_else(|| panic!("no content"));
+        let content = handle
+            .view()
+            .tab(key)
+            .cloned()
+            .unwrap_or_else(|| panic!("no content"));
         let meta = &content.diff.meta;
-        assert!(meta.branch_diff_hash.is_empty(), "the view has a branch hash");
+        assert!(
+            meta.branch_diff_hash.is_empty(),
+            "the view has a branch hash"
+        );
         assert!(meta.raw.contains("+two"), "{}", meta.raw);
         let id = content.tab.identity();
-        assert!(er_engine::review_flow_driver::cached_diff_matches_scope(&id, "unstaged"));
+        assert!(er_engine::review_flow_driver::cached_diff_matches_scope(
+            &id, "unstaged"
+        ));
 
         std::fs::write(repo.join("tracked.rs"), "three\n").unwrap_or_else(|e| panic!("{e}"));
         let fresh = er_engine::diff_load::fetch_raw(&ports, &id, "unstaged", false).ok();
-        assert!(fresh.as_deref().is_some_and(|raw| raw.contains("+three")), "{fresh:?}");
+        assert!(
+            fresh.as_deref().is_some_and(|raw| raw.contains("+three")),
+            "{fresh:?}"
+        );
 
         assert_eq!(er_service::ask_raw_diff(&ports, &content), fresh);
     });

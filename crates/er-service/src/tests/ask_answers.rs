@@ -103,7 +103,9 @@ fn write_finding(bucket: &std::path::Path) {
     );
 }
 
-fn in_bucket(test: impl FnOnce(&str, &std::path::Path) -> anyhow::Result<()>) -> anyhow::Result<()> {
+fn in_bucket(
+    test: impl FnOnce(&str, &std::path::Path) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let bucket = dir.path().join("bucket");
     std::fs::create_dir_all(&bucket)?;
@@ -200,8 +202,8 @@ fn a_finding_answer_lands_in_the_captured_bucket_while_the_workspace_shows_anoth
 /// An AI-assisted finding reply finds or creates the finding's thread and
 /// writes no reply of its own: the ask answers in the thread later.
 #[test]
-fn an_ai_assisted_finding_reply_creates_the_thread_once_and_writes_no_reply(
-) -> anyhow::Result<()> {
+fn an_ai_assisted_finding_reply_creates_the_thread_once_and_writes_no_reply() -> anyhow::Result<()>
+{
     in_bucket(|bucket, path| {
         write_finding(path);
         let handle = actor();

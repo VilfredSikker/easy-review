@@ -17,9 +17,9 @@ mod actor;
 mod ai_extras;
 mod annotations;
 mod annotations_resource;
-mod ask_context;
 mod app_registry;
 pub mod arena;
+mod ask_context;
 mod content;
 mod diff_resource;
 mod effect;
@@ -48,11 +48,11 @@ mod workspace;
 pub use actor::{spawn, WorkspaceDeps};
 pub use ai_extras::{AiExtras, OtherBucketFacts};
 pub use annotations_resource::{annotations_resource, annotations_version};
-pub use ask_context::{ask_raw_diff, ask_scope};
 pub use app_registry::{
     resolve_tab_key, tabs_resource, wire_tab_key, AppCommand, AppRegistry, CachedPr, TabEntry,
     TabsView,
 };
+pub use ask_context::{ask_raw_diff, ask_scope};
 pub use content::{
     AiSection, DiffMeta, DiffSection, FreshnessSection, HistorySection, PrSection, ReviewedSection,
     ScopeStats, SidecarStamp, StackRead, TabContent,
