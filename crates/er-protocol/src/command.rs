@@ -632,6 +632,18 @@ pub enum Command {
         reviewers: Vec<String>,
         focus_prompt: Option<String>,
     },
+    /// Validates the tab's review findings and its eligible GitHub
+    /// comments on `scope`.
+    RunValidate {
+        tab: TabKey,
+        scope: String,
+    },
+    /// Hands a note and its replies to the agent to carry out in the tab's
+    /// working tree.
+    SendNoteToAgent {
+        tab: TabKey,
+        note_id: String,
+    },
     /// Triages one PR of a project from the sidebar, with no tab open.
     RunPrTriage {
         project_id: String,

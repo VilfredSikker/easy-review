@@ -372,6 +372,8 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::GenerateDiagram { .. }
         | Command::RunExpertReview { .. }
         | Command::RunScopedReview { .. }
+        | Command::RunValidate { .. }
+        | Command::SendNoteToAgent { .. }
         | Command::RunPrTriage { .. }
         | Command::RunBranchTriage { .. }
         | Command::CancelQueuedTask { .. }
