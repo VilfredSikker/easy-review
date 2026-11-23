@@ -209,6 +209,7 @@ pub fn expert(
         target(content, er_dir, scope),
         prompt,
         None,
+        false,
     )
     .map_err(refused)
 }
@@ -249,7 +250,8 @@ pub fn scoped(
     };
     let (started, skipped) = crate::commands::spawn_scoped_reviewers(
         &mut |reviewer, target, prompt, stamp| {
-            spawn_reviewer(desktop, reviewer, target, prompt, stamp)
+            // The run's own message below is its one notice, as on the App.
+            spawn_reviewer(desktop, reviewer, target, prompt, stamp, true)
         },
         target(content, er_dir, scope),
         &reviewers,
@@ -414,13 +416,14 @@ fn agent(
 }
 
 /// Queues one finding lens, under the task kind and command name the App
-/// gives it.
+/// gives it; `quiet` leaves its start for the caller to tell.
 pub fn spawn_reviewer(
     desktop: &DesktopState,
     reviewer: &ReviewerKind,
     target: BackgroundTaskTarget,
     prompt: String,
     stamp: Option<ScopedRunStamp>,
+    quiet: bool,
 ) -> Result<(), String> {
     let (kind, name, stamp) = match reviewer {
         ReviewerKind::Triage => (
@@ -445,7 +448,10 @@ pub fn spawn_reviewer(
         }
     };
     er_engine::arena::check_bucket_admission(&target.er_dir).map_err(|e| e.to_string())?;
-    let launch = launch(desktop, &kind, &name, target, prompt, stamp);
+    let launch = Launch {
+        quiet,
+        ..launch(desktop, &kind, &name, target, prompt, stamp)
+    };
     tasks::enqueue(desktop, launch).map(|_| ())
 }
 
@@ -486,6 +492,7 @@ pub fn launch(
             model_id,
             effort,
         },
+        quiet: false,
     }
 }
 

@@ -18,7 +18,6 @@ export const tasksAdapter = new TasksAdapter({
   activeKey: () => tabsResource.activeKey,
   invoke,
   logs: new SvelteMap(),
-  toast: (message) => app.showToast("success", message),
 });
 
 // With the flag on the page lists the tasks from `jobs`, and the runs go

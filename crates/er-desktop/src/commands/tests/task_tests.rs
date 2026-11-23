@@ -155,6 +155,7 @@ fn launch(state: &AppState, dir: &Path, kind: &str, branch: &str) -> crate::task
             model_id,
             effort,
         },
+        quiet: false,
     }
 }
 
@@ -385,6 +386,96 @@ fn each_run_command_through_er_send_lists_its_kind_in_jobs() {
         assert_eq!(listed.ok().as_deref(), Some("src/f1.rs\n"));
         open_gate(&agent.first);
         open_gate(&agent.second);
+    });
+}
+
+/// A scoped run through `er_send` tells the person once, with its own
+/// message, as the App's scoped arm does; its tasks send no started notice
+/// of their own.
+#[test]
+fn a_scoped_run_sends_one_notice() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab = open(&state, dir.path(), "a");
+        let _ = bucket(&state, &tab);
+        let command = Command::RunScopedReview {
+            tab: er_service::wire_tab_key(tab.0),
+            scope: "branch".into(),
+            paths: Vec::new(),
+            reviewers: vec!["triage".into(), "general".into()],
+            focus_prompt: None,
+        };
+        let told = super::while_the_app_is_locked(&state, "the scoped run", move |state| {
+            let effects = crate::resources::send::Effects {
+                notify: &|_, _| {},
+                check_update: || panic!("no update check in this test"),
+                webviews: &crate::browser_webview::NoWebviews,
+                pick_folder: &|| None,
+            };
+            let _ = crate::resources::notice::told(&state.desktop);
+            crate::resources::send::apply(&state.desktop, command, &effects).map(drop)?;
+            Ok::<_, er_protocol::ErError>(crate::resources::notice::told(&state.desktop))
+        });
+        let told = told.unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].starts_with("Started 2 reviewer(s)"), "{told:?}");
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// A scoped reviewer that waits for a slot tells the person once, when it
+/// starts from the queue, as the App tells a queued task's start; at accept
+/// time the scoped message is the run's one notice.
+#[test]
+fn a_queued_scoped_reviewer_tells_its_start_once() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 1);
+        let tab = open(&state, dir.path(), "a");
+        let _ = bucket(&state, &tab);
+        let reviewers = vec!["triage".to_string(), "general".to_string()];
+        let _ = crate::resources::notice::told(&state.desktop);
+        let ran = crate::commands::ask_on_desktop(&state, |desktop| {
+            crate::runs::scoped(desktop, None, "branch".into(), Vec::new(), reviewers, None)
+        });
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        let mut told = crate::resources::notice::told(&state.desktop);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].starts_with("Started 2 reviewer(s)"), "{told:?}");
+        let queued = tasks(&state)
+            .into_iter()
+            .any(|row| row.kind == "review" && row.status == "queued");
+        assert!(
+            queued,
+            "the second reviewer did not wait: {:?}",
+            tasks(&state)
+        );
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+        // The slot pool is the process's, so another test's agent can hold
+        // the one slot; the tick's poll starts the queue once it frees.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            crate::tasks::poll(&state.desktop);
+            told.extend(crate::resources::notice::told(&state.desktop));
+            let done = tasks(&state).into_iter().any(|row| {
+                row.kind == "review" && !matches!(row.status.as_str(), "queued" | "running")
+            });
+            if done {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the queued reviewer never finished: {told:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        told.extend(crate::resources::notice::told(&state.desktop));
+        let started: Vec<&String> = told
+            .iter()
+            .filter(|m| m.starts_with("review started ("))
+            .collect();
+        assert_eq!(started.len(), 1, "{told:?}");
     });
 }
 

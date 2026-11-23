@@ -91,22 +91,6 @@ export function taskCommand(command: string, a: Args): Command | null {
   }
 }
 
-/** The toast a run shows once it starts, as the flag-off path shows it; null for the rest. */
-export function startToast(command: string): string | null {
-  switch (command) {
-    case "run_ai_review":
-      return "AI review started";
-    case "run_ai_expert_review":
-      return "Specialized review started";
-    case "run_ai_triage_review":
-    case "run_pr_triage":
-    case "run_branch_triage":
-      return "Triage scan started";
-    default:
-      return null;
-  }
-}
-
 /**
  * Whether `task` targets the tab `snap` paints, by the App's rule
  * (`matches_target`): repo, PR, remote and branch label, in any bucket.
@@ -137,8 +121,6 @@ interface TasksAdapterDeps {
   invoke: Invoke;
   /** Each host task's output lines as last read, by task id. */
   logs: Map<string, AgentLogEntry[]>;
-  /** Shows a success toast. */
-  toast: (message: string) => void;
 }
 
 /** The most lines the active tab's agent log shows, as the App's snapshot caps it. */
@@ -228,17 +210,11 @@ export class TasksAdapter {
   route(command: string, args: Args = {}): Promise<void> | null {
     if (!this.deps.flagOn) return null;
     const run = runCommand(command, args, this.deps.activeKey());
-    if (run !== null) return this.started(command, this.send(run));
+    // The host's started or queued notice is the run's one message.
+    if (run !== null) return this.send(run);
     const wire = taskCommand(command, args);
     if (wire === null || !this.onHost(text(args.id))) return null;
     return this.send(wire);
-  }
-
-  /** `sent`, then the run's start toast. */
-  private async started(command: string, sent: Promise<void>): Promise<void> {
-    await sent;
-    const message = startToast(command);
-    if (message) this.deps.toast(message);
   }
 
   /** A task's output lines, oldest first. */

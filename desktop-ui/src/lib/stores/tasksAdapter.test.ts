@@ -42,12 +42,14 @@ function adapter(
     invoked.push(command);
     return [{ command_name: "triage", source: "stdout", text: "app" }] as T;
   };
+  // A toast the adapter could reach, as the start toast it once showed did.
+  const shown = { toast: (message: string) => toasts.push(message) };
   const tasks = new TasksAdapter({
+    ...shown,
     flagOn,
     activeKey: () => TAB,
     invoke,
     logs,
-    toast: (message) => toasts.push(message),
     store: {
       get: (key: ResourceKey) => (key.kind === JOBS.kind ? { key, version: 2, value: held } : undefined) as never,
       send: async (command: Command) => {
@@ -163,13 +165,12 @@ describe("TasksAdapter", () => {
     expect(logs.has("gone:7")).toBe(false);
   });
 
-  it("shows a routed run's start toast once it is sent, as the flag-off path does", async () => {
+  it("shows no toast of its own for a routed run: the host's notice is its one message", async () => {
     const { tasks, toasts } = adapter(true);
     await tasks.route("run_ai_review", { scope: "branch" });
     await tasks.route("run_ai_triage_review", { scope: "branch" });
     await tasks.route("run_ai_expert_review", { scope: "branch", expertId: "security" });
-    await tasks.route("generate_tour", {});
-    expect(toasts).toEqual(["AI review started", "Triage scan started", "Specialized review started"]);
+    expect(toasts).toEqual([]);
   });
 
   it("reads an App task's log no sooner than before, and a host task's once on open", async () => {
