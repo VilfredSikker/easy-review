@@ -4,7 +4,7 @@
 //! cannot drift apart on what a prompt says.
 
 use er_engine::ai::{AiState, CommentType, PrivateAnnotation};
-use er_engine::app::{build_card_ai_system_context, CardAiContextParams};
+use er_engine::card_ai_context::{build_card_ai_system_context, CardAiContextParams};
 use er_engine::git::DiffFile;
 
 /// What an ask reads from its tab.

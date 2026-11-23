@@ -6,12 +6,16 @@ pub mod ai;
 #[cfg(feature = "ui")]
 pub mod app;
 pub mod arena;
+pub mod card_ai_context;
+pub mod card_job;
 pub mod checkout;
 pub mod config;
 pub use config::{
     apply_config_field, config_hub_items_for_scope, ConfigFieldValue, ConfigHubFieldDto,
     SettingsScope,
 };
+pub mod agent_log;
+pub mod agent_prompt;
 pub mod agent_runtime;
 pub mod annotations;
 pub mod dev_log;

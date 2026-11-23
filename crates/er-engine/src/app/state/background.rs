@@ -13,31 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{AgentLogEntry, AgentLogSource, CommandStatus, TabState};
 
-pub use crate::task_target::BackgroundTaskTarget;
-
-/// Human-readable name for the *kind* of agent (the intent of the run) so
-/// concurrent tasks against the same target are distinguishable in the UI.
-/// Without this every agent on a branch shows the branch name and they look
-/// identical (e.g. a security pass and a professor pass running side by side).
-///
-/// Accepts the raw `BackgroundTask::kind` string: `"review"`/`"general"`,
-/// `"expert:<id>"`, `"professor"`, `"triage"`, `"tour"`, or `"diagram:<kind>"`.
-pub fn kind_label(kind: &str) -> String {
-    match kind {
-        "" | "review" | "general" => "Review".to_string(),
-        "tour" => "Guide".to_string(),
-        other if other.starts_with("diagram:") => {
-            let sub = other.trim_start_matches("diagram:");
-            format!("Diagram ({})", crate::ai::diagram_kind_label(sub))
-        }
-        other => {
-            // expert:<id>, professor, and triage all resolve through the
-            // shared finding-agent label map.
-            let id = other.strip_prefix("expert:").unwrap_or(other);
-            crate::ai::agent_label_for_id(id).to_string()
-        }
-    }
-}
+pub use crate::task_target::{kind_label, BackgroundTaskTarget};
 
 #[derive(Debug, Clone)]
 pub struct BackgroundTask {

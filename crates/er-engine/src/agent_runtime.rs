@@ -849,7 +849,7 @@ mod tests {
         })
         .unwrap_or_default();
 
-        let card = crate::app::plan_card_ai_invocation(
+        let card = crate::card_job::plan_card_ai_invocation(
             config,
             Some(provider),
             Some(model),

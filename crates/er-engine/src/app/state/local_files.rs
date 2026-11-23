@@ -1,4 +1,5 @@
-//! Files the artifact store does not own: launch markers and debug transcripts.
+//! Files the artifact store does not own: launch markers. The debug transcript
+//! is written by `agent_prompt.rs`, outside the App.
 //!
 //! These carry no envelope and no version, so they are not kinds. The module is
 //! deliberately tiny: a registered sidecar read or written here would skip the
@@ -17,8 +18,6 @@ pub(super) const RETIRED_SUMMARY_MARKER: &str = ".retired-summary-noticed";
 /// other two markers for the same reason.
 pub(super) const RETIRED_AUTO_TRIAGE_MARKER: &str = ".retired-auto-triage-noticed";
 
-pub(super) use crate::stage_job::DEBUG_LOG_FILE;
-
 /// Create the bucket before a command writes into it.
 pub(super) fn ensure_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
@@ -29,11 +28,6 @@ pub(super) fn ensure_dir(dir: &Path) -> std::io::Result<()> {
 pub(super) fn mark_notice_once(dir: &Path, marker: &str) {
     let _ = std::fs::create_dir_all(dir);
     let _ = std::fs::write(dir.join(marker), b"");
-}
-
-/// Write a full agent transcript when `ER_DEBUG` asked for one.
-pub(super) fn write_debug_log(path: &Path, text: &str) {
-    let _ = std::fs::write(path, text);
 }
 
 #[cfg(test)]
