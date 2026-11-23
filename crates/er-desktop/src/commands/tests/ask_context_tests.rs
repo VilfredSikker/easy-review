@@ -372,6 +372,8 @@ fn an_unhashed_diff_is_fetched_again() {
     });
 }
 
+// A fixture repo the test spawns git in, as a test may.
+#[cfg(test)]
 fn git(repo: &Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .args(args)
