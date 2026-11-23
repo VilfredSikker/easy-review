@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { resourceClient } from "$lib/protocol/client";
 import type { ErError } from "$lib/protocol/generated/ErError";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
@@ -32,7 +31,7 @@ async function asText<T>(run: () => Promise<T>): Promise<T> {
 /** The viewer's pending review on the active tab's PR. */
 export async function getPendingReview(): Promise<PendingReview> {
   const tab = sentTab();
-  if (tab === null) return invoke<PendingReview>("get_pending_review");
+  if (tab === null) throw new Error("No GitHub PR detected for the active tab");
   const [entry] = await asText(() => client.fetch([{ kind: "pending_review", tab }]));
   if (entry.value.kind !== "pending_review") throw new Error("not a pending review");
   return entry.value as unknown as PendingReview;
@@ -41,7 +40,7 @@ export async function getPendingReview(): Promise<PendingReview> {
 /** Adds a line comment to the pending review and reads it back. */
 export async function addPendingReviewComment(target: ReviewLineTarget, text: string): Promise<PendingReview> {
   const tab = sentTab();
-  if (tab === null) return invoke<PendingReview>("add_pending_review_comment", { target, text });
+  if (tab === null) throw new Error("No GitHub PR detected for the active tab");
   await asText(() => githubWrites.send({ kind: "add_pending_review_comment", tab, target: reviewLine(target), body: text }));
   return getPendingReview();
 }
@@ -49,7 +48,7 @@ export async function addPendingReviewComment(target: ReviewLineTarget, text: st
 /** Removes one comment from the pending review and reads it back. */
 export async function removePendingReviewComment(commentId: string): Promise<PendingReview> {
   const tab = sentTab();
-  if (tab === null) return invoke<PendingReview>("remove_pending_review_comment", { commentId });
+  if (tab === null) throw new Error("No GitHub PR detected for the active tab");
   await asText(() => githubWrites.send({ kind: "remove_pending_review_comment", tab, commentId }));
   return getPendingReview();
 }

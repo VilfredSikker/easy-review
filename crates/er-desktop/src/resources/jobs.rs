@@ -45,7 +45,9 @@ pub fn jobs(desktop: &DesktopState) -> (u64, Resource) {
         review_flows,
         tasks: desktop.tasks.rows(),
         triage,
-        pr_list_refresh: desktop.loading.lock().is_ok_and(|flags| flags.pr_list),
+        pr_list_refresh: desktop
+            .pr_list_running
+            .load(std::sync::atomic::Ordering::Acquire),
     };
     (version, Resource::Jobs(jobs))
 }

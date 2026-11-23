@@ -1,10 +1,8 @@
 //! `hunks(tab, path, hash)` on the flag path: a comment moves the tab's
 //! annotations and never a file's hash, an unparsed file is parsed by its
-//! actor, a hash the diff no longer holds answers `Stale`, compaction runs
-//! both ways on the service and holds across a load, and nothing records
-//! which hunks the page holds.
+//! actor, a hash the diff no longer holds answers `Stale`, and compaction
+//! runs both ways on the service and holds across a load.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use er_engine::tab_identity::DiffMode;
@@ -15,7 +13,7 @@ use er_service::{AnnotationTarget, Command, HunkRead, TabContent};
 
 use super::diff_resource_tests::{fake_git, listed, state_over, with_storage};
 use super::watcher_tests::{canonical, git};
-use crate::commands::{content_routes, snap_from, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::resources;
 use crate::resources::send::{apply, Effects};
 use crate::service::actor_key;
@@ -39,15 +37,15 @@ fn hunks_key(key: TabKey, path: &str, hash: &str) -> ResourceKey {
     }
 }
 
-fn diff(state: &AppState, key: TabKey) -> TabDiff {
-    let fetched = resources::fetch(&state.desktop, ResourceKey::Diff { tab: wire(key) });
+fn diff(state: &DesktopState, key: TabKey) -> TabDiff {
+    let fetched = resources::fetch(state, ResourceKey::Diff { tab: wire(key) });
     match fetched.map(|f| f.value) {
         Ok(Resource::Diff(diff)) => *diff,
         other => panic!("not a diff: {other:?}"),
     }
 }
 
-fn row_hash(state: &AppState, key: TabKey, path: &str) -> String {
+fn row_hash(state: &DesktopState, key: TabKey, path: &str) -> String {
     let diff = diff(state, key);
     let row = diff.files.iter().find(|row| row.path == path);
     row.unwrap_or_else(|| panic!("{path} is not listed"))
@@ -55,8 +53,13 @@ fn row_hash(state: &AppState, key: TabKey, path: &str) -> String {
         .clone()
 }
 
-fn hunks(state: &AppState, key: TabKey, path: &str, hash: &str) -> Result<FileHunks, ErErrorKind> {
-    match resources::fetch(&state.desktop, hunks_key(key, path, hash)) {
+fn hunks(
+    state: &DesktopState,
+    key: TabKey,
+    path: &str,
+    hash: &str,
+) -> Result<FileHunks, ErErrorKind> {
+    match resources::fetch(state, hunks_key(key, path, hash)) {
         Ok(fetched) => match fetched.value {
             Resource::Hunks(hunks) => Ok(hunks),
             other => panic!("not hunks: {other:?}"),
@@ -65,12 +68,12 @@ fn hunks(state: &AppState, key: TabKey, path: &str, hash: &str) -> Result<FileHu
     }
 }
 
-fn content(state: &AppState, key: TabKey, tab: &TabDescriptor) -> Arc<TabContent> {
+fn content(state: &DesktopState, key: TabKey, tab: &TabDescriptor) -> Arc<TabContent> {
     let content = state.service.content(key, tab);
     content.unwrap_or_else(|| panic!("no content"))
 }
 
-fn load(state: &AppState, key: TabKey, tab: &TabDescriptor, mode: DiffMode) {
+fn load(state: &DesktopState, key: TabKey, tab: &TabDescriptor, mode: DiffMode) {
     let load = Command::LoadTab {
         key,
         tab: tab.clone(),
@@ -93,19 +96,21 @@ fn a_comment_moves_the_annotations_and_never_the_file_hash() {
         let before = hunks(&state, key, "src/f0.rs", &hash);
         let ai = content(&state, key, &tab).ai.revision;
 
-        let asked = content_routes::annotate(&state, None, |context| Command::AddQuestion {
-            context,
-            target: AnnotationTarget {
-                file: "src/f0.rs".into(),
-                hunk_idx: 0,
-                line_num: Some(1),
-                line_num_end: None,
-            },
-            body: "why?".into(),
-            side: None,
-            client_id: None,
-            reply_to: None,
-            finding_ref: None,
+        let asked = content_routes::write_on_key(&state, key, None, |content| {
+            Ok(Command::AddQuestion {
+                context: content.context.clone(),
+                target: AnnotationTarget {
+                    file: "src/f0.rs".into(),
+                    hunk_idx: 0,
+                    line_num: Some(1),
+                    line_num_end: None,
+                },
+                body: "why?".into(),
+                side: None,
+                client_id: None,
+                reply_to: None,
+                finding_ref: None,
+            })
         });
         assert!(asked.is_ok(), "{asked:?}");
 
@@ -162,7 +167,7 @@ fn unparsed_files_are_parsed_through_their_actor_once_per_batch() {
             .collect();
 
         let keys = stubs.iter().map(|(p, h)| hunks_key(key, p, h)).collect();
-        let fetched = resources::fetch_all(&state.desktop, keys);
+        let fetched = resources::fetch_all(&state, keys);
         let fetched = fetched.unwrap_or_else(|e| panic!("fetch: {e:?}"));
 
         let after = content(&state, key, &tab);
@@ -271,20 +276,20 @@ const LOCK_SECTION: &str =
     "diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n\
      @@ -1,2 +1,2 @@\n-old = 1\n+new = 2\n ctx\n";
 
-fn set_compacted(state: &AppState, key: TabKey, compacted: bool) {
+fn set_compacted(state: &DesktopState, key: TabKey, compacted: bool) {
     let command = er_protocol::Command::SetFileCompacted {
         tab: wire(key),
         path: "Cargo.lock".into(),
         compacted,
     };
-    let ack = super::while_the_app_is_locked(state, "set_file_compacted", move |state| {
+    let ack = super::on_a_thread(state, "set_file_compacted", move |state| {
         let effects = Effects {
             notify: &|_, _| {},
             check_update: || panic!("no update check in this test"),
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &|| None,
         };
-        apply(&state.desktop, command, &effects).map(|applied| applied.ack)
+        apply(state, command, &effects).map(|applied| applied.ack)
     });
     let ack = ack.unwrap_or_else(|e| panic!("{e:?}"));
     let named = ack
@@ -294,7 +299,7 @@ fn set_compacted(state: &AppState, key: TabKey, compacted: bool) {
     assert!(named, "the Ack named no diff: {ack:?}");
 }
 
-fn lock_row(state: &AppState, key: TabKey) -> er_protocol::FileRow {
+fn lock_row(state: &DesktopState, key: TabKey) -> er_protocol::FileRow {
     let diff = diff(state, key);
     let row = diff.files.into_iter().find(|row| row.path == "Cargo.lock");
     row.unwrap_or_else(|| panic!("Cargo.lock is not listed"))
@@ -344,99 +349,6 @@ fn compaction_runs_both_ways_on_the_service_and_holds_across_a_load() {
     });
 }
 
-fn app_in(mode: DiffMode) -> er_engine::app::App {
-    let files = er_engine::git::parse_diff(&super::diff_resource_tests::raw_diff());
-    let mut app =
-        er_engine::app::App::new_for_test_with_ports(files, er_engine::ports::Ports::cli());
-    app.tab_mut().mode = mode;
-    app
-}
-
-/// With the flag on nothing records which hunks the page holds: the
-/// snapshot reads no sent-files map, so its differential path never runs.
-/// Two builds of a view the workspace loads omit no file's hunks and leave
-/// the map empty.
-#[test]
-fn the_flag_on_snapshot_records_no_sent_hunks() {
-    with_storage(|dir| {
-        let state = state_over(dir, super::diff_resource_tests::fake_ports());
-        assert!(crate::commands::snapshot_sources(&state)
-            .sent_files
-            .is_none());
-        let app = app_in(DiffMode::Branch);
-        for _ in 0..2 {
-            let files = snap_from(&app, &state).files;
-            assert!(!files.is_empty(), "the snapshot listed no file");
-            assert!(files.iter().all(|f| !f.hunks_omitted && f.hunks.is_empty()));
-        }
-        assert!(state.sent_files.lock().is_ok_and(|sent| sent.is_empty()));
-    });
-}
-
-/// Conflicts and Hidden load on the service too, so with the flag on their
-/// snapshot carries no hunks: the page fetches them by hash.
-#[test]
-fn the_flag_on_snapshot_carries_no_hunks_in_conflicts_or_hidden() {
-    with_storage(|dir| {
-        let state = state_over(dir, super::diff_resource_tests::fake_ports());
-        for mode in [DiffMode::Conflicts, DiffMode::Hidden] {
-            let files = snap_from(&app_in(mode), &state).files;
-            assert!(!files.is_empty(), "{mode:?} listed no file");
-            assert!(files.iter().all(|f| f.hunks.is_empty()), "{mode:?}");
-        }
-    });
-}
-
-/// No flag-on code calls `record_sent_file` or reads `hunks_omitted`: each
-/// use outside the snapshot module that defines them is compiled only
-/// without the flag.
-#[test]
-fn no_flag_on_code_records_sent_hunks() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut uses = Vec::new();
-    scan(&src, &mut uses);
-    for (file, cfg) in &uses {
-        assert_eq!(
-            cfg, "#[cfg(not(feature = \"v1-service\"))]",
-            "{file} records or reads sent hunks with the flag on"
-        );
-    }
-    assert!(!uses.is_empty(), "the scan found no use to check");
-}
-
-fn scan(dir: &Path, uses: &mut Vec<(String, String)>) {
-    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path.to_string_lossy().into_owned();
-        if path.is_dir() {
-            if !name.ends_with("/tests") {
-                scan(&path, uses);
-            }
-            continue;
-        }
-        if !name.ends_with(".rs") || name.ends_with("/snapshot.rs") || name.contains("_tests") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let code = text.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
-        for needle in ["record_sent_file(", "hunks_omitted"] {
-            for (at, _) in code.match_indices(needle) {
-                let mut lines = code.get(..at).unwrap_or("").rsplit('\n');
-                if lines
-                    .next()
-                    .is_some_and(|l| l.trim_start().starts_with("//"))
-                {
-                    continue;
-                }
-                // The nearest `cfg` above the use is the one that compiles it.
-                let cfg = lines.find(|l| l.trim_start().starts_with("#[cfg("));
-                uses.push((name.clone(), cfg.unwrap_or("").trim().to_string()));
-            }
-        }
-    }
-}
-
 /// The tab-switch median on the resource path, over the 5,000-line diff the
 /// flag-off baseline in `latency_tests.rs` reads: `er_send` `select_tab` to
 /// its `Ack`, then `er_fetch` of what it names and of the new tab's
@@ -470,11 +382,11 @@ fn the_tab_switch_reports_its_flag_on_median() {
         let switch = |key: TabKey, window: usize| -> (Duration, usize) {
             let started = Instant::now();
             let select = er_protocol::Command::SelectTab { key: wire(key) };
-            let ack = apply(&state.desktop, select, &effects).unwrap_or_else(|e| panic!("{e:?}"));
+            let ack = apply(&state, select, &effects).unwrap_or_else(|e| panic!("{e:?}"));
             let mut keys: Vec<ResourceKey> = ack.ack.changed.into_iter().map(|c| c.key).collect();
             keys.push(ResourceKey::Diff { tab: wire(key) });
             let mut fetched =
-                resources::fetch_all(&state.desktop, keys).unwrap_or_else(|e| panic!("{e:?}"));
+                resources::fetch_all(&state, keys).unwrap_or_else(|e| panic!("{e:?}"));
             if window > 0 {
                 let Some(Resource::Diff(diff)) = fetched.last().map(|f| f.value.clone()) else {
                     panic!("no diff");
@@ -485,7 +397,7 @@ fn the_tab_switch_reports_its_flag_on_median() {
                     .take(window)
                     .map(|r| hunks_key(key, &r.path, &r.cache_key));
                 fetched.extend(
-                    resources::fetch_all(&state.desktop, hunks.collect())
+                    resources::fetch_all(&state, hunks.collect())
                         .unwrap_or_else(|e| panic!("{e:?}")),
                 );
             }

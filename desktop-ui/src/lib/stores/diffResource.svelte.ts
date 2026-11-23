@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { asErError, resourceClient } from "$lib/protocol/client";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
@@ -63,15 +62,10 @@ async function readOnce<K extends Resource["kind"]>(key: ResourceKey, kind: K): 
   return value as Extract<Resource, { kind: K }>;
 }
 
-/** The tab whose previews and paths come from its content: the active one, while the page draws it by hash. */
-function contentTab(): TabKey | null {
-  return diffResource.hashed() ? tabsResource.activeKey : null;
-}
-
-/** Every path the active diff holds, from the content or the App by view. */
+/** Every path the active diff holds, from the content. */
 export async function readDiffPaths(): Promise<string[]> {
-  const tab = contentTab();
-  if (tab === null) return invoke<string[]>("list_diff_paths");
+  const tab = tabsResource.activeKey;
+  if (tab === null) return [];
   return (await readOnce({ kind: "diff_paths", tab }, "diff_paths")).paths;
 }
 
@@ -87,11 +81,11 @@ function showDiff(key: TabKey | null): (() => void) | undefined {
 pageView.overlay((raw) => diffResource.overlay(raw));
 app.routeCmds((command, args) => diffResource.route(command, args));
 diffPreview.route((path, context) => {
-  const tab = contentTab();
+  const tab = tabsResource.activeKey;
   return tab === null ? null : readOnce({ kind: "file_preview", tab, path, context }, "file_preview");
 });
 imagePreview.route((path, context) => {
-  const tab = contentTab();
+  const tab = tabsResource.activeKey;
   return tab === null ? null : readOnce({ kind: "image_preview", tab, path, context }, "image_preview");
 });
 $effect.root(() => {

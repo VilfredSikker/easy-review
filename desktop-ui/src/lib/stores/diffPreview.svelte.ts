@@ -1,13 +1,10 @@
 import { untrack } from 'svelte';
-import { invoke } from '@tauri-apps/api/core';
 import { DocumentPreviewCache, type DocumentViewMode, type PreviewResponse } from '$lib/documentPreviewCache';
 import type { AppSnapshot, FileSnapshot } from '$lib/pageTypes';
 let revision = $state(0);
-/** Reads from the tab's content when it answers; null leaves the read to the old command. */
+/** Reads from the active tab's content; null when no tab is open. */
 let routed: (path: string, context: string) => Promise<PreviewResponse> | null = () => null;
-const cache = new DocumentPreviewCache((path, context) => routed(path, context) ?? invoke<PreviewResponse>('request_file_preview', {
-  path, expectedPreviewContextKey: context,
-}), () => { revision++; });
+const cache = new DocumentPreviewCache((path, context) => routed(path, context) ?? Promise.reject(new Error('no tab is open')), () => { revision++; });
 export const diffPreview = {
   route: (read: typeof routed) => { routed = read; },
   get revision() { return revision; },

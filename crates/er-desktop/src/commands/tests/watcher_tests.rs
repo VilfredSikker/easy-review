@@ -1,5 +1,5 @@
-//! The flag-on watcher: its target comes from the registry and the content
-//! with the App locked, a file change refreshes the watched tab's content and
+//! The watcher: its target comes from the registry and the content, a file
+//! change refreshes the watched tab's content and
 //! clears the marks whose diff changed, and a load resolves the checkout root
 //! by the watcher's rule, a linked worktree included.
 
@@ -15,7 +15,7 @@ use er_service::{AppCommand, Command, TabContent};
 
 use super::diff_resource_tests::{state_over, with_storage};
 use super::ReviewFlowTestDir;
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::service::actor_key;
 use crate::watcher;
 
@@ -67,7 +67,7 @@ pub(super) fn canonical(path: &Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-fn real_state(dir: &ReviewFlowTestDir) -> AppState {
+fn real_state(dir: &ReviewFlowTestDir) -> DesktopState {
     state_over(dir, er_engine::ports::Ports::cli())
 }
 
@@ -81,7 +81,7 @@ fn branch_view(root: &Path) -> TabDescriptor {
 }
 
 /// Lists `tab` in the registry and loads it in `mode`.
-fn load(state: &AppState, tab: &TabDescriptor, mode: DiffMode) -> TabKey {
+fn load(state: &DesktopState, tab: &TabDescriptor, mode: DiffMode) -> TabKey {
     let added = state
         .service
         .send_app(AppCommand::NewTab { tab: tab.clone() });
@@ -98,7 +98,7 @@ fn load(state: &AppState, tab: &TabDescriptor, mode: DiffMode) -> TabKey {
     key
 }
 
-fn content(state: &AppState, key: TabKey, tab: &TabDescriptor) -> std::sync::Arc<TabContent> {
+fn content(state: &DesktopState, key: TabKey, tab: &TabDescriptor) -> std::sync::Arc<TabContent> {
     state
         .service
         .content(key, tab)
@@ -206,15 +206,18 @@ fn a_file_change_refreshes_the_watched_content_and_clears_its_marks() {
         let state = real_state(dir);
         let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
         let key = load(&state, &tab, DiffMode::Unstaged);
-        let marked = content_routes::write_reviewed(&state, |context| Command::MarkReviewed {
-            context,
-            path: "a.txt".into(),
-            reviewed: true,
-        });
+        let marked =
+            content_routes::write_keyed(&state, super::active_key(&state), None, |context| {
+                Command::MarkReviewed {
+                    context,
+                    path: "a.txt".into(),
+                    reviewed: true,
+                }
+            });
         assert!(marked.is_ok(), "{marked:?}");
         let before = content(&state, key, &tab);
         assert!(before.reviewed.marks.contains_key("a.txt"));
-        let diff_before = crate::resources::diff::published_version(&state.desktop, key, &tab);
+        let diff_before = crate::resources::diff::published_version(&state, key, &tab);
 
         let ports = er_engine::ports::Ports::cli();
         let mut follower = watcher::Follower::default();
@@ -231,21 +234,19 @@ fn a_file_change_refreshes_the_watched_content_and_clears_its_marks() {
         });
         let after = content(&state, key, &tab);
         assert!(!after.reviewed.marks.contains_key("a.txt"), "the mark held");
-        let diff_after = crate::resources::diff::published_version(&state.desktop, key, &tab);
+        let diff_after = crate::resources::diff::published_version(&state, key, &tab);
         assert!(diff_after > diff_before, "diff(tab) did not move");
     });
 }
 
-/// The watcher chooses its target from the registry and the content, so it
-/// answers while the App is locked.
+/// The watcher chooses its target from the registry and the content.
 #[test]
-fn the_watcher_target_is_chosen_with_the_app_locked() {
+fn the_watcher_target_is_chosen_from_the_registry() {
     with_storage(|dir| {
         let root = repo(dir);
         let state = real_state(dir);
         let tab = content_routes::working_tab(root.to_string_lossy().into_owned());
         let key = load(&state, &tab, DiffMode::Branch);
-        let _held = state.app.lock().unwrap_or_else(|e| panic!("{e}"));
         let (tx, rx) = mpsc::channel();
         let service = std::sync::Arc::clone(&state.service);
         std::thread::spawn(move || {
@@ -254,15 +255,15 @@ fn the_watcher_target_is_chosen_with_the_app_locked() {
         });
         let watched = rx
             .recv_timeout(Duration::from_secs(5))
-            .unwrap_or_else(|_| panic!("the watcher waited on the App lock"));
+            .unwrap_or_else(|_| panic!("the watcher never chose"));
         assert_eq!(watched.map(|w| w.key), Some(key));
     });
 }
 
-/// The flag-on watcher loop takes its target from the follower, never the
-/// App, and sends a file change to the follower, which refreshes the content.
+/// The watcher loop takes its target from the follower, and sends a file
+/// change to the follower, which refreshes the content.
 #[test]
-fn the_flag_on_watcher_never_reads_the_app_to_choose() {
+fn the_watcher_takes_the_follower_target() {
     let source = include_str!("../../main.rs");
     let start = source
         .find("fn run_active_branch_watcher(")
@@ -270,24 +271,21 @@ fn the_flag_on_watcher_never_reads_the_app_to_choose() {
     let body = source.get(start..).unwrap_or_default();
     let body = body.split_once("\n}\n").map_or(body, |(body, _)| body);
     let flag_on = body
-        .find("#[cfg(feature = \"v1-service\")]\n        let desired =")
-        .unwrap_or_else(|| panic!("no flag-on target"));
+        .find("let desired =")
+        .unwrap_or_else(|| panic!("no target"));
     let choice = body.get(flag_on..).unwrap_or_default();
     let choice = choice.split_once(';').map_or(choice, |(choice, _)| choice);
     assert!(
         choice.contains(".next(&watcher_service"),
-        "the flag-on watcher does not take the follower's target"
+        "the watcher does not take the follower's target"
     );
-    for app in ["lock(", "desired_local_branch_watch", "watcher_app"] {
-        assert!(!choice.contains(app), "the flag-on target reads {app}");
-    }
     assert!(
         body.contains("follower.on_change(&watcher_service)"),
         "a file change does not refresh the content"
     );
 }
 
-fn diff_of(state: &AppState, key: TabKey, tab: &TabDescriptor) -> er_protocol::TabDiff {
+fn diff_of(state: &DesktopState, key: TabKey, tab: &TabDescriptor) -> er_protocol::TabDiff {
     er_service::diff_resource(
         &content(state, key, tab),
         &er_service::DiffInputs::default(),
@@ -298,7 +296,7 @@ fn rev_parse(dir: &Path, rev: &str) -> String {
     git(dir, &["rev-parse", rev]).trim().to_string()
 }
 
-fn post(state: &AppState, tips: er_service::RemoteTips) {
+fn post(state: &DesktopState, tips: er_service::RemoteTips) {
     let target = watcher::probe_target(&state.service).unwrap_or_else(|| panic!("no target"));
     assert!(
         watcher::post_tips(&state.service, &target, tips),
@@ -307,7 +305,7 @@ fn post(state: &AppState, tips: er_service::RemoteTips) {
 }
 
 /// A branch view of `main` diffed against `main`, loaded on the repo root.
-fn main_view(state: &AppState, root: &Path) -> (TabKey, TabDescriptor) {
+fn main_view(state: &DesktopState, root: &Path) -> (TabKey, TabDescriptor) {
     let tab = TabDescriptor {
         base_ref: Some("main".into()),
         ..content_routes::working_tab(root.to_string_lossy().into_owned())
@@ -331,7 +329,7 @@ fn a_remote_tip_move_lights_the_base_mark_until_the_tip_is_the_base() {
         let state = real_state(dir);
         let (key, tab) = main_view(&state, &root);
         assert_eq!(diff_of(&state, key, &tab).base_behind, None);
-        let before = crate::resources::diff::published_version(&state.desktop, key, &tab);
+        let before = crate::resources::diff::published_version(&state, key, &tab);
 
         let moved = er_service::RemoteTips {
             base_tip: Some(tip.clone()),
@@ -346,7 +344,7 @@ fn a_remote_tip_move_lights_the_base_mark_until_the_tip_is_the_base() {
         wait_until("the stale mark", || {
             diff_of(&state, key, &tab).base_behind.as_ref() == Some(&lit)
         });
-        let after = crate::resources::diff::published_version(&state.desktop, key, &tab);
+        let after = crate::resources::diff::published_version(&state, key, &tab);
         assert!(after > before, "diff(tab) did not move");
 
         let back = er_service::RemoteTips {
@@ -435,15 +433,13 @@ fn the_probe_finds_the_prs_head_by_number_then_by_branch() {
     assert_eq!(watcher::pr_head(&lists, &target(None, Some("other"))), None);
 }
 
-/// The probe chooses its target from the registry and the content, so it
-/// answers while the App is locked.
+/// The probe chooses its target from the registry and the content.
 #[test]
-fn the_probe_target_is_chosen_with_the_app_locked() {
+fn the_probe_target_is_chosen_from_the_registry() {
     with_storage(|dir| {
         let root = repo(dir);
         let state = real_state(dir);
         let (key, _) = main_view(&state, &root);
-        let _held = state.app.lock().unwrap_or_else(|e| panic!("{e}"));
         let (tx, rx) = mpsc::channel();
         let service = std::sync::Arc::clone(&state.service);
         std::thread::spawn(move || {
@@ -451,34 +447,23 @@ fn the_probe_target_is_chosen_with_the_app_locked() {
         });
         let target = rx
             .recv_timeout(Duration::from_secs(5))
-            .unwrap_or_else(|_| panic!("the probe waited on the App lock"));
+            .unwrap_or_else(|_| panic!("the probe never chose"));
         let target = target.unwrap_or_else(|| panic!("no target"));
         assert_eq!((target.key, target.base.as_deref()), (key, Some("main")));
     });
 }
 
-/// With the flag on, the App-reading probe is compiled out and the flag-on
-/// probe takes its target from the registry and the content.
+/// The probe takes its target from the registry and the content.
 #[test]
-fn the_flag_on_probe_never_reads_the_app() {
+fn the_probe_never_reads_the_app() {
     let source = include_str!("../../main.rs");
-    let old = source
-        .find("let probe_app = Arc::clone(&app_arc);")
-        .unwrap_or_else(|| panic!("no flag-off probe"));
-    let before = source.get(..old).unwrap_or_default();
-    assert!(
-        before
-            .trim_end()
-            .ends_with("#[cfg(not(feature = \"v1-service\"))]\n    {"),
-        "the App-reading probe runs with the flag on"
-    );
     let start = source
         .find("fn spawn_base_probe(")
-        .unwrap_or_else(|| panic!("no flag-on probe"));
+        .unwrap_or_else(|| panic!("no probe"));
     let body = source.get(start..).unwrap_or_default();
     let body = body.split_once("\n}\n").map_or(body, |(body, _)| body);
     assert!(body.contains("watcher::probe_target(&service)"));
     for app in ["App", "app_arc", "try_lock"] {
-        assert!(!body.contains(app), "the flag-on probe reads {app}");
+        assert!(!body.contains(app), "the probe reads {app}");
     }
 }

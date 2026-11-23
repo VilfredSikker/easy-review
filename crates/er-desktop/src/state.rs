@@ -1,33 +1,25 @@
-//! The desktop's shared state, minus the App.
-//!
-//! `AppState` wraps this with the App and the counters only the snapshot poll
-//! reads. A module that takes `DesktopState` cannot reach the App, so the
-//! modules that render from the service take this one, and the compiler holds
-//! them off the App. Every field is an `Arc`, so a clone shares the state.
+//! The desktop's shared state. Every field is an `Arc`, so a clone shares
+//! the state.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
-
-use er_engine::pr_open_entry::{PrOpenCacheEntry, PrOpenCacheKey, PrOpenFreshness};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::inbox::InboxHandle;
 use crate::line_commits_cache::LineCommitsCache;
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::snapshot::{
-    GhStatusCache, GhUser, LoadingState, MetaCache, PendingAiReplies, PendingAiReply, PrInfo,
+    GhStatusCache, GhUser, MetaCache, PendingAiReplies, PendingAiReply, PrInfo,
     WatchStatusSnapshot, WatchStatusState,
 };
 
 #[derive(Clone)]
 pub struct DesktopState {
     pub ports: er_engine::ports::Ports,
-    /// Workspace actors for the `v1-service` command path (ADR 0067). The
-    /// default build has no service and no field.
-    #[cfg(feature = "v1-service")]
+    /// Workspace actors for the command path (ADR 0067).
     pub service: Arc<crate::service::ServiceState>,
-    /// Desktop-only view state (ADR 0068). Lock it after `app`, never before.
+    /// Desktop-only view state (ADR 0068).
     pub view: crate::view_state::ViewStateHandle,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     pub pr_cache_fetched_at: PrCacheFetchedAtMap,
@@ -35,7 +27,6 @@ pub struct DesktopState {
     /// keyed by "{repo_root}\0{base_short}". Compared in build_snapshot against
     /// the local origin/<base> oid to detect a stale ("behind main") branch diff.
     pub branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>>,
-    pub pr_open_cache: Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     pub meta_cache: MetaCache,
     /// The sidebar's resources and the metadata cache's one writer.
     pub app_owner: Arc<crate::app_owner::AppOwner>,
@@ -56,8 +47,8 @@ pub struct DesktopState {
     /// Per-PR GitHub status (review decision, mergeable, checks, etc).
     /// Populated by a background thread on a 60s cadence and on explicit refresh.
     pub gh_status_cache: GhStatusCache,
-    /// Which background fetches are currently in-flight — surfaced in every snapshot.
-    pub loading: LoadingState,
+    /// Whether a PR-list refresh is running, which `jobs` shows.
+    pub pr_list_running: Arc<std::sync::atomic::AtomicBool>,
     /// Moves when a PR-list refresh starts or ends, so `jobs` pushes it.
     pub pr_list_clock: WriteClock,
     /// Moves when a GitHub status fetch starts or ends, so `pr_status`
@@ -69,25 +60,6 @@ pub struct DesktopState {
     /// them after the fetch ends, so the end of a first fetch that stored
     /// nothing still reaches the page as `fetching: false`.
     pub gh_status_fetched: Arc<Mutex<HashSet<(String, String, u64)>>>,
-    /// Keys (project_id, pr_number) with an in-flight PR-open prefetch,
-    /// mapped to a claim the open path can wait on. Prevents duplicate
-    /// background `gh` invocations when the user hovers the same row
-    /// repeatedly, and lets a click during a hover-prefetch join the
-    /// in-flight fetch instead of running a duplicate `gh pr diff`.
-    pub pr_open_prefetch_in_flight: Arc<Mutex<PrOpenPrefetchMap>>,
-    /// Keys (repo-or-slug, pr_number) with an in-flight branch-scope preload
-    /// (`kick_branch_preload`). Prevents duplicate background `gh`/git calls
-    /// when the same PR is opened repeatedly.
-    pub branch_preload_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
-    /// Keys (repo-root, pr_number) with an in-flight background PR ref fetch
-    /// (`kick_pr_ref_fetch`). Prevents duplicate `git fetch` pairs when the
-    /// same PR is opened repeatedly.
-    pub pr_ref_fetch_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
-    /// Remote-only PR open cache + in-flight claims (see remote_pr_open_cache.rs).
-    /// Warms on sidebar hover (`prefetch_remote_pr_open`); a hit opens the PR
-    /// with zero `gh` calls.
-    pub remote_pr_open_cache: crate::remote_pr_open_cache::RemotePrOpenCache,
-    pub remote_pr_open_in_flight: crate::remote_pr_open_cache::RemotePrOpenInFlight,
     /// Monotonic counter bumped whenever background-owned durable state changes
     /// so that poll() can detect changes not visible in App state.
     pub desktop_revision: Arc<AtomicU64>,
@@ -108,7 +80,6 @@ pub struct DesktopState {
     /// have moved.
     pub live_tabs: LiveTabs,
     /// The background agent tasks the flag path runs, which `jobs` lists.
-    #[cfg(feature = "v1-service")]
     pub tasks: crate::tasks::TaskHost,
 }
 
@@ -117,11 +88,9 @@ impl DesktopState {
     /// already runs. The check and the mark are one lock. Dropping the guard
     /// ends the refresh, so a panic or an early return cannot leave it on.
     pub fn begin_pr_list_refresh(&self) -> Option<PrListRefresh> {
-        let mut flags = self.loading.lock().ok()?;
-        if std::mem::replace(&mut flags.pr_list, true) {
+        if self.pr_list_running.swap(true, Ordering::AcqRel) {
             return None;
         }
-        drop(flags);
         self.pr_list_clock.bump();
         Some(PrListRefresh(self.clone()))
     }
@@ -140,9 +109,6 @@ impl DesktopState {
         if let Ok(mut fetched) = self.gh_status_fetched.lock() {
             fetched.insert(key.clone());
         }
-        if let Ok(mut flags) = self.loading.lock() {
-            flags.gh_status = true;
-        }
         self.status_fetch_clock.bump();
         Some(StatusFetch {
             desktop: self.clone(),
@@ -158,9 +124,7 @@ pub struct PrListRefresh(DesktopState);
 
 impl Drop for PrListRefresh {
     fn drop(&mut self) {
-        if let Ok(mut flags) = self.0.loading.lock() {
-            flags.pr_list = false;
-        }
+        self.0.pr_list_running.store(false, Ordering::Release);
         self.0.pr_list_clock.bump();
     }
 }
@@ -175,9 +139,6 @@ pub struct StatusFetch {
 
 impl Drop for StatusFetch {
     fn drop(&mut self) {
-        if let Ok(mut flags) = self.desktop.loading.lock() {
-            flags.gh_status = false;
-        }
         if let Ok(mut in_flight) = self.desktop.gh_status_in_flight.lock() {
             in_flight.remove(&self.key);
         }
@@ -256,9 +217,6 @@ pub struct SessionClock {
     wake: Arc<OnceLock<Sender<()>>>,
     /// The last update check's answer.
     pub update: Arc<Mutex<Option<er_protocol::AppUpdate>>>,
-    /// The engine's sequence number of the last App notification sent as a
-    /// notice, so each is sent once.
-    pub app_notice_seq: Arc<AtomicU64>,
 }
 
 impl SessionClock {
@@ -372,20 +330,6 @@ impl AiReplyJobs {
             self.clock.bump();
         }
     }
-}
-
-/// In-flight PR-open prefetch claim. The open path (`load_pr_open_inputs`)
-///
-/// waits on `cv` (bounded) when the claim's freshness matches its own, so a
-/// click during a hover-prefetch consumes the prefetched cache entry instead
-/// of running a duplicate `gh pr diff`. `freshness` is the prefetch's own, so
-/// a waiter whose hint changed mid-flight skips the wait entirely.
-pub type PrOpenPrefetchMap = HashMap<(String, u64), Arc<PrOpenPrefetchClaim>>;
-
-pub struct PrOpenPrefetchClaim {
-    pub freshness: PrOpenFreshness,
-    pub done: Mutex<bool>,
-    pub cv: Condvar,
 }
 
 /// Run a blocking command body on the async runtime's blocking pool.

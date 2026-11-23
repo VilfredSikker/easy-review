@@ -1,5 +1,4 @@
 import { mount } from "svelte";
-import { invoke } from "@tauri-apps/api/core";
 import App from "./App.svelte";
 import { app } from "$lib/stores/app.svelte";
 // Installs the sidebar reads before the first mount reads them.
@@ -58,20 +57,4 @@ import "./app.css";
 const target = document.getElementById("app");
 if (!target) throw new Error("index.html is missing the #app mount point");
 
-async function boot(): Promise<void> {
-  let backend: boolean | undefined;
-  try {
-    backend = await invoke<boolean>("v1_service_enabled");
-  } catch {
-    // No Tauri runtime (a browser dev server): there is no compiled backend
-    // to disagree with, so mount the UI as before.
-  }
-  if (backend === false) {
-    // The page reads only the service's resources, which a backend built
-    // without the feature never serves; refuse before the mount.
-    throw new Error("the backend build has v1-service off; rebuild it with its default features");
-  }
-  mount(App, { target });
-}
-
-void boot();
+mount(App, { target });

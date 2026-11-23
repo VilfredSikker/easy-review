@@ -1,6 +1,6 @@
 //! The review flows on `er_send` and `jobs`: a control names the tab and
-//! the bucket the page painted and runs on that tab's actor with the App
-//! locked, and the flows reach the page through `jobs`.
+//! the bucket the page painted and runs on that tab's actor, and the flows
+//! reach the page through `jobs`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -16,12 +16,12 @@ use super::arena_resource_tests::{local_ports, open, wait_until, HoldingSink};
 use super::diff_command_tests::send;
 use super::diff_resource_tests::with_storage;
 use super::flow_resource_tests::{flow_state, state_with};
-use crate::commands::AppState;
 use crate::resources::Watched;
 use crate::service::actor_key;
+use crate::state::DesktopState;
 
-fn jobs(state: &AppState) -> (u64, Vec<ReviewFlowJob>) {
-    match crate::resources::fetch(&state.desktop, ResourceKey::Jobs) {
+fn jobs(state: &DesktopState) -> (u64, Vec<ReviewFlowJob>) {
+    match crate::resources::fetch(state, ResourceKey::Jobs) {
         Ok(fetched) => match fetched.value {
             Resource::Jobs(jobs) => (fetched.version.0, jobs.review_flows),
             other => panic!("not jobs: {other:?}"),
@@ -31,25 +31,24 @@ fn jobs(state: &AppState) -> (u64, Vec<ReviewFlowJob>) {
 }
 
 /// The bucket `diff(tab)` paints for the tab, which the page sends back.
-fn painted_bucket(state: &AppState, tab: TabKey) -> String {
+fn painted_bucket(state: &DesktopState, tab: TabKey) -> String {
     let key = ResourceKey::Diff {
         tab: er_service::wire_tab_key(tab),
     };
     wait_until("the tab's diff", || {
         matches!(
-            crate::resources::fetch(&state.desktop, key.clone()).map(|f| f.value),
+            crate::resources::fetch(state, key.clone()).map(|f| f.value),
             Ok(Resource::Diff(ref diff)) if !diff.review_bucket_er_dir.is_empty()
         )
     });
-    match crate::resources::fetch(&state.desktop, key).map(|f| f.value) {
+    match crate::resources::fetch(state, key).map(|f| f.value) {
         Ok(Resource::Diff(diff)) => diff.review_bucket_er_dir,
         other => panic!("not a diff: {other:?}"),
     }
 }
 
-/// Starts a review of the branch view on `tab` through `er_send`; `send`
-/// holds the App locked.
-fn start(state: &AppState, tab: TabKey, er_dir: String) -> Result<Ack, ErError> {
+/// Starts a review of the branch view on `tab` through `er_send`.
+fn start(state: &DesktopState, tab: TabKey, er_dir: String) -> Result<Ack, ErError> {
     let command = Command::ReviewFlow {
         tab: er_service::wire_tab_key(tab),
         er_dir,
@@ -61,10 +60,10 @@ fn start(state: &AppState, tab: TabKey, er_dir: String) -> Result<Ack, ErError> 
 }
 
 /// The registry moved to B while the page shows A: an `er_send` start keyed
-/// to A, on the bucket `diff(tab)` painted for A, runs on A's actor with
-/// the App locked, and `jobs` lists the flow in that bucket.
+/// to A, on the bucket `diff(tab)` painted for A, runs on A's actor, and
+/// `jobs` lists the flow in that bucket.
 #[test]
-fn an_er_send_flow_start_runs_on_the_tab_it_names_with_the_app_locked() {
+fn an_er_send_flow_start_runs_on_the_tab_it_names() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = flow_state(dir, local_ports(), Arc::clone(&sink));
@@ -108,7 +107,7 @@ fn a_review_flow_moves_jobs_and_the_relay_names_it() {
         let tab = open(&state, dir.path(), "a");
         let er_dir = painted_bucket(&state, tab.0);
         let (before, _) = jobs(&state);
-        let mut last = crate::resources::watched(&state.desktop);
+        let mut last = crate::resources::watched(&state);
 
         let started = start(&state, tab.0, er_dir.clone());
         assert!(started.is_ok(), "{started:?}");
@@ -123,7 +122,7 @@ fn a_review_flow_moves_jobs_and_the_relay_names_it() {
             serde_json::from_str(&flow.unwrap_or_else(|| panic!("no flow")).json)
                 .unwrap_or_else(|e| panic!("{e}"));
         assert!(snapshot["state"].is_string(), "{snapshot}");
-        let now = crate::resources::watched(&state.desktop);
+        let now = crate::resources::watched(&state);
         let moved = crate::resources::relay::moved(&mut last, now);
         assert!(
             moved.iter().any(|(key, _)| *key == Watched::Jobs),
@@ -233,7 +232,7 @@ fn deep_config() -> String {
 /// flow runs triage, two reviewers over its rounds and an arbiter as real
 /// processes.
 fn flow_until(
-    state: &AppState,
+    state: &DesktopState,
     tab: &TabDescriptor,
     er_dir: &str,
     what: &str,
@@ -322,8 +321,7 @@ fn a_deep_flow_run_is_read_on_er_fetch_from_another_tab_and_accepted_on_er_send(
             er_dir: er_dir.clone(),
             run_id: run_id.clone(),
         };
-        let fetched =
-            crate::resources::fetch(&state.desktop, key).unwrap_or_else(|e| panic!("{e:?}"));
+        let fetched = crate::resources::fetch(&state, key).unwrap_or_else(|e| panic!("{e:?}"));
         let Resource::ReviewFlowRun(run) = fetched.value else {
             panic!("not a flow run: {:?}", fetched.value);
         };

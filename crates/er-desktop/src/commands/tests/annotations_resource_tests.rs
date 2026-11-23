@@ -14,7 +14,7 @@ use er_service::TabContent;
 
 use super::diff_resource_tests::{fake_git, listed, raw_diff, state_over, with_storage};
 use super::ReviewFlowTestDir;
-use crate::commands::{content_routes, AppState};
+use crate::commands::{content_routes, DesktopState};
 use crate::resources::{self, relay, tick, Watched};
 use crate::snapshot::PendingAiReply;
 
@@ -38,7 +38,7 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     }
 }
 
-fn content(state: &AppState, (key, tab): &(TabKey, TabDescriptor)) -> Arc<TabContent> {
+fn content(state: &DesktopState, (key, tab): &(TabKey, TabDescriptor)) -> Arc<TabContent> {
     state
         .service
         .content(*key, tab)
@@ -47,7 +47,9 @@ fn content(state: &AppState, (key, tab): &(TabKey, TabDescriptor)) -> Arc<TabCon
 
 /// A local PR tab shown in its branch view and loaded. Its view bucket is
 /// the branch's and its GitHub-comment bucket the PR's.
-pub(super) fn branch_view_of_a_pr(dir: &ReviewFlowTestDir) -> (AppState, (TabKey, TabDescriptor)) {
+pub(super) fn branch_view_of_a_pr(
+    dir: &ReviewFlowTestDir,
+) -> (DesktopState, (TabKey, TabDescriptor)) {
     let state = state_over(dir, ports());
     let root = dir.path().join("repo");
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
@@ -63,8 +65,7 @@ pub(super) fn branch_view_of_a_pr(dir: &ReviewFlowTestDir) -> (AppState, (TabKey
     assert!(opened.is_ok(), "{opened:?}");
     let key = state.service.app_registry().tabs_view().active;
     let key = key.unwrap_or_else(|| panic!("no active tab"));
-    let branch =
-        content_routes::set_tab_mode(&state.desktop, key, "branch", DiffMode::Branch, None);
+    let branch = content_routes::set_tab_mode(&state, key, "branch", DiffMode::Branch, None);
     assert!(branch.is_ok(), "{branch:?}");
     let entry = (key, tab);
     wait_until("the branch view to load", || {
@@ -105,7 +106,7 @@ fn an_outside_comment_in_the_pr_bucket_reaches_a_branch_view_through_the_tick() 
         );
         stamp_ahead(&pr_bucket.join("github-comments.json"));
 
-        tick::run(&state.desktop);
+        tick::run(&state);
 
         wait_until("the PR bucket's comment", || {
             let now = content(&state, &tab);
@@ -145,7 +146,7 @@ fn an_arena_accept_reaches_the_ai_section_through_the_tick() {
             std::fs::create_dir_all(&run).and_then(|()| std::fs::write(run.join("run.json"), "{}"));
         assert!(wrote.is_ok(), "run.json: {wrote:?}");
 
-        tick::run(&state.desktop);
+        tick::run(&state);
 
         wait_until("the accept to reload the AI section", || {
             content(&state, &tab).ai.revision > loaded.ai.revision
@@ -177,7 +178,7 @@ fn the_view_bucket_reads_answer_the_branch_view_and_never_the_pr_bucket() {
         assert!(saved.iter().all(Result::is_ok), "{saved:?}");
         let wire = er_service::wire_tab_key(tab.0);
 
-        let fetched = resources::fetch(&state.desktop, ResourceKey::UiAnnotations { tab: wire });
+        let fetched = resources::fetch(&state, ResourceKey::UiAnnotations { tab: wire });
         let rows = match fetched.map(|v| v.value) {
             Ok(Resource::UiAnnotations(rows)) => rows.rows,
             other => panic!("{other:?}"),
@@ -188,8 +189,7 @@ fn the_view_bucket_reads_answer_the_branch_view_and_never_the_pr_bucket() {
             rows[0].dom_context_json.as_deref(),
             Some(r#"{"tag":"button"}"#)
         );
-        let revisions =
-            resources::fetch(&state.desktop, ResourceKey::ReviewRevisions { tab: wire });
+        let revisions = resources::fetch(&state, ResourceKey::ReviewRevisions { tab: wire });
         let revisions = match revisions.map(|v| v.value) {
             Ok(Resource::ReviewRevisions(revisions)) => revisions.revisions,
             other => panic!("{other:?}"),
@@ -204,7 +204,7 @@ fn the_view_bucket_reads_answer_the_branch_view_and_never_the_pr_bucket() {
 fn every_pending_reply_write_moves_jobs_and_nothing_else() {
     with_storage(|dir| {
         let state = state_over(dir, ports());
-        let desktop = &state.desktop;
+        let desktop = &state;
         let jobs = || match resources::fetch(desktop, ResourceKey::Jobs).map(|v| v.value) {
             Ok(Resource::Jobs(jobs)) => jobs.ai_replies,
             other => panic!("{other:?}"),
@@ -236,7 +236,7 @@ fn every_pending_reply_write_moves_jobs_and_nothing_else() {
 }
 
 /// A loaded working tab on `repo`, over `raw`.
-fn working(dir: &ReviewFlowTestDir, raw: String) -> (AppState, (TabKey, TabDescriptor)) {
+fn working(dir: &ReviewFlowTestDir, raw: String) -> (DesktopState, (TabKey, TabDescriptor)) {
     let git: Arc<dyn er_git::Git> = Arc::new(fake_git().with_diff_raw(Ok(raw)));
     let github: Arc<dyn er_engine::github::GitHub> =
         Arc::new(er_engine::github::FakeGitHub::default());
@@ -254,9 +254,9 @@ fn working(dir: &ReviewFlowTestDir, raw: String) -> (AppState, (TabKey, TabDescr
     (state, entry)
 }
 
-fn annotations_version(state: &AppState, (key, _): &(TabKey, TabDescriptor)) -> u64 {
+fn annotations_version(state: &DesktopState, (key, _): &(TabKey, TabDescriptor)) -> u64 {
     let tab = er_service::wire_tab_key(*key);
-    match resources::version(&state.desktop, ResourceKey::Annotations { tab }) {
+    match resources::version(state, ResourceKey::Annotations { tab }) {
         Ok(version) => version.0,
         Err(e) => panic!("{e:?}"),
     }
@@ -291,7 +291,7 @@ fn a_service_question_moves_the_annotations_once_across_the_next_tick() {
         let written = annotations_version(&state, &tab);
         assert!(written > before, "the question moved no version");
 
-        tick::run(&state.desktop);
+        tick::run(&state);
         std::thread::sleep(Duration::from_millis(500));
 
         assert_eq!(
@@ -318,7 +318,7 @@ fn an_outside_question_moves_the_annotations_through_the_tick() {
         );
         stamp_ahead(&Path::new(&bucket).join("questions.json"));
 
-        tick::run(&state.desktop);
+        tick::run(&state);
 
         wait_until("the outside question", || {
             annotations_version(&state, &tab) > before
@@ -327,11 +327,11 @@ fn an_outside_question_moves_the_annotations_through_the_tick() {
 }
 
 fn annotations(
-    state: &AppState,
+    state: &DesktopState,
     (key, _): &(TabKey, TabDescriptor),
 ) -> (u64, er_protocol::AiAnnotations) {
     let tab = er_service::wire_tab_key(*key);
-    match resources::fetch(&state.desktop, ResourceKey::Annotations { tab }) {
+    match resources::fetch(state, ResourceKey::Annotations { tab }) {
         Ok(fetched) => match fetched.value {
             Resource::Annotations(a) => (fetched.version.0, a.ai),
             other => panic!("not annotations: {other:?}"),
@@ -354,7 +354,7 @@ fn an_outside_promotion_reaches_the_finding_through_the_tick() {
             } } }),
         );
         stamp_ahead(&bucket.join("review.json"));
-        tick::run(&state.desktop);
+        tick::run(&state);
         wait_until("the review", || {
             annotations(&state, &tab)
                 .1
@@ -370,7 +370,7 @@ fn an_outside_promotion_reaches_the_finding_through_the_tick() {
         let saved = er_engine::ai::save_finding_promotions(&er_dir, &promoted);
         assert!(saved.is_ok(), "{saved:?}");
         stamp_ahead(&bucket.join("finding-promotions.json"));
-        tick::run(&state.desktop);
+        tick::run(&state);
 
         wait_until("the annotations to move", || {
             annotations(&state, &tab).0 > before
@@ -407,7 +407,7 @@ fn a_lazy_parse_moves_no_annotations_version() {
         let stub = stub
             .map(|f| f.path.clone())
             .unwrap_or_else(|| panic!("no stub"));
-        let mut last = resources::watched(&state.desktop);
+        let mut last = resources::watched(&state);
 
         let parse = er_service::Command::ParseFiles {
             key: tab.0,
@@ -419,7 +419,7 @@ fn a_lazy_parse_moves_no_annotations_version() {
             .send(&crate::service::actor_key(&tab.1), parse);
 
         assert!(parsed.is_ok(), "{parsed:?}");
-        let moved = relay::moved(&mut last, resources::watched(&state.desktop));
+        let moved = relay::moved(&mut last, resources::watched(&state));
         let moved: Vec<Watched> = moved.into_iter().map(|(watched, _)| watched).collect();
         assert!(
             moved.contains(&Watched::Diff(tab.0)),
@@ -436,7 +436,7 @@ fn a_lazy_parse_moves_no_annotations_version() {
 fn a_ui_annotation_write_during_the_read_is_pushed_again() {
     with_storage(|dir| {
         let (state, tab) = branch_view_of_a_pr(dir);
-        let desktop = &state.desktop;
+        let desktop = &state;
         let wire = er_service::wire_tab_key(tab.0);
 
         let read = resources::annotations::ui_annotations_read(desktop, wire, |er_dir| {
@@ -476,7 +476,7 @@ fn review_json_answers_none_for_a_tab_nothing_loaded_and_a_bucket_with_no_review
         let unloaded = state_over(dir, ports());
         let (key, fresh) = listed(&unloaded, dir, "fresh");
         let wire = er_service::wire_tab_key(key);
-        let fetched = resources::fetch(&unloaded.desktop, ResourceKey::ReviewJson { tab: wire });
+        let fetched = resources::fetch(&unloaded, ResourceKey::ReviewJson { tab: wire });
         let fetched = fetched.unwrap_or_else(|e| panic!("an unloaded tab: {e:?}"));
         assert_eq!((fetched.version.0, &fetched.value), (0, &none));
         wait_until("the load the fetch posted", || {
@@ -486,7 +486,7 @@ fn review_json_answers_none_for_a_tab_nothing_loaded_and_a_bucket_with_no_review
         let (state, tab) = branch_view_of_a_pr(dir);
         let wire = er_service::wire_tab_key(tab.0);
         let batch = resources::fetch_all(
-            &state.desktop,
+            &state,
             vec![
                 ResourceKey::ReviewJson { tab: wire },
                 ResourceKey::UiAnnotations { tab: wire },
