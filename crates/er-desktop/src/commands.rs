@@ -609,10 +609,10 @@ fn is_one_pending_review_error(raw: &str) -> bool {
     raw.to_lowercase().contains("one pending review")
 }
 
-/// Files the App's finished and failed background tasks in the inbox. The
-/// backend tick runs it with the flag on; the poll runs it with the flag off.
-/// The task host files each of its own tasks as it finishes
-/// (`file_tasks_in_inbox`).
+/// Files the finished and failed background tasks in the inbox. The poll
+/// runs it with the flag off; with the flag on the task host files each task
+/// as it finishes (`file_tasks_in_inbox`).
+#[cfg(not(feature = "v1-service"))]
 pub(crate) fn process_ai_task_inbox(app: &App, state: &DesktopState) {
     let tasks = app.background_task_snapshots();
     let tab = app.tab();
@@ -2156,11 +2156,53 @@ fn ingest_github_notifications(
     }
 }
 
+#[cfg(not(feature = "v1-service"))]
 fn auto_triage_ctx(state: &AppState) -> crate::auto_triage::AutoTriageContext {
+    let (app, spawn_app) = (Arc::clone(&state.app), Arc::clone(&state.app));
     crate::auto_triage::AutoTriageContext {
-        app: Arc::clone(&state.app),
+        ports: state.desktop.ports.clone(),
+        spawn: Arc::new(move |target, prompt| {
+            let mut app = spawn_app.lock().map_err(|e| e.to_string())?;
+            app.spawn_background_triage_review(target, prompt, true)
+                .map_err(|e| e.to_string())
+        }),
+        notify: Arc::new(move |message| {
+            if let Ok(mut app) = app.lock() {
+                app.notify(&message);
+            }
+        }),
         in_flight: Arc::clone(&state.auto_triage_in_flight),
+        queue_moved: Arc::new(|| {}),
         desktop_revision: Arc::clone(&state.desktop_revision),
+    }
+}
+
+/// Sidebar triage on the flag path: queued on the task host, with the
+/// request set shown in `jobs`.
+#[cfg(feature = "v1-service")]
+pub(crate) fn triage_ctx(desktop: &DesktopState) -> crate::auto_triage::AutoTriageContext {
+    let (spawn_desktop, notify_desktop, clock) = (
+        desktop.clone(),
+        desktop.clone(),
+        desktop.tasks.clock.clone(),
+    );
+    crate::auto_triage::AutoTriageContext {
+        ports: desktop.ports.clone(),
+        spawn: Arc::new(move |target, prompt| {
+            crate::runs::spawn_reviewer(
+                &spawn_desktop,
+                &er_engine::ai::ReviewerKind::Triage,
+                target,
+                prompt,
+                None,
+            )
+        }),
+        notify: Arc::new(move |message| {
+            crate::resources::notice::tell(&notify_desktop, message, false);
+        }),
+        in_flight: Arc::clone(&desktop.auto_triage_in_flight),
+        queue_moved: Arc::new(move || clock.bump()),
+        desktop_revision: Arc::clone(&desktop.desktop_revision),
     }
 }
 
@@ -2197,6 +2239,31 @@ pub fn run_pr_triage(
     pr_number: u64,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
+    #[cfg(feature = "v1-service")]
+    return ask_on_desktop(&state, |desktop| {
+        pr_triage(desktop, &triage_ctx(desktop), &project_id, pr_number)
+            .map_err(crate::tasks::refused)
+    });
+    #[cfg(not(feature = "v1-service"))]
+    {
+        pr_triage(
+            &state.desktop,
+            &auto_triage_ctx(&state),
+            &project_id,
+            pr_number,
+        )?;
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    }
+}
+
+/// Queues triage of one project's PR on `ctx`.
+pub(crate) fn pr_triage(
+    desktop: &DesktopState,
+    ctx: &crate::auto_triage::AutoTriageContext,
+    project_id: &str,
+    pr_number: u64,
+) -> Result<(), String> {
     let file = projects::load();
     let project = file
         .projects
@@ -2207,7 +2274,7 @@ pub fn run_pr_triage(
         .remote
         .clone()
         .ok_or_else(|| "Project has no GitHub remote".to_string())?;
-    let pr = pr_from_cache(&state.pr_cache, &remote, pr_number)
+    let pr = pr_from_cache(&desktop.pr_cache, &remote, pr_number)
         .ok_or_else(|| format!("PR #{pr_number} not in cache — try Sync first"))?;
 
     let req = crate::auto_triage::AutoTriageRequest {
@@ -2220,10 +2287,8 @@ pub fn run_pr_triage(
         review_ignore_globs: project.review_ignore_globs.clone(),
         auto_triage_max_diff_kb: project.auto_triage_max_diff_kb,
     };
-    let ctx = auto_triage_ctx(&state);
-    crate::auto_triage::dispatch_auto_triage(&ctx, vec![req]);
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    crate::auto_triage::dispatch_auto_triage(ctx, vec![req]);
+    Ok(())
 }
 
 /// Triage a tracked branch: uses the open PR when `branch` is a PR head, else local branch diff.
@@ -2233,6 +2298,32 @@ pub fn run_branch_triage(
     branch: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
+    #[cfg(feature = "v1-service")]
+    return ask_on_desktop(&state, |desktop| {
+        branch_triage(desktop, &triage_ctx(desktop), &project_id, &branch)
+            .map_err(crate::tasks::refused)
+    });
+    #[cfg(not(feature = "v1-service"))]
+    {
+        branch_triage(
+            &state.desktop,
+            &auto_triage_ctx(&state),
+            &project_id,
+            &branch,
+        )?;
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    }
+}
+
+/// Queues triage of one project's branch on `ctx`: its open PR when it has
+/// one, else the branch diff.
+pub(crate) fn branch_triage(
+    desktop: &DesktopState,
+    ctx: &crate::auto_triage::AutoTriageContext,
+    project_id: &str,
+    branch: &str,
+) -> Result<(), String> {
     let file = projects::load();
     let project = file
         .projects
@@ -2244,33 +2335,35 @@ pub fn run_branch_triage(
         .clone()
         .ok_or_else(|| "Project has no GitHub remote".to_string())?;
 
-    if let Some(pr) = open_pr_for_branch(&state.pr_cache, &remote, &branch) {
-        return run_pr_triage(project_id, pr.number, state);
+    if let Some(pr) = open_pr_for_branch(&desktop.pr_cache, &remote, branch) {
+        return pr_triage(desktop, ctx, project_id, pr.number);
     }
-
-    let ctx = auto_triage_ctx(&state);
     crate::auto_triage::dispatch_branch_triage(
-        &ctx,
+        ctx,
         &project.id,
         &remote,
         &project.root_path,
-        &branch,
+        branch,
         &project.review_ignore_globs,
     );
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    Ok(())
 }
 
 /// Remove a queued (not yet started) review from the AI review queue.
 /// Running reviews are unaffected.
 #[tauri::command]
 pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if !app.cancel_queued_background_task(&id) {
-        return Err("Queued review not found (it may have started)".to_string());
+    #[cfg(feature = "v1-service")]
+    return ask_on_desktop(&state, |desktop| crate::tasks::cancel_queued(desktop, &id));
+    #[cfg(not(feature = "v1-service"))]
+    {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if !app.cancel_queued_background_task(&id) {
+            return Err("Queued review not found (it may have started)".to_string());
+        }
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
     }
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
 }
 
 /// Stop a running review.
@@ -2280,19 +2373,24 @@ pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSna
 /// other command — including the poll that would show the stop took effect.
 #[tauri::command]
 pub fn cancel_running_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let run = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        app.running_background_review(&id)
-    };
-    let Some(run) = run else {
-        return Err("No running review with that id".to_string());
-    };
-    run.kill();
+    #[cfg(feature = "v1-service")]
+    return ask_on_desktop(&state, |desktop| crate::tasks::cancel_running(desktop, &id));
+    #[cfg(not(feature = "v1-service"))]
+    {
+        let run = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            app.running_background_review(&id)
+        };
+        let Some(run) = run else {
+            return Err("No running review with that id".to_string());
+        };
+        run.kill();
 
-    // Re-read for the snapshot only after the signal is away.
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        // Re-read for the snapshot only after the signal is away.
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    }
 }
 
 #[tauri::command]
@@ -12143,21 +12241,36 @@ pub fn get_background_task_log(
     task_id: String,
     state: State<AppState>,
 ) -> Result<Vec<AgentLogSnapshot>, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let entries = app.background_task_log_tail(&task_id);
-    let log: Vec<AgentLogSnapshot> = entries
-        .iter()
-        .map(|e| AgentLogSnapshot {
-            command_name: e.command_name.to_string(),
-            source: match &e.source {
-                er_engine::app::AgentLogSource::Stdout => "stdout".to_string(),
-                er_engine::app::AgentLogSource::Stderr => "stderr".to_string(),
-                er_engine::app::AgentLogSource::Status => "status".to_string(),
-            },
-            text: e.text.clone(),
+    #[cfg(feature = "v1-service")]
+    return Ok(state
+        .desktop
+        .tasks
+        .log(&task_id)
+        .into_iter()
+        .map(|line| AgentLogSnapshot {
+            command_name: line.command_name,
+            source: line.source,
+            text: line.text,
         })
-        .collect();
-    Ok(log)
+        .collect());
+    #[cfg(not(feature = "v1-service"))]
+    {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let entries = app.background_task_log_tail(&task_id);
+        let log: Vec<AgentLogSnapshot> = entries
+            .iter()
+            .map(|e| AgentLogSnapshot {
+                command_name: e.command_name.to_string(),
+                source: match &e.source {
+                    er_engine::app::AgentLogSource::Stdout => "stdout".to_string(),
+                    er_engine::app::AgentLogSource::Stderr => "stderr".to_string(),
+                    er_engine::app::AgentLogSource::Status => "status".to_string(),
+                },
+                text: e.text.clone(),
+            })
+            .collect();
+        Ok(log)
+    }
 }
 
 #[cfg(test)]
@@ -13605,6 +13718,9 @@ mod tests {
         });
     }
 
+    /// The App's flows run only with the flag off; with it on the service
+    /// runs them (P60.1) and the tick no longer polls the App's tasks.
+    #[cfg(not(feature = "v1-service"))]
     #[test]
     fn review_flow_poll_delivers_flow_progress_after_background_wake() {
         use std::time::{Duration, Instant};
@@ -13635,10 +13751,6 @@ mod tests {
             let mut observed_terminal = false;
             while Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
-                // With the flag on the backend tick drives the flow; the poll
-                // only delivers it.
-                #[cfg(feature = "v1-service")]
-                crate::resources::tick::run(&state.desktop, &state.app);
                 let response = poll_impl(&state).unwrap();
                 if let Some(snapshot) = response.snapshot {
                     if snapshot

@@ -2,12 +2,11 @@
 //! snapshot, driven by the backend so each duty has one driver.
 //!
 //! A tick asks every loaded tab's actor to read its sidecars again, so an
-//! outside write reaches the content with no frontend call, has the task
-//! host retire finished tasks and start queued ones, then runs the
-//! App's duties: agent logs and commands, background tasks, the AI task inbox
-//! and the active tab's sidecar check (the only path that brings an outside
-//! write into the App's AI state, which the export and the ask runs still
-//! read). Each App duty leaves as its data leaves the App. Then it lists the
+//! outside write reaches the content with no frontend call, and has the task
+//! host retire finished tasks and start queued ones. Then it runs the App's
+//! duties: agent logs and commands and the active tab's sidecar check (the
+//! only path that brings an outside write into the App's AI state). Each App
+//! duty leaves as its data leaves the App. Then it lists the
 //! active tab's worktrees for the sidebar's owner and has the owner publish,
 //! which is how writes the owner does not make reach its resources.
 //!
@@ -86,8 +85,6 @@ pub fn run(desktop: &DesktopState, app: &Mutex<App>) {
         let before = AppStamp::of(&app);
         app.drain_agent_log();
         app.check_commands();
-        app.poll_background_tasks();
-        crate::commands::process_ai_task_inbox(&app, desktop);
         // Completion and failure lines land after the commands are checked.
         app.drain_agent_log();
         let ai_reloaded = app.tab_mut().check_ai_files_changed();
@@ -180,25 +177,19 @@ pub fn reload_loaded_tabs(desktop: &DesktopState) -> usize {
 }
 
 /// What the App duties move that warrants a new snapshot: each tab's pending
-/// commands and each background task's status. Agent log lines are left out:
+/// commands. Agent log lines are left out:
 /// a running agent writes them continuously, so a bump per line would wake
 /// the tick and the poll every debounce for the whole run. They reach the
 /// page with the next snapshot, as they did when the poll drained them.
 #[derive(PartialEq, Eq)]
 struct AppStamp {
     commands: Vec<usize>,
-    tasks: Vec<(String, String)>,
 }
 
 impl AppStamp {
     fn of(app: &App) -> Self {
         Self {
             commands: app.tabs.iter().map(|tab| tab.command_rx.len()).collect(),
-            tasks: app
-                .background_task_snapshots()
-                .into_iter()
-                .map(|task| (task.id, task.status))
-                .collect(),
         }
     }
 }
