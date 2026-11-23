@@ -100,6 +100,15 @@ pub fn apply(
         }
         super::tabs::Routed::Other(command) => command,
     };
+    let command = match super::runs::apply(desktop, command) {
+        super::tabs::Routed::Applied(ack) => {
+            return ack.map(|ack| Applied {
+                ack,
+                uninstalled: None,
+            })
+        }
+        super::tabs::Routed::Other(command) => command,
+    };
     let command = match super::flows::apply(desktop, command) {
         super::tabs::Routed::Applied(ack) => {
             return ack.map(|ack| Applied {

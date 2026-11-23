@@ -79,6 +79,12 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
         ResourceKey::Annotations { tab } => super::annotations::annotations(desktop, *tab)?,
         ResourceKey::UiAnnotations { tab } => super::annotations::ui_annotations(desktop, *tab)?,
         ResourceKey::Jobs => super::jobs::jobs(desktop),
+        ResourceKey::TaskLog { id } => (
+            0,
+            Resource::TaskLog(er_protocol::TaskLog {
+                lines: desktop.tasks.log(id),
+            }),
+        ),
         ResourceKey::ReviewJson { tab } => super::annotations::review_json(desktop, *tab)?,
         ResourceKey::ReviewRevisions { tab } => {
             super::annotations::review_revisions(desktop, *tab)?
@@ -134,7 +140,8 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         | ResourceKey::ArenaRuns { .. }
         | ResourceKey::ArenaRun { .. }
         | ResourceKey::PendingReview { .. }
-        | ResourceKey::ReviewFlowRun { .. } => 0,
+        | ResourceKey::ReviewFlowRun { .. }
+        | ResourceKey::TaskLog { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
         ResourceKey::Inbox => sidebar(desktop).inbox().0,
@@ -359,6 +366,16 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::ValidateWithAi { .. }
         | Command::ElaborateWithAi { .. }
         | Command::AskAiOnFinding { .. }
+        | Command::RunReview { .. }
+        | Command::GenerateTour { .. }
+        | Command::RunImportanceAgent { .. }
+        | Command::GenerateDiagram { .. }
+        | Command::RunExpertReview { .. }
+        | Command::RunScopedReview { .. }
+        | Command::RunPrTriage { .. }
+        | Command::RunBranchTriage { .. }
+        | Command::CancelQueuedTask { .. }
+        | Command::CancelRunningTask { .. }
         | Command::RefreshStack { .. }
         | Command::RefreshGithubStatus { .. }
         | Command::ReplyToGithubThread { .. }

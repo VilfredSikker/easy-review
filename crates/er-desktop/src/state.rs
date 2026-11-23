@@ -95,6 +95,9 @@ pub struct DesktopState {
     pub session: SessionClock,
     /// How many times the live runs `jobs` lists have moved.
     pub live_jobs: LiveJobs,
+    /// The background agent tasks the flag path runs, which `jobs` lists.
+    #[cfg(feature = "v1-service")]
+    pub tasks: crate::tasks::TaskHost,
 }
 
 /// A count of the changes seen in the live runs and review flows `jobs`

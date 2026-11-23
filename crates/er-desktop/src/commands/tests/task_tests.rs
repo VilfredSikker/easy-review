@@ -1,0 +1,263 @@
+//! The desktop's task host on the flag path: `jobs` lists each task's row
+//! and moves with its status and never with an output line, which
+//! `task_log` reads; a stop reaches the runner; a queued task can be
+//! removed; and none of it takes the App lock.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use er_engine::task_target::BackgroundTaskTarget;
+use er_protocol::{Command, Resource, ResourceKey, TaskJob};
+use er_service::WorkspaceDeps;
+
+use super::ai_ask_tests::jobs;
+use super::arena_resource_tests::{local_ports, wait_until};
+use super::diff_command_tests::send;
+use super::diff_resource_tests::with_storage;
+use super::{review_flow_test_state, ReviewFlowTestDir};
+use crate::commands::AppState;
+use crate::service::ServiceState;
+
+/// The files a gated agent reads and writes.
+struct Agent {
+    pid: PathBuf,
+    first: PathBuf,
+    second: PathBuf,
+}
+
+impl Agent {
+    fn in_dir(dir: &Path) -> Self {
+        Self {
+            pid: dir.join("agent.pid"),
+            first: dir.join("gate-1"),
+            second: dir.join("gate-2"),
+        }
+    }
+
+    /// Prints its pid to a file and `line-a`, waits for the first gate,
+    /// prints `line-b`, waits for the second. Each wait gives up after
+    /// about thirty seconds, so a failed test leaves no shell behind.
+    fn config(&self, cap: usize) -> String {
+        let (pid, first, second) = (
+            self.pid.display(),
+            self.first.display(),
+            self.second.display(),
+        );
+        let wait = |gate: &dyn std::fmt::Display| {
+            format!(
+                r#"n=0; while [ ! -e "{gate}" ] && [ $n -lt 1500 ]; do sleep 0.02; n=$((n+1)); done"#
+            )
+        };
+        let script = format!(
+            r#"echo $$ > "{pid}"; printf 'line-a\n'; {}; printf 'line-b\n'; {}"#,
+            wait(&first),
+            wait(&second)
+        );
+        format!(
+            r#"
+[ai_hub]
+default_provider = "gated"
+default_model = "one"
+max_concurrent_reviews = {cap}
+
+[ai_hub.providers.gated]
+label = "Gated"
+command = "/bin/sh"
+args = ["-c", '''{script}''', "gated-agent", "{{prompt}}"]
+
+[[ai_hub.providers.gated.models]]
+id = "one"
+"#
+        )
+    }
+}
+
+fn open_gate(gate: &Path) {
+    std::fs::write(gate, "").unwrap_or_else(|e| panic!("gate: {e}"));
+}
+
+/// A state whose tasks run the gated agent, under `cap` running reviews.
+fn tasking(dir: &ReviewFlowTestDir, cap: usize) -> (AppState, Agent) {
+    let agent = Agent::in_dir(dir.path());
+    let path = dir.path().join("settings").join("config.toml");
+    std::fs::create_dir_all(dir.path().join("settings")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(&path, agent.config(cap)).unwrap_or_else(|e| panic!("config: {e}"));
+    let mut state = review_flow_test_state(dir);
+    let ports = local_ports();
+    state.desktop.ports = ports.clone();
+    let deps = WorkspaceDeps::new(ports);
+    state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(path));
+    (state, agent)
+}
+
+fn tasks(state: &AppState) -> Vec<TaskJob> {
+    jobs(state).tasks
+}
+
+fn version(state: &AppState) -> u64 {
+    crate::resources::jobs::version(&state.desktop)
+}
+
+fn log(state: &AppState, id: &str) -> Vec<String> {
+    let key = ResourceKey::TaskLog { id: id.to_string() };
+    match crate::resources::fetch(&state.desktop, key).map(|f| f.value) {
+        Ok(Resource::TaskLog(log)) => log.lines.into_iter().map(|l| l.text).collect(),
+        other => panic!("not a task log: {other:?}"),
+    }
+}
+
+/// A task of `kind` on a bucket under `dir`, run with the settings view's
+/// config and saved pick, queued with the App locked. Answers its id.
+fn queued(state: &AppState, dir: &Path, kind: &str) -> String {
+    let config = crate::arena_service::config(&state.desktop);
+    let (provider_id, model_id, effort) = crate::ai_ask::selection(&config);
+    let bucket = dir.join("bucket");
+    std::fs::create_dir_all(&bucket).unwrap_or_else(|e| panic!("bucket: {e}"));
+    let launch = crate::tasks::Launch {
+        kind: kind.to_string(),
+        command_name: kind.to_string(),
+        target: BackgroundTaskTarget {
+            repo_root: dir.to_string_lossy().into_owned(),
+            er_dir: bucket.to_string_lossy().into_owned(),
+            branch_label: "feature".into(),
+            base_branch: "main".into(),
+            scope: "branch".into(),
+            pr_number: None,
+            remote_repo: None,
+            managed_local: true,
+        },
+        prompt: "Review the change".into(),
+        prepared_diff: false,
+        host_write_diagram: None,
+        scoped_stamp: None,
+        config,
+        selection: er_engine::config::AiSelection {
+            provider_id,
+            model_id,
+            effort,
+        },
+    };
+    super::while_the_app_is_locked(state, "the enqueue", move |state| {
+        crate::tasks::enqueue(&state.desktop, launch)
+    })
+    .unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn row(state: &AppState, id: &str) -> Option<TaskJob> {
+    tasks(state).into_iter().find(|row| row.id == id)
+}
+
+#[cfg(test)]
+fn pid_alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// An output line lands in `task_log` and leaves `jobs`' version alone;
+/// the task finishing moves it.
+#[test]
+fn an_output_line_moves_no_jobs_version() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let id = queued(&state, dir.path(), "review");
+        assert!(row(&state, &id).is_some(), "{:?}", tasks(&state));
+        wait_until("the first line", || {
+            log(&state, &id).iter().any(|line| line.contains("line-a"))
+        });
+        let before = version(&state);
+        open_gate(&agent.first);
+        wait_until("the second line", || {
+            log(&state, &id).iter().any(|line| line.contains("line-b"))
+        });
+        assert_eq!(version(&state), before, "an output line moved jobs");
+        open_gate(&agent.second);
+        wait_until("the task to finish", || {
+            row(&state, &id).is_some_and(|row| row.status != "running")
+        });
+        assert!(version(&state) > before, "the finish did not move jobs");
+    });
+}
+
+/// `CancelRunningTask` reaches the runner, as P43's `CancelJob` does: the
+/// agent's process is gone and the task ends failed.
+#[test]
+fn a_stop_reaches_the_runner() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let id = queued(&state, dir.path(), "review");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&agent.pid)
+                .ok()
+                .filter(|text| text.ends_with('\n'))
+            {
+                break pid.trim().to_string();
+            }
+            assert!(Instant::now() < deadline, "the agent never started");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(pid_alive(&pid));
+
+        let stop = Command::CancelRunningTask { id: id.clone() };
+        let stopped = send(&state, "cancel_running_task", stop);
+        assert!(stopped.is_ok(), "{stopped:?}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pid_alive(&pid) {
+            assert!(
+                Instant::now() < deadline,
+                "the agent's process outlived the stop"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        wait_until("the task to end", || {
+            row(&state, &id).is_some_and(|row| row.status == "failed")
+        });
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// Under a cap of one, a second task waits queued, and removing it drops its
+/// row from `jobs`.
+#[test]
+fn a_queued_task_is_removed_from_jobs() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 1);
+        let _first = queued(&state, dir.path(), "review");
+        let second = queued(&state, dir.path(), "tour");
+        assert_eq!(
+            row(&state, &second).map(|row| row.status),
+            Some("queued".to_string())
+        );
+
+        let cancel = Command::CancelQueuedTask { id: second.clone() };
+        let removed = send(&state, "cancel_queued_task", cancel);
+        assert!(removed.is_ok(), "{removed:?}");
+        assert!(row(&state, &second).is_none(), "{:?}", tasks(&state));
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// The host and its commands never name the App, so no task read or write
+/// waits on it.
+#[test]
+fn the_task_host_names_no_app() {
+    for (name, text) in [
+        ("tasks.rs", include_str!("../../tasks.rs")),
+        ("resources/runs.rs", include_str!("../../resources/runs.rs")),
+    ] {
+        for word in [
+            "AppState",
+            "background_task_log_tail",
+            "app.lock",
+            "current_ai_",
+        ] {
+            assert!(!text.contains(word), "{name} names {word}");
+        }
+    }
+}
