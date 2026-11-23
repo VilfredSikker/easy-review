@@ -1,3 +1,5 @@
+// The diff overlay sets the painted bucket first; the flow is read for it.
+import "./diffResource.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { resourceClient } from "$lib/protocol/client";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";

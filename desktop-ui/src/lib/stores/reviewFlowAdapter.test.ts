@@ -103,6 +103,7 @@ describe("ReviewFlowAdapter", () => {
   it("with the flag on the page reads each flow from jobs and sends the controls through er_send", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const read = (name: string) => readFileSync(join(here, name), "utf8");
+    expect(read("reviewFlowResource.svelte.ts")).toMatch(/^\/\/[^\n]*\nimport "\.\/diffResource\.svelte";/);
     expect(read("reviewFlowResource.svelte.ts")).toMatch(
       /if \(flagOn\) \{\s*app\.overlaySnapshot\(\(raw\) => reviewFlowAdapter\.overlay\(raw\)\);\s*app\.routeCmds\(\(command, args\) => reviewFlowAdapter\.route\(command, args\)\);/,
     );
