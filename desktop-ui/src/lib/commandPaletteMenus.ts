@@ -2,7 +2,6 @@
 // The AI menu stays in CommandPalette.svelte because it drives the palette's
 // own provider picker and reviewer view.
 
-import { invoke } from "@tauri-apps/api/core";
 import { app } from "$lib/stores/app.svelte";
 import { tabsResource } from "$lib/stores/tabsResource.svelte";
 import { arena } from "$lib/stores/arena.svelte";
@@ -15,8 +14,8 @@ import { reviewPage, type ReviewPage } from "$lib/stores/reviewPage.svelte";
 import { terminal } from "$lib/stores/terminal.svelte";
 import { copyToClipboard } from "$lib/clipboard";
 import { asErError } from "$lib/protocol/client";
-import type { OpenSource } from "$lib/protocol/generated/OpenSource";
 import { exportReviewToFile } from "$lib/stores/quickExport";
+import { openSource, selectedSource } from "$lib/tabCommands";
 import { resolveContextIdentity } from "$lib/contextIdentity";
 import { resolveActivePrNumber, resolveActivePrUrl } from "$lib/prUrl";
 import { resolveTabRoot } from "$lib/resolveTabRoot";
@@ -163,7 +162,7 @@ export function actionsMenu(snapshot: AppSnapshot | null, r: PaletteRunners): Co
       group: "Actions",
       kbd: "e",
       run: () => r.dismissAndRun(() =>
-        invoke<OpenSource>("open_in_vscode").then((res) => {
+        openSource("open_in_vscode", selectedSource(app.snapshot)).then((res) => {
           if (res.kind === "needs_checkout") app.showToast("info", res.target);
         }).catch((e) => app.showToast("error", `VS Code: ${asErError(e).message}`)),
       ),

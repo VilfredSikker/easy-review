@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { routePrefetches } from "$lib/prOpen";
+import { nameShownTab } from "$lib/tabCommands";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
 import { app } from "./app.svelte";
 import { BrowserViewAdapter } from "./browserView";
@@ -23,6 +24,7 @@ export const tabsResource = new TabsAdapter({
 
 // With the flag on the tab commands, the opens and the prefetches go through
 // er_send; every other command keeps its path.
+nameShownTab(() => tabsResource.activeKey);
 if (flagOn) {
   app.routeCmds((command, args) => tabsResource.route(command, args));
   routePrefetches((command, args) => tabsResource.route(command, args) ?? invoke(command, args));

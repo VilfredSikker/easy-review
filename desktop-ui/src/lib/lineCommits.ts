@@ -1,12 +1,12 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { LineCommits } from "$lib/protocol/generated/LineCommits";
+import { lineCommits } from "$lib/tabCommands";
 
 /** Reply of the lazy `line_commits` command. It is not snapshot data: ask for
  *  it per file when "Mark lines" is on and the file is visible. */
 export type { LineCommits };
 
 export function fetchLineCommits(path: string, cacheKey: string): Promise<LineCommits> {
-  return invoke<LineCommits>("line_commits", { path, cacheKey });
+  return lineCommits(path, cacheKey);
 }
 
 /** A reply is usable only for the hunks it was computed against. */
