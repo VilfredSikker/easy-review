@@ -8,8 +8,6 @@
 //! the context the ask captured: a tab that moved to another view, lost the
 //! focus or closed meanwhile still gets the answer in the bucket it asked
 //! from. Every function takes `DesktopState`, so no ask waits on the App.
-//!
-//! Only compiled with `v1-service`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

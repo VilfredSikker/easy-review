@@ -15,11 +15,9 @@ use crate::projects::{self, normalize_remote_slug};
 use crate::resources::content_routes;
 pub use crate::state::DesktopState;
 #[cfg(test)]
-use er_engine::app::run_card_ai_subprocess;
-#[cfg(test)]
-use er_engine::app::CardAiInvocation;
-use er_engine::app::DiffMode;
+use er_engine::card_job::{run_card_ai_subprocess, CardAiInvocation};
 use er_engine::config::InboxConfig;
+use er_engine::tab_identity::DiffMode;
 
 pub(crate) const DEFAULT_ASK_AI_PROMPT: &str =
     "Elaborate on this and answer any question directly.";
@@ -1821,7 +1819,7 @@ pub(crate) fn card_model(picked: Option<String>, agent_model: String) -> Option<
 /// Where a card ask's progress lines go: the card UI has no log panel, so
 /// they go to the debug log, drained on their own thread while the job
 /// blocks.
-pub(crate) fn card_progress() -> er_engine::app::ProgressSink {
+pub(crate) fn card_progress() -> er_engine::card_job::ProgressSink {
     Arc::new(|line: &str| {
         log::debug!("card ai: {line}");
     })

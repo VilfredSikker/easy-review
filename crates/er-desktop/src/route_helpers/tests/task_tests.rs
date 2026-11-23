@@ -886,7 +886,7 @@ impl Launches {
     }
 
     /// A launch that takes a moment and leaves its task running.
-    fn launch(&self) -> anyhow::Result<er_engine::app::AgentPromptRun> {
+    fn launch(&self) -> anyhow::Result<er_engine::agent_prompt::AgentPromptRun> {
         self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(2));
         let (tx, result) = std::sync::mpsc::channel();
@@ -894,7 +894,7 @@ impl Launches {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(tx);
-        Ok(er_engine::app::AgentPromptRun {
+        Ok(er_engine::agent_prompt::AgentPromptRun {
             run: er_engine::jobs::AgentRunHandle::new(),
             result,
         })

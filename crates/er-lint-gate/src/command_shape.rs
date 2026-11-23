@@ -2,15 +2,14 @@
 //!
 //! A `#[tauri::command]` function in er-desktop returns `Result<T, ErError>`
 //! or a type that is not a `Result`, and no path segment of its return type
-//! ends in `Snapshot`. The commands that predate the rule are listed by name in
-//! `allow`. The list only shrinks: an entry outside the frozen fixture fails,
-//! and so does a stale entry, one with no command or whose every body passes.
+//! ends in `Snapshot`. There is no allow-list: the commands that predated the
+//! rule are gone.
 //!
 //! The source is read with syn, so a body under either arm of a `cfg` is
 //! checked. A `type` alias declared in the same file is expanded first, so
 //! `type R = Result<u8, String>` cannot hide the shape.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use syn::visit::{self, Visit};
 use syn::{GenericArgument, PathArguments, ReturnType, Type};
@@ -23,13 +22,6 @@ pub const CODE: &str = "er::command_shape";
 /// The crate whose commands the rule reads, workspace-relative.
 pub const SOURCE: &str = "crates/er-desktop/src";
 
-/// Where the allow-list lives, for the diagnostics about its entries.
-const MANIFEST: &str = "Cargo.toml";
-
-/// The names that failed the rule when it landed. The allow-list may only
-/// hold names from this set.
-const FROZEN: &str = include_str!("../tests/fixtures/command_shape_frozen.txt");
-
 /// Alias expansions followed before giving up, so a cycle cannot hang the gate.
 const MAX_ALIAS_DEPTH: usize = 16;
 
@@ -39,15 +31,6 @@ pub struct Command {
     pub line: usize,
     /// Why the return type fails the rule, or `None` when it passes.
     pub problem: Option<String>,
-}
-
-/// The frozen names, one per line in the fixture.
-pub fn frozen() -> BTreeSet<&'static str> {
-    FROZEN
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect()
 }
 
 struct Alias {
@@ -257,63 +240,20 @@ pub fn commands(source: &str) -> Vec<Command> {
     finder.commands
 }
 
-/// Turn the commands into gate diagnostics. A failing command whose name is
-/// on `allow` passes. An entry outside `frozen` fails, and so does a stale
-/// one: a name with no command, or whose every body passes.
-pub fn evaluate(
-    commands_by_file: &BTreeMap<String, Vec<Command>>,
-    allow: &[String],
-    frozen: &BTreeSet<&str>,
-    code: &str,
-) -> Vec<Diagnostic> {
+/// Turn the commands into gate diagnostics, one per failing command.
+pub fn evaluate(commands_by_file: &BTreeMap<String, Vec<Command>>, code: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for (file, commands) in commands_by_file {
         for command in commands {
             let Some(problem) = &command.problem else {
                 continue;
             };
-            if allow.contains(&command.name) {
-                continue;
-            }
             let message = format!(
                 "`{}` {problem}: a command returns `Result<T, ErError>` or a type that is \
                  not a `Result`, and no path segment of its return type ends in `Snapshot`",
                 command.name
             );
             out.push(error(file, command.line, code, &message));
-        }
-    }
-    for entry in allow {
-        if !frozen.contains(entry.as_str()) {
-            out.push(error(
-                MANIFEST,
-                1,
-                code,
-                &format!(
-                    "command-shape entry `{entry}` is not in the frozen list: the list only \
-                     shrinks, so a new command takes the new shape"
-                ),
-            ));
-        }
-        let bodies: Vec<&Command> = commands_by_file
-            .values()
-            .flatten()
-            .filter(|command| &command.name == entry)
-            .collect();
-        if bodies.is_empty() {
-            out.push(error(
-                MANIFEST,
-                1,
-                code,
-                &format!("stale allow-list entry: no command is named `{entry}`; remove it"),
-            ));
-        } else if bodies.iter().all(|command| command.problem.is_none()) {
-            out.push(error(
-                MANIFEST,
-                1,
-                code,
-                &format!("stale allow-list entry: every `{entry}` passes the rule; remove it"),
-            ));
         }
     }
     out
@@ -334,23 +274,18 @@ fn error(file: &str, line: usize, code: &str, message: &str) -> Diagnostic {
 mod tests {
     use super::*;
 
-    const FILE: &str = "crates/er-desktop/src/commands.rs";
+    const FILE: &str = "crates/er-desktop/src/direct/os.rs";
 
     fn by_file(source: &str) -> BTreeMap<String, Vec<Command>> {
         BTreeMap::from([(FILE.to_string(), commands(source))])
     }
 
-    fn names(list: &[&str]) -> Vec<String> {
-        list.iter().map(ToString::to_string).collect()
-    }
-
-    fn diagnose(source: &str, allow: &[&str], frozen: &[&str]) -> Vec<Diagnostic> {
-        let frozen: BTreeSet<&str> = frozen.iter().copied().collect();
-        evaluate(&by_file(source), &names(allow), &frozen, CODE)
+    fn diagnose(source: &str) -> Vec<Diagnostic> {
+        evaluate(&by_file(source), CODE)
     }
 
     fn assert_one_failure(source: &str) {
-        let diags = diagnose(source, &[], &[]);
+        let diags = diagnose(source);
         assert_eq!(diags.len(), 1, "{source}: {diags:?}");
         assert_eq!(diags[0].code.as_deref(), Some(CODE));
         assert_eq!(diags[0].file.as_deref(), Some(FILE));
@@ -358,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_result_outside_the_list_fails() {
+    fn a_snapshot_result_fails() {
         assert_one_failure("#[tauri::command] fn c() -> Result<AppSnapshot, String> { x() }");
     }
 
@@ -382,7 +317,7 @@ mod tests {
     #[test]
     fn an_alias_to_the_new_shape_passes() {
         let source = "type R<T> = Result<T, ErError>;\n#[tauri::command] fn c() -> R<u8> { x() }";
-        assert!(diagnose(source, &[], &[]).is_empty());
+        assert!(diagnose(source).is_empty());
     }
 
     #[test]
@@ -398,19 +333,19 @@ mod tests {
     }
 
     #[test]
-    fn a_flag_only_command_fails() {
+    fn a_cfg_gated_command_fails() {
         assert_one_failure(
-            "#[cfg(feature = \"v1-service\")]\n#[tauri::command] fn c() -> Result<u8, String> { x() }",
+            "#[cfg(target_os = \"macos\")]\n#[tauri::command] fn c() -> Result<u8, String> { x() }",
         );
     }
 
     #[test]
     fn both_cfg_bodies_are_read() {
-        let source = "#[cfg(feature = \"v1-service\")]\n#[tauri::command] fn c() -> Result<u8, ErError> { x() }\n\
-                      #[cfg(not(feature = \"v1-service\"))]\n#[tauri::command] fn c() -> Result<u8, String> { x() }";
+        let source = "#[cfg(target_os = \"macos\")]\n#[tauri::command] fn c() -> Result<u8, ErError> { x() }\n\
+                      #[cfg(not(target_os = \"macos\"))]\n#[tauri::command] fn c() -> Result<u8, String> { x() }";
         let found = commands(source);
         assert_eq!(found.len(), 2);
-        assert_eq!(diagnose(source, &[], &[]).len(), 1);
+        assert_eq!(diagnose(source).len(), 1);
     }
 
     #[test]
@@ -423,7 +358,7 @@ mod tests {
             "#[tauri::command] fn c() {}",
             "#[tauri::command] fn c() -> Result<ArenaRunSnapshotWire, ErError> { x() }",
         ] {
-            assert!(diagnose(source, &[], &[]).is_empty(), "{source}");
+            assert!(diagnose(source).is_empty(), "{source}");
         }
     }
 
@@ -437,53 +372,5 @@ mod tests {
         ] {
             assert_one_failure(source);
         }
-    }
-
-    #[test]
-    fn a_listed_command_passes() {
-        let source = "#[tauri::command] fn c() -> Result<AppSnapshot, String> { x() }";
-        assert!(diagnose(source, &["c"], &["c"]).is_empty());
-    }
-
-    #[test]
-    fn an_entry_outside_the_frozen_list_fails() {
-        let source = "#[tauri::command] fn c() -> Result<AppSnapshot, String> { x() }";
-        let diags = diagnose(source, &["c"], &["other"]);
-        assert_eq!(diags.len(), 1, "{diags:?}");
-        assert!(diags[0].rendered.contains("not in the frozen list"));
-        assert_eq!(diags[0].file.as_deref(), Some(MANIFEST));
-    }
-
-    #[test]
-    fn an_entry_whose_every_body_passes_is_stale() {
-        let source = "#[tauri::command] fn c() -> Result<u8, ErError> { x() }";
-        let diags = diagnose(source, &["c"], &["c"]);
-        assert_eq!(diags.len(), 1, "{diags:?}");
-        assert!(diags[0].rendered.contains("stale allow-list entry"));
-        assert!(diags[0].rendered.contains("`c`"));
-    }
-
-    #[test]
-    fn an_entry_with_no_command_is_stale() {
-        let diags = diagnose("fn c() {}", &["gone"], &["gone"]);
-        assert_eq!(diags.len(), 1, "{diags:?}");
-        assert!(diags[0].rendered.contains("stale allow-list entry"));
-        assert!(diags[0].rendered.contains("`gone`"));
-    }
-
-    #[test]
-    fn an_entry_stays_live_while_one_body_fails() {
-        let source = "#[cfg(feature = \"v1-service\")]\n#[tauri::command] fn c() -> Result<u8, ErError> { x() }\n\
-                      #[cfg(not(feature = \"v1-service\"))]\n#[tauri::command] fn c() -> Result<u8, String> { x() }";
-        assert!(diagnose(source, &["c"], &["c"]).is_empty());
-    }
-
-    #[test]
-    fn the_frozen_fixture_parses_to_names() {
-        let frozen = frozen();
-        assert!(!frozen.is_empty());
-        assert!(frozen
-            .iter()
-            .all(|name| !name.contains(char::is_whitespace)));
     }
 }

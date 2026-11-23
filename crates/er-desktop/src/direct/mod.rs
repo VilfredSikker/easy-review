@@ -1,6 +1,7 @@
 //! The commands that stay direct `#[tauri::command]` functions: each acts on
 //! the window, a PTY, the OS shell or git for one file, and has no resource
-//! to serve. They take `DesktopState`.
+//! to serve. They take `DesktopState`, and those that read a tab name it by
+//! its key.
 
 pub mod dev_log;
 pub mod export;

@@ -5,8 +5,6 @@
 //! actor (ADR 0067): progress and live status come from its published view,
 //! and run records from the store. The App is out of reach here: every
 //! function takes `DesktopState`.
-//!
-//! Only compiled with `v1-service`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

@@ -37,9 +37,8 @@ pub fn launch_root(registry: &er_service::AppRegistry, fallback: Option<&str>) -
 }
 
 /// The active tab's PR as `(owner/repo, number)` for the 30s head probe.
-/// None when the tab shows no PR or its origin cannot be resolved, and, off
-/// the flag, while the App is busy: each skips this tick. On the flag the
-/// registry's active tab names it, so a held App lock never skips one.
+/// None when the tab shows no PR or its origin cannot be resolved, which skips
+/// this tick. The registry's active tab names it, so no lock skips one.
 pub fn pr_head_probe_target(state: &DesktopState) -> Option<(String, u64)> {
     let (remote, number, root) = {
         let view = state.service.app_registry().tabs_view();

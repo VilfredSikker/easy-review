@@ -91,17 +91,8 @@ pub(crate) fn content_source(
 ) -> Result<SourceTab, ErError> {
     let content = super::content_of(desktop, wire)?;
     let tab = &content.tab;
-    // A local edit runs in the checkout of the branch the tab shows: its repo,
-    // or a branch view's checkout when one exists.
-    let local_root = if tab.identity().is_remote() {
-        None
-    } else if tab.local_branch_view.is_some() {
-        tab.checkout_root.clone()
-    } else {
-        Some(tab.repo_root.clone())
-    };
     Ok(SourceTab {
-        local_root,
+        local_root: local_root(tab),
         pr_head: content
             .pr
             .overview
@@ -114,6 +105,18 @@ pub(crate) fn content_source(
         repo_root: tab.repo_root.clone(),
         git: Arc::clone(&desktop.ports.git),
     })
+}
+
+/// A local edit runs in the checkout of the branch the tab shows: its repo,
+/// or a branch view's checkout when one exists.
+fn local_root(tab: &er_engine::tab_identity::ResolvedTab) -> Option<String> {
+    if tab.identity().is_remote() {
+        None
+    } else if tab.local_branch_view.is_some() {
+        tab.checkout_root.clone()
+    } else {
+        Some(tab.repo_root.clone())
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -281,20 +284,28 @@ mod tests {
 
     #[test]
     fn open_source_policy_allows_only_checked_out_local_contexts() {
-        // The policy itself lives on `TabState::local_checkout_root` (see the
-        // engine's tests); this pins the two roots it resolves to.
-        let mut working = er_engine::app::TabState::new_for_test(vec![]);
-        working.repo_root = "/repo".into();
-        assert_eq!(working.local_checkout_root(), Some("/repo"));
+        let working = er_engine::tab_identity::ResolvedTab {
+            repo_root: "/repo".into(),
+            current_branch: "main".into(),
+            base_branch: "main".into(),
+            mode: er_engine::tab_identity::DiffMode::Branch,
+            tour_is_pr: false,
+            remote_repo: None,
+            pr_number: None,
+            local_branch_view: None,
+            pr_head_ref: None,
+            checkout_root: None,
+        };
+        assert_eq!(local_root(&working).as_deref(), Some("/repo"));
 
-        let mut pr = er_engine::app::TabState::new_for_test(vec![]);
-        pr.repo_root = "/repo".into();
+        let mut pr = working.clone();
         pr.remote_repo = Some("o/r".into());
+        assert_eq!(local_root(&pr), None, "a remote PR has no checkout");
         pr.local_branch_view = Some("feat/pr-head".into());
         pr.current_branch = "feat/pr-head".into();
-        assert_eq!(pr.local_checkout_root(), None);
-        pr.local_branch_checkout_root = Some("/wt".into());
-        assert_eq!(pr.local_checkout_root(), Some("/wt"));
+        assert_eq!(local_root(&pr), None);
+        pr.checkout_root = Some("/wt".into());
+        assert_eq!(local_root(&pr).as_deref(), Some("/wt"));
     }
 
     /// The page names the file and the line; a checkout that holds the file

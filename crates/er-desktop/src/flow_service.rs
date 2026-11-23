@@ -4,8 +4,6 @@
 //! the workspace actor that runs the flow. A run read takes the published view
 //! and the store and never waits on the actor (ADR 0067). The App is out of
 //! reach here: every function takes `DesktopState`.
-//!
-//! Only compiled with `v1-service`.
 
 use std::sync::atomic::Ordering;
 
