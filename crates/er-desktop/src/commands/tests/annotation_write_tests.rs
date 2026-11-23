@@ -1,6 +1,6 @@
 //! The annotation writes on `er_send`: each names the tab the page painted
 //! and the view `annotations(tab)` named, and lands on that tab whichever
-//! one is active, with the App locked. A key the registry no longer lists is
+//! one is active. A key the registry no longer lists is
 //! `NotFound`; a tab that shows another view since refuses the write.
 
 use std::path::Path;
@@ -290,7 +290,7 @@ fn readme_note(key: TabKey, preview_key: String) -> Command {
 /// A document thread is checked against the preview of the tab it names, in
 /// that tab's content: a key picked in text that has since changed is
 /// refused, and the current key is written to that tab while another is
-/// active, with the App locked.
+/// active.
 #[test]
 fn a_document_thread_is_checked_against_its_own_tabs_preview() {
     with_storage(|dir| {

@@ -1,5 +1,5 @@
 //! The review flows with no App: a flow command names its tab and runs on
-//! that tab's actor with the App locked, and its context comes from the
+//! that tab's actor, and its context comes from the
 //! tab's content and the settings actor's view. Startup recovery reads the
 //! registry's list before any tab has loaded.
 
@@ -106,8 +106,8 @@ fn recovered(
         .is_some_and(|view| view.review_flow(bucket).is_some())
 }
 
-/// Starts a review of the branch view on `tab`, painted on `er_dir`, with
-/// the App locked.
+/// Starts a review of the branch view on `tab`, painted on `er_dir`, on a
+/// thread.
 fn start(state: &DesktopState, tab: TabKey, er_dir: String) -> Result<(), ErError> {
     super::on_a_thread(state, "flow start", move |state| {
         let wire = er_service::wire_tab_key(tab);
@@ -116,11 +116,11 @@ fn start(state: &DesktopState, tab: TabKey, er_dir: String) -> Result<(), ErErro
     })
 }
 
-/// The registry moved to B while the page shows A: a start keyed to A, run
-/// with the App locked, runs on A's actor over A's bucket, and a start that
+/// The registry moved to B while the page shows A: a start keyed to A
+/// runs on A's actor over A's bucket, and a start that
 /// names a bucket A's content no longer shows is refused.
 #[test]
-fn a_flow_start_runs_on_the_tab_it_names_with_the_app_locked() {
+fn a_flow_start_runs_on_the_tab_it_names() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = flow_state(dir, local_ports(), Arc::clone(&sink));
@@ -151,10 +151,10 @@ fn a_flow_start_runs_on_the_tab_it_names_with_the_app_locked() {
     });
 }
 
-/// With the App locked, a flow's context takes the effort `SetAiEffort`
+/// A flow's context takes the effort `SetAiEffort`
 /// just saved through the settings actor, and the view of the tab it names.
 #[test]
-fn a_flow_context_takes_the_saved_effort_with_the_app_locked() {
+fn a_flow_context_takes_the_saved_effort() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = flow_state(dir, local_ports(), Arc::clone(&sink));
@@ -180,7 +180,7 @@ fn a_flow_context_takes_the_saved_effort_with_the_app_locked() {
     });
 }
 
-/// Acceptance, with the App locked, fetches the diff of the listed tab whose
+/// Acceptance fetches the diff of the listed tab whose
 /// content shows the run's target; once that tab shows another view, no tab
 /// shows the target and acceptance is told it is no longer open.
 #[test]
@@ -275,11 +275,10 @@ fn a_review_flow_on_a_remote_pr_tab_keys_through_tabs() {
     });
 }
 
-/// At startup no tab has loaded, and the App, which a restore has already
-/// filled, is locked: recovery still finds each listed tab's flow, in the
-/// bucket its descriptor resolves to.
+/// At startup no tab has loaded: recovery still finds each listed tab's
+/// flow, in the bucket its descriptor resolves to.
 #[test]
-fn startup_recovery_recovers_each_listed_unloaded_tab_with_the_app_locked() {
+fn startup_recovery_recovers_each_listed_unloaded_tab() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = flow_state(dir, local_ports(), Arc::clone(&sink));

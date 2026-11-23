@@ -1,5 +1,5 @@
-//! The flag-on watcher: its target comes from the registry and the content
-//! with the App locked, a file change refreshes the watched tab's content and
+//! The watcher: its target comes from the registry and the content, a file
+//! change refreshes the watched tab's content and
 //! clears the marks whose diff changed, and a load resolves the checkout root
 //! by the watcher's rule, a linked worktree included.
 

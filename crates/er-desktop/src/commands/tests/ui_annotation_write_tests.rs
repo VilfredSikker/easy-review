@@ -1,6 +1,6 @@
 //! The browser annotation writes on `er_send`: each names the tab and view
 //! the page painted, writes `ui-annotations.json` and the screenshots in that
-//! tab's view bucket with the App locked, and moves `ui_annotations(tab)`.
+//! tab's view bucket, and moves `ui_annotations(tab)`.
 
 use std::path::Path;
 use std::sync::Barrier;
@@ -124,11 +124,11 @@ fn the_browser_annotation_writes_land_in_the_view_bucket_never_the_pr_bucket() {
     });
 }
 
-/// With the App locked, each write answers, moves `ui_annotations(tab)` to
+/// Each write answers, moves `ui_annotations(tab)` to
 /// the version its `Ack` names, and leaves the rows and files it should, as
 /// the `ui_annotations(tab)` fetch and the view bucket show them.
 #[test]
-fn each_browser_annotation_write_moves_ui_annotations_with_the_app_locked() {
+fn each_browser_annotation_write_moves_ui_annotations() {
     with_tab(|state, (key, tab)| {
         let painted = view(state, key);
         let wire = er_service::wire_tab_key(key);
@@ -274,7 +274,7 @@ fn each_browser_annotation_write_moves_ui_annotations_with_the_app_locked() {
 }
 
 /// Writes sent together each land: 24 adds started at once leave 24 rows.
-/// The threads call the route itself, since `send` holds the App lock and
+/// The threads call the route itself, since `send` waits on each one and
 /// would line them up on its own.
 #[test]
 fn browser_annotation_writes_sent_together_each_land() {

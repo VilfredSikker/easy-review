@@ -1,5 +1,5 @@
 //! The arena on `er_send` and `er_fetch`: a command names the tab the page
-//! painted and runs there with the App locked, a read answers from the tab's
+//! painted and runs there, a read answers from the tab's
 //! buckets, and the live runs reach the page through `jobs`.
 
 use std::sync::Arc;
@@ -72,10 +72,10 @@ fn ended(job: &ArenaRunJob) -> bool {
 }
 
 /// The registry moved to B while the page shows A: an `er_send` start keyed
-/// to A, sent with the App locked, files its run in A's bucket and none in
-/// B's, and `jobs` lists it there.
+/// to A files its run in A's bucket and none in B's, and `jobs` lists it
+/// there.
 #[test]
-fn an_er_send_start_runs_on_the_tab_it_names_with_the_app_locked() {
+fn an_er_send_start_runs_on_the_tab_it_names() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = arena_state(dir, local_ports(), Arc::clone(&sink));
@@ -216,8 +216,8 @@ fn live_jobs_counts_a_change_of_progress_alone() {
     );
 }
 
-/// `arena_estimate` prices the plan on the files it names, read with the App
-/// locked and never through the actor's queue.
+/// `arena_estimate` prices the plan on the files it names, read off the
+/// actor's queue.
 #[test]
 fn an_estimate_prices_the_files_its_plan_names() {
     with_storage(|dir| {

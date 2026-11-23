@@ -1,5 +1,5 @@
 //! The direct commands that read a tab, with the flag on: each names the tab
-//! by its key and reads that tab's published content with the App locked.
+//! by its key and reads that tab's published content.
 
 use er_protocol::ExportOptions;
 
@@ -10,10 +10,10 @@ use super::on_a_thread;
 use crate::direct::os::{content_source, target, view_bucket, Editor, Target};
 use crate::direct::{export, line_commits};
 
-/// With the App locked, the open, reveal, line-commit and export commands
-/// each answer from the content of the tab their key names.
+/// The open, reveal, line-commit and export commands each answer
+/// from the content of the tab their key names.
 #[test]
-fn the_keyed_direct_commands_answer_with_the_app_locked() {
+fn the_keyed_direct_commands_answer() {
     with_tab(|state, (key, tab)| {
         let content = state.service.content(key, &tab).expect("the tab's content");
         let root = content.tab.repo_root.clone();

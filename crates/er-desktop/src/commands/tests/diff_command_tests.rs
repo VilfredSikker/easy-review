@@ -1,5 +1,5 @@
 //! The diff commands on `er_send`: each moves its tab's `diff(tab)` and
-//! answers that version, with the App lock held; a filter is the desktop's
+//! answers that version; a filter is the desktop's
 //! own view state, never the App tab's.
 
 use er_engine::tab_identity::DiffMode;
@@ -70,7 +70,7 @@ fn assert_moved(state: &DesktopState, key: TabKey, before: u64, ack: &Ack) -> Ta
 }
 
 #[test]
-fn each_diff_command_moves_its_tab_diff_with_the_app_lock_held() {
+fn each_diff_command_moves_its_tab_diff() {
     with_tab(|state, (key, tab)| {
         let wire = er_service::wire_tab_key(key);
         let commands = [

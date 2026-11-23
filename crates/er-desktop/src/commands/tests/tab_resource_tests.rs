@@ -1,5 +1,5 @@
 //! The tab commands and the opens through `er_send` with the flag on: each
-//! answers while the App is locked, names `tabs` at the registry's new
+//! answers, names `tabs` at the registry's new
 //! revision, and leaves the registry as the strip asked. The browser commands
 //! write the registry's active tab, and a close prunes the closed tab's view.
 
@@ -135,8 +135,8 @@ impl TabWebviews for Webviews {
     }
 }
 
-/// Sends `command` through `er_send`'s body while the App is locked.
-pub(super) fn send_locked(
+/// Sends `command` through `er_send`'s body on a thread.
+pub(super) fn send_on_a_thread(
     state: &DesktopState,
     command: Command,
     picked: Option<String>,
@@ -157,7 +157,7 @@ pub(super) fn send_locked(
 /// Sends `command` and checks its `Ack` names `tabs` at the new revision.
 fn send_tab_command(state: &DesktopState, command: Command) -> er_service::TabsView {
     let what = format!("{command:?}");
-    let ack = send_locked(state, command, None).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+    let ack = send_on_a_thread(state, command, None).unwrap_or_else(|e| panic!("{what}: {e:?}"));
     let view = state.service.app_registry().tabs_view();
     let version = crate::resources::version(state, ResourceKey::Tabs);
     let version = version.unwrap_or_else(|e| panic!("{what}: {e:?}"));
@@ -187,10 +187,10 @@ fn strip(state: &DesktopState) -> Vec<(TabKind, String)> {
         .collect()
 }
 
-/// Every tab command and open answers through `er_send` while the App is
-/// locked, and the registry holds what the strip asked for.
+/// Every tab command and open answers through `er_send`, and the registry
+/// holds what the strip asked for.
 #[test]
-fn every_tab_command_and_open_answers_through_er_send_with_the_app_locked() {
+fn every_tab_command_and_open_answers_through_er_send() {
     with_storage(|dir| {
         let state = state(dir);
         let one = dir_in(dir, "widgets");
@@ -204,9 +204,9 @@ fn every_tab_command_and_open_answers_through_er_send_with_the_app_locked() {
                 project_id: project(),
             },
         );
-        let picked = send_locked(&state, Command::OpenWorktree, Some(two.clone()));
+        let picked = send_on_a_thread(&state, Command::OpenWorktree, Some(two.clone()));
         assert!(picked.is_ok(), "open_worktree: {picked:?}");
-        let cancelled = send_locked(&state, Command::OpenWorktree, None);
+        let cancelled = send_on_a_thread(&state, Command::OpenWorktree, None);
         assert_eq!(cancelled.map(|ack| ack.changed), Ok(Vec::new()));
         send_tab_command(&state, Command::NewTab);
         assert_eq!(
@@ -233,7 +233,7 @@ fn every_tab_command_and_open_answers_through_er_send_with_the_app_locked() {
         let closed = view.tabs[0].key;
         let view = send_tab_command(&state, Command::CloseTab { key: wire(closed) });
         assert!(view.tabs.iter().all(|tab| tab.key != closed));
-        let gone = send_locked(&state, Command::SelectTab { key: wire(closed) }, None);
+        let gone = send_on_a_thread(&state, Command::SelectTab { key: wire(closed) }, None);
         assert_eq!(gone.map_err(|e| e.kind), Err(ErErrorKind::NotFound));
 
         let opens = [
@@ -304,7 +304,7 @@ fn every_tab_command_and_open_answers_through_er_send_with_the_app_locked() {
             },
         ] {
             let what = format!("{prefetch:?}");
-            let ack = send_locked(&state, prefetch, None);
+            let ack = send_on_a_thread(&state, prefetch, None);
             assert_eq!(ack.map(|ack| ack.changed), Ok(Vec::new()), "{what}");
         }
     });
@@ -431,7 +431,7 @@ fn cycle_tab_browser_layout_through_er_send_moves_the_registry_active_tab() {
 
 /// The bodies the tab arm calls take `DesktopState`, which still reaches the
 /// App through `tauri_app_handle`. That handle is `None` in tests, so the
-/// held-mutex tests cannot see a lock taken through it; this scan can. It
+/// thread-run tests cannot see a lock taken through it; this scan can. It
 /// reads each named body; the helpers those bodies call go unscanned.
 #[test]
 fn no_body_the_tab_arm_calls_reaches_the_app() {
