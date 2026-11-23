@@ -8,13 +8,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use er_engine::task_target::BackgroundTaskTarget;
+use er_engine::TabKey;
 use er_protocol::{Command, Resource, ResourceKey, TaskJob};
 use er_service::WorkspaceDeps;
 
 use super::ai_ask_tests::jobs;
-use super::arena_resource_tests::{local_ports, wait_until};
+use super::arena_resource_tests::{bucket, local_ports, open, wait_until};
 use super::diff_command_tests::send;
-use super::diff_resource_tests::with_storage;
+use super::diff_resource_tests::{raw_diff, with_storage};
 use super::{review_flow_test_state, ReviewFlowTestDir};
 use crate::commands::AppState;
 use crate::service::ServiceState;
@@ -259,5 +260,73 @@ fn the_task_host_names_no_app() {
         ] {
             assert!(!text.contains(word), "{name} names {word}");
         }
+    }
+}
+
+/// With the App locked, a review run through `er_send` reads the tab's
+/// content: the diff it prepares in the tab's bucket is the diff the content
+/// holds, and `jobs` lists its task under that bucket and scope.
+#[test]
+fn a_review_run_prepares_the_content_diff_with_the_app_locked() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab = open(&state, dir.path(), "a");
+        let bucket = bucket(&state, &tab);
+        let command = Command::RunReview {
+            tab: er_service::wire_tab_key(tab.0),
+            scope: "branch".into(),
+        };
+        let ack = send(&state, "run_review", command).unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(
+            ack.changed.iter().any(|c| c.key == ResourceKey::Jobs),
+            "{ack:?}"
+        );
+        let task = tasks(&state)
+            .into_iter()
+            .find(|row| row.kind == "review")
+            .unwrap_or_else(|| panic!("no review row"));
+        assert_eq!(
+            (task.er_dir.as_str(), task.scope.as_str()),
+            (bucket.as_str(), "branch")
+        );
+        let prepared = std::fs::read_to_string(Path::new(&bucket).join("diff-tmp"));
+        assert_eq!(prepared.ok().as_deref(), Some(raw_diff().as_str()));
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// The run commands' flag path never takes the App lock: the tour and a
+/// scoped triage each start with the App held.
+#[test]
+fn the_run_commands_start_with_the_app_locked() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab: (TabKey, _) = open(&state, dir.path(), "a");
+        let _ = bucket(&state, &tab);
+        let started = super::while_the_app_is_locked(&state, "the runs", |state| {
+            let tour =
+                crate::commands::ask_on_desktop(state, |desktop| crate::runs::tour(desktop, None));
+            let triage = crate::commands::ask_on_desktop(state, |desktop| {
+                let reviewers = vec!["triage".to_string()];
+                crate::runs::scoped(desktop, None, "branch".into(), Vec::new(), reviewers, None)
+            });
+            (tour.map(drop), triage.map(drop))
+        });
+        assert_eq!(started, (Ok(()), Ok(())));
+        let kinds: Vec<String> = tasks(&state).into_iter().map(|row| row.kind).collect();
+        assert!(kinds.contains(&"tour".to_string()), "{kinds:?}");
+        assert!(kinds.contains(&"triage".to_string()), "{kinds:?}");
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// The run module never names the App.
+#[test]
+fn the_runs_name_no_app() {
+    let text = include_str!("../../runs.rs");
+    for word in ["AppState", "app.lock", "current_ai_", "app.tab()"] {
+        assert!(!text.contains(word), "runs.rs names {word}");
     }
 }
