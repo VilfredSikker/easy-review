@@ -1,5 +1,7 @@
 import { tick } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
+import { asErError } from "$lib/protocol/client";
+import type { OpenSource } from "$lib/protocol/generated/OpenSource";
 import { app } from "$lib/stores/app.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { reviewPage } from "$lib/stores/reviewPage.svelte";
@@ -13,10 +15,10 @@ export function wantsSource(e: MouseEvent | KeyboardEvent | undefined): boolean 
 async function openSource(idx: number): Promise<void> {
   await app.cmd("select_file", { idx });
   try {
-    const res = await invoke<{ kind: string; target: string }>("open_source");
+    const res = await invoke<OpenSource>("open_source");
     if (res.kind === "needs_checkout") app.showToast("info", "Create editable worktree to open locally");
   } catch (err) {
-    app.showToast("error", `Open source: ${err}`);
+    app.showToast("error", `Open source: ${asErError(err).message}`);
   }
 }
 

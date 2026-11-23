@@ -12,6 +12,7 @@ import {
   buildExportOpts,
   collectExportItems,
   countExportedItems,
+  exportFailedText,
   exportTabKey,
   markdownLineCount,
   parseExportPrefs,
@@ -95,7 +96,7 @@ class ExportOptionsStore {
       const count = countExportedItems(body);
       app.showToast("success", `Export copied · ${count} items, ${markdownLineCount(body)} lines of markdown`);
     } catch (e) {
-      app.showToast("error", `Export failed: ${String(e)}`);
+      app.showToast("error", exportFailedText(e));
     }
   }
 }
