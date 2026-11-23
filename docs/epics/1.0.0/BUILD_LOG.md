@@ -315,3 +315,11 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - P58.1 merged as four stacked PRs (#682 `05e243477`, #686 `d5f71daa3`, #687 `eaef11c34`, #688 `f9e7587a4`): `annotations(tab)`, `ui_annotations(tab)` and the first part of `jobs`. Decided on #615: the parity check leaves out `relocated_at_hash` on notes with no line anchor in Conflicts and Hidden. #686 was trimmed by comments only to 1,490 lines.
 - P58.2 is built as #689–#691. Rulings on #616: the click-to-paint numbers are taken on the release preview, add question's 0.9 ms A9 overrun is accepted, and the screenshot command's twin stays.
 - 1Password signing failed for most of the day; many commits on P56.3b, P57, P58.1 and P58.2 are unsigned under the fallback the owner accepted.
+
+### 2026-11-23
+
+- P58.2 merged as three stacked PRs (#689 `652d44cc8`, #690 `64db1eb79`, #691 `be9027c39`): the 27 annotation writes through `er_send`, eight new er-service commands, pending until ack. Rulings on #616: the click-to-paint numbers are taken on the release preview and listed on the exit list.
+- P59 merged (#692 `219fcd7f0`, #693 `f157cb3e1`): `pr(tab)` with the stack, `pr_status`, the GitHub senders keyed by tab.
+- P60.1 merged as five PRs (#694 `905348851`, #695 `ed6f04f6a`, #696 `8dbae2fad`, #699 `baf5fcf95`, #700 `15d700257`): `jobs` with the arena and review flows. #695's review proofs would have put it over the stop line, so they went into #696.
+- P61 merged (#697 `8e2acc144`, #698 `074296bfd`): the direct commands typed and moved into `direct/`. Rulings on #620: P60.2 removes `check_ai_files_changed`, and the export move is a rename with a `lib.rs` alias.
+- P60.2a merged (#701 `7e30d7484`, #702 `7f7c08da7`): AI asks and their answers without the App. P60.2b and P62.1 are building side by side.
