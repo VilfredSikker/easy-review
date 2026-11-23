@@ -1,8 +1,6 @@
 //! The commands that stay direct `#[tauri::command]` functions: each acts on
 //! the window, a PTY, the OS shell or git for one file, and has no resource
-//! to serve. They take `DesktopState`; the few that still read the App on the
-//! flag-off path take it as their own argument, so deleting that path deletes
-//! only those twins.
+//! to serve. They take `DesktopState`.
 
 pub mod dev_log;
 pub mod export;

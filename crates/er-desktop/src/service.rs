@@ -62,9 +62,8 @@ impl ServiceState {
     }
 
     /// Like [`Self::new`], with every actor's published revisions forwarded to
-    /// `relay`. The desktop bumps its revision from it, so a flag-path change
-    /// reaches the front end as an `er://revision` event instead of waiting
-    /// for a poll; a live arena run's progress reaches the page this way.
+    /// `relay`. The desktop bumps its revision from it, which wakes the
+    /// backend tick; a live arena run's progress reaches the page this way.
     pub fn with_revision_relay(ports: Ports, relay: impl Fn(u64) + Send + Sync + 'static) -> Self {
         Self::with_deps(WorkspaceDeps::new(ports), relay)
     }

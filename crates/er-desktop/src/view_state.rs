@@ -12,8 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use er_engine::TabKey;
 
-/// Shared handle in `AppState`. Lock order: the engine lock first, then this
-/// one. Release it before building a snapshot, which takes it again.
+/// Shared handle in `DesktopState`.
 pub type ViewStateHandle = Arc<Mutex<DesktopViewState>>;
 
 #[derive(Debug, Default)]
