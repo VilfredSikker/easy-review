@@ -358,3 +358,92 @@ fn a_second_run_of_a_running_lens_is_refused() {
         open_gate(&agent.second);
     });
 }
+
+/// A sidebar triage request moves `jobs` as it is taken and as it ends, so
+/// the spinner that reads `jobs.triage` shows it, and `jobs` lists each
+/// request held.
+#[test]
+fn a_triage_request_shows_in_jobs() {
+    with_storage(|dir| {
+        let (state, _agent) = tasking(dir, 50);
+        let before = version(&state);
+        let ctx = crate::commands::triage_ctx(&state.desktop);
+        // No clone, so the request ends at once.
+        crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", "", "feature", &[]);
+        wait_until("the request to move jobs twice", || {
+            version(&state) >= before + 2
+        });
+
+        let held = "branch:o/r:other".to_string();
+        if let Ok(mut queue) = state.desktop.auto_triage_in_flight.lock() {
+            queue.insert(held.clone());
+        }
+        assert_eq!(jobs(&state).triage, vec![held]);
+    });
+}
+
+/// A sidebar branch triage queues its run on the task host with the App
+/// held: `jobs` lists a triage task for the branch.
+#[test]
+fn a_sidebar_triage_queues_on_the_host_with_the_app_locked() {
+    with_storage(|dir| {
+        let (mut state, agent) = tasking(dir, 50);
+        let git: Arc<dyn er_git::Git> = Arc::new(
+            er_git::FakeGit::default()
+                .with_detect_base_branch(Ok("main".to_string()))
+                .with_diff_raw_range(Ok(raw_diff())),
+        );
+        state.desktop.ports = er_engine::ports::Ports::with_git(git);
+        let root = dir.path().join("a");
+        std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("{e}"));
+        let root = root.to_string_lossy().into_owned();
+        let queued_root = root.clone();
+        super::while_the_app_is_locked(&state, "the sidebar triage", move |state| {
+            let ctx = crate::commands::triage_ctx(&state.desktop);
+            crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", &root, "feature", &[]);
+            wait_until("a triage task in jobs", || {
+                tasks(state).iter().any(|row| row.kind == "triage")
+            });
+        });
+        let row = tasks(&state)
+            .into_iter()
+            .find(|row| row.kind == "triage")
+            .unwrap_or_else(|| panic!("no triage row"));
+        assert_eq!(
+            (row.repo_root.as_str(), row.branch_label.as_str()),
+            (queued_root.as_str(), "feature")
+        );
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// The task log is read from the task host: the flag path of
+/// `get_background_task_log` names the host, and its App read sits in the
+/// flag-off arm alone. Sidebar triage and the tick's task duties name no App.
+#[test]
+fn the_task_log_and_triage_are_off_the_app() {
+    let source = include_str!("../../commands.rs");
+    let body = source
+        .split("pub fn get_background_task_log(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .unwrap_or_else(|| panic!("no get_background_task_log"));
+    assert!(body.contains(".log(&task_id)"), "{body}");
+    let app_read = body
+        .find("background_task_log_tail")
+        .unwrap_or_else(|| panic!("no flag-off arm"));
+    let flag_off = body
+        .find("#[cfg(not(feature = \"v1-service\"))]")
+        .unwrap_or_else(|| panic!("the App read is not behind the flag-off arm"));
+    assert!(flag_off < app_read, "{body}");
+
+    let triage = include_str!("../../auto_triage.rs");
+    for word in ["er_engine::app", "App>", "app.lock"] {
+        assert!(!triage.contains(word), "auto_triage.rs names {word}");
+    }
+    let tick = include_str!("../../resources/tick.rs");
+    for word in ["poll_background_tasks", "process_ai_task_inbox"] {
+        assert!(!tick.contains(word), "the tick runs {word}");
+    }
+}
