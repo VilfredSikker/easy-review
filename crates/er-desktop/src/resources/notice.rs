@@ -31,22 +31,38 @@ pub fn tell(desktop: &crate::state::DesktopState, message: String, long: bool) {
         Some(handle) => emit(&handle, &engine_notice(message, long)),
         None => {
             #[cfg(test)]
-            TOLD.with(|told| told.borrow_mut().push(message.clone()));
+            told_on(desktop, &message);
             log::info!("{message}");
         }
     }
 }
 
+/// What `tell` sent with no window up, by the state it was told on (its
+/// handle's address, which every clone of the state shares).
 #[cfg(test)]
-thread_local! {
-    /// What `tell` sent on this thread with no window up.
-    static TOLD: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+static TOLD: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn told_key(desktop: &crate::state::DesktopState) -> usize {
+    std::sync::Arc::as_ptr(&desktop.tauri_app_handle) as usize
 }
 
-/// What `tell` sent on this thread with no window up, since the last call.
 #[cfg(test)]
-pub fn told() -> Vec<String> {
-    TOLD.with(|told| std::mem::take(&mut *told.borrow_mut()))
+fn told_on(desktop: &crate::state::DesktopState, message: &str) {
+    let mut told = TOLD.lock().unwrap_or_else(|e| e.into_inner());
+    told.push((told_key(desktop), message.to_string()));
+}
+
+/// What `tell` sent on `desktop`, from any thread, since the last call.
+#[cfg(test)]
+pub fn told(desktop: &crate::state::DesktopState) -> Vec<String> {
+    let key = told_key(desktop);
+    let mut told = TOLD.lock().unwrap_or_else(|e| e.into_inner());
+    let (mine, rest) = std::mem::take(&mut *told)
+        .into_iter()
+        .partition(|(at, _)| *at == key);
+    *told = rest;
+    mine.into_iter().map(|(_, message)| message).collect()
 }
 
 /// An engine notification as a notice, with the level the page gave it when
