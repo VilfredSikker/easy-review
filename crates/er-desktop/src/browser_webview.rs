@@ -8,11 +8,13 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use er_engine::TabKey;
+use er_protocol::ErError;
 
 use crate::view_state::{BrowserLayout, BrowserUpdate, TabBrowserState, ViewStateHandle};
 use tauri::webview::{PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, WebviewUrl};
 
+use crate::direct::failed;
 use crate::frame_script::{BROWSER_MESSAGE_EVENT, FRAME_SCRIPT};
 
 pub const REVIEW_BROWSER_LABEL_PREFIX: &str = "review-browser";
@@ -425,10 +427,11 @@ pub fn browser_ensure(
     browser_state: State<'_, BrowserWebviewState>,
     url: String,
     tabIdx: Option<usize>,
-) -> Result<(), String> {
+) -> Result<(), ErError> {
     let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
-    let (wv, newly_created) = ensure_tab_webview(&app, &browser_state, idx, &url)?;
-    finish_browser_navigate(&app, &browser_state, idx, &wv, &url, newly_created)
+    let (wv, newly_created) =
+        ensure_tab_webview(&app, &browser_state, idx, &url).map_err(failed)?;
+    finish_browser_navigate(&app, &browser_state, idx, &wv, &url, newly_created).map_err(failed)
 }
 
 /// Tear down all review child webviews before showing a Svelte modal. `hide()` alone
@@ -437,8 +440,8 @@ pub fn browser_ensure(
 pub fn browser_suspend_for_overlay(
     app: AppHandle,
     browser_state: State<'_, BrowserWebviewState>,
-) -> Result<(), String> {
-    reset_all_tab_webviews(&app, &browser_state)?;
+) -> Result<(), ErError> {
+    reset_all_tab_webviews(&app, &browser_state).map_err(failed)?;
     refocus_main_window(&app);
     Ok(())
 }
@@ -453,14 +456,14 @@ pub fn browser_hide(
     app: AppHandle,
     tabIdx: Option<usize>,
     browser_state: State<'_, BrowserWebviewState>,
-) -> Result<(), String> {
+) -> Result<(), ErError> {
     if let Some(idx) = tabIdx {
         if let Some(wv) = tab_webview(&app, idx) {
             park_tab_webview(&wv);
         }
         refocus_main_window(&app);
     } else {
-        hide_all_webviews(&app, &browser_state)?;
+        hide_all_webviews(&app, &browser_state).map_err(failed)?;
     }
     Ok(())
 }
@@ -479,15 +482,15 @@ pub fn browser_set_bounds(
     width: f64,
     height: f64,
     browser_state: State<'_, BrowserWebviewState>,
-) -> Result<(), String> {
+) -> Result<(), ErError> {
     let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };
     wv.set_position(LogicalPosition::new(x, y))
-        .map_err(|e| e.to_string())?;
+        .map_err(failed)?;
     wv.set_size(LogicalSize::new(width.max(1.0), height.max(1.0)))
-        .map_err(|e| e.to_string())?;
+        .map_err(failed)?;
     Ok(())
 }
 
@@ -502,10 +505,11 @@ pub fn browser_navigate(
     browser_state: State<'_, BrowserWebviewState>,
     url: String,
     tabIdx: Option<usize>,
-) -> Result<(), String> {
+) -> Result<(), ErError> {
     let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
-    let (wv, newly_created) = ensure_tab_webview(&app, &browser_state, idx, &url)?;
-    finish_browser_navigate(&app, &browser_state, idx, &wv, &url, newly_created)
+    let (wv, newly_created) =
+        ensure_tab_webview(&app, &browser_state, idx, &url).map_err(failed)?;
+    finish_browser_navigate(&app, &browser_state, idx, &wv, &url, newly_created).map_err(failed)
 }
 
 /// Enable or disable in-page annotation listeners for a tab's webview.
@@ -519,20 +523,19 @@ pub fn browser_set_annotate_mode(
     active: bool,
     tabIdx: Option<usize>,
     browser_state: State<'_, BrowserWebviewState>,
-) -> Result<(), String> {
+) -> Result<(), ErError> {
     let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     browser_state.set_tab_annotate_mode(idx, active);
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };
-    sync_annotate_mode_to_page(&wv, active)
+    sync_annotate_mode_to_page(&wv, active).map_err(failed)
 }
 
 /// Called from the injected content script on a review browser page.
 #[tauri::command]
-pub fn browser_host_message(app: AppHandle, payload: serde_json::Value) -> Result<(), String> {
-    app.emit(BROWSER_MESSAGE_EVENT, payload)
-        .map_err(|e| e.to_string())
+pub fn browser_host_message(app: AppHandle, payload: serde_json::Value) -> Result<(), ErError> {
+    app.emit(BROWSER_MESSAGE_EVENT, payload).map_err(failed)
 }
 
 /// Reload the current page in a tab's review browser.
@@ -545,12 +548,12 @@ pub fn browser_reload(
     app: AppHandle,
     tabIdx: Option<usize>,
     browser_state: State<'_, BrowserWebviewState>,
-) -> Result<(), String> {
+) -> Result<(), ErError> {
     let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };
-    wv.reload().map_err(|e| e.to_string())
+    wv.reload().map_err(failed)
 }
 
 /// Deliver a host message to a tab's review browser page.
@@ -564,12 +567,12 @@ pub fn browser_send_to_page(
     payload: serde_json::Value,
     tabIdx: Option<usize>,
     browser_state: State<'_, BrowserWebviewState>,
-) -> Result<(), String> {
+) -> Result<(), ErError> {
     let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };
-    post_message_to_webview(&wv, &payload)
+    post_message_to_webview(&wv, &payload).map_err(failed)
 }
 
 #[cfg(test)]

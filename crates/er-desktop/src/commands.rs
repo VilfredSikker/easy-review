@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(not(feature = "v1-service"))]
 use std::sync::Condvar;
@@ -11,7 +10,6 @@ use tauri_plugin_notification::NotificationExt;
 
 #[cfg(feature = "v1-service")]
 pub(crate) mod content_routes;
-pub mod line_commits;
 
 use crate::inbox::{
     inbox_item_from_notification, inbox_items_from_pr_transition, is_review_edge_kind, InboxHandle,
@@ -149,12 +147,6 @@ pub struct ReviewRevisionSummary {
     pub agents: Vec<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct OpenSourceResult {
-    pub kind: String, // opened_local | opened_url | needs_checkout
-    pub target: String,
-}
-
 /// The desktop state plus what only the App path reads: the App, and the
 /// snapshot poll's record of what it last sent. Field reads reach the
 /// [`DesktopState`] it wraps through `Deref`.
@@ -235,11 +227,6 @@ pub struct PrOpenHint {
     pub title: String,
     #[serde(default)]
     pub author: String,
-}
-
-#[tauri::command]
-pub fn start_window_drag(window: tauri::Window) -> Result<(), String> {
-    window.start_dragging().map_err(|e| e.to_string())
 }
 
 macro_rules! snap {
@@ -1642,117 +1629,6 @@ pub async fn unbulk_review_pillar(
     .await
 }
 
-// ── Editor ────────────────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub fn open_in_editor(state: State<AppState>) -> Result<OpenSourceResult, String> {
-    open_source(state)
-}
-
-/// Open the selected file in VS Code (`code -g path:line`) when a local checkout exists.
-/// No GitHub/browser fallback — desktop `e` key uses this exclusively.
-#[tauri::command]
-pub fn open_in_vscode(state: State<AppState>) -> Result<OpenSourceResult, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let tab = app.tab();
-    let file = match tab.selected_diff_file() {
-        Some(f) => f,
-        None => {
-            return Ok(OpenSourceResult {
-                kind: "needs_checkout".to_string(),
-                target: "No selected file".to_string(),
-            });
-        }
-    };
-    let line_num = file
-        .hunks
-        .get(tab.current_hunk)
-        .map(|h| h.new_start)
-        .unwrap_or(1);
-
-    if let Some(local_root) = local_source_root(tab) {
-        let file_path = Path::new(local_root).join(&file.path);
-        if file_path.exists() {
-            crate::os_launch::open_vscode_at(local_root, &file_path, line_num)
-                .map_err(|e| e.to_string())?;
-            return Ok(OpenSourceResult {
-                kind: "opened_local".to_string(),
-                target: file_path.to_string_lossy().into_owned(),
-            });
-        }
-    }
-
-    Ok(OpenSourceResult {
-        kind: "needs_checkout".to_string(),
-        target: "No local checkout found for this file. Check out the branch in a worktree first."
-            .to_string(),
-    })
-}
-
-#[tauri::command]
-pub fn open_source(state: State<AppState>) -> Result<OpenSourceResult, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let tab = app.tab();
-    let file = match tab.selected_diff_file() {
-        Some(f) => f,
-        None => {
-            return Ok(OpenSourceResult {
-                kind: "needs_checkout".to_string(),
-                target: "No selected file".to_string(),
-            });
-        }
-    };
-    let line_num = file
-        .hunks
-        .get(tab.current_hunk)
-        .map(|h| h.new_start)
-        .unwrap_or(1);
-
-    // Local editable source is only valid when this tab represents a checked-out
-    // local context (working tree, or local-branch view with checkout root).
-    if let Some(local_root) = local_source_root(tab) {
-        let file_path = Path::new(local_root).join(&file.path);
-        if file_path.exists() {
-            crate::os_launch::open_editor_at(local_root, &file_path, line_num)
-                .map_err(|e| e.to_string())?;
-            return Ok(OpenSourceResult {
-                kind: "opened_local".to_string(),
-                target: file_path.to_string_lossy().into_owned(),
-            });
-        }
-    }
-
-    // Fallback: open GitHub URL for PR/tab-backed sources.
-    if let Some(url) = github_file_url_for_tab(tab, &file.path, line_num) {
-        drop(app);
-        open_url_in_browser(url.clone())?;
-        return Ok(OpenSourceResult {
-            kind: "opened_url".to_string(),
-            target: url,
-        });
-    }
-
-    Ok(OpenSourceResult {
-        kind: "needs_checkout".to_string(),
-        target: "No local checkout found for this source. Create editable worktree first."
-            .to_string(),
-    })
-}
-
-fn local_source_root(tab: &er_engine::app::TabState) -> Option<&str> {
-    tab.local_checkout_root()
-}
-
-/// Open an http(s) URL in the system default browser (shared by Tauri command + nav policy).
-pub fn open_external_url(url: &str) -> Result<(), String> {
-    crate::os_launch::open_external_url(url)
-}
-
-#[tauri::command]
-pub fn open_url_in_browser(url: String) -> Result<(), String> {
-    open_external_url(&url)
-}
-
 /// Result of comparing the running desktop build to GitHub Releases latest.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AppUpdateInfo {
@@ -1844,55 +1720,6 @@ pub(crate) fn app_update_cached() -> AppUpdateInfo {
         });
     }
     info
-}
-
-fn github_file_url_for_tab(
-    tab: &er_engine::app::TabState,
-    file_path: &str,
-    line_num: usize,
-) -> Option<String> {
-    let pr_head = tab
-        .pr_data
-        .as_ref()
-        .map(|pr| pr.head_branch.trim().to_string())
-        .filter(|b| !b.is_empty());
-
-    let mut branch_ref = pr_head
-        .or_else(|| tab.local_branch_view.clone())
-        .unwrap_or_else(|| tab.current_branch.clone())
-        .trim()
-        .to_string();
-
-    // PR tab whose overview hasn't loaded yet: synchronously ask gh for the head branch.
-    if tab.pr_data.is_none() {
-        if let Some(n) = tab.pr_number {
-            if let Ok(name) = er_engine::github::gh_pr_head_branch_name(n, &tab.repo_root) {
-                let name = name.trim().to_string();
-                if !name.is_empty() {
-                    branch_ref = name;
-                }
-            }
-        }
-    }
-
-    if branch_ref.is_empty() {
-        return None;
-    }
-    if let Some(slug) = tab.remote_repo.as_ref() {
-        return Some(format!(
-            "https://github.com/{slug}/blob/{branch_ref}/{file_path}#L{line_num}"
-        ));
-    }
-
-    let remote = tab.ports.git.remote_url(&tab.repo_root, "origin").ok()?;
-    let slug = parse_github_slug(&remote)?;
-    Some(format!(
-        "https://github.com/{slug}/blob/{branch_ref}/{file_path}#L{line_num}"
-    ))
-}
-
-fn parse_github_slug(remote: &str) -> Option<String> {
-    er_engine::github::RepoSlug::parse_github_com(remote).map(|slug| slug.to_string())
 }
 
 fn normalize_check_state(checks: &[er_engine::github::CheckRun]) -> (String, Vec<String>) {
@@ -2423,24 +2250,6 @@ pub fn patch_project_review_settings(
     crate::profile_log::bump_desktop_revision(&state.desktop_revision, "project_review_settings");
     let app = state.app.lock().map_err(|e| e.to_string())?;
     Ok(snap_from(&app, &state))
-}
-
-#[tauri::command]
-pub fn reveal_er_folder(state: State<AppState>) -> Result<(), String> {
-    let er_dir = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        app.tab().er_dir()
-    };
-    let target = std::path::Path::new(&er_dir);
-    // Ensure the directory exists so reveal never fails on a fresh or empty revision.
-    let _ = std::fs::create_dir_all(target);
-    crate::os_launch::reveal_folder(target)
-}
-
-#[tauri::command]
-pub fn reveal_path(path: String) -> Result<(), String> {
-    let target = std::path::Path::new(&path);
-    crate::os_launch::reveal_path(target)
 }
 
 #[tauri::command]
@@ -10654,72 +10463,6 @@ pub async fn update_thread_message(
     .await
 }
 
-// ── Review export (markdown) ─────────────────────────────────────────────────
-
-use crate::export::{render_markdown, ExportOpts};
-
-/// Render the active tab's annotations as markdown and return the body to
-/// the UI for clipboard copy / preview.
-#[tauri::command]
-pub async fn export_review(opts: ExportOpts, state: State<'_, AppState>) -> Result<String, String> {
-    let state = state.inner().clone();
-    run_blocking(move || {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        Ok(render_markdown(app.tab(), &opts))
-    })
-    .await
-}
-
-/// Render and write to disk. Empty `path` writes to `<comments_dir>/export.md`.
-/// Returns the resolved absolute path so the UI can show it in a toast.
-#[tauri::command]
-pub async fn export_review_to_file(
-    opts: ExportOpts,
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let state = state.inner().clone();
-    run_blocking(move || {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab = app.tab();
-        let body = render_markdown(tab, &opts);
-        let target = if path.trim().is_empty() {
-            let dir = tab.comments_dir();
-            std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {dir}: {e}"))?;
-            format!("{dir}/export.md")
-        } else {
-            path
-        };
-        std::fs::write(&target, body).map_err(|e| format!("Failed to write {target}: {e}"))?;
-        Ok(target)
-    })
-    .await
-}
-
-/// Back-compat shim: delegate to `export_review_to_file` with all-defaults
-/// opts. Kept so older bindings / CommandPalette entries don't break.
-#[tauri::command]
-pub async fn export_to_agent(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
-    let state = state.inner().clone();
-    run_blocking(move || {
-        let opts = ExportOpts::default();
-        let path = {
-            let app = state.app.lock().map_err(|e| e.to_string())?;
-            let tab = app.tab();
-            let body = render_markdown(tab, &opts);
-            let dir = tab.comments_dir();
-            std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {dir}: {e}"))?;
-            let path = format!("{dir}/export.md");
-            std::fs::write(&path, body).map_err(|e| format!("Failed to write {path}: {e}"))?;
-            path
-        };
-        let _ = path;
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
-    })
-    .await
-}
-
 // ── Commit composer ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -12539,230 +12282,6 @@ fn compute_content_revision_with_arbiter(app: &App, other_overlay: Option<&[u8]>
         last.text.hash(&mut h);
     }
     crate::profile_log::finish_hash(h)
-}
-
-// ── Terminal (in-app shell drawer) ───────────────────────────────────────────
-//
-// Each frontend `Terminal.svelte` instance owns a `session_id` (typically
-// `tab-<idx>`). On mount it calls `terminal_spawn`, then streams keystrokes via
-// `terminal_write` and resize events via `terminal_resize`. Output is pushed
-// back as a Tauri event (`terminal-output`) so we don't poll. On unmount,
-// `terminal_close` removes the session from the map — `PtySession::drop` then
-// kills the child shell.
-
-#[derive(serde::Serialize, Clone)]
-struct TerminalOutputPayload {
-    session_id: String,
-    bytes: Vec<u8>,
-}
-
-#[derive(serde::Serialize, Clone)]
-struct TerminalExitPayload {
-    session_id: String,
-}
-
-#[tauri::command]
-pub fn terminal_spawn(
-    session_id: String,
-    cwd: String,
-    app_handle: tauri::AppHandle,
-    state: State<AppState>,
-) -> Result<(), String> {
-    use std::io::Read;
-    use tauri::Emitter;
-
-    // Idempotent spawn: keep an existing PTY alive (hide/show must not kill shells).
-    {
-        let map = state.terminals.lock().map_err(|e| e.to_string())?;
-        if map.contains_key(&session_id) {
-            return Ok(());
-        }
-    }
-
-    let (session, mut reader) =
-        crate::terminal::PtySession::spawn(&cwd).map_err(|e| e.to_string())?;
-    {
-        let mut map = state.terminals.lock().map_err(|e| e.to_string())?;
-        map.insert(session_id.clone(), session);
-    }
-
-    let handle = app_handle;
-    let sid = session_id;
-    let terminals_for_thread = Arc::clone(&state.terminals);
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => {
-                    let _ = handle.emit(
-                        "terminal-exit",
-                        TerminalExitPayload {
-                            session_id: sid.clone(),
-                        },
-                    );
-                    if let Ok(mut map) = terminals_for_thread.lock() {
-                        map.remove(&sid);
-                    }
-                    break;
-                }
-                Ok(n) => {
-                    let _ = handle.emit(
-                        "terminal-output",
-                        TerminalOutputPayload {
-                            session_id: sid.clone(),
-                            bytes: buf[..n].to_vec(),
-                        },
-                    );
-                }
-                Err(_) => {
-                    let _ = handle.emit(
-                        "terminal-exit",
-                        TerminalExitPayload {
-                            session_id: sid.clone(),
-                        },
-                    );
-                    if let Ok(mut map) = terminals_for_thread.lock() {
-                        map.remove(&sid);
-                    }
-                    break;
-                }
-            }
-        }
-    });
-
-    Ok(())
-}
-
-#[tauri::command]
-pub fn terminal_write(
-    session_id: String,
-    bytes: Vec<u8>,
-    state: State<AppState>,
-) -> Result<(), String> {
-    let mut map = state.terminals.lock().map_err(|e| e.to_string())?;
-    let session = map
-        .get_mut(&session_id)
-        .ok_or_else(|| format!("no terminal session: {session_id}"))?;
-    session.write(&bytes).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn terminal_resize(
-    session_id: String,
-    rows: u16,
-    cols: u16,
-    state: State<AppState>,
-) -> Result<(), String> {
-    let mut map = state.terminals.lock().map_err(|e| e.to_string())?;
-    let session = map
-        .get_mut(&session_id)
-        .ok_or_else(|| format!("no terminal session: {session_id}"))?;
-    session.resize(rows, cols).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn terminal_close(session_id: String, state: State<AppState>) -> Result<(), String> {
-    let mut map = state.terminals.lock().map_err(|e| e.to_string())?;
-    map.remove(&session_id);
-    Ok(())
-}
-
-// ── Dev-URL detection ─────────────────────────────────────────────────────────
-
-/// Pure helper: given the textual contents of a `package.json`, return the
-/// best-guess local dev-server URL. Returns the Vite default if a
-/// `package.json` was found but no signal matched.
-fn detect_dev_url_from_package_json(text: &str) -> Option<String> {
-    let json: serde_json::Value = serde_json::from_str(text).ok()?;
-    let scripts = json.get("scripts").and_then(|v| v.as_object());
-    let script = scripts
-        .and_then(|s| s.get("dev").and_then(|v| v.as_str()))
-        .or_else(|| scripts.and_then(|s| s.get("start").and_then(|v| v.as_str())));
-
-    if let Some(cmd) = script {
-        // Explicit port flag wins.
-        if let Some(port) = explicit_port(cmd) {
-            return Some(format!("http://localhost:{port}"));
-        }
-        if let Some(port) = port_from_command(cmd) {
-            return Some(format!("http://localhost:{port}"));
-        }
-    }
-    // package.json present but no signal — fall back to Vite default.
-    Some("http://localhost:5173".to_string())
-}
-
-/// Scan a script string for `--port N` or `-p N` and return N.
-fn explicit_port(cmd: &str) -> Option<u16> {
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
-    let mut i = 0;
-    while i < tokens.len() {
-        let t = tokens[i];
-        // --port=N
-        if let Some(rest) = t.strip_prefix("--port=") {
-            if let Ok(n) = rest.parse() {
-                return Some(n);
-            }
-        }
-        if let Some(rest) = t.strip_prefix("-p=") {
-            if let Ok(n) = rest.parse() {
-                return Some(n);
-            }
-        }
-        // --port N  /  -p N
-        if (t == "--port" || t == "-p") && i + 1 < tokens.len() {
-            if let Ok(n) = tokens[i + 1].parse() {
-                return Some(n);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Recognize common dev-server commands and return their conventional port.
-fn port_from_command(cmd: &str) -> Option<u16> {
-    let c = cmd.to_lowercase();
-    // Order matters: check longer/more-specific patterns first.
-    if c.contains("next dev") {
-        return Some(3000);
-    }
-    if c.contains("astro dev") {
-        return Some(4321);
-    }
-    if c.contains("webpack-dev-server") || c.contains("webpack serve") {
-        return Some(8080);
-    }
-    if c.contains("rails server") || c.contains("bin/dev") {
-        return Some(3000);
-    }
-    if c.contains("manage.py runserver") {
-        return Some(8000);
-    }
-    if c.contains("fastapi run") {
-        return Some(8000);
-    }
-    if c.contains("bun --hot") || c.contains("bun run --hot") {
-        return Some(3000);
-    }
-    if c.contains("vite") {
-        return Some(5173);
-    }
-    None
-}
-
-#[tauri::command]
-pub fn detect_dev_url(repo_root: String) -> Result<Option<String>, String> {
-    if repo_root.is_empty() {
-        return Ok(None);
-    }
-    let pkg = std::path::Path::new(&repo_root).join("package.json");
-    if pkg.exists() {
-        let text = std::fs::read_to_string(&pkg).map_err(|e| e.to_string())?;
-        return Ok(detect_dev_url_from_package_json(&text));
-    }
-    // No package.json — caller may extend later (pyproject.toml / Cargo.toml).
-    Ok(None)
 }
 
 /// Return the recent log entries for a specific background task.
@@ -14767,24 +14286,6 @@ mod tests {
     }
 
     #[test]
-    fn open_source_policy_allows_only_checked_out_local_contexts() {
-        // The policy itself lives on `TabState::local_checkout_root` (see the
-        // engine's tests); this pins the two roots it resolves to.
-        let mut working = er_engine::app::TabState::new_for_test(vec![]);
-        working.repo_root = "/repo".into();
-        assert_eq!(local_source_root(&working), Some("/repo"));
-
-        let mut pr = er_engine::app::TabState::new_for_test(vec![]);
-        pr.repo_root = "/repo".into();
-        pr.remote_repo = Some("o/r".into());
-        pr.local_branch_view = Some("feat/pr-head".into());
-        pr.current_branch = "feat/pr-head".into();
-        assert_eq!(local_source_root(&pr), None);
-        pr.local_branch_checkout_root = Some("/wt".into());
-        assert_eq!(local_source_root(&pr), Some("/wt"));
-    }
-
-    #[test]
     fn card_ai_subprocess_honors_fake_sentinel_ok() {
         let inv = CardAiInvocation {
             command: "claude".into(),
@@ -15166,98 +14667,6 @@ mod tests {
         assert!(decode_data_url_png("not-a-data-url").is_none());
         assert!(decode_data_url_png("data:text/plain,hello").is_none());
         assert!(decode_data_url_png("data:image/png,plainstuff").is_none());
-    }
-
-    #[test]
-    fn parse_github_slug_accepts_ssh_and_https_remotes() {
-        assert_eq!(
-            parse_github_slug("git@github.com:owner/repo.git").as_deref(),
-            Some("owner/repo")
-        );
-        assert_eq!(
-            parse_github_slug("https://github.com/owner/repo.git").as_deref(),
-            Some("owner/repo")
-        );
-        assert_eq!(
-            parse_github_slug("https://user@github.com/owner/repo").as_deref(),
-            Some("owner/repo")
-        );
-        assert_eq!(parse_github_slug("https://gitlab.com/owner/repo"), None);
-    }
-
-    #[test]
-    fn git_at_github_com_colon_form_parses_the_same_everywhere() {
-        let remote = "git@github.com:Acme/Widgets.git";
-        assert_eq!(
-            er_engine::github::parse_remote_url(remote),
-            Some(("Acme".to_string(), "Widgets".to_string()))
-        );
-        assert_eq!(
-            er_engine::projects_pins::normalize_remote_slug(remote),
-            "acme/widgets"
-        );
-        assert_eq!(
-            crate::projects::slug_from_remote_url(remote).as_deref(),
-            Some("Acme/Widgets")
-        );
-        assert_eq!(parse_github_slug(remote).as_deref(), Some("Acme/Widgets"));
-    }
-
-    fn write_pkg(dir: &std::path::Path, body: &str) {
-        std::fs::write(dir.join("package.json"), body).unwrap();
-    }
-
-    #[test]
-    fn detect_dev_url_vite_default() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_pkg(tmp.path(), r#"{ "scripts": { "dev": "vite" } }"#);
-        let got = detect_dev_url(tmp.path().to_string_lossy().to_string()).unwrap();
-        assert_eq!(got.as_deref(), Some("http://localhost:5173"));
-    }
-
-    #[test]
-    fn detect_dev_url_next() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_pkg(tmp.path(), r#"{ "scripts": { "dev": "next dev" } }"#);
-        let got = detect_dev_url(tmp.path().to_string_lossy().to_string()).unwrap();
-        assert_eq!(got.as_deref(), Some("http://localhost:3000"));
-    }
-
-    #[test]
-    fn detect_dev_url_explicit_port() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_pkg(
-            tmp.path(),
-            r#"{ "scripts": { "dev": "vite --port 4200" } }"#,
-        );
-        let got = detect_dev_url(tmp.path().to_string_lossy().to_string()).unwrap();
-        assert_eq!(
-            got.as_deref(),
-            Some("http://localhost:4200"),
-            "explicit --port N should win over framework default"
-        );
-    }
-
-    #[test]
-    fn detect_dev_url_no_package_json() {
-        let tmp = tempfile::tempdir().unwrap();
-        let got = detect_dev_url(tmp.path().to_string_lossy().to_string()).unwrap();
-        assert_eq!(got, None);
-    }
-
-    #[test]
-    fn detect_dev_url_unknown_command() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_pkg(
-            tmp.path(),
-            r#"{ "scripts": { "dev": "node scripts/start.js" } }"#,
-        );
-        let got = detect_dev_url(tmp.path().to_string_lossy().to_string()).unwrap();
-        assert_eq!(
-            got.as_deref(),
-            Some("http://localhost:5173"),
-            "unknown command should fall back to vite default when package.json exists"
-        );
     }
 
     fn make_app_with_n_tabs(n: usize) -> App {
@@ -16007,7 +15416,6 @@ mod tests {
             "run_ai_validate",
             "run_ai_expert_review",
             "generate_tour",
-            "export_to_agent",
             "refresh_diff",
             "force_refresh_diff",
             // Commit rows are primary click targets; both run git diff under
@@ -16047,8 +15455,8 @@ mod tests {
             // Checklist toggles write a sidecar, so they lock and hit disk too.
             "toggle_checklist_item",
             // AI card actions build prompt context under the app lock; the gh
-            // push/post commands are network round trips; export renders under
-            // the lock. All of them froze the window as sync commands.
+            // push/post commands are network round trips. All of them froze the
+            // window as sync commands.
             "ask_ai",
             "validate_with_ai",
             "elaborate_with_ai",
@@ -16058,8 +15466,6 @@ mod tests {
             "remove_pending_review_comment",
             "submit_pending_review",
             "post_github_line_comment",
-            "export_review",
-            "export_review_to_file",
             // App-wide chrome writes (inbox, pins, ignores): painted optimistically,
             // confirmed with a chrome-only snapshot.
             "mark_inbox_item_read",

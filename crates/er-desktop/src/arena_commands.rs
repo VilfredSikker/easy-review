@@ -696,11 +696,6 @@ fn arena_override_local(
     Ok(wire_snapshot(snap))
 }
 
-#[tauri::command]
-pub fn dev_log_filter() -> Option<Vec<String>> {
-    crate::dev_log::filter_groups()
-}
-
 /// Re-wire the arena's live-progress notify to desktop revision (once at startup).
 pub fn attach_arena_notify(app: &mut App, desktop_revision: Arc<std::sync::atomic::AtomicU64>) {
     let arena_revision = Arc::clone(&desktop_revision);
@@ -767,7 +762,8 @@ mod route_tests {
             );
         }
         // A process-wide filter with no workspace state: deliberately unrouted.
-        assert!(!body(source, "dev_log_filter").contains("arena_service"));
+        let dev_log = include_str!("direct/dev_log.rs");
+        assert!(!body(dev_log, "dev_log_filter").contains("arena_service"));
 
         let service = include_str!("arena_service.rs");
         for sent in [

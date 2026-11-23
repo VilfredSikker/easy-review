@@ -23,7 +23,6 @@ MUST_RUN_BLOCKING=(
   run_ai_validate
   run_ai_expert_review
   generate_tour
-  export_to_agent
   refresh_diff
   force_refresh_diff
 )
