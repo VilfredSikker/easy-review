@@ -58,8 +58,17 @@ pub struct DesktopState {
     pub gh_status_cache: GhStatusCache,
     /// Which background fetches are currently in-flight — surfaced in every snapshot.
     pub loading: LoadingState,
+    /// Moves when a PR-list refresh starts or ends, so `jobs` pushes it.
+    pub pr_list_clock: WriteClock,
+    /// Moves when a GitHub status fetch starts or ends, so `pr_status`
+    /// pushes it.
+    pub status_fetch_clock: WriteClock,
     /// Keys with an in-flight gh_status fetch. Prevents duplicate concurrent fetches.
     pub gh_status_in_flight: Arc<Mutex<HashSet<(String, String, u64)>>>,
+    /// Every key a status fetch has started for. The relay keeps watching
+    /// them after the fetch ends, so the end of a first fetch that stored
+    /// nothing still reaches the page as `fetching: false`.
+    pub gh_status_fetched: Arc<Mutex<HashSet<(String, String, u64)>>>,
     /// Keys (project_id, pr_number) with an in-flight PR-open prefetch,
     /// mapped to a claim the open path can wait on. Prevents duplicate
     /// background `gh` invocations when the user hovers the same row
@@ -101,6 +110,79 @@ pub struct DesktopState {
     /// The background agent tasks the flag path runs, which `jobs` lists.
     #[cfg(feature = "v1-service")]
     pub tasks: crate::tasks::TaskHost,
+}
+
+impl DesktopState {
+    /// Marks a PR-list refresh as running and moves `jobs`; None when one
+    /// already runs. The check and the mark are one lock. Dropping the guard
+    /// ends the refresh, so a panic or an early return cannot leave it on.
+    pub fn begin_pr_list_refresh(&self) -> Option<PrListRefresh> {
+        let mut flags = self.loading.lock().ok()?;
+        if std::mem::replace(&mut flags.pr_list, true) {
+            return None;
+        }
+        drop(flags);
+        self.pr_list_clock.bump();
+        Some(PrListRefresh(self.clone()))
+    }
+
+    /// Marks the status fetch of `(owner, repo, number)` as running and
+    /// moves `pr_status`; None when it already runs. Dropping the guard ends
+    /// the fetch.
+    pub fn begin_status_fetch(&self, key: &(String, String, u64)) -> Option<StatusFetch> {
+        let added = self
+            .gh_status_in_flight
+            .lock()
+            .is_ok_and(|mut in_flight| in_flight.insert(key.clone()));
+        if !added {
+            return None;
+        }
+        if let Ok(mut fetched) = self.gh_status_fetched.lock() {
+            fetched.insert(key.clone());
+        }
+        if let Ok(mut flags) = self.loading.lock() {
+            flags.gh_status = true;
+        }
+        self.status_fetch_clock.bump();
+        Some(StatusFetch {
+            desktop: self.clone(),
+            key: key.clone(),
+        })
+    }
+}
+
+/// A running PR-list refresh. Dropping it marks the refresh as done and
+/// moves `jobs`.
+#[must_use = "dropping the guard ends the refresh"]
+pub struct PrListRefresh(DesktopState);
+
+impl Drop for PrListRefresh {
+    fn drop(&mut self) {
+        if let Ok(mut flags) = self.0.loading.lock() {
+            flags.pr_list = false;
+        }
+        self.0.pr_list_clock.bump();
+    }
+}
+
+/// A running status fetch. Dropping it marks the fetch as done and moves
+/// `pr_status`.
+#[must_use = "dropping the guard ends the fetch"]
+pub struct StatusFetch {
+    desktop: DesktopState,
+    key: (String, String, u64),
+}
+
+impl Drop for StatusFetch {
+    fn drop(&mut self) {
+        if let Ok(mut flags) = self.desktop.loading.lock() {
+            flags.gh_status = false;
+        }
+        if let Ok(mut in_flight) = self.desktop.gh_status_in_flight.lock() {
+            in_flight.remove(&self.key);
+        }
+        self.desktop.status_fetch_clock.bump();
+    }
 }
 
 /// A count of the changes seen in the live runs and review flows `jobs`

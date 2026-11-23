@@ -18,6 +18,8 @@ pub struct Jobs {
     /// The sidebar triage requests still being prepared, before their task
     /// is queued, by remote and PR or branch.
     pub triage: Vec<String>,
+    /// A refresh of the sidebar's PR lists is running.
+    pub pr_list_refresh: bool,
 }
 
 /// One background agent task, as the running pill and the task panel list

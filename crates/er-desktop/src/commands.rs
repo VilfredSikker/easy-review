@@ -19,8 +19,7 @@ use crate::inbox::{
 use crate::projects::{self, normalize_remote_slug};
 use crate::snapshot::{
     build_chrome_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary, FileSnapshot,
-    GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState,
-    PrInfo,
+    GhCommentSummary, GhReviewSummary, GhUser, GithubStatusSnapshot, PrInfo,
 };
 pub use crate::state::{run_blocking, DesktopState, PrOpenPrefetchClaim, PrOpenPrefetchMap};
 #[cfg(not(feature = "v1-service"))]
@@ -550,38 +549,22 @@ pub fn fetch_and_store_github_status(
 /// Returns immediately. The cache is updated on success; failures are logged.
 /// Deduplicates: if a fetch for the same key is already in-flight, this is a no-op.
 pub fn kick_github_status_refresh(
-    cache: GhStatusCache,
-    in_flight: Arc<Mutex<HashSet<(String, String, u64)>>>,
-    desktop_revision: Arc<AtomicU64>,
-    loading: Option<LoadingState>,
+    desktop: &DesktopState,
     owner: String,
     repo: String,
     number: u64,
 ) {
     let key = (owner.clone(), repo.clone(), number);
-    if let Ok(mut set) = in_flight.lock() {
-        if !set.insert(key.clone()) {
-            return; // already fetching
-        }
-    }
-    if let Some(loading) = &loading {
-        if let Ok(mut flags) = loading.lock() {
-            flags.gh_status = true;
-        }
-    }
-    let in_flight_clone = Arc::clone(&in_flight);
+    let Some(fetch) = desktop.begin_status_fetch(&key) else {
+        return; // already fetching
+    };
+    let desktop = desktop.clone();
     std::thread::spawn(move || {
-        if fetch_and_store_github_status(&cache, &desktop_revision, &owner, &repo, number) {
+        let _fetch = fetch;
+        let cache = &desktop.gh_status_cache;
+        if fetch_and_store_github_status(cache, &desktop.desktop_revision, &owner, &repo, number) {
             // Persist after the lock is released (the save helper re-locks).
-            crate::gh_status_cache::save_persisted_gh_status_cache(&cache);
-        }
-        if let Some(loading) = &loading {
-            if let Ok(mut flags) = loading.lock() {
-                flags.gh_status = false;
-            }
-        }
-        if let Ok(mut set) = in_flight_clone.lock() {
-            set.remove(&key);
+            crate::gh_status_cache::save_persisted_gh_status_cache(cache);
         }
     });
 }
@@ -991,15 +974,7 @@ fn kick_active_gh_status(app: &App, state: &AppState) {
         ) {
             return;
         }
-        kick_github_status_refresh(
-            state.gh_status_cache.clone(),
-            Arc::clone(&state.gh_status_in_flight),
-            Arc::clone(&state.desktop_revision),
-            Some(Arc::clone(&state.loading)),
-            owner,
-            repo,
-            number,
-        );
+        kick_github_status_refresh(state, owner, repo, number);
     }
 }
 
@@ -3504,15 +3479,7 @@ fn refresh_active_status_after_sync(state: &AppState) {
 
 pub(crate) fn refresh_status_after_sync(state: &DesktopState, key: Option<(String, String, u64)>) {
     if let Some((owner, repo, number)) = key {
-        kick_github_status_refresh(
-            state.gh_status_cache.clone(),
-            Arc::clone(&state.gh_status_in_flight),
-            Arc::clone(&state.desktop_revision),
-            Some(Arc::clone(&state.loading)),
-            owner,
-            repo,
-            number,
-        );
+        kick_github_status_refresh(state, owner, repo, number);
     }
 }
 
@@ -3525,15 +3492,7 @@ pub fn refresh_github_status(state: State<AppState>) -> Result<AppSnapshot, Stri
         active_github_key(&app, &state)
     };
     if let Some((owner, repo, number)) = key {
-        kick_github_status_refresh(
-            state.gh_status_cache.clone(),
-            Arc::clone(&state.gh_status_in_flight),
-            Arc::clone(&state.desktop_revision),
-            Some(Arc::clone(&state.loading)),
-            owner,
-            repo,
-            number,
-        );
+        kick_github_status_refresh(&state, owner, repo, number);
     }
     snap!(state)
 }
@@ -3765,15 +3724,7 @@ pub fn submit_github_pr_decision(
         .map_err(anyhow::Error::from)
         .map_err(gh_review_submit_err)?;
 
-    kick_github_status_refresh(
-        state.gh_status_cache.clone(),
-        Arc::clone(&state.gh_status_in_flight),
-        Arc::clone(&state.desktop_revision),
-        Some(Arc::clone(&state.loading)),
-        owner,
-        repo,
-        number,
-    );
+    kick_github_status_refresh(&state, owner, repo, number);
 
     let app = state.app.lock().map_err(|e| e.to_string())?;
     Ok(snap_from(&app, &state))
@@ -3812,15 +3763,7 @@ fn post_github_pr_comment_impl(body: String, state: &AppState) -> Result<AppSnap
         .map_err(|e| format!("Failed to post comment: {e}"))?;
 
     // Refresh the cached GitHub status so the comment count + recent list update.
-    kick_github_status_refresh(
-        state.gh_status_cache.clone(),
-        Arc::clone(&state.gh_status_in_flight),
-        Arc::clone(&state.desktop_revision),
-        Some(Arc::clone(&state.loading)),
-        owner,
-        repo,
-        number,
-    );
+    kick_github_status_refresh(state, owner, repo, number);
 
     let app = state.app.lock().map_err(|e| e.to_string())?;
     Ok(snap_from(&app, state))
@@ -3971,15 +3914,7 @@ fn read_pending_review(state: &AppState) -> Result<PendingReviewView, String> {
 /// return, so drop its cache and let the status card recount.
 pub(crate) fn after_github_write(state: &DesktopState, owner: String, repo: String, number: u64) {
     er_engine::github::invalidate_pr_comments_cache();
-    kick_github_status_refresh(
-        state.gh_status_cache.clone(),
-        Arc::clone(&state.gh_status_in_flight),
-        Arc::clone(&state.desktop_revision),
-        Some(Arc::clone(&state.loading)),
-        owner,
-        repo,
-        number,
-    );
+    kick_github_status_refresh(state, owner, repo, number);
 }
 
 #[tauri::command]
@@ -6439,15 +6374,7 @@ fn activate_or_open_remote_pr(
         {
             app.active_tab = idx;
             kick_meta_refresh(state, app.tab().repo_root.clone());
-            kick_github_status_refresh(
-                state.gh_status_cache.clone(),
-                Arc::clone(&state.gh_status_in_flight),
-                Arc::clone(&state.desktop_revision),
-                Some(Arc::clone(&state.loading)),
-                owner.to_string(),
-                repo.to_string(),
-                number,
-            );
+            kick_github_status_refresh(state, owner.to_string(), repo.to_string(), number);
             kick_branch_preload(&app, state);
             return Ok(snap_from_command(&app, state));
         }
@@ -6465,30 +6392,14 @@ fn activate_or_open_remote_pr(
     {
         app.active_tab = idx;
         kick_meta_refresh(state, app.tab().repo_root.clone());
-        kick_github_status_refresh(
-            state.gh_status_cache.clone(),
-            Arc::clone(&state.gh_status_in_flight),
-            Arc::clone(&state.desktop_revision),
-            Some(Arc::clone(&state.loading)),
-            owner.to_string(),
-            repo.to_string(),
-            number,
-        );
+        kick_github_status_refresh(state, owner.to_string(), repo.to_string(), number);
         kick_branch_preload(&app, state);
         return Ok(snap_from_command(&app, state));
     }
     place_tab(&mut app, &state.view, tab, replace, false);
     app.tab_mut().needs_initial_refresh = false;
     kick_meta_refresh(state, app.tab().repo_root.clone());
-    kick_github_status_refresh(
-        state.gh_status_cache.clone(),
-        Arc::clone(&state.gh_status_in_flight),
-        Arc::clone(&state.desktop_revision),
-        Some(Arc::clone(&state.loading)),
-        owner.to_string(),
-        repo.to_string(),
-        number,
-    );
+    kick_github_status_refresh(state, owner.to_string(), repo.to_string(), number);
     kick_branch_preload(&app, state);
     Ok(snap_from_command(&app, state))
 }
@@ -6856,15 +6767,7 @@ fn service_post_github_pr_comment(state: &AppState, body: &str) -> Result<AppSna
     match reply {
         er_service::Reply::CommentPosted { pr } => {
             // The comment count and the recent list come from the status card.
-            kick_github_status_refresh(
-                state.gh_status_cache.clone(),
-                Arc::clone(&state.gh_status_in_flight),
-                Arc::clone(&state.desktop_revision),
-                Some(Arc::clone(&state.loading)),
-                pr.owner,
-                pr.repo,
-                pr.number,
-            );
+            kick_github_status_refresh(state, pr.owner, pr.repo, pr.number);
             Ok(AppSnapshot::default())
         }
         other => Err(unexpected_reply(&other)),
@@ -6923,15 +6826,7 @@ fn service_submit_github_pr_decision(
     .map_err(review_write_message)?;
     match reply {
         er_service::Reply::ReviewSubmitted { pr } => {
-            kick_github_status_refresh(
-                state.gh_status_cache.clone(),
-                Arc::clone(&state.gh_status_in_flight),
-                Arc::clone(&state.desktop_revision),
-                Some(Arc::clone(&state.loading)),
-                pr.owner,
-                pr.repo,
-                pr.number,
-            );
+            kick_github_status_refresh(state, pr.owner, pr.repo, pr.number);
             Ok(AppSnapshot::default())
         }
         other => Err(unexpected_reply(&other)),
@@ -8926,14 +8821,9 @@ pub(crate) fn kick_pr_list_refresh(
     remote: Option<String>,
     prefs: impl FnOnce() -> InboxConfig + Send + 'static,
 ) -> Result<(), String> {
-    // Atomic check-and-set under a single lock acquisition to avoid TOCTOU.
-    let already_running = {
-        let mut flags = desktop.loading.lock().map_err(|e| e.to_string())?;
-        std::mem::replace(&mut flags.pr_list, true)
-    };
-    if already_running {
+    let Some(refresh) = desktop.begin_pr_list_refresh() else {
         return Ok(());
-    }
+    };
     let desktop = desktop.clone();
     std::thread::spawn(move || {
         #[expect(
@@ -8973,9 +8863,7 @@ pub(crate) fn kick_pr_list_refresh(
             process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
         }
         process_inbox_after_pr_refresh(handles, &prefs, None);
-        if let Ok(mut f) = desktop.loading.lock() {
-            f.pr_list = false;
-        }
+        drop(refresh);
         crate::profile_log::bump_desktop_revision(&desktop.desktop_revision, reason);
     });
     Ok(())
@@ -12765,6 +12653,7 @@ mod tests {
             gh_status_cache,
             loading,
             gh_status_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            gh_status_fetched: Arc::default(),
             pr_open_prefetch_in_flight: Arc::new(Mutex::new(HashMap::new())),
             branch_preload_in_flight: Arc::new(Mutex::new(HashSet::new())),
             pr_ref_fetch_in_flight: Arc::new(Mutex::new(HashSet::new())),
@@ -12779,6 +12668,8 @@ mod tests {
             session: Default::default(),
             live_jobs: Default::default(),
             live_tabs: Default::default(),
+            pr_list_clock: Default::default(),
+            status_fetch_clock: Default::default(),
             #[cfg(feature = "v1-service")]
             tasks: Default::default(),
         };

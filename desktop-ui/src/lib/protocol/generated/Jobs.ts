@@ -29,4 +29,8 @@ tasks: Array<TaskJob>,
  * The sidebar triage requests still being prepared, before their task
  * is queued, by remote and PR or branch.
  */
-triage: Array<string>, };
+triage: Array<string>, 
+/**
+ * A refresh of the sidebar's PR lists is running.
+ */
+pr_list_refresh: boolean, };

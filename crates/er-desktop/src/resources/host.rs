@@ -171,7 +171,9 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         ResourceKey::Pr { tab } => {
             super::pr::published_version(desktop, &super::diff::listed(desktop, *tab)?)
         }
-        ResourceKey::PrStatus { remote, number } => sidebar(desktop).pr_status(remote, *number).0,
+        ResourceKey::PrStatus { remote, number } => {
+            super::pr::status_version(desktop, sidebar(desktop).pr_status(remote, *number).0)
+        }
     };
     Ok(ResourceVersion(version))
 }
@@ -628,11 +630,19 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
         (Watched::Jobs, super::jobs::version(desktop)),
     ]);
     let sidebar = sidebar(desktop).versions();
-    versions.extend(
-        sidebar
-            .into_iter()
-            .map(|(key, v)| (Watched::Sidebar(key), v)),
-    );
+    versions.extend(sidebar.into_iter().map(|(key, v)| {
+        let v = match key {
+            ResourceKey::PrStatus { .. } => super::pr::status_version(desktop, v),
+            _ => v,
+        };
+        (Watched::Sidebar(key), v)
+    }));
+    // A status whose fetches stored nothing has no stored version, and stays
+    // watched after the fetch ends so its `fetching: false` is pushed.
+    for key in super::pr::fetched_keys(desktop) {
+        let fetching = super::pr::status_version(desktop, 0);
+        versions.entry(Watched::Sidebar(key)).or_insert(fetching);
+    }
     if let Ok(view) = desktop.view.lock() {
         versions.extend(
             view.browser_revisions()

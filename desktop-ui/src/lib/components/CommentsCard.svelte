@@ -34,9 +34,7 @@
   const vis = $derived(app.commentVisibility);
   const visibleCommentThreads = $derived(filterVisibleComments(ai.threads, vis, files));
   const annotationCount = $derived(pageView.current?.ui_annotations?.length ?? 0);
-  const refreshing = $derived(
-    manualRefreshing || (pageView.current?.bg_loading?.gh_comments ?? false),
-  );
+  const refreshing = $derived(manualRefreshing);
 
   function currentAutoPullKey(): string | null {
     return commentAutoPullKey(pageView.current);

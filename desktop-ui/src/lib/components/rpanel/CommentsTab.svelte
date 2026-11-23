@@ -63,10 +63,8 @@
   const counts = $derived(kindCounts(threads));
   const rows = $derived(commentRows(threads, rightPanelFilters.kind, fileOrder));
 
-  const pulling = $derived(pageView.current?.bg_loading?.gh_comments ?? false);
-  const freshness = $derived(pulling ? "pulling…" : "synced");
-
   let manualPulling = $state(false);
+  const freshness = $derived(manualPulling ? "pulling…" : "synced");
   async function pull() {
     manualPulling = true;
     try {
@@ -161,7 +159,7 @@
 
 <PanelActions
   actions={[
-    { glyph: "↻", label: "Pull GitHub comments", disabled: pulling || manualPulling, run: () => void pull() },
+    { glyph: "↻", label: "Pull GitHub comments", disabled: manualPulling, run: () => void pull() },
     { glyph: "⧉", label: "Quick copy export", title: "Copy this list as markdown, ready to paste into a coding agent", run: quickCopy },
     { glyph: "↗", label: "Open export…", run: () => app.setMainView("export-review") },
   ]}

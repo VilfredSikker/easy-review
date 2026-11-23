@@ -112,12 +112,6 @@ function snap(overrides: Partial<AppSnapshot> = {}): AppSnapshot {
     notification: null,
     tabs: [tab()],
     active_tab: 0,
-    bg_loading: {
-      pr_list: false,
-      gh_status: false,
-      gh_comments: false,
-      tab_diff: false,
-    },
     ...overrides,
   };
 }

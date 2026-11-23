@@ -6,7 +6,7 @@
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
   import { pageView } from "$lib/stores/pageView.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
-  import { loadHashedHunks } from "$lib/stores/diffResource.svelte";
+  import { diffResource, loadHashedHunks } from "$lib/stores/diffResource.svelte";
   import { layoutPanels } from "$lib/stores/layoutPanels.svelte";
   import { tabViewKey } from "$lib/viewIdentity";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
@@ -2196,9 +2196,9 @@
   >
     {#if !snapshot}
       <div class="flex items-center justify-center h-full text-muted">Loading…</div>
-    {:else if files.length === 0 && snapshot.bg_loading?.tab_diff}
-      <!-- First diff load of a stub tab runs on a background thread — show a
-           loading state instead of flashing "No changes". -->
+    {:else if files.length === 0 && diffResource.held() === null}
+      <!-- Until the tab's diff(tab) arrives, show a loading state instead of
+           flashing "No changes". -->
       <div class="flex items-center justify-center h-full text-muted text-sm gap-2">
         <span class="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse"></span>
         Loading diff…

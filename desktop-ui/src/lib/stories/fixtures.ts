@@ -896,7 +896,6 @@ const baseSnapshot: AppSnapshot = {
   notification: null,
   tabs: tabsWorkingActive,
   active_tab: 0,
-  bg_loading: { pr_list: false, gh_status: false, gh_comments: false },
   commits: commitsRich,
   unstaged_stat: { files: 1, additions: 3, deletions: 1 },
   staged_stat: { files: 0, additions: 0, deletions: 0 },
