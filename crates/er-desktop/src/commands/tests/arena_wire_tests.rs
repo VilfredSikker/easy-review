@@ -151,6 +151,70 @@ fn a_live_run_moves_jobs_and_a_diff_publish_does_not() {
     });
 }
 
+/// One reviewer's end moves the run's progress while its status holds: the
+/// progress alone moves `jobs` and the relay names it.
+#[test]
+fn a_progress_tick_moves_jobs_while_the_status_holds() {
+    with_storage(|dir| {
+        let sink = Arc::new(HoldingSink::default());
+        let state = arena_state(dir, local_ports(), Arc::clone(&sink));
+        let tab = open(&state, dir.path(), "a");
+        let run_id = started(&state, tab.0);
+        let live = |state: &AppState| jobs(state).1.into_iter().find(|run| run.run_id == run_id);
+        wait_until("both reviewers to be held", || sink.held() == 2);
+        wait_until("the reviewers to show as thinking", || {
+            live(&state).is_some_and(|run| !run.progress.thinking.is_empty())
+        });
+        let before = live(&state).unwrap_or_else(|| panic!("the run left jobs"));
+        let (version, _) = jobs(&state);
+        let mut last = crate::resources::watched(&state.desktop);
+
+        sink.end_one();
+        wait_until("the reviewer's end to show in jobs", || {
+            live(&state).is_some_and(|run| run.progress != before.progress)
+        });
+
+        let after = live(&state).unwrap_or_else(|| panic!("the run left jobs"));
+        assert_eq!(after.status, before.status, "the status moved too");
+        let (moved_to, _) = jobs(&state);
+        assert!(moved_to > version, "a progress tick left jobs at {version}");
+        let now = crate::resources::watched(&state.desktop);
+        let moved = crate::resources::relay::moved(&mut last, now);
+        assert!(
+            moved.iter().any(|(key, _)| *key == Watched::Jobs),
+            "{moved:?}"
+        );
+        sink.release();
+    });
+}
+
+/// Two lists that differ only in a run's progress move the count; the same
+/// list read again does not.
+#[test]
+fn live_jobs_counts_a_change_of_progress_alone() {
+    let run = |done: &[&str]| ArenaRunJob {
+        run_id: "run-1".into(),
+        er_dir: "/bucket".into(),
+        status: ArenaRunStatus::Running { round: 1 },
+        progress: er_protocol::ArenaRunProgress {
+            round: 1,
+            total_rounds: 2,
+            phase: String::new(),
+            thinking: vec!["b".into()],
+            done: done.iter().map(|id| (*id).to_string()).collect(),
+        },
+    };
+    let live = crate::state::LiveJobs::default();
+    let first = live.observe(&[run(&[])]);
+    let ticked = live.observe(&[run(&["a"])]);
+    assert!(ticked > first, "a progress tick left the count at {first}");
+    assert_eq!(
+        live.observe(&[run(&["a"])]),
+        ticked,
+        "the same runs moved the count"
+    );
+}
+
 /// `arena_estimate` prices the plan on the files it names, read with the App
 /// locked and never through the actor's queue.
 #[test]
