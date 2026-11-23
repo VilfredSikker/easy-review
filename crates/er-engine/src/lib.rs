@@ -53,6 +53,7 @@ pub mod projects_pins;
 pub mod release_install;
 pub mod release_update;
 pub mod remote_pr_open_cache;
+pub mod review_export;
 pub mod review_flow_driver;
 pub mod review_queue;
 pub mod session_store;
