@@ -332,9 +332,9 @@ fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
         wait_until("the tab's rows to take the committed tier", || {
             tier().as_deref() == Some("low")
         });
-        state.desktop.tasks.cancel_queued(&importance);
-        open_gate(&agent.first);
-        open_gate(&agent.second);
+        // The review still runs on the gated agent: end it before the
+        // storage goes, so it frees the process's one slot.
+        release(&state, &agent);
     });
 }
 
