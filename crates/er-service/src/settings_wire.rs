@@ -246,7 +246,9 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::DeleteUiAnnotation { .. }
         | wire::Command::ClearUiAnnotationsForPage { .. }
         | wire::Command::ClearUiAnnotations { .. }
-        | wire::Command::UpdateUiAnnotationAnchors { .. }) => return Err(Box::new(other)),
+        | wire::Command::UpdateUiAnnotationAnchors { .. }
+        | wire::Command::RefreshStack { .. }
+        | wire::Command::RefreshGithubStatus { .. }) => return Err(Box::new(other)),
     })
 }
 

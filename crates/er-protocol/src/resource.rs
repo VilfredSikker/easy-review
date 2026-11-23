@@ -3,9 +3,9 @@ use ts_rs::TS;
 
 use crate::{
     AnnotationScreenshot, Annotations, AvailableBranches, AvailablePrs, Branches, DiffPaths,
-    FileHunks, FilePreview, ImagePreview, Inbox, Jobs, Panels, Projects, Prs, ReviewJson,
-    ReviewRevisions, Risk, Session, Settings, TabDiff, TabReviewed, TabRow, TabView, UiAnnotations,
-    Worktrees,
+    FileHunks, FilePreview, ImagePreview, Inbox, Jobs, Panels, PrStatus, Projects, Prs, ReviewJson,
+    ReviewRevisions, Risk, Session, Settings, TabDiff, TabPr, TabReviewed, TabRow, TabView,
+    UiAnnotations, Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -104,6 +104,15 @@ pub enum ResourceKey {
     /// A saved annotation screenshot by its path, read on each fetch and
     /// never pushed.
     AnnotationScreenshot { path: String },
+    /// One open tab's pull request card and stack, by its key.
+    Pr { tab: TabKey },
+    /// One pull request's GitHub status, by the `owner/repo` it lives in and
+    /// its number.
+    PrStatus {
+        remote: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -135,6 +144,8 @@ pub enum Resource {
     ReviewJson(ReviewJson),
     ReviewRevisions(ReviewRevisions),
     AnnotationScreenshot(AnnotationScreenshot),
+    Pr(Box<TabPr>),
+    PrStatus(Box<PrStatus>),
 }
 
 /// The open tabs in strip order, and the active one.

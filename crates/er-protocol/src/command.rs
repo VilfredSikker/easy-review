@@ -519,6 +519,17 @@ pub enum Command {
         view: PaintedView,
         updates: Vec<AnchorUpdate>,
     },
+
+    // ── The PR card ──
+    /// Reads the tab's `gh stack` again into `pr(tab)`.
+    RefreshStack {
+        tab: TabKey,
+    },
+    /// Fetches the GitHub status of the tab's PR in the background; the push
+    /// brings `pr_status`.
+    RefreshGithubStatus {
+        tab: TabKey,
+    },
 }
 
 /// A browser annotation as the page submits it.

@@ -12820,6 +12820,8 @@ mod tests {
     #[cfg(not(feature = "v1-service"))]
     mod latency_tests;
     #[cfg(feature = "v1-service")]
+    mod pr_resource_tests;
+    #[cfg(feature = "v1-service")]
     mod preview_tests;
     #[cfg(feature = "v1-service")]
     mod resource_tests;

@@ -1134,6 +1134,8 @@ fn main() {
         Arc::clone(&gh_user),
         Arc::clone(&inbox),
     ));
+    #[cfg(feature = "v1-service")]
+    app_owner.read_status_from(Arc::clone(&gh_status_cache));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
     let tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
@@ -1512,7 +1514,11 @@ fn main() {
     // duplicate concurrent fetches when a branch switch fires during this loop.
     {
         let gh_status_bg = Arc::clone(&gh_status_cache);
+        #[cfg(feature = "v1-service")]
+        let loop_state = state.clone();
+        #[cfg(not(feature = "v1-service"))]
         let app_bg = Arc::clone(&app_arc);
+        #[cfg(not(feature = "v1-service"))]
         let pr_cache_bg = Arc::clone(&pr_cache);
         let gh_status_loading = Arc::clone(&loading);
         let gh_status_in_flight_bg = Arc::clone(&gh_status_in_flight);
@@ -1522,7 +1528,11 @@ fn main() {
             // lets the loop fire immediately on launch.
             std::thread::sleep(std::time::Duration::from_secs(30));
 
+            // The flag path reads the registry's active tab, never the App.
+            #[cfg(feature = "v1-service")]
+            let key = er_desktop::status_loop::pick(&loop_state);
             // Snapshot identity in a short critical section.
+            #[cfg(not(feature = "v1-service"))]
             let key: Option<(String, String, u64)> = app_bg
                 .lock()
                 .ok()
