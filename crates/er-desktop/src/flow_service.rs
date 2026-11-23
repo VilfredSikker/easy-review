@@ -64,10 +64,8 @@ pub fn context(desktop: &DesktopState, tab: &ArenaTab, scope: Option<&str>) -> F
         .resolve_default_selection(&config.agent)
         .effort;
     let view = match scope {
-        Some(scope) => {
-            er_service::review_flow_inputs(&desktop.ports, &tab.content, &config, scope)
-                .map_err(|error| error.to_string())
-        }
+        Some(scope) => er_service::review_flow_inputs(&desktop.ports, &tab.content, &config, scope)
+            .map_err(|error| error.to_string()),
         None => Err("this command reviews no view".into()),
     };
     FlowContext {
@@ -234,8 +232,7 @@ pub fn get_run(
 ) -> Result<ArenaRunSnapshot, ErError> {
     let key = flow_key(desktop, er_dir, fallback);
     let config = arena_service::config(desktop);
-    er_service::read_flow_run(&desktop.service.view(&key), &config, er_dir, run_id)
-        .map_err(failed)
+    er_service::read_flow_run(&desktop.service.view(&key), &config, er_dir, run_id).map_err(failed)
 }
 
 /// Recovers every listed tab's flow bucket in its workspace actor at

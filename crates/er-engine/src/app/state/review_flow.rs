@@ -18,9 +18,7 @@ use super::background::BackgroundTaskTarget;
 use super::{App, CommandStatus};
 use crate::ai::review_flow::{FlowTaskStatus, ReviewFlow};
 use crate::ai::WorkflowHolder;
-use crate::arena::{
-    ArenaRunControl, ArenaRunInputs, ArenaStartParams, SeededStartParams,
-};
+use crate::arena::{ArenaRunControl, ArenaRunInputs, ArenaStartParams, SeededStartParams};
 use crate::config::{AiSelection, ErConfig};
 use crate::ports::Ports;
 use crate::review_flow_driver::{
@@ -190,7 +188,9 @@ impl App {
         let tab = self
             .tabs
             .iter()
-            .find(|tab| crate::review_flow_driver::shows_target(&tab.identity(), &tab.er_dir(), target))
+            .find(|tab| {
+                crate::review_flow_driver::shows_target(&tab.identity(), &tab.er_dir(), target)
+            })
             .context("The captured review target is no longer open; start a new Review")?;
         let raw_diff = tab
             .fetch_tab_raw_diff(&target.scope)
