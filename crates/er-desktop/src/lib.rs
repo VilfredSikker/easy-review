@@ -12,6 +12,7 @@ pub mod commands;
 pub mod comment_tick;
 pub mod config_commands;
 pub mod dev_log;
+pub mod direct;
 pub mod export;
 #[cfg(feature = "v1-service")]
 pub mod flow_service;

@@ -14,6 +14,9 @@ import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
 import { reviewPage, type ReviewPage } from "$lib/stores/reviewPage.svelte";
 import { terminal } from "$lib/stores/terminal.svelte";
 import { copyToClipboard } from "$lib/clipboard";
+import { asErError } from "$lib/protocol/client";
+import type { OpenSource } from "$lib/protocol/generated/OpenSource";
+import { exportReviewToFile } from "$lib/stores/quickExport";
 import { resolveContextIdentity } from "$lib/contextIdentity";
 import { resolveActivePrNumber, resolveActivePrUrl } from "$lib/prUrl";
 import { resolveTabRoot } from "$lib/resolveTabRoot";
@@ -85,7 +88,7 @@ function exportItems(r: PaletteRunners): CommandItem[] {
       label: "Export review to file",
       description: "Write markdown export of the current review",
       group: "Actions",
-      run: () => r.dismissAndRun(() => app.cmd("export_to_agent")),
+      run: () => r.dismissAndRun(exportReviewToFile),
     },
   ];
 }
@@ -160,9 +163,9 @@ export function actionsMenu(snapshot: AppSnapshot | null, r: PaletteRunners): Co
       group: "Actions",
       kbd: "e",
       run: () => r.dismissAndRun(() =>
-        invoke<{ kind: string; target: string }>("open_in_vscode").then((res) => {
+        invoke<OpenSource>("open_in_vscode").then((res) => {
           if (res.kind === "needs_checkout") app.showToast("info", res.target);
-        }).catch((e) => app.showToast("error", `VS Code: ${e}`)),
+        }).catch((e) => app.showToast("error", `VS Code: ${asErError(e).message}`)),
       ),
     },
     ...exportItems(r),

@@ -59,6 +59,7 @@ import {
 import { inboxReturnView } from "../inboxNav";
 import { v1ServiceRequested } from "../v1ServiceFlag";
 import { resources } from "./resourceStore";
+import { errorText } from "./settingsAdapter";
 
 export type { CommentVisibility };
 
@@ -843,9 +844,10 @@ class AppStore {
 
   private reportCmdError(command: string, e: unknown) {
     console.error(`${command} failed:`, e);
-    this.pushLog("error", command, String(e));
-    this.error = `${command}: ${e}`;
-    this.showToast("error", `${command}: ${e}`);
+    const message = errorText(e);
+    this.pushLog("error", command, message);
+    this.error = `${command}: ${message}`;
+    this.showToast("error", `${command}: ${message}`);
     setTimeout(() => {
       if (this.error?.startsWith(`${command}:`)) this.error = null;
     }, 5000);

@@ -1,32 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-
-/** A run of consecutive lines on one side of a diff, all from one commit.
- *  Mirrors `er_engine::git::BlameSpan`. */
-export interface BlameSpan {
-  /** 1-based line number on that side. */
-  start: number;
-  len: number;
-  /** Index into `LineCommits.commits`. */
-  commit: number;
-}
+import type { LineCommits } from "$lib/protocol/generated/LineCommits";
 
 /** Reply of the lazy `line_commits` command. It is not snapshot data: ask for
  *  it per file when "Mark lines" is on and the file is visible. */
-export interface LineCommits {
-  path: string;
-  /** The `FileSnapshot.cache_key` it was computed for. */
-  cache_key: string;
-  /** Why this view cannot be attributed (remote PR, unstaged/staged…). */
-  unavailable: string | null;
-  /** Full shas, oldest first. */
-  commits: string[];
-  /** New-side lines by the commit that introduced them. */
-  added: BlameSpan[];
-  /** Old-side lines by the commit that removed them. Best-effort. */
-  deleted: BlameSpan[];
-  /** False when the old side could not be blamed at all (e.g. a new file). */
-  deleted_attributed: boolean;
-}
+export type { LineCommits };
 
 export function fetchLineCommits(path: string, cacheKey: string): Promise<LineCommits> {
   return invoke<LineCommits>("line_commits", { path, cacheKey });

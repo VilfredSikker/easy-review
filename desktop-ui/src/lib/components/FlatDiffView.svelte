@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import type { OpenSource } from "$lib/protocol/generated/OpenSource";
+  import { devHeightProbeOn } from "$lib/dev/heightProbe";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
   import { loadHashedHunks } from "$lib/stores/diffResource.svelte";
@@ -1985,7 +1987,7 @@
   let devRo: ResizeObserver | null = null;
   $effect(() => {
     if (!import.meta.env.DEV || !scrollEl) return;
-    if (globalThis.localStorage?.getItem("erDevHeightProbe") !== "1") return;
+    if (!devHeightProbeOn()) return;
     void vw.start;
     void vw.end;
     devRo?.disconnect();
@@ -2140,7 +2142,7 @@
         <button type="button"
           class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded"
           onclick={async () => {
-            const res = await invoke<{ kind: string; target: string }>("open_source");
+            const res = await invoke<OpenSource>("open_source");
             if (res.kind === "needs_checkout") app.showToast("info", "Create editable worktree to open locally");
           }}
         >

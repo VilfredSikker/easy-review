@@ -816,11 +816,6 @@ pub fn attach_live_runs(app: &App, service: Arc<crate::service::ServiceState>) {
     app.set_arena_live_elsewhere(Arc::new(move |run_id| service.arena_run_live(run_id)));
 }
 
-#[tauri::command]
-pub fn dev_log_filter() -> Option<Vec<String>> {
-    crate::dev_log::filter_groups()
-}
-
 /// Re-wire the arena's live-progress notify to desktop revision (once at startup).
 pub fn attach_arena_notify(app: &mut App, desktop_revision: Arc<std::sync::atomic::AtomicU64>) {
     let arena_revision = Arc::clone(&desktop_revision);
@@ -887,7 +882,8 @@ mod route_tests {
             );
         }
         // A process-wide filter with no workspace state: deliberately unrouted.
-        assert!(!body(source, "dev_log_filter").contains("arena_service"));
+        let dev_log = include_str!("direct/dev_log.rs");
+        assert!(!body(dev_log, "dev_log_filter").contains("arena_service"));
 
         let service = include_str!("arena_service.rs");
         for sent in [
