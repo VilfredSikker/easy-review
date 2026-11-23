@@ -126,7 +126,11 @@ pub(super) fn jobs(state: &AppState) -> Jobs {
 }
 
 fn pending(state: &AppState) -> Vec<String> {
-    jobs(state).ai_replies.into_iter().map(|r| r.target).collect()
+    jobs(state)
+        .ai_replies
+        .into_iter()
+        .map(|r| r.target)
+        .collect()
 }
 
 fn ask(state: &AppState, tab: TabKey, thread: &str) -> Ack {
@@ -233,7 +237,9 @@ fn an_ask_and_a_validation_land_their_answers_with_the_app_locked() {
         release(&gate);
         wait_until("the thread answer", || !replies(&bucket, &asked).is_empty());
         wait_until("the finding answer", || !responses(&bucket).is_empty());
-        wait_until("the pending replies to clear", || pending(&state).is_empty());
+        wait_until("the pending replies to clear", || {
+            pending(&state).is_empty()
+        });
         drop(held);
         assert_eq!(replies(&bucket, &asked)[0].0, "ai");
     });
@@ -345,7 +351,13 @@ fn a_closed_tab_still_gets_its_answer_in_the_captured_bucket() {
         let closed = content_routes::close_key(&state.desktop, tab.0);
         assert!(closed.is_ok(), "{closed:?}");
         assert!(
-            !state.service.app_registry().tabs_view().tabs.iter().any(|t| t.key == tab.0),
+            !state
+                .service
+                .app_registry()
+                .tabs_view()
+                .tabs
+                .iter()
+                .any(|t| t.key == tab.0),
             "the tab is still listed"
         );
 
@@ -368,7 +380,10 @@ fn a_late_answer_lands_in_the_asking_tab_after_the_focus_moves() {
         let other = open(&state, dir.path(), "b");
         let (asking, active) = (bucket(&state, &tab), bucket(&state, &other));
         assert_ne!(asking, active, "the fixture's two buckets are one");
-        assert_eq!(state.service.app_registry().tabs_view().active, Some(other.0));
+        assert_eq!(
+            state.service.app_registry().tabs_view().active,
+            Some(other.0)
+        );
 
         release(&gate);
         wait_until("the pending reply to clear", || pending(&state).is_empty());
@@ -392,8 +407,13 @@ fn a_late_answer_lands_in_the_view_the_ask_was_made_on() {
             .content(tab.0, &tab.1)
             .is_some_and(|c| c.tab.mode == DiffMode::Branch));
         ask(&state, tab.0, &asked);
-        let moved =
-            content_routes::set_tab_mode(&state.desktop, tab.0, "unstaged", DiffMode::Unstaged, None);
+        let moved = content_routes::set_tab_mode(
+            &state.desktop,
+            tab.0,
+            "unstaged",
+            DiffMode::Unstaged,
+            None,
+        );
         assert!(moved.is_ok(), "{moved:?}");
         wait_until("the unstaged view", || {
             state

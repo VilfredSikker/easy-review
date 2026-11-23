@@ -97,7 +97,10 @@ pub fn thread_ask(tab: AskTab<'_>, thread_id: &str) -> Result<(AskContext, Answe
         // collection (and resulting CommentType) by id prefix.
         let is_note = thread_id.starts_with("n-");
         let items: &[PrivateAnnotation] = if is_note {
-            ai.notes.as_ref().map(|ns| ns.notes.as_slice()).unwrap_or(&[])
+            ai.notes
+                .as_ref()
+                .map(|ns| ns.notes.as_slice())
+                .unwrap_or(&[])
         } else {
             ai.questions
                 .as_ref()

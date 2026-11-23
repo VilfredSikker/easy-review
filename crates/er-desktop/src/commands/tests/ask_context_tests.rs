@@ -109,9 +109,15 @@ fn branch_view(repo: &str) -> TabDescriptor {
 
 /// The App's side: the tab restored, refreshed, then switched through
 /// `steps`, with `parse`'s stub parsed as when the user opens it.
-fn app_tab(ports: &Ports, descriptor: &TabDescriptor, steps: &[DiffMode], parse: Option<&str>) -> TabState {
+fn app_tab(
+    ports: &Ports,
+    descriptor: &TabDescriptor,
+    steps: &[DiffMode],
+    parse: Option<&str>,
+) -> TabState {
     let resolved = resolve_descriptor(&*ports.git, descriptor).unwrap_or_else(|e| panic!("{e}"));
-    let mut tab = TabState::from_resolved(resolved, ports.clone()).unwrap_or_else(|e| panic!("{e}"));
+    let mut tab =
+        TabState::from_resolved(resolved, ports.clone()).unwrap_or_else(|e| panic!("{e}"));
     let branch = er_engine::checkout::watched_branch(
         tab.is_remote(),
         tab.local_branch_view.as_deref(),
@@ -121,7 +127,8 @@ fn app_tab(ports: &Ports, descriptor: &TabDescriptor, steps: &[DiffMode], parse:
         er_engine::checkout::resolve_head_checkout(&*ports.git, &tab.repo_root, &branch)
     });
     tab.sync_managed_storage_light();
-    tab.refresh_diff().unwrap_or_else(|e| panic!("refresh: {e}"));
+    tab.refresh_diff()
+        .unwrap_or_else(|e| panic!("refresh: {e}"));
     for step in steps {
         tab.set_mode(*step);
     }
@@ -143,7 +150,11 @@ fn service_state(dir: &ReviewFlowTestDir, ports: &Ports) -> AppState {
 }
 
 /// The tab opened in the registry and loaded, then switched to `mode`.
-fn content_tab(state: &AppState, descriptor: &TabDescriptor, mode: Option<DiffMode>) -> (TabKey, Arc<TabContent>) {
+fn content_tab(
+    state: &AppState,
+    descriptor: &TabDescriptor,
+    mode: Option<DiffMode>,
+) -> (TabKey, Arc<TabContent>) {
     let opened = content_routes::open(state, descriptor.clone(), false);
     assert!(opened.is_ok(), "{opened:?}");
     let key = state
@@ -152,7 +163,9 @@ fn content_tab(state: &AppState, descriptor: &TabDescriptor, mode: Option<DiffMo
         .tabs_view()
         .active
         .unwrap_or_else(|| panic!("no active tab"));
-    wait_until("the content", || state.service.content(key, descriptor).is_some());
+    wait_until("the content", || {
+        state.service.content(key, descriptor).is_some()
+    });
     if let Some(mode) = mode {
         let moved = content_routes::set_tab_mode(&state.desktop, key, mode.git_mode(), mode, None);
         assert!(moved.is_ok(), "{moved:?}");
@@ -163,7 +176,10 @@ fn content_tab(state: &AppState, descriptor: &TabDescriptor, mode: Option<DiffMo
                 .is_some_and(|c| c.tab.mode == mode)
         });
     }
-    let content = state.service.content(key, descriptor).unwrap_or_else(|| panic!("no content"));
+    let content = state
+        .service
+        .content(key, descriptor)
+        .unwrap_or_else(|| panic!("no content"));
     (key, content)
 }
 
@@ -192,7 +208,10 @@ fn a_history_ask_reads_the_same_raw_diff_branches_and_directory() {
         let app = app_tab(&ports, &descriptor, &[DiffMode::History], None);
         let state = service_state(dir, &ports);
         let (_, content) = content_tab(&state, &descriptor, Some(DiffMode::History));
-        assert!(!content.diff.meta.raw.is_empty(), "the content shows no commit");
+        assert!(
+            !content.diff.meta.raw.is_empty(),
+            "the content shows no commit"
+        );
 
         let off = shown(&crate::commands::app_ask_tab(&app));
         let on = shown(&crate::ai_ask::content_ask_tab(&state.desktop, &content));
@@ -214,11 +233,19 @@ fn a_history_ask_on_an_unchecked_out_branch_reads_no_diff() {
         let (_, content) = content_tab(&state, &descriptor, Some(DiffMode::History));
         let id = content.tab.identity();
         assert!(id.checkout_root.is_none(), "the branch has a checkout");
-        assert!(er_engine::review_flow_driver::cached_diff_matches_scope(&id, "branch"));
+        assert!(er_engine::review_flow_driver::cached_diff_matches_scope(
+            &id, "branch"
+        ));
         assert!(!content.diff.meta.branch_diff_hash.is_empty(), "no hash");
-        assert!(!content.diff.meta.raw.is_empty(), "the content shows no commit");
+        assert!(
+            !content.diff.meta.raw.is_empty(),
+            "the content shows no commit"
+        );
 
-        assert_eq!(er_service::ask_raw_diff(&state.desktop.ports, &content), None);
+        assert_eq!(
+            er_service::ask_raw_diff(&state.desktop.ports, &content),
+            None
+        );
     });
 }
 
@@ -241,7 +268,9 @@ fn a_finding_ask_on_a_stub_reads_the_same_context() {
         let app = app_tab(&ports, &descriptor, &[], Some(path));
         assert!(app.lazy_mode, "the App did not parse lazily");
         assert!(
-            app.files.iter().any(|f| f.path == path && !f.hunks.is_empty()),
+            app.files
+                .iter()
+                .any(|f| f.path == path && !f.hunks.is_empty()),
             "the App did not parse the finding's file"
         );
         let off = finding_ask(crate::commands::app_ask_tab(&app), "f-1")
@@ -251,7 +280,11 @@ fn a_finding_ask_on_a_stub_reads_the_same_context() {
         let (key, content) = content_tab(&state, &descriptor, None);
         assert!(content.diff.meta.lazy, "the content is not lazy");
         assert!(
-            content.diff.files.iter().any(|f| f.path == path && f.hunks.is_empty()),
+            content
+                .diff
+                .files
+                .iter()
+                .any(|f| f.path == path && f.hunks.is_empty()),
             "the finding's file is not a stub"
         );
         // A refresh parses the App's first file, the one it selects; the page
@@ -262,13 +295,18 @@ fn a_finding_ask_on_a_stub_reads_the_same_context() {
             paths: vec![first],
             expand: false,
         };
-        let parsed = state.service.send(&crate::service::actor_key(&descriptor), parse);
+        let parsed = state
+            .service
+            .send(&crate::service::actor_key(&descriptor), parse);
         assert!(parsed.is_ok(), "{parsed:?}");
         let tab = crate::arena_service::tab(&state.desktop, Some(er_service::wire_tab_key(key)))
             .unwrap_or_else(|e| panic!("{e:?}"));
         let content = crate::ai_ask::parsed_for_finding(&state.desktop, &tab, "f-1");
-        let on = finding_ask(crate::ai_ask::content_ask_tab(&state.desktop, &content), "f-1")
-            .unwrap_or_else(|e| panic!("{e}"));
+        let on = finding_ask(
+            crate::ai_ask::content_ask_tab(&state.desktop, &content),
+            "f-1",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
 
         assert!(off.line_content.is_some(), "the App read no line content");
         assert_eq!(observed(&on), observed(&off));
@@ -307,16 +345,28 @@ fn an_unhashed_diff_is_fetched_again() {
         };
         let loaded = handle.send_and_wait_with(load, std::time::Duration::from_secs(10));
         assert!(loaded.is_ok(), "{loaded:?}");
-        let content = handle.view().tab(key).cloned().unwrap_or_else(|| panic!("no content"));
+        let content = handle
+            .view()
+            .tab(key)
+            .cloned()
+            .unwrap_or_else(|| panic!("no content"));
         let meta = &content.diff.meta;
-        assert!(meta.branch_diff_hash.is_empty(), "the view has a branch hash");
+        assert!(
+            meta.branch_diff_hash.is_empty(),
+            "the view has a branch hash"
+        );
         assert!(meta.raw.contains("+two"), "{}", meta.raw);
         let id = content.tab.identity();
-        assert!(er_engine::review_flow_driver::cached_diff_matches_scope(&id, "unstaged"));
+        assert!(er_engine::review_flow_driver::cached_diff_matches_scope(
+            &id, "unstaged"
+        ));
 
         std::fs::write(repo.join("tracked.rs"), "three\n").unwrap_or_else(|e| panic!("{e}"));
         let fresh = er_engine::diff_load::fetch_raw(&ports, &id, "unstaged", false).ok();
-        assert!(fresh.as_deref().is_some_and(|raw| raw.contains("+three")), "{fresh:?}");
+        assert!(
+            fresh.as_deref().is_some_and(|raw| raw.contains("+three")),
+            "{fresh:?}"
+        );
 
         assert_eq!(er_service::ask_raw_diff(&ports, &content), fresh);
     });

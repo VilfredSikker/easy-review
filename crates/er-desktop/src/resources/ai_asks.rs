@@ -3,7 +3,9 @@
 //! AI-assisted finding reply also names the tab's `annotations(tab)`, which
 //! holds the thread it asks in, and creates that thread's root id.
 
-use er_protocol::{Ack, Command, ErError, PaintedView, ResourceChanged, ResourceKey, ResourceVersion};
+use er_protocol::{
+    Ack, Command, ErError, PaintedView, ResourceChanged, ResourceKey, ResourceVersion,
+};
 
 use super::tabs::Routed;
 use crate::state::DesktopState;

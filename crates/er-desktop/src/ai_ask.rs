@@ -141,7 +141,12 @@ pub fn content_ask_tab<'a>(desktop: &DesktopState, content: &'a TabContent) -> A
         } else {
             tab.repo_root.clone()
         },
-        files: content.diff.files.iter().map(|f| DiffFile::clone(f)).collect(),
+        files: content
+            .diff
+            .files
+            .iter()
+            .map(|f| DiffFile::clone(f))
+            .collect(),
         raw_diff: er_service::ask_raw_diff(&desktop.ports, content),
         ai: &content.ai.state,
     }
@@ -253,7 +258,14 @@ fn ask_thread(
         reply_to: thread_id,
         ai_action,
     };
-    start(desktop, tab.entry.key, &tab.content.context, ask, answer, prompt);
+    start(
+        desktop,
+        tab.entry.key,
+        &tab.content.context,
+        ask,
+        answer,
+        prompt,
+    );
     Ok(())
 }
 
@@ -267,7 +279,14 @@ fn ask_finding(
     let ask = ask_context::finding_ask(content_ask_tab(desktop, &content), &finding_id)
         .map_err(refused)?;
     let answer = Answer::Finding { finding_id };
-    start(desktop, tab.entry.key, &content.context, ask, answer, prompt);
+    start(
+        desktop,
+        tab.entry.key,
+        &content.context,
+        ask,
+        answer,
+        prompt,
+    );
     Ok(())
 }
 

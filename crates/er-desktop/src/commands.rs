@@ -27,16 +27,17 @@ use crate::snapshot::{
 pub use crate::state::{run_blocking, DesktopState, PrOpenPrefetchClaim, PrOpenPrefetchMap};
 #[cfg(not(feature = "v1-service"))]
 use er_engine::ai::CommentType;
-#[cfg(test)]
-use er_engine::app::CardAiInvocation;
 #[cfg(any(test, not(feature = "v1-service")))]
 use er_engine::app::run_card_ai_subprocess;
-use er_engine::app::{App, DiffMode, InputMode};
+#[cfg(test)]
+use er_engine::app::CardAiInvocation;
 #[cfg(not(feature = "v1-service"))]
 use er_engine::app::{plan_card_ai_invocation, CommentTarget};
+use er_engine::app::{App, DiffMode, InputMode};
 use er_engine::config::InboxConfig;
 
-pub(crate) const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
+pub(crate) const DEFAULT_ASK_AI_PROMPT: &str =
+    "Elaborate on this and answer any question directly.";
 
 /// Per-card validation: check whether a comment, question, or finding still holds.
 pub(crate) const VALIDATE_CARD_AI_PROMPT: &str = r#"Validate whether this review note is still accurate against the current code context provided.
@@ -12490,17 +12491,17 @@ mod tests {
     use er_engine::ai::{load_ui_annotations, save_ui_annotations, UiAnnotation};
 
     #[cfg(feature = "v1-service")]
+    mod ai_ask_tests;
+    #[cfg(feature = "v1-service")]
     mod annotation_write_tests;
     #[cfg(feature = "v1-service")]
     mod annotations_resource_tests;
     #[cfg(feature = "v1-service")]
-    mod ai_ask_tests;
-    #[cfg(feature = "v1-service")]
-    mod ask_context_tests;
-    #[cfg(feature = "v1-service")]
     mod arena_resource_tests;
     #[cfg(feature = "v1-service")]
     mod arena_wire_tests;
+    #[cfg(feature = "v1-service")]
+    mod ask_context_tests;
     #[cfg(feature = "v1-service")]
     mod content_route_tests;
     #[cfg(feature = "v1-service")]
@@ -16379,7 +16380,10 @@ mod route_tests {
         let body = &source[start..];
         let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
         assert!(body.contains("ai_ask::ask_on_finding("), "{body}");
-        assert!(body.contains("er_service::Command::ReplyToFinding"), "{body}");
+        assert!(
+            body.contains("er_service::Command::ReplyToFinding"),
+            "{body}"
+        );
         assert!(!body.contains("reply_to_finding_impl"), "{body}");
     }
 
