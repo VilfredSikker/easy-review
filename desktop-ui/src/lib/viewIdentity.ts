@@ -57,8 +57,10 @@ export type TaskTarget = {
 };
 
 /**
- * The target the view's tab files its background tasks under: the viewed
- * local branch, else the live branch the view names.
+ * The target the view's tab files its background tasks under, by the task
+ * host's rule: the branch its row names once the tab has loaded, else the
+ * viewed local branch, else the branch the view names. Only a remote PR
+ * files under its `owner/repo`; a local PR's tasks file under its clone.
  */
 export function viewTaskTarget(view: AppSnapshot): TaskTarget | null {
   const tab = view.tabs?.find((t) => t.is_active);
@@ -66,7 +68,7 @@ export function viewTaskTarget(view: AppSnapshot): TaskTarget | null {
   return {
     repo_root: tab.repo_root,
     pr_number: tab.pr_number,
-    remote_repo: tab.remote,
-    branch_label: tab.branch ?? view.branch,
+    remote_repo: tab.kind === "remote_pr" ? tab.remote : null,
+    branch_label: tab.live_branch ?? tab.branch ?? view.branch,
   };
 }

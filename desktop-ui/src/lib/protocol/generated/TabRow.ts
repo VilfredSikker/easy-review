@@ -8,8 +8,9 @@ import type { TabKind } from "./TabKind";
  */
 export type TabRow = { key: TabKey, kind: TabKind, 
 /**
- * Built from the saved descriptor. A Working tab names its repo folder,
- * since the live branch is not part of the descriptor.
+ * The App's tab name. A loaded tab's comes from its content, so a
+ * Working tab names its checkout's branch; a tab not loaded yet takes it
+ * from its saved descriptor, which names a Working tab's repo folder.
  */
 label: string, repo_root: string, 
 /**
@@ -17,6 +18,17 @@ label: string, repo_root: string,
  */
 branch: string | null, pr_number: number | null, 
 /**
- * `owner/repo` of a PR with no clone.
+ * `owner/repo` of a PR: a remote PR's from its descriptor, a local PR's
+ * from its clone's `origin`.
  */
-remote: string | null, };
+remote: string | null, 
+/**
+ * The branch a loaded tab's background tasks file under: its viewed
+ * branch, else its checkout's branch. None until the tab loads.
+ */
+live_branch: string | null, 
+/**
+ * The loaded diff's branch diff hash, which the strip compares with the
+ * one last seen to mark new changes; empty until the tab loads.
+ */
+change_token: string, };

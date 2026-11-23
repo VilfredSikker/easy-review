@@ -586,6 +586,8 @@ export interface TabSummary {
   repo_root: string;
   is_active: boolean;
   change_token: string;
+  /** The branch the tab's background tasks file under, once it has loaded. */
+  live_branch?: string | null;
   /**
    * Diff built from an older commit than origin has. Active tab: same as
    * `AppSnapshot.diff_stale` being set. Other tabs: PR tabs only, so an

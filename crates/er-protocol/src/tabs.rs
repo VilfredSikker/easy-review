@@ -20,16 +20,24 @@ pub enum TabKind {
 pub struct TabRow {
     pub key: TabKey,
     pub kind: TabKind,
-    /// Built from the saved descriptor. A Working tab names its repo folder,
-    /// since the live branch is not part of the descriptor.
+    /// The App's tab name. A loaded tab's comes from its content, so a
+    /// Working tab names its checkout's branch; a tab not loaded yet takes it
+    /// from its saved descriptor, which names a Working tab's repo folder.
     pub label: String,
     pub repo_root: String,
     /// The branch a branch or local PR view shows; none on the other kinds.
     pub branch: Option<String>,
     #[ts(type = "number | null")]
     pub pr_number: Option<u64>,
-    /// `owner/repo` of a PR with no clone.
+    /// `owner/repo` of a PR: a remote PR's from its descriptor, a local PR's
+    /// from its clone's `origin`.
     pub remote: Option<String>,
+    /// The branch a loaded tab's background tasks file under: its viewed
+    /// branch, else its checkout's branch. None until the tab loads.
+    pub live_branch: Option<String>,
+    /// The loaded diff's branch diff hash, which the strip compares with the
+    /// one last seen to mark new changes; empty until the tab loads.
+    pub change_token: String,
 }
 
 /// One tab's desktop view: its review browser.

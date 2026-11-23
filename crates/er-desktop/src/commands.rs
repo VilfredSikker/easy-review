@@ -12778,6 +12778,7 @@ mod tests {
             line_commits_cache: Arc::default(),
             session: Default::default(),
             live_jobs: Default::default(),
+            live_tabs: Default::default(),
             #[cfg(feature = "v1-service")]
             tasks: Default::default(),
         };

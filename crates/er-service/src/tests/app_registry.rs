@@ -589,6 +589,8 @@ fn the_tabs_resource_carries_labels_kinds_and_descriptor_fields() -> anyhow::Res
             branch: None,
             pr_number: None,
             remote: None,
+            live_branch: None,
+            change_token: String::new(),
         };
         let expected = vec![
             row(0, Wire::Working, "widgets", "/src/widgets"),

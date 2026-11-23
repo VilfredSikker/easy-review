@@ -4,7 +4,6 @@ import { nameShownTab } from "$lib/tabCommands";
 import { app } from "./app.svelte";
 import { BrowserViewAdapter } from "./browserView";
 import { tabIsStale } from "./diffAdapter";
-import { legacySnapshot } from "./legacySnapshot.svelte";
 import { pageView } from "./pageView.svelte";
 import { resources } from "./resourceStore";
 import { TabsAdapter } from "./tabsAdapter";
@@ -12,7 +11,6 @@ import { TabsAdapter } from "./tabsAdapter";
 /** The open tabs, from the `tabs` resource. */
 export const tabsResource = new TabsAdapter({
   store: resources,
-  rows: () => legacySnapshot.tabRows,
   stale: (row, isActive) => tabIsStale(resources, row, isActive),
 });
 

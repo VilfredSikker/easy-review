@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use er_engine::tabs_record::TabDescriptor;
 use er_engine::TabKey;
-use er_protocol::{ResourceChanged, ResourceKey, ResourceVersion};
+use er_protocol::{ResourceChanged, ResourceKey};
 use er_service::{AppCommand, Command, Reply, TabContent};
 
 use super::{review_flow_test_state, ReviewFlowTestDir};
@@ -226,12 +226,13 @@ fn a_tab_change_reaches_the_wire_as_one_tabs_change() {
         let moved = bursts
             .recv_timeout(WAIT)
             .expect("no burst after the tab change");
-        let revision = state.service.app_registry().tabs_view().revision;
+        let version = resources::version(&state.desktop, ResourceKey::Tabs);
+        let version = version.unwrap_or_else(|e| panic!("tabs version: {e:?}"));
         assert_eq!(
             relay::wire(&moved),
             vec![ResourceChanged {
                 key: ResourceKey::Tabs,
-                version: ResourceVersion(revision),
+                version,
             }]
         );
     });
@@ -263,12 +264,128 @@ fn the_tabs_read_comes_from_the_published_list() {
         let Ok(fetched) = fetched else {
             panic!("tabs answered {fetched:?}");
         };
-        assert_eq!(fetched.version, ResourceVersion(view.revision));
-        assert_eq!(
-            fetched.value,
-            er_protocol::Resource::Tabs(er_service::tabs_resource(&view))
-        );
+        assert!(fetched.version.0 >= view.revision, "{fetched:?}");
+        let er_protocol::Resource::Tabs(fetched) = fetched.value else {
+            panic!("tabs answered {:?}", fetched.value);
+        };
+        let listed = |rows: &[er_protocol::TabRow]| -> Vec<_> {
+            rows.iter()
+                .map(|row| (row.key, row.kind, row.repo_root.clone()))
+                .collect()
+        };
+        let plain = er_service::tabs_resource(&view);
+        assert_eq!(listed(&fetched.tabs), listed(&plain.tabs));
+        assert_eq!(fetched.active, plain.active);
         assert_eq!(view.tabs.len(), tabs.len());
+    });
+}
+
+/// The `tabs` row of `key`, fetched.
+fn tab_row(state: &AppState, key: TabKey) -> er_protocol::TabRow {
+    let fetched = resources::fetch(&state.desktop, ResourceKey::Tabs);
+    let Ok(er_protocol::Versioned {
+        value: er_protocol::Resource::Tabs(tabs),
+        ..
+    }) = fetched
+    else {
+        panic!("tabs answered {fetched:?}");
+    };
+    let wire = er_service::wire_tab_key(key);
+    tabs.tabs
+        .into_iter()
+        .find(|row| row.key == wire)
+        .unwrap_or_else(|| panic!("no row for {key:?}"))
+}
+
+/// A loaded Working tab's row names its checkout's branch, as the App's tab
+/// row does, where its descriptor alone names the folder.
+#[test]
+fn a_working_tab_row_names_its_checkouts_branch() {
+    with_storage(|dir| {
+        let (state, tabs) = fixture(dir, None, &["one"]);
+        let row = tab_row(&state, tabs[0].0);
+        assert_eq!(row.label, "feature");
+        assert_eq!(row.live_branch.as_deref(), Some("feature"));
+    });
+}
+
+/// A loaded tab's row carries its diff's branch diff hash, which the strip's
+/// new-changes dot compares.
+#[test]
+fn a_tab_row_carries_its_diffs_change_token() {
+    with_storage(|dir| {
+        let (state, tabs) = fixture(dir, None, &["one"]);
+        let hash = content(&state, &tabs[0]).diff.meta.branch_diff_hash.clone();
+        assert!(!hash.is_empty(), "the fixture's diff has no hash");
+        assert_eq!(tab_row(&state, tabs[0].0).change_token, hash);
+    });
+}
+
+/// A local PR tab saved with no branch, loaded, over a clone whose `origin`
+/// names acme/widgets.
+fn local_pr_without_a_branch(dir: &ReviewFlowTestDir) -> (AppState, (TabKey, TabDescriptor)) {
+    let github = er_engine::github::FakeGitHub::default()
+        .with_pr_diff(Ok(raw_diff()))
+        .with_pr_commits(Ok(Vec::new()))
+        .with_get_repo_info(Ok(("acme".into(), "widgets".into())));
+    let ports = er_engine::ports::Ports {
+        github: Arc::new(github),
+        ..ports()
+    };
+    let mut state = review_flow_test_state(dir);
+    let settings = dir.path().join("settings").join("config.toml");
+    state.service = Arc::new(ServiceState::with_settings_path(ports.clone(), settings));
+    state.ports = ports;
+    let root = dir.path().join("pr");
+    std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
+    let tab = TabDescriptor {
+        kind: er_engine::tabs_record::TabKind::LocalPr,
+        pr_number: Some(7),
+        pr_head_ref: Some("refs/er/pr/7/head".into()),
+        ..content_routes::working_tab(root.to_string_lossy().into_owned())
+    };
+    let opened = content_routes::open(&state, tab.clone(), false);
+    assert!(opened.is_ok(), "{opened:?}");
+    let key = state.service.app_registry().tabs_view().active;
+    let entry = (key.unwrap_or_else(|| panic!("no active tab")), tab);
+    wait_until("the PR to load", || {
+        state.service.content(entry.0, &entry.1).is_some()
+    });
+    (state, entry)
+}
+
+/// A local PR saved with no branch is named by the head view its content
+/// resolves, as the App names it, where its descriptor alone names the folder.
+#[test]
+fn a_local_pr_row_without_a_branch_names_its_head_view() {
+    with_storage(|dir| {
+        let (state, (key, _)) = local_pr_without_a_branch(dir);
+        let row = tab_row(&state, key);
+        assert_eq!(row.branch, None);
+        assert_eq!(row.label, "pr/7");
+    });
+}
+
+/// A local PR's row carries the `owner/repo` its clone's `origin` names,
+/// which its stale mark and comment pull key on.
+#[test]
+fn a_local_pr_row_carries_its_clones_owner_and_repo() {
+    with_storage(|dir| {
+        let (state, (key, _)) = local_pr_without_a_branch(dir);
+        assert_eq!(tab_row(&state, key).remote.as_deref(), Some("acme/widgets"));
+    });
+}
+
+/// A load that changes what a row takes from its content moves `tabs` past
+/// the registry's revision with no tab command, so the page refetches it.
+#[test]
+fn a_loaded_rows_values_move_tabs_past_the_registry() {
+    with_storage(|dir| {
+        let (state, _) = fixture(dir, None, &["one"]);
+        let revision = state.service.app_registry().tabs_view().revision;
+        let version = resources::version(&state.desktop, ResourceKey::Tabs);
+        let version = version.unwrap_or_else(|e| panic!("tabs version: {e:?}"));
+        assert!(version.0 > revision, "{version:?} at revision {revision}");
     });
 }
 

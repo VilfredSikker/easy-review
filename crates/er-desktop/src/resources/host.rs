@@ -122,7 +122,7 @@ pub fn fetch_all(
 /// `key`'s version, read without building its content.
 pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersion, ErError> {
     let version = match &key {
-        ResourceKey::Tabs => desktop.service.app_registry().tabs_view().revision,
+        ResourceKey::Tabs => tabs_version(desktop),
         ResourceKey::Projects => sidebar(desktop).projects().0,
         ResourceKey::Branches { project } => sidebar(desktop).branches(project).0,
         // Computed on each read, or immutable under their key, so they never
@@ -472,12 +472,46 @@ fn sidebar(desktop: &DesktopState) -> &dyn SidebarOwner {
     &*desktop.app_owner
 }
 
-/// The registry's published list. A read never takes the registry's command
-/// path, which applies tab commands inline on the caller's thread.
+/// The registry's published list, each row with what its content and its
+/// repo add. A read never takes the registry's command path, which applies
+/// tab commands inline on the caller's thread. The version is the registry's
+/// revision plus the times the rows' added values moved.
 fn tabs(desktop: &DesktopState) -> (u64, Resource) {
     let view = desktop.service.app_registry().tabs_view();
-    let tabs = er_service::tabs_resource(&view);
-    (view.revision, Resource::Tabs(tabs))
+    let rows: Vec<_> = view
+        .tabs
+        .iter()
+        .map(|entry| {
+            let content = desktop.service.content(entry.key, &entry.descriptor);
+            er_service::live_tab_row(entry, content.as_deref(), |root| repo_slug(desktop, root))
+        })
+        .collect();
+    let plain = er_service::tabs_resource(&view);
+    let added: Vec<_> = rows
+        .iter()
+        .zip(&plain.tabs)
+        .filter(|(row, plain)| row != plain)
+        .map(|(row, _)| row.clone())
+        .collect();
+    let version = view.revision + desktop.live_tabs.observe(&added);
+    let tabs = er_protocol::Tabs {
+        tabs: rows,
+        active: plain.active,
+    };
+    (version, Resource::Tabs(tabs))
+}
+
+/// `tabs`' version now, read as its fetch reads it.
+pub(super) fn tabs_version(desktop: &DesktopState) -> u64 {
+    tabs(desktop).0
+}
+
+/// The `owner/repo` the clone at `root` names as its `origin`, as the App's
+/// local PR tab takes it. The GitHub port caches it per root.
+fn repo_slug(desktop: &DesktopState, root: &str) -> Option<String> {
+    let ports = &desktop.ports;
+    let (owner, repo) = ports.github.get_repo_info(&*ports.git, root).ok()?;
+    Some(format!("{owner}/{repo}"))
 }
 
 /// The settings actor's published view. The first read starts the actor,
@@ -585,7 +619,7 @@ pub fn watched(desktop: &DesktopState) -> BTreeMap<Watched, u64> {
     let tabs = desktop.service.app_registry().tabs_view();
     let settings = desktop.service.settings_if_started().map(|s| s.view());
     let mut versions = BTreeMap::from([
-        (Watched::Tabs, tabs.revision),
+        (Watched::Tabs, tabs_version(desktop)),
         (
             Watched::Session,
             super::session::session_version(desktop, settings.as_deref()),

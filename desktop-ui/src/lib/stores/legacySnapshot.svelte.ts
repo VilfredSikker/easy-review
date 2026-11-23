@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSnapshot, PollResponse, TabSummary } from "../pageTypes";
+import type { AppSnapshot, PollResponse } from "../pageTypes";
 import { pageView } from "./pageView.svelte";
 
 /** A fallback read in case a revision event is missed. */
@@ -8,10 +8,9 @@ const SAFETY_MS = 30_000;
 
 /**
  * The App's snapshot, read only for what no resource serves yet: the agent
- * commands and their log, the background tasks, the loading flags, and the
- * tab rows' live labels, change tokens and local PRs' `owner/repo`. Nothing
- * else on the page reads it; each field leaves here when a resource carries
- * it.
+ * commands and their log, the background tasks and the loading flags.
+ * Nothing else on the page reads it; each field leaves here when a resource
+ * carries it.
  */
 class LegacySnapshot {
   private raw = $state<AppSnapshot | null>(null);
@@ -19,11 +18,6 @@ class LegacySnapshot {
   private unlisten: Promise<UnlistenFn> | null = null;
   private inFlight = false;
   private again = false;
-
-  /** The App's tab rows, which the tab strip reads for what its resource lacks. */
-  get tabRows(): readonly TabSummary[] {
-    return this.raw?.tabs ?? [];
-  }
 
   /** Lays the fields no resource serves over the page's view. */
   overlay(view: AppSnapshot): AppSnapshot {

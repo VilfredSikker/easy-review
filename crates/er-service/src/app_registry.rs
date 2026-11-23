@@ -30,9 +30,11 @@ use er_engine::remote_pr_open_cache::{
     claim_remote_pr_open, get_remote_pr_open_entry, insert_remote_pr_open_entry,
     release_remote_pr_open, RemotePrOpenCache, RemotePrOpenEntry, RemotePrOpenInFlight,
 };
+use er_engine::tab_identity::ResolvedTab;
 use er_engine::tabs_record::{load_tabs, save_tabs, TabDescriptor};
 use er_engine::TabKey;
 
+use crate::content::TabContent;
 use crate::guard;
 use crate::handle::WorkspaceError;
 use crate::protocol::{Event, Reply};
@@ -154,7 +156,60 @@ fn tab_row(entry: &TabEntry) -> er_protocol::TabRow {
         branch,
         pr_number: tab.pr_number,
         remote,
+        live_branch: None,
+        change_token: String::new(),
     }
+}
+
+/// A tab's strip row with what its descriptor does not hold, as the App's
+/// tab row shows it. A loaded tab takes its name, its task branch and its
+/// branch diff hash from `content` (the task branch by the task host's rule); a local PR takes its `owner/repo` from `slug`, which reads
+/// its clone's `origin`. A tab not loaded yet keeps its descriptor's label.
+pub fn live_tab_row(
+    entry: &TabEntry,
+    content: Option<&TabContent>,
+    slug: impl FnOnce(&str) -> Option<String>,
+) -> er_protocol::TabRow {
+    let mut row = tab_row(entry);
+    if entry.descriptor.kind == er_engine::tabs_record::TabKind::LocalPr {
+        row.remote = slug(&entry.descriptor.repo_root);
+    }
+    if let Some(content) = content {
+        let tab = &content.tab;
+        row.label = tab_name(tab);
+        row.live_branch = Some(
+            tab.local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone()),
+        );
+        row.change_token = content.diff.meta.branch_diff_hash.clone();
+    }
+    row
+}
+
+/// The App's tab name for a resolved tab: a branch view by its branch, a
+/// remote PR by its repo and number, else the checked-out branch, else the
+/// folder.
+fn tab_name(tab: &ResolvedTab) -> String {
+    if let Some(branch) = &tab.local_branch_view {
+        return branch.clone();
+    }
+    if let Some(slug) = &tab.remote_repo {
+        let repo = slug.rsplit('/').next().unwrap_or(slug);
+        return match tab.pr_number {
+            Some(number) => format!("{repo}#{number}"),
+            None => repo.to_string(),
+        };
+    }
+    if !tab.current_branch.is_empty() {
+        return tab.current_branch.clone();
+    }
+    std::path::Path::new(&tab.repo_root)
+        .file_name()
+        .map_or_else(
+            || tab.repo_root.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        )
 }
 
 /// A write or warm-up the registry runs. Commands that act on an existing tab
