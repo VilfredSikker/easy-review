@@ -8,9 +8,12 @@ import type { ModelUpsert } from "./ModelUpsert";
 import type { NewUiAnnotation } from "./NewUiAnnotation";
 import type { PaintedView } from "./PaintedView";
 import type { Panel } from "./Panel";
+import type { PrAction } from "./PrAction";
 import type { PrOpenHint } from "./PrOpenHint";
+import type { PrTarget } from "./PrTarget";
 import type { ProjectReviewSettingsPatch } from "./ProjectReviewSettingsPatch";
 import type { ProviderUpsert } from "./ProviderUpsert";
+import type { ReviewLine } from "./ReviewLine";
 import type { ReviewModelGroups } from "./ReviewModelGroups";
 import type { TabKey } from "./TabKey";
 import type { UninstallOptions } from "./UninstallOptions";
@@ -22,4 +25,4 @@ export type Command = { "kind": "reload_settings" } | { "kind": "apply_config_pa
 /**
  * None runs at the saved selection's effort.
  */
-effort: string | null, } | { "kind": "arena_validate_findings", tab: TabKey, } | { "kind": "arena_accept_findings", tab: TabKey, runId: string, findingIds: Array<string> | null, } | { "kind": "arena_delete", tab: TabKey, runId: string, } | { "kind": "arena_cancel", tab: TabKey, runId: string, } | { "kind": "arena_override", tab: TabKey, runId: string, findingId: string, verdict: string, note: string, };
+effort: string | null, } | { "kind": "arena_validate_findings", tab: TabKey, } | { "kind": "arena_accept_findings", tab: TabKey, runId: string, findingIds: Array<string> | null, } | { "kind": "arena_delete", tab: TabKey, runId: string, } | { "kind": "arena_cancel", tab: TabKey, runId: string, } | { "kind": "arena_override", tab: TabKey, runId: string, findingId: string, verdict: string, note: string, } | { "kind": "refresh_stack", tab: TabKey, } | { "kind": "refresh_github_status", tab: TabKey, } | { "kind": "reply_to_github_thread", tab: TabKey, view: PaintedView, parentId: string, body: string, clientId: string | null, } | { "kind": "pull_github_comments", tab: TabKey, force: boolean, } | { "kind": "post_github_pr_comment", tab: TabKey, body: string, } | { "kind": "post_github_line_comment", tab: TabKey, target: ReviewLine, body: string, } | { "kind": "submit_github_pr_decision", tab: TabKey, mode: string, summary: string, } | { "kind": "add_pending_review_comment", tab: TabKey, target: ReviewLine, body: string, } | { "kind": "remove_pending_review_comment", tab: TabKey, commentId: string, } | { "kind": "submit_pending_review", tab: TabKey, mode: string, summary: string, } | { "kind": "run_github_pr_action", tab: TabKey, pr: PrTarget, action: PrAction, };

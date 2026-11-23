@@ -318,6 +318,9 @@ pub enum Command {
     /// Forget a closed tab's content. A key the actor never loaded answers
     /// at once and publishes nothing.
     DropTab { key: TabKey },
+    /// Read a loaded tab's `gh stack` again into its PR section. The lookup
+    /// runs off the actor; a tab with nowhere to read a stack is refused.
+    RefreshStack { key: TabKey },
 }
 
 /// What started a comment sync, which decides how fresh the read must be.
@@ -748,6 +751,10 @@ pub enum Reply {
     SidecarsReloaded {
         key: TabKey,
         reloaded: bool,
+    },
+    /// A stack lookup landed in the tab's PR section.
+    StackRead {
+        key: TabKey,
     },
 }
 

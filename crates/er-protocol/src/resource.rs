@@ -4,8 +4,8 @@ use ts_rs::TS;
 use crate::{
     AnnotationScreenshot, Annotations, ArenaEstimate, ArenaPlan, ArenaRun, ArenaRuns,
     AvailableBranches, AvailablePrs, Branches, DiffPaths, FileHunks, FilePreview, ImagePreview,
-    Inbox, Jobs, Panels, Projects, Prs, ReviewJson, ReviewRevisions, Risk, Session, Settings,
-    TabDiff, TabReviewed, TabRow, TabView, UiAnnotations, Worktrees,
+    Inbox, Jobs, Panels, PendingReview, PrStatus, Projects, Prs, ReviewJson, ReviewRevisions, Risk,
+    Session, Settings, TabDiff, TabPr, TabReviewed, TabRow, TabView, UiAnnotations, Worktrees,
 };
 
 /// A tab as the wire names it. The engine's key has no public constructor, so
@@ -113,6 +113,18 @@ pub enum ResourceKey {
     /// One run, looked up from a tab's buckets, read on each fetch and never
     /// pushed.
     ArenaRun { tab: TabKey, run_id: String },
+    /// One open tab's pull request card and stack, by its key.
+    Pr { tab: TabKey },
+    /// One pull request's GitHub status, by the `owner/repo` it lives in and
+    /// its number.
+    PrStatus {
+        remote: String,
+        #[ts(type = "number")]
+        number: u64,
+    },
+    /// The viewer's pending review on one open tab's PR, read from GitHub on
+    /// each fetch and never pushed.
+    PendingReview { tab: TabKey },
 }
 
 /// One resource's content, tagged with the kind of key it answers.
@@ -147,6 +159,9 @@ pub enum Resource {
     ArenaEstimate(ArenaEstimate),
     ArenaRuns(ArenaRuns),
     ArenaRun(ArenaRun),
+    Pr(Box<TabPr>),
+    PrStatus(Box<PrStatus>),
+    PendingReview(Box<PendingReview>),
 }
 
 /// The open tabs in strip order, and the active one.

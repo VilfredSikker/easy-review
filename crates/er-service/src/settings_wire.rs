@@ -252,7 +252,18 @@ pub fn settings_command(command: wire::Command) -> Result<SettingsCommand, Box<w
         | wire::Command::ArenaAcceptFindings { .. }
         | wire::Command::ArenaDelete { .. }
         | wire::Command::ArenaCancel { .. }
-        | wire::Command::ArenaOverride { .. }) => return Err(Box::new(other)),
+        | wire::Command::ArenaOverride { .. }
+        | wire::Command::RefreshStack { .. }
+        | wire::Command::RefreshGithubStatus { .. }
+        | wire::Command::ReplyToGithubThread { .. }
+        | wire::Command::PullGithubComments { .. }
+        | wire::Command::PostGithubPrComment { .. }
+        | wire::Command::PostGithubLineComment { .. }
+        | wire::Command::SubmitGithubPrDecision { .. }
+        | wire::Command::AddPendingReviewComment { .. }
+        | wire::Command::RemovePendingReviewComment { .. }
+        | wire::Command::SubmitPendingReview { .. }
+        | wire::Command::RunGithubPrAction { .. }) => return Err(Box::new(other)),
     })
 }
 
