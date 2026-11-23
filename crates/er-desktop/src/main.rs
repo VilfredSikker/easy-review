@@ -1446,10 +1446,8 @@ fn main() {
         let app_bg = Arc::clone(&app_arc);
         #[cfg(not(feature = "v1-service"))]
         let pr_cache_bg = Arc::clone(&pr_cache);
-        let gh_status_loading = Arc::clone(&loading);
-        let gh_status_in_flight_bg = Arc::clone(&gh_status_in_flight);
+        let fetches = state.desktop.clone();
         let gh_status_desktop_rev = Arc::clone(&desktop_revision);
-        let fetch_clock = state.status_fetch_clock.clone();
         std::thread::spawn(move || loop {
             // Sleep FIRST: kills the startup burst — a sleep at the bottom
             // lets the loop fire immediately on launch.
@@ -1480,34 +1478,21 @@ fn main() {
                 )
             });
             // Register in-flight and shell out — skip if already fetching.
-            let Some((owner, repo, number)) = key else {
+            let Some(key) = key else {
                 continue;
             };
-            let registered = gh_status_in_flight_bg
-                .lock()
-                .map(|mut s| s.insert((owner.clone(), repo.clone(), number)))
-                .unwrap_or(false);
-            if !registered {
+            if !fetches.begin_status_fetch(&key) {
                 continue;
             }
-            if let Ok(mut f) = gh_status_loading.lock() {
-                f.gh_status = true;
-            }
-            fetch_clock.bump();
+            let (owner, repo, number) = &key;
             commands::fetch_and_store_github_status(
                 &gh_status_bg,
                 &gh_status_desktop_rev,
-                &owner,
-                &repo,
-                number,
+                owner,
+                repo,
+                *number,
             );
-            if let Ok(mut f) = gh_status_loading.lock() {
-                f.gh_status = false;
-            }
-            let _ = gh_status_in_flight_bg
-                .lock()
-                .map(|mut s| s.remove(&(owner, repo, number)));
-            fetch_clock.bump();
+            fetches.end_status_fetch(&key);
         });
     }
 
@@ -1660,7 +1645,6 @@ fn main() {
     let bg_cache = Arc::clone(&pr_cache);
     let bg_fetched_at = Arc::clone(&pr_cache_fetched_at);
     let bg_owner = Arc::clone(&app_owner);
-    let bg_loading = Arc::clone(&loading);
     let bg_desktop_rev = Arc::clone(&desktop_revision);
     let bg_gh_user = Arc::clone(&gh_user);
     let bg_inbox = Arc::clone(&inbox);
@@ -1686,10 +1670,7 @@ fn main() {
             .build()
             .expect("failed to build tokio runtime");
         let run_refresh = || {
-            if let Ok(mut f) = bg_loading.lock() {
-                f.pr_list = true;
-            }
-            bg_state.pr_list_clock.bump();
+            let _ = bg_state.begin_pr_list_refresh();
             let failed = rt.block_on(bg_owner.refresh_prs(Arc::clone(&bg_github)));
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
             let handles = commands::InboxRefreshHandles {
@@ -1703,20 +1684,14 @@ fn main() {
                 commands::process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
             }
             commands::process_inbox_after_pr_refresh(handles, &prefs, None);
-            if let Ok(mut f) = bg_loading.lock() {
-                f.pr_list = false;
-            }
-            bg_state.pr_list_clock.bump();
+            bg_state.end_pr_list_refresh();
             profile_log::bump_desktop_revision(&bg_desktop_rev, "pr_cache_refresh");
         };
 
         // Startup: fetch the active project's remote first so its sidebar PR
         // list lights up quickly. The full multi-remote sweep follows.
         if let Some(active_remote) = pr_cache::active_project_remote() {
-            if let Ok(mut f) = bg_loading.lock() {
-                f.pr_list = true;
-            }
-            bg_state.pr_list_clock.bump();
+            let _ = bg_state.begin_pr_list_refresh();
             let success =
                 rt.block_on(bg_owner.refresh_remote_prs(Arc::clone(&bg_github), &active_remote));
             let prefs = er_desktop::app_owner::startup::inbox_prefs(&bg_state);
@@ -1732,10 +1707,7 @@ fn main() {
                 &prefs,
                 if success { None } else { Some(active_remote) },
             );
-            if let Ok(mut f) = bg_loading.lock() {
-                f.pr_list = false;
-            }
-            bg_state.pr_list_clock.bump();
+            bg_state.end_pr_list_refresh();
             profile_log::bump_desktop_revision(&bg_desktop_rev, "pr_cache_active_remote");
         }
 

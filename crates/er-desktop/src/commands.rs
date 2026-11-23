@@ -555,15 +555,9 @@ pub fn kick_github_status_refresh(
     number: u64,
 ) {
     let key = (owner.clone(), repo.clone(), number);
-    if let Ok(mut set) = desktop.gh_status_in_flight.lock() {
-        if !set.insert(key.clone()) {
-            return; // already fetching
-        }
+    if !desktop.begin_status_fetch(&key) {
+        return; // already fetching
     }
-    if let Ok(mut flags) = desktop.loading.lock() {
-        flags.gh_status = true;
-    }
-    desktop.status_fetch_clock.bump();
     let desktop = desktop.clone();
     std::thread::spawn(move || {
         let cache = &desktop.gh_status_cache;
@@ -571,13 +565,7 @@ pub fn kick_github_status_refresh(
             // Persist after the lock is released (the save helper re-locks).
             crate::gh_status_cache::save_persisted_gh_status_cache(cache);
         }
-        if let Ok(mut flags) = desktop.loading.lock() {
-            flags.gh_status = false;
-        }
-        if let Ok(mut set) = desktop.gh_status_in_flight.lock() {
-            set.remove(&key);
-        }
-        desktop.status_fetch_clock.bump();
+        desktop.end_status_fetch(&key);
     });
 }
 
@@ -8833,15 +8821,9 @@ pub(crate) fn kick_pr_list_refresh(
     remote: Option<String>,
     prefs: impl FnOnce() -> InboxConfig + Send + 'static,
 ) -> Result<(), String> {
-    // Atomic check-and-set under a single lock acquisition to avoid TOCTOU.
-    let already_running = {
-        let mut flags = desktop.loading.lock().map_err(|e| e.to_string())?;
-        std::mem::replace(&mut flags.pr_list, true)
-    };
-    if already_running {
+    if !desktop.begin_pr_list_refresh() {
         return Ok(());
     }
-    desktop.pr_list_clock.bump();
     let desktop = desktop.clone();
     std::thread::spawn(move || {
         #[expect(
@@ -8881,10 +8863,7 @@ pub(crate) fn kick_pr_list_refresh(
             process_inbox_after_pr_refresh(handles, &prefs, Some(remote));
         }
         process_inbox_after_pr_refresh(handles, &prefs, None);
-        if let Ok(mut f) = desktop.loading.lock() {
-            f.pr_list = false;
-        }
-        desktop.pr_list_clock.bump();
+        desktop.end_pr_list_refresh();
         crate::profile_log::bump_desktop_revision(&desktop.desktop_revision, reason);
     });
     Ok(())

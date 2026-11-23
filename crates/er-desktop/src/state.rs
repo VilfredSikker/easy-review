@@ -108,6 +108,58 @@ pub struct DesktopState {
     pub tasks: crate::tasks::TaskHost,
 }
 
+impl DesktopState {
+    /// Marks a PR-list refresh as running and moves `jobs`; false when one
+    /// already runs. The check and the mark are one lock.
+    pub fn begin_pr_list_refresh(&self) -> bool {
+        let Ok(mut flags) = self.loading.lock() else {
+            return false;
+        };
+        if std::mem::replace(&mut flags.pr_list, true) {
+            return false;
+        }
+        drop(flags);
+        self.pr_list_clock.bump();
+        true
+    }
+
+    /// Marks the PR-list refresh as done and moves `jobs`.
+    pub fn end_pr_list_refresh(&self) {
+        if let Ok(mut flags) = self.loading.lock() {
+            flags.pr_list = false;
+        }
+        self.pr_list_clock.bump();
+    }
+
+    /// Marks the status fetch of `(owner, repo, number)` as running and
+    /// moves `pr_status`; false when it already runs.
+    pub fn begin_status_fetch(&self, key: &(String, String, u64)) -> bool {
+        let added = self
+            .gh_status_in_flight
+            .lock()
+            .is_ok_and(|mut in_flight| in_flight.insert(key.clone()));
+        if !added {
+            return false;
+        }
+        if let Ok(mut flags) = self.loading.lock() {
+            flags.gh_status = true;
+        }
+        self.status_fetch_clock.bump();
+        true
+    }
+
+    /// Marks the status fetch of `key` as done and moves `pr_status`.
+    pub fn end_status_fetch(&self, key: &(String, String, u64)) {
+        if let Ok(mut flags) = self.loading.lock() {
+            flags.gh_status = false;
+        }
+        if let Ok(mut in_flight) = self.gh_status_in_flight.lock() {
+            in_flight.remove(key);
+        }
+        self.status_fetch_clock.bump();
+    }
+}
+
 /// A count of the changes seen in the live runs and review flows `jobs`
 /// lists. The actors publish them in their views, which move for every diff
 /// or annotation write too, so the count moves only when the runs or flows

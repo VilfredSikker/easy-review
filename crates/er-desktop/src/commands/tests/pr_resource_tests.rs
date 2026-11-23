@@ -216,17 +216,6 @@ fn the_status_loop_picks_the_active_pr_with_the_app_locked() {
     });
 }
 
-fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !ready() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-}
-
 fn status_of(state: &AppState, remote: &str, number: u64) -> (u64, PrStatus) {
     let key = ResourceKey::PrStatus {
         remote: remote.into(),
@@ -241,40 +230,38 @@ fn status_of(state: &AppState, remote: &str, number: u64) -> (u64, PrStatus) {
 
 /// A status fetch shows on its `pr_status` while it runs, moves the version
 /// when it starts and again when it ends, and the relay watches the key
-/// before any status is stored.
+/// before any status is stored. The fetch's begin and end are the ones the
+/// status loop and the status kick use, so no `gh` runs here: a read while
+/// the fetch runs starts none.
 #[test]
 fn a_status_fetch_shows_on_its_pr_status_while_it_runs() {
     with_storage(|dir| {
         let state = state_over(dir, er_engine::ports::Ports::for_test());
-        let before = crate::resources::version(
-            &state.desktop,
-            ResourceKey::PrStatus {
-                remote: "acme/widgets".into(),
-                number: 9,
-            },
-        )
-        .unwrap_or_else(|e| panic!("{e:?}"));
-        crate::commands::kick_github_status_refresh(&state, "acme".into(), "widgets".into(), 9);
-        {
-            // The fetch clears the flag before it leaves the in-flight set,
-            // so holding the flags holds it in flight.
-            let _held = state.loading.lock();
-            let (version, status) = status_of(&state, "acme/widgets", 9);
-            assert!(status.fetching, "{status:?}");
-            assert!(version > before.0, "{version} after {before:?}");
-            let watched = crate::resources::watched(&state.desktop);
-            let key = crate::resources::Watched::Sidebar(ResourceKey::PrStatus {
-                remote: "acme/widgets".into(),
-                number: 9,
-            });
-            assert_eq!(watched.get(&key), Some(&version));
-        }
-        let (during, _) = status_of(&state, "acme/widgets", 9);
-        wait_until("the fetch to end", || {
-            !status_of(&state, "acme/widgets", 9).1.fetching
-        });
-        let (after, _) = status_of(&state, "acme/widgets", 9);
-        assert!(after > during, "{after} after {during}");
+        let key = ("acme".to_string(), "widgets".to_string(), 9);
+        let wire = ResourceKey::PrStatus {
+            remote: "acme/widgets".into(),
+            number: 9,
+        };
+        let version = || {
+            crate::resources::version(&state.desktop, wire.clone())
+                .unwrap_or_else(|e| panic!("{e:?}"))
+                .0
+        };
+        let before = version();
+        assert!(state.begin_status_fetch(&key));
+        assert!(!state.begin_status_fetch(&key), "a second fetch began");
+        let (started, status) = status_of(&state, "acme/widgets", 9);
+        assert!(status.fetching, "{status:?}");
+        assert!(started > before, "{started} after {before}");
+        let watched = crate::resources::watched(&state.desktop);
+        let watched = watched.get(&crate::resources::Watched::Sidebar(wire.clone()));
+        assert_eq!(watched, Some(&started));
+        state.end_status_fetch(&key);
+        // A read of a status none stored starts a fetch, so the end is read
+        // from its version and the in-flight set.
+        let ended = version();
+        assert!(ended > started, "{ended} after {started}");
+        assert!(crate::resources::pr::fetched_keys(&state.desktop).is_empty());
     });
 }
 
@@ -288,30 +275,22 @@ fn jobs_of(state: &AppState) -> (u64, er_protocol::Jobs) {
 }
 
 /// A PR-list refresh shows in `jobs` while it runs, and moves `jobs` when it
-/// starts and again when it ends.
+/// starts and again when it ends. The begin and end are the ones the refresh
+/// kick and the startup sweep use, so no `gh` runs here.
 #[test]
 fn a_pr_list_refresh_shows_in_jobs_while_it_runs() {
     with_storage(|dir| {
         let state = state_over(dir, er_engine::ports::Ports::for_test());
         let (before, idle) = jobs_of(&state);
         assert!(!idle.pr_list_refresh);
-        let started = {
-            // The refresh stamps the inbox before it ends, so holding the
-            // inbox holds it running.
-            let _held = state.inbox.lock();
-            let kicked = crate::commands::kick_pr_list_refresh(
-                &state,
-                Some("acme/widgets".into()),
-                Default::default,
-            );
-            assert!(kicked.is_ok(), "{kicked:?}");
-            let (started, running) = jobs_of(&state);
-            assert!(running.pr_list_refresh);
-            assert!(started > before, "{started} after {before}");
-            started
-        };
-        wait_until("the refresh to end", || !jobs_of(&state).1.pr_list_refresh);
-        let (after, _) = jobs_of(&state);
-        assert!(after > started, "{after} after {started}");
+        assert!(state.begin_pr_list_refresh());
+        assert!(!state.begin_pr_list_refresh(), "a second refresh began");
+        let (started, running) = jobs_of(&state);
+        assert!(running.pr_list_refresh);
+        assert!(started > before, "{started} after {before}");
+        state.end_pr_list_refresh();
+        let (ended, done) = jobs_of(&state);
+        assert!(!done.pr_list_refresh);
+        assert!(ended > started, "{ended} after {started}");
     });
 }
