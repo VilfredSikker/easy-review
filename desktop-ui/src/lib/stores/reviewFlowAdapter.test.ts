@@ -7,6 +7,7 @@ import type { Ack } from "$lib/protocol/generated/Ack";
 import type { Command } from "$lib/protocol/generated/Command";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
+import type { ReviewFlowAction } from "$lib/protocol/generated/ReviewFlowAction";
 import type { AppSnapshot } from "$lib/types";
 import { JOBS } from "./annotationsAdapter";
 import { ReviewFlowAdapter } from "./reviewFlowAdapter";
@@ -76,20 +77,24 @@ describe("ReviewFlowAdapter", () => {
 
   it("sends each control keyed to the active tab and the painted bucket", async () => {
     const { flows, sent } = adapter(true);
-    await flows.route("start_review_flow", { scope: "current", erDir: "/a" });
-    await flows.route("confirm_review_flow", { erDir: "/b" });
-    await flows.route("flow_accept_findings", { erDir: "/b", runId: "run-1", findingIds: ["f-1"] });
+    const controls: [string, Record<string, unknown>, ReviewFlowAction][] = [
+      ["start_review_flow", { scope: "current", erDir: "/a" }, { kind: "start", scope: "current" }],
+      ["confirm_review_flow", { erDir: "/b" }, { kind: "confirm" }],
+      ["decline_review_flow", { erDir: "/b" }, { kind: "decline" }],
+      ["rerun_review_flow", { erDir: "/b" }, { kind: "rerun" }],
+      ["cancel_review_flow", { erDir: "/b" }, { kind: "cancel" }],
+      ["run_standard_review_flow", { erDir: "/b" }, { kind: "run_standard" }],
+      [
+        "flow_accept_findings",
+        { erDir: "/b", runId: "run-1", findingIds: ["f-1"] },
+        { kind: "accept_findings", runId: "run-1", findingIds: ["f-1"] },
+      ],
+    ];
+    for (const [command, args] of controls) await flows.route(command, args);
     expect(flows.route("arena_start", {})).toBeNull();
-    expect(sent).toEqual([
-      { kind: "review_flow", tab: TAB, erDir: "/a", action: { kind: "start", scope: "current" } },
-      { kind: "review_flow", tab: TAB, erDir: "/b", action: { kind: "confirm" } },
-      {
-        kind: "review_flow",
-        tab: TAB,
-        erDir: "/b",
-        action: { kind: "accept_findings", runId: "run-1", findingIds: ["f-1"] },
-      },
-    ]);
+    expect(sent).toEqual(
+      controls.map(([, args, action]) => ({ kind: "review_flow", tab: TAB, erDir: String(args.erDir), action })),
+    );
   });
 
   it("fetches a flow's run by its captured bucket", async () => {
