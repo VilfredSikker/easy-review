@@ -16,9 +16,10 @@ plugin({
   },
 });
 
-// Runes modules the arena resource reads at load; bun cannot load them.
+// The App store runs on runes too and is not under test. Bun keeps a module
+// mock for the whole run, which is safe here: no test loads the real store,
+// and keyboard.test.ts mocks it again.
 void mock.module("./app.svelte", () => ({ app: { overlaySnapshot: () => {} } }));
-void mock.module("./tabsResource.svelte", () => ({ tabsResource: { activeKey: null } }));
 
 const { followRunProgress } = await import("./arenaResource.svelte");
 const { jobsFixture } = await import("./arenaResourceFixture.svelte");
