@@ -244,3 +244,101 @@ fn an_ai_assisted_finding_reply_creates_the_thread_once_and_writes_no_reply() ->
         Ok(())
     })
 }
+
+/// The tab's context with GitHub comments in their own bucket, as a local PR
+/// tab in Branch view has them.
+fn split_context(bucket: &str, comments_dir: &str) -> TabContext {
+    TabContext {
+        comments_dir: comments_dir.to_string(),
+        ..context(bucket, "/repo")
+    }
+}
+
+/// The comments bucket next to `bucket`, under the same storage root.
+fn comments_bucket(bucket: &std::path::Path) -> anyhow::Result<String> {
+    let dir = bucket
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("bucket has no parent"))?
+        .join("comments");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+fn github_rows(dir: &str) -> anyhow::Result<Option<er_engine::ai::ErGithubComments>> {
+    let store = er_engine::store_registry::store();
+    let scope = er_store::Scope::dir(dir)?;
+    Ok(
+        match er_engine::ai::annotation_store::load_github_comments(&store, &scope)? {
+            er_store::Loaded::Found(stored) => Some(stored.value),
+            _ => None,
+        },
+    )
+}
+
+/// The finding's thread root lives in the comments bucket, so a second
+/// AI-assisted ask on a tab whose two buckets differ reuses it.
+#[test]
+fn an_ai_assisted_finding_reply_reuses_the_thread_in_a_separate_comments_bucket(
+) -> anyhow::Result<()> {
+    in_bucket(|bucket, path| {
+        write_finding(path);
+        let comments = comments_bucket(path)?;
+        let handle = actor();
+        let ask = || Command::ReplyToFinding {
+            context: split_context(bucket, &comments),
+            finding_id: "f-1".to_string(),
+            body: "Is this right?".to_string(),
+            ai_assist: true,
+            client_id: None,
+        };
+        let first = handle.send_and_wait_with(ask(), WAIT)?;
+        let Reply::FindingReplied { root_id, .. } = first else {
+            anyhow::bail!("got {first:?}");
+        };
+        let again = handle.send_and_wait_with(ask(), WAIT)?;
+        assert_eq!(
+            again,
+            Reply::FindingReplied {
+                root_id: root_id.clone(),
+                reply_id: String::new(),
+            },
+            "the second ask reuses the thread"
+        );
+        let rows = github_rows(&comments)?.map_or_else(Vec::new, |c| c.comments);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].id, root_id);
+        assert!(github_rows(bucket)?.is_none(), "nothing lands in er_dir");
+        Ok(())
+    })
+}
+
+/// A plain finding reply on such a tab also replies under the one root.
+#[test]
+fn a_finding_reply_reuses_the_thread_in_a_separate_comments_bucket() -> anyhow::Result<()> {
+    in_bucket(|bucket, path| {
+        write_finding(path);
+        let comments = comments_bucket(path)?;
+        let handle = actor();
+        let reply = |body: &str| Command::ReplyToFinding {
+            context: split_context(bucket, &comments),
+            finding_id: "f-1".to_string(),
+            body: body.to_string(),
+            ai_assist: false,
+            client_id: None,
+        };
+        let first = handle.send_and_wait_with(reply("First"), WAIT)?;
+        let Reply::FindingReplied { root_id, .. } = first else {
+            anyhow::bail!("got {first:?}");
+        };
+        let second = handle.send_and_wait_with(reply("Second"), WAIT)?;
+        let Reply::FindingReplied { root_id: again, .. } = second else {
+            anyhow::bail!("got {second:?}");
+        };
+        assert_eq!(again, root_id, "the second reply reuses the thread");
+        let rows = github_rows(&comments)?.map_or_else(Vec::new, |c| c.comments);
+        assert_eq!(rows.len(), 3, "one root and two replies: {rows:?}");
+        let roots = rows.iter().filter(|row| row.in_reply_to.is_none()).count();
+        assert_eq!(roots, 1, "{rows:?}");
+        Ok(())
+    })
+}
