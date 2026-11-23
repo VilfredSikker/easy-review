@@ -23,7 +23,8 @@ void mock.module("@tauri-apps/api/core", () => ({
   ...tauri,
   invoke: (cmd: string, args?: Record<string, unknown>) =>
     cmd === "export_review"
-      ? Promise.reject({ kind: "internal", message: "no review is open" })
+      ? // eslint-disable-next-line prefer-promise-reject-errors -- Tauri rejects with the serialized ErError, a plain object
+        Promise.reject({ kind: "internal", message: "no review is open" })
       : realInvoke(cmd, args),
 }));
 
