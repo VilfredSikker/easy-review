@@ -135,9 +135,9 @@ fn a_github_reply_painted_elsewhere_is_refused() {
 }
 
 /// A PR action built for another PR than the one the tab's card shows is
-/// refused with the App locked, before any `gh` call.
+/// refused before any `gh` call.
 #[test]
-fn a_pr_action_for_another_pr_is_refused_with_the_app_locked() {
+fn a_pr_action_for_another_pr_is_refused() {
     with_pr_tab(|state, key, _| {
         let tab = er_service::wire_tab_key(key);
         let pr = er_protocol::PrTarget {
@@ -158,11 +158,11 @@ fn a_pr_action_for_another_pr_is_refused_with_the_app_locked() {
     });
 }
 
-/// With the App locked, one comment tick picks the active tab's PR from the
+/// One comment tick picks the active tab's PR from the
 /// registry, its content and the PR cache, and sends the sync to that tab's
 /// workspace.
 #[test]
-fn the_comment_tick_syncs_the_active_pr_with_the_app_locked() {
+fn the_comment_tick_syncs_the_active_pr() {
     with_pr_tab(|state, _, github| {
         let before = github.calls().len();
         let ticked = on_a_thread(state, "the comment tick", |state| {

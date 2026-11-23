@@ -9374,6 +9374,8 @@ mod tests {
                     "{sent} did not go through the port: {calls:?}"
                 );
             }
+            assert!(state.remote_pr_open_cache.lock().unwrap().is_empty());
+            assert!(state.pr_open_cache.lock().unwrap().is_empty());
         });
     }
 

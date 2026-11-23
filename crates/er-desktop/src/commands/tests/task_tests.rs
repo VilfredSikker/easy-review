@@ -141,7 +141,7 @@ fn log(state: &DesktopState, id: &str) -> Vec<String> {
 }
 
 /// A task of `kind` on a bucket under `dir`, run with the settings view's
-/// config and saved pick, queued with the App locked. Answers its id.
+/// config and saved pick, queued on a thread. Answers its id.
 fn queued(state: &DesktopState, dir: &Path, kind: &str) -> String {
     let launch = launch(state, dir, kind, "feature");
     super::on_a_thread(state, "the enqueue", move |state| {
@@ -357,11 +357,11 @@ fn the_task_host_names_no_app() {
     }
 }
 
-/// With the App locked, a review run through `er_send` reads the tab's
+/// A review run through `er_send` reads the tab's
 /// content: the diff it prepares in the tab's bucket is the diff the content
 /// holds, and `jobs` lists its task under that bucket and scope.
 #[test]
-fn a_review_run_prepares_the_content_diff_with_the_app_locked() {
+fn a_review_run_prepares_the_content_diff() {
     with_storage(|dir| {
         let (state, agent) = tasking(dir, 50);
         let tab = open(&state, dir.path(), "a");
@@ -412,7 +412,7 @@ fn the_run_commands_start() {
     });
 }
 
-/// Each run command on `er_send` starts its own run with the App locked:
+/// Each run command on `er_send` starts its own run:
 /// `jobs` lists a row of the command's kind, and a scoped run keeps its
 /// reviewers and paths.
 #[test]
@@ -609,10 +609,10 @@ fn a_triage_request_shows_in_jobs() {
     });
 }
 
-/// A sidebar branch triage queues its run on the task host with the App
-/// held: `jobs` lists a triage task for the branch.
+/// A sidebar branch triage queues its run on the task host: `jobs` lists a
+/// triage task for the branch.
 #[test]
-fn a_sidebar_triage_queues_on_the_host_with_the_app_locked() {
+fn a_sidebar_triage_queues_on_the_host() {
     with_storage(|dir| {
         let (mut state, agent) = tasking(dir, 50);
         let git: Arc<dyn er_git::Git> = Arc::new(
@@ -729,11 +729,11 @@ fn note(
     }
 }
 
-/// With the App locked (`send` holds it), a note sent to the agent through
+/// A note sent to the agent through
 /// `er_send` is read from the tab's AI section and runs on the task host,
 /// which lists it and reads its output lines.
 #[test]
-fn a_note_goes_to_the_agent_from_the_ai_section_with_the_app_locked() {
+fn a_note_goes_to_the_agent_from_the_ai_section() {
     with_storage(|dir| {
         let (state, agent) = tasking(dir, 50);
         let tab = open(&state, dir.path(), "a");
@@ -809,10 +809,10 @@ fn a_note_goes_to_the_agent_on_a_detached_head() {
     });
 }
 
-/// With the App locked, a validation through `er_send` starts its agent on
+/// A validation through `er_send` starts its agent on
 /// the task host when the bucket holds a review.
 #[test]
-fn a_validation_starts_on_the_host_with_the_app_locked() {
+fn a_validation_starts_on_the_host() {
     with_storage(|dir| {
         let (state, agent) = tasking(dir, 50);
         let tab = open(&state, dir.path(), "a");

@@ -1,6 +1,6 @@
 //! The review flows on `er_send` and `jobs`: a control names the tab and
-//! the bucket the page painted and runs on that tab's actor with the App
-//! locked, and the flows reach the page through `jobs`.
+//! the bucket the page painted and runs on that tab's actor, and the flows
+//! reach the page through `jobs`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -47,8 +47,7 @@ fn painted_bucket(state: &DesktopState, tab: TabKey) -> String {
     }
 }
 
-/// Starts a review of the branch view on `tab` through `er_send`; `send`
-/// holds the App locked.
+/// Starts a review of the branch view on `tab` through `er_send`.
 fn start(state: &DesktopState, tab: TabKey, er_dir: String) -> Result<Ack, ErError> {
     let command = Command::ReviewFlow {
         tab: er_service::wire_tab_key(tab),
@@ -61,10 +60,10 @@ fn start(state: &DesktopState, tab: TabKey, er_dir: String) -> Result<Ack, ErErr
 }
 
 /// The registry moved to B while the page shows A: an `er_send` start keyed
-/// to A, on the bucket `diff(tab)` painted for A, runs on A's actor with
-/// the App locked, and `jobs` lists the flow in that bucket.
+/// to A, on the bucket `diff(tab)` painted for A, runs on A's actor, and
+/// `jobs` lists the flow in that bucket.
 #[test]
-fn an_er_send_flow_start_runs_on_the_tab_it_names_with_the_app_locked() {
+fn an_er_send_flow_start_runs_on_the_tab_it_names() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = flow_state(dir, local_ports(), Arc::clone(&sink));

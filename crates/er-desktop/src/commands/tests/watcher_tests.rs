@@ -1,5 +1,5 @@
-//! The flag-on watcher: its target comes from the registry and the content
-//! with the App locked, a file change refreshes the watched tab's content and
+//! The watcher: its target comes from the registry and the content, a file
+//! change refreshes the watched tab's content and
 //! clears the marks whose diff changed, and a load resolves the checkout root
 //! by the watcher's rule, a linked worktree included.
 
@@ -260,8 +260,8 @@ fn the_watcher_target_is_chosen_from_the_registry() {
     });
 }
 
-/// The watcher loop takes its target from the follower, and sends a file
-/// change to the follower, which refreshes the content.
+/// The watcher loop takes its target from the follower, never the App, and
+/// sends a file change to the follower, which refreshes the content.
 #[test]
 fn the_watcher_takes_the_follower_target() {
     let source = include_str!("../../main.rs");
@@ -279,6 +279,9 @@ fn the_watcher_takes_the_follower_target() {
         choice.contains(".next(&watcher_service"),
         "the watcher does not take the follower's target"
     );
+    for app in ["lock(", "watcher_app"] {
+        assert!(!choice.contains(app), "the target reads {app}");
+    }
     assert!(
         body.contains("follower.on_change(&watcher_service)"),
         "a file change does not refresh the content"

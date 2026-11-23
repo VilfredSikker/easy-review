@@ -1,5 +1,5 @@
 //! The finding, checklist and review-artifact writes on `er_send`: each
-//! runs as a workspace command with the App locked, writes the tab's view
+//! runs as a workspace command, writes the tab's view
 //! bucket and moves `annotations(tab)`. A review delete waits for no review
 //! flow, and both deletes refuse a view the tab left.
 
@@ -199,10 +199,10 @@ fn writes(key: TabKey, view: &PaintedView) -> Vec<(&'static str, Command, Check)
     ]
 }
 
-/// With the App locked, each write answers through its workspace command,
+/// Each write answers through its workspace command,
 /// moves `annotations(tab)`, and leaves its change there.
 #[test]
-fn each_finding_checklist_and_artifact_write_answers_with_the_app_locked() {
+fn each_finding_checklist_and_artifact_write_answers() {
     with_tab(|state, (key, tab)| {
         seed(state, key, &tab);
         let (_, seeded) = annotations(state, key);

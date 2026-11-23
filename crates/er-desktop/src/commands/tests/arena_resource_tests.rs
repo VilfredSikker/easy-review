@@ -1,5 +1,5 @@
 //! The arena with no App: a command names its tab and runs there, whichever
-//! tab is active, with the App locked, and its context comes from that tab's
+//! tab is active, and its context comes from that tab's
 //! content and the settings actor's view.
 
 use std::path::Path;
@@ -178,7 +178,7 @@ pub(super) fn record(bucket: &str, run_id: &str) -> Option<er_engine::arena::Are
     er_engine::arena::load_run(&ArenaPaths::for_run(Path::new(bucket), run_id)).ok()
 }
 
-/// Starts two fake reviewers on `tab` with the App locked; answers the run.
+/// Starts two fake reviewers on `tab` on a thread; answers the run.
 pub(super) fn started(state: &DesktopState, tab: TabKey) -> String {
     super::on_a_thread(state, "arena start", move |state| {
         let wire = er_service::wire_tab_key(tab);
@@ -188,10 +188,10 @@ pub(super) fn started(state: &DesktopState, tab: TabKey) -> String {
     .unwrap_or_else(|e| panic!("{e:?}"))
 }
 
-/// The registry moved to B while the page shows A: a start keyed to A, run
-/// with the App locked, files its run in A's bucket and none in B's.
+/// The registry moved to B while the page shows A: a start keyed to A files
+/// its run in A's bucket and none in B's.
 #[test]
-fn an_arena_start_runs_on_the_tab_it_names_with_the_app_locked() {
+fn an_arena_start_runs_on_the_tab_it_names() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = arena_state(dir, local_ports(), Arc::clone(&sink));
@@ -217,11 +217,11 @@ fn an_arena_start_runs_on_the_tab_it_names_with_the_app_locked() {
     });
 }
 
-/// With the App locked, the saved selection's effort is what a start with no
+/// The saved selection's effort is what a start with no
 /// effort of its own runs at: the settings actor's view, which `SetAiEffort`
 /// just wrote, never a copy the App holds.
 #[test]
-fn an_arena_start_runs_at_the_saved_effort_with_the_app_locked() {
+fn an_arena_start_runs_at_the_saved_effort() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = arena_state(dir, local_ports(), Arc::clone(&sink));
@@ -241,10 +241,10 @@ fn an_arena_start_runs_at_the_saved_effort_with_the_app_locked() {
 }
 
 /// A branch tab viewing a branch other than the checkout's, with a review in
-/// its AI section: the context built with the App locked files under the
+/// its AI section: the context files under the
 /// viewed branch and carries the review's hash.
 #[test]
-fn an_arena_context_takes_the_viewed_branch_and_the_review_hash_with_the_app_locked() {
+fn an_arena_context_takes_the_viewed_branch_and_the_review_hash() {
     with_storage(|dir| {
         let sink = Arc::new(HoldingSink::default());
         let state = arena_state(dir, super::tab_key_tests::ports(), Arc::clone(&sink));

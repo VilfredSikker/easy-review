@@ -1,7 +1,6 @@
 //! `pr(tab)` and `pr_status` on the flag path: a stack lookup lands in the
 //! PR section and moves `pr(tab)`, a stored status moves `pr_status` at the
-//! owner's next publish, and the status loop picks its PR with the App
-//! locked.
+//! owner's next publish, and the status loop picks its PR from the registry.
 
 use std::sync::Arc;
 
@@ -174,10 +173,9 @@ fn pr_info(number: u64, head_ref: &str, state: &str) -> PrInfo {
 }
 
 /// The status loop picks the active tab's PR from the registry, its content
-/// and the PR cache while the App is locked. Read from the App, a held lock
-/// would skip the tick.
+/// and the PR cache.
 #[test]
-fn the_status_loop_picks_the_active_pr_with_the_app_locked() {
+fn the_status_loop_picks_the_active_pr() {
     with_stacked_tab(|state, _| {
         state
             .pr_cache
