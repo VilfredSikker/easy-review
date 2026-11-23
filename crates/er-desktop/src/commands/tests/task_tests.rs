@@ -447,3 +447,126 @@ fn the_task_log_and_triage_are_off_the_app() {
         assert!(!tick.contains(word), "the tick runs {word}");
     }
 }
+
+/// A note on the tab's first file, written through its actor; answers its id
+/// once the content holds it.
+fn note(state: &AppState, (key, tab): &(TabKey, er_engine::tabs_record::TabDescriptor)) -> String {
+    let content = state
+        .service
+        .content(*key, tab)
+        .unwrap_or_else(|| panic!("no content"));
+    let written = state.service.send(
+        &crate::service::actor_key(tab),
+        er_service::Command::AddNote {
+            context: content.context.clone(),
+            target: er_service::AnnotationTarget {
+                file: "src/f0.rs".into(),
+                hunk_idx: 0,
+                line_num: Some(1),
+                line_num_end: None,
+            },
+            body: "Rename this".into(),
+            side: None,
+            client_id: None,
+            reply_to: None,
+            finding_ref: None,
+        },
+    );
+    match written {
+        Ok(er_service::Reply::AnnotationWritten { id }) => {
+            wait_until("the note in the content", || {
+                state.service.content(*key, tab).is_some_and(|c| {
+                    c.ai.state
+                        .notes
+                        .as_ref()
+                        .is_some_and(|n| n.notes.iter().any(|n| n.id == id))
+                })
+            });
+            id
+        }
+        other => panic!("no note: {other:?}"),
+    }
+}
+
+/// With the App locked (`send` holds it), a note sent to the agent through
+/// `er_send` is read from the tab's AI section and runs on the task host,
+/// which lists it and reads its output lines.
+#[test]
+fn a_note_goes_to_the_agent_from_the_ai_section_with_the_app_locked() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab = open(&state, dir.path(), "a");
+        let bucket = bucket(&state, &tab);
+        let id = note(&state, &tab);
+        let command = Command::SendNoteToAgent {
+            tab: er_service::wire_tab_key(tab.0),
+            note_id: id,
+        };
+        let sent = send(&state, "send_note_to_agent", command);
+        assert!(sent.is_ok(), "{sent:?}");
+        let row = tasks(&state)
+            .into_iter()
+            .find(|row| row.kind == crate::commands::SEND_NOTE_COMMAND)
+            .unwrap_or_else(|| panic!("no note task: {:?}", tasks(&state)));
+        assert_eq!(
+            (row.er_dir.as_str(), row.status.as_str()),
+            (bucket.as_str(), "running")
+        );
+        wait_until("the agent's first line in the task log", || {
+            log(&state, &row.id).iter().any(|line| line == "line-a")
+        });
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+        wait_until("the note task to finish", || {
+            tasks(&state)
+                .iter()
+                .any(|r| r.id == row.id && r.status == "done")
+        });
+    });
+}
+
+/// With the App locked, a validation through `er_send` starts its agent on
+/// the task host when the bucket holds a review.
+#[test]
+fn a_validation_starts_on_the_host_with_the_app_locked() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab = open(&state, dir.path(), "a");
+        let bucket = bucket(&state, &tab);
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "h",
+            "created_at": "2026-11-23T00:00:00Z",
+            "base_branch": "main",
+            "head_branch": "feature",
+            "files": {}
+        });
+        std::fs::create_dir_all(&bucket).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(Path::new(&bucket).join("review.json"), review.to_string())
+            .unwrap_or_else(|e| panic!("{e}"));
+        let command = Command::RunValidate {
+            tab: er_service::wire_tab_key(tab.0),
+            scope: "branch".into(),
+        };
+        let sent = send(&state, "run_validate", command);
+        assert!(sent.is_ok(), "{sent:?}");
+        let kinds: Vec<String> = tasks(&state).into_iter().map(|row| row.kind).collect();
+        assert!(kinds.contains(&"validate".to_string()), "{kinds:?}");
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// The tick names the App only for its sidecar check and the App's
+/// notification, and the AI picker's saves name no App.
+#[test]
+fn the_tick_and_the_pick_leave_the_app() {
+    let tick = include_str!("../../resources/tick.rs");
+    for word in ["drain_agent_log", "check_commands", "poll_background_tasks"] {
+        assert!(!tick.contains(word), "the tick runs {word}");
+    }
+    let pick = include_str!("../../ai_selection_service.rs");
+    for word in ["AppState", "er_engine::app", "current_ai_", "app.lock"] {
+        assert!(!pick.contains(word), "ai_selection_service.rs names {word}");
+    }
+}
