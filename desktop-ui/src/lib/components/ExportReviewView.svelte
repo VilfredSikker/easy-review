@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { asErError } from "$lib/protocol/client";
   import { readReviewJson } from "$lib/stores/annotationReads";
   import { copyToClipboard } from "$lib/clipboard";
   import {
@@ -62,7 +63,7 @@
       const target = await invoke<string>("export_review_to_file", { opts: exportOptions.current, path: "" });
       app.showToast("success", `Saved to ${target}`);
     } catch (e) {
-      app.showToast("error", `Save failed: ${String(e)}`);
+      app.showToast("error", `Save failed: ${asErError(e).message}`);
     }
   }
 

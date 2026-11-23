@@ -3,6 +3,7 @@
   import { Terminal as XTerm } from "@xterm/xterm";
   import "@xterm/xterm/css/xterm.css";
   import { app } from "$lib/stores/app.svelte";
+  import { asErError } from "$lib/protocol/client";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { terminalRepoName } from "$lib/stores/terminalTabs";
   import { themeByName, xtermThemeFor } from "$lib/themes";
@@ -90,7 +91,7 @@
     try {
       await invoke("terminal_spawn", { sessionId, cwd });
     } catch (e) {
-      term.write(`\r\n\x1b[31mfailed to spawn shell: ${String(e)}\x1b[0m\r\n`);
+      term.write(`\r\n\x1b[31mfailed to spawn shell: ${asErError(e).message}\x1b[0m\r\n`);
       return;
     }
 

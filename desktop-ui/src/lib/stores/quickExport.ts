@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { copyToClipboard } from "$lib/clipboard";
+import { asErError } from "$lib/protocol/client";
 import { app } from "./app.svelte";
 
 /**
@@ -23,7 +24,20 @@ export async function copyReviewExport(opts: QuickExportOpts = EXPORT_PAGE_DEFAU
     const lines = body.split("\n").length;
     app.showToast("success", `Export copied · ${lines} lines of markdown`);
   } catch (e) {
-    app.pushLog("error", "export_review", String(e));
-    app.showToast("error", `Export failed: ${e}`);
+    const message = asErError(e).message;
+    app.pushLog("error", "export_review", message);
+    app.showToast("error", `Export failed: ${message}`);
+  }
+}
+
+/** Write the review export, every option at its default, to the tab's `export.md`. */
+export async function exportReviewToFile(): Promise<void> {
+  try {
+    const path = await invoke<string>("export_to_agent");
+    app.showToast("success", `Export written to ${path}`);
+  } catch (e) {
+    const message = asErError(e).message;
+    app.pushLog("error", "export_to_agent", message);
+    app.showToast("error", `Export failed: ${message}`);
   }
 }
