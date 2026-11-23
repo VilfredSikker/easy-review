@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use er_engine::TabKey;
 use er_protocol::{
     Ack, BrowserLayout, Command, ErErrorKind, PrOpenHint, Resource, ResourceChanged, ResourceKey,
-    ResourceVersion, TabKind,
+    TabKind,
 };
 use er_service::wire_tab_key;
 
@@ -159,11 +159,14 @@ fn send_tab_command(state: &AppState, command: Command) -> er_service::TabsView 
     let what = format!("{command:?}");
     let ack = send_locked(state, command, None).unwrap_or_else(|e| panic!("{what}: {e:?}"));
     let view = state.service.app_registry().tabs_view();
+    let version = crate::resources::version(&state.desktop, ResourceKey::Tabs);
+    let version = version.unwrap_or_else(|e| panic!("{what}: {e:?}"));
+    assert!(version.0 >= view.revision, "{what}: {version:?}");
     assert_eq!(
         ack.changed,
         vec![ResourceChanged {
             key: ResourceKey::Tabs,
-            version: ResourceVersion(view.revision),
+            version,
         }],
         "{what}"
     );

@@ -181,7 +181,8 @@ describe("resource source scans", () => {
     ]) {
       expect(block(f, ctor)).not.toMatch(/pageView/);
     }
-    expect(block("tabsResource.svelte.ts", "TabsAdapter")).toMatch(/rows: \(\) => legacySnapshot\.tabRows,/);
+    // The strip's rows come from the resource alone.
+    expect(block("tabsResource.svelte.ts", "TabsAdapter")).not.toMatch(/rows:|legacySnapshot/);
     // Every dot, the active branch view's too, reads diff(tab), never the App's stale mark.
     expect(block("tabsResource.svelte.ts", "TabsAdapter")).not.toMatch(/diff_stale/);
   });

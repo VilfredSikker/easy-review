@@ -1174,6 +1174,7 @@ fn main() {
         line_commits_cache: Arc::default(),
         session: session.clone(),
         live_jobs: Default::default(),
+        live_tabs: Default::default(),
         #[cfg(feature = "v1-service")]
         tasks: er_desktop::tasks::TaskHost::new(session.clock()),
     };

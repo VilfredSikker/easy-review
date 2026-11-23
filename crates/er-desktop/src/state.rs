@@ -95,6 +95,9 @@ pub struct DesktopState {
     pub session: SessionClock,
     /// How many times the live runs `jobs` lists have moved.
     pub live_jobs: LiveJobs,
+    /// How many times the tab rows' values from outside their descriptors
+    /// have moved.
+    pub live_tabs: LiveTabs,
     /// The background agent tasks the flag path runs, which `jobs` lists.
     #[cfg(feature = "v1-service")]
     pub tasks: crate::tasks::TaskHost,
@@ -123,16 +126,42 @@ impl LiveJobs {
     }
 
     fn compare<T: Clone + PartialEq>(&self, seen: &Mutex<Vec<T>>, now: &[T]) -> u64 {
-        let mut seen = match seen.lock() {
-            Ok(seen) => seen,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if seen.as_slice() != now {
-            *seen = now.to_vec();
-            self.revision.fetch_add(1, Ordering::AcqRel);
-        }
-        self.revision.load(Ordering::Acquire)
+        count_change(seen, &self.revision, now)
     }
+}
+
+/// A count of the changes seen in the tab rows' values that come from the
+/// tabs' content and repos, which no registry revision moves: a load that
+/// changes a Working tab's branch or a diff's hash moves this count, so
+/// `tabs` moves with it.
+#[derive(Clone, Default)]
+pub struct LiveTabs {
+    seen: Arc<Mutex<Vec<er_protocol::TabRow>>>,
+    revision: Arc<AtomicU64>,
+}
+
+impl LiveTabs {
+    /// The count after comparing `now` with the rows seen last.
+    pub fn observe(&self, now: &[er_protocol::TabRow]) -> u64 {
+        count_change(&self.seen, &self.revision, now)
+    }
+}
+
+/// `revision` after comparing `now` with `seen`, moved by one when they differ.
+fn count_change<T: Clone + PartialEq>(
+    seen: &Mutex<Vec<T>>,
+    revision: &AtomicU64,
+    now: &[T],
+) -> u64 {
+    let mut seen = match seen.lock() {
+        Ok(seen) => seen,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if seen.as_slice() != now {
+        *seen = now.to_vec();
+        revision.fetch_add(1, Ordering::AcqRel);
+    }
+    revision.load(Ordering::Acquire)
 }
 
 /// The desktop's own writes to `session` and `panels`: the watcher's status,

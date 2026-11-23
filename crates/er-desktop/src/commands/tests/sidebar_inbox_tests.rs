@@ -393,9 +393,10 @@ fn an_inbox_open_reads_the_item_and_opens_its_target_with_the_app_locked() {
         let view = state.service.app_registry().tabs_view();
         assert_eq!(view.tabs.len(), before + 1, "the open added no tab");
         let tabs = ack.changed.iter().find(|c| c.key == ResourceKey::Tabs);
+        let version = crate::resources::version(&state.desktop, ResourceKey::Tabs);
         assert_eq!(
-            tabs.map(|c| c.version.0),
-            Some(view.revision),
+            tabs.map(|c| c.version),
+            version.ok(),
             "the open's Ack does not name tabs: {ack:?}"
         );
         let active = view

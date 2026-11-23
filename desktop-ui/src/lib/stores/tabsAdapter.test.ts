@@ -8,23 +8,8 @@ import type { Command } from "$lib/protocol/generated/Command";
 import type { ResourceChanged } from "$lib/protocol/generated/ResourceChanged";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabRow } from "$lib/protocol/generated/TabRow";
-import type { TabSummary } from "$lib/pageTypes";
 import { ResourceStore } from "./resourceStore";
 import { TabsAdapter, tabsFromResource } from "./tabsAdapter";
-
-function row(idx: number, label: string, isActive: boolean): TabSummary {
-  return {
-    idx,
-    label,
-    kind: "working",
-    branch: null,
-    pr_number: null,
-    remote: null,
-    repo_root: `/r/${label}`,
-    is_active: isActive,
-    change_token: label,
-  };
-}
 
 function wireRow(key: number, label: string, overrides: Partial<TabRow> = {}): TabRow {
   return {
@@ -35,12 +20,13 @@ function wireRow(key: number, label: string, overrides: Partial<TabRow> = {}): T
     branch: label,
     pr_number: null,
     remote: null,
+    live_branch: null,
+    change_token: "",
     ...overrides,
   };
 }
 
-/** The snapshot calls the first tab active; the backend's registry says the second. */
-const snapshot = { tabs: [row(0, "a", true), row(1, "b", false)], active_tab: 0 };
+/** The backend's registry calls the second tab active. */
 const wireTabs = { tabs: [wireRow(11, "a"), wireRow(12, "b")], active: 12 };
 
 function backend(value: unknown = { kind: "tabs", ...wireTabs }) {
@@ -66,7 +52,7 @@ describe("TabsAdapter", () => {
       tabs: [wireRow(11, "x"), wireRow(12, "y", { kind: "remote_pr", branch: null, pr_number: 9, remote: "acme/y" })],
       active: 12,
     });
-    const tabs = new TabsAdapter({ store, rows: () => [] });
+    const tabs = new TabsAdapter({ store });
     await settle();
     expect(calls).toEqual(["er_fetch"]);
     expect(tabs.active).toBe(1);
@@ -76,32 +62,47 @@ describe("TabsAdapter", () => {
     ]);
   });
 
-  it("shows the resource's rows while the snapshot lags it", async () => {
-    const { store } = backend();
-    let current = snapshot;
-    const tabs = new TabsAdapter({ store, rows: () => current.tabs });
-    await settle();
-    current = { tabs: [row(0, "a", true)], active_tab: 0 };
-    expect(tabs.tabs.map((t) => [t.label, t.is_active])).toEqual([
-      ["a", false],
-      ["b", true],
-    ]);
+  it("asks nothing but er_fetch for its rows", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "tabsAdapter.ts"), "utf8");
+    expect(source).not.toMatch(/legacySnapshot|snapshotRows|rows: \(\) =>/);
   });
 });
 
 describe("tabsFromResource", () => {
-  it("keeps the snapshot's change token while the rows agree", () => {
-    const rows = [row(0, "a", true), row(1, "b", false)];
-    const view = tabsFromResource(wireTabs, rows);
-    expect(view.tabs.map((t) => t.change_token)).toEqual(["a", "b"]);
-    const lagging = tabsFromResource(wireTabs, rows.slice(0, 1));
-    expect(lagging.tabs.map((t) => t.change_token)).toEqual(["", ""]);
+  it("labels a Working tab with the live branch its row carries", () => {
+    const wire = { tabs: [wireRow(11, "main", { kind: "working", branch: null, live_branch: "main" })], active: 11 };
+    const [tab] = tabsFromResource(wire).tabs;
+    expect([tab?.label, tab?.kind, tab?.live_branch]).toEqual(["main", "working", "main"]);
   });
 
-  it("takes each tab's staleness from its diff and PR list, never the snapshot row", () => {
-    const rows = [{ ...row(0, "a", true), stale: true }, { ...row(1, "b", false), stale: true }];
+  it("labels a local PR whose row has no branch with the head view its row names", () => {
+    const wire = {
+      tabs: [wireRow(11, "pr/7", { kind: "local_pr", repo_root: "/r/proj", branch: null, pr_number: 7 })],
+      active: 11,
+    };
+    const [tab] = tabsFromResource(wire).tabs;
+    expect([tab?.label, tab?.branch, tab?.kind]).toEqual(["pr/7", null, "local_branch"]);
+  });
+
+  it("carries each row's change token", () => {
+    const wire = { tabs: [wireRow(11, "a", { change_token: "h1" }), wireRow(12, "b", { change_token: "h2" })], active: 11 };
+    expect(tabsFromResource(wire).tabs.map((t) => t.change_token)).toEqual(["h1", "h2"]);
+  });
+
+  it("gives a local PR its row's owner/repo, which its stale mark reads", () => {
+    const wire = { tabs: [wireRow(11, "b", { kind: "local_pr", pr_number: 7, remote: "acme/b" })], active: 11 };
+    const asked: (string | null)[] = [];
+    const view = tabsFromResource(wire, (tab) => {
+      asked.push(tab.remote);
+      return false;
+    });
+    expect(view.tabs.map((t) => t.remote)).toEqual(["acme/b"]);
+    expect(asked).toEqual(["acme/b"]);
+  });
+
+  it("takes each tab's staleness from its diff and PR list", () => {
     const asked: [number, boolean][] = [];
-    const view = tabsFromResource(wireTabs, rows, (wire, isActive) => {
+    const view = tabsFromResource(wireTabs, (wire, isActive) => {
       asked.push([wire.key, isActive]);
       return wire.key === 11;
     });
@@ -112,79 +113,8 @@ describe("tabsFromResource", () => {
     ]);
   });
 
-  it("labels a Working tab with the snapshot's live branch and a local PR with its remote, which its stale mark reads", () => {
-    const wire = {
-      tabs: [
-        wireRow(11, "a", { kind: "working", branch: null }),
-        wireRow(12, "b", { kind: "local_pr", pr_number: 7 }),
-      ],
-      active: 11,
-    };
-    const rows = [
-      { ...row(0, "main", true), repo_root: "/r/a" },
-      { ...row(1, "b", false), kind: "local_branch" as const, remote: "acme/b" },
-    ];
-    const asked: (string | null)[] = [];
-    const view = tabsFromResource(wire, rows, (tab) => {
-      asked.push(tab.remote);
-      return false;
-    });
-    expect(view.tabs.map((t) => [t.label, t.kind, t.remote])).toEqual([
-      ["main", "working", null],
-      ["b", "local_branch", "acme/b"],
-    ]);
-    expect(asked).toEqual([null, "acme/b"]);
-    expect(tabsFromResource(wire, []).tabs[0]?.label).toBe("a");
-  });
-
-  it("matches a remote PR on its remote and number, since its descriptor has no repo root", () => {
-    const wire = {
-      tabs: [
-        wireRow(11, "a"),
-        wireRow(12, "gadgets#9", { kind: "remote_pr", repo_root: "", branch: null, pr_number: 9, remote: "acme/gadgets" }),
-      ],
-      active: 11,
-    };
-    const remotePr = {
-      ...row(1, "gadgets#9", false),
-      kind: "remote_pr" as const,
-      repo_root: "/Users/x/proj",
-      pr_number: 9,
-      remote: "acme/gadgets",
-      stale: true,
-      change_token: "t1",
-    };
-    const pick = (rows: TabSummary[]) =>
-      tabsFromResource(wire, rows).tabs.map((t) => [t.label, t.change_token]);
-    expect(pick([row(0, "a", true), remotePr])).toEqual([
-      ["a", "a"],
-      ["gadgets#9", "t1"],
-    ]);
-    // Same length, other tabs: another PR number, and a branch in another repo.
-    expect(pick([{ ...row(0, "a", true), repo_root: "/r/other" }, { ...remotePr, pr_number: 10 }])).toEqual([
-      ["a", ""],
-      ["gadgets#9", ""],
-    ]);
-  });
-
-  it("labels a local PR whose row has no branch with the snapshot's head branch", () => {
-    const wire = {
-      tabs: [
-        wireRow(11, "proj#7", { kind: "local_pr", repo_root: "/r/proj", branch: null, pr_number: 7 }),
-        wireRow(12, "b"),
-      ],
-      active: 11,
-    };
-    const rows = [
-      { ...row(0, "feature-x", true), kind: "local_branch" as const, repo_root: "/r/proj", branch: "feature-x", pr_number: 7 },
-      { ...row(1, "b", false), kind: "local_branch" as const, label: "older-name" },
-    ];
-    expect(tabsFromResource(wire, rows).tabs.map((t) => t.label)).toEqual(["feature-x", "b"]);
-    expect(tabsFromResource(wire, rows.slice(0, 1)).tabs[0]?.label).toBe("proj#7");
-  });
-
   it("takes the first tab as active when the resource names none", () => {
-    expect(tabsFromResource({ ...wireTabs, active: null }, snapshot.tabs).active).toBe(0);
+    expect(tabsFromResource({ ...wireTabs, active: null }).active).toBe(0);
   });
 });
 
@@ -291,7 +221,7 @@ describe("TabsAdapter.route", () => {
   for (const [name, args, wire] of ROUTED) {
     it(`sends ${name} ${JSON.stringify(args)} through er_send, and resolves once the Ack's versions are held`, async () => {
       const { sent, waited, releases, store } = sender();
-      const tabs = new TabsAdapter({ store, rows: () => snapshot.tabs });
+      const tabs = new TabsAdapter({ store });
       const routed = tabs.route(name, args);
       if (routed === null) throw new Error(`${name} fell back to app.cmd`);
       let settled = false;
@@ -313,7 +243,7 @@ describe("TabsAdapter.route", () => {
 
   it("resolves a prefetch with no hint at once and sends nothing", async () => {
     const { sent, waited, store } = sender();
-    const tabs = new TabsAdapter({ store, rows: () => snapshot.tabs });
+    const tabs = new TabsAdapter({ store });
     await tabs.route("prefetch_pr_open", { projectId: "p", prNumber: 7 });
     expect(sent).toEqual([]);
     expect(waited).toEqual([]);
@@ -322,7 +252,7 @@ describe("TabsAdapter.route", () => {
 
   it("rejects a position the resource does not list", async () => {
     const { sent, store } = sender();
-    const tabs = new TabsAdapter({ store, rows: () => snapshot.tabs });
+    const tabs = new TabsAdapter({ store });
     await expect(tabs.route("select_tab", { idx: 5 }) ?? Promise.resolve()).rejects.toThrow("no tab at position 5");
     expect(sent).toEqual([]);
   });
@@ -334,6 +264,6 @@ describe("the strip's staleness", () => {
     const source = readFileSync(join(here, "tabsAdapter.ts"), "utf8");
     const body = source.slice(source.indexOf("export function tabsFromResource"), source.indexOf("type Args"));
     expect(body).not.toMatch(/seen\??\.stale|snapshotRows\[[^\]]*\]\??\.stale|candidate\??\.stale/);
-    expect(body).toMatch(/stale: stale\(\{ \.\.\.row, remote \}, idx === active\)/);
+    expect(body).toMatch(/stale: stale\(row, idx === active\)/);
   });
 });

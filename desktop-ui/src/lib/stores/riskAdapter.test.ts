@@ -56,7 +56,7 @@ function fakeBackend() {
 function adapter() {
   const backend = fakeBackend();
   const store = new ResourceStore(resourceClient(backend.run, async () => () => {}), 60_000);
-  return { backend, store, risk: new RiskAdapter({ store, invoke: backend.run }) };
+  return { backend, store, risk: new RiskAdapter({ store }) };
 }
 
 describe("RiskAdapter", () => {

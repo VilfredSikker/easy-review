@@ -96,11 +96,13 @@ fn the_tabs_resource_is_tagged_by_its_key() -> serde_json::Result<()> {
                     branch: None,
                     pr_number: Some(9),
                     remote: Some("acme/gadgets".into()),
+                    live_branch: None,
+                    change_token: String::new(),
                 }],
                 active: Some(TabKey(2)),
             }),
         },
-        r#"{"key":{"kind":"tabs"},"version":3,"value":{"kind":"tabs","tabs":[{"key":2,"kind":"remote_pr","label":"gadgets#9","repo_root":"","branch":null,"pr_number":9,"remote":"acme/gadgets"}],"active":2}}"#,
+        r#"{"key":{"kind":"tabs"},"version":3,"value":{"kind":"tabs","tabs":[{"key":2,"kind":"remote_pr","label":"gadgets#9","repo_root":"","branch":null,"pr_number":9,"remote":"acme/gadgets","live_branch":null,"change_token":""}],"active":2}}"#,
     )
 }
 

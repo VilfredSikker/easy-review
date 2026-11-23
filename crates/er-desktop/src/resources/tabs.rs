@@ -149,11 +149,10 @@ pub(super) fn opened(desktop: &DesktopState) -> Ack {
 }
 
 fn tabs_moved(desktop: &DesktopState, created: Option<String>) -> Ack {
-    let revision = desktop.service.app_registry().tabs_view().revision;
     Ack {
         changed: vec![ResourceChanged {
             key: ResourceKey::Tabs,
-            version: ResourceVersion(revision),
+            version: ResourceVersion(super::host::tabs_version(desktop)),
         }],
         created,
     }
