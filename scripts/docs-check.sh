@@ -12,6 +12,7 @@
 #      the repo root, the citing file's directory, or the crate src root.
 #   2. Relative markdown links resolve.
 #   3. ADR references name an ADR that exists.
+#   7. Each "Superseded by" mark matches the superseding ADR's list.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -216,6 +217,69 @@ for doc in $DOCS; do
   done < <(grep -nE '^#{2,3} +(Files|Module Map|Type Reference|Structs|Key Types)$' "$doc" 2>/dev/null)
 done
 [ "$shapes" -eq 0 ] && echo "  no inventory shapes (the rot pattern) found"
+echo
+
+# ── 7: supersession ───────────────────────────────────────────────────────────
+# A superseded ADR says so in its own header (`_Superseded by ADR NNNN…_`), and
+# the ADR that replaces it lists it (`_Supersedes ADRs NNNN, … and NNNN…_`).
+# A reader lands on one end or the other, so the two must agree: a mark the
+# list lacks, or a listed ADR with no mark, sends that reader to a rule that no
+# longer holds, or away from one that still does.
+#
+# Prints one line per disagreement in the ADR directory given.
+supersession_problems() {
+  local dir="$1" f n
+  local marks lists
+  marks="$(mktemp)"
+  lists="$(mktemp)"
+  for f in "$dir"/[0-9][0-9][0-9][0-9]-*.md; do
+    [ -f "$f" ] || continue
+    n="$(basename "$f" | cut -c1-4)"
+    grep -m1 -oE '^_Superseded by ADRs? 0[0-9]{3}' "$f" | grep -oE '0[0-9]{3}$' \
+      | sed "s/^/$n /" >>"$marks"
+    awk '/^_Supersedes /{on=1} on{print} on&&/_$/{exit}' "$f" | grep -oE '0[0-9]{3}' \
+      | sed "s/$/ $n/" >>"$lists"
+  done
+  sort -u -o "$marks" "$marks"
+  sort -u -o "$lists" "$lists"
+  comm -23 "$marks" "$lists" | while read -r old new; do
+    echo "ADR $old is marked superseded by ADR $new, but ADR $new's supersedes line does not list it"
+  done
+  comm -13 "$marks" "$lists" | while read -r old new; do
+    echo "ADR $new's supersedes line lists ADR $old, but ADR $old has no 'Superseded by ADR $new' mark"
+  done
+  rm -f "$marks" "$lists"
+}
+
+# The check guards a pair of lines nobody re-reads together, so every run
+# proves it still catches a disagreement in each direction.
+supersession_self_test() {
+  local t rc=0
+  t="$(mktemp -d)"
+  mkdir "$t/agree" "$t/unlisted" "$t/unmarked"
+  printf '# a\n\n_Superseded by ADR 0002._\n' >"$t/agree/0001-a.md"
+  printf '# b\n\n_Supersedes ADRs 0001 and\n0003._\n' >"$t/agree/0002-b.md"
+  printf '# c\n\n_Superseded by ADR 0002 for one case._\n' >"$t/agree/0003-c.md"
+  cp "$t/agree/"* "$t/unlisted/"
+  cp "$t/agree/"* "$t/unmarked/"
+  printf '# b\n\n_Supersedes ADR 0003._\n' >"$t/unlisted/0002-b.md"
+  printf '# c\n' >"$t/unmarked/0003-c.md"
+  [ -z "$(supersession_problems "$t/agree")" ] || rc=1
+  supersession_problems "$t/unlisted" | grep -q "ADR 0001 is marked superseded by ADR 0002" || rc=1
+  supersession_problems "$t/unmarked" | grep -q "lists ADR 0003, but ADR 0003 has no" || rc=1
+  rm -rf "$t"
+  return "$rc"
+}
+
+echo "Supersession:"
+supersession_self_test || note "the supersession check missed a planted disagreement in its self-test"
+sups=0
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  sups=$((sups + 1))
+  note "$p"
+done < <(supersession_problems docs/adr)
+[ "$sups" -eq 0 ] && echo "  every superseded mark matches its superseding ADR's list"
 echo
 
 if [ "$fail" -ne 0 ]; then

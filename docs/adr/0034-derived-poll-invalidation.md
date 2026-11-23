@@ -1,5 +1,7 @@
 # Poll invalidation is derived from the snapshot fields, not declared by writers
 
+_Superseded by ADR 0072._
+
 `compute_content_revision` and `compute_chrome_revision` hash an explicit list of snapshot fields. `poll_impl` recomputes both and compares them against the `last_sent_*` markers to decide whether to send anything at all. Nothing declares "this changed"; the hash of the fields is the declaration.
 
 The alternative — a version counter every writer bumps — was not taken because it is easy to forget, and a forgotten bump is silent. This design fails the other way: a snapshot field that is not added to the hash list will never be noticed, and the failure has no recovery path. The poll keeps comparing equal, so it keeps answering `snapshot: null`, and the 30-second fallback does not help because the fallback calls the same comparison.

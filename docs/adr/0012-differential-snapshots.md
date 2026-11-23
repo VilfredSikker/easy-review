@@ -1,5 +1,7 @@
 # Snapshots omit hunks the frontend already holds
 
+_Superseded by ADR 0072._
+
 Hunk lines dominate snapshot payloads, so the backend remembers, per view, the `delta_key` of the content it last delivered for each file (`SentFilesState`, keyed by a view token covering tab, mode, branch and filter). A file whose content the frontend already holds ships with `hunks_omitted = true` and no hunk payload, and the frontend splices the previous snapshot's hunks back in. Omitted files consume none of the IPC line budget (`SNAPSHOT_DIFF_LINE_BUDGET`), so the budget throttles only what actually changed.
 
 ## Considered Options

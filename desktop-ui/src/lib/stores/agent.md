@@ -4,49 +4,40 @@
 
 ## State ownership
 
-- `app.snapshot` is backend truth at rest: render from it, read loading state from it (`app.switching`, `app.refreshing`, `snapshot.bg_loading`), never infer backend state from toasts.
-- While a review write is in flight the store runs ahead of the backend on purpose. An optimistic write paints the record into `app.snapshot` and re-applies it over every incoming snapshot until the backend's own copy lands (`keepOptimisticOps`). The store is a second source of truth for in-flight review records — that is the point of the layer, and the pending-op list is what keeps the record alive across a poll.
-- localStorage holds frontend preferences only: diff view mode, comment visibility, drawer sizes, scroll offsets. Never review data.
+- The resource store (`resources`) is backend truth at rest. Each store reads its keys from it, and the page view (`pageView`) is built from those stores alone, each laying its fields over the tab strip's rows; it holds no state of its own. Render from it, read loading state from the resources that carry it, and never infer backend state from toasts.
+- A store shows a key while something holds it (`show` returns the release). A key nobody holds is dropped with its content, so a store that reads a key it never showed reads nothing.
+- While a write is in flight the page runs ahead of the server on purpose; see pending writes below.
+- localStorage holds frontend preferences only: diff view mode, comment visibility, drawer sizes, scroll offsets. Never review data, and never a wire key.
 
-## Optimistic writes (ADR 0017)
+## Pending writes
 
-- Contract: paint, register the op, confirm over IPC. `cmdOptimistic` applies the op before its first `await`, so a composer can close immediately; the op rolls back only if the call fails or the view identity moved on. A successful global op is never rolled back.
-- Skipping the registration undoes the paint. Each snapshot replaces `app.snapshot` wholesale, and anything not held as a pending op is gone — the record flashes in and reverts.
-- A command listed in `OPTIMISTIC_COMMANDS` with no branch in `buildOptimisticOp` returns null, and `cmdOptimistic` then drops the action: no paint, no IPC, no error. Add both.
-- Paint gate: `canPaintOptimistic()` refuses while a tab switch is in flight. A refused paint calls `explainPaintBlocked()` and leaves the composer draft intact — a click that does nothing reads as a frozen app.
+- A thread write (add, reply, promote) paints a pending row under the id it sends as `clientId`, so the confirming row lands on the same id and is not drawn twice (`withPending`). This is ADR 0017's `client_id` rule, which ADR 0072 keeps.
+- The paint is dropped once every version the `Ack` names is held (`whenAt`), or when the send fails. A refused write takes its paint back with no rollback code; dropping it any earlier flashes the row out until the refetch lands.
+- A reviewed checkmark is pending the same way, until its `Ack`'s versions are held.
+- Every other write paints nothing: the push of the resource it moved paints the result.
 - Composers fire `void app.cmd(...)` and clear their draft after, never `await`.
-- `optimisticChain` serializes optimistic IPC so a reply lands on the id its parent just created.
 
-## Command wrapper vs raw invoke (ADR 0018)
+## Commands: `app.cmd` and raw `invoke`
 
-Default is `app.cmd`: it ingests the returned snapshot, carries the tab-change ordering and the loading flags, routes failures to the banner + toast + log, and covers the optimistic commands.
+`app.cmd` sends a command through the first route a store handed it (`routeCmds`); each store routes the commands it owns to `er_send`. A name no route takes is an error, and every failure goes to the banner, the toast and the log. What a command changed reaches the page through the resources, never through its return.
 
-Raw `invoke` is for commands whose result must not replace the live snapshot:
+Some stores send through the resource store directly rather than through `app.cmd`, the settings and session adapters among them. Their sends reject with the `ErError`, and the caller reports it; nothing else will.
 
-- a non-snapshot return — `export_review`, `get_background_task_log`, `list_available_branches`, the `arena_*` reads the arena store polls itself;
-- the settings panel, which reads and writes through `settingsResource` (`settingsAdapter.ts`): the old commands with the flag off, the `settings` resource and `er_send` with it on, never the snapshot;
-- the app chrome and the AI picker (theme, view switches, AI labels, watcher, version, update check, providers, reviewers, picks), which read and write through `sessionResource` (`sessionAdapter.ts`) the same way over `settings` and `session`; with the flag off Settings invokes the picks itself and the palette sends them through `app.cmd`;
-- `toggle_panel`, which paints the layout locally first and mirrors through `panelMirror.ts`;
-- the hover prefetches in `prOpen.ts`, which go through `er_send` with the flag on.
-
-With the flag on, `app.cmd` first offers each command to the route `tabsResource` (`tabsAdapter.ts`) registers: the tab commands, the opens and the browser writes go through `er_send` and answer no snapshot, so their content follows the next poll. The open tabs read from `tabsResource`, and the active tab's review browser from `browserView` (`browserView.ts`, the tab's `view` resource), with either flag.
-
-A raw `invoke` reports its own failure; nothing else will.
+Raw `invoke` is for the direct commands, which are not published state: the exports, the terminal, the browser webview, the OS launches and line commits. The protocol client (`desktop-ui/src/lib/protocol/client.ts`) is the one place the three resource commands are invoked. A raw `invoke` reports its own failure; nothing else will.
 
 ## Ordering guards
 
-Snapshots arrive out of order (poll, command response, revision event), so each path defends itself:
+Answers arrive out of order (a push, an `Ack`, a version check), and the resource store defends itself:
 
-- `snapshotGeneration` — a poll that started before a newer command or merge is discarded (`isStaleSnapshotGeneration`).
-- `tabChangeGeneration` + `shouldDropCommandSnapshot` — a command snapshot for another tab is dropped unless the command is a tab change; a failed tab change restores `lastConfirmedSnapshot`.
-- `tabChangeInvokeQueue` (`createLatestInvokeQueue`) — tab-change invokes serialize, and a superseded one resolves to `LATEST_INVOKE_SKIPPED`, which the caller must ignore rather than apply.
-- `pollInFlight` / `pollPending` — a revision event during a poll coalesces into one follow-up, not a second invoke.
+- A key has at most one fetch in flight. A version announced while it is in flight is remembered, and the key is fetched again once the fetch lands if that version is still ahead.
+- An older reply never replaces a newer one: a fetch whose version is at or below the held one is dropped.
+- A store that needs a key at a version waits on `whenAt`, which also resolves when the key is released or its fetch fails, so nothing waits on a key no one shows.
 
-Any new async path that assigns `this.snapshot` needs one of these.
+Any new path that holds content outside the resource store needs the same guards, or it is the stale copy.
 
-## Poll model (ADR 0011)
+## Push model (ADR 0072)
 
-The backend pushes `er://revision` when its desktop revision advances; the frontend answers by invoking `poll`. The 30s timer is a safety net for a dropped event or a listener that has not attached yet — it was 2s when polling was the primary mechanism. A stale-looking UI points at missing backend revision invalidation; shortening the interval hides that.
+The backend pushes `er://resources` with the keys whose version moved; the store refetches those it shows. The 30s timer asks for the versions of every shown key, for a push that was lost or one sent before the listener attached. A stale-looking UI points at a writer that did not stamp a version, or a relay that did not hand it on; shortening the interval hides that.
 
 ## Browser URL identity
 

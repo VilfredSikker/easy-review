@@ -50,20 +50,18 @@ bound the wait — `send_and_wait`, which carries `REPLY_TIMEOUT`, or its own
 actor lives and turn a dead actor into a frozen command.
 
 **The crate graph stays headless.** `er-service` depends on `er-engine` with
-`default-features = false` and has no front end in its graph. `v1-service` is
-an optional feature on `er-desktop` and `er-tui`; the default build is
-unchanged. D21 applies: the flag-on desktop does not render from the view until
-P47, so the routed open commands acknowledge the command and return an empty
-snapshot. `open_local_branch` and `open_worktree` stay on the old path; they are
-noted on #538.
+`default-features = false` and has no front end in its graph. The desktop
+always runs on it; `v1-service` stays an optional feature on `er-tui` only.
+An open goes through `er_send` like every other command: its `Ack` names the
+resources it moved, and the page refetches `tabs` and the new tab's content
+from the published view (ADR 0072).
 
 ## Consequences
 
-**Good.** An open command no longer takes the App lock, so a slow `gh` call
-cannot stall snapshots. Both front ends will call one implementation, and the
+**Good.** An open takes no lock that a read needs, so a slow `gh` call
+cannot stall the page. Both front ends will call one implementation, and the
 actor's state has one writer.
 
 **Costs.** One effect thread per command in P40; a pool can come later if the
-thread cost shows up. The flag-on desktop is visibly incomplete until P47
-(recorded in D21). Each repo root keeps one live actor for the process's
+thread cost shows up. Each repo root keeps one live actor for the process's
 lifetime; there is no eviction yet.

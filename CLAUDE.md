@@ -91,8 +91,10 @@ docs and release chores do land on `main`.
 - **The agent-slot cap covers review agents, not every subprocess.** A spawn
   path that launches something else takes no slot, so the pool is not a global
   process limit. See ADR 0021.
-- **The desktop is push-driven.** The backend emits a revision event; the 30s
-  timer is only a safety net. Fix revision invalidation before touching a timer.
+- **The desktop is push-driven.** The page reads resources, and the backend
+  pushes the keys whose version moved; the 30s version check is only a safety
+  net. A stale view means a writer that did not stamp a version, or a relay
+  that did not hand it on. Fix that before touching a timer (ADR 0072).
 - **One `er` instance per worktree.** Multi-worktree tabs work through the
   worktree picker.
 - **`main` and `release/v*` can differ** — check the branch you are actually on.

@@ -1,5 +1,7 @@
 # Mutations go through the command wrapper that ingests the returned snapshot
 
+_Superseded by ADR 0072._
+
 Desktop mutations go through `app.cmd` (`desktop-ui/src/lib/stores/app.svelte.ts`), which invokes the command, ingests the returned snapshot, and routes a failure to the error banner, the toast, and the frontend log. Raw `invoke` stays for results that must not replace the live snapshot: a non-snapshot return (an export string, a provider list, a terminal write), or a snapshot the caller ingests itself. The rule is written down because the obvious tidy-up — moving every remaining raw `invoke` onto the wrapper — would, for that second group, replace the live view with the snapshot its caller was already handling.
 
 ## Consequences

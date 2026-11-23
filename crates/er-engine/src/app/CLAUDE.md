@@ -10,7 +10,7 @@ PR. `App` owns what has to survive a tab switch: the open tabs and active index,
 the AI provider/model selection, and app-level background review tasks that keep
 running while the user navigates elsewhere. Caches that exist only for the
 desktop (GitHub list/status caches, loading flags, terminal sessions) belong to
-`crates/er-desktop`'s `AppState`. Which side of the line a new field goes on is
+`crates/er-desktop`'s `DesktopState`. Which side of the line a new field goes on is
 `crates/er-engine/src/app/state/agent.md`.
 
 Never widen an existing field so a second front end can read something else out

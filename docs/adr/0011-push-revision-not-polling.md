@@ -1,5 +1,7 @@
 # The desktop pushes revision events; polling is only a safety net
 
+_Superseded by ADR 0072._
+
 The desktop backend emits an `er://revision` event whenever its state changes, and the frontend polls in response to that event, coalescing concurrent polls into one. Interval polling made freshness a function of timer length, so every latency complaint was answered by shortening a timer that was never the real lever — backend revision invalidation is. A 30-second timer stays, but only to cover events fired before the frontend's listener has attached.
 
 ## Consequences
