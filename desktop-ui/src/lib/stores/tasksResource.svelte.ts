@@ -30,5 +30,5 @@ if (flagOn) {
   });
   // The painted tab's agent log reads its tasks' output, which `jobs`
   // leaves out, once a second.
-  setInterval(() => void tasksAdapter.refreshLogs(app.appSnapshot?.review_bucket_er_dir), 1000);
+  setInterval(() => void tasksAdapter.refreshLogs(app.appSnapshot), 1000);
 }

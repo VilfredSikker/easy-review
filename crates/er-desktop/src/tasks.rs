@@ -73,6 +73,10 @@ pub struct Launch {
     pub scoped_stamp: Option<ScopedRunStamp>,
     pub config: Arc<ErConfig>,
     pub selection: AiSelection,
+    /// The caller tells the person once for a run of several tasks, so the
+    /// host sends no started or queued notice of its own while it accepts
+    /// this one; a start later, from the queue, is told as any other.
+    pub quiet: bool,
 }
 
 impl TaskHost {
@@ -195,6 +199,7 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
         finished_at_ms: None,
     };
     let command_name = launch.command_name.clone();
+    let quiet = launch.quiet;
     {
         // One lock over the busy check and the push, so two clicks at once
         // queue one task.
@@ -228,6 +233,10 @@ pub fn enqueue(desktop: &DesktopState, launch: Launch) -> Result<String, String>
         waiting.iter().position(|task| task.row.id == id)
     };
     if let Some(position) = position {
+        if quiet {
+            hear_from_queue(host, &id);
+            return Ok(id);
+        }
         let label = target.display_label();
         crate::resources::notice::tell(
             desktop,
@@ -250,7 +259,11 @@ pub fn hold_agent(
     launch: impl FnOnce(Sender<AgentLogEntry>) -> anyhow::Result<AgentPromptRun>,
 ) -> Result<String, String> {
     let host = &desktop.tasks;
-    let busy = host.lock().iter().any(|task| {
+    // One lock over the busy check, the launch and the push, so two sends at
+    // once start one agent. The launch only spawns: the runner waits for its
+    // slot on its own thread.
+    let mut tasks = host.lock();
+    let busy = tasks.iter().any(|task| {
         task.row.kind == name && task.target.er_dir == target.er_dir && task.run.is_some()
     });
     if busy {
@@ -278,7 +291,7 @@ pub fn hold_agent(
         started_at_ms: now_ms(),
         finished_at_ms: None,
     };
-    host.lock().push(Task {
+    tasks.push(Task {
         row,
         log: VecDeque::new(),
         run: Some(started.run),
@@ -286,6 +299,7 @@ pub fn hold_agent(
         target,
         agent: true,
     });
+    drop(tasks);
     host.clock.bump();
     let (desktop, task) = (desktop.clone(), id.clone());
     // Unnamed, like every thread that reaches the storage root. The lines
@@ -303,6 +317,18 @@ pub fn hold_agent(
         })
         .map_err(|e| format!("start the task worker: {e}"))?;
     Ok(id)
+}
+
+/// Lets the queued task `id` tell the person when it starts.
+fn hear_from_queue(host: &TaskHost, id: &str) {
+    let mut tasks = host.lock();
+    if let Some(queued) = tasks
+        .iter_mut()
+        .find(|task| task.row.id == id)
+        .and_then(|task| task.queued.as_mut())
+    {
+        queued.launch.quiet = false;
+    }
 }
 
 /// Starts queued tasks, oldest first, while fewer than the cap run here and
@@ -402,7 +428,9 @@ fn launch(
             dispatch(&desktop_for_worker);
         })
         .map_err(|e| format!("start the task worker: {e}"))?;
-    crate::resources::notice::tell(desktop, started, false);
+    if !launch.quiet {
+        crate::resources::notice::tell(desktop, started, false);
+    }
     Ok(())
 }
 

@@ -80,12 +80,20 @@ fn open_gate(gate: &Path) {
 
 /// A state whose tasks run the gated agent, under `cap` running reviews.
 fn tasking(dir: &ReviewFlowTestDir, cap: usize) -> (AppState, Agent) {
+    tasking_on(dir, cap, local_ports())
+}
+
+/// `tasking` on the git `ports` give.
+fn tasking_on(
+    dir: &ReviewFlowTestDir,
+    cap: usize,
+    ports: er_engine::ports::Ports,
+) -> (AppState, Agent) {
     let agent = Agent::in_dir(dir.path());
     let path = dir.path().join("settings").join("config.toml");
     std::fs::create_dir_all(dir.path().join("settings")).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(&path, agent.config(cap)).unwrap_or_else(|e| panic!("config: {e}"));
     let mut state = review_flow_test_state(dir);
-    let ports = local_ports();
     state.desktop.ports = ports.clone();
     let deps = WorkspaceDeps::new(ports);
     state.service = Arc::new(ServiceState::with_deps(deps, |_| {}).with_config_path(path));
@@ -147,6 +155,7 @@ fn launch(state: &AppState, dir: &Path, kind: &str, branch: &str) -> crate::task
             model_id,
             effort,
         },
+        quiet: false,
     }
 }
 
@@ -361,6 +370,149 @@ fn the_run_commands_start_with_the_app_locked() {
     });
 }
 
+/// Each run command on `er_send` starts its own run with the App locked:
+/// `jobs` lists a row of the command's kind, and a scoped run keeps its
+/// reviewers and paths.
+#[test]
+fn each_run_command_through_er_send_lists_its_kind_in_jobs() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab = open(&state, dir.path(), "a");
+        let bucket = bucket(&state, &tab);
+        let wire = er_service::wire_tab_key(tab.0);
+        let commands = [
+            ("tour", Command::GenerateTour { tab: wire }),
+            ("importance", Command::RunImportanceAgent { tab: wire }),
+            (
+                "diagram:flows",
+                Command::GenerateDiagram {
+                    tab: wire,
+                    diagram_kind: "flows".into(),
+                    custom_prompt: None,
+                },
+            ),
+            (
+                "expert:security",
+                Command::RunExpertReview {
+                    tab: wire,
+                    scope: "branch".into(),
+                    expert_id: "security".into(),
+                },
+            ),
+            (
+                "triage",
+                Command::RunScopedReview {
+                    tab: wire,
+                    scope: "branch".into(),
+                    paths: vec!["src/f1.rs".into()],
+                    reviewers: vec!["triage".into()],
+                    focus_prompt: None,
+                },
+            ),
+        ];
+        for (kind, command) in commands {
+            let ack = send(&state, "a run", command).unwrap_or_else(|e| panic!("{kind}: {e:?}"));
+            assert!(ack.changed.iter().any(|c| c.key == ResourceKey::Jobs));
+            let kinds: Vec<String> = tasks(&state).into_iter().map(|row| row.kind).collect();
+            assert!(kinds.iter().any(|k| k == kind), "{kind}: {kinds:?}");
+        }
+        let listed = std::fs::read_to_string(Path::new(&bucket).join("review-files.txt"));
+        assert_eq!(listed.ok().as_deref(), Some("src/f1.rs\n"));
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// A scoped run through `er_send` tells the person once, with its own
+/// message, as the App's scoped arm does; its tasks send no started notice
+/// of their own.
+#[test]
+fn a_scoped_run_sends_one_notice() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 50);
+        let tab = open(&state, dir.path(), "a");
+        let _ = bucket(&state, &tab);
+        let command = Command::RunScopedReview {
+            tab: er_service::wire_tab_key(tab.0),
+            scope: "branch".into(),
+            paths: Vec::new(),
+            reviewers: vec!["triage".into(), "general".into()],
+            focus_prompt: None,
+        };
+        let told = super::while_the_app_is_locked(&state, "the scoped run", move |state| {
+            let effects = crate::resources::send::Effects {
+                notify: &|_, _| {},
+                check_update: || panic!("no update check in this test"),
+                webviews: &crate::browser_webview::NoWebviews,
+                pick_folder: &|| None,
+            };
+            let _ = crate::resources::notice::told(&state.desktop);
+            crate::resources::send::apply(&state.desktop, command, &effects).map(drop)?;
+            Ok::<_, er_protocol::ErError>(crate::resources::notice::told(&state.desktop))
+        });
+        let told = told.unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].starts_with("Started 2 reviewer(s)"), "{told:?}");
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
+/// A scoped reviewer that waits for a slot tells the person once, when it
+/// starts from the queue, as the App tells a queued task's start; at accept
+/// time the scoped message is the run's one notice.
+#[test]
+fn a_queued_scoped_reviewer_tells_its_start_once() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 1);
+        let tab = open(&state, dir.path(), "a");
+        let _ = bucket(&state, &tab);
+        let reviewers = vec!["triage".to_string(), "general".to_string()];
+        let _ = crate::resources::notice::told(&state.desktop);
+        let ran = crate::commands::ask_on_desktop(&state, |desktop| {
+            crate::runs::scoped(desktop, None, "branch".into(), Vec::new(), reviewers, None)
+        });
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        let mut told = crate::resources::notice::told(&state.desktop);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].starts_with("Started 2 reviewer(s)"), "{told:?}");
+        let queued = tasks(&state)
+            .into_iter()
+            .any(|row| row.kind == "review" && row.status == "queued");
+        assert!(
+            queued,
+            "the second reviewer did not wait: {:?}",
+            tasks(&state)
+        );
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+        // The slot pool is the process's, so another test's agent can hold
+        // the one slot; the tick's poll starts the queue once it frees.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            crate::tasks::poll(&state.desktop);
+            told.extend(crate::resources::notice::told(&state.desktop));
+            let done = tasks(&state).into_iter().any(|row| {
+                row.kind == "review" && !matches!(row.status.as_str(), "queued" | "running")
+            });
+            if done {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the queued reviewer never finished: {told:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        told.extend(crate::resources::notice::told(&state.desktop));
+        let started: Vec<&String> = told
+            .iter()
+            .filter(|m| m.starts_with("review started ("))
+            .collect();
+        assert_eq!(started.len(), 1, "{told:?}");
+    });
+}
+
 /// The run module never names the App.
 #[test]
 fn the_runs_name_no_app() {
@@ -564,6 +716,50 @@ fn a_note_goes_to_the_agent_from_the_ai_section_with_the_app_locked() {
     });
 }
 
+/// A plain local tab on a detached HEAD reads no branch, so its branch
+/// resolves no checkout; it is still the main checkout, and a note goes to
+/// the agent there as it does with the flag off.
+#[test]
+fn a_note_goes_to_the_agent_on_a_detached_head() {
+    with_storage(|dir| {
+        let git: Arc<dyn er_git::Git> = Arc::new(
+            er_git::FakeGit::default()
+                .with_current_branch(Ok(String::new()))
+                .with_detect_base_branch(Ok("main".to_string()))
+                .with_diff_raw(Ok(raw_diff()))
+                .with_diff_shortstat((3, 3, 3))
+                .with_rev_parse_verify(Ok(Some("b".repeat(40))))
+                .with_is_merge_in_progress(false),
+        );
+        let (state, agent) = tasking_on(dir, 50, er_engine::ports::Ports::with_git(git));
+        let tab = open(&state, dir.path(), "a");
+        let id = note(&state, &tab);
+        let content = state
+            .service
+            .content(tab.0, &tab.1)
+            .unwrap_or_else(|| panic!("no content"));
+        assert_eq!(
+            content.tab.checkout_root, None,
+            "the fixture's detached HEAD"
+        );
+        let command = Command::SendNoteToAgent {
+            tab: er_service::wire_tab_key(tab.0),
+            note_id: id,
+        };
+        let sent = send(&state, "send_note_to_agent", command);
+        assert!(sent.is_ok(), "{sent:?}");
+        assert!(
+            tasks(&state)
+                .iter()
+                .any(|row| row.kind == crate::commands::SEND_NOTE_COMMAND),
+            "{:?}",
+            tasks(&state)
+        );
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
 /// With the App locked, a validation through `er_send` starts its agent on
 /// the task host when the bucket holds a review.
 #[test]
@@ -626,6 +822,84 @@ fn two_clicks_at_once_queue_one_task() {
         }
         open_gate(&agent.first);
         open_gate(&agent.second);
+    });
+}
+
+/// Agent launches a test counts, each held running by its kept result
+/// sender.
+#[derive(Default)]
+struct Launches {
+    count: std::sync::atomic::AtomicUsize,
+    results: std::sync::Mutex<Vec<std::sync::mpsc::Sender<anyhow::Result<()>>>>,
+}
+
+impl Launches {
+    fn count(&self) -> usize {
+        self.count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A launch that takes a moment and leaves its task running.
+    fn launch(&self) -> anyhow::Result<er_engine::app::AgentPromptRun> {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(2));
+        let (tx, result) = std::sync::mpsc::channel();
+        self.results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(tx);
+        Ok(er_engine::app::AgentPromptRun {
+            run: er_engine::jobs::AgentRunHandle::new(),
+            result,
+        })
+    }
+}
+
+/// Sends `validate` on `target` once the gate opens; answers whether the
+/// host took it.
+fn send_at_gate(
+    state: &AppState,
+    gate: &std::sync::Barrier,
+    target: BackgroundTaskTarget,
+    launches: &Launches,
+) -> bool {
+    gate.wait();
+    crate::tasks::hold_agent(&state.desktop, target, "validate", |_| launches.launch()).is_ok()
+}
+
+/// Two sends of the same tab command on one bucket at once start one
+/// agent: the busy check, the launch and the record are one step.
+#[test]
+fn two_sends_at_once_start_one_agent() {
+    with_storage(|dir| {
+        let (state, _agent) = tasking(dir, 50);
+        let launches = Launches::default();
+        for round in 0..60 {
+            let mut target = launch(&state, dir.path(), "validate", "feature").target;
+            let bucket = dir.path().join(format!("bucket-{round}"));
+            target.er_dir = bucket.to_string_lossy().into_owned();
+            let before = launches.count();
+            let gate = std::sync::Barrier::new(2);
+            let accepted = std::thread::scope(|scope| {
+                let sends: Vec<_> = (0..2)
+                    .map(|_| {
+                        let (state, gate, launches) = (&state, &gate, &launches);
+                        let target = target.clone();
+                        scope.spawn(move || send_at_gate(state, gate, target, launches))
+                    })
+                    .collect();
+                sends
+                    .into_iter()
+                    .map(|send| send.join().unwrap_or(false))
+                    .filter(|accepted| *accepted)
+                    .count()
+            });
+            let started = launches.count() - before;
+            assert_eq!(
+                (accepted, started),
+                (1, 1),
+                "round {round} accepted {accepted} sends and started {started} agents"
+            );
+        }
     });
 }
 

@@ -2236,6 +2236,7 @@ pub(crate) fn triage_ctx(desktop: &DesktopState) -> crate::auto_triage::AutoTria
                 target,
                 prompt,
                 None,
+                false,
             )
         }),
         notify: Arc::new(move |message| {
@@ -13472,8 +13473,8 @@ mod tests {
     }
 
     /// With the feature on, the AI picker's three saves reach the settings
-    /// actor before the App lock is taken, and the App only follows the saved
-    /// selection: its own copy of the config is never written.
+    /// actor before the App lock is taken, and the App takes none of it:
+    /// neither its session pick nor its copy of the config is written.
     #[cfg(feature = "v1-service")]
     #[test]
     fn the_ai_picker_saves_route_with_the_feature_on() {
@@ -13483,6 +13484,22 @@ mod tests {
         };
         er_engine::storage::with_process_test_storage_root(tmp.path(), || {
             let state = shared_config_state(&dir);
+            let before = {
+                let Ok(app) = state.app.lock() else {
+                    panic!("the App lock is poisoned");
+                };
+                (
+                    app.current_ai_provider.clone(),
+                    app.current_ai_model.clone(),
+                    app.current_ai_effort.clone(),
+                )
+            };
+            assert_ne!(before.0.as_deref(), Some("fake"), "the fixture's pick");
+            assert_ne!(
+                before.1.as_deref(),
+                Some("fake-model"),
+                "the fixture's pick"
+            );
             saved_while_locked(
                 &state,
                 "set_ai_model",
@@ -13513,9 +13530,15 @@ mod tests {
             let Ok(app) = state.app.lock() else {
                 panic!("the App lock is poisoned");
             };
-            assert_eq!(app.current_ai_provider.as_deref(), Some("fake"));
-            assert_eq!(app.current_ai_model.as_deref(), Some("fake-model"));
-            assert_eq!(app.current_ai_effort.as_deref(), Some("high"));
+            assert_eq!(
+                (
+                    app.current_ai_provider.clone(),
+                    app.current_ai_model.clone(),
+                    app.current_ai_effort.clone(),
+                ),
+                before,
+                "the saved pick was copied into the App"
+            );
             assert_eq!(
                 app.config.ai_hub.default_model, None,
                 "the App's copy was written"
