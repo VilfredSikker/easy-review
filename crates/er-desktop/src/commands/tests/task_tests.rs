@@ -575,6 +575,35 @@ fn a_sidebar_triage_queues_on_the_host_with_the_app_locked() {
     });
 }
 
+/// A sidebar triage tells the person once, with the sidebar's own message;
+/// its task sends no started notice of its own.
+#[test]
+fn a_sidebar_triage_sends_one_notice() {
+    with_storage(|dir| {
+        let (mut state, agent) = tasking(dir, 50);
+        let git: Arc<dyn er_git::Git> = Arc::new(
+            er_git::FakeGit::default()
+                .with_detect_base_branch(Ok("main".to_string()))
+                .with_diff_raw_range(Ok(raw_diff())),
+        );
+        state.desktop.ports = er_engine::ports::Ports::with_git(git);
+        let root = dir.path().join("a");
+        std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("{e}"));
+        let root = root.to_string_lossy().into_owned();
+        let _ = crate::resources::notice::told(&state.desktop);
+        let ctx = crate::commands::triage_ctx(&state.desktop);
+        crate::auto_triage::dispatch_branch_triage(&ctx, "p", "o/r", &root, "feature", &[]);
+        let mut told = Vec::new();
+        wait_until("the sidebar's notice", || {
+            told.extend(crate::resources::notice::told(&state.desktop));
+            told.iter().any(|m| m.starts_with("Triage started for branch"))
+        });
+        assert_eq!(told, vec!["Triage started for branch feature".to_string()]);
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
 /// The task log is read from the task host: the flag path of
 /// `get_background_task_log` names the host, and its App read sits in the
 /// flag-off arm alone. Sidebar triage and the tick's task duties name no App.
