@@ -2017,10 +2017,9 @@ fn main() {
                 {
                     use er_desktop::resources::tick;
                     let desktop = state.desktop.clone();
-                    let app = Arc::clone(&state.app);
                     std::thread::spawn(move || {
                         let never = std::sync::atomic::AtomicBool::new(false);
-                        tick::follow_revisions(desktop, app, tick::INTERVAL, &never, &emit);
+                        tick::follow_revisions(desktop, tick::INTERVAL, &never, &emit);
                     });
                 }
                 #[cfg(not(feature = "v1-service"))]

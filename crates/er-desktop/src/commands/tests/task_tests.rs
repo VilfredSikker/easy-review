@@ -244,6 +244,40 @@ fn a_queued_task_is_removed_from_jobs() {
     });
 }
 
+/// An importance run that finishes well has the settings view load the
+/// repo's rules again, so `risk(key)` moves for the open tabs at once. The
+/// test finishes a queued importance task by hand: a run that commits a
+/// table needs a real provider CLI.
+#[test]
+fn a_finished_importance_run_reloads_the_repo_risk_rules() {
+    with_storage(|dir| {
+        let (state, agent) = tasking(dir, 1);
+        let _first = queued(&state, dir.path(), "review");
+        let importance = queued(
+            &state,
+            dir.path(),
+            er_engine::ai::prompts::IMPORTANCE_TASK_KIND,
+        );
+        let repo_root = dir.path().to_string_lossy().into_owned();
+        let loaded = || {
+            state
+                .service
+                .settings()
+                .view()
+                .risk_for(&repo_root, None)
+                .is_some()
+        };
+        assert!(!loaded(), "the rules were loaded before the run");
+
+        crate::tasks::finish(&state.desktop, &importance, Ok(()));
+
+        assert!(loaded(), "the finished run left the rules unloaded");
+        state.desktop.tasks.cancel_queued(&importance);
+        open_gate(&agent.first);
+        open_gate(&agent.second);
+    });
+}
+
 /// The host and its commands never name the App, so no task read or write
 /// waits on it.
 #[test]

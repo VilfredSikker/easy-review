@@ -242,10 +242,12 @@ macro_rules! snap {
 /// Build a snapshot using the lock guards directly (when callers already hold them).
 /// Differential: hunks the frontend already holds are omitted (`hunks_omitted`).
 pub fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
+    send_app_notice(app, state);
     crate::snapshot::build_snapshot_with_delta(app, &snapshot_sources(state))
 }
 
 fn snap_from_with_arbiter(app: &App, state: &AppState, overlay: Option<&[u8]>) -> AppSnapshot {
+    send_app_notice(app, state);
     let mut sources = snapshot_sources(state);
     sources.other_bucket_arbiter = Some(overlay);
     crate::snapshot::build_snapshot_with_delta(app, &sources)
@@ -371,7 +373,46 @@ fn snap_from_command_invalidate(app: &App, state: &AppState) {
 }
 
 fn chrome_snap_from(app: &App, state: &AppState) -> AppSnapshot {
+    send_app_notice(app, state);
     build_chrome_snapshot(app, &snapshot_sources(state))
+}
+
+/// With the flag on the page shows the App's notification only as a notice,
+/// so every snapshot an App command builds sends it, under the lock the
+/// command holds, and answers what it sent. P62.2 deletes this with the
+/// App's commands.
+#[cfg(feature = "v1-service")]
+fn send_app_notice(app: &App, state: &AppState) -> Option<er_protocol::Notice> {
+    let notice = app_notice(app.notification.as_ref(), &state.session.app_notice_seq)?;
+    let handle = state
+        .tauri_app_handle
+        .lock()
+        .ok()
+        .and_then(|handle| handle.clone());
+    if let Some(handle) = handle {
+        crate::resources::notice::emit(&handle, &notice);
+    }
+    Some(notice)
+}
+
+#[cfg(not(feature = "v1-service"))]
+fn send_app_notice(_: &App, _: &AppState) -> Option<er_protocol::Notice> {
+    None
+}
+
+/// The App's notification as a notice, once: `sent` holds the engine's
+/// sequence number of the last one sent, and the App keeps its last
+/// notification set, so every later snapshot sees it again.
+#[cfg(feature = "v1-service")]
+pub(crate) fn app_notice(
+    notification: Option<&er_engine::app::Notification>,
+    sent: &AtomicU64,
+) -> Option<er_protocol::Notice> {
+    let notification = notification?;
+    let before = sent.fetch_max(notification.seq, Ordering::AcqRel);
+    (before < notification.seq).then(|| {
+        crate::resources::notice::engine_notice(notification.message.clone(), notification.long)
+    })
 }
 
 fn log_branch_open_phase(

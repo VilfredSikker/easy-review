@@ -403,7 +403,7 @@ fn launch(
 
 /// Records a task's outcome, tells the person once and files it in the
 /// inbox.
-fn finish(desktop: &DesktopState, id: &str, result: Result<(), String>) {
+pub(crate) fn finish(desktop: &DesktopState, id: &str, result: Result<(), String>) {
     let finished = {
         let mut tasks = desktop.tasks.lock();
         let Some(task) = tasks.iter_mut().find(|task| task.row.id == id) else {
@@ -428,11 +428,12 @@ fn finish(desktop: &DesktopState, id: &str, result: Result<(), String>) {
         task.row.finished_at_ms = Some(now_ms());
         task.run = None;
         push_line(&mut task.log, status_line(&what, message.clone()));
-        (task.row.clone(), message, task.agent)
+        (task.row.clone(), message, task.agent, task.target.clone())
     };
     desktop.tasks.clock.bump();
-    let (row, message, agent) = finished;
+    let (row, message, agent, target) = finished;
     if row.kind == er_engine::ai::prompts::IMPORTANCE_TASK_KIND && row.status == "done" {
+        reload_risk_rules(desktop, &target);
         crate::resources::notice::tell(
             desktop,
             "Risk rules committed — see the task log for its report".to_string(),
@@ -442,6 +443,35 @@ fn finish(desktop: &DesktopState, id: &str, result: Result<(), String>) {
     crate::resources::notice::tell(desktop, message, true);
     if !agent {
         crate::commands::file_tasks_in_inbox(desktop, &[row]);
+    }
+}
+
+/// Has the settings view read the repo's rules again after an importance run
+/// committed them, so `risk(key)` moves and the open tabs filter with the new
+/// rules at once, as the App's `sync_repo_rules_to_tabs` hands them on. A load
+/// replaces the paths the view resolves, so it sends a loaded tab's paths on
+/// that repo, the active tab's first.
+fn reload_risk_rules(desktop: &DesktopState, target: &BackgroundTaskTarget) {
+    let tabs = desktop.service.app_registry().tabs_view();
+    let active = tabs.active;
+    let mut on_repo: Vec<_> = tabs
+        .tabs
+        .iter()
+        .filter(|entry| entry.descriptor.repo_root == target.repo_root)
+        .collect();
+    on_repo.sort_by_key(|entry| Some(entry.key) != active);
+    let paths = on_repo
+        .iter()
+        .find_map(|entry| desktop.service.content(entry.key, &entry.descriptor))
+        .map(|content| content.diff.files.iter().map(|f| f.path.clone()).collect())
+        .unwrap_or_default();
+    let load = er_service::SettingsCommand::LoadRiskRules {
+        repo_root: target.repo_root.clone(),
+        remote_repo: target.remote_repo.clone(),
+        paths,
+    };
+    if let Err(error) = desktop.service.settings().send_and_wait(load) {
+        log::warn!("reload risk rules after importance: {error}");
     }
 }
 

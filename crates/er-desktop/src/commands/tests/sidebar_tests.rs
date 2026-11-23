@@ -219,7 +219,7 @@ fn loaded_with(
 fn the_tick_warms_the_registry_active_tab() {
     with_storage(|dir| {
         let (state, root, git) = loaded_fixture(dir);
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
         let warmed = format!("list_worktrees(repo_root={root:?})");
         wait_until("the warm of the active tab", || {
             git.calls().contains(&warmed)
@@ -267,7 +267,7 @@ fn the_tick_serves_the_active_tab_worktrees_as_build_worktrees_lists_them() {
             dismissed_branches: vec!["gone".into()],
             ..record("p", &root, Some("acme/widgets"))
         }]);
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
         // The fake answers the merged list for any base, so the rows alone
         // cannot show the tick asked with the loaded tab's base.
         let merged_asks: Vec<String> = git
@@ -413,7 +413,7 @@ fn a_pr_cache_write_reaches_the_branches_within_one_tick() {
             .lock()
             .unwrap()
             .insert("acme/p".into(), vec![pr(9, "feature", "someone")]);
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
         assert!(
             branches_version(&state, "p") > before,
             "the tick did not publish"

@@ -14,8 +14,8 @@ use er_protocol::{
 
 use super::{review_flow_test_state, while_the_app_is_locked, ReviewFlowTestDir};
 use crate::commands::AppState;
+use crate::resources;
 use crate::resources::send::{apply, Applied, Effects};
-use crate::resources::{self, tick};
 use crate::service::ServiceState;
 use crate::snapshot::{build_snapshot_with_delta, SnapshotSources, WatchStatusSnapshot};
 
@@ -386,50 +386,52 @@ fn a_model_refresh_names_the_count() {
     });
 }
 
-/// The App keeps its last notification set, and the tick sees it on every
-/// pass; it goes out as a notice once, and a new one goes out again.
+/// The App keeps its last notification set, and every snapshot an App
+/// command builds sees it again; it goes out as a notice once, and a new one
+/// goes out again.
 #[test]
 fn each_app_notification_is_one_notice() {
     let mut app = er_engine::app::App::new_for_test(Vec::new());
     let sent = AtomicU64::new(0);
     app.notify("Review started");
-    let first = tick::app_notice(app.notification.as_ref(), &sent);
+    let first = crate::commands::app_notice(app.notification.as_ref(), &sent);
     assert_eq!(
         first.map(|n| (n.level, n.message)),
         Some((NoticeLevel::Success, "Review started".to_string()))
     );
-    assert_eq!(tick::app_notice(app.notification.as_ref(), &sent), None);
+    assert_eq!(
+        crate::commands::app_notice(app.notification.as_ref(), &sent),
+        None
+    );
     app.notify("Review failed");
-    let next = tick::app_notice(app.notification.as_ref(), &sent);
+    let next = crate::commands::app_notice(app.notification.as_ref(), &sent);
     assert_eq!(next.map(|n| n.level), Some(NoticeLevel::Error));
 }
 
-/// The tick itself sends the App's notification: one tick consumes it, so
-/// the dedupe has nothing left to send, and the next tick sends nothing.
+/// An App command sends the notification it set as a notice, under the lock
+/// it holds; the next App command finds the same notification sent and
+/// sends none. No window is up in a test, so the sequence and the send's
+/// answer are what show it.
 #[test]
-fn the_tick_sends_the_app_notification_once() {
+fn an_app_command_sends_its_notification_once() {
     with_storage(|dir| {
         let state = review_flow_test_state(dir);
-        let set = {
-            let mut app = state.app.lock().unwrap_or_else(|e| e.into_inner());
-            app.notify("Review started");
-            app.notification.as_ref().map_or(0, |n| n.seq)
-        };
-        assert!(set > 0, "the App numbered its notification");
         let sent = || state.desktop.session.app_notice_seq.load(Ordering::Acquire);
 
-        tick::run(&state.desktop, &state.app);
+        let opened = crate::commands::open_inbox_item_impl("no-such-item".into(), false, &state);
+        assert!(opened.is_ok(), "{:?}", opened.err());
 
-        let current = {
-            let app = state.app.lock().unwrap_or_else(|e| e.into_inner());
-            let unsent = tick::app_notice(app.notification.as_ref(), &AtomicU64::new(sent()));
-            assert_eq!(unsent, None, "the tick left the notification unsent");
-            app.notification.as_ref().map_or(0, |n| n.seq)
+        let app = state.app.lock().unwrap_or_else(|e| e.into_inner());
+        let set = app
+            .notification
+            .as_ref()
+            .map(|n| (n.seq, n.message.clone()));
+        let Some((seq, message)) = set else {
+            panic!("the command set no notification");
         };
-        assert!(current >= set, "{current} before {set}");
-        assert_eq!(sent(), current);
-
-        tick::run(&state.desktop, &state.app);
-        assert_eq!(sent(), current, "a second tick sent again");
+        assert_eq!(message, crate::commands::NO_INBOX_TARGET);
+        assert_eq!(sent(), seq, "the command did not send its notification");
+        let again = crate::commands::send_app_notice(&app, &state);
+        assert_eq!(again, None, "the same notification went out twice");
     });
 }
