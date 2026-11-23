@@ -84,6 +84,9 @@ pub fn fetch(desktop: &DesktopState, key: ResourceKey) -> Result<Versioned<Resou
             super::annotations::review_revisions(desktop, *tab)?
         }
         ResourceKey::AnnotationScreenshot { path } => super::annotations::screenshot(path)?,
+        ResourceKey::ArenaEstimate { tab, plan } => super::arena::estimate(desktop, *tab, plan)?,
+        ResourceKey::ArenaRuns { tab } => super::arena::runs(desktop, *tab)?,
+        ResourceKey::ArenaRun { tab, run_id } => super::arena::run(desktop, *tab, run_id)?,
         ResourceKey::Pr { tab } => super::pr::pr(desktop, *tab)?,
         ResourceKey::PrStatus { remote, number } => super::pr::pr_status(desktop, remote, *number),
         ResourceKey::PendingReview { tab } => super::github_writes::pending_review(desktop, *tab)?,
@@ -122,6 +125,9 @@ pub fn version(desktop: &DesktopState, key: ResourceKey) -> Result<ResourceVersi
         | ResourceKey::ReviewJson { .. }
         | ResourceKey::ReviewRevisions { .. }
         | ResourceKey::AnnotationScreenshot { .. }
+        | ResourceKey::ArenaEstimate { .. }
+        | ResourceKey::ArenaRuns { .. }
+        | ResourceKey::ArenaRun { .. }
         | ResourceKey::PendingReview { .. } => 0,
         ResourceKey::Prs { remote } => sidebar(desktop).prs(remote).0,
         ResourceKey::Worktrees { root } => sidebar(desktop).worktrees(root).0,
@@ -337,6 +343,12 @@ pub fn send(desktop: &DesktopState, command: Command) -> Result<Ack, ErError> {
         | Command::ClearUiAnnotationsForPage { .. }
         | Command::ClearUiAnnotations { .. }
         | Command::UpdateUiAnnotationAnchors { .. }
+        | Command::ArenaStart { .. }
+        | Command::ArenaValidateFindings { .. }
+        | Command::ArenaAcceptFindings { .. }
+        | Command::ArenaDelete { .. }
+        | Command::ArenaCancel { .. }
+        | Command::ArenaOverride { .. }
         | Command::RefreshStack { .. }
         | Command::RefreshGithubStatus { .. }
         | Command::ReplyToGithubThread { .. }
