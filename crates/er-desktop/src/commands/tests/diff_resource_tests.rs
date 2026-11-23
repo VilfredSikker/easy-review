@@ -86,7 +86,11 @@ pub(super) fn listed(
     (key, tab)
 }
 
-fn opened(state: &AppState, dir: &ReviewFlowTestDir, repo: &str) -> (TabKey, TabDescriptor) {
+pub(super) fn opened(
+    state: &AppState,
+    dir: &ReviewFlowTestDir,
+    repo: &str,
+) -> (TabKey, TabDescriptor) {
     let root = dir.path().join(repo);
     std::fs::create_dir_all(&root).unwrap_or_else(|e| panic!("repo dir: {e}"));
     let tab = content_routes::working_tab(root.to_string_lossy().into_owned());

@@ -15,7 +15,7 @@ use er_service::WorkspaceDeps;
 use super::ai_ask_tests::jobs;
 use super::arena_resource_tests::{bucket, local_ports, open, wait_until};
 use super::diff_command_tests::send;
-use super::diff_resource_tests::{raw_diff, with_storage};
+use super::diff_resource_tests::{fake_ports, opened, raw_diff, with_storage};
 use super::{review_flow_test_state, ReviewFlowTestDir};
 use crate::commands::AppState;
 use crate::service::ServiceState;
@@ -259,33 +259,57 @@ fn a_queued_task_is_removed_from_jobs() {
 }
 
 /// An importance run that finishes well has the settings view load the
-/// repo's rules again, so `risk(key)` moves for the open tabs at once. The
-/// test finishes a queued importance task by hand: a run that commits a
-/// table needs a real provider CLI.
+/// repo's rules again, so `risk(key)` moves, and refreshes the loaded tabs on
+/// the repo, so their rows take the committed tiers at once. The test commits
+/// the table and finishes a queued importance task by hand: a run that
+/// commits a table needs a real provider CLI.
 #[test]
-fn a_finished_importance_run_reloads_the_repo_risk_rules() {
+fn a_finished_importance_run_refilters_the_loaded_tabs_on_its_repo() {
     with_storage(|dir| {
-        let (state, agent) = tasking(dir, 1);
+        let (state, agent) = tasking_on(dir, 1, fake_ports());
+        let (key, tab) = opened(&state, dir, "one");
         let _first = queued(&state, dir.path(), "review");
-        let importance = queued(
+        let mut importance = launch(
             &state,
             dir.path(),
             er_engine::ai::prompts::IMPORTANCE_TASK_KIND,
+            "feature",
         );
-        let repo_root = dir.path().to_string_lossy().into_owned();
-        let loaded = || {
-            state
-                .service
-                .settings()
-                .view()
-                .risk_for(&repo_root, None)
-                .is_some()
+        importance.target.repo_root.clone_from(&tab.repo_root);
+        let importance = super::while_the_app_is_locked(&state, "the enqueue", move |state| {
+            crate::tasks::enqueue(&state.desktop, importance)
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+        let tier = || {
+            let diff = ResourceKey::Diff {
+                tab: er_service::wire_tab_key(key),
+            };
+            match crate::resources::fetch(&state.desktop, diff).map(|f| f.value) {
+                Ok(Resource::Diff(diff)) => (diff.files.iter())
+                    .find(|f| f.path == "src/f2.rs")
+                    .map(|f| f.risk_tier.to_string()),
+                other => panic!("not a diff: {other:?}"),
+            }
         };
-        assert!(!loaded(), "the rules were loaded before the run");
+        assert_eq!(tier().as_deref(), Some("ai"));
+        let committed = er_engine::config::RiskRuleProposal {
+            repo: "widgets".into(),
+            rules: [("src/f2.rs".to_string(), "low".into())].into(),
+            ..Default::default()
+        };
+        let store = er_engine::store_registry::store();
+        assert!(committed.commit_to_store("widgets", &store).is_ok());
 
         crate::tasks::finish(&state.desktop, &importance, Ok(()));
 
-        assert!(loaded(), "the finished run left the rules unloaded");
+        let view = state.service.settings().view();
+        assert!(
+            view.risk_for(&tab.repo_root, None).is_some(),
+            "rules unloaded"
+        );
+        wait_until("the tab's rows to take the committed tier", || {
+            tier().as_deref() == Some("low")
+        });
         state.desktop.tasks.cancel_queued(&importance);
         open_gate(&agent.first);
         open_gate(&agent.second);

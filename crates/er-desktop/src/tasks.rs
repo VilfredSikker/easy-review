@@ -480,10 +480,11 @@ pub(crate) fn finish(desktop: &DesktopState, id: &str, result: Result<(), String
 }
 
 /// Has the settings view read the repo's rules again after an importance run
-/// committed them, so `risk(key)` moves and the open tabs filter with the new
-/// rules at once, as the App's `sync_repo_rules_to_tabs` hands them on. A load
-/// replaces the paths the view resolves, so it sends a loaded tab's paths on
-/// that repo, the active tab's first.
+/// committed them, so `risk(key)` moves, and refreshes every loaded tab on
+/// the repo, so its diff reads the new table and filters with it at once, as
+/// the App's `sync_repo_rules_to_tabs` hands them on. A load replaces the
+/// paths the view resolves, so it sends a loaded tab's paths on that repo,
+/// the active tab's first.
 fn reload_risk_rules(desktop: &DesktopState, target: &BackgroundTaskTarget) {
     let tabs = desktop.service.app_registry().tabs_view();
     let active = tabs.active;
@@ -505,6 +506,9 @@ fn reload_risk_rules(desktop: &DesktopState, target: &BackgroundTaskTarget) {
     };
     if let Err(error) = desktop.service.settings().send_and_wait(load) {
         log::warn!("reload risk rules after importance: {error}");
+    }
+    for entry in on_repo {
+        crate::watcher::refresh(&desktop.service, entry.key, &entry.descriptor);
     }
 }
 
