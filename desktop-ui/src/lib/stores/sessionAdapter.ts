@@ -12,7 +12,7 @@ import type {
   FeatureFlagsSnapshot,
   ReviewerInfo,
   WatchStatusSnapshot,
-} from "$lib/types";
+} from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 import { errorText, SETTINGS_KEY } from "./settingsAdapter";
 

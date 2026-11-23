@@ -1,6 +1,6 @@
 import { contrastRatio } from "./diffContrast";
 import { commitSeriesFor, type AppTheme } from "./themes";
-import type { PrInfo } from "./types";
+import type { PrInfo } from "./pageTypes";
 
 /** One letter for the project tile. Falls back to "?" so an unnamed repo
  *  still renders a tile rather than an empty square. */

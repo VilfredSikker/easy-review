@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import type { UiDomContext } from "$lib/types";
+  import type { UiDomContext } from "$lib/pageTypes";
 
   /** What a saved annotation carries to `onSave`. */
   export type AnnotationSubmission = {

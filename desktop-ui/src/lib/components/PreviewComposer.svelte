@@ -2,7 +2,7 @@
   import { hunkForLines, quotedBody, type LineRange } from "$lib/documentAnchors";
   import { newCommentClientId } from "$lib/optimisticComment";
   import { app } from "$lib/stores/app.svelte";
-  import type { FileSnapshot } from "$lib/types";
+  import type { FileSnapshot } from "$lib/pageTypes";
 
   type Kind = "question" | "note" | "comment";
 

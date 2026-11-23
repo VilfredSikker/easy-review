@@ -3,7 +3,7 @@
   import { copyToClipboard } from "$lib/clipboard";
   import AnnotationOverflowMenu from "$lib/components/AnnotationOverflowMenu.svelte";
   import type { OverflowItem } from "$lib/annotationActions";
-  import type { FindingResponseSnapshot, ThreadMessage } from "$lib/types";
+  import type { FindingResponseSnapshot, ThreadMessage } from "$lib/pageTypes";
 
   type ReplyLike = ThreadMessage | FindingResponseSnapshot;
 

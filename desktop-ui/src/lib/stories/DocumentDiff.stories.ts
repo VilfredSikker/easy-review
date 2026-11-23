@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import DocumentDiffHarness from "./DocumentDiffHarness.svelte";
 import { richSnapshot, fileMediaCombobox, commentThread } from "./fixtures";
-import type { AppSnapshot, FileSnapshot } from "$lib/types";
+import type { AppSnapshot, FileSnapshot } from "$lib/pageTypes";
 
 const meta = {
   title: "Diff/Document previews",

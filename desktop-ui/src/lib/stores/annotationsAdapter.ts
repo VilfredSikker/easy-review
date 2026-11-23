@@ -15,7 +15,7 @@ import type {
   ThreadSnapshot,
   TourSnapshot,
   UiAnnotation,
-} from "$lib/types";
+} from "$lib/pageTypes";
 import { withPending, type PendingPaint } from "./annotationWrites";
 import type { ResourceStore } from "./resourceStore";
 

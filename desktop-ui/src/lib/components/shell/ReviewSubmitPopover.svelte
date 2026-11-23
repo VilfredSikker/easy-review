@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ThreadSnapshot } from "$lib/types";
+  import type { ThreadSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { pendingReview } from "$lib/stores/pendingReview.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";

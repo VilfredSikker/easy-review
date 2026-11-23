@@ -1,4 +1,4 @@
-import type { AppSnapshot, TabSummary } from "./types";
+import type { AppSnapshot, TabSummary } from "./pageTypes";
 
 /** Max tab snapshots kept for instant revisit. Matches backend sent-files cap. */
 export const TAB_SNAPSHOT_CACHE_CAP = 8;

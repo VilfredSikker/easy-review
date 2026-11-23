@@ -1,6 +1,6 @@
 <script lang="ts">
   import { settingsResource } from "$lib/stores/settingsResource.svelte";
-  import type { AiModelInfo, AiProviderInfo } from "$lib/types";
+  import type { AiModelInfo, AiProviderInfo } from "$lib/pageTypes";
   import { EFFORT_LEVELS, effortLabel } from "$lib/arena/effort";
   import Button from "$lib/components/ui/Button.svelte";
 

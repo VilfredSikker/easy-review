@@ -1,6 +1,6 @@
 <script lang="ts">
   import { annotationDrafts } from "$lib/stores/annotationDrafts.svelte";
-  import type { FlatFinding, ThreadSnapshot } from "$lib/types";
+  import type { FlatFinding, ThreadSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
   import EditMessageModal from "$lib/components/EditMessageModal.svelte";

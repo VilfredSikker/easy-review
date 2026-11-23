@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { syncToastMessage } from "./syncToast";
-import type { DiffStaleSnapshot, FileSnapshot } from "./types";
+import type { DiffStaleSnapshot, FileSnapshot } from "./pageTypes";
 
 const file = (path: string, reviewed: boolean) => ({ path, reviewed }) as FileSnapshot;
 const stale: DiffStaleSnapshot = {

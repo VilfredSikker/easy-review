@@ -1,4 +1,4 @@
-import type { AiModelInfo, AiProviderInfo } from "$lib/types";
+import type { AiModelInfo, AiProviderInfo } from "$lib/pageTypes";
 import type { ReviewerRef } from "$lib/types/arena";
 
 export function formatModelPricePer1k(m: AiModelInfo): string {

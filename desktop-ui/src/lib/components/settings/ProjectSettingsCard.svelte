@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ReviewSettingsChange } from "$lib/stores/projectsAdapter";
-  import type { ProjectSnapshot } from "$lib/types";
+  import type { ProjectSnapshot } from "$lib/pageTypes";
   import SettingsSection from "./SettingsSection.svelte";
   import SettingsRow from "./SettingsRow.svelte";
   import SettingsButton from "./SettingsButton.svelte";

@@ -1,4 +1,4 @@
-import type { TriageSnapshot } from "$lib/types";
+import type { TriageSnapshot } from "$lib/pageTypes";
 
 /**
  * File paths Triage flagged for review, in priority order, de-duplicated.

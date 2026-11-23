@@ -1,4 +1,4 @@
-import type { AiSnapshot, FlatFinding } from "$lib/types";
+import type { AiSnapshot, FlatFinding } from "$lib/pageTypes";
 
 /** Matches `list_ai_reviewers` / EXPERTS registry order in er-engine. */
 export const AGENT_LABEL_ORDER: readonly string[] = [

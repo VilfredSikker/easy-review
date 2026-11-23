@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import type { LineSnapshot } from "$lib/types";
+  import type { LineSnapshot } from "$lib/pageTypes";
   const EMPTY_HUNK_LINES: LineSnapshot[] = [];
 </script>
 
@@ -7,7 +7,7 @@
   import InlineFinding from "$lib/components/InlineFinding.svelte";
   import { findingReviewSide } from "$lib/diffAnnotations";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
-  import type { FlatFinding, ThreadSnapshot } from "$lib/types";
+  import type { FlatFinding, ThreadSnapshot } from "$lib/pageTypes";
   import AnnotationSplitRow from "./AnnotationSplitRow.svelte";
 
   interface Props {

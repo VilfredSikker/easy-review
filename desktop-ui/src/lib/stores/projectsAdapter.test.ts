@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { resourceClient, type Invoke } from "$lib/protocol/client";
 import type { Command } from "$lib/protocol/generated/Command";
-import type { AppSnapshot, ProjectSnapshot, TabSummary } from "$lib/types";
+import type { AppSnapshot, ProjectSnapshot, TabSummary } from "$lib/pageTypes";
 import { ProjectsAdapter, branchRows, branchesKey, isActiveProject, remoteKey } from "./projectsAdapter";
 import { prsKey } from "./prsAdapter";
 import { ResourceStore } from "./resourceStore";

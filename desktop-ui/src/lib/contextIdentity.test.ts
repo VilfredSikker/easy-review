@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveContextIdentity, resolveContextTitle } from "./contextIdentity";
-import type { AppSnapshot, GithubStatusSnapshot, PrInfo, ProjectSnapshot, TabSummary } from "./types";
+import type { AppSnapshot, GithubStatusSnapshot, PrInfo, ProjectSnapshot, TabSummary } from "./pageTypes";
 
 function githubSnap(overrides: Partial<GithubStatusSnapshot> = {}): GithubStatusSnapshot {
   return {

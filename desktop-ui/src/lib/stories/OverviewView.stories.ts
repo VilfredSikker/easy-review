@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import OverviewView from "$lib/components/overview/OverviewView.svelte";
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 import {
   githubStatusOpen,
   localBranchEmptyBucketSnapshot,

@@ -1,5 +1,5 @@
 import { findingPassesTrust } from "$lib/diffAnnotations";
-import type { AiSnapshot, Confidence } from "$lib/types";
+import type { AiSnapshot, Confidence } from "$lib/pageTypes";
 
 /// Findings the confidence gate is holding back, counted per file. `minTrust`
 /// resolves the reader's gate from the engine's default.

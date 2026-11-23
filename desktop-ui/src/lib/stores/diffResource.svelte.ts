@@ -3,7 +3,7 @@ import { asErError, resourceClient } from "$lib/protocol/client";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
-import type { FileSnapshot } from "$lib/types";
+import type { FileSnapshot } from "$lib/pageTypes";
 import { diffPreview } from "./diffPreview.svelte";
 import { imagePreview } from "./imagePreview.svelte";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";

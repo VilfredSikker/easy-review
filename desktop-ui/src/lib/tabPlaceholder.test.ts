@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { tabPlaceholderRepo, tabPlaceholderTarget } from "./tabPlaceholder";
-import type { TabSummary } from "./types";
+import type { TabSummary } from "./pageTypes";
 
 const tab = (over: Partial<TabSummary>): TabSummary => ({
   idx: 0,

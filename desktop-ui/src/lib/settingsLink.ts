@@ -1,4 +1,4 @@
-import type { SettingsTab } from "./types";
+import type { SettingsTab } from "./pageTypes";
 
 /** A Settings section other surfaces link to by name. */
 export type SettingsSectionId = "risk-rules" | "concurrency" | "uninstall" | "display";

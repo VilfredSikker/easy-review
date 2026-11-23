@@ -1,4 +1,4 @@
-import type { SpanSnapshot } from "$lib/types";
+import type { SpanSnapshot } from "$lib/pageTypes";
 
 export interface HunkHighlight {
   hunk_index: number;

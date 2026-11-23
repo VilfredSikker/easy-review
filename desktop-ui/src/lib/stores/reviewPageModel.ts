@@ -5,7 +5,7 @@
 // into a main view plus, at most, one `set_mode`.
 
 import { detectedPrNumber, type DetectSnapshot } from "../sidebarReads";
-import type { AppSnapshot, FeatureFlagsSnapshot, TabSummary } from "../types";
+import type { AppSnapshot, FeatureFlagsSnapshot, TabSummary } from "../pageTypes";
 import type { MainViewMode } from "./app.svelte";
 
 export type ReviewPage = "overview" | "tour" | "diff";

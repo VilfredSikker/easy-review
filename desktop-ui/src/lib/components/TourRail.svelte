@@ -1,7 +1,7 @@
 <script lang="ts">
   import { baseName, shortFileName } from "$lib/shortFileName";
   import { pad2, type RailFile, type RailPillar } from "$lib/tourModel";
-  import type { FileSnapshot, PillarSnapshot } from "$lib/types";
+  import type { FileSnapshot, PillarSnapshot } from "$lib/pageTypes";
   import TourRuler from "./TourRuler.svelte";
 
   interface Props {

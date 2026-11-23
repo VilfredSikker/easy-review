@@ -1,4 +1,4 @@
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 
 /**
  * The repo the risk commands answer for. The caller names it, so the backend

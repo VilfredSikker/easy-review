@@ -212,7 +212,7 @@ describe("resource source scans", () => {
   // for the TUI (D20), and no resource carries it.
   it("no module reads input_mode off the snapshot", () => {
     const field = /\.input_mode\b|\binput_mode:\s*(prev|next|snap|snapshot)\b/;
-    expect(sources().filter((f) => f !== join("lib", "types.ts") && field.test(stripped(f)))).toEqual([]);
+    expect(sources().filter((f) => f !== join("lib", "pageTypes.ts") && field.test(stripped(f)))).toEqual([]);
   });
 
   it("App.svelte reads only the adapter's rows, and persists its two panel sizes only", () => {

@@ -1,5 +1,5 @@
 import { snapshotViewIdentity } from "./snapshotChrome";
-import type { AppSnapshot, FileSnapshot, ThreadSnapshot } from "./types";
+import type { AppSnapshot, FileSnapshot, ThreadSnapshot } from "./pageTypes";
 
 export const ADD_THREAD_COMMANDS = ["add_question", "add_note"] as const;
 

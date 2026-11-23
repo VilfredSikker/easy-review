@@ -1,4 +1,4 @@
-import type { DiffStaleSnapshot, LocalBranchDivergenceSnapshot } from "./types";
+import type { DiffStaleSnapshot, LocalBranchDivergenceSnapshot } from "./pageTypes";
 
 /** Seven characters, as git prints a short SHA. */
 export function shortOid(oid: string): string {

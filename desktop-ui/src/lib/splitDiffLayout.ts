@@ -1,4 +1,4 @@
-import type { FileSnapshot } from "./types";
+import type { FileSnapshot } from "./pageTypes";
 
 /** Minimum line-number gutter width per panel; enough for three digits.
  *  The live width is `--er-split-gutter`, set by FlatDiffView from `diffGutterPx`. */

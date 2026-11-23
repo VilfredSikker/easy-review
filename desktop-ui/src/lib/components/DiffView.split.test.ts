@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { splitRows } from "$lib/splitRows";
-import type { LineSnapshot } from "$lib/types";
+import type { LineSnapshot } from "$lib/pageTypes";
 
 const ctx = (oldN: number, newN: number, text = "ctx"): LineSnapshot => ({
   old_num: oldN,

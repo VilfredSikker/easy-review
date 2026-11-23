@@ -8,7 +8,7 @@ import {
   stackTitle,
   stackUnknown,
 } from "./stackControl";
-import type { StackLayerSnapshot, StackSnapshot } from "./types";
+import type { StackLayerSnapshot, StackSnapshot } from "./pageTypes";
 
 function layer(over: Partial<StackLayerSnapshot> = {}): StackLayerSnapshot {
   return {

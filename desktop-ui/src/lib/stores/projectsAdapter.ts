@@ -7,7 +7,7 @@ import type { Project } from "$lib/protocol/generated/Project";
 import type { ProjectReviewSettingsPatch } from "$lib/protocol/generated/ProjectReviewSettingsPatch";
 import type { Prs } from "$lib/protocol/generated/Prs";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
-import type { AppSnapshot, BranchInfo, ProjectSnapshot, TabSummary } from "$lib/types";
+import type { AppSnapshot, BranchInfo, ProjectSnapshot, TabSummary } from "$lib/pageTypes";
 import { projectPrFields, prsKey } from "./prsAdapter";
 import { resourceKeyId, type ResourceStore } from "./resourceStore";
 

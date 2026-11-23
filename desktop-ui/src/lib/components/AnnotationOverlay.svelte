@@ -5,7 +5,7 @@
   import { browser } from "$lib/stores/browser.svelte";
   import { annotationMatchesPage } from "$lib/stores/browserUrl";
   import AnnotationComposer from "./AnnotationComposer.svelte";
-  import type { UiAnnotation, UiDomContext } from "$lib/types";
+  import type { UiAnnotation, UiDomContext } from "$lib/pageTypes";
 
   interface Props {
     /** Width of the iframe (used to position pins). */

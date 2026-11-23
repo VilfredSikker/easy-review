@@ -1,5 +1,5 @@
-import type { AppSnapshot, FileSnapshot } from './types';
-import type { TabSummary } from './types';
+import type { AppSnapshot, FileSnapshot } from './pageTypes';
+import type { TabSummary } from './pageTypes';
 
 /** How a document file shows in the diff. `side` keeps the raw rows and renders the document beside them. */
 export type DocumentViewMode = 'raw' | 'preview' | 'side';

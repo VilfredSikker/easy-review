@@ -11,7 +11,7 @@ import {
   type ParsedAddThread,
 } from "$lib/optimisticComment";
 import { profileLog } from "$lib/profileLog";
-import type { AiSnapshot, FlatFinding, ThreadMessage, ThreadSnapshot } from "$lib/types";
+import type { AiSnapshot, FlatFinding, ThreadMessage, ThreadSnapshot } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 type Args = Record<string, unknown>;

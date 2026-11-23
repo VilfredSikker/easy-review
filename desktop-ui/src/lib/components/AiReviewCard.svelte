@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AiSnapshot, Confidence, FlatFinding } from "$lib/types";
+  import type { AiSnapshot, Confidence, FlatFinding } from "$lib/pageTypes";
   import { confidenceGlyph, findingPassesTrust, TRUST_RANK } from "$lib/diffAnnotations";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
   import { revealErFolder as reveal } from "$lib/tabCommands";

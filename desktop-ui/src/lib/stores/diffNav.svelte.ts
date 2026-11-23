@@ -1,7 +1,7 @@
 import { tick } from "svelte";
 import type { CrossFileModel } from "$lib/diffRenderModel";
 import { nextPillarId, pillarOrder } from "$lib/tourModel";
-import type { FileSnapshot } from "$lib/types";
+import type { FileSnapshot } from "$lib/pageTypes";
 
 /**
  * Adapter the DiffView component registers with this store so external callers

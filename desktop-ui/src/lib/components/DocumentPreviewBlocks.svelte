@@ -2,7 +2,7 @@
   import { quoteSourceLines, threadsByBlock, type LineRange } from "$lib/documentAnchors";
   import type { DocumentBlock } from "$lib/documentPreview";
   import { app } from "$lib/stores/app.svelte";
-  import type { FileSnapshot } from "$lib/types";
+  import type { FileSnapshot } from "$lib/pageTypes";
   import DocumentMarkdown from "./DocumentMarkdown.svelte";
   import InlineThread from "./InlineThread.svelte";
   import PreviewComposer from "./PreviewComposer.svelte";

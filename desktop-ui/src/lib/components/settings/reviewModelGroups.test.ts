@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { ReviewModelGroups } from "$lib/types";
+import type { ReviewModelGroups } from "$lib/pageTypes";
 import {
   cloneReviewModelGroups,
   hasReviewModel,

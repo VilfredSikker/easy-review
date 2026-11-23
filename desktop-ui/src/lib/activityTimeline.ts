@@ -1,4 +1,4 @@
-import type { AiSnapshot, GithubStatusSnapshot } from "./types";
+import type { AiSnapshot, GithubStatusSnapshot } from "./pageTypes";
 
 /**
  * One row of the Overview's Activity timeline. `gh pr view --json` has no

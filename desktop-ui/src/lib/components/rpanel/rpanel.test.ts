@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FlatFinding, ThreadSnapshot } from "$lib/types";
+import type { FlatFinding, ThreadSnapshot } from "$lib/pageTypes";
 import { DEFAULT_COMMENT_VISIBILITY } from "$lib/commentVisibility";
 import {
   arbiterSummary,

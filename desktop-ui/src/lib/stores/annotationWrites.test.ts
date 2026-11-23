@@ -6,7 +6,7 @@ import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { Versioned } from "$lib/protocol/generated/Versioned";
 import { isOptimisticCommand } from "$lib/optimisticLocal";
-import type { AiSnapshot, FlatFinding, ThreadSnapshot } from "$lib/types";
+import type { AiSnapshot, FlatFinding, ThreadSnapshot } from "$lib/pageTypes";
 import { AnnotationWrites, withPending } from "./annotationWrites";
 
 const TAB = 4;

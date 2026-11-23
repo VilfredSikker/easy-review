@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { CrossFileFlatRow } from "./diffRenderModel";
 import type { DocumentBlock } from "./documentPreview";
 import { sideBlockPadding, sideBlockSpans } from "./documentSideLayout";
-import type { FileSnapshot, LineSnapshot } from "./types";
+import type { FileSnapshot, LineSnapshot } from "./pageTypes";
 
 const PATH = "doc.md";
 

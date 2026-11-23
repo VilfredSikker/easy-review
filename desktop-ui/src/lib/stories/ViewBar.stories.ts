@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import ViewBarHarness from "./ViewBarHarness.svelte";
 import { localBranchBannerSnapshot, richSnapshot, staleSnapshot } from "./fixtures";
-import type { AppSnapshot, GithubStatusSnapshot } from "$lib/types";
+import type { AppSnapshot, GithubStatusSnapshot } from "$lib/pageTypes";
 import type { PendingReview } from "$lib/reviewSubmit";
 
 const meta = {

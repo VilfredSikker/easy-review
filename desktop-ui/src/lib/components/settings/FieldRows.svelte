@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ConfigFieldValue } from "$lib/types";
+  import type { ConfigFieldValue } from "$lib/pageTypes";
   import Toggle from "./Toggle.svelte";
   import OptionGroup from "./OptionGroup.svelte";
   import SettingsTextField from "./SettingsTextField.svelte";

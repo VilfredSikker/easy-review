@@ -1,4 +1,4 @@
-import type { FlatFinding, ThreadSnapshot } from "./types";
+import type { FlatFinding, ThreadSnapshot } from "./pageTypes";
 
 /** Per-kind annotation totals for the display menu and the Comments filter. */
 export interface AnnotationCounts {

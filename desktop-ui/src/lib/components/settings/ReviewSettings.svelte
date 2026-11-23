@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ConfigFieldValue, ConfigHubField } from "$lib/types";
+  import type { ConfigFieldValue, ConfigHubField } from "$lib/pageTypes";
   import SettingsSection from "./SettingsSection.svelte";
   import FieldRows from "./FieldRows.svelte";
   import RiskRulesSection from "./RiskRulesSection.svelte";

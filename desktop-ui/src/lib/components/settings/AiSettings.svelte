@@ -2,7 +2,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { settingsResource } from "$lib/stores/settingsResource.svelte";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
-  import type { AiProviderInfo, ConfigFieldValue, ConfigHubField, ReviewModelGroups } from "$lib/types";
+  import type { AiProviderInfo, ConfigFieldValue, ConfigHubField, ReviewModelGroups } from "$lib/pageTypes";
   import SettingsSection from "./SettingsSection.svelte";
   import SettingsRow from "./SettingsRow.svelte";
   import SettingsButton from "./SettingsButton.svelte";

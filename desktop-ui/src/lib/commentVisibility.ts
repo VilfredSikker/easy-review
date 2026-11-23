@@ -1,4 +1,4 @@
-import type { ThreadSnapshot } from "./types";
+import type { ThreadSnapshot } from "./pageTypes";
 
 export interface CommentVisibility {
   hideAll: boolean;

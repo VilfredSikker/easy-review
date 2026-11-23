@@ -3,7 +3,7 @@ import type { Command } from "$lib/protocol/generated/Command";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { TabReviewed } from "$lib/protocol/generated/TabReviewed";
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 export function reviewedKey(tab: TabKey): ResourceKey {

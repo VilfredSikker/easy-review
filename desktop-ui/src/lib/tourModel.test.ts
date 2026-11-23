@@ -11,7 +11,7 @@ import {
   railPillars,
   resolveDiffPath,
 } from "./tourModel";
-import type { FileSnapshot, PillarSnapshot, TourFileRef } from "./types";
+import type { FileSnapshot, PillarSnapshot, TourFileRef } from "./pageTypes";
 
 function file(path: string, reviewed = false): FileSnapshot {
   return { path, reviewed, additions: 1, deletions: 0, source_index: 0 } as FileSnapshot;

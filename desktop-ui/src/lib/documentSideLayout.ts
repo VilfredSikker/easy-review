@@ -1,6 +1,6 @@
 import type { CrossFileFlatRow } from "./diffRenderModel";
 import type { DocumentBlock } from "./documentPreview";
-import type { FileSnapshot, LineSnapshot } from "./types";
+import type { FileSnapshot, LineSnapshot } from "./pageTypes";
 
 /** A rendered block and the flat rows of raw lines it sits beside. */
 export interface SideBlockSpan {

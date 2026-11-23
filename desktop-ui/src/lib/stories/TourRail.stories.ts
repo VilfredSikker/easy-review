@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/svelte";
 import TourRail from "$lib/components/TourRail.svelte";
 import TourRailHarness from "./TourRailHarness.svelte";
 import { railPillars } from "$lib/tourModel";
-import type { PillarSnapshot } from "$lib/types";
+import type { PillarSnapshot } from "$lib/pageTypes";
 import {
   fileExperimentTemplate,
   fileMediaCombobox,

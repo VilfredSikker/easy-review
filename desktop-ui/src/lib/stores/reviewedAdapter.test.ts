@@ -6,7 +6,7 @@ import { resourceClient, type Invoke } from "$lib/protocol/client";
 import type { Ack } from "$lib/protocol/generated/Ack";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
 import type { TabReviewed } from "$lib/protocol/generated/TabReviewed";
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 import { isOptimisticCommand } from "../optimisticLocal";
 import { ResourceStore } from "./resourceStore";
 import { ReviewedAdapter, reviewedKey } from "./reviewedAdapter";

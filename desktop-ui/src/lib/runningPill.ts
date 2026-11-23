@@ -1,6 +1,6 @@
 import { reviewRunVisible } from "./reviewRunCard";
 import { activeJobCount, type RunningJob } from "./runningJobs";
-import type { AgentCommandStatus, BackgroundTaskSnapshot, ReviewFlowSnapshot } from "./types";
+import type { AgentCommandStatus, BackgroundTaskSnapshot, ReviewFlowSnapshot } from "./pageTypes";
 
 export type PillTone = "running" | "need" | "done" | "failed";
 

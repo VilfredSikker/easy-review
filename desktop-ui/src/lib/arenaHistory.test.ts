@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { captureHistoryFlowOrigin, openArenaHistory } from "./arenaHistory";
 import { arenaAcceptanceRoute } from "./arenaFlowAcceptance";
-import type { ReviewFlowSnapshot } from "./types";
+import type { ReviewFlowSnapshot } from "./pageTypes";
 import type { ArenaRunSnapshot } from "./types/arena";
 
 function snapshot(kind: "models" | "review_flow" | "seeded"): ArenaRunSnapshot {

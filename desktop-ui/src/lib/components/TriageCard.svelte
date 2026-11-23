@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { TriageSnapshot } from "$lib/types";
+  import type { TriageSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { openOverviewFile } from "$lib/overviewFileOpen";
   import { arena } from "$lib/stores/arena.svelte";

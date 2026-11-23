@@ -4,7 +4,7 @@
   import FileTree from "$lib/components/FileTree.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
   import RightPanel from "$lib/components/RightPanel.svelte";
-  import type { AppSnapshot } from "$lib/types";
+  import type { AppSnapshot } from "$lib/pageTypes";
 
   interface PinnedItem {
     id: string;

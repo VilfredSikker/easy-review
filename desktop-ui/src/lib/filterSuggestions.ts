@@ -1,4 +1,4 @@
-import type { FilterSuggestionSnapshot } from "./types";
+import type { FilterSuggestionSnapshot } from "./pageTypes";
 
 /** `kind:te`, `-kind:`, `+kind:code` — the draft is mid-way through one kind. */
 const KIND_DRAFT = /^([+-]?)kind:([a-z]*)$/i;

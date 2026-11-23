@@ -12,7 +12,7 @@ import type {
   GetConfigHubResponse,
   RefreshAiModelsResponse,
   ReviewModelGroups,
-} from "$lib/types";
+} from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 export const SETTINGS_KEY: ResourceKey = { kind: "settings" };

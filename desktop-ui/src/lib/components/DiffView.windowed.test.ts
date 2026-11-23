@@ -14,7 +14,7 @@
  *   - 60px floor for empty/no-change files
  */
 import { describe, expect, it } from "bun:test";
-import type { FileSnapshot, HunkSnapshot, LineSnapshot } from "$lib/types";
+import type { FileSnapshot, HunkSnapshot, LineSnapshot } from "$lib/pageTypes";
 
 function estimateHeight(file: FileSnapshot): number {
   return file.hunks.reduce((acc, h) => acc + 22 + h.lines.length * 21, 0) || 60;

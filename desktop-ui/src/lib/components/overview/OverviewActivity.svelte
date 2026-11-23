@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AiSnapshot, GithubStatusSnapshot } from "$lib/types";
+  import type { AiSnapshot, GithubStatusSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { githubStatusForActiveTab } from "$lib/prUrl";
   import { longAge } from "$lib/relativeTime";

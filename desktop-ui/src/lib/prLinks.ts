@@ -1,4 +1,4 @@
-import type { GhCommentSummary } from "./types";
+import type { GhCommentSummary } from "./pageTypes";
 
 /** A PR or issue on GitHub, as a `#123` or URL in a PR body names it. */
 export interface GithubRef {

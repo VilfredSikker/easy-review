@@ -12,7 +12,7 @@ import { commandPalette } from "./commandPalette.svelte";
 import { buildTree, flattenForNav } from "$lib/treeFromPaths";
 import { nextFile, prevFile } from "$lib/navigation";
 import { v1ServiceRequested } from "$lib/v1ServiceFlag";
-import type { AppSnapshot, FileSnapshot } from "$lib/types";
+import type { AppSnapshot, FileSnapshot } from "$lib/pageTypes";
 import { openSource, selectedSource } from "$lib/tabCommands";
 import { asErError } from "$lib/protocol/client";
 import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";

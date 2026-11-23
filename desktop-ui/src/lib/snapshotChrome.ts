@@ -1,4 +1,4 @@
-import type { AppSnapshot } from "./types";
+import type { AppSnapshot } from "./pageTypes";
 
 /** Fields the backend uses to refuse an optimistic write on a switched view. */
 export type SnapshotViewParts = {

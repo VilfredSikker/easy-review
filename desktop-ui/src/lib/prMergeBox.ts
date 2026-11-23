@@ -4,7 +4,7 @@
  * branch) plus the overflow menu. Kept out of the component so every state is
  * unit-tested away from the DOM.
  */
-import type { GithubStatusSnapshot } from "$lib/types";
+import type { GithubStatusSnapshot } from "$lib/pageTypes";
 import { countChecks } from "$lib/checkCounts";
 
 export type MergeMethod = "merge" | "squash" | "rebase";

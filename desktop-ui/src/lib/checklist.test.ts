@@ -5,7 +5,7 @@ import {
   checklistProgress,
   groupChecklistItems,
 } from "./checklist";
-import type { ChecklistItemSnapshot } from "./types";
+import type { ChecklistItemSnapshot } from "./pageTypes";
 
 function item(overrides: Partial<ChecklistItemSnapshot> = {}): ChecklistItemSnapshot {
   return {

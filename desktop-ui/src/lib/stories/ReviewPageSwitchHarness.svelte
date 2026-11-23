@@ -4,7 +4,7 @@
   import DiffView from "$lib/components/DiffView.svelte";
   import OverviewView from "$lib/components/overview/OverviewView.svelte";
   import { reviewLayers, type ReviewLayers } from "$lib/stores/reviewPageModel";
-  import type { AppSnapshot } from "$lib/types";
+  import type { AppSnapshot } from "$lib/pageTypes";
   import { applyTheme } from "$lib/themes";
 
   interface Props {

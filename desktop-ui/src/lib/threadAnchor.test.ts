@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { isDocumentAnchored, ownReplyCount } from "./threadAnchor";
-import type { AppSnapshot, FileSnapshot, HunkSnapshot, ThreadSnapshot } from "./types";
+import type { AppSnapshot, FileSnapshot, HunkSnapshot, ThreadSnapshot } from "./pageTypes";
 
 function thread(overrides: Partial<ThreadSnapshot> = {}): ThreadSnapshot {
   return {

@@ -1,5 +1,5 @@
 import { threadAnchorEnd } from "$lib/diffAnnotations";
-import type { ThreadSnapshot } from "$lib/types";
+import type { ThreadSnapshot } from "$lib/pageTypes";
 
 type ThreadLineRef = Pick<ThreadSnapshot, "line" | "line_end">;
 

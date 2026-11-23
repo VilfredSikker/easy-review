@@ -3,7 +3,7 @@ import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ReviewFlowAction } from "$lib/protocol/generated/ReviewFlowAction";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
 import type { Invoke, ResourceClient } from "$lib/protocol/client";
-import type { AppSnapshot, ReviewFlowSnapshot } from "$lib/types";
+import type { AppSnapshot, ReviewFlowSnapshot } from "$lib/pageTypes";
 import type { ArenaRunSnapshot } from "$lib/types/arena";
 import { JOBS } from "./annotationsAdapter";
 import type { ResourceStore } from "./resourceStore";

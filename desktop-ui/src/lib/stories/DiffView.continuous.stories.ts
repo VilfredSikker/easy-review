@@ -6,7 +6,7 @@ import {
   fileExperimentTemplate,
   richSnapshot,
 } from "./fixtures";
-import type { AppSnapshot, FileSnapshot, HunkSnapshot, LineSnapshot } from "$lib/types";
+import type { AppSnapshot, FileSnapshot, HunkSnapshot, LineSnapshot } from "$lib/pageTypes";
 
 const meta = {
   title: "Diff/DiffView (continuous)",

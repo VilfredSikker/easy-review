@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import { diffPreview } from "$lib/stores/diffPreview.svelte";
   import type { PreviewState } from "$lib/documentPreviewCache";
-  import type { AppSnapshot, FileSnapshot } from "$lib/types";
+  import type { AppSnapshot, FileSnapshot } from "$lib/pageTypes";
   import DocumentPreview from "./DocumentPreview.svelte";
 
   const { snapshot, file }: { snapshot: AppSnapshot; file: FileSnapshot } = $props();

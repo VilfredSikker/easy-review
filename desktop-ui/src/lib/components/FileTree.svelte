@@ -11,7 +11,7 @@
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
-  import type { FileSnapshot } from "$lib/types";
+  import type { FileSnapshot } from "$lib/pageTypes";
   import { hiddenFindingCounts, toggledPath, toggledPaths } from "$lib/fileTreeModel";
   import { moveHighlight, suggestionFooter, suggestionLabel, visibleSuggestions } from "$lib/filterSuggestions";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";

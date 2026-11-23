@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { orderPrsByStack } from "./prStacks";
-import type { PrInfo } from "./types";
+import type { PrInfo } from "./pageTypes";
 
 function pr(number: number, head_ref: string, base_ref = "main"): PrInfo {
   return {

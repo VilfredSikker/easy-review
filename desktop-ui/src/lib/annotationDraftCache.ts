@@ -1,4 +1,4 @@
-import type { AppSnapshot, TabSummary } from "./types";
+import type { AppSnapshot, TabSummary } from "./pageTypes";
 
 function reviewKey(tab: TabSummary): string {
   return JSON.stringify([tab.repo_root, tab.remote, tab.kind, tab.pr_number == null ? tab.branch : null, tab.pr_number]);

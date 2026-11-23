@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { BackgroundTaskSnapshot, AgentLogEntry } from "$lib/types";
+  import type { BackgroundTaskSnapshot, AgentLogEntry } from "$lib/pageTypes";
   import { sourceColor } from "$lib/utils/agentLog";
   import { copyToClipboard } from "$lib/clipboard";
   import { invoke } from "@tauri-apps/api/core";

@@ -4,7 +4,7 @@ import type { Ack } from "$lib/protocol/generated/Ack";
 import type { Command } from "$lib/protocol/generated/Command";
 import type { Resource } from "$lib/protocol/generated/Resource";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 import { JOBS } from "./annotationsAdapter";
 import { ArenaAdapter } from "./arenaAdapter";
 

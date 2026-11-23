@@ -1,5 +1,5 @@
 import { reviewedClearedBySync, shortOid } from "./shellBanners";
-import type { AppSnapshot } from "./types";
+import type { AppSnapshot } from "./pageTypes";
 
 /** `force_refresh_diff`'s reply: a snapshot plus the Reviewed marks the engine cleared. */
 export type SyncReply = AppSnapshot & { reviewed_cleared?: number };

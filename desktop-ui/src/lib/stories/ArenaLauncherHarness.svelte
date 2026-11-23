@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import ArenaLauncher from "$lib/components/arena/ArenaLauncher.svelte";
-  import type { AiProviderInfo, ReviewerInfo } from "$lib/types";
+  import type { AiProviderInfo, ReviewerInfo } from "$lib/pageTypes";
   import type { ArenaEstimate } from "$lib/types/arena";
 
   const PROVIDERS: AiProviderInfo[] = [

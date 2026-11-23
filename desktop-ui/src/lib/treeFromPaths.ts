@@ -1,4 +1,4 @@
-import type { FileSnapshot } from "$lib/types";
+import type { FileSnapshot } from "$lib/pageTypes";
 
 /**
  * Renderable tree node. Folders carry no `file` reference; files do.

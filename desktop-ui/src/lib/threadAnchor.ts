@@ -1,4 +1,4 @@
-import type { AppSnapshot, FileSnapshot, ThreadSnapshot } from "./types";
+import type { AppSnapshot, FileSnapshot, ThreadSnapshot } from "./pageTypes";
 
 /**
  * Whether a question or note is anchored on a document line outside the diff

@@ -9,7 +9,7 @@ import {
   shouldReplaceTab,
   tabOpenKeyChoice,
 } from "./prOpen";
-import type { PrInfo } from "./types";
+import type { PrInfo } from "./pageTypes";
 
 function pr(overrides: Partial<PrInfo> = {}): PrInfo {
   return {

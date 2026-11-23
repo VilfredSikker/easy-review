@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { resolveOmittedHunks } from "./snapshotDelta";
-import type { AppSnapshot, FileSnapshot, HunkSnapshot } from "$lib/types";
+import type { AppSnapshot, FileSnapshot, HunkSnapshot } from "$lib/pageTypes";
 
 function hunk(text: string): HunkSnapshot {
   return {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { moveHighlight, suggestionFooter, suggestionLabel, visibleSuggestions } from "./filterSuggestions";
-import type { FilterSuggestionSnapshot } from "./types";
+import type { FilterSuggestionSnapshot } from "./pageTypes";
 
 const all: FilterSuggestionSnapshot[] = [
   { kind: "kind", name: "code", expr: "kind:code", files: 12 },

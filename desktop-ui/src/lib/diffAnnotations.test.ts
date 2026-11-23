@@ -19,7 +19,7 @@ import {
   type CommentVisibility,
   type HunkQuery,
 } from "./diffAnnotations";
-import type { FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "./types";
+import type { FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "./pageTypes";
 
 const VIS_OFF: CommentVisibility = {
   hideAll: false,

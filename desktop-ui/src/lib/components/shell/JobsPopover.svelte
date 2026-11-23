@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { BackgroundTaskSnapshot, ReviewFlowSnapshot } from "$lib/types";
+  import type { BackgroundTaskSnapshot, ReviewFlowSnapshot } from "$lib/pageTypes";
   import type { RunningJob } from "$lib/runningJobs";
   import { app } from "$lib/stores/app.svelte";
   import { arena } from "$lib/stores/arena.svelte";

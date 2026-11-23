@@ -1,4 +1,4 @@
-import type { OtherBucketSnapshot } from "./types";
+import type { OtherBucketSnapshot } from "./pageTypes";
 
 export interface TourEmptyCopy {
   title: string;

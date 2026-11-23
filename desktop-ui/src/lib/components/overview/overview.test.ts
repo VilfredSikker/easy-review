@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AppSnapshot, FlatFinding, OtherBucketSnapshot } from "$lib/types";
+import type { AppSnapshot, FlatFinding, OtherBucketSnapshot } from "$lib/pageTypes";
 import { canPromote, confidenceWord, lensCaption, overviewFindingsView, promoteBody } from "./findingsList";
 import { emptyBucketCopy } from "./emptyBucket";
 

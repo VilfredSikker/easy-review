@@ -7,7 +7,7 @@
   import ViewBar from "$lib/components/shell/ViewBar.svelte";
   import StaleBanner from "$lib/components/shell/StaleBanner.svelte";
   import LocalBranchBanner from "$lib/components/shell/LocalBranchBanner.svelte";
-  import type { AppSnapshot } from "$lib/types";
+  import type { AppSnapshot } from "$lib/pageTypes";
 
   interface Props {
     snapshot: AppSnapshot;

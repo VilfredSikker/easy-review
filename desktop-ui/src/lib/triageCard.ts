@@ -1,4 +1,4 @@
-import type { DiffStaleSnapshot, TriagePriorityFileSnapshot, TriageSnapshot } from "$lib/types";
+import type { DiffStaleSnapshot, TriagePriorityFileSnapshot, TriageSnapshot } from "$lib/pageTypes";
 import type { PillTone } from "$lib/components/ui/Pill.svelte";
 import { longAge } from "$lib/relativeTime";
 

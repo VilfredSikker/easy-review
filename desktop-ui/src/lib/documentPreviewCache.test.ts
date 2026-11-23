@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { DocumentPreviewCache, type PreviewResponse } from './documentPreviewCache';
-import type { AppSnapshot, FileSnapshot, TabSummary } from './types';
+import type { AppSnapshot, FileSnapshot, TabSummary } from './pageTypes';
 import { richSnapshot } from './stories/fixtures';
 
 function fixture(context = 'one') {

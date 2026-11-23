@@ -1,4 +1,4 @@
-import type { AiProviderInfo, ConfigHubField, ProjectSnapshot, SettingsTab } from "$lib/types";
+import type { AiProviderInfo, ConfigHubField, ProjectSnapshot, SettingsTab } from "$lib/pageTypes";
 import { groupInboxFields } from "./inboxGroups";
 import { tierLabel, type RiskFileRow, type RiskRuleRow } from "./riskRules";
 import {

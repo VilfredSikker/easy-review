@@ -1,4 +1,4 @@
-import type { PrInfo } from "./types";
+import type { PrInfo } from "./pageTypes";
 
 export type StackedPrRow = { pr: PrInfo; depth: number };
 

@@ -3,7 +3,7 @@
   import DiffComposer from "$lib/components/DiffComposer.svelte";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { app } from "$lib/stores/app.svelte";
-  import type { AppSnapshot } from "$lib/types";
+  import type { AppSnapshot } from "$lib/pageTypes";
 
   /**
    * Storybook harness for the three composer placements. The diff view decides

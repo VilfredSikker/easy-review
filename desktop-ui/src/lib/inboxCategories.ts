@@ -1,4 +1,4 @@
-import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
+import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/pageTypes";
 
 export const INBOX_CATEGORY_ORDER = [
   "pr_comment",

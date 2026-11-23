@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 
 const calls: [string, Record<string, unknown>][] = [];
 mock.module("@tauri-apps/api/core", () => ({

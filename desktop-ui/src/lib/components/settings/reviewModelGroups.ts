@@ -1,4 +1,4 @@
-import type { ReviewModelGroups, ReviewModelRef } from "$lib/types";
+import type { ReviewModelGroups, ReviewModelRef } from "$lib/pageTypes";
 
 export const REVIEW_MODEL_GROUPS = ["fast", "standard", "advanced"] as const;
 export type ReviewModelGroup = (typeof REVIEW_MODEL_GROUPS)[number];

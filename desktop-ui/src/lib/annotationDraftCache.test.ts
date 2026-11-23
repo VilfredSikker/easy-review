@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { TabSummary } from "./types";
+import type { TabSummary } from "./pageTypes";
 import { AnnotationDraftCache } from "./annotationDraftCache";
 import { richSnapshot } from "./stories/fixtures";
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { GithubStatusSnapshot } from "$lib/types";
+import type { GithubStatusSnapshot } from "$lib/pageTypes";
 import {
   allowedMethods,
   canWrite,

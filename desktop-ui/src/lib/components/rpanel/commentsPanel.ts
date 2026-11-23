@@ -1,4 +1,4 @@
-import type { ThreadSnapshot } from "$lib/types";
+import type { ThreadSnapshot } from "$lib/pageTypes";
 import { visibleCommentThreads, type CommentVisibility } from "$lib/commentVisibility";
 
 /**

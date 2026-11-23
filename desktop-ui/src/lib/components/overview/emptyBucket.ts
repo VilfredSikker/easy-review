@@ -1,4 +1,4 @@
-import type { AppSnapshot, OtherBucketSnapshot } from "$lib/types";
+import type { AppSnapshot, OtherBucketSnapshot } from "$lib/pageTypes";
 import { activeDiffSource } from "$lib/sourceToggle";
 
 export interface EmptyBucketCopy {

@@ -1,5 +1,5 @@
 import { asErError } from "./protocol/client";
-import type { AiSnapshot, AppSnapshot, TabSummary } from "./types";
+import type { AiSnapshot, AppSnapshot, TabSummary } from "./pageTypes";
 
 /**
  * The Export page's whole choice, sent as er-protocol's `ExportOptions`: the

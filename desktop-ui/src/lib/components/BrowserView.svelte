@@ -19,7 +19,7 @@
     browserSetBounds,
     listenBrowserMessages,
   } from "$lib/stores/browserHost";
-  import type { UiDomContext } from "$lib/types";
+  import type { UiDomContext } from "$lib/pageTypes";
   import AnnotationOverlay from "./AnnotationOverlay.svelte";
   import type { AnnotationSubmission } from "./AnnotationComposer.svelte";
   import {

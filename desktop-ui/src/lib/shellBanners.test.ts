@@ -6,7 +6,7 @@ import {
   shortOid,
   staleBannerCopy,
 } from "./shellBanners";
-import type { DiffStaleSnapshot } from "./types";
+import type { DiffStaleSnapshot } from "./pageTypes";
 
 const OLD = "7be0d14aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const NEW = "9f3e1a2bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

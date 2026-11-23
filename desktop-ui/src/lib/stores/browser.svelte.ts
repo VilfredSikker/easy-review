@@ -5,7 +5,7 @@
 import { app } from "./app.svelte";
 import { browserView } from "./tabsResource.svelte";
 import { DEFAULT_DEV_URL, defaultDevUrl, pageKey, urlPath } from "./browserUrl";
-import type { UiDomContext } from "$lib/types";
+import type { UiDomContext } from "$lib/pageTypes";
 export { DEFAULT_DEV_URL, defaultDevUrl, pageKey, urlPath };
 
 export type BrowserLayout = "hidden" | "split" | "fullscreen";

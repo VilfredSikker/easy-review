@@ -1,5 +1,5 @@
 import { sidebarWorktrees } from "./sidebarReads";
-import type { AppSnapshot, TabSummary } from "./types";
+import type { AppSnapshot, TabSummary } from "./pageTypes";
 
 /** Resolved filesystem root for the active tab: the linked worktree path when
  *  the viewed branch is checked out in one, otherwise the tab's `repo_root`. */

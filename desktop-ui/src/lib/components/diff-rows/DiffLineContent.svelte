@@ -6,7 +6,7 @@
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import { themeByName } from "$lib/themes";
   import { sessionResource } from "$lib/stores/sessionResource.svelte";
-  import type { SpanSnapshot } from "$lib/types";
+  import type { SpanSnapshot } from "$lib/pageTypes";
   import type { Span as WordSpan } from "$lib/wordDiff";
 
   interface Props {

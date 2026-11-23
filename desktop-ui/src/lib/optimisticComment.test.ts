@@ -15,7 +15,7 @@ import type {
   HunkSnapshot,
   TabSummary,
   ThreadSnapshot,
-} from "./types";
+} from "./pageTypes";
 
 function emptyAi(overrides: Partial<AiSnapshot> = {}): AiSnapshot {
   return {

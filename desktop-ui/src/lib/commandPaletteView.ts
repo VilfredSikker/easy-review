@@ -3,7 +3,7 @@
 // and the cross-repo PR list the PR menu offers.
 
 import { baseName } from "./shortFileName";
-import type { PrInfo, ProjectSnapshot } from "./types";
+import type { PrInfo, ProjectSnapshot } from "./pageTypes";
 
 /** How long a run keeps its row flashed before the palette closes. */
 export const RUN_FLASH_MS = 140;

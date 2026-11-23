@@ -7,7 +7,7 @@
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
-  import type { AppSnapshot } from "$lib/types";
+  import type { AppSnapshot } from "$lib/pageTypes";
   import type { DocumentViewMode } from "$lib/documentPreviewCache";
 
   interface Props {

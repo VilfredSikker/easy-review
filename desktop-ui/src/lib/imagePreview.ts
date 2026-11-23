@@ -1,4 +1,4 @@
-import type { AppSnapshot, FileSnapshot } from './types';
+import type { AppSnapshot, FileSnapshot } from './pageTypes';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'ico', 'svg']);
 

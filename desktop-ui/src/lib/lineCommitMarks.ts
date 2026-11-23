@@ -1,6 +1,6 @@
 import { commitColorVar } from "./commitColors";
 import { lineCommitSha, type LineCommits } from "./lineCommits";
-import type { CommitSummary, LineSnapshot } from "./types";
+import type { CommitSummary, LineSnapshot } from "./pageTypes";
 
 /** Colour slot per sha: the position in the engine's commit list, the same
  *  index the commits list and the toolbar legend colour by. */

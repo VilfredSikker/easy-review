@@ -3,7 +3,7 @@
    *  divides the diff; the popover lists the pillars with their files. */
   import RulerBase from "./RulerBase.svelte";
   import { tourGroups, type RulerFilter } from "$lib/rulerGeometry";
-  import type { FileSnapshot, PillarSnapshot } from "$lib/types";
+  import type { FileSnapshot, PillarSnapshot } from "$lib/pageTypes";
 
   interface Props {
     pillars: readonly PillarSnapshot[];

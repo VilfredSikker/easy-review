@@ -5,7 +5,7 @@
   import { riskResource, settingsResource } from "$lib/stores/settingsResource.svelte";
   import type { ReviewSettingsChange } from "$lib/stores/projectsAdapter";
   import { projectsResource } from "$lib/stores/projectsResource.svelte";
-  import type { ConfigFieldValue, SettingsTab } from "$lib/types";
+  import type { ConfigFieldValue, SettingsTab } from "$lib/pageTypes";
   import GeneralSettings from "./GeneralSettings.svelte";
   import AiSettings from "./AiSettings.svelte";
   import ReviewSettings from "./ReviewSettings.svelte";

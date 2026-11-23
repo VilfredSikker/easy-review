@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
-  import type { FileSnapshot } from "$lib/types";
+  import type { FileSnapshot } from "$lib/pageTypes";
   import { extChip } from "$lib/fileTreeModel";
   import { riskDotClass } from "$lib/fileStatus";
   import { baseName, shortFileName } from "$lib/shortFileName";

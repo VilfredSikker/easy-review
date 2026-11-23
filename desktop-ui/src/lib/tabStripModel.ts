@@ -1,4 +1,4 @@
-import type { TabSummary } from "./types";
+import type { TabSummary } from "./pageTypes";
 import type { ArenaRunSummary } from "./types/arena";
 
 /** Trailing state mark on a tab. One at a time: a running review outranks a

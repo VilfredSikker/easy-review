@@ -1,4 +1,4 @@
-import type { AppSnapshot, CommitSummary, FileSnapshot } from "./types";
+import type { AppSnapshot, CommitSummary, FileSnapshot } from "./pageTypes";
 
 type DiffModeName = AppSnapshot["mode"];
 

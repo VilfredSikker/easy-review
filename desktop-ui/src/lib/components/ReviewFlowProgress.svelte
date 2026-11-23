@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ReviewFlowSnapshot, ReviewFlowTaskProgress } from "$lib/types";
+  import type { ReviewFlowSnapshot, ReviewFlowTaskProgress } from "$lib/pageTypes";
   import { reviewFlowProgressView, reviewFlowStage } from "$lib/reviewFlow";
 
   interface Props {

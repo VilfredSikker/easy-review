@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { tick } from "svelte";
-import type { PrInfo } from "$lib/types";
+import type { PrInfo } from "$lib/pageTypes";
 
 export interface PrOpenHint {
   baseRef: string;

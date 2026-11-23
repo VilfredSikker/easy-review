@@ -1,6 +1,6 @@
 import { arbiterBallot, roundsRun, verdictKey, type VerdictKey } from "$lib/arena/arenaView";
 import type { ArenaFinding, ArenaRunSnapshot, ArenaSeverity, Reviewer, RunStatus } from "$lib/types/arena";
-import type { HunkSnapshot } from "$lib/types";
+import type { HunkSnapshot } from "$lib/pageTypes";
 
 /** The stat tiles double as the list filter; "all" clears it. */
 export type VerificationFilter = "all" | VerdictKey;

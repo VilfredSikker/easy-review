@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AppSnapshot } from "$lib/types";
+  import type { AppSnapshot } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { githubStatusForActiveTab } from "$lib/prUrl";
   import { extractPrLinks } from "$lib/prLinks";

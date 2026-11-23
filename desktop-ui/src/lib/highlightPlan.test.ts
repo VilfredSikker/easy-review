@@ -10,7 +10,7 @@ import {
   syntaxSpansEqual,
 } from "./highlightPlan";
 import type { HunkHighlight } from "./highlightCache";
-import type { FileSnapshot, HunkSnapshot, LineSnapshot } from "./types";
+import type { FileSnapshot, HunkSnapshot, LineSnapshot } from "./pageTypes";
 
 function line(
   kind: LineSnapshot["kind"],

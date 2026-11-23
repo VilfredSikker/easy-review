@@ -3,7 +3,7 @@
   import { imagePreview } from "$lib/stores/imagePreview.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import { imagePanes, stepPane, type ImagePreviewState } from "$lib/imagePreview";
-  import type { AppSnapshot, FileSnapshot } from "$lib/types";
+  import type { AppSnapshot, FileSnapshot } from "$lib/pageTypes";
 
   interface Props {
     snapshot: AppSnapshot;

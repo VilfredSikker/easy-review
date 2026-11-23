@@ -1,6 +1,6 @@
 import { SvelteMap } from "svelte/reactivity";
 import type { TabKey } from "$lib/protocol/generated/TabKey";
-import type { AppSnapshot, FileSnapshot } from "$lib/types";
+import type { AppSnapshot, FileSnapshot } from "$lib/pageTypes";
 import { jumpToUnreviewed, nextFile, nextHunk, prevFile, prevHunk, type FileMove } from "$lib/navigation";
 
 type Args = Record<string, unknown>;

@@ -6,7 +6,7 @@ import {
   jobsForTab,
 } from "./runningJobs";
 import type { ArenaRunSummary } from "./types/arena";
-import type { BackgroundTaskSnapshot, TabSummary } from "./types";
+import type { BackgroundTaskSnapshot, TabSummary } from "./pageTypes";
 
 const NOW = 1_000_000;
 

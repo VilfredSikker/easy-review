@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { diffNav, type DiffNavigator } from "./diffNav.svelte";
 import type { CrossFileModel } from "$lib/diffRenderModel";
-import type { FileSnapshot } from "$lib/types";
+import type { FileSnapshot } from "$lib/pageTypes";
 
 function makeFile(path: string, overrides: Partial<FileSnapshot> = {}): FileSnapshot {
   return {

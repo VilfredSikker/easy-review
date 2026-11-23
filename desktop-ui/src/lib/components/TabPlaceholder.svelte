@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { TabSummary } from "$lib/types";
+  import type { TabSummary } from "$lib/pageTypes";
   import { tabPlaceholderRepo } from "$lib/tabPlaceholder";
 
   /**

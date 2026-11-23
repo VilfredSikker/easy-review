@@ -1,4 +1,4 @@
-import type { FileRiskSnapshot, FileSnapshot, MatchedRiskRule, RiskTier } from "$lib/types";
+import type { FileRiskSnapshot, FileSnapshot, MatchedRiskRule, RiskTier } from "$lib/pageTypes";
 import { riskRows } from "$lib/components/rpanel/risksPanel";
 
 /**

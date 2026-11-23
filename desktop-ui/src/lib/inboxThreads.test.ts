@@ -15,7 +15,7 @@ import {
   stepInboxSelection,
   withDaySeparators,
 } from "./inboxThreads";
-import type { InboxItemSnapshot, PrInfo, ProjectSnapshot, TabSummary } from "./types";
+import type { InboxItemSnapshot, PrInfo, ProjectSnapshot, TabSummary } from "./pageTypes";
 
 const NOW = new Date(2026, 9, 30, 15, 0, 0).getTime();
 const HOUR = 3_600_000;

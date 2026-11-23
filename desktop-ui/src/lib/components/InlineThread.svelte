@@ -2,7 +2,7 @@
   import { annotationDrafts } from "$lib/stores/annotationDrafts.svelte";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
-  import type { ThreadSnapshot } from "$lib/types";
+  import type { ThreadSnapshot } from "$lib/pageTypes";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
   import EditMessageModal from "$lib/components/EditMessageModal.svelte";
   import ReplyActionBar from "$lib/components/ReplyActionBar.svelte";

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { FileRiskSnapshot, RiskTier } from "$lib/types";
+  import type { FileRiskSnapshot, RiskTier } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { openOverviewFile } from "$lib/overviewFileOpen";
   import Card from "$lib/components/ui/Card.svelte";

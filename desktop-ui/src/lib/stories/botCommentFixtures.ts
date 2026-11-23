@@ -1,4 +1,4 @@
-import type { GithubStatusSnapshot } from "$lib/types";
+import type { GithubStatusSnapshot } from "$lib/pageTypes";
 import { githubStatusOpen } from "./fixtures";
 
 // Comment bodies as deploy and tracker bots post them on GitHub, kept close to

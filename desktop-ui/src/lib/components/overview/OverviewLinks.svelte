@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { GhCommentSummary } from "$lib/types";
+  import type { GhCommentSummary } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { copyToClipboard } from "$lib/clipboard";

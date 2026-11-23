@@ -1,7 +1,7 @@
 <script lang="ts">
   import { revealErFolder } from "$lib/tabCommands";
   import { readReviewJson } from "$lib/stores/annotationReads";
-  import type { AiSnapshot, Confidence, FlatFinding } from "$lib/types";
+  import type { AiSnapshot, Confidence, FlatFinding } from "$lib/pageTypes";
   import { app } from "$lib/stores/app.svelte";
   import { tabsResource } from "$lib/stores/tabsResource.svelte";
   import { arena } from "$lib/stores/arena.svelte";

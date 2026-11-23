@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
-  import type { AgentLogEntry, AgentCommandStatus } from "$lib/types";
+  import type { AgentLogEntry, AgentCommandStatus } from "$lib/pageTypes";
   import { sourceColor } from "$lib/utils/agentLog";
 
   const commands = $derived<AgentCommandStatus[]>(app.snapshot?.agent_commands ?? []);

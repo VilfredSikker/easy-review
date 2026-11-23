@@ -3,7 +3,7 @@
   import LeftSidebar from "$lib/components/LeftSidebar.svelte";
   import InboxView from "$lib/components/InboxView.svelte";
   import { richSnapshot } from "$lib/stories/fixtures";
-  import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
+  import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/pageTypes";
 
   interface Props {
     inboxItems?: InboxItemSnapshot[];

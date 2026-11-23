@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot } from "$lib/pageTypes";
 import { SelectionAdapter } from "./selectionAdapter";
 
 const KEY = 7;

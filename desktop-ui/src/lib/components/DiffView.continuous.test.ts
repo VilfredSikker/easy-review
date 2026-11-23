@@ -19,7 +19,7 @@ import {
   fileExperimentTemplate,
   richSnapshot,
 } from "$lib/stories/fixtures";
-import type { AppSnapshot, FileSnapshot, HunkSnapshot, LineSnapshot } from "$lib/types";
+import type { AppSnapshot, FileSnapshot, HunkSnapshot, LineSnapshot } from "$lib/pageTypes";
 
 function hunk(start: number): HunkSnapshot {
   const lines: LineSnapshot[] = [

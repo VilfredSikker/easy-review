@@ -1,4 +1,4 @@
-import type { TabSummary } from "./types";
+import type { TabSummary } from "./pageTypes";
 
 /** The repo a tab views: its remote slug's name when known, else the clone's folder. */
 export function tabPlaceholderRepo(tab: Pick<TabSummary, "remote" | "repo_root">): string {

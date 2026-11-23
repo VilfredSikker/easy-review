@@ -1,4 +1,4 @@
-import type { ConfigHubField, SettingsTab } from "$lib/types";
+import type { ConfigHubField, SettingsTab } from "$lib/pageTypes";
 
 export interface SettingsTabMeta {
   id: SettingsTab;

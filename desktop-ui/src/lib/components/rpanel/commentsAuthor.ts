@@ -1,4 +1,4 @@
-import type { ThreadSnapshot } from "$lib/types";
+import type { ThreadSnapshot } from "$lib/pageTypes";
 import { sameAuthor } from "$lib/reviewerComments";
 
 /**

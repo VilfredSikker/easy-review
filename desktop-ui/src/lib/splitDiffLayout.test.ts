@@ -6,7 +6,7 @@ import {
   maxLineNumber,
   SPLIT_GUTTER_PX,
 } from "./splitDiffLayout";
-import type { FileSnapshot } from "./types";
+import type { FileSnapshot } from "./pageTypes";
 
 function file(hunks: [oldStart: number, oldCount: number, newStart: number, newCount: number][]) {
   return {

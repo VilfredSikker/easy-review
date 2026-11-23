@@ -1,5 +1,5 @@
 import { hasColoredSyntaxSpans } from "./highlightPlan";
-import type { SpanSnapshot } from "./types";
+import type { SpanSnapshot } from "./pageTypes";
 import type { Span as WordSpan } from "./wordDiff";
 
 export interface RenderSegment {

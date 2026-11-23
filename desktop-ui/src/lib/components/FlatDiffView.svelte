@@ -88,7 +88,7 @@
   import { syntaxThemeById } from "$lib/syntaxThemes";
   import { profileLog, profileLogRateLimited } from "$lib/profileLog";
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
-  import type { AppSnapshot, FileSnapshot, LineSnapshot } from "$lib/types";
+  import type { AppSnapshot, FileSnapshot, LineSnapshot } from "$lib/pageTypes";
   import { diffGutterPx, maxLineNumber } from "$lib/splitDiffLayout";
   import DiffToolbar from "./DiffToolbar.svelte";
   import {

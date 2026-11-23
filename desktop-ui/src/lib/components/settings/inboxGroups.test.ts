@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { ConfigHubField } from "$lib/types";
+import type { ConfigHubField } from "$lib/pageTypes";
 import { groupAllOn, groupInboxFields, groupPatches, inboxOnCount } from "./inboxGroups";
 
 const bool = (key: string, value: boolean, description = "Show when x"): ConfigHubField => ({

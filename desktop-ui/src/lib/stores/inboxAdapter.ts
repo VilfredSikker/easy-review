@@ -3,7 +3,7 @@ import type { ErError } from "$lib/protocol/generated/ErError";
 import type { Inbox } from "$lib/protocol/generated/Inbox";
 import type { InboxItem } from "$lib/protocol/generated/InboxItem";
 import type { ResourceKey } from "$lib/protocol/generated/ResourceKey";
-import type { AppSnapshot, InboxItemSnapshot } from "$lib/types";
+import type { AppSnapshot, InboxItemSnapshot } from "$lib/pageTypes";
 import type { ResourceStore } from "./resourceStore";
 
 export const INBOX_KEY: ResourceKey = { kind: "inbox" };

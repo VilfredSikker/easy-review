@@ -1,4 +1,4 @@
-import type { FlatFinding } from "$lib/types";
+import type { FlatFinding } from "$lib/pageTypes";
 
 export type FindingSeverityFilter = "all" | FlatFinding["severity"];
 

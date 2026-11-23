@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ImagePreviewCache, imagePanes, isImagePath, isImagePreview, stepPane, type ImagePreviewResponse } from './imagePreview';
-import type { AppSnapshot, FileSnapshot } from './types';
+import type { AppSnapshot, FileSnapshot } from './pageTypes';
 import { richSnapshot } from './stories/fixtures';
 
 function fixture(context = 'one') {
