@@ -272,8 +272,8 @@ fn the_tabs_read_comes_from_the_published_list() {
     });
 }
 
-/// Every module of the host takes `DesktopState`, so none reaches the App.
-/// The tick is the one that may: it is handed the App beside the state.
+/// Every module of the host takes `DesktopState`, so none reaches the App,
+/// the tick included.
 #[test]
 fn no_resource_module_names_the_app() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/resources");
@@ -281,9 +281,6 @@ fn no_resource_module_names_the_app() {
     let mut scanned = 0;
     for entry in entries {
         let path = entry.unwrap_or_else(|e| panic!("{e}")).path();
-        if path.file_name().is_some_and(|name| name == "tick.rs") {
-            continue;
-        }
         let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e}"));
         for name in ["AppState", "er_engine::app"] {
             assert!(!source.contains(name), "{} names {name}", path.display());
@@ -304,7 +301,7 @@ fn the_tick_reloads_every_loaded_tab() {
         let context = &before[0].context;
         write_review(&context.er_dir, &context.branch_diff_hash);
 
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
 
         for (tab, loaded) in tabs.iter().zip(&before) {
             wait_until("each loaded tab's reload", || {
@@ -338,7 +335,7 @@ fn an_outside_question_reaches_the_flag_on_export_after_one_tick() {
         );
         stamp_ahead(&dir.join("questions.json"));
 
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
 
         let wire = er_service::wire_tab_key(tabs[0].0);
         let options = er_protocol::ExportOptions::default();
@@ -376,97 +373,78 @@ fn the_flag_on_poll_leaves_the_duties_to_the_tick() {
     });
 }
 
-/// A tick that finishes a command bumps the desktop revision, so the page
-/// polls for it; one that only drains agent log lines does not, or a running
-/// agent would wake the tick and the poll every debounce.
+/// The tick's duties publish through their own resources, so a tick that
+/// brings an outside write into a tab's content bumps no desktop revision,
+/// and the tick never wakes itself.
 #[test]
-fn the_tick_bumps_for_a_finished_command_and_not_for_log_lines() {
+fn a_tick_bumps_no_desktop_revision() {
     with_storage(|dir| {
-        let state = review_flow_test_state(dir);
-        let revision = || {
-            state
-                .desktop_revision
-                .load(std::sync::atomic::Ordering::Relaxed)
-        };
-        {
-            let app = state.app.lock().unwrap_or_else(|e| e.into_inner());
-            let line = er_engine::app::AgentLogEntry {
-                timestamp: Instant::now(),
-                command_name: Arc::from("lens"),
-                source: er_engine::app::AgentLogSource::Stdout,
-                text: "working".to_string(),
-            };
-            assert!(app.tab().log_tx.send(line).is_ok());
-        }
+        let (state, tabs) = fixture(dir, None, &["one"]);
+        let loaded = content(&state, &tabs[0]);
+        let revision = || state.desktop_revision.load(Ordering::Relaxed);
+        write_review(&loaded.context.er_dir, &loaded.context.branch_diff_hash);
         let before = revision();
 
-        tick::run(&state.desktop, &state.app);
+        tick::run(&state.desktop);
 
-        let drained = {
-            let app = state.app.lock().unwrap_or_else(|e| e.into_inner());
-            app.tab().agent_log.len()
-        };
-        assert_eq!(drained, 1, "the tick did not drain the line");
-        assert_eq!(revision(), before, "a log line bumped the revision");
-
-        finished_command(&state);
-        tick::run(&state.desktop, &state.app);
-
-        assert!(!command_pending(&state));
-        assert!(revision() > before, "a finished command did not bump");
+        wait_until("the tab's reload", || {
+            content(&state, &tabs[0]).ai.revision > loaded.ai.revision
+        });
+        assert_eq!(revision(), before, "the tick bumped the desktop revision");
     });
 }
 
-/// A revision bump runs the tick at once: a finished command is drained
-/// long before the interval.
+/// A wake runs the tick at once: an outside write reaches the content long
+/// before the interval.
 #[test]
 fn a_wake_runs_the_tick_before_the_interval() {
     with_storage(|dir| {
-        let state = review_flow_test_state(dir);
-        let wake = tick::spawn(
-            state.desktop.clone(),
-            Arc::clone(&state.app),
-            Duration::from_secs(600),
-        );
-        finished_command(&state);
+        let (state, tabs) = fixture(dir, None, &["one"]);
+        let wake = tick::spawn(state.desktop.clone(), Duration::from_secs(600));
+        let loaded = content(&state, &tabs[0]);
+        write_review(&loaded.context.er_dir, &loaded.context.branch_diff_hash);
 
         wake.wake();
 
-        wait_until("the tick to drain the command", || !command_pending(&state));
+        wait_until("the tick to reload the tab", || {
+            content(&state, &tabs[0]).ai.revision > loaded.ai.revision
+        });
     });
 }
 
 /// A desktop revision bump runs the tick through the watcher the app runs,
-/// the one that emits `er://revision`: a finished command is drained long
-/// before the interval.
+/// the one that emits `er://revision`: an outside write reaches the content
+/// long before the interval.
 #[test]
 fn a_revision_bump_runs_the_tick_through_the_watcher() {
     with_storage(|dir| {
-        let state = review_flow_test_state(dir);
+        let (state, tabs) = fixture(dir, None, &["one"]);
         let stop = Arc::new(AtomicBool::new(false));
         let (emitted, emits) = mpsc::channel();
         let follower = {
             let desktop = state.desktop.clone();
-            let app = Arc::clone(&state.app);
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
                 let emit = move |revision: u64, _delta: u64| {
                     let _ = emitted.send(revision);
                 };
-                tick::follow_revisions(desktop, app, Duration::from_secs(600), &stop, &emit);
+                tick::follow_revisions(desktop, Duration::from_secs(600), &stop, &emit);
             })
         };
         // The watcher's first read emits, and wakes the tick, with no bump;
-        // the command goes in once that tick has passed.
+        // the write goes in once that tick has passed.
         let first = emits.recv_timeout(WAIT).expect("no first emit");
         std::thread::sleep(Duration::from_millis(200));
-        finished_command(&state);
+        let loaded = content(&state, &tabs[0]);
+        write_review(&loaded.context.er_dir, &loaded.context.branch_diff_hash);
 
         let bumped =
             crate::profile_log::bump_desktop_revision(&state.desktop_revision, "test_bump");
         assert!(bumped > first, "{bumped} after {first}");
 
-        wait_until("the tick to drain the command", || !command_pending(&state));
+        wait_until("the tick to reload the tab", || {
+            content(&state, &tabs[0]).ai.revision > loaded.ai.revision
+        });
         stop.store(true, Ordering::Relaxed);
         assert!(follower.join().is_ok(), "the watcher panicked");
     });

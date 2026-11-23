@@ -48,13 +48,15 @@ function fakeBackend() {
         throw new Error(`unexpected ${command}`);
     }
   };
-  return { run, names: () => calls.map((c) => c.command), calls };
+  /** Moves the rules as an importance run's reload does; answers the new version. */
+  const reload = () => (version += 1);
+  return { run, names: () => calls.map((c) => c.command), calls, reload };
 }
 
 function adapter(flagOn: boolean) {
   const backend = fakeBackend();
   const store = new ResourceStore(resourceClient(backend.run, async () => () => {}), 60_000);
-  return { backend, risk: new RiskAdapter({ flagOn, store, invoke: backend.run }) };
+  return { backend, store, risk: new RiskAdapter({ flagOn, store, invoke: backend.run }) };
 }
 
 describe("RiskAdapter", () => {
@@ -85,5 +87,20 @@ describe("RiskAdapter", () => {
       remoteRepo: null,
       paths: ["db/a.sql", "src/b.rs"],
     });
+  });
+
+  it("reports a risk(key) push past its last load, so the Risks tab loads again", async () => {
+    const { backend, store, risk: adapterRisk } = adapter(true);
+    await adapterRisk.loadRules(TARGET, ["db/a.sql"]);
+    expect(adapterRisk.pushed(TARGET)).toBe(false);
+
+    const key = { kind: "risk", key: "acme/widgets" } as const;
+    const version = backend.reload();
+    store.applyChanges([{ key, version }]);
+    await store.whenAt(key, version);
+    expect(adapterRisk.pushed(TARGET)).toBe(true);
+
+    await adapterRisk.loadRules(TARGET, ["db/a.sql"]);
+    expect(adapterRisk.pushed(TARGET)).toBe(false);
   });
 });

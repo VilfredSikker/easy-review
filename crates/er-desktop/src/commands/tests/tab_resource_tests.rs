@@ -146,7 +146,6 @@ pub(super) fn send_locked(
         let pick = move || picked.clone();
         let effects = Effects {
             notify: &|_, _| {},
-            follow_selection: &|_| {},
             check_update: || panic!("no update check in this test"),
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &pick,
@@ -348,7 +347,6 @@ fn the_browser_commands_write_the_registry_active_tab_with_the_app_locked() {
         let ack = while_the_app_is_locked(&state, "update_tab_browser", move |state| {
             let effects = Effects {
                 notify: &|_, _| {},
-                follow_selection: &|_| {},
                 check_update: || panic!("no update check in this test"),
                 webviews: &*sent,
                 pick_folder: &|| None,
@@ -435,7 +433,6 @@ fn cycle_tab_browser_layout_through_er_send_moves_the_registry_active_tab() {
         let ack = while_the_app_is_locked(&state, "cycle_tab_browser_layout", move |state| {
             let effects = Effects {
                 notify: &|_, _| {},
-                follow_selection: &|_| {},
                 check_update: || panic!("no update check in this test"),
                 webviews: &*sent,
                 pick_folder: &|| None,
@@ -530,7 +527,6 @@ fn a_close_prunes_the_closed_tabs_view_with_the_app_locked() {
         let pruned = while_the_app_is_locked(&state, "close_tab", move |state| {
             let effects = Effects {
                 notify: &|_, _| {},
-                follow_selection: &|_| {},
                 check_update: || panic!("no update check in this test"),
                 webviews: &crate::browser_webview::NoWebviews,
                 pick_folder: &|| None,
@@ -569,7 +565,6 @@ fn the_open_target_reports_its_flag_on_median() {
         let (first, _) = two_tabs(&state, dir);
         let effects = Effects {
             notify: &|_, _| {},
-            follow_selection: &|_| {},
             check_update: || panic!("no update check in this test"),
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &|| None,

@@ -598,6 +598,72 @@ pub enum Command {
         client_id: Option<String>,
     },
 
+    // ── Background tasks ──
+    /// Each run below queues an agent task on its tab's view; `jobs` shows
+    /// it until it finishes, and its output is read through `task_log`.
+    /// `scope` is `auto`, `branch`, `staged` or `unstaged`.
+    RunReview {
+        tab: TabKey,
+        scope: String,
+    },
+    GenerateTour {
+        tab: TabKey,
+    },
+    /// Ranks the repo's files for the importance rules.
+    RunImportanceAgent {
+        tab: TabKey,
+    },
+    GenerateDiagram {
+        tab: TabKey,
+        diagram_kind: String,
+        custom_prompt: Option<String>,
+    },
+    RunExpertReview {
+        tab: TabKey,
+        scope: String,
+        expert_id: String,
+    },
+    /// Runs `reviewers` (`general`, `professor`, `triage` or
+    /// `expert:<id>`) over `paths`, or over the whole diff when empty.
+    RunScopedReview {
+        tab: TabKey,
+        scope: String,
+        paths: Vec<String>,
+        reviewers: Vec<String>,
+        focus_prompt: Option<String>,
+    },
+    /// Validates the tab's review findings and its eligible GitHub
+    /// comments on `scope`.
+    RunValidate {
+        tab: TabKey,
+        scope: String,
+    },
+    /// Hands a note and its replies to the agent to carry out in the tab's
+    /// working tree.
+    SendNoteToAgent {
+        tab: TabKey,
+        note_id: String,
+    },
+    /// Triages one PR of a project from the sidebar, with no tab open.
+    RunPrTriage {
+        project_id: String,
+        #[ts(type = "number")]
+        pr_number: u64,
+    },
+    /// Triages a project's branch: its open PR when it has one.
+    RunBranchTriage {
+        project_id: String,
+        branch: String,
+    },
+    /// Removes a task that has not started.
+    CancelQueuedTask {
+        id: String,
+    },
+    /// Stops a running task.
+    CancelRunningTask {
+        id: String,
+    },
+
     // ── The PR card ──
     /// Reads the tab's `gh stack` again into `pr(tab)`.
     RefreshStack {

@@ -40,7 +40,6 @@ fn theme(value: &str) -> Command {
 fn effects(notify: &dyn Fn(NoticeLevel, String)) -> Effects<'_> {
     Effects {
         notify,
-        follow_selection: &|_| {},
         check_update: || panic!("no update check in this test"),
         webviews: &crate::browser_webview::NoWebviews,
         pick_folder: &|| None,

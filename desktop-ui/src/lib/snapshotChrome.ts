@@ -31,6 +31,29 @@ export function snapshotViewParts(snap: AppSnapshot): SnapshotViewParts {
   };
 }
 
+/** What the App matches a background task against (`matches_target`). */
+export type SnapshotTaskTarget = {
+  repo_root: string;
+  pr_number: number | null;
+  remote_repo: string | null;
+  branch_label: string;
+};
+
+/**
+ * The target the snapshot's tab files its background tasks under: the
+ * viewed local branch, else the live branch the snapshot names.
+ */
+export function snapshotTaskTarget(snap: AppSnapshot): SnapshotTaskTarget | null {
+  const tab = snap.tabs?.find((t) => t.is_active);
+  if (!tab) return null;
+  return {
+    repo_root: tab.repo_root,
+    pr_number: tab.pr_number,
+    remote_repo: tab.remote,
+    branch_label: tab.branch ?? snap.branch,
+  };
+}
+
 export function snapshotViewIdentity(snap: AppSnapshot): string {
   const p = snapshotViewParts(snap);
   return `${p.active_tab}|${p.repo_root}|${p.pr_number ?? ""}|${p.branch}|${p.mode}`;

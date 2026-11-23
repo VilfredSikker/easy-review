@@ -1,7 +1,9 @@
 //! `jobs`: the work in flight the page shows while it runs. Its parts are
-//! the ask-AI replies being written, which `AiReplyJobs` holds and counts,
-//! and the arena runs and review flows the started workspaces hold, which
-//! their published views carry; the AI runs join it later.
+//! the ask-AI replies being written, which `AiReplyJobs` holds and counts;
+//! the arena runs and review flows the started workspaces hold, which their
+//! published views carry; and the background tasks and the sidebar triage
+//! requests, which the task host holds and counts. A task's output lines
+//! stay out: `task_log` reads them, so a line moves no version.
 
 use er_protocol::{AiReplyJob, ArenaRunJob, Jobs, Resource, ReviewFlowJob};
 
@@ -30,10 +32,18 @@ pub fn jobs(desktop: &DesktopState) -> (u64, Resource) {
         })
         .unwrap_or_default();
     ai_replies.sort_by(|a, b| a.target.cmp(&b.target));
+    let mut triage: Vec<String> = desktop
+        .auto_triage_in_flight
+        .lock()
+        .map(|queue| queue.iter().cloned().collect())
+        .unwrap_or_default();
+    triage.sort();
     let jobs = Jobs {
         ai_replies,
         arena_runs,
         review_flows,
+        tasks: desktop.tasks.rows(),
+        triage,
     };
     (version, Resource::Jobs(jobs))
 }
@@ -53,5 +63,7 @@ pub fn version(desktop: &DesktopState) -> u64 {
 /// the relay never disagree.
 fn counted(desktop: &DesktopState, arena_runs: &[ArenaRunJob], flows: &[ReviewFlowJob]) -> u64 {
     desktop.live_jobs.observe(arena_runs);
-    desktop.pending_ai_replies.clock.revision() + desktop.live_jobs.observe_flows(flows)
+    desktop.pending_ai_replies.clock.revision()
+        + desktop.live_jobs.observe_flows(flows)
+        + desktop.tasks.clock.revision()
 }

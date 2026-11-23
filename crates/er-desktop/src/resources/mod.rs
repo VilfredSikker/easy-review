@@ -39,6 +39,8 @@ pub mod relay;
 #[cfg(feature = "v1-service")]
 pub mod reviewed;
 #[cfg(feature = "v1-service")]
+pub mod runs;
+#[cfg(feature = "v1-service")]
 pub mod send;
 #[cfg(feature = "v1-service")]
 pub mod session;

@@ -280,7 +280,6 @@ fn set_compacted(state: &AppState, key: TabKey, compacted: bool) {
     let ack = super::while_the_app_is_locked(state, "set_file_compacted", move |state| {
         let effects = Effects {
             notify: &|_, _| {},
-            follow_selection: &|_| {},
             check_update: || panic!("no update check in this test"),
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &|| None,
@@ -464,7 +463,6 @@ fn the_tab_switch_reports_its_flag_on_median() {
         load(&state, b, &b_tab, DiffMode::Branch);
         let effects = Effects {
             notify: &|_, _| {},
-            follow_selection: &|_| {},
             check_update: || panic!("no update check in this test"),
             webviews: &crate::browser_webview::NoWebviews,
             pick_folder: &|| None,
