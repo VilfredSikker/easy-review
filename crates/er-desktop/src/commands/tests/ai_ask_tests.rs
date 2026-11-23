@@ -19,7 +19,9 @@ use crate::commands::{content_routes, AppState};
 use crate::service::{actor_key, ServiceState};
 
 /// A provider that waits for the gate file, then answers with its own
-/// arguments, so the reply names the model it ran.
+/// arguments, so the reply names the model it ran. It stops waiting after
+/// about thirty seconds, so a test that fails before it opens the gate
+/// leaves no shell behind.
 fn config(gate: &Path) -> String {
     let gate = gate.display();
     format!(
@@ -31,7 +33,7 @@ default_model = "first"
 [ai_hub.providers.echo]
 label = "Echo"
 command = "/bin/sh"
-args = ["-c", '''while [ ! -e "{gate}" ]; do sleep 0.02; done; printf '%s\n' "$@"''', "echo-agent", "{{prompt}}"]
+args = ["-c", '''n=0; while [ ! -e "{gate}" ] && [ $n -lt 1500 ]; do sleep 0.02; n=$((n+1)); done; printf '%s\n' "$@"''', "echo-agent", "{{prompt}}"]
 
 [[ai_hub.providers.echo.models]]
 id = "first"

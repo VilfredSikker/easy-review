@@ -233,10 +233,11 @@ impl Answer {
     }
 }
 
-/// One ask, as it starts: the tab it was made on, that tab's context then,
-/// what it sends and where the answer goes.
+/// One ask, as it starts: the tab it was made on and the actor that holds
+/// it, that tab's context then, what it sends and where the answer goes.
 struct Asked {
     key: TabKey,
+    workspace: String,
     context: TabContext,
     ask: AskContext,
     system: String,
@@ -258,14 +259,7 @@ fn ask_thread(
         reply_to: thread_id,
         ai_action,
     };
-    start(
-        desktop,
-        tab.entry.key,
-        &tab.content.context,
-        ask,
-        answer,
-        prompt,
-    );
+    start(desktop, tab, &tab.content.context, ask, answer, prompt);
     Ok(())
 }
 
@@ -279,14 +273,7 @@ fn ask_finding(
     let ask = ask_context::finding_ask(content_ask_tab(desktop, &content), &finding_id)
         .map_err(refused)?;
     let answer = Answer::Finding { finding_id };
-    start(
-        desktop,
-        tab.entry.key,
-        &content.context,
-        ask,
-        answer,
-        prompt,
-    );
+    start(desktop, tab, &content.context, ask, answer, prompt);
     Ok(())
 }
 
@@ -294,7 +281,7 @@ fn ask_finding(
 /// its own and lands its answer.
 fn start(
     desktop: &DesktopState,
-    key: TabKey,
+    tab: &ArenaTab,
     context: &TabContext,
     ask: AskContext,
     answer: Answer,
@@ -319,7 +306,8 @@ fn start(
         },
     );
     let asked = Asked {
-        key,
+        key: tab.entry.key,
+        workspace: tab.workspace(),
         context: context.clone(),
         system: ask.system_prompt(),
         ask,
@@ -333,7 +321,7 @@ fn start(
     let desktop = desktop.clone();
     std::thread::spawn(move || {
         let body = answer_of(&invocation, &asked, model.as_deref());
-        land(&desktop, asked.key, &asked.context, asked.answer, body);
+        land(&desktop, &asked, body);
         desktop.pending_ai_replies.remove([pending.as_str()]);
         desktop
             .app_owner
@@ -353,19 +341,21 @@ fn answer_of(invocation: &CardAiInvocation, asked: &Asked, model: Option<&str>) 
     .into_inner()
 }
 
-/// Sends the answer to the workspace of the context the ask captured,
-/// started when none runs, whatever the registry lists or shows by now.
-fn land(desktop: &DesktopState, key: TabKey, context: &TabContext, answer: Answer, body: String) {
-    let command = match answer {
+/// Sends the answer, with the context the ask captured, to the actor that
+/// held the asking tab, started again when none runs, whatever the registry
+/// lists or shows by now.
+fn land(desktop: &DesktopState, asked: &Asked, body: String) {
+    let (key, context) = (asked.key, asked.context.clone());
+    let command = match &asked.answer {
         Answer::Thread {
             target,
             reply_to,
             ai_action,
         } => Command::SubmitAiReply {
             key,
-            context: context.clone(),
+            context,
             target: AnnotationTarget {
-                file: target.file,
+                file: target.file.clone(),
                 hunk_idx: target.hunk_idx,
                 line_num: target.line_num,
                 line_num_end: None,
@@ -376,17 +366,33 @@ fn land(desktop: &DesktopState, key: TabKey, context: &TabContext, answer: Answe
                 CommentType::GitHubComment => None,
             },
             kind: target.kind,
-            reply_to,
+            reply_to: reply_to.clone(),
         },
         Answer::Finding { finding_id } => Command::AppendFindingResponse {
             key,
-            context: context.clone(),
-            finding_id,
+            context,
+            finding_id: finding_id.clone(),
             body,
         },
     };
-    if let Err(error) = desktop.service.send(&context.workspace_key(), command) {
-        log::warn!("an AI answer did not land: {error}");
+    if let Err(error) = desktop.service.send(&asked.workspace, command) {
+        notify(desktop, format!("Failed to save the AI answer: {error}"));
+    }
+}
+
+/// A notice the page shows once.
+fn notify(desktop: &DesktopState, message: String) {
+    let handle = desktop
+        .tauri_app_handle
+        .lock()
+        .ok()
+        .and_then(|handle| handle.clone());
+    match handle {
+        Some(handle) => crate::resources::notice::emit(
+            &handle,
+            &crate::resources::notice::engine_notice(message, false),
+        ),
+        None => log::warn!("{message}"),
     }
 }
 
